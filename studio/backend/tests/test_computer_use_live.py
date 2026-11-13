@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The platform backends against a real display. Linux gets a private Xvfb, so nothing the
-developer is looking at moves; macOS only reads; Windows moves the real pointer, so it runs on CI
-runners (or with UNSLOTH_COMPUTER_USE_LIVE=1) and puts the pointer back."""
+"""Platform backends on a real display: Linux on a private Xvfb, macOS read-only, Windows on CI."""
 
 import os
 import shutil
@@ -15,9 +13,6 @@ import pytest
 from core.inference.computer_use.backends import BackendError, Display, FrontWindow
 
 LIVE = os.environ.get("UNSLOTH_COMPUTER_USE_LIVE") == "1"
-
-
-# ── Linux, on a throwaway X server ──
 
 
 @pytest.fixture
@@ -85,7 +80,6 @@ def test_x11_typing_borrows_a_key_and_gives_it_back(xvfb):
         pytest.skip(backend.unavailable_reason())
     _table, spare = backend._keyboard_map()
     assert spare is not None
-    # Characters on the layout, a shifted one, and ones no layout key carries.
     backend.type_text("Hi, wörld → 你好\tdone\n")
     _table, after = backend._keyboard_map()
     assert after == spare, "the borrowed keycode must be empty again"
@@ -147,7 +141,6 @@ def test_x11_finds_the_window_under_a_point_in_front_or_behind(xvfb):
         assert behind.bounds == (0, 0, 400, 300)
         assert backend.window_at(300, 50).app == "Notes"
         assert backend.window_at(500, 50).app == "Notes"
-        # The bare desktop belongs to no window.
         assert backend.window_at(700, 500) is None
     finally:
         x11.XCloseDisplay(display)
@@ -164,9 +157,6 @@ def test_a_wayland_session_is_reported_not_attempted(monkeypatch):
     with pytest.raises(BackendError, match = "Wayland"):
         backend.move(1, 1)
     assert backend.front_window() == FrontWindow()
-
-
-# ── macOS: nothing here moves the pointer or raises a system prompt ──
 
 
 @pytest.fixture
@@ -219,9 +209,6 @@ def test_macos_open_app_takes_names_not_paths(mac):
             mac.open_app(name)
 
 
-# ── Windows, on a runner's desktop ──
-
-
 @pytest.fixture
 def windows():
     if sys.platform != "win32":
@@ -251,7 +238,6 @@ def test_windows_pointer_keys_and_capture(windows):
         windows.move(*target)
         assert windows.cursor() == target
         image = windows.capture(primary)
-        # Per-monitor DPI aware on both sides: a capture pixel is an input position.
         assert image.size == (int(primary.width), int(primary.height))
         windows.key(("shift",), None)
         windows.scroll(0, 1)
@@ -266,7 +252,6 @@ def test_windows_names_an_app_as_the_start_menu_does(windows):
     system = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32")
     assert windows._description(os.path.join(system, "notepad.exe")) == "Notepad"
     assert windows._description(os.path.join(system, "no-such-program.exe")) == ""
-    # Whatever is in front has a name and keeps its file name as its id.
     front = windows.front_window()
     assert isinstance(front.app, str) and front.app_id == front.app_id.lower()
 

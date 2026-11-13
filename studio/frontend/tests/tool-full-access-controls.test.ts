@@ -205,7 +205,6 @@ test("a computer call offers Allow and Deny but never Always allow", async () =>
   assert.ok(h.get(nodes, "Button", "Deny"));
   assert.equal(nodes.some((node) => node.type === "Button" && node.props.children === "Always allow"), false);
   assert.ok(nodes.some((node) => node.type === "p" && node.props.children === "computerUse.approval.note"));
-  // Other tools keep it.
   assert.ok(h.get(harness().render(), "Button", "Always allow"));
 });
 

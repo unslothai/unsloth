@@ -116,7 +116,6 @@ Chord = tuple[tuple[str, ...], Optional[str]]
 
 
 def canonical_key(raw: str) -> str:
-    """One key name, or ValueError naming it."""
     text = raw.strip()
     if text == "":
         if raw == " ":
@@ -172,7 +171,6 @@ def _chord(names: list[str]) -> Chord:
 
 
 def parse_keys(value: Any) -> list[Chord]:
-    """Shortcuts to press in order: "ctrl+c", "cmd+a cmd+c", or ["ctrl", "shift", "p"]."""
     if isinstance(value, (list, tuple)):
         names = [str(item) for item in value if item is not None and str(item) != ""]
         if not names:
@@ -204,7 +202,6 @@ _PRINTABLE_RE = re.compile(r"[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f]*\Z")
 
 
 def typed_text_problem(text: str) -> Optional[str]:
-    """Text goes in as characters, so control codes (an escape sequence, a NUL) are refused."""
     if not _PRINTABLE_RE.match(text):
         return "text has control characters; use the key action for keys such as escape."
     return None

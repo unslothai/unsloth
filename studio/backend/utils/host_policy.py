@@ -276,9 +276,7 @@ def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> No
 
 
 def serves_this_machine_only() -> bool:
-    """True while only this machine's own user can reach the server: a loopback bind off Colab,
-    with no tunnel or LAN listener carrying requests in. Unlike the stdio MCP gate, no
-    environment variable widens it."""
+    """A loopback bind off Colab with no tunnel or LAN listener. No environment variable widens it."""
     return _local_bind and not remote_connector_active()
 
 

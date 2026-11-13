@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-chat computer use state: the user's go-ahead, the last screenshot's frame, and which chat
-holds the one mouse and keyboard. Memory only, so a restart asks again."""
+"""Per-chat computer use state. Memory only, so a restart asks again."""
 
 from __future__ import annotations
 
@@ -13,9 +12,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
-# A go-ahead lapses once the chat has left the computer alone this long.
 GRANT_IDLE_S = 30 * 60.0
-# How long after its last action a chat still holds the mouse and keyboard.
 _CONTROL_HOLD_S = 20.0
 _CONTROL_WAIT_S = 30.0
 _MAX_SESSIONS = 64
@@ -28,7 +25,6 @@ Key = tuple[str, str]
 @dataclass
 class Session:
     granted: bool = False
-    # Casefolded names of the apps the user let this chat act in.
     apps: set = field(default_factory = set)
     used: float = 0.0
     coordinates: str = "pixels"
@@ -36,9 +32,7 @@ class Session:
     display: Optional[int] = None
     # Where the last action left the pointer, to tell the user's own move to a corner from ours.
     pointer: Optional[tuple[float, float]] = None
-    # The user took back control: "pointer" (a screen corner) or "switch" (computer use turned
-    # off). Only they can lift it (an answered approval, Allow again, or switching it back on),
-    # so a chat with Full access can't simply carry on.
+    # "pointer" or "switch". Only the user lifts it, so a chat with Full access can't carry on.
     stopped: str = ""
 
 
@@ -102,7 +96,6 @@ def revoke(key: Key) -> None:
 
 
 def stop(key: Key) -> None:
-    """The user took back control of this chat: its go-ahead goes, and it stays stopped."""
     with _lock:
         revoke(key)
         session(key).stopped = "pointer"
@@ -131,8 +124,7 @@ def stopped_count(account_id: str) -> int:
 
 
 def resume_account(account_id: str) -> int:
-    """Allow again, or computer use switched back on: stopped chats may use the computer again
-    on the terms of their permission mode. Their go-ahead stays withdrawn."""
+    """Stopped chats may use the computer again; their go-ahead stays withdrawn."""
     with _lock:
         count = 0
         for (account, _session), found in _sessions.items():
@@ -147,16 +139,13 @@ def halts() -> int:
 
 
 def halt_running() -> None:
-    """End the chain of actions that is running now, between two of its actions."""
     global _halts
     with _lock:
         _halts += 1
 
 
 def revoke_account(account_id: str) -> int:
-    """Every chat of this account asks again, and what is running ends; the composer switch and
-    the setting going off call this. A turn that is running keeps the tool it started with, so
-    the chats also stay stopped until computer use is switched back on."""
+    """Every chat of this account asks again and stays stopped: a running turn keeps its tool."""
     halt_running()
     with _lock:
         count = 0
@@ -188,8 +177,7 @@ def control(
     *,
     take_over: bool = False,
 ) -> Iterator[None]:
-    """One chat acts at a time, and another can't cut in between a chat's steps. `take_over`: the
-    user just allowed this chat's call, which says which chat they mean to have the computer."""
+    """One chat acts at a time. `take_over`: the user just allowed this chat's call."""
     global _holder, _held_at
     deadline = time.monotonic() + _CONTROL_WAIT_S
     while not _control.acquire(timeout = 0.25):
@@ -213,7 +201,6 @@ def control(
 
 
 def reset() -> None:
-    """Test hook."""
     global _holder, _held_at, _halts
     with _lock:
         _sessions.clear()

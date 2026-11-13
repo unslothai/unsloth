@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a platform backend provides. Positions are global desktop points: the unit the OS takes
-for input, which on a HiDPI screen is not a pixel of the capture."""
+"""What a platform backend provides. Positions are desktop points, not capture pixels."""
 
 from __future__ import annotations
 
@@ -34,7 +33,6 @@ class FrontWindow:
     app_id: str = ""
     title: str = ""
     pid: int = 0
-    # x, y, width, height in desktop points, when the platform reports them.
     bounds: Optional[tuple[float, float, float, float]] = None
 
     def contains(self, x: float, y: float) -> bool:
@@ -46,16 +44,13 @@ class FrontWindow:
 
 class Backend:
     name = "none"
-    # The modifier this platform's shortcuts use, told to the model.
     shortcut_modifier = "ctrl"
     os_name = "this computer"
 
     def unavailable_reason(self) -> Optional[str]:
-        """Why this session has no desktop to control, or None."""
         return None
 
     def permissions(self) -> dict[str, Optional[bool]]:
-        """`screen` and `input`: True, False, or None where the platform has no such grant."""
         return {"screen": None, "input": None}
 
     def request_permission(self, kind: str) -> None:
@@ -65,7 +60,6 @@ class Backend:
         raise NotImplementedError
 
     def capture(self, display: Display) -> Any:
-        """A PIL image of the whole display, at whatever resolution the OS gives."""
         raise NotImplementedError
 
     def cursor(self) -> tuple[float, float]:
@@ -94,16 +88,12 @@ class Backend:
         return FrontWindow()
 
     def window_at(self, x: float, y: float) -> Optional[FrontWindow]:
-        """The window a click at this point would land on, or None when it can't be told. A
-        backend that can't see behind the front window answers for that one only."""
+        """The window a click at this point would land on, or None when it can't be told."""
         front = self.front_window()
         return front if front.bounds is not None and front.contains(x, y) else None
 
     def resolve_app(self, name: str) -> str:
-        """The application `open_app` would open for this name, without opening it, so the
-        policy is applied to what would really start. The name itself where it can't be told."""
         return name
 
     def open_app(self, name: str) -> str:
-        """Open or focus an application by name; returns the name it opened."""
         raise BackendError("opening an application by name isn't supported on this system.")

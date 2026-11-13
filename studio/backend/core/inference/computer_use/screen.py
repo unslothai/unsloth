@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Screenshots as the model sees them, and the frame that maps a point in one back to the desktop.
-The server owns that mapping: a model only ever names a point in a picture it was sent."""
+"""Screenshots as the model sees them, and the frame mapping a picture point back to the desktop."""
 
 from __future__ import annotations
 
@@ -14,16 +13,13 @@ from typing import Any, Callable, Optional
 
 from .backends import Backend, Display
 
-# Vision towers cut the image into 28 px cells and models that answer in pixels (Qwen2.5-VL,
-# UI-TARS 1.5) count them on the resized image, so the picture is sent already on that grid. The
-# long edge stays under mcp_images.MAX_IMAGE_EDGE, or the image would be resized again.
+# Models that answer in pixels count 28 px cells on the resized image, so it is sent on that grid.
 CELL = 28
 MAX_EDGE = 1008
 GRID = 1000
 JPEG_QUALITY = 80
 # A grey level step that means the picture there is different, not merely shaded.
 _LEVEL_STEP = 28
-# Share of the patch around a target that may differ before the target counts as moved.
 _PATCH_CHANGED = 0.30
 _PATCH_RADIUS = 80
 # "Nothing changed" has to notice one digit ticking over, so it looks for any real step at all.
@@ -46,14 +42,11 @@ def fit_size(width: float, height: float) -> tuple[int, int]:
 
 @dataclass
 class Frame:
-    """One screenshot the model was sent: the display it shows and the picture's size."""
-
     display: Display
     width: int
     height: int
     gray: Any = field(repr = False, default = None)
-    # Sent because the screen had changed under a target: the next action is not re-checked,
-    # or a playing video could never be clicked.
+    # Sent because the screen changed under a target: not re-checked, or a video is never clickable.
     lenient: bool = False
 
     def to_desktop(self, x: float, y: float) -> tuple[float, float]:
@@ -70,7 +63,6 @@ class Frame:
 
 
 def image_point(frame: Frame, mode: str, x: float, y: float) -> tuple[float, float]:
-    """A point as the model named it, in the frame's pixels; ValueError says how it is off."""
     if mode == "grid":
         if x > GRID or y > GRID:
             raise ValueError("x and y run from 0 to 1000 across the screenshot.")
@@ -97,8 +89,7 @@ def take(backend: Backend, display: Display) -> Shot:
     size = fit_size(display.width, display.height)
     image = full.resize(size, Image.Resampling.LANCZOS, reducing_gap = 2.0)
     frame = Frame(display, size[0], size[1])
-    # Kept without the pointer, which is drawn on afterwards: comparing two screens must see a
-    # checkbox that changed under the pointer, and must not see the pointer having moved.
+    # Kept without the pointer: comparing two screens must not see the pointer having moved.
     frame.gray = image.convert("L")
     try:
         x, y = frame.from_desktop(*backend.cursor())
@@ -131,8 +122,6 @@ def _changed_pixels(
 
 
 def target_moved(frame: Frame, now: Frame, x: float, y: float) -> bool:
-    """Whether the screen around an image point differs between the frame the model chose the
-    point in and the screen as it is: a dialog opened, the page scrolled, a window moved."""
     if frame.gray is None or now.gray is None or frame.gray.size != now.gray.size:
         return True
     width, height = frame.gray.size
@@ -149,7 +138,6 @@ def target_moved(frame: Frame, now: Frame, x: float, y: float) -> bool:
 
 
 def unchanged(before: Frame, after: Frame) -> bool:
-    """True when the screen is the same, so the picture need not be sent again."""
     if before.gray is None or after.gray is None or before.gray.size != after.gray.size:
         return False
     from PIL import ImageChops
@@ -159,8 +147,7 @@ def unchanged(before: Frame, after: Frame) -> bool:
 
 
 def settle(shoot: Callable[[], Shot], sleep: Callable[[float], bool]) -> Shot:
-    """The screen once it has stopped moving after an action, or after a few looks at one that
-    never does (a video, a spinner). `sleep` returns False when the run was stopped."""
+    """The screen once it stops moving. `sleep` returns False when the run was stopped."""
     if not sleep(_SETTLE_FIRST_S):
         return shoot()
     shot = shoot()
@@ -176,7 +163,6 @@ def settle(shoot: Callable[[], Shot], sleep: Callable[[float], bool]) -> Shot:
 
 
 def zoom(shot: Shot, region: tuple[float, float, float, float]) -> Any:
-    """`region` of the picture, cut from the capture at its own resolution so small text reads."""
     from PIL import Image
 
     frame, full = shot.frame, shot.full
@@ -198,7 +184,6 @@ def zoom(shot: Shot, region: tuple[float, float, float, float]) -> Any:
 
 
 def envelope(image: Any) -> str:
-    """The tool-result suffix the chat loop turns into an image for the model and the card."""
     from ..mcp_images import SENTINEL
 
     buffer = io.BytesIO()

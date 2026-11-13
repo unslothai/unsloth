@@ -41,7 +41,6 @@ import { SettingsSection } from "../components/settings-section";
 const GRANTS: ComputerUsePermission[] = ["screen", "input"];
 const ROW_ICON_CLASS = "me-1.5 size-7";
 
-/** A string whose <b>…</b> part is emphasised, so each language keeps its own word order. */
 function bold(text: string): ReactNode {
   return text
     .split(/<\/?b>/)
@@ -56,7 +55,6 @@ function bold(text: string): ReactNode {
     );
 }
 
-/** Apps by name, each with Remove: the bordered list of Settings > Browser's site permissions. */
 function AppList({
   apps,
   disabled,
@@ -66,7 +64,6 @@ function AppList({
   apps: string[];
   disabled: boolean;
   onRemove: (app: string) => void;
-  /** The row a new name is typed into, when the list takes one. */
   children?: ReactNode;
 }) {
   const t = useT();
@@ -95,8 +92,6 @@ function AppList({
   );
 }
 
-/** Settings > Computer use: which apps models may control on this computer, the system grants
- *  that takes, and the apps they may use without asking. */
 export function ComputerUseTab() {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -104,7 +99,6 @@ export function ComputerUseTab() {
   const browserUse = useBrowserAgentStore((state) => state.enabled);
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  // The name being typed into Blocked apps, or null while that row is closed.
   const [draft, setDraft] = useState<string | null>(null);
 
   useEffect(() => {

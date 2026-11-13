@@ -4938,7 +4938,6 @@ export function createOpenAIStreamAdapter(
         (options.modelType === undefined || options.modelType === "base");
       const browserTools = browserAgentToolsForTurn();
       const computerTools = computerUseToolsForTurn();
-      // Both work a task step by step, where a step announced and not taken ends it.
       const stepwiseTools = browserTools.length > 0 || computerTools.length > 0;
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane and thread

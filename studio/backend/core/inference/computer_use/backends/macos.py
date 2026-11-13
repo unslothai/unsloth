@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""macOS: Quartz events through ctypes and the system's own screencapture, so nothing is added
-to the install. Needs the Screen Recording and Accessibility grants of whatever launched Unsloth
-(the desktop app, or the terminal)."""
+"""macOS: Quartz events through ctypes and screencapture. Needs Screen Recording and Accessibility."""
 
 from __future__ import annotations
 
@@ -31,7 +29,6 @@ _MAX_SCROLL_LINES = 10
 _FLAGS = {"shift": 0x20000, "ctrl": 0x40000, "alt": 0x80000, "cmd": 0x100000}
 _MODIFIER_KEYS = {"cmd": 55, "shift": 56, "alt": 58, "ctrl": 59}
 
-# Virtual key codes of the ANSI layout (HIToolbox Events.h): physical keys, as shortcuts are.
 _KEYCODES = {
     "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11,
     "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21,
@@ -68,7 +65,6 @@ class _Rect(ctypes.Structure):
 
 
 def _load() -> tuple[Any, Any]:
-    # ApplicationServices re-exports CoreGraphics and holds AXIsProcessTrusted.
     lib = ctypes.CDLL(ctypes.util.find_library("ApplicationServices"))
     cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
     ref, u32, i32, u64 = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint64
@@ -127,7 +123,6 @@ class MacBackend(Backend):
         screen = self._preflight("CGPreflightScreenCaptureAccess")
         trusted = bool(self._lib.AXIsProcessTrusted())
         return {
-            # Before 10.15 there is no screen grant to hold.
             "screen": True if screen is None else screen,
             "input": trusted or bool(self._preflight("CGPreflightPostEventAccess")),
         }
@@ -165,7 +160,6 @@ class MacBackend(Backend):
         if self._lib.CGGetActiveDisplayList(16, ids, ctypes.byref(count)) != 0 or count.value == 0:
             raise BackendError("no display was found, so there is no screen to control.")
         main = self._lib.CGMainDisplayID()
-        # The main display first: screencapture's -D numbers them that way.
         ordered = sorted(ids[: count.value], key = lambda display: display != main)
         found = []
         for index, display in enumerate(ordered, start = 1):
@@ -265,7 +259,6 @@ class MacBackend(Backend):
 
     def scroll(self, dx: int, dy: int) -> None:
         self._need("input")
-        # Positive wheel values scroll up and left; the tool counts down and right as positive.
         vertical, horizontal = -dy * _LINES_PER_NOTCH, -dx * _LINES_PER_NOTCH
         while vertical or horizontal:
             # Apple documents deltas of about -10 to 10 per event; larger ones scroll erratically.
@@ -332,8 +325,7 @@ class MacBackend(Backend):
                     self._post(event)
 
     def _front_app(self) -> tuple[str, str, int]:
-        """Name, bundle id and pid of the front application, asked of LaunchServices: NSWorkspace
-        goes stale in a process with no run loop."""
+        """Asked of LaunchServices: NSWorkspace goes stale in a process with no run loop."""
         try:
             asn = subprocess.run(
                 ["/usr/bin/lsappinfo", "front"], capture_output = True, text = True, timeout = 5
@@ -386,7 +378,6 @@ class MacBackend(Backend):
         return number.value
 
     def _windows(self) -> list[tuple[int, FrontWindow]]:
-        """Every window on screen, front to back, with its layer (0 for ordinary windows)."""
         found: list[tuple[int, FrontWindow]] = []
         windows = self._lib.CGWindowListCopyWindowInfo(
             _WINDOW_LIST_ON_SCREEN | _WINDOW_LIST_NO_DESKTOP, 0
@@ -422,7 +413,6 @@ class MacBackend(Backend):
 
     def front_window(self) -> FrontWindow:
         app, bundle, pid = self._front_app()
-        # The first ordinary window of the front app is the one in front.
         for layer, window in self._windows():
             if layer == 0 and (not pid or window.pid == pid):
                 return FrontWindow(
@@ -436,11 +426,9 @@ class MacBackend(Backend):
 
     def window_at(self, x: float, y: float) -> Optional[FrontWindow]:
         for layer, window in self._windows():
-            # Ordinary windows only: the menu bar and the Dock sit above them and are no app's page.
             if layer == 0 and window.bounds is not None and window.contains(x, y):
                 app, bundle, pid = self._front_app()
                 if pid and window.pid == pid:
-                    # One name per app: the window list's can differ from LaunchServices'.
                     return FrontWindow(app or window.app, bundle, window.title, pid, window.bounds)
                 return window
         return None

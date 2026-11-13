@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Who may use computer use, and what it asks about or refuses outright. Controlling the desktop
-is outside every sandbox Unsloth has, so the gates are: this machine's own user only, the owner's
-switch in Settings, a go-ahead per chat, and a question before anything risky."""
+"""Who may use computer use, and what it asks about or refuses: no sandbox holds the desktop."""
 
 from __future__ import annotations
 
@@ -23,8 +21,7 @@ COORDINATE_SETTINGS = ("auto", "pixels", "grid")
 MAX_ALLOWED_APPS = 100
 _MAX_APP_NAME_CHARS = 80
 
-# Families trained to answer on a 0-1000 grid whatever the picture's size (Qwen3-VL cookbook,
-# UI-TARS 1.0 action parser, Gemini computer use docs); the others answer in pixels.
+# Families that answer on a 0-1000 grid whatever the picture's size; the others answer in pixels.
 _GRID_MODEL_RE = re.compile(
     r"qwen[-_ ]?3(?:\.\d+)?[-_ ]?vl|qwen3vl|ui[-_ ]?tars(?![-_ ]?1\.5)|gemini", re.IGNORECASE
 )
@@ -43,13 +40,11 @@ _SYSTEM = (
     "diskutility", "script editor", "scripteditor", "automator", "activity monitor",
     "activitymonitor", "installer",
 )  # fmt: skip
-# Operating system prompts that grant a password or a permission: only the user answers those.
 _PROTECTED = (
     "securityagent", "coreservicesuiagent", "usernotificationcenter", "loginwindow",
     "authorizationhost", "polkit", "pinentry", "askpass", "gcr-prompter", "kdesu", "consent",
     "credentialuibroker",
 )  # fmt: skip
-# Short names that would match inside other words, so they match whole.
 _EXACT = {"cmd": "a terminal", "wt": "a terminal", "hyper": "a terminal", "mmc": "a system tool"}
 
 # Whole names, since "arc" or "edge" inside another app's name is not a browser.
@@ -65,8 +60,7 @@ _BROWSERS = frozenset(
 _OWN_TITLE_RE = re.compile(r"(?:^|[-–—|] )Unsloth(?: [-–—|]|$)")
 _OWN_APP_IDS = ("ai.unsloth.studio",)
 
-# Lock, log out, force quit, kill the display server, switch consoles: nothing a task needs, and
-# each takes the screen away from the user.
+# Nothing a task needs, and each takes the screen away from the user.
 _BLOCKED = {
     "darwin": {"ctrl+cmd+q", "shift+cmd+q", "alt+shift+cmd+q", "alt+cmd+escape", "alt+shift+cmd+escape"},
     "win32": {"cmd+l", "ctrl+alt+delete"},
@@ -107,7 +101,6 @@ def settings() -> dict:
 
 
 def _app_names(value: Any) -> list[str]:
-    """App names as stored, without blanks or repeats that differ only in case."""
     names: dict[str, str] = {}
     for item in value if isinstance(value, list) else []:
         name = " ".join(item.split()) if isinstance(item, str) else ""
@@ -132,8 +125,7 @@ def _without(names: list[str], name: str) -> list[str]:
 
 
 def allow_app(name: Any) -> dict:
-    """Add an app the model may act in without asking, in every chat. The apps that ask every
-    time (terminals, password managers, system tools) and Unsloth itself can't be added."""
+    """Always allow an app. Apps that ask every time and Unsloth itself can't be added."""
     cleaned = _app_names([name])
     if not cleaned:
         raise ValueError("Give the application's name.")
@@ -157,8 +149,7 @@ def remove_allowed_app(name: Any) -> dict:
 
 
 def block_app(name: Any) -> dict:
-    """Add an app no model may act in, in any chat or mode. Blocking wins, so the app also
-    leaves the always-allowed list."""
+    """Blocking wins, so the app also leaves the always-allowed list."""
     cleaned = _app_names([name])
     if not cleaned:
         raise ValueError("Give the application's name.")
@@ -177,8 +168,7 @@ def unblock_app(name: Any) -> dict:
 
 
 def is_blocked(name: str, current: Optional[dict] = None) -> bool:
-    """Whether the owner blocked this app. A blocked name matches as whole words, so "Chrome"
-    covers "Google Chrome": missing an app here is worse than covering one too many."""
+    """Whole words, so "Chrome" covers "Google Chrome": a miss is worse than one too many."""
     folded = name.casefold()
     if not folded:
         return False
@@ -189,7 +179,6 @@ def is_blocked(name: str, current: Optional[dict] = None) -> bool:
 
 
 def blocked_window(window: FrontWindow) -> Optional[str]:
-    """The blocked app this window belongs to, as the owner named it, or None."""
     current = settings()
     for name in (window.app, window.app_id):
         if is_blocked(name, current):
@@ -221,7 +210,6 @@ def coordinate_mode(model: Any) -> str:
 
 
 def host_problem() -> Optional[str]:
-    """Why this request may not control the computer at all, whatever the settings say."""
     from auth.policy import full_access_permitted
     from state.tool_policy import get_tool_policy
     from utils.account_context import via_api_key_context
@@ -250,7 +238,6 @@ def unavailable_reason(backend: Optional[Backend] = None) -> Optional[str]:
 
 
 def offered() -> bool:
-    """Whether a chat request may be given the tool."""
     return settings()["enabled"] and unavailable_reason() is None
 
 
@@ -275,9 +262,7 @@ def _sensitive_app_name(name: str) -> Optional[str]:
 
 
 def is_own_window(window: FrontWindow) -> bool:
-    """Unsloth's own window: the desktop app, or a browser window on its tab. A browser window
-    whose title can't be read counts too, since it can't be told apart (macOS hides titles
-    without the Screen Recording grant)."""
+    """Unsloth's own window. A browser whose title can't be read counts too (macOS hides titles)."""
     names = (window.app.casefold(), window.app_id.casefold())
     stems = [name.removesuffix(".exe") for name in names]
     if names[1] in _OWN_APP_IDS or any(
@@ -291,7 +276,6 @@ def is_own_window(window: FrontWindow) -> bool:
 
 
 def app_allowed(name: str, session: Any) -> bool:
-    """Whether the model may act in this app without asking: allowed in this chat, or always."""
     folded = name.casefold()
     return folded in session.apps or any(
         folded == app.casefold() for app in settings()["allowed_apps"]
@@ -308,7 +292,6 @@ def _window_at(
     backend: Backend,
     prefix: str = "",
 ) -> Optional[FrontWindow]:
-    """The window a click at the action's point would land in, or None if unknown."""
     from . import screen
 
     frame = session.frame
@@ -323,7 +306,6 @@ def _window_at(
 
 
 def _resolved_app(name: str, backend: Backend) -> str:
-    """The app a name would open, so the card and the gate speak of what would really start."""
     try:
         return backend.resolve_app(name) or name
     except Exception:  # noqa: BLE001 - the run itself reports a name that opens nothing
@@ -331,7 +313,6 @@ def _resolved_app(name: str, backend: Backend) -> str:
 
 
 def _window_under_pointer(backend: Backend) -> Optional[FrontWindow]:
-    """Where a scroll without a point lands: the window under the pointer, not the one in front."""
     try:
         return backend.window_at(*backend.cursor())
     except Exception:  # noqa: BLE001 - the app in front answers instead
@@ -341,9 +322,7 @@ def _window_under_pointer(backend: Backend) -> Optional[FrontWindow]:
 def windows_used(
     actions: list[dict], session: Any, backend: Backend, front: FrontWindow
 ) -> list[FrontWindow]:
-    """The windows a call's clicks and keys would land in, in order: where each click points,
-    and for keys the app in front after the clicks before them. Whole windows, since an app
-    may be known for what it is by its id alone."""
+    """The windows a call's clicks and keys would land in, in order."""
     current = front
     used: list[FrontWindow] = []
     for action in actions:
@@ -352,7 +331,6 @@ def windows_used(
             current = FrontWindow(app = _resolved_app(action["name"], backend))
             used.append(current)
         elif op in ("click", "drag"):
-            # A click brings its window forward, so the keys after it go there.
             current = _window_at(action, session, backend) or current
             used.append(current)
             if op == "drag":
@@ -380,8 +358,7 @@ def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontW
 
 
 def new_apps(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
-    """Apps this call would act in that the user has not allowed, here or always. The ones that
-    ask every time are `risks`' to report, and Unsloth's own window is refused outright."""
+    """Apps this call would act in that the user has not allowed, here or always."""
     current = settings()
     return [
         window.app
@@ -408,9 +385,7 @@ def risks(
     front: FrontWindow,
     used: tuple = (),
 ) -> list[str]:
-    """Why these actions want the user's say-so first, in words for the approval card. Looking
-    (screenshot, zoom, wait) never does. `used`: the apps the call would act in, where known,
-    so a click into a terminal behind the front window counts too."""
+    """Why these actions ask first, for the approval card. Looking never does."""
     found: list[str] = []
     for item in used:
         window = item if isinstance(item, FrontWindow) else FrontWindow(app = item)
@@ -435,8 +410,7 @@ def risks(
 
 
 def call_asks(arguments: Any, session_id: Optional[str]) -> dict:
-    """Why a call asks first, for its approval card: what is risky about it, and the apps it
-    would be the first to use in this chat. Never raises."""
+    """Why a call asks first, for its approval card. Never raises."""
     from state import computer_use as state
 
     from .actions import parse_actions
@@ -459,9 +433,7 @@ def call_asks(arguments: Any, session_id: Optional[str]) -> dict:
 
 
 def needs_confirmation(arguments: Any, session_id: Optional[str]) -> bool:
-    """Under "auto" and "off": ask for a chat's first action, for an app the chat has not used,
-    and for anything risky. A call that will not parse is refused when it runs, so it need not
-    ask."""
+    """Ask for a chat's first action, a new app, or anything risky. A bad call is refused when run."""
     from state import computer_use as state
 
     from .actions import parse_actions

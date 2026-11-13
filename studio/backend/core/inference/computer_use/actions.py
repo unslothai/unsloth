@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The computer tool's arguments, in whatever dialect a model learned (Anthropic, OpenAI, Qwen,
-UI-TARS, Gemini), as one list of validated actions in the model's own coordinates."""
+"""The computer tool's arguments, in whatever dialect a model learned, as validated actions."""
 
 from __future__ import annotations
 
@@ -81,7 +80,6 @@ _OP_ALIASES = {
     "cursor_position": "cursor",
 }
 
-# Actions that send mouse or keyboard input; the rest only look or wait.
 INPUT_OPS = frozenset({"click", "move", "drag", "scroll", "type", "key"})
 POINT_OPS = frozenset({"click", "move", "drag", "scroll", "zoom"})
 
@@ -109,7 +107,6 @@ def _coordinate(raw: Any, what: str) -> float:
 
 
 def _numbers_in(value: Any) -> Optional[list[float]]:
-    """Numbers out of [x, y], {"x": .., "y": ..}, "(x, y)" or a UI-TARS box string."""
     if isinstance(value, dict):
         if "x" in value and "y" in value:
             return [_number(value["x"], "x"), _number(value["y"], "y")]
@@ -134,7 +131,6 @@ def _as_point(value: Any) -> Optional[tuple[float, float]]:
     if len(numbers) == 2:
         return numbers[0], numbers[1]
     if len(numbers) == 4:
-        # A box means its centre.
         return (numbers[0] + numbers[2]) / 2, (numbers[1] + numbers[3]) / 2
     return None
 
@@ -223,7 +219,6 @@ def _scroll(raw: dict) -> dict:
             elif axis == "y":
                 dy = notches
             else:
-                # Qwen: positive pixels scroll up.
                 dy = -notches
         if dx == 0 and dy == 0:
             raise ValueError('scroll needs a direction: "up", "down", "left" or "right".')
@@ -245,7 +240,6 @@ def _drag(raw: dict) -> dict:
         if start is None:
             start = other
         elif end is None:
-            # Anthropic: start_coordinate is where it starts and coordinate where it ends.
             end = other
     if start is None or end is None:
         raise ValueError("drag needs x and y to start from, and to_x and to_y to end at.")
@@ -376,7 +370,6 @@ def _one(raw: Any) -> dict:
 
 
 def parse_actions(arguments: Any) -> list[dict]:
-    """The actions one call asks for, in order; ValueError explains a call that cannot run."""
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be an object with an action.")
     batch = None
@@ -384,7 +377,6 @@ def parse_actions(arguments: Any) -> list[dict]:
         if isinstance(arguments.get(key), (list, tuple)):
             batch = list(arguments[key])
             break
-    # "type" names an action in some dialects, as `_one` reads it.
     has_first = any(arguments.get(key) not in (None, "") for key in ("action", "op")) or (
         isinstance(arguments.get("type"), str) and bool(arguments["type"].strip())
     )
@@ -397,8 +389,7 @@ def parse_actions(arguments: Any) -> list[dict]:
 
 
 def describe(action: dict) -> str:
-    """One action in a few words, for the status line, the approval card and the log. Typed text
-    is never included in full."""
+    """One action in a few words. Typed text is never included in full."""
     op = action["op"]
     if op == "click":
         kind = {"right": "Right-click", "middle": "Middle-click"}.get(action["button"], "Click")

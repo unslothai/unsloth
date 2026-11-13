@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Linux on X11: the XTEST extension through ctypes and Pillow's screen grab. Wayland gives an
-application no way to see or drive other windows, so a Wayland session is reported unsupported."""
+"""Linux on X11 through XTEST and Pillow's screen grab; Wayland sessions are reported unsupported."""
 
 from __future__ import annotations
 
@@ -63,8 +62,6 @@ _INPUT_OUTPUT = 1
 
 
 class _WindowAttributes(ctypes.Structure):
-    """Xlib's XWindowAttributes."""
-
     _fields_ = [
         ("x", ctypes.c_int),
         ("y", ctypes.c_int),
@@ -177,8 +174,7 @@ class LinuxBackend(Backend):
             pointer(cint),
             pointer(cint),
         )
-        # Xlib's default handler ends the process on any protocol error, such as a window that
-        # closed between being found and being read.
+        # Xlib's default handler ends the process on any protocol error.
         self._on_error = ctypes.CFUNCTYPE(cint, ref, ref)(lambda _display, _event: 0)
         x11.XSetErrorHandler.argtypes = [ctypes.c_void_p]
         x11.XSetErrorHandler(ctypes.cast(self._on_error, ctypes.c_void_p))
@@ -336,8 +332,7 @@ class LinuxBackend(Backend):
         time.sleep(0.01)
 
     def _keyboard_map(self) -> tuple[dict[int, tuple[int, bool]], Optional[int]]:
-        """Keysym to (keycode, needs Shift) for the layout's first two levels, and a keycode with
-        no symbol to borrow for everything else."""
+        """Keysym to (keycode, needs Shift), and a spare keycode to borrow for everything else."""
         low, high, per = ctypes.c_int(0), ctypes.c_int(0), ctypes.c_int(0)
         self._x11.XDisplayKeycodes(self._display, ctypes.byref(low), ctypes.byref(high))
         count = high.value - low.value + 1
@@ -381,7 +376,6 @@ class LinuxBackend(Backend):
                         self.key((), "tab")
                         continue
                     point = ord(char)
-                    # Latin-1 keysyms are the code point; the rest live in the Unicode range.
                     keysym = (
                         point
                         if 0x20 <= point <= 0x7E or 0xA0 <= point <= 0xFF
@@ -422,7 +416,6 @@ class LinuxBackend(Backend):
         if status != 0 or not data.value:
             return 0, b""
         try:
-            # Format 32 arrives as C longs, whatever their size.
             size = {8: 1, 16: 2, 32: ctypes.sizeof(ctypes.c_long)}.get(form.value, 0)
             return form.value, ctypes.string_at(data.value, items.value * size)
         finally:
@@ -446,7 +439,6 @@ class LinuxBackend(Backend):
             return self._describe(window)
 
     def _children(self, window: int) -> list[int]:
-        """A window's children, lowest first."""
         root, parent = ctypes.c_ulong(0), ctypes.c_ulong(0)
         children = ctypes.POINTER(ctypes.c_ulong)()
         count = ctypes.c_uint(0)
@@ -466,8 +458,6 @@ class LinuxBackend(Backend):
         window: int,
         depth: int = 0,
     ) -> int:
-        """The application's own window inside a window manager's frame: the first one down
-        the tree that names its class. 0 when none does."""
         _form, klass = self._property(window, b"WM_CLASS")
         if klass:
             return window
@@ -479,8 +469,7 @@ class LinuxBackend(Backend):
         return 0
 
     def window_at(self, x: float, y: float) -> Optional[FrontWindow]:
-        """The topmost window under this point, in front or behind. A menu or tooltip names no
-        application, and is charged to the one in front, which raised it."""
+        """The topmost window under this point. A menu or tooltip is charged to the app in front."""
         if self._problem:
             return None
         with self._lock:
@@ -536,8 +525,6 @@ class LinuxBackend(Backend):
         )
 
     def _entries(self) -> list[tuple[str, str, str, str, str]]:
-        """The launcher's applications: path, file stem, shown name, Exec line and window class.
-        Read again after half a minute, since apps come and go."""
         now = time.monotonic()
         if self._launcher is not None and now - self._launcher[0] < 30.0:
             return self._launcher[1]
@@ -580,7 +567,6 @@ class LinuxBackend(Backend):
         return found
 
     def _desktop_entry(self, name: str) -> Optional[tuple[str, str, str]]:
-        """Path, shown name and Exec line of the application whose name matches best."""
         wanted = name.casefold()
         best: Optional[tuple[int, str, str, str]] = None
         for path, stem, shown, command, _klass in self._entries():
@@ -596,14 +582,12 @@ class LinuxBackend(Backend):
         return best[1:] if best else None
 
     def _shown_name(self, classes: list[str]) -> str:
-        """The launcher's name for a window's class ("Firefox Web Browser" for firefox), so a
-        name blocked or allowed when an app is opened also covers acting in its windows."""
+        """The launcher's name for a window's class, so a blocked name covers its windows."""
         wanted = {name.casefold() for name in classes if name}
         if not wanted:
             return ""
         for _path, stem, shown, _command, klass in self._entries():
             stem = stem.casefold()
-            # org.gnome.Nautilus.desktop belongs to the class "nautilus" or the full id.
             if klass.casefold() in wanted or stem in wanted or stem.rsplit(".", 1)[-1] in wanted:
                 return shown
         return ""
@@ -624,7 +608,6 @@ class LinuxBackend(Backend):
         if launcher:
             argv = [launcher, "launch", path]
         else:
-            # Field codes (%f, %U) stand for files to open, and there are none.
             argv = [part for part in shlex.split(command) if not part.startswith("%")]
         try:
             subprocess.Popen(

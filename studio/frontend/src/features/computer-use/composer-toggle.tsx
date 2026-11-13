@@ -12,8 +12,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect } from "react";
 import { computerUseReady, refreshComputerUseStatus, useComputerUseStore } from "./store";
 
-/** Why the loaded model can't use the tool, or null: it needs Unsloth's tool loop and eyes. A
- *  connected model's vision isn't known here, so the server decides for those. */
+/** Why the loaded model can't use the tool, or null. The server decides for connected models. */
 function useModelProblem(): "tools" | "vision" | null {
   return useChatRuntimeStore((s) => {
     if (!s.params.checkpoint || s.modelLoading) return null;
@@ -23,7 +22,6 @@ function useModelProblem(): "tools" | "vision" | null {
   });
 }
 
-/** Asks the server once the menu or the pill is on screen; the answer is shared. */
 function useComputerUseStatus() {
   const status = useComputerUseStore((state) => state.status);
   useEffect(() => {
@@ -37,8 +35,7 @@ export function ComputerUseMenuItem() {
   const status = useComputerUseStatus();
   const enabled = useComputerUseStore((state) => state.enabled);
   const problem = useModelProblem();
-  // A server that can't control this computer has nothing to offer; one where it is only
-  // switched off sends the owner to the switch.
+  // Unavailable offers nothing; switched off sends the owner to the switch.
   if (!status?.available) return null;
   const ready = computerUseReady(status);
   const on = enabled && ready && !problem;
@@ -61,7 +58,6 @@ export function ComputerUseMenuItem() {
   );
 }
 
-/** Shown while computer use is on; a click turns it off. `glyph` wraps the icon like the other pills. */
 export function ComputerUsePill({ glyph }: { glyph: (icon: ReactNode) => ReactNode }) {
   const t = useT();
   const status = useComputerUseStatus();

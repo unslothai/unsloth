@@ -9,8 +9,7 @@ const ROUTE = "/api/computer-use";
 export type ComputerUseCoordinates = "auto" | "pixels" | "grid";
 export type ComputerUsePermission = "screen" | "input";
 
-/** routes/computer_use.py. `available` is false when this server can't control the computer it
- *  runs on (reached from another machine, no desktop session), with `reason` saying why. */
+/** `available` is false when this server can't control the computer it runs on. */
 export type ComputerUseStatus = {
   available: boolean;
   reason: string | null;
@@ -19,11 +18,8 @@ export type ComputerUseStatus = {
   platform: string;
   /** null where the operating system has no such grant. */
   permissions: Record<ComputerUsePermission, boolean | null>;
-  /** Apps a model may act in without asking, in every chat. */
   allowedApps: string[];
-  /** Apps no model may act in. */
   blockedApps: string[];
-  /** Chats the user stopped with the pointer; they stay stopped until allowed again. */
   stoppedChats: number;
 };
 
@@ -79,7 +75,6 @@ export async function requestComputerUsePermission(kind: ComputerUsePermission):
   return checked(res, "Could not open the system permission prompt.");
 }
 
-/** Always allow: the model acts in this app without asking, in every chat. */
 export async function allowComputerUseApp(name: string): Promise<ComputerUseStatus> {
   const res = await authFetch(`${ROUTE}/allowed-apps`, {
     method: "POST",
@@ -94,7 +89,6 @@ export async function removeComputerUseApp(name: string): Promise<ComputerUseSta
   return checked(res, "Could not remove the app.");
 }
 
-/** Block: no model acts in this app, in any chat or permission mode. */
 export async function blockComputerUseApp(name: string): Promise<ComputerUseStatus> {
   const res = await authFetch(`${ROUTE}/blocked-apps`, {
     method: "POST",
@@ -109,13 +103,11 @@ export async function unblockComputerUseApp(name: string): Promise<ComputerUseSt
   return checked(res, "Could not remove the app.");
 }
 
-/** Allow again: the chats stopped with the pointer may use the computer once more. */
 export async function resumeComputerUse(): Promise<ComputerUseStatus> {
   const res = await authFetch(`${ROUTE}/resume`, { method: "POST" });
   return checked(res, "Could not allow computer use again.");
 }
 
-/** Every chat asks again before it next touches the computer, and what is running ends. */
 export async function revokeComputerUse(): Promise<void> {
   await authFetch(`${ROUTE}/revoke`, { method: "POST" });
 }

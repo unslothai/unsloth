@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A drawn desktop that touches nothing real, for tests and for trying the tool without handing
-over a machine: UNSLOTH_STUDIO_COMPUTER_USE_BACKEND=virtual. It captures at twice its point size,
-as a HiDPI screen does."""
+"""A drawn desktop that touches nothing real: UNSLOTH_STUDIO_COMPUTER_USE_BACKEND=virtual."""
 
 from __future__ import annotations
 
@@ -35,7 +33,6 @@ class VirtualBackend(Backend):
             self.focused = False
             self.scrolled = 0
             self.events: list[tuple] = []
-            # Windows behind the front one, front to back, for tests.
             self.behind: list[FrontWindow] = []
             self.front = FrontWindow(
                 app = "Notes", app_id = "virtual.notes", title = "Untitled", pid = 1, bounds = WINDOW

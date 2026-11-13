@@ -211,7 +211,6 @@ function ToolFallbackTrigger({
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
-  /** What a computer call does, shown after the tool's name so a run of them reads as steps. */
   detail?: string;
   // Relayed verbatim from provider SSE, so a non-string name lands here; formatMcpToolName needs a string.
   toolName: unknown;
@@ -538,7 +537,6 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         : toolName === COMPUTER_USE_TOOL
           ? plainComputerResult(result)
           : (widget?.text ?? result);
-  // What the call does, in words: the user approves what they can read.
   const computerSteps = toolName === COMPUTER_USE_TOOL ? describeComputerCall(argsText) : [];
 
   const picture =

@@ -63,8 +63,7 @@ export function ToolConfirmationControls({
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
   // Sharing the user's image is asked every time: no Always allow, no keyboard chord.
   const disclosure = confirmation?.imageDisclosure;
-  // The server decides when a computer call asks, so the tool as a whole has no Always allow.
-  // An app the chat has not used yet can be always allowed instead (Settings > Computer use).
+  // The server decides when a computer call asks, so only an app can be always allowed.
   const computer = toolName === COMPUTER_USE_TOOL;
   const computerAsk = computer ? confirmation?.computerUse : undefined;
   const alwaysApp = permissionMode === "ask" ? null : alwaysAllowableApp(computerAsk);

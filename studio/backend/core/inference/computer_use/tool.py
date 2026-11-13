@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The `computer` tool: one function a local or connected model calls to see this machine's
-screen and use its mouse and keyboard. One call may chain actions and answers with the screen as
-it then is, so a step costs the model one round trip, not an action and a look."""
+"""The `computer` tool: one call may chain actions and answers with the screen as it then is."""
 
 from __future__ import annotations
 
@@ -130,7 +128,6 @@ def computer_tool(mode: str = "pixels", backend: Optional[Backend] = None) -> di
 
 
 def status_text(arguments: Any) -> str:
-    """The chat's status line for a call, without typed text."""
     try:
         actions = parse_actions(arguments)
     except ValueError:
@@ -163,8 +160,6 @@ def _fenced(text: str) -> str:
 
 
 class _Halt(Exception):
-    """An action that must not run. `shot` is the screen to show the model with the reason."""
-
     def __init__(
         self,
         message: str,
@@ -192,7 +187,6 @@ class _Run:
         self.session = state.session(key)
         self.actions = actions
         self.cancel_event = cancel_event
-        # The user answered this call's approval, or the chat has Full access.
         self.allowed = allowed
         self.displays = backend.displays()
         self.checked_target = False
@@ -232,7 +226,6 @@ class _Run:
         self.session.frame = shot.frame
 
     def _failsafe(self) -> None:
-        """Before every piece of input: the user's ways of taking control back."""
         if self._stopped():
             raise _Halt("it was stopped.")
         x, y = self.backend.cursor()
@@ -252,7 +245,6 @@ class _Run:
                 )
 
     def _front(self, action: dict) -> FrontWindow:
-        """The window in front, after the checks every mouse or keyboard action passes."""
         self._failsafe()
         front = self.backend.front_window()
         if policy.is_security_prompt(front):
@@ -285,13 +277,10 @@ class _Run:
         return frame
 
     def _under(self, x: float, y: float, front: FrontWindow) -> FrontWindow:
-        """The window a click at this desktop point lands in. The menu bar and the bare desktop
-        belong to no window, and there the app in front answers."""
         return self.backend.window_at(x, y) or front
 
     def _on_own_window(self, x: float, y: float, front: FrontWindow) -> bool:
-        """Whether a click here would land on Unsloth, in front or showing from behind: one click
-        on a waiting Allow button there would be the model approving itself."""
+        """A click on a waiting Allow button there would be the model approving itself."""
         under = self.backend.window_at(x, y) or (front if front.contains(x, y) else None)
         return under is not None and policy.is_own_window(under)
 
@@ -308,8 +297,7 @@ class _Run:
         name: str,
         app_id: str = "",
     ) -> None:
-        """Input is about to go to this app. A call the user answered opens the app to the rest
-        of the chat; any other call may only use apps already allowed."""
+        """An answered call opens the app to the chat; any other may only use allowed apps."""
         if not name:
             return
         if policy.is_blocked(name):
@@ -330,7 +318,6 @@ class _Run:
         *,
         guard: bool = True,
     ) -> tuple[float, float]:
-        """A point the model named, as a desktop position that is safe to act on."""
         frame = self._frame()
         ix, iy = self._image_point(frame, x, y)
         if not self.checked_target:
@@ -344,7 +331,6 @@ class _Run:
                         "was done there. This is the screen now; choose the point again.",
                         now,
                     )
-                # Same picture where it matters, and a fresher one to compare the result with.
                 self._adopt(now)
                 self.before = now.frame
         if self._stopped():
@@ -387,7 +373,6 @@ class _Run:
             self._use_app(backend.resolve_app(action["name"]) or action["name"])
             action["name"] = backend.open_app(action["name"])
             self._sleep(_OPEN_APP_WAIT_S)
-            # The system may know it by another name than the one asked for.
             opened = backend.front_window()
             if self.allowed or policy.blocked_window(opened):
                 self._use(opened)
@@ -435,8 +420,7 @@ class _Run:
                 self._use(self._under(*backend.cursor(), front))
             backend.scroll(action["dx"], action["dy"])
         elif op == "type":
-            # In pieces, each after the checks: a long text can take minutes to type, and a
-            # stop, a switch-off or another app coming forward must end it where it is.
+            # In pieces: a stop, a switch-off or another app coming forward must end a long text.
             text = action["text"]
             pieces = [text[at : at + _TYPE_CHUNK] for at in range(0, len(text), _TYPE_CHUNK)]
             for piece in [*pieces, None] if action["submit"] else pieces or [""]:
@@ -456,7 +440,6 @@ class _Run:
                     )
             for _ in range(action["repeat"]):
                 for mods, key in action["chords"]:
-                    # Each one anew: a chord such as alt+tab moves the keys to another app.
                     self._use(self._front(action))
                     backend.key(mods, key)
                 if self._stopped():
@@ -492,7 +475,6 @@ class _Run:
             if action["op"] in INPUT_OPS or action["op"] in ("open_app", "wait"):
                 acted = True
             if action["op"] in INPUT_OPS or action["op"] in ("open_app", "wait", "screenshot"):
-                # An enlarged view from before this is of a screen that has moved on.
                 self.zoomed = None
         self.state.touch(self.key)
         logger.info(
@@ -591,9 +573,7 @@ def execute_computer_tool(
     approved: bool = False,
     full_access: bool = False,
 ) -> str:
-    """Run one call. `approved` means the user answered this call's approval card; without it
-    (and without Full access) a chat's first call and any risky action are refused here, so a
-    request that could not ask never acts."""
+    """Run one call. Without `approved` or Full access, a first or risky call is refused here."""
     from state import computer_use as state
 
     if not policy.settings()["enabled"]:

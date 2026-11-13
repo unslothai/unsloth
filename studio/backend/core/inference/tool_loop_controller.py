@@ -234,8 +234,6 @@ class ToolCallDecision:
         }
         if self.tool_name == COMPUTER_TOOL_NAME and fragment is None:
             from core.inference.computer_use import policy as computer_policy
-
-            # Why this call asks, for the approval card.
             payload["computer_use"] = computer_policy.call_asks(self.arguments, self.session_id)
         return payload
 

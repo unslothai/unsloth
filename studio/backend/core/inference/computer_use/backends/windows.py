@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows: SendInput through ctypes and Pillow's screen grab. Every call runs per-monitor DPI
-aware, so a position is a physical pixel of the capture on any scaling. Windows itself keeps
-input away from elevated windows and the secure desktop (UAC, the lock screen)."""
+"""Windows: SendInput through ctypes and Pillow's screen grab, per-monitor DPI aware."""
 
 from __future__ import annotations
 
@@ -215,7 +213,6 @@ class WindowsBackend(Backend):
             int(display.y + display.height),
         )
         try:
-            # all_screens: the box is in virtual desktop pixels, so a second monitor works.
             return ImageGrab.grab(bbox = box, all_screens = True).convert("RGB")
         except OSError as exc:
             raise BackendError("the screen could not be captured.") from exc
@@ -286,7 +283,6 @@ class WindowsBackend(Backend):
                 self._send(self._mouse_input(_MOUSE_UP["left"]))
 
     def scroll(self, dx: int, dy: int) -> None:
-        # A positive wheel value scrolls up; the tool counts down as positive.
         if dy:
             self._send(self._mouse_input(_WHEEL, -dy * _WHEEL_DELTA))
         if dx:
@@ -348,8 +344,7 @@ class WindowsBackend(Backend):
             finally:
                 self._kernel32.CloseHandle(handle)
         return FrontWindow(
-            # The name the Start menu and open_app know it by ("Microsoft Edge"), so one name
-            # covers opening an app and acting in it; the file name stays as its id.
+            # The Start menu's name, so one name covers opening an app and acting in it.
             app = shown or (exe.rsplit(".", 1)[0] if exe else ""),
             app_id = exe.lower(),
             title = title.value,
@@ -362,7 +357,6 @@ class WindowsBackend(Backend):
         )
 
     def _description(self, path: str) -> str:
-        """The program's own name for itself, from its version resource, or "" without one."""
         if path in self._descriptions:
             return self._descriptions[path]
         found = ""
@@ -413,7 +407,6 @@ class WindowsBackend(Backend):
     def window_at(self, x: float, y: float) -> Optional[FrontWindow]:
         with self._dpi_aware():
             hwnd = self._user32.WindowFromPoint(wintypes.POINT(int(round(x)), int(round(y))))
-        # The control under the point belongs to a top-level window, which carries the title.
         root = self._user32.GetAncestor(hwnd, _GA_ROOT) if hwnd else None
         return self._window(root) if root else None
 

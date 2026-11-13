@@ -13,10 +13,8 @@ import {
 } from "./api";
 
 type ComputerUseState = {
-  /** The composer's Computer use switch: offer the model the computer tool. */
   enabled: boolean;
   setEnabled: (enabled: boolean) => void;
-  /** What the server last said; null until asked, or on a backend without computer use. */
   status: ComputerUseStatus | null;
   setStatus: (status: ComputerUseStatus | null) => void;
 };
@@ -54,7 +52,6 @@ syncAcrossWindows(useComputerUseStore);
 
 let inFlight: Promise<ComputerUseStatus | null> | null = null;
 
-/** One request at a time; a failed read leaves the last answer in place. */
 export function refreshComputerUseStatus(): Promise<ComputerUseStatus | null> {
   inFlight ??= loadComputerUseStatus()
     .then((status) => {
@@ -68,12 +65,10 @@ export function refreshComputerUseStatus(): Promise<ComputerUseStatus | null> {
   return inFlight;
 }
 
-/** The approval card's Always allow: adds the app to the list in Settings > Computer use. */
 export async function alwaysAllowComputerUseApp(name: string): Promise<void> {
   useComputerUseStore.getState().setStatus(await allowComputerUseApp(name));
 }
 
-/** The server would hand a chat the tool: it can control this computer and the owner switched it on. */
 export function computerUseReady(status: ComputerUseStatus | null): boolean {
   return !!status && status.available && status.enabled;
 }

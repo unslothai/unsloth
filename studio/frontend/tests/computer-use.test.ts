@@ -55,7 +55,6 @@ test("a call the steps do not fully say is shown as sent too", () => {
   const said = (args: unknown) => computerCallFullySaid(JSON.stringify(args));
   assert.equal(said({ action: "click", x: 1, y: 2, why: "Open", then: [{ action: "type", text: "hi", submit: true }] }), true);
   assert.equal(said({ actions: [{ type: "keypress", keys: ["CTRL", "L"] }] }), true);
-  // Another dialect's name for the text, a button, a repeat count, an unknown action.
   assert.equal(said({ action: "type", content: "send this text", press_enter: true }), false);
   assert.equal(said({ action: "click", x: 1, y: 2, button: "right" }), false);
   assert.equal(said({ action: "key", keys: "tab", repeat: 9 }), false);

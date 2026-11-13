@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Computer use: the dialects a call may arrive in, the picture-to-desktop mapping, what is asked
-about or refused, and whole calls against the drawn desktop (nothing real is touched)."""
+"""Computer use: call dialects, picture-to-desktop mapping, whole calls on the drawn desktop."""
 
 import asyncio
 import threading
@@ -26,7 +25,6 @@ SESSION = "chat-1"
 
 @pytest.fixture(autouse = True)
 def desktop(monkeypatch):
-    """The drawn desktop, on a server only this machine reaches, with computer use switched on."""
     monkeypatch.setenv(backends.BACKEND_ENV, "virtual")
     backends.reset_backend()
     state.reset()
@@ -58,15 +56,12 @@ def run(arguments, **kwargs):
 
 
 def look(**kwargs):
-    """The chat's first call, which the user allowed, with Notes (the app in front) allowed for
-    the chat as an approved click there would leave it."""
     result = run({"action": "screenshot"}, approved = True, **kwargs)
     state.session(state.session_key(kwargs.get("session_id", SESSION))).apps.add("notes")
     return result
 
 
 def at(x, y):
-    """A desktop point as pixels of the latest screenshot."""
     frame = state.session(state.session_key(SESSION)).frame
     px, py = frame.from_desktop(x, y)
     return {"x": round(px), "y": round(py)}
@@ -75,9 +70,6 @@ def at(x, y):
 BUTTON = (640, 450)
 FIELD = (400, 320)
 OUTSIDE = (1100, 700)
-
-
-# ── keys ──
 
 
 @pytest.mark.parametrize(
@@ -111,9 +103,6 @@ def test_keys_that_name_no_key_are_refused(written):
         keys.parse_keys(written)
 
 
-# ── the dialects a model may speak ──
-
-
 def test_our_own_shape_parses_with_a_chain():
     parsed = actions_mod.parse_actions(
         {
@@ -141,7 +130,6 @@ def test_our_own_shape_parses_with_a_chain():
 @pytest.mark.parametrize(
     "arguments, expected",
     [
-        # Anthropic computer_20250124
         (
             {"action": "left_click", "coordinate": [100, 200]},
             {"op": "click", "x": 100.0, "y": 200.0},
@@ -169,7 +157,6 @@ def test_our_own_shape_parses_with_a_chain():
             {"op": "zoom", "region": (0.0, 0.0, 100.0, 50.0)},
         ),
         ({"action": "wait", "duration": 2}, {"op": "wait", "seconds": 2.0}),
-        # OpenAI computer tool
         ({"type": "click", "x": 3, "y": 4, "button": "right"}, {"op": "click", "button": "right"}),
         ({"type": "keypress", "keys": ["CTRL", "L"]}, {"op": "key", "chords": [(("ctrl",), "l")]}),
         (
@@ -180,10 +167,8 @@ def test_our_own_shape_parses_with_a_chain():
             {"type": "drag", "path": [{"x": 1, "y": 2}, {"x": 9, "y": 9}, {"x": 30, "y": 40}]},
             {"op": "drag", "x": 1.0, "y": 2.0, "to_x": 30.0, "to_y": 40.0},
         ),
-        # Qwen computer_use
         ({"action": "scroll", "pixels": -250}, {"op": "scroll", "dy": 2}),
         ({"action": "key", "keys": ["ctrl", "c"]}, {"op": "key", "chords": [(("ctrl",), "c")]}),
-        # UI-TARS
         (
             {"action": "click", "start_box": "<|box_start|>(235,512)<|box_end|>"},
             {"op": "click", "x": 235.0, "y": 512.0},
@@ -198,7 +183,6 @@ def test_our_own_shape_parses_with_a_chain():
             {"op": "drag", "x": 1.0, "y": 2.0, "to_x": 30.0, "to_y": 40.0},
         ),
         ({"action": "hotkey", "key": "ctrl a"}, {"op": "key"}),
-        # Gemini
         ({"action": "type", "text": "x", "press_enter": True}, {"op": "type", "submit": True}),
         ({"action": "open_app", "name": "  Safari "}, {"op": "open_app", "name": "Safari"}),
     ],
@@ -272,9 +256,6 @@ def test_descriptions_never_carry_a_long_typed_text():
     assert "s3cret" not in computer_use.status_text({"action": "type", "text": "s3cret"})
 
 
-# ── pictures and frames ──
-
-
 @pytest.mark.parametrize(
     "size", [(1352, 878), (1280, 800), (1920, 1080), (3840, 2160), (800, 600), (1080, 1920)]
 )
@@ -284,7 +265,6 @@ def test_the_picture_fits_the_vision_grid_and_the_shared_image_cap(size):
     width, height = screen.fit_size(*size)
     assert width % screen.CELL == 0 and height % screen.CELL == 0
     assert max(width, height) <= screen.MAX_EDGE <= MAX_IMAGE_EDGE
-    # The picture keeps the screen's shape to within a cell.
     assert abs(width / height - size[0] / size[1]) < 0.06
 
 
@@ -312,15 +292,11 @@ def test_the_picture_reaches_the_model_at_the_size_the_frame_says(desktop):
     assert is_image_tool(computer_use.COMPUTER_TOOL_NAME)
 
 
-# ── whole calls ──
-
-
 def test_the_first_call_needs_the_users_go_ahead(desktop):
     refused = run({"action": "screenshot"})
     assert refused.startswith("Error:") and "go-ahead" in refused
     assert not desktop.events
     assert look().startswith("Done: Take a screenshot.")
-    # Granted for the chat, not for another one.
     assert run({"action": "screenshot"}).startswith("Done:")
     assert run({"action": "screenshot"}, session_id = "chat-2").startswith("Error:")
 
@@ -338,7 +314,6 @@ def test_a_click_lands_where_the_picture_shows_it(desktop):
     kind, x, y, button, count, mods = desktop.events[-1]
     assert (kind, button, count, mods) == ("click", "left", 1, ())
     assert abs(x - BUTTON[0]) < 2 and abs(y - BUTTON[1]) < 2
-    # The button's label changed, so the new screen comes back with the result.
     assert len(images) == 1
     assert "untrusted_screen_text" in text and "Notes" in text
 
@@ -361,7 +336,6 @@ def test_a_chain_runs_in_one_call_and_stops_at_the_first_failure(desktop):
     assert "Done before it: Click at" in text and "Not run: the 1 action after it." in text
     assert desktop.text == "héllo wörld"
     assert ("type", "never") not in desktop.events
-    # What did happen is shown.
     assert len(images) == 1
 
 
@@ -370,7 +344,6 @@ def test_an_action_that_changes_nothing_sends_no_picture(desktop):
     text, images = split_images(run({"action": "click", **at(*OUTSIDE)}))
     assert "Nothing changed on the screen." in text
     assert images == []
-    # An explicit look always sends one.
     assert len(split_images(run({"action": "screenshot"}))[1]) == 1
 
 
@@ -382,7 +355,6 @@ def test_a_small_change_under_the_pointer_is_still_shown(desktop):
     def capture(display):
         image = original(display)
         if ticked:
-            # A checkbox a few pixels wide, right where the pointer now is.
             from PIL import ImageDraw
             x, y = (round(value * virtual.SCALE) for value in OUTSIDE)
             ImageDraw.Draw(image).rectangle([x - 6, y - 6, x + 6, y + 6], fill = "white")
@@ -404,7 +376,6 @@ def test_a_click_without_a_screenshot_shows_the_screen_instead(desktop):
 def test_a_target_that_moved_since_the_screenshot_is_not_clicked(desktop):
     look()
     target = at(*BUTTON)
-    # A window covers the button after the model looked.
     desktop.presses = 7
     desktop.text = "x" * 60
     original = desktop.capture
@@ -421,7 +392,6 @@ def test_a_target_that_moved_since_the_screenshot_is_not_clicked(desktop):
     assert text.startswith("Error:") and "changed after the screenshot" in text
     assert len(images) == 1
     assert not [event for event in desktop.events if event[0] == "click"]
-    # The model has now seen the screen as it is, so choosing again goes through.
     assert run({"action": "click", **target}).startswith("Done:")
     assert [event for event in desktop.events if event[0] == "click"]
 
@@ -473,7 +443,6 @@ def test_an_enlarged_view_is_not_shown_for_a_screen_that_moved_on(desktop):
     for chain in ([click], [click, {"action": "screenshot"}], [{"action": "screenshot"}]):
         result = run({**zoom, "then": chain})
         assert "Enlarged view" not in result and "Screenshot attached" in result
-    # Zooming last still shows the enlarged view.
     assert "Enlarged view" in run({**click, "then": [zoom]})
 
 
@@ -488,9 +457,6 @@ def test_keys_scroll_and_open_app_reach_the_desktop(desktop):
     assert run({"action": "open_app", "name": "missing"}, approved = True).startswith("Error:")
 
 
-# ── what is asked about, and what is never done ──
-
-
 def test_risky_actions_are_refused_unless_the_user_was_asked(desktop, monkeypatch):
     monkeypatch.setattr(policy, "_platform", lambda: "darwin")
     look()
@@ -498,7 +464,6 @@ def test_risky_actions_are_refused_unless_the_user_was_asked(desktop, monkeypatc
     assert refused.startswith("Error:") and "approval" in refused
     assert not [event for event in desktop.events if event[0] == "key"]
     assert run({"action": "key", "keys": "cmd+q"}, approved = True).startswith("Done:")
-    # A terminal in front makes any click or keystroke a question.
     desktop.front = FrontWindow(app = "Terminal", app_id = "com.apple.Terminal", bounds = virtual.WINDOW)
     assert run({"action": "type", "text": "ls"}).startswith("Error:")
     assert run({"action": "screenshot"}).startswith("Done:")
@@ -536,7 +501,6 @@ def test_unsloths_own_window_is_out_of_reach(desktop, title):
     inside = run({"action": "click", **at(300, 300)}, approved = True)
     assert inside.startswith("Error:") and "own window" in inside
     assert not [event for event in desktop.events if event[0] in ("type", "click")]
-    # Another window beside it can still be clicked, which is how the model leaves.
     assert run({"action": "click", **at(900, 300)}, approved = True).startswith("Done:")
 
 
@@ -557,14 +521,12 @@ def test_a_browser_window_with_no_readable_title_is_treated_as_unsloth():
 
 def test_unsloth_showing_from_behind_cannot_be_clicked_either(desktop):
     look()
-    # Notes is in front; Unsloth's window shows beside it with an approval waiting.
     desktop.behind = [
         FrontWindow(app = "Firefox", title = "Chat - Unsloth", bounds = (1050, 0, 230, 800))
     ]
     refused = run({"action": "click", **at(1150, 400)})
     assert refused.startswith("Error:") and "own window" in refused
     assert not [event for event in desktop.events if event[0] == "click"]
-    # Looking and hovering there are harmless, and the window in front still works.
     assert run({"action": "move", **at(1150, 400)}).startswith("Done:")
     assert run({"action": "click", **at(*BUTTON)}).startswith("Done:")
 
@@ -608,7 +570,6 @@ def test_a_security_prompt_showing_from_behind_is_left_alone_too(desktop):
 def test_the_pointer_in_a_corner_stops_computer_use(desktop):
     look()
     run({"action": "click", **at(*OUTSIDE)})
-    # The user slams the pointer into the corner.
     desktop.pointer = (0.0, 0.0)
     stopped = run({"action": "click", **at(*BUTTON)})
     assert stopped.startswith("Error:") and "corner" in stopped
@@ -621,7 +582,6 @@ def test_the_pointer_in_a_corner_stops_computer_use(desktop):
     assert _asks("auto", {"action": "screenshot"})
     asks = policy.call_asks({"action": "screenshot"}, SESSION)
     assert asks["risks"] == ["you stopped computer use in this chat"]
-    # Only the user lifts it: by answering the chat's next question ...
     assert run({"action": "screenshot"}, approved = True).startswith("Done:")
     assert not state.is_stopped(state.session_key(SESSION))
 
@@ -635,7 +595,6 @@ def test_allow_again_in_settings_lifts_a_stop(client):
     assert "stopped computer use" in run({"action": "screenshot"}, full_access = True)
     resumed = client.post("/api/computer-use/resume")
     assert resumed.status_code == 200 and resumed.json()["stopped_chats"] == 0
-    # The go-ahead is still gone, so a chat without Full access asks again.
     assert "go-ahead" in run({"action": "screenshot"})
     assert run({"action": "screenshot"}, full_access = True).startswith("Done:")
     host_policy.set_remote_connector_active(True)
@@ -645,16 +604,12 @@ def test_allow_again_in_settings_lifts_a_stop(client):
 def test_switching_off_holds_for_a_turn_that_still_has_the_tool(client):
     client.put("/api/computer-use/settings", json = {"enabled": True})
     assert run({"action": "screenshot"}, full_access = True).startswith("Done:")
-    # The composer's switch goes off mid-turn; the running turn still carries the tool.
     assert client.post("/api/computer-use/revoke").json() == {"revoked": 1}
     again = run({"action": "screenshot"}, full_access = True)
     assert again.startswith("Error:") and "stopped computer use" in again
-    # Not a pointer stop, so Settings has nothing to show for it.
     assert client.get("/api/computer-use/status").json()["stopped_chats"] == 0
-    # Switching it back on is the user's word.
     assert client.post("/api/computer-use/resume").status_code == 200
     assert run({"action": "screenshot"}, full_access = True).startswith("Done:")
-    # The same through the owner's switch in Settings.
     client.put("/api/computer-use/settings", json = {"enabled": False})
     client.put("/api/computer-use/settings", json = {"enabled": True})
     assert run({"action": "screenshot"}, full_access = True).startswith("Done:")
@@ -678,7 +633,6 @@ def test_a_call_that_waited_through_a_switch_off_does_nothing(desktop):
         target = lambda: results.append(run({"action": "type", "text": "late"}, approved = True))
     )
     waiter.start()
-    # The approved call is queued behind the other chat when the switch goes off.
     time.sleep(0.3)
     state.revoke_account(key[0])
     release.set()
@@ -706,7 +660,6 @@ def test_typing_ends_where_it_is_when_control_is_taken_back(desktop):
     assert "was not done: it was stopped." in result
     assert len(typed) == 1 and len(typed[0]) < len(long)
     assert ("key", (), "enter") not in desktop.events
-    # The pointer in a corner ends it too, and so does another app coming forward.
     state.resume_account(key[0])
     look()
     typed.clear()
@@ -719,7 +672,6 @@ def test_typing_ends_where_it_is_when_control_is_taken_back(desktop):
     desktop.type_text = corner_after_first
     assert "corner" in run({"action": "type", "text": long})
     assert len(typed) == 1
-    # A short text still goes out whole, with its Enter.
     desktop.pointer = (640.0, 400.0)
     desktop.type_text = original
     look()
@@ -741,7 +693,6 @@ def test_a_stop_ends_a_key_action_between_its_chords(desktop):
     result = run({"action": "key", "keys": "ctrl+a backspace enter"}, approved = True)
     assert "was not done: it was stopped." in result
     assert sent == ["a"]
-    # The chat's Stop does the same.
     state.resume_account(key[0])
     look()
     sent.clear()
@@ -762,7 +713,6 @@ def test_switching_off_ends_the_actions_running_now(desktop):
 
     def click(*args):
         original(*args)
-        # The owner turns the switch off (or the composer's) while the chain runs.
         state.revoke_account("")
 
     desktop.click = click
@@ -799,10 +749,8 @@ def test_stop_ends_a_chain_between_actions(desktop):
 def test_one_chat_holds_the_mouse_at_a_time(desktop, monkeypatch):
     look()
     run({"action": "screenshot"}, session_id = "chat-2", approved = True)
-    # Both chats are allowed; the one that acted last holds the computer for a while.
     assert "another chat" in run({"action": "screenshot"})
     assert run({"action": "screenshot"}, session_id = "chat-2").startswith("Done:")
-    # The user answering a chat's card hands it the computer at once.
     assert run({"action": "screenshot"}, approved = True).startswith("Done:")
     assert "another chat" in run({"action": "screenshot"}, session_id = "chat-2")
     monkeypatch.setattr(state, "_CONTROL_HOLD_S", 0.0)
@@ -827,11 +775,7 @@ def test_a_window_title_cannot_speak_outside_its_fence(desktop):
     assert text.rstrip().endswith("</untrusted_screen_text>")
 
 
-# ── apps: allowed for a chat, or always ──
-
-
 def first_look():
-    """The chat's go-ahead alone: no app has been allowed yet."""
     return run({"action": "screenshot"}, approved = True)
 
 
@@ -842,16 +786,13 @@ def test_an_app_the_chat_has_not_used_asks_first(desktop):
     assert desktop.presses == 0
     assert _asks("auto", {"action": "click", **at(*BUTTON)})
     assert _asks("off", {"action": "type", "text": "hi"})
-    # Looking never asks about an app.
     assert not _asks("auto", {"action": "screenshot"})
-    # The user answers the card: the click runs, and Notes is open to the rest of this chat.
     assert run({"action": "click", **at(*BUTTON)}, approved = True).startswith("Done:")
     assert not _asks("auto", {"action": "click", **at(*FIELD)})
     assert run(
         {"action": "click", **at(*FIELD), "then": [{"action": "type", "text": "hi"}]}
     ).startswith("Done:")
     assert desktop.text == "hi"
-    # Another chat starts over.
     run({"action": "screenshot"}, session_id = "chat-2", approved = True)
     assert "has not been allowed" in run({"action": "type", "text": "x"}, session_id = "chat-2")
 
@@ -903,7 +844,6 @@ def test_an_x11_window_takes_its_launchers_name(tmp_path, monkeypatch):
     assert backend._shown_name(["code", "Code"]) == "Visual Studio Code"
     assert backend._shown_name(["xterm", "XTerm"]) == ""
     assert backend._desktop_entry("fire")[1] == "Firefox Web Browser"
-    # So the name blocked when the app is opened is the one its windows carry.
     assert backend.resolve_app("fire") == backend._shown_name(["Navigator", "firefox"])
 
 
@@ -913,7 +853,6 @@ def test_an_always_allowed_app_never_asks(desktop):
     assert policy.allow_app("Notes")["allowed_apps"] == ["notes"]
     assert not _asks("auto", {"action": "click", **at(*BUTTON)})
     assert run({"action": "click", **at(*BUTTON)}).startswith("Done:")
-    # In every chat, until it is taken off the list.
     run({"action": "screenshot"}, session_id = "chat-2", approved = True)
     assert run({"action": "type", "text": "x"}, session_id = "chat-2").startswith("Done:")
     assert policy.remove_allowed_app("NOTES")["allowed_apps"] == []
@@ -931,7 +870,6 @@ def test_apps_that_ask_every_time_cannot_be_always_allowed(desktop, name):
 
 def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
     look()
-    # Notes is in front and allowed; Mail shows beside it.
     desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
     click_mail = {"action": "click", **at(1150, 400), "then": [{"action": "type", "text": "x"}]}
     assert policy.call_asks(click_mail, SESSION)["apps"] == ["Mail"]
@@ -939,7 +877,6 @@ def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
     refused = run(click_mail)
     assert "Mail has not been allowed" in refused
     assert not [event for event in desktop.events if event[0] in ("click", "type")]
-    # A terminal behind the front window is a risk, not a new app to always allow.
     desktop.behind = [FrontWindow(app = "Terminal", title = "zsh", bounds = (1050, 0, 230, 800))]
     asks = policy.call_asks({"action": "click", **at(1150, 400)}, SESSION)
     assert asks == {"risks": ["Terminal is a terminal"], "apps": []}
@@ -968,7 +905,6 @@ def test_a_scroll_without_a_point_asks_about_the_app_under_the_pointer(desktop):
     assert policy.call_asks(scroll, SESSION)["apps"] == ["Mail"]
     assert _asks("auto", scroll)
     assert "Mail has not been allowed" in run(scroll)
-    # The user's answer lets it through, so asking again is not a dead end.
     assert run(scroll, approved = True).startswith("Done:")
     assert not _asks("auto", scroll)
 
@@ -985,7 +921,6 @@ def test_an_app_known_as_sensitive_by_its_id_alone_asks_every_time(desktop):
         "risks": ["Windows Command Processor is a terminal"],
         "apps": [],
     }
-    # The user allows one click there; the next still asks, and is refused if it could not.
     assert run(click, approved = True).startswith("Done:")
     desktop.front = FrontWindow(app = "Notes", title = "Untitled", bounds = (0, 0, 1050, 800))
     desktop.behind = [shell]
@@ -1027,7 +962,6 @@ def test_a_blocked_app_is_never_used(desktop):
     look()
     assert policy.block_app(" notes ")["blocked_apps"] == ["notes"]
     click = {"action": "click", **at(*BUTTON)}
-    # Nothing to ask: the call is refused when it runs, whoever allowed it.
     assert policy.call_asks(click, SESSION) == {"risks": [], "apps": []}
     for kwargs in ({}, {"approved": True}, {"full_access": True}):
         refused = run(click, **kwargs)
@@ -1036,7 +970,6 @@ def test_a_blocked_app_is_never_used(desktop):
     assert desktop.presses == 0 and desktop.text == ""
     assert "notes is blocked" in run({"action": "open_app", "name": "notes"}, approved = True)
     assert ("open_app", "notes") not in desktop.events
-    # Looking is not acting.
     assert run({"action": "screenshot"}).startswith("Done:")
     assert policy.unblock_app("NOTES")["blocked_apps"] == []
     assert run(click).startswith("Done:")
@@ -1053,7 +986,6 @@ def test_a_part_of_a_name_cannot_open_a_blocked_app(desktop, monkeypatch):
         refused = run({"action": "open_app", "name": "fire"}, **kwargs)
         assert refused.startswith("Error:") and "Firefox is blocked" in refused
     assert not [event for event in desktop.events if event[0] == "open_app"]
-    # The card and the gate speak of the app that would really start.
     policy.unblock_app("Firefox")
     assert policy.call_asks({"action": "open_app", "name": "fire"}, SESSION)["apps"] == ["Firefox"]
     monkeypatch.setattr(desktop, "resolve_app", lambda name: "Terminal", raising = False)
@@ -1071,14 +1003,12 @@ def test_each_chord_goes_to_the_app_then_in_front(desktop):
     def key(mods, name):
         original(mods, name)
         sent.append(name)
-        # The first chord switches apps, as alt+tab would.
         desktop.front = FrontWindow(app = "Mail", title = "Inbox", bounds = (0, 0, 1280, 800))
 
     desktop.key = key
     refused = run({"action": "key", "keys": "tab enter"}, approved = True)
     assert refused.startswith("Error:") and "Mail is blocked" in refused
     assert sent == ["tab"]
-    # Unsloth's own window and a security prompt are refused the same way, approved or not.
     sent.clear()
     desktop.front = FrontWindow(app = "Notes", title = "Untitled", bounds = (0, 0, 1280, 800))
 
@@ -1160,9 +1090,6 @@ def test_the_allowed_apps_routes(client):
     assert client.post("/api/computer-use/allowed-apps", json = {"name": "Safari"}).status_code == 403
 
 
-# ── who may use it at all ──
-
-
 def test_switched_off_in_settings_nothing_runs(desktop):
     desktop.chosen["enabled"] = False
     assert "turned off" in run({"action": "screenshot"}, approved = True, full_access = True)
@@ -1212,9 +1139,6 @@ def test_api_keys_managed_accounts_and_disabled_tools_are_refused(desktop, monke
 def test_a_session_with_no_desktop_reports_why(desktop, monkeypatch):
     monkeypatch.setattr(desktop, "unavailable_reason", lambda: "No desktop session here.")
     assert run({"action": "screenshot"}, approved = True) == "Error: No desktop session here."
-
-
-# ── the approval gate ──
 
 
 def _asks(mode, arguments, **kwargs):
@@ -1271,7 +1195,6 @@ def test_the_card_gets_what_the_call_does_and_why_it_asks(desktop, monkeypatch):
     asks = {"risks": ["cmd+q can close or delete things"], "apps": []}
     assert policy.call_asks(chain, SESSION) == asks
     assert policy.call_asks({"action": "nope"}, SESSION) == {"risks": [], "apps": []}
-    # A chat that has not used Notes yet is asked about Notes.
     assert policy.call_asks(chain, "chat-2")["apps"] == ["Notes"]
     from core.inference.tool_loop_controller import ToolCallDecision
 
@@ -1285,9 +1208,6 @@ def test_the_card_gets_what_the_call_does_and_why_it_asks(desktop, monkeypatch):
     )
     assert status_for_tool("computer", {"action": "click", "x": 5, "y": 6}) == "Click at (5, 6)"
     assert status_for_tool("computer", {"oops": 1}) == "Using the computer"
-
-
-# ── offering the tool ──
 
 
 def _selected(
@@ -1343,9 +1263,6 @@ def test_the_offer_fixes_how_the_chat_names_a_point(desktop, monkeypatch):
     tool = _selected(["computer"], model = "unsloth/Qwen3-VL-4B-Instruct-GGUF")["computer"]
     assert "0 to 1000" in tool["function"]["description"]
     assert state.session(state.session_key(SESSION)).coordinates == "grid"
-
-
-# ── Settings > Security routes ──
 
 
 @pytest.fixture
@@ -1416,7 +1333,6 @@ def test_a_reachable_server_cannot_be_switched_on_or_prompted(client):
     assert status["available"] is False and "other machines" in status["reason"]
     assert client.put("/api/computer-use/settings", json = {"enabled": True}).status_code == 403
     assert client.post("/api/computer-use/permissions/screen").status_code == 403
-    # Off is always allowed.
     assert client.put("/api/computer-use/settings", json = {"enabled": False}).status_code == 200
 
 

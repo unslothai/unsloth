@@ -13919,7 +13919,6 @@ def execute_tool(
             cancel_event = cancel_event,
             # The conversation: a project's chats share session_id, and each asks for itself.
             session_id = thread_id or session_id,
-            # The user answered this call's approval card, or the chat runs with Full access.
             approved = host_access_approved,
             full_access = disable_sandbox,
         )

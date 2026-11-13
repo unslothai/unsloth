@@ -3,7 +3,6 @@
 
 /** A computer call in words for its card: the user approves what they can read, not JSON. */
 
-/** core/inference/computer_use: the server runs it, so the turn needs no live tab. */
 export const COMPUTER_USE_TOOL = "computer";
 
 type Raw = Record<string, unknown>;
@@ -73,14 +72,12 @@ function parseCall(argsText: string | undefined): Raw | null {
 
 const WHY_CHARS = 80;
 
-/** The model's own few words on what a call is for, as one short line, or "". It is the model's
- *  claim, so a card waiting on Allow shows the steps instead. */
+/** The model's own claim, so a card waiting on Allow shows the steps instead. */
 export function computerCallWhy(argsText: string | undefined): string {
   const why = text(parseCall(argsText)?.why).replace(/\s+/g, " ").trim();
   return why.length > WHY_CHARS ? `${why.slice(0, WHY_CHARS - 1)}…` : why;
 }
 
-/** One line per action, in the order they run; empty when the arguments are still streaming in. */
 export function describeComputerCall(argsText: string | undefined): string[] {
   const raw = parseCall(argsText);
   if (!raw) return [];
@@ -90,16 +87,14 @@ export function describeComputerCall(argsText: string | undefined): string[] {
   return [...first, ...rest].map(one);
 }
 
-// The fields the lines above put into words. A call that carries anything else (another
-// dialect's name for the text, a button, a repeat count) is not fully said by its summary.
+// A call carrying any other field is not fully said by its summary.
 const SAID = new Set([
   "action", "type", "x", "y", "to_x", "to_y", "coordinate", "coordinates", "text", "submit", "keys", "key",
   "direction", "scroll_direction", "name", "why", "then", "actions", "steps", "seconds", "amount", "region",
   "display",
 ]);
 
-/** Whether the steps say everything the call would do. When not, the card also shows the call as
- *  it was sent, so what is approved is never less than what runs. */
+/** When false the card also shows the call as sent: what is approved is never less than what runs. */
 export function computerCallFullySaid(argsText: string | undefined): boolean {
   const raw = parseCall(argsText);
   if (!raw) return false;
@@ -119,8 +114,6 @@ export function computerCallFullySaid(argsText: string | undefined): boolean {
 
 const FENCE = /<\/?untrusted_screen_text>/g;
 
-/** A computer result without the fence the backend puts around window titles; a result with a
- *  screenshot arrives as { text, images }. */
 export function plainComputerResult(result: unknown): unknown {
   if (typeof result === "string") return result.replace(FENCE, "");
   if (result && typeof result === "object" && typeof (result as { text?: unknown }).text === "string") {
@@ -129,8 +122,6 @@ export function plainComputerResult(result: unknown): unknown {
   return result;
 }
 
-/** Why a computer call asks, from the backend's `computer_use` field on tool_start: what is
- *  risky about it, and the apps it would be the first to use in this chat. */
 export type ComputerUseAsk = { risks: string[]; apps: string[] };
 
 const strings = (value: unknown): string[] =>
@@ -143,8 +134,7 @@ export function computerUseAsk(value: unknown): ComputerUseAsk | undefined {
   return { risks: strings(risks), apps: strings(apps) };
 }
 
-/** The one app "Always allow" would add, or null: a risky call, or one that opens several apps
- *  at once, is answered for this time only. */
+/** null for a risky call or one opening several apps: those are answered for this time only. */
 export function alwaysAllowableApp(ask: ComputerUseAsk | undefined): string | null {
   return ask && ask.risks.length === 0 && ask.apps.length === 1 ? ask.apps[0] : null;
 }

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Settings > Computer use: whether this machine can be controlled, the owner's switch, and the
-operating system grants it needs."""
+"""Settings > Computer use: availability, the owner's switch, and the OS grants it needs."""
 
 import asyncio
 from typing import Literal, Optional
@@ -20,7 +19,6 @@ router = APIRouter()
 
 
 class ComputerUsePermissions(BaseModel):
-    # None where the operating system has no such grant to hold.
     screen: Optional[bool] = None
     input: Optional[bool] = None
 
@@ -32,11 +30,8 @@ class ComputerUseStatus(BaseModel):
     coordinates: Literal["auto", "pixels", "grid"]
     platform: str
     permissions: ComputerUsePermissions
-    # Apps a model may act in without asking, in every chat.
     allowed_apps: list[str] = []
-    # Apps no model may act in.
     blocked_apps: list[str] = []
-    # Chats the user stopped with the pointer, which stay stopped until allowed again.
     stopped_chats: int = 0
 
 
@@ -122,8 +117,7 @@ async def update_computer_use_settings(
 async def request_computer_use_permission(
     kind: Literal["screen", "input"], current_subject: str = Depends(get_current_subject)
 ):
-    """Raise the operating system's own prompt for a grant. A person presses this in Settings; a
-    tool call never can."""
+    """Raise the OS prompt for a grant. A person presses this in Settings; a tool call never can."""
     from core.inference.computer_use import policy
     from core.inference.computer_use.backends import get_backend
 
@@ -195,8 +189,7 @@ async def unblock_computer_use_app(name: str, current_subject: str = Depends(get
 
 @router.post("/resume", response_model = ComputerUseStatus, dependencies = [OwnerOnly])
 async def resume_computer_use(current_subject: str = Depends(get_current_subject)):
-    """Allow again: the chats the user stopped with the pointer may use the computer once more,
-    each on the terms of its permission mode."""
+    """Allow again: chats the user stopped with the pointer may use the computer once more."""
     from core.inference.computer_use import policy
     from state import computer_use as state
     from utils.account_context import current_account_id
@@ -211,8 +204,7 @@ async def resume_computer_use(current_subject: str = Depends(get_current_subject
 
 @router.post("/revoke")
 async def revoke_computer_use(current_subject: str = Depends(get_current_subject)):
-    """Every chat of this account asks again before it next touches the computer, and the
-    actions running now end."""
+    """Every chat of this account asks again, and the actions running now end."""
     from state import computer_use as state
     from utils.account_context import current_account_id
 
