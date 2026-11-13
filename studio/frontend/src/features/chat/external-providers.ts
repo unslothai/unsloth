@@ -13,7 +13,6 @@ import {
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning.ts";
 
-/** How often a connection is asked for models it newly offers; "off" ticks none automatically. */
 export type NewModelCheckInterval = "launch" | "daily" | "weekly" | "off";
 
 export interface ExternalProviderConfig {
@@ -43,7 +42,7 @@ export interface ExternalProviderConfig {
   promptCacheTtl?: "5m" | "1h";
   isReasoningModel?: boolean;
   autoReloadModels?: boolean;
-  /** How often this browser asks the connection for models it newly offers; unset = daily. */
+  /** Unset = daily. */
   newModelCheck?: NewModelCheckInterval;
   openaiContainerTtlMinutes?: number;
   createdAt: number;
@@ -748,7 +747,7 @@ export function newModelCheckOf(provider: { newModelCheck?: NewModelCheckInterva
   return provider.newModelCheck ?? "daily";
 }
 
-/** Connection id -> epoch ms of its last background listing; persisted so "weekly" survives restarts. */
+/** Persisted so "weekly" survives restarts. */
 export function loadNewModelChecksAt(): Record<string, number> {
   if (!canUseStorage()) return {};
   try {

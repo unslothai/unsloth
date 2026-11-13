@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Labels only: requests always send the id (Anthropic accepts claude-opus-4-5, not 4.5).
+// Labels only: requests always send the id.
 const MODEL_DISPLAY_NAMES_KEY = "unsloth_chat_provider_model_names";
 const NAMES = new Map<string, Record<string, string>>();
 let hydrated = false;
@@ -27,11 +27,10 @@ function hydrate(): void {
       );
     }
   } catch {
-    // Invalid browser state: the next listing relearns the names.
+    // Relearned on the next listing.
   }
 }
 
-/** Keeps the provider's own name for each listed id that has one other than the id itself. */
 export function learnModelDisplayNames(
   providerType: string,
   models: readonly { id: string; display_name?: string | null }[],
@@ -63,7 +62,7 @@ export function learnModelDisplayNames(
       JSON.stringify(Object.fromEntries(NAMES)),
     );
   } catch {
-    // Storage full or blocked: names stay for this session.
+    // Kept for this session.
   }
 }
 

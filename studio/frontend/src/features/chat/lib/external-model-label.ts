@@ -28,7 +28,6 @@ export function compareModelDisplayName(id: string): string {
   const selection = parseExternalModelId(id);
   if (selection) {
     const name = externalModelLabel(id) ?? selection.modelId;
-    // A provider's own name reads as is; a bare id drops its org prefix.
     if (name !== selection.modelId) return name;
   }
   const value = selection?.modelId ?? id;

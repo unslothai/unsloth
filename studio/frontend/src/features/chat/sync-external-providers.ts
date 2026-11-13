@@ -302,7 +302,7 @@ export async function syncExternalProvidersFromBackend(
         serverModels.length === 0 && savedModels.length > 0;
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
-      // Filled from the built-in suggestions, not a listing: nothing in it says what was offered.
+      // Suggestions, not a listing.
       const defaultSet = new Set(defaultModels);
       if (
         serverAvailableModels.length === 0 ||
@@ -369,20 +369,18 @@ export async function syncExternalProvidersFromBackend(
   return syncedProviders;
 }
 
-/** Connection ids whose stored offered list is the suggestions; a listing becomes their baseline unticked. */
+/** Stored list is only the suggestions: adopt the next listing, tick nothing. */
 export const suggestedBaselines = new Set<string>();
 
 type NewlyListed = { models: string[]; availableModels: string[]; added: string[] };
 
-/** Ticks ids listed now but not when `previouslyListed` was saved; null = no change. An id listed
- *  before and unticked since stays unticked. `knownIds` drops saved ids the provider no longer knows. */
+/** null = no change; ids listed before and unticked since stay unticked. */
 export function withNewlyListedModels(
   savedModels: string[],
   previouslyListed: string[],
   listedIds: string[],
   options: { knownIds?: string[]; maxAdded?: number } = {},
 ): NewlyListed | null {
-  // No baseline (never listed, or a row saved before available_models) cannot tell new from unticked.
   if (listedIds.length === 0 || savedModels.length === 0 || previouslyListed.length === 0) {
     return null;
   }
@@ -390,7 +388,7 @@ export function withNewlyListedModels(
   const added = listedIds.filter((id) => !before.has(id));
   if (added.length === 0) return null;
   if (options.maxAdded !== undefined && added.length > options.maxAdded) {
-    // A jump this size means the baseline was the built-in suggestions, not a listing: adopt it, tick nothing.
+    // Baseline was the suggestions: adopt the listing, tick nothing.
     return { models: savedModels, availableModels: listedIds, added: [] };
   }
   const known = options.knownIds ? new Set(options.knownIds) : null;
@@ -414,18 +412,14 @@ export function withNewlyOfferedCodexModels(
   );
 }
 
-/** How many new ids one listing may tick for this connection. */
 export function autoTickLimit(providerId: string, limit?: number): number | undefined {
   return suggestedBaselines.has(providerId) ? 0 : limit;
 }
 
 // Gateways list new third-party models every week; ticking each would flood the picker.
 const NO_AUTO_TICK_PROVIDER_TYPES = new Set(["openrouter", "huggingface"]);
-// More at once is a first real listing against the suggestions, not a release.
 export const MAX_AUTO_TICKED_MODELS = 3;
 
-/** API connections whose listing is the provider's own; local servers and custom endpoints opt in
- *  separately (llama.cpp auto reload), ChatGPT subscriptions use their plan catalog. */
 export function autoTicksNewlyListedModels(
   provider: Pick<ExternalProviderConfig, "providerType" | "authKind" | "sharedByOwner">,
 ): boolean {
@@ -443,7 +437,7 @@ const NEW_MODEL_CHECK_PERIOD_MS: Partial<Record<NewModelCheckInterval, number>> 
   weekly: 7 * 24 * 60 * 60 * 1000,
 };
 
-/** Every focus re-syncs, so a connection is listed only once per launch, day or week as chosen. */
+/** Every focus re-syncs, so listings are rate-limited per connection. */
 export function newModelCheckDue(
   interval: NewModelCheckInterval,
   checkedThisLaunch: boolean,
@@ -461,7 +455,6 @@ const ticksInFlight = new Set<string>();
 
 type NewlyListedFor = (row: ExternalProviderConfig) => NewlyListed | null;
 
-/** Lists the connection when due; the result is applied to the row as it is once the listing returns. */
 async function listForNewModels(
   provider: ExternalProviderConfig,
   codexEntry: ProviderRegistryEntry | undefined,
@@ -566,7 +559,7 @@ async function tickNewlyListedModels(
       const updateFor = await listForNewModels(provider, codexEntry);
       if (isCurrent && !isCurrent()) return;
       if (!updateFor || providerSavesInFlight.has(provider.id)) continue;
-      // A settings save may have finished during the listing: merge into the row as it is now.
+      // A save may have landed during the listing.
       const latest = currentRow(provider.id);
       const update = updateFor(latest ?? provider);
       if (!update) continue;
@@ -583,7 +576,7 @@ async function tickNewlyListedModels(
         ),
       );
     } catch {
-      // Offline, unauthorized or the save failed: a later sync tries again.
+      // Retried on a later sync.
     } finally {
       ticksInFlight.delete(provider.id);
     }

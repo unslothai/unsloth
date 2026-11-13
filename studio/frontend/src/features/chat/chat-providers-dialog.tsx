@@ -902,7 +902,7 @@ export function ChatProvidersSettings({
         const record = providersRef.current.find(
           (provider) => provider.id === editingProviderId,
         );
-        // Only a listing made with the saved key and endpoint describes the saved connection.
+        // Only the saved key and endpoint list the saved connection.
         const listedSavedConnection =
           silent || (!apiKey.trim() && baseUrlDraft.trim() === (record?.baseUrl ?? ""));
         const fresh =
