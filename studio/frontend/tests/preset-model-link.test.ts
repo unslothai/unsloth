@@ -708,6 +708,40 @@ test("a linked external model's budget stays within its output cap", async () =>
   }
 });
 
+test("a reload with a smaller window keeps the capped linked budget", async () => {
+  const store = useChatRuntimeStore.getState();
+  const saved = store.customPresets;
+  const big = { name: "Big", params: { ...DEFAULT_INFERENCE_PARAMS, maxTokens: 100000 } };
+  store.setCustomPresets([...saved, big]);
+  store.setModelPreset(GEMMA, "Big");
+  useChatRuntimeStore.setState({ paramsByModel: { [GEMMA]: { maxTokens: 1024 } } });
+  const poll = (window: number) => {
+    const s = useChatRuntimeStore.getState();
+    s.setParams(
+      mergeBackendRecommendedInference({
+        current: s.params,
+        response: { inference: RECOMMENDED, is_gguf: true, context_length: window },
+        modelId: GEMMA,
+        presetSource: presetSourceForModel(GEMMA),
+        loadedContextLength: window,
+      }),
+      { fromModelDefaults: true, maxTokensCap: window },
+    );
+  };
+  try {
+    await switchTo(GEMMA);
+    poll(8192);
+    assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+    poll(4096);
+    poll(4096);
+    assert.equal(useChatRuntimeStore.getState().params.maxTokens, 4096);
+  } finally {
+    store.setModelPreset(GEMMA, null);
+    store.setCustomPresets(saved);
+    await settled();
+  }
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);

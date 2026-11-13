@@ -6689,6 +6689,8 @@ let pickBeforeLink: {
   params: ReturnType<typeof getPresetOwnedParams>;
 } | null = null;
 let lastLinkCheckpoint = "";
+/** The preset-owned values the link last put on screen. */
+let linkValues: ReturnType<typeof getPresetOwnedParams> | null = null;
 /** The unlinked model a status merge put its recommendation on since the link showed. */
 let recommendationMergedFor: string | null = null;
 
@@ -6772,11 +6774,13 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
       activePresetSource: getPresetSource(preset.name),
     });
     linkShown = preset.name;
+    linkValues = getPresetOwnedParams(useChatRuntimeStore.getState().params);
     return;
   }
   freezePendingChatWrite(shown);
   const before = pickBeforeLink;
   linkShown = null;
+  linkValues = null;
   pickBeforeLink = null;
   if (!shown || !before) return;
   // Its values, then this model's memory and the open chat's own settings over them.
@@ -6832,13 +6836,18 @@ function withLinkOverlay(params: InferenceParams): InferenceParams {
   const preset = getLinkedPreset(params.checkpoint, state.modelPresets, state.customPresets);
   if (preset?.name !== linkShown) return params;
   const live = getPresetOwnedParams(state.params);
-  const linked = getPresetOwnedParams(linkedParams(state.params, preset));
+  const linked = getPresetOwnedParams(linkedParams(params, preset));
+  // Against the values the link last put on, not a fresh copy: a reload that moves the cap moves
+  // the linked budget too, and that is no edit.
+  const shownValues = linkValues ?? linked;
   const kept = Object.fromEntries(
     Object.entries(linked).filter(
-      ([key, value]) =>
-        JSON.stringify(live[key as keyof typeof live]) === JSON.stringify(value),
+      ([key]) =>
+        JSON.stringify(live[key as keyof typeof live]) ===
+        JSON.stringify(shownValues[key as keyof typeof shownValues]),
     ),
   );
+  linkValues = { ...shownValues, ...kept };
   return { ...params, ...kept };
 }
 
@@ -6875,7 +6884,7 @@ function withoutLinkOverlay(
   const preset =
     outgoing ?? getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
   if (preset?.name !== linkShown) return;
-  const linked = getPresetOwnedParams(linkedParams(state.params, preset));
+  const linked = linkValues ?? getPresetOwnedParams(linkedParams(state.params, preset));
   const own = settings as Record<string, unknown>;
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     if (explicitlyEditedThreadFields.has(key)) continue;
@@ -6891,6 +6900,7 @@ function withoutLinkOverlay(
 /** A pick by hand replaces whatever a link put on, so leaving the model keeps it. */
 function forgetLinkShown(): void {
   linkShown = null;
+  linkValues = null;
   pickBeforeLink = null;
 }
 
