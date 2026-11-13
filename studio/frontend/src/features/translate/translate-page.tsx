@@ -57,6 +57,7 @@ import {
   isTranslateMode,
   isTranslateSource,
   isTranslateTone,
+  trimBlankLines,
 } from "./translate-prompt";
 import { useTranslateStore } from "./translate-store";
 
@@ -158,7 +159,7 @@ export function TranslatePage() {
 
   async function translate() {
     if (!canTranslate) return;
-    const text = input.trim();
+    const text = trimBlankLines(input);
     const controller = new AbortController();
     abortRef.current = controller;
     setRunning(true);

@@ -88,8 +88,8 @@ test("reasoning never reaches the translation, finished or still streaming", () 
     "Wrap it in <think> and </think>.",
   );
   assert.equal(
-    cleanTranslation("  Line one\nLine two  "),
-    "Line one\nLine two",
+    cleanTranslation("\n\n    indented()\n  next\n\n"),
+    "    indented()\n  next",
   );
 });
 

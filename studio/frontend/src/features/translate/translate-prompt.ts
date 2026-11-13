@@ -141,10 +141,15 @@ export function buildTranslateSystemPrompt(options: TranslateOptions): string {
 // Only a reasoning block that opens the reply is dropped (closed or still streaming); tags
 // elsewhere are the translation's own. Thinking is requested off, so no template opens one.
 export function cleanTranslation(raw: string): string {
-  const text = raw.trim();
-  if (!/^<think>/i.test(text)) return text;
+  const text = trimBlankLines(raw);
+  if (!/^<think>/i.test(text.trimStart())) return text;
   const close = text.search(/<\/think>/i);
-  return close < 0 ? "" : text.slice(close + "</think>".length).trim();
+  return close < 0 ? "" : trimBlankLines(text.slice(close + "</think>".length));
+}
+
+/** Drops blank lines around the text, keeping the first line's indentation. */
+export function trimBlankLines(text: string): string {
+  return text.replace(/^\s*\n/, "").trimEnd();
 }
 
 function entryLabel(entry: TranslationEntry): string {
