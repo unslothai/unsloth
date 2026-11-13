@@ -24,9 +24,7 @@ def test_csv_files_differing_headers_keep_cells_as_written(tmp_path):
     narrow.write_text("instruction,output\nState?,NA\n")
 
     files = [str(wide), str(narrow)]
-    dataset = load_dataset(
-        "csv", data_files = files, split = "train", **csv_as_text_kwargs(files)
-    )
+    dataset = load_dataset("csv", data_files = files, split = "train", **csv_as_text_kwargs(files))
     assert len(dataset) == 3
     rows = {row["instruction"]: row for row in dataset}
     assert rows["Zip code?"]["input"] == "Holtsville"
