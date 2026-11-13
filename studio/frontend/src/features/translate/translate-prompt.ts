@@ -147,7 +147,6 @@ export function cleanTranslation(raw: string): string {
   return close < 0 ? "" : trimBlankLines(text.slice(close + "</think>".length));
 }
 
-/** Drops blank lines around the text, keeping the first line's indentation. */
 export function trimBlankLines(text: string): string {
   return text.replace(/^\s*\n/, "").trimEnd();
 }

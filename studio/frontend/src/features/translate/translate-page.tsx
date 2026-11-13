@@ -132,8 +132,7 @@ export function TranslatePage() {
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
-  // Chat adopts the server's loaded model; a direct visit or reload here never mounts Chat.
-  // Retried while nothing is adopted, since a load still running on the server is skipped.
+  // Chat adopts the server's model but may never mount here; retried while a server load is still running.
   useEffect(() => {
     if (checkpoint) return;
     void tryAdoptServerActiveModel();
@@ -188,7 +187,7 @@ export function TranslatePage() {
             model,
           });
         } catch {
-          // The entry stays in this window's history; only the persisted copy missed it.
+          // Kept in this window's history only.
         }
       }
     } catch (error) {
