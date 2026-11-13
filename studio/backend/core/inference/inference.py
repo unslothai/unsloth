@@ -582,6 +582,23 @@ class _StopSequenceStreamer:
         self.next_tokens_are_prompt = bool(getattr(streamer, "skip_prompt", False))
         self.is_harmony = isinstance(streamer, HarmonyTextStreamer)
         self.cleans_up = _decoder_cleans_up(streamer)
+        self.special_stop_ids = set()
+        if (
+            self.sequences
+            and not self.is_harmony
+            and getattr(streamer, "decode_kwargs", {}).get("skip_special_tokens", False)
+        ):
+            special_tokens = dict(
+                zip(
+                    getattr(streamer.tokenizer, "all_special_tokens", ()),
+                    getattr(streamer.tokenizer, "all_special_ids", ()),
+                )
+            )
+            self.special_stop_ids = {
+                special_tokens[sequence]
+                for sequence in self.sequences
+                if sequence in special_tokens
+            }
 
     def __next__(self):
         return next(self.streamer)
@@ -602,11 +619,20 @@ class _StopSequenceStreamer:
         if self.next_tokens_are_prompt:
             self.next_tokens_are_prompt = False
             return
-        self.token_ids.extend(value.tolist())
+        new_tokens = value.tolist()
+        stop_index = next(
+            (index for index, token in enumerate(new_tokens) if token in self.special_stop_ids),
+            None,
+        )
+        token_matched = stop_index is not None
+        self.token_ids.extend(new_tokens[:stop_index] if token_matched else new_tokens)
         self._decode_new_tokens()
         # Earlier text was already scanned; only a stop overlapping new text can match.
         start = self.scan_from
         cut, matched = _mlx_stop_cut(self.text[start:], self.sequences)
+        if token_matched and not matched:
+            cut = len(self.text) - start
+        matched = matched or token_matched
         self.cut = start + cut
         if matched:
             # This runs in the producer, before model.generate checks criteria.

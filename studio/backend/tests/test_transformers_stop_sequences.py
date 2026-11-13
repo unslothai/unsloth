@@ -421,3 +421,72 @@ def test_harmony_stream_waits_for_split_multibyte_characters(stop):
         streamer.put(torch.tensor([token]))
     streamer.end()
     assert "".join(streamer) == f"<think>{body}\ufffd</think>{body}\ufffd"
+
+
+def _registered_stop_tokenizer():
+    tokenizers = pytest.importorskip("tokenizers")
+    from transformers import PreTrainedTokenizerFast
+
+    vocabulary = {"[UNK]": 0, "alpha": 1, "[STOP]": 2, "beta": 3, "[AUX]": 4, "ST": 5}
+    backend = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocabulary, unk_token = "[UNK]"))
+    backend.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+    return PreTrainedTokenizerFast(
+        tokenizer_object = backend,
+        unk_token = "[UNK]",
+        additional_special_tokens = ["[STOP]", "[AUX]"],
+    )
+
+
+@pytest.mark.parametrize("skip_special_tokens", [False, True])
+@pytest.mark.parametrize("batched", [False, True])
+def test_registered_special_token_stops_before_following_tokens(skip_special_tokens, batched):
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    streamer = inf.IncrementalTextIteratorStreamer(
+        _registered_stop_tokenizer(),
+        skip_prompt = False,
+        skip_special_tokens = skip_special_tokens,
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["[STOP]"])
+    chunks = [[1, 4, 2, 3]] if batched else [[1], [4], [2], [3]]
+
+    for chunk in chunks:
+        stopped.put(torch.tensor(chunk))
+    stopped.end()
+
+    assert stopped.matched.is_set()
+    assert "".join(stopped).rstrip() == ("alpha" if skip_special_tokens else "alpha [AUX]")
+
+
+def test_special_token_stop_flushes_an_unmatched_ordinary_stop_prefix():
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    streamer = inf.IncrementalTextIteratorStreamer(
+        _registered_stop_tokenizer(),
+        skip_prompt = False,
+        skip_special_tokens = True,
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["[STOP]", "STOP"])
+
+    stopped.put(torch.tensor([5, 2, 3]))
+    stopped.end()
+
+    assert stopped.matched.is_set()
+    assert "".join(stopped) == "ST"
+
+
+def test_unrequested_special_tokens_stay_hidden_without_stopping():
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    streamer = inf.IncrementalTextIteratorStreamer(
+        _registered_stop_tokenizer(),
+        skip_prompt = False,
+        skip_special_tokens = True,
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["never"])
+
+    stopped.put(torch.tensor([1, 4, 3]))
+    stopped.end()
+
+    assert not stopped.matched.is_set()
+    assert "".join(stopped) == "alpha beta"
