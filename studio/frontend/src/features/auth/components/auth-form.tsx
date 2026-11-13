@@ -126,13 +126,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               const refreshed = await refreshSession();
               if (refreshed) {
                 if (!canceled) setStatusLoading(false);
-                navigate({ to: getPostAuthRoute(), search: { q } });
+                navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
                 return;
               }
             }
             if (hasAuthToken()) {
               if (!canceled) setStatusLoading(false);
-              navigate({ to: getPostAuthRoute(), search: { q } });
+              navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
               return;
             }
           }
@@ -332,7 +332,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       );
       pendingLogin.current = null;
       if (replaced) return;
-      navigate({ to: getPostAuthRoute(), search: { q } });
+      navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
     } catch (err: unknown) {
       // Show the backend's PATH-based command as-is; a relative Windows path only resolves in the
       // Unsloth home dir.
@@ -348,7 +348,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     setLoading(true);
     try {
       if (await continueAsDesktopOwner()) {
-        navigate({ to: getPostAuthRoute(), search: { q } });
+        navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
       } else {
         setError(t("auth.signInWithUsername"));
       }

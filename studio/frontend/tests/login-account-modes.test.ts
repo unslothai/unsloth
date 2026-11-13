@@ -75,6 +75,7 @@ function mountForm(
   const effects: (() => void)[] = [];
   const routes: string[] = [];
   const searches: ({ q?: string } | undefined)[] = [];
+  const replaces: (boolean | undefined)[] = [];
   const transitions: string[] = [];
   const api = loadWithStubs<{
     AuthForm: (props: { mode: string }) => StubElement | null;
@@ -152,9 +153,10 @@ function mountForm(
       useSearch: () => ({ q }),
       useNavigate:
         () =>
-        ({ to, search }: { to: string; search?: { q?: string } }) => {
+        ({ to, search, replace }: { to: string; search?: { q?: string }; replace?: boolean }) => {
           routes.push(to);
           searches.push(search);
+          replaces.push(replace);
         },
     },
     "@hugeicons/core-free-icons": { ViewIcon: "ViewIcon", ViewOffSlashIcon: "ViewOffSlashIcon" },
@@ -192,6 +194,7 @@ function mountForm(
     render,
     routes,
     searches,
+    replaces,
     transitions,
     initialize: async (mode = "login") => {
       render(mode);
@@ -708,6 +711,8 @@ for (const switched of [false, true]) {
     await submit({ preventDefault() {} });
     assert.deepEqual(form.transitions, [`alice@a1:/change-password?q=${encodeURIComponent(q)}`]);
     assert.deepEqual(form.searches, switched ? [] : [{ q }]);
+    // Back must not land on the consumed /login?q= entry and replay the link.
+    assert.deepEqual(form.replaces, switched ? [] : [true]);
   });
 }
 
