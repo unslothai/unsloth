@@ -26,7 +26,7 @@ from packaging.version import InvalidVersion, Version
 
 from .update_status import DISABLE_ENV_VAR, RELEASE_NOTES_URL
 
-# Each entry carries its whole body plus asset list (up to ~100 KiB), and only the newest is used: 30 was ~2 MiB, which a link under ~6 Mbit/s could not fetch in time. 10 still spans the asset-only releases (`Windows-ARM64`, `prebuilt-wheels-*`).
+# Entries carry full bodies and asset lists, so keep the page small (#17661); 10 still spans the asset-only releases (`Windows-ARM64`, `prebuilt-wheels-*`).
 RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=10"
 RELEASES_URL_ENV_VAR = "UNSLOTH_RELEASES_URL"
 RELEASES_TIMEOUT_SECONDS = 10
