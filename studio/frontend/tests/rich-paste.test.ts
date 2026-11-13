@@ -162,3 +162,23 @@ test("a table caption and line breaks inside code survive", () => {
     "```\ndef f():\n    return 1\n```",
   );
 });
+
+test("text styled to keep its whitespace keeps its line breaks and indentation", () => {
+  const body = el(
+    "body",
+    el("p", el("b", "x"), " question"),
+    el("div", { style: "white-space: pre-wrap" }, "Call ", el("code", "f"), ":\ndef f():\n    return 1\n\n\ndef g():\n\treturn 2"),
+  );
+  assert.equal(htmlNodeToMarkdown(body), "**x** question\n\nCall `f`:\ndef f():\n    return 1\n\n\ndef g():\n\treturn 2");
+});
+
+test("Google Docs code lines keep their indentation", () => {
+  const line = (text: string) => el("p", el("span", { style: "font-family:'Courier New';white-space:pre;white-space:pre-wrap;" }, text));
+  const body = el("body", el("b", { style: "font-weight:normal;" }, line("def f():"), line("    return 1")));
+  assert.equal(htmlNodeToMarkdown(body), "def f():\n\n    return 1");
+});
+
+test("non-breaking space indents survive, and blank non-breaking paragraphs do not", () => {
+  const body = el("body", el("p", el("b", "Retry")), el("p", " "), el("p", "def f():"), el("p", "    return 1"));
+  assert.equal(htmlNodeToMarkdown(body), "**Retry**\n\ndef f():\n\n    return 1");
+});

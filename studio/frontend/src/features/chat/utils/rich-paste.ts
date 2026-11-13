@@ -47,7 +47,7 @@ function clean(text: string): string {
   const fences: string[] = [];
   return text
     .replace(FENCED, (block) => `${FENCE_OPEN}${fences.push(block) - 1}${FENCE_CLOSE}`)
-    .replace(/[ \t]+\n/g, "\n")
+    .replace(/[ \t\u00a0]+\n/g, "\n")
     .replace(/\n[ \t]+/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim()
@@ -166,12 +166,13 @@ function table(node: PasteNode, ctx: Ctx): string {
 function convert(node: PasteNode, ctx: Ctx): string {
   if (node.nodeType === 3) {
     const text = node.textContent ?? "";
-    return ctx.pre ? text : text.replace(/\s+/g, " ");
+    return ctx.pre ? `${FENCE_OPEN}${text}${FENCE_CLOSE}` : text.replace(/[^\S\u00a0]+/g, " ");
   }
   if (node.nodeType !== 1) return "";
   const tag = node.nodeName.toUpperCase();
   if (SKIP.has(tag)) return "";
   const style = attr(node, "style").toLowerCase();
+  if (/white-space:\s*pre/.test(style)) ctx = { ...ctx, pre: true };
   switch (tag) {
     case "BR":
       return "\n";
@@ -202,7 +203,7 @@ function convert(node: PasteNode, ctx: Ctx): string {
     case "STRIKE":
       return wrap("~~", children(node, ctx));
     case "CODE":
-      return ctx.pre ? children(node, ctx) : codeSpan(node.textContent ?? "");
+      return codeSpan(node.textContent ?? "");
     case "PRE":
       return preBlock(node);
     case "H1":
@@ -239,8 +240,8 @@ function convert(node: PasteNode, ctx: Ctx): string {
 
 export function htmlNodeToMarkdown(root: PasteNode): string {
   return clean(convert(root, { pre: false, bold: false, italic: false })).replace(
-    new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}]`, "g"),
-    (mark) => (mark === INDENT ? " " : ""),
+    new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}\u00a0]`, "g"),
+    (mark) => (mark === FENCE_OPEN || mark === FENCE_CLOSE ? "" : " "),
   );
 }
 
