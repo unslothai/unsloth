@@ -199,9 +199,15 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
 
 
 def install_torchao_int_mm_patch():
-    """Every diffusion, video and diffusion-training entry point calls this, so it also carries the peft LoRA guard (independent of the switch)."""
+    """Every diffusion, video and diffusion-training entry point calls this, so it also carries the peft LoRA guard
+    and the Triton sm_8x 8-bit prefetch fix (both independent of this switch)."""
     try:
         install_peft_torchao_dispatch_guard()
+    except Exception:
+        pass
+    try:
+        from .diffusion_triton_prefetch import install_triton_prefetch_fix
+        install_triton_prefetch_fix()
     except Exception:
         pass
     if os.environ.get(_TORCHAO_INT_MM_ENV, "1").strip() == "0":

@@ -131,15 +131,23 @@ def test_kill_switch_after_install_restores_the_stock_pipeline(fake_triton, monk
     assert _compile(fake_triton.backend, _I8, 89) == 1
 
 
-@pytest.mark.parametrize("version", ["3.7.1", "3.10.0", "4.0.0", "garbage"])
-def test_unchecked_triton_versions_are_left_alone(fake_triton, version):
+@pytest.mark.parametrize("version", ["3.7.1", "2.3.0", "garbage"])
+def test_triton_before_the_regression_is_left_alone(fake_triton, version):
     fake_triton.triton.__version__ = version
     assert patches.fix_triton_sm8x_8bit_prefetch() is False
     assert _compile(fake_triton.backend, _I8, 89) == 1
 
 
-def test_force_overrides_the_version_list(fake_triton, monkeypatch):
-    fake_triton.triton.__version__ = "3.10.0"
+@pytest.mark.parametrize("version", ["3.8.0", "3.9.0", "3.10.0", "4.0.0+git12ab"])
+def test_every_later_triton_with_the_pass_is_fixed(fake_triton, version):
+    """Default-on from 3.8 for as long as the installed pipeline still adds the pass for sm_8x."""
+    fake_triton.triton.__version__ = version
+    assert patches.fix_triton_sm8x_8bit_prefetch() is True
+    assert _compile(fake_triton.backend, _I8, 89) == 0
+
+
+def test_force_overrides_the_version_floor(fake_triton, monkeypatch):
+    fake_triton.triton.__version__ = "3.7.1"
     monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, "force")
     assert patches.fix_triton_sm8x_8bit_prefetch() is True
     assert _compile(fake_triton.backend, _I8, 89) == 0
@@ -240,8 +248,8 @@ def real_triton(monkeypatch):
     import re
 
     match = re.match(r"(\d+)\.(\d+)", triton.__version__)
-    if (int(match.group(1)), int(match.group(2))) not in patches._TRITON_PREFETCH_VERSIONS:
-        pytest.skip(f"Triton {triton.__version__} is outside the patched versions")
+    if (int(match.group(1)), int(match.group(2))) < patches._TRITON_PREFETCH_FIRST:
+        pytest.skip(f"Triton {triton.__version__} predates the regression")
     backend = nvidia_compiler.CUDABackend
     saved_stage = backend.__dict__["make_ttgir"]
     saved_prefetch = real_passes.ttgpuir.add_prefetch
@@ -316,3 +324,137 @@ def test_real_triton_compile_only_changes_8bit_dots_on_sm8x(real_triton, monkeyp
             assert patched == ptx, f"{ab} on sm_{arch} changed"
     monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, "0")
     assert _ptx(real_triton, kernel, "*i8", "*i32", 89) == stock[("*i8", 89)]
+
+
+# ---- import-time install and Inductor's compile workers ----
+
+
+@pytest.fixture
+def clean_meta_path(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "meta_path",
+        [f for f in sys.meta_path if not getattr(f, patches._TRITON_PREFETCH_SENTINEL, False)],
+    )
+    yield
+
+
+def test_install_is_a_no_op_under_the_kill_switch(clean_meta_path, monkeypatch):
+    monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, "0")
+    before = list(sys.meta_path)
+    assert patches.install_triton_prefetch_fix() is False
+    assert sys.meta_path == before
+
+
+def test_install_hooks_modules_as_they_import(clean_meta_path, monkeypatch, tmp_path):
+    pkg = tmp_path / "fake_prefetch_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "compiler.py").write_text("VALUE = 41\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    seen = []
+    monkeypatch.setattr(
+        patches,
+        "_POST_IMPORT",
+        {"fake_prefetch_pkg.compiler": lambda module: seen.append(module.VALUE)},
+    )
+    monkeypatch.delenv(patches._TRITON_PREFETCH_ENV, raising = False)
+    assert patches.install_triton_prefetch_fix() is True
+    assert patches.install_triton_prefetch_fix() is True
+    assert (
+        sum(1 for f in sys.meta_path if getattr(f, patches._TRITON_PREFETCH_SENTINEL, False)) == 1
+    )
+    import importlib
+
+    module = importlib.import_module("fake_prefetch_pkg.compiler")
+    assert module.VALUE == 41 and seen == [41]
+    monkeypatch.delitem(sys.modules, "fake_prefetch_pkg.compiler")
+    monkeypatch.delitem(sys.modules, "fake_prefetch_pkg")
+
+
+def test_install_patches_already_imported_modules_now(clean_meta_path, monkeypatch):
+    seen = []
+    module = types.ModuleType("already_here")
+    monkeypatch.setitem(sys.modules, "already_here", module)
+    monkeypatch.setattr(patches, "_POST_IMPORT", {"already_here": lambda m: seen.append(m)})
+    before = list(sys.meta_path)
+    assert patches.install_triton_prefetch_fix() is True
+    assert seen == [module] and sys.meta_path == before  # nothing left to wait for
+
+
+class _FakePool:
+    def __init__(
+        self,
+        nprocs,
+        pickler = None,
+        kind = None,
+        quiesce = False,
+    ):
+        self.pickler = pickler
+
+
+@pytest.fixture
+def fake_pool(monkeypatch):
+    module = types.SimpleNamespace(SubprocPool = type("SubprocPool", (_FakePool,), {}))
+    sentinel = object()
+    monkeypatch.setattr(patches, "_worker_pickler_class", lambda: (lambda: sentinel))
+    monkeypatch.delenv(patches._TRITON_PREFETCH_ENV, raising = False)
+    return module, sentinel
+
+
+def test_compile_pool_gets_the_fixing_pickler(fake_pool, monkeypatch):
+    module, sentinel = fake_pool
+    monkeypatch.setattr(patches, "_workers_can_import_this_module", lambda: True)
+    assert patches._cover_inductor_workers(module) is True
+    assert patches._cover_inductor_workers(module) is False  # once
+    assert module.SubprocPool(4).pickler is sentinel
+    given = object()
+    assert module.SubprocPool(4, pickler = given).pickler is given
+    assert module.SubprocPool(4, given).pickler is given
+
+
+def test_compile_pool_is_left_alone_when_workers_cannot_import_the_fix(fake_pool, monkeypatch):
+    module, _ = fake_pool
+    monkeypatch.setattr(patches, "_workers_can_import_this_module", lambda: False)
+    patches._cover_inductor_workers(module)
+    assert module.SubprocPool(4).pickler is None
+
+
+def test_compile_pool_kill_switch(fake_pool, monkeypatch):
+    module, _ = fake_pool
+    monkeypatch.setattr(patches, "_workers_can_import_this_module", lambda: True)
+    patches._cover_inductor_workers(module)
+    monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, "0")
+    assert module.SubprocPool(4).pickler is None
+
+
+def test_this_module_is_importable_from_the_test_path():
+    assert patches._workers_can_import_this_module() is True
+
+
+def test_worker_pickler_is_found_by_name_and_is_a_subproc_pickler():
+    pytest.importorskip("torch")
+    from torch._inductor.compile_worker.subproc_pool import SubprocPickler
+
+    cls = getattr(patches, patches._WORKER_PICKLER)
+    assert issubclass(cls, SubprocPickler) and cls.__module__ == patches.__name__
+    assert cls.__name__ == patches._WORKER_PICKLER
+
+
+def test_real_inductor_compile_worker_runs_with_the_fix(real_triton, monkeypatch):
+    """CPU only: a real Inductor SubprocPool sidecar reports the fix installed in its forked worker."""
+    pytest.importorskip("torch")
+    from torch._inductor.compile_worker import subproc_pool
+
+    saved = subproc_pool.SubprocPool.__dict__["__init__"]
+    monkeypatch.setattr(subproc_pool.SubprocPool, "__init__", saved)
+    assert patches._cover_inductor_workers(subproc_pool) is True
+    results = {}
+    for mode in ("1", "0"):
+        monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, mode)
+        pool = subproc_pool.SubprocPool(1)
+        try:
+            results[mode] = pool.submit(patches.triton_prefetch_fix_installed).result(timeout = 120)
+        finally:
+            pool.shutdown()
+    assert results == {"1": True, "0": False}

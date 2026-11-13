@@ -16,14 +16,18 @@ so a cached cubin from a process without the fix (or the reverse) differs in spe
 from __future__ import annotations
 
 import functools
+import importlib.abc
+import importlib.util
 import inspect
 import os
 import re
+import sys
 import threading
+from pathlib import Path
 
 _TRITON_PREFETCH_ENV = "UNSLOTH_TRITON_8BIT_PREFETCH_FIX"
 _TRITON_PREFETCH_SENTINEL = "__unsloth_8bit_prefetch_fix__"
-_TRITON_PREFETCH_VERSIONS = ((3, 8), (3, 9))  # checked to still carry the bug
+_TRITON_PREFETCH_FIRST = (3, 8)  # the first release whose prefetch pass splits 8-bit dots (#9806)
 _TRITON_PREFETCH_PIPELINE = re.compile(
     r"if\s+capability\s*//\s*10\s*==\s*8\s*:\s*\n\s*passes\.ttgpuir\.add_prefetch\(pm\)"
 )
@@ -63,14 +67,16 @@ def fix_triton_sm8x_8bit_prefetch():
         return True
     match = re.match(r"(\d+)\.(\d+)", str(getattr(triton, "__version__", "")))
     version = (int(match.group(1)), int(match.group(2))) if match else None
-    if version not in _TRITON_PREFETCH_VERSIONS and _triton_8bit_prefetch_fix_mode() != "force":
+    if (
+        version is None or version < _TRITON_PREFETCH_FIRST
+    ) and _triton_8bit_prefetch_fix_mode() != "force":
         return False
     try:
         source = inspect.getsource(make_ttgir)
     except Exception:
         return False
     if _TRITON_PREFETCH_PIPELINE.search(source) is None:
-        return False
+        return False  # this Triton no longer adds the pass for sm_8x where we expect it
 
     # The skip flag lives on the installed pass wrapper, so whichever copy of this fix runs
     # second drives the same flag the first one installed.
@@ -108,4 +114,162 @@ def fix_triton_sm8x_8bit_prefetch():
 
     setattr(patched_make_ttgir, _TRITON_PREFETCH_SENTINEL, True)
     backend.make_ttgir = staticmethod(patched_make_ttgir)
+    return True
+
+
+# Inductor compiles Triton kernels in a sidecar process (torch._inductor.compile_worker) that forks the
+# workers, so a fix installed only here would leave its kernels alone, and the parent would then load the
+# sidecar's spilling cubin from the shared Triton cache. The sidecar imports the pickler class it is given by
+# name, so the pool is handed this module's pickler: importing it there installs the fix before the fork.
+_INDUCTOR_POOL_MODULE = "torch._inductor.compile_worker.subproc_pool"
+_TRITON_COMPILER_MODULE = "triton.backends.nvidia.compiler"
+_WORKER_PICKLER = "_UnslothTritonPrefetchPickler"
+_WORKER_PICKLER_CLASS = []
+
+
+def _worker_pickler_class():
+    if not _WORKER_PICKLER_CLASS:
+        from torch._inductor.compile_worker.subproc_pool import SubprocPickler
+        cls = type(_WORKER_PICKLER, (SubprocPickler,), {"__module__": __name__})
+        _WORKER_PICKLER_CLASS.append(cls)
+    return _WORKER_PICKLER_CLASS[0]
+
+
+def __getattr__(name):
+    if name == _WORKER_PICKLER:
+        # Reached by name from the compile sidecar: install the fix there, then hand back the pickler.
+        try:
+            fix_triton_sm8x_8bit_prefetch()
+        except Exception:
+            pass
+        return _worker_pickler_class()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _workers_can_import_this_module():
+    """The sidecar gets the parent's sys.path as PYTHONPATH (or TORCH_CUSTOM_PYTHONPATH); a name it
+    cannot import would kill the pool, so the pickler is only swapped when this module is reachable."""
+    if __name__ == "__main__" or not __name__.count("."):
+        return False
+    root = Path(__file__).resolve().parents[__name__.count(".")]
+    custom = os.environ.get("TORCH_CUSTOM_PYTHONPATH")
+    entries = custom.split(os.pathsep) if custom is not None else list(sys.path)
+    for entry in entries:
+        try:
+            if entry and Path(entry).resolve() == root:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _cover_inductor_workers(module):
+    pool = getattr(module, "SubprocPool", None)
+    init = getattr(pool, "__init__", None)
+    if init is None or getattr(init, _TRITON_PREFETCH_SENTINEL, False):
+        return False
+
+    @functools.wraps(init)
+    def __init__(self, *args, **kwargs):
+        if (
+            kwargs.get("pickler") is None
+            and len(args) < 2
+            and _triton_8bit_prefetch_fix_mode() not in ("0", "off", "false", "no")
+            and _workers_can_import_this_module()
+        ):
+            try:
+                kwargs["pickler"] = _worker_pickler_class()()
+            except Exception:
+                pass
+        return init(self, *args, **kwargs)
+
+    setattr(__init__, _TRITON_PREFETCH_SENTINEL, True)
+    pool.__init__ = __init__
+    return True
+
+
+_POST_IMPORT = {
+    _TRITON_COMPILER_MODULE: lambda module: fix_triton_sm8x_8bit_prefetch(),
+    _INDUCTOR_POOL_MODULE: _cover_inductor_workers,
+}
+
+
+class _PostImportLoader(importlib.abc.Loader):
+    __slots__ = ("_loader", "_hook")
+
+    def __init__(self, loader, hook):
+        self._loader = loader
+        self._hook = hook
+
+    def create_module(self, spec):
+        create = getattr(self._loader, "create_module", None)
+        return None if create is None else create(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        try:
+            self._hook(module)
+        except Exception:
+            pass
+
+    def __getattr__(self, attribute):
+        return getattr(self._loader, attribute)
+
+
+class _PostImportFinder(importlib.abc.MetaPathFinder):
+    """At the front of sys.meta_path until both modules are imported; never changes what is imported."""
+
+    __slots__ = (_TRITON_PREFETCH_SENTINEL, "_finding")
+
+    def __init__(self):
+        setattr(self, _TRITON_PREFETCH_SENTINEL, True)
+        self._finding = False
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        hook = _POST_IMPORT.get(fullname)
+        if hook is None or self._finding:
+            return None
+        self._finding = True
+        try:
+            spec = importlib.util.find_spec(fullname)
+        except Exception:
+            return None
+        finally:
+            self._finding = False
+        if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):
+            return None
+        spec.loader = _PostImportLoader(spec.loader, hook)
+        return spec
+
+
+def triton_prefetch_fix_installed():
+    """True in a process whose Triton compiles through the fix (also run inside Inductor's compile workers)."""
+    module = sys.modules.get(_TRITON_COMPILER_MODULE)
+    backend = getattr(module, "CUDABackend", None)
+    stage = None if backend is None else backend.__dict__.get("make_ttgir")
+    return bool(getattr(getattr(stage, "__func__", stage), _TRITON_PREFETCH_SENTINEL, False))
+
+
+def install_triton_prefetch_fix():
+    """Studio entry points call this: patches Triton and Inductor's compile pool now when they are already
+    imported, else as they import. Nothing is imported here. Returns False when the kill switch is set."""
+    if _triton_8bit_prefetch_fix_mode() in ("0", "off", "false", "no"):
+        return False
+    pending = False
+    for name, hook in _POST_IMPORT.items():
+        module = sys.modules.get(name)
+        if module is None:
+            pending = True
+            continue
+        try:
+            hook(module)
+        except Exception:
+            pass
+    if pending and not any(getattr(f, _TRITON_PREFETCH_SENTINEL, False) for f in sys.meta_path):
+        sys.meta_path.insert(0, _PostImportFinder())
     return True
