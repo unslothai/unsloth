@@ -47,8 +47,7 @@ _CONFIG_OVERRIDES: dict[str, Any] = {
     "auto_check_model_updates": False,
     "auto_update_models": False,
     "log_file": "disabled",
-    # backend_output() raises it over /internal/set, which saves it; a crash mid-load must not
-    # leave it there.
+    # backend_output() raises it over /internal/set, which persists; a crash must not leave debug.
     "log_level": "info",
     "host": "127.0.0.1",
     "max_loaded_models": 1,
@@ -207,16 +206,14 @@ class LemonadeServer:
         if window.shared:
             yield
             return
-        # The window goes up before debug and comes down after it: a chat that opens one while
-        # either level change is in flight must already be filtered.
+        # Up before debug, down after it: a chat during either level change is already filtered.
         self._filter_until = None
         self._load_window = window
         self._set_log_level("debug")
         try:
             yield
         finally:
-            # A lemond that died prints no chat and its pipe may still hold flm's reason, so the
-            # capture stays up until the next start.
+            # A dead lemond prints no chat; its pipe may still hold flm's reason, so keep capturing.
             if self.is_alive():
                 # No deadline until the request is back: it can outlast one, with lemond at debug.
                 self._filter_until = float("inf")
@@ -238,8 +235,7 @@ class LemonadeServer:
         until = self._filter_until
         if window is None and until is None:
             return own
-        # A chat joined the load, or the load is over and lemond may still be at debug: only
-        # lemond's own lines at info and up, since debug content can run onto untagged lines.
+        # Chat joined or debug may linger: lemond's own info+ lines only (debug runs onto untagged lines).
         back = bool(match) and own and _BACK_AT_INFO.search(line)
         if until is not None and (back or time.monotonic() > until):
             self._filter_until = None
@@ -342,7 +338,6 @@ class LemonadeServer:
         logger.info("Starting Lemonade: %s", " ".join(cmd))
         with self._tail_lock:
             self._tail.clear()
-        # A new lemond starts at info.
         self._load_window = self._filter_until = None
         log_file = self._open_log_file(port, cmd)
 
