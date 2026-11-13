@@ -14264,6 +14264,10 @@ class VideoBackend:
                         time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
                     if not marked:
                         _enter_decode_phase()
+                    from .video_stream_residency import prepare_decode
+
+                    # groups lent to the denoise stream again: the decode starts from the whole-request fit
+                    prepare_decode(state.pipe, logger = logger)
                     if carry_by_scheduler:
                         logger.info(
                             "video.h3_stream_carry: %d carried copies read across forwards so far",

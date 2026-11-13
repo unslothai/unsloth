@@ -5,7 +5,8 @@
 request; need estimate stays the lower bound; kill switches UNSLOTH_VIDEO_DIT_RESIDENT=0,
 UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top group only), UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0
 (estimate only), UNSLOTH_VIDEO_DIT_RESIDENT_WARM_ONLY=0 (stored peaks widen a process's first render too),
-UNSLOTH_VIDEO_DIT_RESIDENT_OOM_RETRY=0 (an out-of-memory render with groups resident fails as is)."""
+UNSLOTH_VIDEO_DIT_RESIDENT_OOM_RETRY=0 (an out-of-memory render with groups resident fails as is),
+UNSLOTH_VIDEO_DIT_DECODE_LEND=0 (the denoise keeps only what also fits beside the VAE decode)."""
 
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ VIDEO_DIT_RESIDENT_BLOCKS_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS"
 VIDEO_DIT_RESIDENT_MEASURED_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED"
 VIDEO_DIT_RESIDENT_WARM_ONLY_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_WARM_ONLY"
 VIDEO_DIT_RESIDENT_OOM_RETRY_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_OOM_RETRY"
+# "0": no groups lent to the denoise beyond the whole-request fit (the room the VAE decode needs stays free throughout).
+VIDEO_DIT_DECODE_LEND_ENV = "UNSLOTH_VIDEO_DIT_DECODE_LEND"
 RESIDENT_POLICIES = ("group", "streaming")
 # Single-DiT families measured under the fit (MiniMax-H3 has its own controller, video_minimax_h3_residency).
 RESIDENT_FAMILY_PREFIXES = ("wan", "hunyuanvideo-1.5")
@@ -36,6 +39,10 @@ _COUNTS: dict[str, int] = {
     "groups": 0,
     "cold_skips": 0,
     "oom_retries": 0,
+    "lends": 0,
+    "lent_mib": 0,
+    "decode_returns": 0,
+    "returned_mib": 0,
 }
 
 
@@ -65,6 +72,10 @@ def warm_only_enabled() -> bool:
 
 def oom_retry_enabled() -> bool:
     return not _off(VIDEO_DIT_RESIDENT_OOM_RETRY_ENV)
+
+
+def decode_lend_enabled() -> bool:
+    return not _off(VIDEO_DIT_DECODE_LEND_ENV)
 
 
 def applies(
@@ -154,6 +165,41 @@ def measured_room_mib(
 _PEAKS: dict = {}
 # keys rendered in this process; a stored warm peak omits first-render compile/allocator cost, so only widens later renders
 _WARM: set = set()
+# calibration key -> {work: MiB above the request's start when its VAE decode began}: the denoise phase alone, this
+# process only (read after one render of the key, so it always includes that render's compile and allocator cost)
+_PRE_DECODE: dict = {}
+
+
+def _pre_decode_table(module: Any) -> dict:
+    key = getattr(module, "_unsloth_video_calibration_key", None)
+    if key is None:
+        table = getattr(module, "_unsloth_video_pre_decode", None)
+        if not isinstance(table, dict):
+            table = {}
+            try:
+                module._unsloth_video_pre_decode = table
+            except AttributeError:
+                pass
+        return table
+    return _PRE_DECODE.setdefault(key, {})
+
+
+def pre_decode_extra_mib(module: Any, work: int) -> Optional[int]:
+    """The largest denoise-phase peak recorded in this process at a request at least as large as ``work``."""
+    return _covering(_pre_decode_table(module), int(work))
+
+
+def lend_room_mib(
+    *, free_mib: int, unused_cache_mib: int, resident_mib_now: int, pre_decode_extra_mib: int
+) -> int:
+    """Room for resident groups during the denoise only: the measured denoise-phase peak with the same margin and
+    slack as ``measured_room_mib``."""
+    return measured_room_mib(
+        free_mib = free_mib,
+        unused_cache_mib = unused_cache_mib,
+        resident_mib_now = resident_mib_now,
+        peak_extra_mib = pre_decode_extra_mib,
+    )
 
 
 def _cold(module: Any) -> bool:
@@ -348,6 +394,8 @@ def discard_request(pipe: Any) -> None:
         return
     try:
         module._unsloth_video_pending = None
+        module._unsloth_video_pre_extra = None
+        module._unsloth_video_decode_room = None
         window = getattr(module, "_unsloth_video_window", None)
         module._unsloth_video_window = None
         if window is not None:
@@ -413,6 +461,60 @@ def _keyed_graphs_live(pipe: Any, key: Any) -> bool:
         return False
 
 
+def prepare_decode(pipe: Any, *, logger: Any = None) -> int:
+    """At the VAE decode's entry: record the denoise-phase peak, then stream the groups ``fit_for_request`` lent to
+    the denoise again, so the decode starts with the resident set (and free memory) of the whole-request fit. Returns
+    the MiB streamed again. Never raises."""
+    module = getattr(pipe, "transformer", None)
+    pending = getattr(module, "_unsloth_video_pending", None) if module is not None else None
+    if pending is None:
+        return 0
+    try:
+        import torch
+
+        work, start, dev = pending
+        if getattr(module, "_unsloth_video_pre_extra", None) is not None:
+            return 0  # this request's decode already started (a second decoder)
+        pre = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
+        module._unsloth_video_pre_extra = max(0, pre)
+        if pre > 0 and getattr(module, "_unsloth_video_graphs_clean", True):
+            table = _pre_decode_table(module)
+            table[work] = max(pre, table.get(work, 0))
+        room = getattr(module, "_unsloth_video_decode_room", None)
+        module._unsloth_video_decode_room = None
+        if room is None:
+            return 0
+        held = resident_bytes(module)
+        over = held - (int(room) << 20)
+        if over <= 0:
+            return 0
+        from .diffusion_memory import release_resident_groups
+
+        release_resident_groups(
+            pipe,
+            -(-over // (1 << 20)),
+            logger,
+            denoisers_only = True,
+            reason = "the VAE decode (lent to the denoise)",
+        )
+        returned = max(0, held - resident_bytes(module))
+        module._unsloth_resident_room = int(room) if int(room) > 0 else None
+        # The rest of the request is measured on the decode's residency: the peak since the fit includes the lent
+        # groups, so it restarts here from the start the whole-request fit would have had; record_request_peak takes
+        # the larger of this phase and the denoise phase read above.
+        torch.cuda.reset_peak_memory_stats(dev)
+        module._unsloth_video_pending = (work, int(start) - returned, dev)
+        _COUNTS["decode_returns"] += 1
+        _COUNTS["returned_mib"] += returned >> 20
+        return returned >> 20
+    except Exception as exc:  # noqa: BLE001 -- the decode's own OOM recovery still frees the card
+        if logger is not None:
+            logger.warning(
+                "video.dit_resident: lent groups not returned before the decode (%s)", exc
+            )
+        return 0
+
+
 def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
     """Record the request's peak allocation above its start; call only after decode and export."""
     module = getattr(pipe, "transformer", None)
@@ -425,6 +527,11 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         module._unsloth_video_pending = None
         work, start, dev = pending
         extra = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
+        pre = getattr(module, "_unsloth_video_pre_extra", None)
+        module._unsloth_video_pre_extra = None
+        module._unsloth_video_decode_room = None
+        if pre is not None:
+            extra = max(extra, int(pre))
         completed = getattr(module, "_unsloth_video_calibration_key", None)
         if completed is not None:
             _WARM.add(completed)
@@ -550,10 +657,32 @@ def fit_for_request(
             if wider > room:
                 room = wider
                 _COUNTS["measured_fits"] += 1
-        room = max(0, room - _user_budget_reserve_mib(int(total) >> 20))
+        reserve = _user_budget_reserve_mib(int(total) >> 20)
+        room = max(0, room - reserve)
+        top = None
         if not blocks_enabled():
             top = _top_group_mib(module)
             room = min(room, top) if top else 0
+        # The decode's share of the room is lent to the denoise when this process has measured the denoise alone;
+        # prepare_decode streams the lent groups again before the VAE decode, which then sees the room it sees today.
+        decode_room = None
+        module._unsloth_video_decode_room = None
+        pre = pre_decode_extra_mib(module, work) if decode_lend_enabled() else None
+        if pre is not None and not tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()):
+            lend = max(
+                0,
+                lend_room_mib(
+                    free_mib = int(free) >> 20,
+                    unused_cache_mib = unused >> 20,
+                    resident_mib_now = current,
+                    pre_decode_extra_mib = pre,
+                )
+                - reserve,
+            )
+            if top is not None:
+                lend = min(lend, top) if top else 0
+            if lend > room:
+                decode_room, room = room, lend
         released = promoted = 0
         over = resident_bytes(module) - (room << 20)
         if over > 0:
@@ -575,8 +704,13 @@ def fit_for_request(
         try:
             # release_resident_groups' restore reads it back; keep it at this request's room
             module._unsloth_resident_room = room if room > 0 else None
+            module._unsloth_video_decode_room = decode_room
+            module._unsloth_video_pre_extra = None
         except AttributeError:
             pass
+        if decode_room is not None:
+            _COUNTS["lends"] += 1
+            _COUNTS["lent_mib"] += max(0, room - decode_room)
         _COUNTS["fits"] += 1
         _COUNTS["promoted_mib"] += promoted
         _COUNTS["released_mib"] += released
@@ -596,7 +730,13 @@ def fit_for_request(
                 height,
                 frames,
                 room,
-                f"measured peak {measured} MiB" if measured is not None else "estimate",
+                (f"measured peak {measured} MiB" if measured is not None else "estimate")
+                + (
+                    f"; {room - decode_room} MiB of it lent to the denoise (denoise peak {pre} MiB), "
+                    f"{decode_room} MiB kept for the decode"
+                    if decode_room is not None
+                    else ""
+                ),
                 promoted,
                 released,
                 int(free) >> 20,
@@ -647,6 +787,7 @@ def stream_after_oom(pipe: Any, *, logger: Any = None) -> bool:
             return False
         # no re-pin (encode lend restore, decode restore) until the next request's fit
         module._unsloth_resident_room = None
+        module._unsloth_video_decode_room = None
         gc.collect()
         torch.cuda.empty_cache()
         pending = getattr(module, "_unsloth_video_pending", None)
