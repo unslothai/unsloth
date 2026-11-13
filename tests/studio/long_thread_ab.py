@@ -200,10 +200,30 @@ areas.AREAS["stream_scroll"] = {
 }
 
 
+# The reader wheels up through the thread and back: the window mounts rows on almost every step.
+areas.AREAS["wheel_sweep"] = {
+    "open": ("wheel_sweep", None),
+    "ready": ("settle",),
+    "close": None,
+    "gone": ("settle",),
+    "covers": [],
+}
+SWEEP_UP, SWEEP_DOWN, SWEEP_PX, SWEEP_GAP_MS = 250, 120, 400, 16
+
+
 class ABPage(areas.Page):
     coverage: list[float]
 
     def act(self, action) -> bool:
+        if action is not None and action[0] == "wheel_sweep":
+            page = self.page
+            box = page.locator(".aui-thread-viewport").bounding_box()
+            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            for k in range(SWEEP_UP + SWEEP_DOWN):
+                page.mouse.wheel(0, -SWEEP_PX if k < SWEEP_UP else SWEEP_PX)
+                page.wait_for_timeout(SWEEP_GAP_MS)
+            self.hovered = True
+            return True
         if action is None or action[0] != "stream_scroll":
             return super().act(action)
         page = self.page
@@ -385,7 +405,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--gated",
-        default = os.environ.get("LONG_THREAD_AB_GATED", "stream,type,stream_scroll"),
+        default = os.environ.get("LONG_THREAD_AB_GATED", "stream,type,stream_scroll,wheel_sweep"),
         help = "areas whose SLOWER verdict fails the run; the rest are reported",
     )
     ap.add_argument(

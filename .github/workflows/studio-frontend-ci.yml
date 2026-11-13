@@ -912,6 +912,7 @@ jobs:
           }
           ab --areas stream,type,thread_scroll
           ab --areas stream_scroll --tall 6 --stream-ms 10
+          ab --areas wheel_sweep
 
   # The suite reads sources and resolves module URLs, so it can break only on Windows.
   # .gitattributes pins LF for studio/frontend, so exact-substring assertions hold.
