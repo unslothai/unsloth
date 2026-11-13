@@ -192,10 +192,11 @@ def test_candidates_and_install_without_cuda(cr, monkeypatch):
 
 
 def test_install_probes_the_compute_card_and_reports_the_count(cr, monkeypatch):
+    # built first: on a live CUDA context the Linears probe the current card themselves at construction
+    t = _wrap(_linear(), _linear())
     seen = []
     monkeypatch.setattr(cr, "prepare", lambda device = None: seen.append(device) or True)
     monkeypatch.setattr(cr, "_install_share_pass", lambda logger = None: seen.append("share") or True)
-    t = _wrap(_linear(), _linear())
     assert cr.install(t, device = "cuda:1") == 2
     assert seen == ["cuda:1", "share"]
 
