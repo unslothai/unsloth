@@ -10,6 +10,7 @@ import { toast } from "@/lib/toast";
 import { wasAttachmentAddCancelled } from "../draft-attachment-adapter";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
+  BATCH_SEND_TIMEOUT_MS,
   type BatchFinish,
   type ThreadListLike,
   batchTargetKey,
@@ -170,9 +171,26 @@ export function useBatchNewChatsComposer(
       const draftId = aui.threadListItem().getState().id;
       void (async () => {
         try {
-          await aui.composer().addAttachment(claim.file);
+          let prepTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              aui.composer().addAttachment(claim.file),
+              new Promise((_, reject) => {
+                prepTimer = setTimeout(
+                  () => reject(new Error("Studio couldn't read this file in time.")),
+                  BATCH_SEND_TIMEOUT_MS,
+                );
+              }),
+            ]);
+          } finally {
+            clearTimeout(prepTimer);
+          }
           if (wasAttachmentAddCancelled(claim.file)) {
             throw new Error("The chat changed before the file was attached.");
+          }
+          // Text typed into this chat while the file was read is the user's: keep it and stop.
+          if (aui.composer().getState().text.trim()) {
+            throw new Error("This chat's message box was edited, so it was left as is.");
           }
           aui.composer().setText(claim.prompt);
           // Let the composer render the file and text, so its send checks see them.
