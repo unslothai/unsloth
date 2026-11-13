@@ -1112,7 +1112,8 @@ export const VoiceEngine: FC = () => {
     if (voiceModeRef.current !== "active" || !hasChatModelRef.current) return;
     // The voice is up and idle: cache the fixed asides so the first one is instant.
     void warmAsidesIfTts(asidePhrases());
-    if (pendingForVoiceRef.current.length) {
+    // A failed load also ends loading: re-sending would re-park and reload in a loop.
+    if (pendingForVoiceRef.current.length && useChatRuntimeStore.getState().voiceSlotLoaded) {
       // Something is being said right now: cutting the session here lost a turn
       // mid-transcription. Its own finish (or no-speech resume) sends the lot.
       if (isUtteranceInFlight()) return;

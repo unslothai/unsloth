@@ -131,3 +131,20 @@ test("a session dropped by a clear re-arms the listener", () => {
   const drop = loop.slice(loop.indexOf('why: "cleared"'));
   assert.match(drop.slice(0, 300), /finish\("stopped"\);[\s\S]*?requestVoiceResume\(\)[\s\S]*?return;/);
 });
+
+test("a transcript revealed across a Stop is dropped, not sent", () => {
+  const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
+  const reveal = loop.slice(loop.indexOf("const mine = { shown: shown(transcript), rush: false };"));
+  const submit = reveal.indexOf("requestVoiceSubmit(transcript)");
+  const guard = reveal.indexOf("if (epoch !== heldEpoch) {");
+  assert.ok(guard > 0 && guard < submit);
+});
+
+test("parked turns flush only once the voice actually loaded", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const effect = engine.slice(engine.indexOf("wasSlotLoadingRef.current = voiceSlotLoading;"));
+  assert.match(
+    effect.slice(0, 900),
+    /if \(pendingForVoiceRef\.current\.length && useChatRuntimeStore\.getState\(\)\.voiceSlotLoaded\) \{[\s\S]*?submitRef\.current\(""\)/,
+  );
+});
