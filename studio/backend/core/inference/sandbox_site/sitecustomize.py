@@ -491,7 +491,8 @@ def _session_entries():
 def _literal(path, names):
     import ast
 
-    with open(path, "rb") as f:
+    # Decoded here as UTF-8: parsing bytes would honour a coding cookie, i.e. import a codec module.
+    with open(path, encoding = "utf-8") as f:
         tree = ast.parse(f.read())
     found = {}
     for node in tree.body:
@@ -505,7 +506,17 @@ def _literal(path, names):
 _finder_template = []
 
 
-def _install_editable_finder(entry, module):
+def _editable_finder_data(entry, module):
+    data = _literal(os.path.join(entry, module + ".py"), {"MAPPING", "NAMESPACES"})
+    mapping, namespaces = data.get("MAPPING", {}), data.get("NAMESPACES", {})
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
+        return None
+    if not all(isinstance(k, str) and isinstance(v, list) for k, v in namespaces.items()):
+        return None
+    return mapping, namespaces
+
+
+def _install_editable_finder(module, mapping, namespaces):
     # setuptools' editable finder, built from the template of the setuptools in Studio's own site-packages (never
     # one the chat folder could shadow) with the chat file's literal MAPPING / NAMESPACES: the chat-written module
     # never runs. Read as text: importing setuptools is slow. Without setuptools there (torch ships it from 3.12)
@@ -516,12 +527,6 @@ def _install_editable_finder(entry, module):
             sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
         )
         _finder_template.append(_literal(source, {"_FINDER_TEMPLATE"})["_FINDER_TEMPLATE"])
-    data = _literal(os.path.join(entry, module + ".py"), {"MAPPING", "NAMESPACES"})
-    mapping, namespaces = data.get("MAPPING", {}), data.get("NAMESPACES", {})
-    if not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
-        return
-    if not all(isinstance(k, str) and isinstance(v, list) for k, v in namespaces.items()):
-        return
     code = _finder_template[0].format(
         name = module, mapping = dict(sorted(mapping.items())), namespaces = namespaces
     )
@@ -570,9 +575,18 @@ def _read_pth_files(entries, on_sys_path = True):
         saved = sys.path[:]
         sys.path[:] = _stdlib_paths()
         try:
+            # Every finder file is read before any finder is registered, so none can answer the others' imports.
+            parsed = []
             for entry, module in finders:
                 try:
-                    installed.append(_install_editable_finder(entry, module))
+                    data = _editable_finder_data(entry, module)
+                except Exception:  # noqa: BLE001
+                    data = None
+                if data is not None:
+                    parsed.append((module, data))
+            for module, (mapping, namespaces) in parsed:
+                try:
+                    installed.append(_install_editable_finder(module, mapping, namespaces))
                 except Exception:  # noqa: BLE001
                     pass
         finally:
@@ -700,6 +714,17 @@ def _recorded_files(
     return files
 
 
+def _claimed(entry, root, skip):
+    claimed = set()
+    try:
+        names = [n for n in os.listdir(entry) if n.endswith(".dist-info") and n not in skip]
+    except OSError:
+        return claimed
+    for name in names:
+        claimed |= _recorded_files(entry, name, root, True)
+    return claimed
+
+
 def _remove_files(paths, entry):
     # As pip's uninstall: the files, then any folder they leave empty, never above the site dir.
     stop = os.path.normcase(os.path.abspath(entry))
@@ -752,6 +777,8 @@ def _prune_stale_dist_info():
 
                 stamped.sort()
                 keep = _recorded_files(entry, stamped[-1][1], root) if stamped else set()
+                # Files another surviving distribution now ships stay too.
+                keep |= _claimed(entry, root, {name for _, name in stamped[:-1]})
                 for _, name in stamped[:-1]:
                     # Also the files only the replaced version had, as pip's uninstall would remove.
                     _remove_files(_recorded_files(entry, name, root) - keep, entry)
@@ -791,7 +818,7 @@ def _retire_rewritten(snapshot):
                 continue
         except OSError:
             continue
-        _remove_files(files - _recorded_files(entry, name, root, True), entry)
+        _remove_files(files - _claimed(entry, root, ()), entry)
 
 
 if os.environ.get("PIP_PREFIX"):

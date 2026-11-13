@@ -1256,6 +1256,63 @@ def test_an_editable_child_of_a_namespace_wins_over_studios_copy(monkeypatch, tm
     assert str(tmp_path / "editable" / "pkg" / "__init__.py") in out, out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_coding_cookie_in_a_finder_file_imports_no_chat_codec(monkeypatch, tmp_path):
+    """Finder files are read as UTF-8 text before any finder exists, so a cookie cannot import a mapped codec."""
+    template = os.path.join(
+        sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
+    )
+    if not os.path.exists(template):
+        pytest.skip("finder-based editable installs need setuptools in Studio's environment")
+    workdir = tmp_path / "chat"
+    marker = tmp_path / "codec_ran"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    site_dir.mkdir(parents = True)
+    payload = tmp_path / "chatcodec.py"
+    payload.write_text(f"open({str(marker)!r}, 'w').close()\n")
+    for tag, body in (
+        ("a", f"MAPPING = {{'encodings.chatcodec': {str(payload)!r}}}\nNAMESPACES = {{}}\n"),
+        ("b", "# coding: chatcodec\nMAPPING = {}\nNAMESPACES = {}\n"),
+    ):
+        finder = f"__editable___{tag}_1_0_finder"
+        (site_dir / f"__editable__.{tag}-1.0.pth").write_text(
+            f"import {finder}; {finder}.install()\n"
+        )
+        (site_dir / f"{finder}.py").write_text(body)
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    out = tools._bash_exec(
+        "python -c 'print(41 + 1)'", None, 60, _SESSION, tool_execution_mode = "software"
+    )
+    assert "42" in out, out
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_retirement_keeps_a_file_another_distribution_now_ships(monkeypatch, tmp_path):
+    """A module moving from core 1.0 into a new companion package stays installed after the upgrade."""
+    workdir = tmp_path / "chat"
+    (workdir / "v2").mkdir(parents = True)
+    core1 = _wheel(
+        workdir,
+        "unsloth_split_core",
+        {"unsloth_split/__init__.py": "", "unsloth_split/feature.py": ""},
+        "1.0",
+    )
+    core2 = "v2/" + _wheel(
+        workdir / "v2", "unsloth_split_core", {"unsloth_split/__init__.py": ""}, "2.0"
+    )
+    feature = "v2/" + _wheel(
+        workdir / "v2", "unsloth_split_feature", {"unsloth_split/feature.py": ""}
+    )
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = (
+        f"{_PIP} {core1} && sleep 1 && {_PIP} {core2} {feature} && "
+        "python -c 'import unsloth_split.feature as f; print(f.__file__)'"
+    )
+    out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
+    assert "feature.py" in out and "Error" not in out, out
+
+
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
     """Every OS: Studio's pip installs into the chat folder; nothing else it starts, nor another venv, inherits that."""
     packages = str(tmp_path / os_sandbox.SESSION_PACKAGES_RELPATH)
