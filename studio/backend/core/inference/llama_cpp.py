@@ -12557,6 +12557,15 @@ class LlamaCppBackend:
             else "off"
         )
         on_device = int(model_size) - _host_pinned_input_bytes(scan, argv, env, lazy_mode = lazy_mode)
+        # Managed (GGML_CUDA_ENABLE_UNIFIED_MEMORY) allocations are host-backed, not carve-out.
+        source_env = os.environ if env is None else env
+        if not self._unified_memory_opted_out(source_env) and (
+            "GGML_CUDA_ENABLE_UNIFIED_MEMORY" in source_env
+            or self._unified_memory_for_launch(
+                gpu_indices, on_device, opted_in = self._unified_memory_opted_in(source_env)
+            )
+        ):
+            return 0
         # Used (dedicated + shared) fills the carve-out first, so this never over-credits.
         credit = max(0, min(int(carve_out) - int(used), on_device))
         if credit:

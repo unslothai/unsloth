@@ -2750,6 +2750,21 @@ def test_windows_apu_gpu_used_bytes(monkeypatch, dedicated, shared, expected):
 
 
 @pytest.mark.parametrize(
+    "env_name", ["GGML_CUDA_ENABLE_UNIFIED_MEMORY", "UNSLOTH_ENABLE_UNIFIED_MEMORY"]
+)
+def test_windows_rocm_apu_managed_memory_gets_no_carve_out_credit(tmp_path, monkeypatch, env_name):
+    """Managed allocations are host-backed, so they sit in Windows RAM whatever the carve-out."""
+    backend, gguf = _windows_apu_backend(tmp_path, monkeypatch, **_W96, model_gb = 62, ple_gb = 0)
+    monkeypatch.setenv(env_name, "1")
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none", "--fit", "off", "-ngl", "49"])[
+        "cmd"
+    ]
+
+    assert not _unmapped_tokens(cmd), cmd
+
+
+@pytest.mark.parametrize(
     "gpu_layers, n_cpu_moe, keeps_none",
     [(99, 0, True), (-1, 0, False), (99, 48, False)],
     ids = ["manual_all", "manual_auto_is_fitter", "manual_cpu_moe"],
