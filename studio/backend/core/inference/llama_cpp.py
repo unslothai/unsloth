@@ -16259,7 +16259,11 @@ class LlamaCppBackend:
             return self._FIT_LOAD_MODE
         return None
 
-    def _sized_cache_ram_mib(self, fit_kwargs: Mapping[str, Any]) -> Optional[int]:
+    def _sized_cache_ram_mib(
+        self, fit_kwargs: Mapping[str, Any], state_bytes: int
+    ) -> Optional[int]:
+        """Largest --cache-ram up to one saved full-context state (target + draft + checkpoints,
+        server-task.cpp skips a bigger one) the fit still holds; None keeps the default."""
         mib = 1024 * 1024
         avail = self._available_system_memory_mib()
 
@@ -16278,7 +16282,7 @@ class LlamaCppBackend:
             )
 
         low = _LLAMA_CACHE_RAM_DEFAULT_MIB
-        high = -(-fit_kwargs["kv_cache_bytes"] // mib)
+        high = -(-state_bytes // mib)
         while low < high:
             mid = (low + high + 1) // 2
             if fits(mid):
@@ -28714,7 +28718,12 @@ class LlamaCppBackend:
                                 )
                                 + _moe_expert_bytes
                             )
-                        _planned_cache_ram = self._sized_cache_ram_mib(_cache_fit)
+                        _planned_cache_ram = self._sized_cache_ram_mib(
+                            _cache_fit,
+                            _cache_fit["kv_cache_bytes"]
+                            + _cache_fit["mtp_bytes"]
+                            + _ckpt_host_bytes,
+                        )
                         if _planned_cache_ram is not None:
                             logger.info(
                                 "Prompt cache: --cache-ram %d MiB so a saved conversation "

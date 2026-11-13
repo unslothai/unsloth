@@ -37,6 +37,7 @@ def launch(tmp_path, monkeypatch):
         caps = None,
         platform = "linux",
         memory = ((0, 48 * 1024, 48 * 1024),),
+        keep_estimator = False,
         **load_kwargs,
     ):
         monkeypatch.setattr(sys, "platform", platform)
@@ -52,9 +53,10 @@ def launch(tmp_path, monkeypatch):
         backend._apple_metal_memory_budget_bytes = lambda: 0
         backend._get_gguf_size_bytes = lambda _path: 4 * 1024 * MIB
         backend._can_estimate_kv = lambda: True
-        backend._estimate_kv_cache_bytes = lambda n_ctx, *args, **kwargs: (
-            max(0, int(n_ctx)) * KV_BYTES_PER_TOKEN
-        )
+        if not keep_estimator:
+            backend._estimate_kv_cache_bytes = lambda n_ctx, *args, **kwargs: (
+                max(0, int(n_ctx)) * KV_BYTES_PER_TOKEN
+            )
         load_kwargs.setdefault("n_ctx", CTX)
         return placement._launch(backend, gguf, **load_kwargs)["cmd"]
 
@@ -68,6 +70,23 @@ def cache_ram_flags(cmd):
 def test_prompt_cache_holds_a_full_context_conversation(launch):
     assert FULL_CONTEXT_MIB > 8192
     assert last(launch(), "--cache-ram") == str(FULL_CONTEXT_MIB)
+
+
+def test_the_cache_holds_the_checkpoints_saved_with_the_conversation(launch, monkeypatch):
+    ckpt_mib = 512
+
+    def estimate(
+        self,
+        n_ctx,
+        *args,
+        ctx_checkpoints = 0,
+        **kwargs,
+    ):
+        return max(0, int(n_ctx)) * KV_BYTES_PER_TOKEN + (ckpt_mib * MIB if ctx_checkpoints else 0)
+
+    monkeypatch.setattr(LlamaCppBackend, "_estimate_kv_cache_bytes", estimate)
+    sized = launch(keep_estimator = True, ctx_checkpoints = 8)
+    assert last(sized, "--cache-ram") == str(FULL_CONTEXT_MIB + ckpt_mib)
 
 
 def test_a_context_the_default_already_holds_adds_no_flag(launch):
