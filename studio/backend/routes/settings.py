@@ -5316,11 +5316,34 @@ class PlusMenuPrefsPayload(BaseModel):
     pinnedListIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
 
 
+_GlassMaterial = Literal["transparent", "frosted", "blurred", "liquid", "liquid-3d", "macos"]
+_GlassStrength = Annotated[int, Field(ge = 0, le = 100)]
+
+
+class GlassStrengthPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    light: Optional[_GlassStrength] = None
+    dark: Optional[_GlassStrength] = None
+
+
+class MaterialPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    material: Optional[Literal["solid", _GlassMaterial]] = None
+    style: Optional[_GlassMaterial] = None
+    menus: Optional[bool] = None
+    strength: Optional[GlassStrengthPayload] = None
+    lens: Optional[Literal["off", "magnify", "shrink"]] = None
+    scope: Optional[Literal["newChat", "chats", "all"]] = None
+
+
 class ClientPreferencesPayload(BaseModel):
     interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
     browser: Optional[BrowserPrefsPayload] = None
     chat: Optional[ChatPrefsPayload] = None
     plusMenu: Optional[PlusMenuPrefsPayload] = None
+    material: Optional[MaterialPrefsPayload] = None
     timeFormat: Optional[Literal["system", "12h", "24h"]] = None
     spellcheck: Optional[bool] = None
 
