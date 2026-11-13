@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -98,6 +99,25 @@ def test_prompt_cache_never_outgrows_free_host_ram(launch):
     sized = int(last(launch(avail_mib = avail_mib), "--cache-ram"))
     assert 8192 < sized < FULL_CONTEXT_MIB
     assert sized == avail_mib - 2048 - 1024
+
+
+def test_another_servers_cache_cap_is_held_back(launch, monkeypatch):
+    other = SimpleNamespace(
+        is_active = True, _process = None, _sized_cache_ram_flags = ["--cache-ram", "16384"]
+    )
+    monkeypatch.setattr(lc, "_serving_backends_snapshot", lambda: [other, *backends])
+    backends = []
+    real_backend = placement._backend
+
+    def tracked(*args, **kwargs):
+        backend, gguf = real_backend(*args, **kwargs)
+        backends.append(backend)
+        return backend, gguf
+
+    monkeypatch.setattr(placement, "_backend", tracked)
+    avail_mib = 30 * 1024
+    sized = int(last(launch(avail_mib = avail_mib), "--cache-ram"))
+    assert sized == avail_mib - 16384 - 2048 - 1024
 
 
 def test_a_host_without_room_keeps_the_default(launch):

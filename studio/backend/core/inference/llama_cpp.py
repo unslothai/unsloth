@@ -16265,6 +16265,9 @@ class LlamaCppBackend:
         server-task.cpp skips a bigger one) the fit still holds; None keeps the default."""
         mib = 1024 * 1024
         avail = self._available_system_memory_mib()
+        if avail is not None:
+            # Another live server's cap is RAM it may still grow into, not yet out of MemAvailable.
+            avail -= self._other_sized_cache_mib()
 
         def fits(size: int) -> bool:
             return (
@@ -34871,6 +34874,21 @@ class LlamaCppBackend:
         for idx, mib in media_held_mib().items():
             held[idx] = held.get(idx, 0) + mib
         return held
+
+    def _other_sized_cache_mib(self) -> int:
+        serving = _serving_backends_snapshot()
+        if self not in serving:
+            return 0
+        total = 0
+        for backend in serving:
+            flags = getattr(backend, "_sized_cache_ram_flags", None)
+            if backend is self or not flags or not getattr(backend, "is_active", False):
+                continue
+            poll = getattr(getattr(backend, "_process", None), "poll", None)
+            if callable(poll) and poll() is not None:
+                continue
+            total += int(flags[-1])
+        return total
 
     def _other_servers_running(self) -> bool:
         serving = _serving_backends_snapshot()
