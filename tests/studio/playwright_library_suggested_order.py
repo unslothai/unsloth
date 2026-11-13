@@ -7,7 +7,8 @@ Suggested ranks by last activity, and opening an item saves a new openedAt. The 
 its order while the viewer is open, after a window-focus refresh returns the saved openedAt, and
 after the viewer closes. Opening a card in the first column used to move it to the top, and the
 browser's scroll anchoring followed it there, resetting the Library's scroll position to 0. The
-next visit (here a tab switch, which remounts the view) shows the opened item first.
+order holds across a tab switch, and coming back after leaving the Library shows the opened
+item first.
 """
 
 from __future__ import annotations
@@ -149,8 +150,18 @@ def assert_unchanged(before: dict, after: dict, step: str) -> None:
     ), f"{step}: {len(moved)} of {len(before['cards'])} cards moved, e.g. {moved[:3]}"
 
 
+def reading_order(state: dict) -> list[str]:
+    """Card names left to right, top to bottom."""
+    cards = state["cards"]
+    return sorted(cards, key = lambda name: (cards[name][1], cards[name][0]))
+
+
 def open_suggested(page) -> None:
     page.goto(f"{BASE}/library?show=suggested", timeout = 120_000)
+    wait_for_cards(page)
+
+
+def wait_for_cards(page) -> None:
     page.wait_for_function(
         f"() => document.querySelectorAll('main button[aria-label^=\"Library image\"]').length === {ITEMS}",
         timeout = 120_000,
@@ -207,16 +218,28 @@ def check(page, api: MockApi) -> None:
     page.wait_for_timeout(500)
     assert_unchanged(before, layout(page), "viewer closed")
 
-    # Switching tabs remounts the view: the opened item now ranks first.
+    # A tab switch stays in the Library: Suggested keeps the order it had before the open.
     sections = page.get_by_role("navigation", name = "Library sections")
     sections.get_by_role("button", name = "Images", exact = True).click()
     page.wait_for_url("**show=images**", timeout = 30_000)
     sections.get_by_role("button", name = "Suggested", exact = True).click()
     page.wait_for_url("**show=suggested**", timeout = 30_000)
     page.wait_for_timeout(500)
-    cards = layout(page)["cards"]
-    first = min(cards, key = lambda name: (cards[name][1], cards[name][0]))
-    assert first == target, f"after remounting, {first} ranks first, not the opened {target}"
+    assert reading_order(layout(page)) == reading_order(before), "a tab switch reordered Suggested"
+
+    # Leaving the Library and coming back shows the new order: the opened item ranks first.
+    page.get_by_text("Model hub", exact = True).first.click()
+    page.wait_for_url("**/hub**", timeout = 30_000)
+    # Until the hub replaces the grid, a click back cancels the navigation and the user never left.
+    page.wait_for_function(
+        "() => !document.querySelector('main button[aria-label^=\"Library image\"]')",
+        timeout = 30_000,
+    )
+    page.get_by_text("Library", exact = True).first.click()
+    page.wait_for_url("**/library**", timeout = 30_000)
+    wait_for_cards(page)
+    first = reading_order(layout(page))[0]
+    assert first == target, f"back in the Library, {first} ranks first, not the opened {target}"
 
 
 def main() -> int:

@@ -3,6 +3,7 @@
 
 import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
 import { validateLibrarySearch } from "@/features/library/search";
+import { useLibraryVisitStore } from "@/features/library/settings-store";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
@@ -18,4 +19,6 @@ export const Route = createRoute({
   validateSearch: validateLibrarySearch,
   beforeLoad: () => requireAuth(),
   component: LibraryPage,
+  // Leaving the Library ends the visit; a tab or folder change within it does not.
+  onLeave: () => useLibraryVisitStore.getState().end(),
 });

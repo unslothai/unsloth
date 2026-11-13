@@ -337,15 +337,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   useEffect(() => {
     if (!folderId) setLibrarySettings({ lastTab: tab });
   }, [tab, folderId, setLibrarySettings]);
-  const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
-  const previewId = previewItem?.id ?? null;
-  // Opening an item counts as activity, which Suggested ranks by. Keep each opened item's earlier
-  // openedAt for the rest of the visit, so the grid does not reshuffle behind the viewer; the next
-  // visit shows the new order. Recorded during render, before the markOpened effect changes it.
-  const [openedBefore, setOpenedBefore] = useState<ReadonlyMap<string, number | null>>(new Map());
-  if (previewItem && !openedBefore.has(previewItem.id)) {
-    setOpenedBefore(new Map(openedBefore).set(previewItem.id, previewItem.openedAt ?? null));
-  }
+  const openedBefore = useLibraryVisitStore((s) => s.openedBefore);
+  const holdOpenedAt = useLibraryVisitStore((s) => s.holdOpenedAt);
   const visibleItems = useMemo(() => {
     let pool = items;
     if (folderId) pool = pool.filter((item) => item.folderId === folderId);
@@ -402,9 +395,16 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
   }, [visibleKeys]);
 
+  const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
+  const previewId = previewItem?.id ?? null;
+  // Opening an item counts as activity, which Suggested ranks by. Its earlier openedAt is held until
+  // the Library is left, so the grid does not reorder while the user is in it.
   useEffect(() => {
-    if (previewId) markOpened(previewId);
-  }, [previewId, markOpened]);
+    if (!previewId) return;
+    const opened = useLibraryStore.getState().items.find((item) => item.id === previewId);
+    holdOpenedAt(previewId, opened?.openedAt ?? null);
+    markOpened(previewId);
+  }, [previewId, markOpened, holdOpenedAt]);
 
   const router = useRouter();
   const pushedPreview = useRef<string | null>(null);

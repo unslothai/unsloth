@@ -194,7 +194,21 @@ export function compareBySort({ key, desc }: LibrarySortState): (a: Sortable, b:
   return desc ? (a, b) => ascending(b, a) : ascending;
 }
 
-export const useLibraryVisitStore = create<{ visit: number; restart: () => void }>((set) => ({
+/** A visit lasts until the Library page is left or restarted. `openedBefore` maps each item opened
+ * during it to its `openedAt` before that, so Suggested keeps its order across tab switches. */
+export const useLibraryVisitStore = create<{
+  visit: number;
+  openedBefore: ReadonlyMap<string, number | null>;
+  restart: () => void;
+  end: () => void;
+  holdOpenedAt: (id: string, openedAt: number | null) => void;
+}>((set) => ({
   visit: 0,
-  restart: () => set((state) => ({ visit: state.visit + 1 })),
+  openedBefore: new Map(),
+  restart: () => set((state) => ({ visit: state.visit + 1, openedBefore: new Map() })),
+  end: () => set({ openedBefore: new Map() }),
+  holdOpenedAt: (id, openedAt) =>
+    set((state) =>
+      state.openedBefore.has(id) ? state : { openedBefore: new Map(state.openedBefore).set(id, openedAt) },
+    ),
 }));
