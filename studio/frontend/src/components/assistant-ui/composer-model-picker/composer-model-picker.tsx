@@ -951,12 +951,12 @@ function Hint({
 }
 
 // A mark only: Eject is in the row menu and the header.
-function LoadedDot() {
+function LoadedDot({ label = "Loaded" }: { label?: string }) {
   return (
-    <Hint label="Loaded">
+    <Hint label={label}>
       <span
         role="img"
-        aria-label="Loaded"
+        aria-label={label}
         className="-mx-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 place-items-center"
       >
         <span className="size-[calc(6px*var(--ui-space-scale,1))] rounded-full bg-status-success" />
@@ -2195,19 +2195,25 @@ export function ComposerModelPicker({
   // The size estimate flags a repo by a mid quant; its listing says whether a smaller one runs,
   // so flagged rows are checked before anyone opens them.
   const checkedFits = useRef(new Set<string>());
-  const fitCheck = useRef({ hubFit, noteListedFit });
-  fitCheck.current = { hubFit, noteListedFit };
+  const fitCheck = useRef({ hubFit, noteListedFit, fitOf, noGpu });
+  fitCheck.current = { hubFit, noteListedFit, fitOf, noGpu };
   useEffect(() => {
     if (!(open && viewed === RECOMMENDED_TAB)) {
       return;
     }
     const queue = hubResults.filter((r) => {
       const id = r.id.toLowerCase();
-      return (
-        r.isGguf &&
-        isOverBudget(fitCheck.current.hubFit.get(id)) &&
-        !checkedFits.current.has(id)
-      );
+      const { hubFit: fits, fitOf: sizeFit, noGpu: ramOnly } = fitCheck.current;
+      // Only rows shown flagged: with no GPU, running from RAM is no warning.
+      const shown = (f: ReturnType<typeof sizeFit> | undefined) =>
+        isOverBudget(f) && !(f === "ram" && ramOnly);
+      if (!r.isGguf || !shown(fits.get(id)) || checkedFits.current.has(id)) {
+        return false;
+      }
+      // Only when its smallest quant (~IQ1_M, 0.3 bytes a parameter) could fit: past that, a
+      // listing cannot clear it.
+      const params = r.totalParams ?? paramsFromId(r.id);
+      return !params || sizeFit(params * 0.3) !== "oom";
     });
     if (queue.length === 0) {
       return;
@@ -2311,18 +2317,29 @@ export function ComposerModelPicker({
         return !isOverBudget(fit) || (fit === "ram" && noGpu);
       });
     }
-    if (viewed === CONNECTED_TAB) {
-      return sortConnectedRows(found);
+    if (viewed === CONNECTED_TAB || viewed.startsWith(EXT_PREFIX)) {
+      return sortConnectedRows(found, isFavorite);
+    }
+    const lastLoaded = (row: Row) => loadedAt(loadTimes, row.id);
+    // Stable: favorites lift to the top, each side keeping its order.
+    const favoritesFirst = (list: Row[]) =>
+      [...list].sort((a, b) => Number(isFavorite(b)) - Number(isFavorite(a)));
+    // A maker's tab reads like On Device's default: favorites, then last loaded or downloaded.
+    if (viewed.startsWith(MAKER_PREFIX)) {
+      return favoritesFirst(sortDeviceRows(found, "recent", lastLoaded));
     }
     if (viewed !== DEVICE_TAB) {
       return found;
     }
-    return sortDeviceRows(
+    const sorted = sortDeviceRows(
       found.filter((row) => matchesFormat(row, formatFilter)),
       deviceSort,
-      (row) => loadedAt(loadTimes, row.id),
+      lastLoaded,
       deviceSortDesc,
     );
+    return deviceSort === "recent" && deviceSortDesc === DEVICE_SORT_DESC.recent
+      ? favoritesFirst(sorted)
+      : sorted;
   }, [
     rows,
     viewed,
@@ -3646,6 +3663,9 @@ export function ComposerModelPicker({
               ) : null}
               {row.loaded ? (
                 <LoadedDot />
+              ) : isChosen && row.kind === "external" ? (
+                // A connected model in use reads as an on-device one loaded.
+                <LoadedDot label="In use" />
               ) : row.kind === "hub" && row.onDevice ? (
                 <Hint label="On device">
                   <span
@@ -3699,7 +3719,7 @@ export function ComposerModelPicker({
             ) : row.kind === "npu" ? (
               <QuantPill quant="NPU" />
             ) : null}
-            {isChosen && !row.loaded ? (
+            {isChosen && !row.loaded && row.kind !== "external" ? (
               <HugeiconsIcon
                 icon={Tick02Icon}
                 strokeWidth={2}

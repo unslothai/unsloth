@@ -181,14 +181,36 @@ export function sortDeviceRows<T extends PickerRow>(
   return desc === DEVICE_SORT_DESC[key] ? sorted : sorted.reverse();
 }
 
+/** A model id's first version run (`gpt-5.6-sol` -> [5, 6], `claude-opus-4-7` -> [4, 7]). */
+export function modelVersion(id: string): number[] {
+  const run = /\d+(?:[.-]\d+)*/.exec(id.replace(/^.*\//, ""));
+  return run ? run[0].split(/[.-]/).map(Number) : [];
+}
+
+/** Each connection's favorites first, then newest version first; ties keep the provider's order. */
 export function sortConnectedRows<T extends PickerRow>(
   rows: readonly T[],
+  isFavorite: (row: T) => boolean = () => false,
 ): T[] {
+  const at = new Map(rows.map((row, index) => [row, index]));
+  const newer = (a: T, b: T) => {
+    const va = modelVersion(a.label);
+    const vb = modelVersion(b.label);
+    for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+      const diff = (vb[i] ?? -1) - (va[i] ?? -1);
+      if (diff !== 0) {
+        return diff;
+      }
+    }
+    return 0;
+  };
   return [...rows].sort(
     (a, b) =>
       (a.providerName ?? "").localeCompare(b.providerName ?? "") ||
       a.tab.localeCompare(b.tab) ||
-      a.label.localeCompare(b.label),
+      Number(isFavorite(b)) - Number(isFavorite(a)) ||
+      newer(a, b) ||
+      (at.get(a) ?? 0) - (at.get(b) ?? 0),
   );
 }
 

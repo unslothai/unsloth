@@ -886,7 +886,7 @@ test("the picker slides back inside a narrow window instead of hanging off its e
   assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
 });
 
-test("the Connected tab lists every connection's models, by connection or by name", () => {
+test("the Connected tab lists every connection's models, favorites then newest first", () => {
   const ext = (id: string, providerId: string, providerName: string) =>
     row({
       key: id,
@@ -904,9 +904,36 @@ test("the Connected tab lists every connection's models, by connection or by nam
     row({ key: "device", id: "unsloth/Qwen3-4B-GGUF" }),
   ];
   const connected = filterRows(rows, CONNECTED_TAB, "", none);
+  // Without versions, the provider's order stands.
   assert.deepEqual(
     sortConnectedRows(connected).map((r) => r.key),
-    ["claude-haiku", "claude-opus", "gpt-5"],
+    ["claude-opus", "claude-haiku", "gpt-5"],
+  );
+  // Newest version first, favorites ahead of it.
+  const gpt = [
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.5",
+    "gpt-5.6-sol",
+    "gpt-6-astra",
+    "gpt-6-sol",
+  ].map((id) => ext(id, "p2", "OpenAI"));
+  assert.deepEqual(
+    sortConnectedRows(gpt).map((r) => r.key),
+    [
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-5.6-sol",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+    ],
+  );
+  assert.deepEqual(
+    sortConnectedRows(gpt, (r) => r.key === "gpt-5.4")
+      .map((r) => r.key)
+      .slice(0, 2),
+    ["gpt-5.4", "gpt-6-astra"],
   );
   // Each connection keeps its own tab too.
   assert.deepEqual(
