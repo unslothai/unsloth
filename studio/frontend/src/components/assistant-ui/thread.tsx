@@ -7005,9 +7005,8 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
   return pickerAcceptForTextBasenames(enabledAccept);
 }
 
-function usePickComposerAttachment(): () => void {
-  const aui = useAui();
-  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
+function useAudioAttachmentsEnabled(): boolean {
+  return useChatRuntimeStore((s) => {
     const activeCheckpoint = s.params.checkpoint;
     // No model yet: offer audio too, since files attached now wait for the model loaded next.
     if (!activeCheckpoint || s.modelLoading) {
@@ -7016,6 +7015,11 @@ function usePickComposerAttachment(): () => void {
     const activeModel = s.models.find((m) => m.id === activeCheckpoint);
     return Boolean(activeModel?.hasAudioInput);
   });
+}
+
+function usePickComposerAttachment(): () => void {
+  const aui = useAui();
+  const audioAttachmentsEnabled = useAudioAttachmentsEnabled();
   return useCallback(() => {
     const attachmentAccept = attachmentAcceptForPicker(
       aui.composer().getState().attachmentAccept,
@@ -7140,6 +7144,7 @@ const ComposerToolsMenu: FC<{
   );
   const pickAttachment = usePickComposerAttachment();
   const batchRunning = useBatchNewChatsStore((s) => s.run !== null);
+  const audioAttachmentsEnabled = useAudioAttachmentsEnabled();
   // Straight to the picker, skipping the "+" menu the item lives in. Off-route
   // the chat pane is hidden rather than unmounted, so the chords gate on it
   // being the visible tab; a window listener does not care about `inert`.
@@ -7367,7 +7372,7 @@ const ComposerToolsMenu: FC<{
             navigate,
             attachmentAcceptForPicker(
               aui.composer().getState().attachmentAccept,
-              true,
+              audioAttachmentsEnabled,
             ),
           )
         }

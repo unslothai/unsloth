@@ -133,6 +133,12 @@ export function useBatchNewChatsComposer(
     composerForms.set(targetKey, formRef);
     let disposed = false;
     let readyTicks = 0;
+    // Polls only while a step waits on this chat, so idle composers keep no timer.
+    let poll: ReturnType<typeof setInterval> | null = null;
+    const stopPoll = () => {
+      if (poll !== null) clearInterval(poll);
+      poll = null;
+    };
     // The route names the new chat before the runtime has switched to it; claim only once the
     // chat on screen is that empty new chat, or the file lands in the previous one.
     const onFreshChat = () => {
@@ -148,12 +154,15 @@ export function useBatchNewChatsComposer(
       const run = useBatchNewChatsStore.getState().run;
       if (!run || run.phase !== "opening" || batchTargetKey(run.nonce) !== targetKey) {
         readyTicks = 0;
+        stopPoll();
         return;
       }
+      poll ??= setInterval(tryClaim, 150);
       readyTicks = onFreshChat() ? readyTicks + 1 : 0;
       if (readyTicks < 2) return;
       const claim = claimBatchStep(targetKey);
       if (!claim) return;
+      stopPoll();
       void (async () => {
         try {
           await aui.composer().addAttachment(claim.file);
@@ -191,11 +200,10 @@ export function useBatchNewChatsComposer(
     };
     tryClaim();
     const unsubscribe = useBatchNewChatsStore.subscribe(tryClaim);
-    const poll = setInterval(tryClaim, 150);
     return () => {
       disposed = true;
       if (composerForms.get(targetKey) === formRef) composerForms.delete(targetKey);
-      clearInterval(poll);
+      stopPoll();
       unsubscribe();
     };
   }, [aui, targetKey, formRef]);
