@@ -416,7 +416,6 @@ def test_a_window_alone_still_gets_its_reason(tmp_path, log):
 
 
 def _flm(severity: str, text: str) -> str:
-    # How lemond relays a line flm printed.
     return _line(severity, "Process", text)
 
 
