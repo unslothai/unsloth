@@ -346,3 +346,12 @@ def test_an_overlapped_request_publishes_no_denoise_peak(monkeypatch):
     assert vr.pre_decode_extra_mib(card.module, WORK) is None
     card.fit()
     assert card.module._unsloth_video_lend is None
+
+
+@pytest.mark.parametrize("pad, stored", [(500, DENOISE_PEAK + 500), (None, None)])
+def test_the_denoise_peak_is_stored_on_the_streamed_baseline(monkeypatch, pad, stored):
+    card = _Card(monkeypatch)
+    monkeypatch.setattr(dm, "stream_window_pad_mib", lambda pipe: pad)
+    card.fit()
+    card.render()
+    assert vr.pre_decode_extra_mib(card.module, WORK) == stored

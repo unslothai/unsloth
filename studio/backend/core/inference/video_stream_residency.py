@@ -391,6 +391,7 @@ def discard_request(pipe: Any) -> None:
     try:
         module._unsloth_video_pending = None
         module._unsloth_video_pre_extra = None
+        module._unsloth_video_pre_pad = None
         module._unsloth_video_decode_room = None
         module._unsloth_video_lend = None
         window = getattr(module, "_unsloth_video_window", None)
@@ -527,6 +528,14 @@ def begin_denoise(pipe: Any, *, logger: Any = None) -> int:
         return 0
 
 
+def _stream_window_pad(pipe: Any) -> Optional[int]:
+    try:
+        from .diffusion_memory import stream_window_pad_mib
+        return stream_window_pad_mib(pipe)
+    except Exception:  # noqa: BLE001 - unsized: the denoise peak is not recorded
+        return None
+
+
 def prepare_decode(pipe: Any, *, logger: Any = None) -> int:
     """Record the denoise peak, then stream lent groups again so the decode sees the whole-request fit. Never raises."""
     module = getattr(pipe, "transformer", None)
@@ -542,6 +551,8 @@ def prepare_decode(pipe: Any, *, logger: Any = None) -> int:
         pre = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
         # published by record_request_peak once the window is known not to overlap another render
         module._unsloth_video_pre_extra = max(0, pre)
+        # on the streamed baseline, as the whole-request peak: sized at the denoise's placement, before the return
+        module._unsloth_video_pre_pad = _stream_window_pad(pipe)
         room = getattr(module, "_unsloth_video_decode_room", None)
         module._unsloth_video_decode_room = None
         if room is None:
@@ -588,7 +599,9 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         work, start, dev = pending
         extra = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
         pre = getattr(module, "_unsloth_video_pre_extra", None)
+        pre_pad = getattr(module, "_unsloth_video_pre_pad", None)
         module._unsloth_video_pre_extra = None
+        module._unsloth_video_pre_pad = None
         module._unsloth_video_decode_room = None
         module._unsloth_video_lend = None
         if pre is not None:
@@ -606,9 +619,9 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
                 return None  # another render on the card reset the peak meanwhile
         if not getattr(module, "_unsloth_video_graphs_clean", True):
             return None
-        if pre is not None and int(pre) > 0:
+        if pre is not None and int(pre) > 0 and pre_pad is not None:
             table = _pre_decode_table(module)
-            table[work] = max(int(pre), table.get(work, 0))
+            table[work] = max(int(pre) + int(pre_pad), table.get(work, 0))
         if extra <= 0:
             return None
         peaks = getattr(module, "_unsloth_video_peaks", None)
@@ -773,6 +786,7 @@ def fit_for_request(
             # promoted by begin_denoise, after the prompt encode (which would only stream them again)
             module._unsloth_video_lend = (lend, pre) if decode_room is not None else None
             module._unsloth_video_pre_extra = None
+            module._unsloth_video_pre_pad = None
         except AttributeError:
             pass
         _COUNTS["fits"] += 1
