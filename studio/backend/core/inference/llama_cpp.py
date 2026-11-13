@@ -12513,6 +12513,7 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]] = None,
         gpu_memory_mode: Optional[str] = None,
         gpu_layers: Optional[int] = None,
+        n_cpu_moe: int = 0,
     ) -> int:
         """Weight bytes a full-offload Windows ROCm APU load puts in the BIOS carve-out, which
         Windows does not count as RAM; 0 unless the placement and carve-out are both known.
@@ -12524,12 +12525,17 @@ class LlamaCppBackend:
         if not self._amd_apu_wants_unified_memory(gpu_indices):
             return 0
         argv = [str(arg) for arg in extra_args or ()]
-        if gpu_memory_mode == "manual":
+        # Mirrors the launch: manual -1 is Auto and stays with the fitter.
+        if gpu_memory_mode == "manual" and gpu_layers is not None and gpu_layers >= 0:
+            moe = self._resolve_cpu_moe_flag(
+                n_cpu_moe, self.n_moe_layers, self._leading_dense_block_count or 0
+            )
             argv = [
                 "--gpu-layers",
-                str(gpu_layers if gpu_layers is not None else -1),
+                str(gpu_layers),
                 "--fit",
                 "off",
+                *(["--n-cpu-moe", str(moe)] if moe is not None else []),
                 *argv,
             ]
         if not self._launch_forces_full_offload(argv, env):
@@ -28900,6 +28906,7 @@ class LlamaCppBackend:
                             env = _apu_lazy_env,
                             gpu_memory_mode = gpu_memory_mode,
                             gpu_layers = gpu_layers,
+                            n_cpu_moe = n_cpu_moe,
                         )
                         - self._lazy_read_host_bytes(
                             model_path,

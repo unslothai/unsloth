@@ -2701,6 +2701,33 @@ def test_windows_rocm_apu_full_offload_prices_the_carve_out_apart_from_ram(
     assert ("unified-memory APU" in (backend.last_load_warning or "")) is not keeps_none
 
 
+@pytest.mark.parametrize(
+    "gpu_layers, n_cpu_moe, keeps_none",
+    [(99, 0, True), (-1, 0, False), (99, 48, False)],
+    ids = ["manual_all", "manual_auto_is_fitter", "manual_cpu_moe"],
+)
+def test_windows_rocm_apu_manual_placement_matches_the_launch(
+    tmp_path, monkeypatch, gpu_layers, n_cpu_moe, keeps_none
+):
+    """Manual -1 is the fitter's call and CPU experts stay in RAM, so neither earns the credit."""
+    backend, gguf = _windows_apu_backend(tmp_path, monkeypatch, **_W96, model_gb = 62, ple_gb = 0)
+
+    def metadata(_path):
+        backend._n_layers, backend._n_experts = 48, 128
+
+    backend._read_gguf_metadata = metadata
+    cmd = _launch(
+        backend,
+        gguf,
+        extra_args = ["--load-mode", "none"],
+        gpu_memory_mode = "manual",
+        gpu_layers = gpu_layers,
+        n_cpu_moe = n_cpu_moe,
+    )["cmd"]
+
+    assert (_unmapped_tokens(cmd) == ["--load-mode", "none"]) is keeps_none, cmd
+
+
 @pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
 def test_an_oversized_unmapped_apu_load_is_paged_before_it_launches(
     tmp_path, monkeypatch, extra_args
