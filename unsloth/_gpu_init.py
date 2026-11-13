@@ -573,6 +573,10 @@ elif DEVICE_TYPE == "cuda":
     _cuda_cap = cuda_bf16_capability()
     SUPPORTS_BFLOAT16 = _cuda_cap is not None and _cuda_cap[0] >= 8
     del _cuda_cap
+    # DDP children see only their local rank's card. The coordinator determines
+    # a common dtype for the selected devices and passes it to every child.
+    if os.environ.get("UNSLOTH_DDP_COMMON_DTYPE") in ("bf16", "fp16"):
+        SUPPORTS_BFLOAT16 = os.environ["UNSLOTH_DDP_COMMON_DTYPE"] == "bf16"
 
     # Same rule for the public probe, else a merged 16-bit save picks bf16 for an fp16 distributed run.
     _bf16_from_weakest = distributed_launch()
@@ -580,6 +584,8 @@ elif DEVICE_TYPE == "cuda":
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
         def is_bf16_supported(including_emulation = False):
+            if os.environ.get("UNSLOTH_DDP_COMMON_DTYPE") in ("bf16", "fp16"):
+                return SUPPORTS_BFLOAT16
             supported = old_is_bf16_supported(including_emulation)
             if including_emulation or not _bf16_from_weakest:
                 return supported
