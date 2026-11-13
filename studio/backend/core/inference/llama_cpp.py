@@ -2807,6 +2807,45 @@ if _SLOT_SAVE_HTTP_TIMEOUT <= 0:
     _SLOT_SAVE_HTTP_TIMEOUT = 30.0
 
 
+_SLOT_RESUME_STRICT_FLAGS = frozenset({"--override-kv", "--kv-unified-per-slot"})
+
+
+def _slot_rope_regime(lines: list[str]) -> Optional[bool]:
+    """llama.cpp chooses rotary factors using n_ctx_seq, before the server caps its slot size."""
+    # A draft model or a second context can also log its own sizes. Only trust
+    # unambiguous startup values from this launch. Quiet/older binaries may omit them.
+    thresholds = set()
+    lengths = set()
+    for line in lines:
+        if match := re.fullmatch(
+            r"(?:\d+\.\d+\.\d+\.\d+ I )?print_info: n_ctx_orig_yarn\s*= (\d+)", line
+        ):
+            thresholds.add(int(match[1]))
+        elif match := re.fullmatch(
+            r"(?:\d+\.\d+\.\d+\.\d+ I )?llama_context: n_ctx_seq\s*= (\d+)", line
+        ):
+            lengths.add(int(match[1]))
+    if len(thresholds) != 1 or len(lengths) != 1:
+        return None
+    threshold, length = thresholds.pop(), lengths.pop()
+    return length > threshold if threshold and length else None
+
+
+class _SlotLaunchFingerprint(NamedTuple):
+    """Compared whole, except by ``slot_resume_fits``, which lets the context fields differ."""
+
+    extra_args: tuple
+    sidecars: tuple
+    requested_n_ctx: object
+    effective_context_length: object
+    cache_types: object
+    parallel_slots: object
+    swa_full: object
+    kv_cache_unified: object
+    n_ubatch: object
+    flash_attn: object
+
+
 def _swa_cache_path() -> Path:
     home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     base = Path(home) if home else Path.home() / ".unsloth" / "studio"
@@ -8747,6 +8786,7 @@ class LlamaCppBackend:
         self._api_key_file: Optional[Path] = None
         self._slot_save_dir: Optional[str] = None
         self._slot_save_binary: Optional[tuple[str, int]] = None
+        self._slot_long_rope: Optional[bool] = None
         # (gguf_identity, launch_fingerprint) at load lets a slot save detect swapped model files.
         self._slot_loaded_identity: Optional[tuple] = None
         self._prompt_cache_disabled: bool = False
@@ -34811,6 +34851,7 @@ class LlamaCppBackend:
             self._slot_save_dir = None
             self._slot_save_binary = None
             self._slot_loaded_identity = None
+            self._slot_long_rope = None
             self._prompt_cache_disabled = False
             self._swa_full = False
             self._kv_cache_unified = False
@@ -36068,7 +36109,7 @@ class LlamaCppBackend:
             return False
         return True
 
-    def _slot_launch_fingerprint(self) -> tuple:
+    def _slot_launch_fingerprint(self) -> "_SlotLaunchFingerprint":
         # KV validity keys on extra args, stat'd sidecar weights, effective ctx.
         sidecars = []
         for path in self._sidecar_weight_files():
@@ -36077,7 +36118,7 @@ class LlamaCppBackend:
                 sidecars.append((path, st.st_size, st.st_mtime_ns))
             except OSError:
                 sidecars.append((path, None, None))
-        return (
+        return _SlotLaunchFingerprint(
             tuple(self._extra_args or ()),
             tuple(sidecars),
             self._requested_n_ctx,
@@ -36089,6 +36130,47 @@ class LlamaCppBackend:
             self._n_ubatch,
             self._flash_attn_enabled,
         )
+
+    def _slot_context_capacity(self) -> Optional[int]:
+        # The reconciled effective context is already per slot (/props n_ctx).
+        if self._effective_context_length:
+            return int(self._effective_context_length)
+        if not self._requested_n_ctx:
+            return None
+        return int(self._requested_n_ctx) // (
+            1 if self._kv_cache_unified else self.effective_parallel_slots
+        )
+
+    def slot_resume_fits(self, manifest: dict) -> bool:
+        """Only the context fields may differ: saved KV stays valid if every slot still fits (#9037)."""
+        saved = manifest.get("launch")
+        current = self._slot_launch_fingerprint()
+        if not isinstance(saved, (tuple, list)) or len(saved) != len(current):
+            return False
+        saved = _SlotLaunchFingerprint(*saved)
+        saved_regime = manifest.get("long_rope")
+        if saved == current:
+            # Preserve strict reuse for older manifests, but never restore across
+            # a known switch hidden by identical requested and advertised sizes.
+            return "long_rope" not in manifest or saved_regime is self._slot_long_rope
+        neutral = {"requested_n_ctx": None, "effective_context_length": None}
+        if saved._replace(**neutral) != current._replace(**neutral):
+            return False
+        capacity = self._slot_context_capacity()
+        slots = manifest.get("slots") or []
+        if capacity is None or not slots:
+            return False
+        # These can move the RoPE threshold or n_ctx_seq.
+        if os.environ.get("LLAMA_ARG_KV_UNIFIED_PER_SLOT") or any(
+            _flag_name(str(arg)) in _SLOT_RESUME_STRICT_FLAGS for arg in current.extra_args
+        ):
+            return False
+        if self._slot_long_rope is None or saved_regime is not self._slot_long_rope:
+            return False
+        try:
+            return all(0 < int(entry.get("n_saved") or 0) <= capacity for entry in slots)
+        except (TypeError, ValueError):
+            return False
 
     @staticmethod
     def _gguf_load_source_identity(path: str, mmproj_path: Optional[str] = None) -> Optional[tuple]:
@@ -36342,6 +36424,7 @@ class LlamaCppBackend:
             "gguf": str(self._gguf_path),
             "gguf_stat": gguf_stat,
             "launch": launch,
+            "long_rope": self._slot_long_rope,
             "slots": entries,
         }
 
@@ -37102,7 +37185,8 @@ class LlamaCppBackend:
         return int(n_ctx) if n_ctx else None
 
     def _reconcile_effective_ctx_with_server(self, requested_n_ctx: int = 0) -> None:
-        """Opens a streaming POST, retrying through prefill; yields (response, first_token_deadline) on 200 and owns the httpx client; RuntimeError on any other status"""
+        """Record the engine's rotary regime and reconcile the client-visible window with /props."""
+        self._slot_long_rope = _slot_rope_regime(self._stdout_lines)
         actual_n_ctx = self._query_server_n_ctx()
         if not actual_n_ctx or actual_n_ctx <= 0:
             return

@@ -1845,6 +1845,68 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     )
 
 
+def test_repeated_duplicate_final_pass_asks_for_the_answer_not_another_tool(monkeypatch):
+    search = {"query": "gpu prices 2026"}
+    streams = [
+        [_tool_call_sse("web_search", search, f"call_search_{index}"), _done()]
+        for index in range(3)
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        streams + [[_sse({"content": "Answer."}), _done()]],
+        payloads,
+    )
+    _record_tool_calls(monkeypatch, "result")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search gpus"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 10,
+    )
+
+    final_pass = payloads[-1]
+    assert final_pass["tool_choice"] == "none"
+    last = final_pass["messages"][-1]
+    assert last["role"] == "user"
+    assert "different tool" not in last["content"]
+    assert "final answer now" in last["content"]
+
+
+def test_final_pass_notice_ends_with_the_answer_request_in_a_mixed_batch(monkeypatch):
+    def batch(*queries):
+        calls = [
+            {
+                "index": index,
+                "id": f"call_{query}_{index}_{len(queries)}",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": json.dumps({"query": query})},
+            }
+            for index, query in enumerate(queries)
+        ]
+        return [_sse({"tool_calls": calls}), _done()]
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [batch("a", "b"), batch("a"), batch("a", "b"), [_sse({"content": "Answer."}), _done()]],
+        payloads,
+    )
+    _record_tool_calls(monkeypatch, "result")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 10,
+    )
+
+    final_pass = payloads[-1]
+    assert final_pass["tool_choice"] == "none"
+    assert "different tool" not in final_pass["messages"][-1]["content"]
+
+
 def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     same_turn_duplicates = [
         _sse(

@@ -41,6 +41,9 @@ _ROTQ_K_TILES: dict = {
 _ROTQ_QPARAMS = {
     "v1": (-127.0, 127.0, 127.0, 1e-5),
     "v2": (-128.0, 127.0, 127.5, 1.1920928955078125e-07),
+    # diffusion_native_quant ``_int_mm_rows`` (NativeWeightOnlyLinear W8A8): EPS is the clamp floor, DIV the fp32
+    # reciprocal of 127 ATen's CUDA ``div_(127.0)`` multiplies by
+    "native": (-127.0, 127.0, 0.007874015718698502, 1e-12),
 }
 # device index -> probed rotq tile (None = stock), and the per-K rules whose tile passed the probe there.
 _ROTQ_DEVICE: dict = {}
@@ -171,8 +174,13 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         h_ptr,
         q_ptr,
         s_ptr,
+        pa_ptr,
+        pb_ptr,
         M,
         NG,
+        T,
+        stride_pb,
+        stride_pt,
         G: tl.constexpr,  # rotation group width
         BLOCK_M: tl.constexpr,  # group rows per program
         BLOCK_K: tl.constexpr,  # K step inside a group
@@ -183,6 +191,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         DIV: tl.constexpr,  # amax divisor (127)
         EPS: tl.constexpr,  # norm epsilon, per model
         FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear's quant: fp32 s = max(amax, EPS) * DIV, fp32 1 / s
+        PRO: tl.constexpr = 0,  # prologue on the loaded bf16 x: 0 none, 2 RMSNorm (no affine) [+ AdaLN]
+        MOD: tl.constexpr = False,  # PRO 2: x * (1 + pa) + pb, pa / pb rows (row // T, row % T)
+        NORM_EPS: tl.constexpr = 1e-6,  # PRO 2: RMSNorm epsilon
     ):
         # one program = ROWS whole activation rows, so the per-row amax closes inside the tile
         pid = tl.program_id(0)
@@ -193,27 +205,56 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         rg = tl.where(live, row * NG + (t % NG), 0)
         offs_k = tl.arange(0, BLOCK_K)
         offs_n = tl.arange(0, G)
+        j = tl.arange(0, ROWS_P2)
+        sel = lr[:, None] == j[None, :]
         acc = tl.zeros((BLOCK_M, G), dtype = tl.float32)
         a_ptrs = x_ptr + rg[:, None] * G + offs_k[None, :]
         h_ptrs = h_ptr + offs_k[:, None] * G + offs_n[None, :]
+        if PRO == 2:
+            # whole-row sum of squares first (fp32), then rs = rsqrt(mean + eps) per row, back on every group row
+            ss = tl.zeros((BLOCK_M,), dtype = tl.float32)
+            for _k in range(0, G // BLOCK_K):
+                a = tl.load(a_ptrs, mask = live[:, None], other = 0.0).to(tl.float32)
+                ss += tl.sum(a * a, axis = 1)
+                a_ptrs += BLOCK_K
+            a_ptrs -= G
+            rss = tl.sum(tl.where(sel, ss[:, None], 0.0), axis = 0)
+            rs = libdevice.rsqrt(rss / (NG * G) + NORM_EPS)
+            rs_t = tl.max(tl.where(sel, rs[None, :], 0.0), axis = 1)
+            if MOD:
+                pbase = (row // T) * stride_pb + (row % T) * stride_pt + (t % NG) * G
+                p_off = pbase[:, None] + offs_k[None, :]
         for _k in range(0, G // BLOCK_K):
             a = tl.load(a_ptrs, mask = live[:, None], other = 0.0)
+            if PRO == 2:
+                # diffusers RMSNorm (bf16 out), then the block's AdaLN modulation in fp32, one bf16 round
+                a = _rbf16(a.to(tl.float32) * rs_t[:, None])
+                if MOD:
+                    sc = tl.load(pa_ptr + p_off, mask = live[:, None], other = 0.0).to(tl.float32)
+                    sh = tl.load(pb_ptr + p_off, mask = live[:, None], other = 0.0).to(tl.float32)
+                    a = libdevice.fma_rn(a, sc + 1.0, sh)
+                    p_off += BLOCK_K
+                a = a.to(tl.bfloat16)
             acc = tl.dot(a, tl.load(h_ptrs), acc, out_dtype = tl.float32)
             a_ptrs += BLOCK_K
             h_ptrs += BLOCK_K * G
         z = _rbf16(acc)
         # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s))))
         # FP32_SCALE (torchao >= 0.18 Int8Tensor) keeps the reciprocal and the product in fp32.
-        j = tl.arange(0, ROWS_P2)
-        sel = lr[:, None] == j[None, :]
         amax = tl.max(tl.where(sel, tl.max(tl.abs(z), axis = 1)[:, None], 0.0), axis = 0)
-        s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
-        inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
-        if not FP32_SCALE:
-            inv = _rbf16(inv)
+        if NATIVE:
+            # ``_int_mm_rows`` on CUDA: clamp_(min = EPS).div_(127) multiplies by fp32(1 / 127) (DIV here, as ATen does
+            # for a scalar divisor), then reciprocal() and x * recip, all fp32 round-to-nearest
+            s = libdevice.mul_rn(tl.maximum(amax, EPS), DIV)
+            inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
+        else:
+            s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
+            inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
+            if not FP32_SCALE:
+                inv = _rbf16(inv)
         inv_t = tl.max(tl.where(sel, inv[None, :], 0.0), axis = 1)
         p = z * inv_t[:, None]
-        if not FP32_SCALE:
+        if not FP32_SCALE and not NATIVE:
             p = _rbf16(p)
         p = libdevice.rint(p)
         p = tl.minimum(tl.maximum(p, QMIN), QMAX)
@@ -907,7 +948,19 @@ def _rotq_rows(k: int, group: int, cfg: tuple) -> int:
     return cfg[0] // (k // group)
 
 
-def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
+def _rotq_launch(
+    x2d: Any,
+    group: int,
+    kind: str,
+    cfg: tuple,
+    prologue: int = 0,
+    scale: Any = None,
+    shift: Any = None,
+    tokens: int = 1,
+    norm_eps: float = 1e-6,
+) -> tuple:
+    """``prologue`` 2: quantise RMSNorm(x) (no affine, ``norm_eps``), times ``1 + scale`` plus ``shift`` when given
+    ([B, T | 1, K], unit last stride, B * ``tokens`` == rows; shift with scale's strides)."""
     import torch
     from .diffusion_convrot import build_convrot_hadamard
 
@@ -919,18 +972,25 @@ def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
     qmin, qmax, div, eps = _ROTQ_QPARAMS[kind]
     h = build_convrot_hadamard(group, device = x2d.device, dtype = torch.bfloat16)
     q = torch.empty((m, k), device = x2d.device, dtype = torch.int8)
-    fp32_scale = _rotq_scale_fp32(kind)
+    native = kind == "native"
+    fp32_scale = native or _rotq_scale_fp32(kind)
     s = torch.empty((m,), device = x2d.device, dtype = torch.float32 if fp32_scale else torch.bfloat16)
     if m == 0:
         return q, s
     with torch.cuda.device(x2d.device):
+        mod = prologue == 2 and scale is not None
         kern.rotq_i8[(triton.cdiv(m, rows),)](
             x2d,
             h,
             q,
             s,
+            scale if mod else h,
+            shift if mod else h,
             m,
             k // group,
+            max(1, int(tokens)),
+            (scale.stride(0) if scale.shape[0] > 1 else 0) if mod else 0,
+            (scale.stride(1) if scale.shape[1] > 1 else 0) if mod else 0,
             G = group,
             BLOCK_M = bm,
             BLOCK_K = bk,
@@ -941,6 +1001,10 @@ def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
             DIV = div,
             EPS = eps,
             FP32_SCALE = fp32_scale,
+            NATIVE = native,
+            PRO = int(prologue),
+            MOD = mod,
+            NORM_EPS = float(norm_eps),
             num_warps = warps,
             num_stages = stages,
             enable_fp_fusion = False,
