@@ -20,7 +20,6 @@ import {
 
 export async function voiceServing(id: string): Promise<boolean> {
   const status = await getInferenceStatus();
-  // The chat model's own voice is up whenever the loaded chat model speaks.
   if (isChatModelVoice(id)) return Boolean(status.speaks);
   return (status.serving ?? status.loaded ?? []).some((s) => voiceIdServes(s, id));
 }
@@ -31,7 +30,6 @@ export async function servedVoice(): Promise<string | null> {
 }
 
 export async function loadVoice(id: string): Promise<void> {
-  // Nothing to load beside the chat model; it either speaks or it cannot.
   if (isChatModelVoice(id)) {
     if (await voiceServing(id)) return;
     throw new Error(translate("voicePanel.chatModelCannotSpeak"));

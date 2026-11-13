@@ -870,8 +870,7 @@ def _speech_stop_streamer(cancel_event):
 
 
 def _speech_event_streamers(events, cancel_event, stopped):
-    """Streamers that queue ("text", token id) and ("frame", codes) as LFM3 samples them, and end
-    generate once the request is cancelled. The text streamer's first put is the prompt."""
+    """LFM3 streamers queueing ("text", id) / ("frame", codes); the text streamer's first put is the prompt."""
     from transformers.generation.streamers import BaseStreamer
 
     def check():
@@ -903,15 +902,13 @@ def _speech_event_streamers(events, cancel_event, stopped):
     return _Text(), _Audio()
 
 
-# Frames per streamed speech chunk (LiquidCodec: 80 ms each). The first is short so playback
-# starts early; later ones are longer so the browser schedules fewer clips.
+# LiquidCodec frames are 80 ms: a short first chunk starts playback early.
 _SPEECH_FIRST_CHUNK_FRAMES = 4
 _SPEECH_CHUNK_FRAMES = 12
 
 
 class _SpeechChunker:
-    """Decodes speech frames through the codec's streaming cache in chunks; the chunks join into
-    the same audio as one decode of every frame."""
+    """Chunked decode through LiquidCodecStreamingCache: the chunks join into the whole decode."""
 
     def __init__(self, codec, model):
         self.codec, self.model = codec, model
@@ -945,7 +942,6 @@ class _SpeechChunker:
         return out.audio_values[0].float().cpu().numpy()
 
     def add(self, frame):
-        """Queue one frame; a chunk's samples once enough have built up, else None."""
         if self.cache is None:
             return None
         self.pending.append(frame)
@@ -973,8 +969,7 @@ class _SpeechChunker:
 
 
 def _speech_item(samples, sample_rate) -> dict:
-    """A WAV chunk as the backend's speech item. Clipped, not peak-normalised, so chunks of one
-    reply keep the same loudness."""
+    """Clipped, not peak-normalised, so chunks of one reply keep the same loudness."""
     import base64
     import io
     import wave
@@ -2988,7 +2983,6 @@ class InferenceBackend:
     def _speak_audio_reply(
         self, messages, system_prompt, audio_array, max_new_tokens, use_adapter, cancel_event
     ):
-        """One spoken question answered in interleaved text and speech, streamed as it is made."""
         system = "\n\n".join(p for p in (_SPEECH_REPLY_SYSTEM_PROMPT, system_prompt) if p)
         conversation = messages_with_attached_image(
             alternating_turns(messages),
@@ -3002,9 +2996,7 @@ class InferenceBackend:
         )
 
     def _stream_speech(self, conversation, prefill, max_new_tokens, use_adapter, cancel_event):
-        """Generate with the assistant turn opened by ``prefill``, yielding text deltas and
-        ``{"speech", "sample_rate"}`` WAV chunks as the frames arrive, so playback can start on the
-        first one. A codec without a streaming cache decodes once, at the end."""
+        """Yields text deltas and ``{"speech", "sample_rate"}`` WAV chunks as frames arrive."""
         import base64
         import queue
 

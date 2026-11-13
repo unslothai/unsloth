@@ -143,8 +143,6 @@ function voicedApprovalCount(s: ReturnType<typeof useChatRuntimeStore.getState>)
   return pending ? pending.more + 1 : 0;
 }
 
-// Voice mode speaks with the chat model itself (an opt-in pick): each turn goes with its
-// recorded speech and the reply comes back spoken, so no TTS runs on its text.
 function speaksWithChatModel(): boolean {
   const s = useChatRuntimeStore.getState();
   return isChatModelVoice(s.selectedVoiceModelId) && chatModelSpeaks(s);
@@ -376,8 +374,6 @@ export const VoiceEngine: FC = () => {
   feedClipRef.current = feedClip;
   const endClipsRef = useRef(endClips);
   endClipsRef.current = endClips;
-  // The run in flight answers a turn sent with its speech to a chat model that speaks: its
-  // reply plays from the streamed chunks, and only the text TTS is skipped.
   const spokenRunRef = useRef(false);
   const spokenClipsRef = useRef(0);
   // Whether the run-start branch opened a TTS session for the run in flight. It
@@ -507,7 +503,6 @@ export const VoiceEngine: FC = () => {
     if (held.length) voiceTrace("engine.foldHeld", { held, text });
     // Drained on every send, so speech kept while the model could not answer in it never rides along later.
     const taken = takeVoiceTurnAudio();
-    // Any audio-input model hears the turn; who speaks the reply is decided at run start.
     const turnAudio = voiceHearsAudio(
       useChatRuntimeStore.getState(),
       useVoiceSettingsStore.getState().micTarget,
@@ -559,7 +554,6 @@ export const VoiceEngine: FC = () => {
       composer.setText("");
       setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
     };
-    // The composer's own send, with the turn's speech attached first when it goes to the chat model.
     const sendThroughComposer = () => {
       if (!turnAudio) {
         sendNow();

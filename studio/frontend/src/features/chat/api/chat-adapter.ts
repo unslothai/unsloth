@@ -8044,8 +8044,6 @@ export function createOpenAIStreamAdapter(
                   | undefined
               )?.audio?.data;
               if (typeof spokenAudio === "string" && spokenAudio) {
-                // The backend streams the speech in chunks: play them as they come in voice
-                // mode, and keep one player of all of them on the reply.
                 spokenAudioChunks.push(spokenAudio);
                 publishVoiceSpokenAudio(resolvedThreadId ?? null, spokenAudio);
                 spokenReplyPart = {

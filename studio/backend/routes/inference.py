@@ -1511,7 +1511,6 @@ def _speech_reply_audio(item: dict) -> dict:
 
 
 def _joined_speech_reply(items: list) -> dict:
-    """The message ``audio`` part for a reply whose speech arrived in chunks: one WAV of them all."""
     if len(items) < 2:
         return _speech_reply_audio(items[0]) if items else {}
     import base64

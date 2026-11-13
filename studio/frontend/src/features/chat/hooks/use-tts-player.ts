@@ -61,7 +61,6 @@ interface Stream {
   extra: number;
   /** Spoken-reply chunks (feedClip) still decoding; the stream ends only once they are scheduled. */
   decoding: number;
-  /** Chunks fed through feedClip, in order. */
   clips: Promise<void>;
 }
 
@@ -87,9 +86,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   beginStream(): void;
   feedText(text: string): void;
   endStream(finalText: string): void;
-  /** Play a WAV chunk of a reply the chat model speaks itself, after the ones before it. */
   feedClip(wavBase64: string): void;
-  /** No more chunks: the stream ends once the fed ones have played. */
   endClips(): void;
   /** Queue a sentence that is not in the reply text, e.g. a thinking filler. */
   /**
@@ -204,7 +201,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker } =
           useChatRuntimeStore.getState();
         return generateStudioTtsAudio(sentence, abortRef.current?.signal, {
-          // The chat model's own voice is the unnamed request: /audio/generate reads with the loaded model.
+          // Unnamed: /audio/generate reads with the loaded chat model.
           model: isChatModelVoice(selectedVoiceModelId) ? "" : selectedVoiceModelId,
           voiceId: voiceTtsCanClone(selectedVoiceModelId) ? selectedVoiceId : "",
           speaker: selectedVoiceSpeaker,

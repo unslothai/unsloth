@@ -291,7 +291,6 @@ export function getHeldTurnText(): string {
 // The recorded speech of the turn, kept only while the chat model hears audio (voiceHearsAudio).
 const turnAudio = createTurnAudio();
 
-/** The turn's speech as one WAV (base64), emptied; null when none was kept. */
 export function takeVoiceTurnAudio(): string | null {
   return turnAudio.take();
 }

@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The chat model's own voice (voice-models.ts VOICE_CHAT_MODEL_VOICE): the turn's recorded
-// speech goes to the model with its transcript, and the reply comes back as speech chunks.
 // Dependency-free so the node test runner loads it directly.
 
 import { joinWavBase64, pcmWavBase64 } from "../utils/wav-chunks.ts";
 
-/** The speech of the turn being said, fragment by fragment, until the turn is sent. */
 export function createTurnAudio() {
   let chunks: Float32Array[] = [];
   let rate = 0;
@@ -17,7 +14,6 @@ export function createTurnAudio() {
       rate = sampleRate;
       chunks.push(samples);
     },
-    /** The turn as one WAV (base64), emptied; null when nothing was said. */
     take(): string | null {
       if (!chunks.length || !rate) return null;
       const total = chunks.reduce((n, c) => n + c.length, 0);
@@ -39,7 +35,6 @@ export function createTurnAudio() {
   };
 }
 
-/** The user message's audio attachment for a turn's WAV. */
 export function voiceTurnAttachment(wavBase64: string, id: string) {
   return {
     id,
@@ -54,7 +49,6 @@ export function voiceTurnAttachment(wavBase64: string, id: string) {
 type Part = { type: string };
 type Message = { role: string; content?: readonly Part[]; attachments?: readonly { content?: readonly Part[] }[] };
 
-/** Whether the newest user message carries audio: its reply is the spoken one. */
 export function lastUserTurnHasAudio(messages: readonly Message[]): boolean {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -75,11 +69,7 @@ function audioOf(m: { content?: readonly Part[]; attachments?: readonly { conten
     .filter(Boolean);
 }
 
-/**
- * This turn's speech joined after the speech of the unanswered user bubbles before it: bubbles
- * coalesced into one run are one prompt, and the request sends only the newest bubble's audio.
- * Each bubble already carries the run's speech so far, so only the nearest one is joined.
- */
+/** Coalesced bubbles are one prompt but only the newest bubble's audio is sent; each already holds the run's speech so far. */
 export function coalescedTurnAudio(messages: readonly Message[], turn: string): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -92,7 +82,6 @@ export function coalescedTurnAudio(messages: readonly Message[], turn: string): 
 
 const AUDIO_PLAYER = /<audio-player\b[^>]*\/>/g;
 
-/** Reply text without the spoken reply's player markup, which is not something to say. */
 export function withoutAudioPlayer(text: string): string {
   return text.includes("<audio-player") ? text.replace(AUDIO_PLAYER, "").trim() : text;
 }

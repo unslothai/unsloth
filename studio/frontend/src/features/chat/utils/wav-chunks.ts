@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// PCM WAV in base64, the shape of a spoken reply's delta.audio chunks. Dependency-free so the
-// node test runner loads it directly.
+// Dependency-free so the node test runner loads it directly.
 
 function bytesOf(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -20,7 +19,6 @@ function base64Of(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/** The fmt chunk and the sample bytes of a RIFF/WAVE file, or null when it is not one. */
 function parseWav(bytes: Uint8Array): { fmt: Uint8Array; data: Uint8Array } | null {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const tag = (at: number) => String.fromCharCode(...bytes.subarray(at, at + 4));
@@ -77,7 +75,6 @@ export function joinWavBase64(chunks: readonly string[]): string {
   return base64Of(wavBytes(fmt, data));
 }
 
-/** 16-bit mono PCM WAV of Float32 samples, in base64. */
 export function pcmWavBase64(samples: Float32Array, sampleRate: number): string {
   const fmt = new Uint8Array(16);
   const fv = new DataView(fmt.buffer);

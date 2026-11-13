@@ -30,24 +30,18 @@ export const VOICE_TTS_MODELS: readonly string[] = [
   ).map((model) => model.id),
 ];
 
-/**
- * Opt-in pick for a chat model that reports `speaks`: it hears each turn and answers in its
- * own voice, so no audio.cpp voice loads. Never picked for the user.
- */
+/** Opt-in pick: a `speaks` chat model hears each turn and answers in its own voice. */
 export const VOICE_CHAT_MODEL_VOICE = "chat-model-voice";
-/** The chat model's TTS mode speakers (audio_options.voice on /audio/generate). */
 export const CHAT_MODEL_VOICE_SPEAKERS = ["female", "male"] as const;
 
 export function isChatModelVoice(id: string | null | undefined): boolean {
   return id === VOICE_CHAT_MODEL_VOICE;
 }
 
-/** The chat model's female / male and an audio.cpp voice's speakers are separate lists. */
 export function speakerCarriesOver(from: string | null | undefined, to: string): boolean {
   return isChatModelVoice(from) === isChatModelVoice(to);
 }
 
-/** Whether the loaded chat model answers in speech (the inference status's `speaks`). */
 export function chatModelSpeaks(state: {
   models: readonly { id: string; speaks?: boolean }[];
   params: { checkpoint: string };
@@ -55,11 +49,7 @@ export function chatModelSpeaks(state: {
   return Boolean(state.models.find((m) => m.id === state.params.checkpoint)?.speaks);
 }
 
-/**
- * Whether voice mode sends each turn's speech to the chat model as audio. Any model with audio
- * input hears it once the mic is set to send audio (the same setting as the composer mic), or
- * the chat model's own voice is picked; otherwise only the transcript goes.
- */
+/** Voice turns carry their speech only to an audio-input model, opted in by mic target or the own-voice pick. */
 export function voiceHearsAudio(
   state: {
     models: readonly { id: string; hasAudioInput?: boolean }[];
@@ -76,11 +66,7 @@ export function voiceHearsAudio(
   return micSendsAudioToModel(target, model?.hasAudioInput === true);
 }
 
-/**
- * Whether a turn asks the chat model to answer in speech. Outside voice mode a speaking model
- * answers an audio turn aloud, as before; in voice mode only when its own voice is the pick,
- * since an audio.cpp voice reads the text and the model's speech would go unheard.
- */
+/** In voice mode only the own-voice pick asks for speech: an audio.cpp voice would talk over it. */
 export function wantsSpokenReply(input: {
   speaks: boolean;
   turnHasAudio: boolean;

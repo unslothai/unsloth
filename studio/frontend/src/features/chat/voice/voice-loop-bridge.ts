@@ -344,14 +344,12 @@ export function startVoiceListen(): DictationAdapter.Session | null {
 
 let voiceSpokenAudio: ((threadId: string | null, wavBase64: string) => void) | null = null;
 
-/** Where a spoken reply's delta.audio chunks go while voice mode speaks with the chat model. */
 export function registerVoiceSpokenAudio(
   fn: ((threadId: string | null, wavBase64: string) => void) | null,
 ): void {
   voiceSpokenAudio = fn;
 }
 
-/** A spoken reply's speech chunk, as it arrives. A no-op outside voice mode. */
 export function publishVoiceSpokenAudio(threadId: string | null, wavBase64: string): void {
   voiceSpokenAudio?.(threadId, wavBase64);
 }
