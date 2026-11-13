@@ -13,7 +13,7 @@ use tauri::Manager;
 
 const PREFERENCE_FILE: &str = "keep-awake-v1";
 
-const REASON: &str = "Unsloth Studio is set to keep this computer awake";
+const REASON: &str = "Unsloth is set to keep this computer awake";
 
 const SUPPORTED: bool = cfg!(any(
     target_os = "windows",
@@ -259,7 +259,7 @@ mod platform {
     use std::os::fd::{FromRawFd, OwnedFd};
 
     const CALL_TIMEOUT_MS: i32 = 5_000;
-    const APP_NAME: &str = "Unsloth Studio";
+    const APP_NAME: &str = "Unsloth";
 
     /// A desktop's session-bus inhibit service. Each drops a cookie when its holder leaves the
     /// bus. The xdg portal's Inhibit is not used: on Plasma 6 its inhibitions outlive both
