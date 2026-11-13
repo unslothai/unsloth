@@ -9,6 +9,8 @@ backend runs inside the strided processor instead of the stock one); all but the
 
 from __future__ import annotations
 
+import contextlib
+
 import os
 from functools import lru_cache
 from typing import Any, Optional
@@ -177,7 +179,7 @@ def _strided_processor_for(base: Any) -> Any:
                 dispatch = getattr(base_module, "dispatch_attention_fn", None)
             sage = dispatch is not None
             if (
-                (kernel is None and not sage)
+                (kernel is None and not sage and not self._unsloth_int8)
                 or attention_mask is not None
                 or self._parallel_config is not None
             ):
@@ -220,8 +222,7 @@ def _strided_processor_for(base: Any) -> Any:
                     key = _apply_rotary_emb(key, *rotary_emb)
 
             if (
-                kernel is not None
-                and self._unsloth_int8
+                self._unsloth_int8
                 and query.shape[1] >= self._unsloth_int8_min_tokens
                 # the kernel has no backward: a call that needs gradients runs native attention, here and not
                 # inside the op (autograd never sees inside it)
@@ -248,7 +249,8 @@ def _strided_processor_for(base: Any) -> Any:
                 )
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             else:
-                with sdpa_kernel(kernel):
+                # an INT8 route over a default SDPA pick has no kernel to pin
+                with sdpa_kernel(kernel) if kernel is not None else contextlib.nullcontext():
                     out = F.scaled_dot_product_attention(
                         query.permute(0, 2, 1, 3),
                         key.permute(0, 2, 1, 3),

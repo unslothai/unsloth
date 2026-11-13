@@ -712,12 +712,17 @@ def test_strided_processor_routes_flagged_calls_to_the_op(monkeypatch, _active_b
         for proc in procs:
             proc._unsloth_int8_min_tokens = 10**6
         assert all(torch.equal(a, b) for a, b in zip(want, model(**_h3_inputs()))) and not calls
-        # a processor whose backend is not a native kernel never takes the route
+        # over a default SDPA pick (sm75, gfx1151: no native kernel to pin) a flagged processor still takes the route
         for proc in procs:
             proc._unsloth_int8_min_tokens = 0
             proc._attention_backend = None
-        model(**_h3_inputs())
-        assert not calls
+        got = model(**_h3_inputs())
+        assert calls and all(torch.allclose(a, b, atol = 1e-5, rtol = 1e-5) for a, b in zip(want, got))
+        # and an unflagged one there runs the stock processor
+        calls.clear()
+        for proc in procs:
+            proc._unsloth_int8 = False
+        assert all(torch.equal(a, b) for a, b in zip(want, model(**_h3_inputs()))) and not calls
 
 
 def test_h3_strided_processor_keeps_native_attention_for_calls_that_need_gradients(

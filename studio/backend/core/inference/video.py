@@ -12732,20 +12732,27 @@ class VideoBackend:
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
                 target = types.SimpleNamespace(device = device, dtype = dtype),
             )
+            from . import diffusion_int8_attention as int8_attention
+
+            # by name or by its env switch: the strided processors run Studio's INT8 attention kernel, also over a
+            # default SDPA pick (sm75, gfx1151), where the strided processor is otherwise not installed
+            int8_mode = int8_attention.mode()
+            int8_wanted = int8_mode == "force" or (
+                int8_mode != "off" and int8_attention.requested(attention_backend)
+            )
             # speed off stays bit-identical: the fused q/k norm + RoPE only matches stock within a rounding step
-            if effective_speed != SPEED_OFF and strided_install_backend(attention_engaged):
+            if effective_speed != SPEED_OFF and (
+                strided_install_backend(attention_engaged) or int8_wanted
+            ):
                 try:
                     if install_strided_attention(
-                        getattr(pipe, denoiser_component, None), logger = logger
+                        getattr(pipe, denoiser_component, None),
+                        logger = logger,
+                        # installed only for the INT8 route: the stock q/k norm + RoPE
+                        qk_rope = None if strided_install_backend(attention_engaged) else False,
                     ):
                         h3_attn_levers += ("h3_strided_attn",)
-                        from . import diffusion_int8_attention as int8_attention
-
-                        # by name or by its env switch: the strided processors run Studio's INT8 attention kernel
-                        if (
-                            int8_attention.requested(attention_backend)
-                            or int8_attention.mode() == "force"
-                        ) and int8_attention.install_int8_attention(
+                        if int8_wanted and int8_attention.install_int8_attention(
                             getattr(pipe, denoiser_component, None),
                             device = device,
                             dtype = dtype,
