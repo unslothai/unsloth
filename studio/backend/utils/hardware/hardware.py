@@ -6221,20 +6221,19 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
     except Exception as e:
         # A 5.x-only config cannot be parsed by the default transformers; that is expected (the worker reloads under the sidecar), so only warn for the default tier.
         tier = "default"
+        needed = None
         try:
-            from utils.transformers_version import get_transformers_tier
+            from utils.transformers_version import _tier_version, get_transformers_tier
             tier = get_transformers_tier(model_name)
+            needed = _tier_version(tier)
         except Exception:
             pass
         if tier != "default":
-            _tier_version = {"457": "4.57.6", "510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(
-                tier, "5.x"
-            )
             logger.info(
                 "Config for '%s' not parseable by the default transformers; "
                 "needs transformers %s and will be loaded with that sidecar in the worker",
                 model_name,
-                _tier_version,
+                needed or "5.x",
             )
         else:
             logger.warning("Could not load config for '%s': %s", model_name, e)
