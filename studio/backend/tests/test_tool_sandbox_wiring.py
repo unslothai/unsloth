@@ -806,6 +806,58 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
     assert f"{expected}{os.sep}" in out, out
 
 
+@pytest.mark.parametrize("case", ["editable_fork", "namespace"])
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path, case):
+    """An editable fork of a Studio package, and a new portion of a namespace Studio already imported, both load."""
+    name = f"unsloth_chat_shadow_{case}"
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    packages = str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
+    if case == "editable_fork":
+        studio_files = {f"{name}.py": ""}
+        (workdir / "src").mkdir()
+        (workdir / "src" / f"{name}.py").write_text("")
+        chat_wheel = _wheel(
+            workdir, name, {f"__editable__.{name}-1.0.pth": str(workdir / "src") + "\n"}
+        )
+        command = f"{_PIP} {chat_wheel} && python -c 'import {name}; print({name}.__file__)'"
+        expected = str(workdir / "src")
+    else:
+        studio_files = {f"{name}/a.py": ""}
+        chat_wheel = _wheel(workdir, f"{name}_b", {f"{name}/b.py": ""})
+        command = (
+            f'python -c "import subprocess, sys, {name}.a; subprocess.check_call(sys.argv[1:]); '
+            f'import {name}.b; print({name}.b.__file__)" python -m pip install -q --no-index --no-deps {chat_wheel}'
+        )
+        expected = packages
+    studio_dir = tmp_path / "studio"
+    studio_dir.mkdir()
+    studio_wheel = studio_dir / _wheel(studio_dir, name, studio_files)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "--no-index",
+            "--no-deps",
+            str(studio_wheel),
+        ],
+        check = True,
+    )
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    try:
+        out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
+    finally:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "-q", name, f"{name}_b"],
+            capture_output = True,
+        )
+    assert f"{expected}{os.sep}" in out, out
+
+
 def test_only_studios_interpreter_gets_the_chat_pip_prefix(tmp_path):
     """Every OS: the shim routes Studio's own pip and leaves another venv's pip alone."""
     packages = str(tmp_path / os_sandbox.SESSION_PACKAGES_RELPATH)

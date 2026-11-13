@@ -392,8 +392,10 @@ def _session_entries():
 
 
 # PYTHONPATH skips .pth files: add their path lines (what editable installs use), never run their import lines.
+# Right after the session dirs, so a chat's editable fork wins over Studio's installed copy as its other installs do.
 def _add_pth_paths(entries):
     try:
+        added = []
         for entry in entries:
             try:
                 names = sorted(n for n in os.listdir(entry) if n.endswith(".pth"))
@@ -410,13 +412,17 @@ def _add_pth_paths(entries):
                     if not line or line.startswith(("#", "import ", "import\t")):
                         continue
                     path = os.path.abspath(os.path.join(entry, line))
-                    if path not in sys.path and os.path.isdir(path):
-                        sys.path.append(path)
+                    if path not in sys.path and path not in added and os.path.isdir(path):
+                        added.append(path)
+        if added:
+            at = max(i for i, e in enumerate(sys.path) if e in entries) + 1
+            sys.path[at:at] = added
     except Exception:  # noqa: BLE001
         pass
 
 
-# A session dir pip creates after startup stays cached as missing; retry the path finder once it exists.
+# A session dir pip creates after startup stays cached as missing, and a namespace package imported before an
+# install keeps its old __path__; on a miss, look again in the session dirs.
 class _LateSessionDirsFinder:
     def __init__(self, entries):
         self._entries = entries
@@ -427,16 +433,28 @@ class _LateSessionDirsFinder:
         path = None,
         target = None,
     ):
+        import importlib.machinery
+
         if path is not None:
-            return None
+            parent = getattr(sys.modules.get(name.rpartition(".")[0]), "__spec__", None)
+            if parent is None or parent.origin not in (None, "namespace"):
+                return None
+            portions = [
+                p
+                for p in (os.path.join(e, *parent.name.split(".")) for e in self._entries)
+                if p not in path and os.path.isdir(p)
+            ]
+            return (
+                importlib.machinery.PathFinder.find_spec(name, portions, target)
+                if portions
+                else None
+            )
         cache = sys.path_importer_cache
         stale = [e for e in self._entries if e in cache and cache[e] is None and os.path.isdir(e)]
         if not stale:
             return None
         for entry in stale:
             cache.pop(entry, None)
-        import importlib.machinery
-
         return importlib.machinery.PathFinder.find_spec(name, None, target)
 
 
