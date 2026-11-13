@@ -8598,21 +8598,39 @@ def _python_is_high_risk(code: str) -> bool:
             folded = _folded_path(node, str_vars)
             if folded and _folded_is_sensitive(folded):
                 return True
+    runner_modules = {m: m for m in _PY_CODE_STRING_RUNNERS}
+    runner_funcs = {f: "timeit" for f in _PY_CODE_STRING_RUNNERS["timeit"]}
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in _PY_CODE_STRING_RUNNERS:
+                    runner_modules[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module in _PY_CODE_STRING_RUNNERS:
+            for alias in node.names:
+                if alias.name in _PY_CODE_STRING_RUNNERS[node.module]:
+                    runner_funcs[alias.asname or alias.name] = node.module
+
+    def _code_string(arg):
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return arg.value
+        if isinstance(arg, ast.Name):
+            value = str_vars.get(arg.id)
+            if value is not None and "\x00" not in value and "\x02" not in value:
+                return value
+        return None
+
     # Non-literal exec/eval/compile/__import__ runs unseen code: ask. Literal ones are screened.
     for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            runs_code_string = func.attr in _PY_CODE_STRING_RUNNERS.get(func.value.id, ())
+            module = runner_modules.get(func.value.id)
+            runs_code_string = func.attr in _PY_CODE_STRING_RUNNERS.get(module, ())
         else:
-            runs_code_string = (
-                isinstance(func, ast.Name) and func.id in _PY_CODE_STRING_RUNNERS["timeit"]
-            )
+            runs_code_string = isinstance(func, ast.Name) and func.id in runner_funcs
         if runs_code_string and any(
-            isinstance(arg, ast.Constant)
-            and isinstance(arg.value, str)
-            and _python_is_high_risk(arg.value)
+            (source := _code_string(arg)) is not None and _python_is_high_risk(source)
             for arg in [*node.args, *(kw.value for kw in node.keywords)]
         ):
             return True

@@ -1668,6 +1668,17 @@ def test_python_shell_command_terminal_asks_about_is_high_risk(command, template
         ("import cProfile\ncProfile.run(\"import os; os.system('rm -rf junk_dir')\")", True),
         ("import pdb\npdb.run(\"import shutil; shutil.rmtree('junk_dir')\")", True),
         ("import anyio\nanyio.run(anyio.run_process, 'rm -rf junk_dir')", True),
+        (
+            "import timeit as t\nt.timeit(\"import os; os.system('git push --force')\", number=1)",
+            True,
+        ),
+        ("from cProfile import run\nrun(\"import shutil; shutil.rmtree('junk_dir')\")", True),
+        (
+            "import timeit\ns = \"import os; os.system('git push --force')\"\ntimeit.timeit(s, number=1)",
+            True,
+        ),
+        ("import timeit as t\nt.timeit('sum(range(100))', number=1000)", False),
+        ("import timeit\ns = 'sum(range(100))'\ntimeit.timeit(s, number=1000)", False),
         ("import timeit\nprint(timeit.timeit('sum(range(100))', number=1000))", False),
         ("import timeit\nprint(timeit.timeit(lambda: sorted([3, 1, 2]), number=10))", False),
         ("import cProfile\ncProfile.run('sum(range(100))')", False),
