@@ -646,8 +646,6 @@ jobs:
         timeout-minutes: 8
         run: python3 tests/studio/playwright_gallery_strip_renders.py
 
-      # Opening a Library item saves its openedAt; Suggested must keep its order and scroll
-      # position until the next visit, through a focus refresh and closing the viewer.
       - name: Browser check for the Library's Suggested order when an item is opened
         working-directory: ${{ github.workspace }}
         timeout-minutes: 5

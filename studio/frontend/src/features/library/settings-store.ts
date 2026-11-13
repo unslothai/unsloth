@@ -174,8 +174,7 @@ export function lastActivity(item: { updatedAt: number; openedAt?: number | null
   return Math.max(item.updatedAt, item.openedAt ?? 0);
 }
 
-/** Last activity with opens from this visit left out: `openedBefore` maps each item opened during
- * the visit to its `openedAt` before that, so opening an item does not reorder Suggested. */
+/** Last activity, with `openedAt` from before this visit for the items in `openedBefore`. */
 export function activityBeforeVisit(
   item: { id: string; updatedAt: number; openedAt?: number | null },
   openedBefore: ReadonlyMap<string, number | null>,

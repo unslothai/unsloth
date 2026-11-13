@@ -205,9 +205,7 @@ export function LibraryPage() {
 
 type HoldOpenedAt = (id: string, openedAt: number | null) => void;
 
-// A visit lasts until the Library is left or restarted from Settings, across tab and folder changes.
-// Opening an item counts as activity, which Suggested ranks by: each opened item's earlier openedAt
-// is held for the visit, so the order does not change while the user browses the Library.
+// Until the Library is left, Suggested ranks opened items by their earlier openedAt.
 function LibraryVisit({ search }: { search: LibrarySearch }) {
   const [openedBefore, setOpenedBefore] = useState<ReadonlyMap<string, number | null>>(new Map());
   const holdOpenedAt = useCallback<HoldOpenedAt>(
@@ -420,7 +418,6 @@ function LibraryView({
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
   const previewId = previewItem?.id ?? null;
-  // Hold the earlier openedAt before markOpened replaces it.
   useEffect(() => {
     if (!previewId) return;
     const opened = useLibraryStore.getState().items.find((item) => item.id === previewId);

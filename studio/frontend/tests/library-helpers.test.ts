@@ -289,7 +289,6 @@ test("an item opened during the visit keeps its earlier activity", () => {
   const openedBefore = new Map<string, number | null>([["a", 3], ["b", null]]);
   assert.equal(activityBeforeVisit({ id: "a", updatedAt: 1, openedAt: 50 }, openedBefore), 3);
   assert.equal(activityBeforeVisit({ id: "b", updatedAt: 2, openedAt: 50 }, openedBefore), 2);
-  // An edit during the visit is still activity.
   assert.equal(activityBeforeVisit({ id: "a", updatedAt: 40, openedAt: 50 }, openedBefore), 40);
   assert.equal(activityBeforeVisit({ id: "c", updatedAt: 1, openedAt: 50 }, openedBefore), 50);
 });

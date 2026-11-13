@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opening a Library item must not reorder Suggested or move its scroll position.
-
-Suggested ranks by last activity, and opening an item saves a new openedAt. The grid has to keep
-its order while the viewer is open, after a window-focus refresh returns the saved openedAt, and
-after the viewer closes. Opening a card in the first column used to move it to the top, and the
-browser's scroll anchoring followed it there, resetting the Library's scroll position to 0. The
-order holds across a tab switch, and coming back after leaving the Library shows the opened
-item first.
-"""
+"""Opening a Library item must not reorder Suggested or move its scroll position until the Library
+is left."""
 
 from __future__ import annotations
 
@@ -34,7 +27,7 @@ from _playwright_robust import (  # noqa: E402
 PORT = int(os.environ.get("SMOKE_PORT", "5227"))
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip().rstrip("/")
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
-# Suggested shows the 40 most recently active items.
+# Suggested's default limit.
 ITEMS = 40
 SCROLL_TOP = 600
 NOW_MS = 1_760_000_000_000
@@ -86,7 +79,7 @@ def _item(i: int) -> dict:
 
 
 class MockApi:
-    """A Library that saves openedAt, so a refresh returns the bumped activity as the backend does."""
+    """Saves openedAt, so a refresh returns the bumped activity as the backend does."""
 
     def __init__(self) -> None:
         self.items = [_item(i) for i in range(ITEMS)]
@@ -151,7 +144,6 @@ def assert_unchanged(before: dict, after: dict, step: str) -> None:
 
 
 def reading_order(state: dict) -> list[str]:
-    """Card names left to right, top to bottom."""
     cards = state["cards"]
     return sorted(cards, key = lambda name: (cards[name][1], cards[name][0]))
 
@@ -166,7 +158,7 @@ def wait_for_cards(page) -> None:
         f"() => document.querySelectorAll('main button[aria-label^=\"Library image\"]').length === {ITEMS}",
         timeout = 120_000,
     )
-    # Thumbnails load as cards near the viewport; the square test image keeps every card square.
+    # Cards near the viewport load thumbnails; wait so the layout is final.
     page.wait_for_function(
         "() => document.querySelectorAll('main button[aria-label^=\"Library image\"] img').length >= 10",
         timeout = 60_000,
@@ -182,8 +174,7 @@ def check(page, api: MockApi) -> None:
     before = layout(page)
     assert before["scrollTop"] == SCROLL_TOP, f"the Library only scrolls to {before['scrollTop']}"
 
-    # A first-column card in the middle of the viewport: its DOM node survives a move to the top,
-    # which is what scroll anchoring follows.
+    # A first-column card's DOM node survives a move to the top, and scroll anchoring follows it.
     first_column = min(x for x, _ in before["cards"].values())
     target = min(
         (name for name, (x, y) in before["cards"].items() if x == first_column and y > 250),
@@ -218,7 +209,6 @@ def check(page, api: MockApi) -> None:
     page.wait_for_timeout(500)
     assert_unchanged(before, layout(page), "viewer closed")
 
-    # A tab switch stays in the Library: Suggested keeps the order it had before the open.
     sections = page.get_by_role("navigation", name = "Library sections")
     sections.get_by_role("button", name = "Images", exact = True).click()
     page.wait_for_url("**show=images**", timeout = 30_000)
@@ -227,7 +217,6 @@ def check(page, api: MockApi) -> None:
     page.wait_for_timeout(500)
     assert reading_order(layout(page)) == reading_order(before), "a tab switch reordered Suggested"
 
-    # Leaving the Library and coming back shows the new order: the opened item ranks first.
     page.get_by_text("Model hub", exact = True).first.click()
     page.wait_for_url("**/hub**", timeout = 30_000)
     # Until the hub replaces the grid, a click back cancels the navigation and the user never left.
@@ -265,14 +254,13 @@ def main() -> int:
                 page = context.new_page()
                 errors: list[str] = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
-                # A first visit lets the dev server finish optimizing dependencies, whose reload
-                # would otherwise land in the middle of the check.
+                # Absorb the dev server's dependency-optimization reload before the check.
                 open_suggested(page)
                 page.wait_for_timeout(2000)
                 check(page, api)
             finally:
                 browser.close()
-        # Endpoints this check does not mock answer 404, which the app reports and moves past.
+        # Unmocked endpoints answer 404.
         unexpected = [error for error in errors if not error.startswith("Request failed (404)")]
         assert not unexpected, unexpected
         info("ok")
