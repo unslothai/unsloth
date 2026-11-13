@@ -1152,6 +1152,75 @@ def test_a_checkout_in_the_cwd_wins_over_a_chat_editable_finder(monkeypatch, tmp
     assert str(workdir / "checkout" / f"{name}.py") in out, out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix symlinks and shell")
+def test_retiring_a_chat_version_never_follows_a_symlink_out_of_the_prefix(monkeypatch, tmp_path):
+    """A recorded folder that links elsewhere: the files behind the link survive the cleanup."""
+    workdir = tmp_path / "chat"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    site_dir.mkdir(parents = True)
+    outside = tmp_path / "dataset"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("data")
+    (site_dir / "linked").symlink_to(outside, target_is_directory = True)
+    name = "unsloth_chat_linked"
+    old = site_dir / f"{name}-1.0.dist-info"
+    old.mkdir()
+    (old / "RECORD").write_text(f"linked/keep.txt,,\n{name}-1.0.dist-info/RECORD,,\n")
+    time.sleep(0.05)
+    new = site_dir / f"{name}-2.0.dist-info"
+    new.mkdir()
+    (new / "RECORD").write_text(f"{name}-2.0.dist-info/RECORD,,\n")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    out = tools._bash_exec(
+        "python -m pip --version", None, 60, _SESSION, tool_execution_mode = "software"
+    )
+    assert "pip" in out, out
+    assert (outside / "keep.txt").read_text() == "data"
+    assert not old.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_the_namespace_check_never_loads_ast_from_the_cwd(monkeypatch, tmp_path):
+    """The cwd joins sys.path after the shim runs; the ast import must not search it either."""
+    workdir = tmp_path / "chat"
+    marker = tmp_path / "planted_ran"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    (site_dir / "email").mkdir(parents = True)
+    (workdir / "here").mkdir()
+    (workdir / "here" / "ast.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = "cd here && python -c 'import email.mime; print(41 + 1)'"
+    out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
+    assert "42" in out, out
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_checkout_package_keeps_its_own_submodules_over_a_chat_editable(monkeypatch, tmp_path):
+    """The parent came from the checkout, so its child must too, not from the editable's mapping."""
+    template = os.path.join(
+        sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
+    )
+    if not os.path.exists(template):
+        pytest.skip("finder-based editable installs need setuptools in Studio's environment")
+    name = "unsloth_chat_child_shadow"
+    workdir = tmp_path / "chat"
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    site_dir.mkdir(parents = True)
+    for root in (tmp_path / "editable" / name, workdir / "checkout" / name):
+        root.mkdir(parents = True)
+        (root / "__init__.py").write_text("")
+        (root / "child.py").write_text("")
+    finder = f"__editable___{name}_1_0_finder"
+    (site_dir / f"__editable__.{name}-1.0.pth").write_text(f"import {finder}; {finder}.install()\n")
+    mapping = {name: str(tmp_path / "editable" / name)}
+    (site_dir / f"{finder}.py").write_text(f"MAPPING = {mapping!r}\nNAMESPACES = {{}}\n")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = f"cd checkout && python -c 'import {name}.child as c; print(c.__file__)'"
+    out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
+    assert str(workdir / "checkout" / name / "child.py") in out, out
+
+
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
     """Every OS: Studio's pip installs into the chat folder; nothing else it starts, nor another venv, inherits that."""
     packages = str(tmp_path / os_sandbox.SESSION_PACKAGES_RELPATH)

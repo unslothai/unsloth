@@ -467,6 +467,19 @@ def _route_pip():
 _route_pip()
 
 
+def _stdlib_paths():
+    # The standard library alone: no session dir, .pth source, cwd or script dir can answer the shim's imports.
+    base = os.path.join(os.path.normcase(os.path.realpath(sys.base_prefix)), "")
+    return [
+        e
+        for e in sys.path
+        if e
+        and os.path.normcase(os.path.realpath(e)).startswith(base)
+        and "site-packages" not in os.path.normcase(e)
+        and "dist-packages" not in os.path.normcase(e)
+    ]
+
+
 def _session_entries():
     prefix = _chat_prefix or os.environ.get("PIP_PREFIX")
     if not prefix:
@@ -555,7 +568,7 @@ def _read_pth_files(entries, on_sys_path = True):
     if finders and on_sys_path:
         # The helpers they import (ast, sysconfig, pathlib, ...) come from the stdlib, never a chat-planted copy.
         saved = sys.path[:]
-        sys.path[:] = [e for e in saved if e not in entries]
+        sys.path[:] = _stdlib_paths()
         try:
             for entry, module in finders:
                 try:
@@ -598,11 +611,15 @@ class _SessionPackagesFinder:
         for finder in self._editable:
             spec = finder.find_spec(name, path, target)
             if spec is not None and spec.loader is not None:
-                # The cwd / script dir and anything else ahead of the session dirs still come first.
+                # The cwd / script dir and anything else ahead of the session dirs, and for a submodule the
+                # chosen parent's own __path__, still come first.
                 if path is None:
                     first = min(i for i, e in enumerate(sys.path) if e in self._entries)
-                    if first and self._path_finder.find_spec(name, sys.path[:first], target):
-                        return None
+                    ahead = sys.path[:first]
+                else:
+                    ahead = list(path)
+                if ahead and self._path_finder.find_spec(name, ahead, target):
+                    return None
                 return spec
         if path is None:
             return None
@@ -621,7 +638,7 @@ class _SessionPackagesFinder:
             if "ast" not in sys.modules:
                 # _extends_path imports ast: the stdlib one, never a chat-planted copy.
                 saved = sys.path[:]
-                sys.path[:] = [e for e in saved if e not in self._chat_paths]
+                sys.path[:] = _stdlib_paths()
                 try:
                     import ast  # noqa: F401
                 finally:
@@ -657,13 +674,17 @@ def _recorded_files(
     metadata = False,
 ):
     files = set()
+    # Resolved too: a recorded folder that is a symlink must not lead the cleanup outside the prefix.
+    real_root = os.path.join(os.path.normcase(os.path.realpath(root)), "")
     try:
         with open(os.path.join(entry, dist_info, "RECORD"), encoding = "utf-8") as f:
             for line in f:
                 path = line.rstrip("\n").rsplit(",", 2)[0].strip('"')
                 full = os.path.normcase(os.path.abspath(os.path.join(entry, path)))
+                real = os.path.normcase(os.path.realpath(full))
                 in_meta = path.startswith(dist_info + "/")
-                if path and full.startswith(root) and (metadata or not in_meta):
+                inside = full.startswith(root) and real.startswith(real_root)
+                if path and inside and (metadata or not in_meta):
                     if not (in_meta and path.endswith("/RECORD")):
                         files.add(full)
     except OSError:
