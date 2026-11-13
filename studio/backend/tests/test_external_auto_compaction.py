@@ -132,6 +132,7 @@ def _proxy(
     provider_type: str,
     messages: list[dict],
     handler = _Handler,
+    reaches_provider = True,
     **fields,
 ):
     async def receive() -> dict:
@@ -169,6 +170,9 @@ def _proxy(
                         chunks.append(json.loads(body))
 
         _run(go)
+        if not reaches_provider:
+            assert not [b for b in server.bodies if "messages" in b]
+            return chunks, None
         assert server.bodies, "the route never reached the provider"
         return chunks, server.bodies[-1]
 
@@ -609,6 +613,30 @@ def test_a_message_larger_than_the_window_ollama_loaded_is_refused():
     assert refused.value.status_code == 400
     error = refused.value.detail["error"]
     assert error["code"] == "context_length_exceeded"
+    assert error["message"].startswith("Message too long:")
+    assert "4096-token context window" in error["message"]
+
+
+def test_a_tool_enabled_chat_refuses_a_message_larger_than_the_window_ollama_loaded(monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    # the tool loop polls for disconnects and would stop before reaching the provider.
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    chunks, _ = _proxy(
+        "ollama",
+        [{"role": "user", "content": "word " * 8_000 + "What is the code?"}],
+        handler = _ollama(),
+        reaches_provider = False,
+        model = "qwen3:1.7b",
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    [error] = [c["error"] for c in chunks if "error" in c]
     assert error["message"].startswith("Message too long:")
     assert "4096-token context window" in error["message"]
 

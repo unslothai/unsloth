@@ -888,6 +888,20 @@ def _context_budget_http_error(exc) -> "HTTPException":
     )
 
 
+def _refuse_what_ollama_would_cut(provider_type, truncation, window) -> None:
+    """Ollama drops the middle of an oversized prompt (instructions included) instead of refusing it."""
+    if (
+        provider_type != "ollama"
+        or not window
+        or not truncation
+        or truncation.get("fits", True)
+        or int(truncation.get("irreducible_tokens") or 0) < window
+    ):
+        return
+    context_refusal.record_fit({**truncation, "context_length": window})
+    raise context_refusal.ContextBudgetExceeded(truncation["irreducible_tokens"], window)
+
+
 def _openai_stream_error_sse(error: dict) -> str:
     # Flag failed so the middleware does not claim a preview-owned model on a failed stream.
     from core.inference.llama_keepwarm import mark_current_response_failed
@@ -29869,6 +29883,7 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
                 _external_truncation = truncation
@@ -29898,21 +29913,12 @@ async def _proxy_to_external_provider(
             payload,
             tools = _external_fit_tools,
         )
-        _window = payload.context_window
-        # Ollama cuts an oversized prompt without an error instead of refusing it.
-        if (
-            provider_type == "ollama"
-            and _window
-            and _external_truncation
-            and not _external_truncation.get("fits")
-            and _external_truncation["irreducible_tokens"] >= _window
-        ):
-            context_refusal.record_fit({**_external_truncation, "context_length": _window})
-            raise _context_budget_http_error(
-                context_refusal.ContextBudgetExceeded(
-                    _external_truncation["irreducible_tokens"], _window
-                )
+        try:
+            _refuse_what_ollama_would_cut(
+                provider_type, _external_truncation, payload.context_window
             )
+        except context_refusal.ContextBudgetExceeded as exc:
+            raise _context_budget_http_error(exc)
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
 
     cancel_event = threading.Event()
