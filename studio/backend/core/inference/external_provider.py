@@ -7610,6 +7610,16 @@ class ExternalProviderClient:
                 return _positive_int(entry.get("context_length"))
         return None
 
+    async def load_ollama_window(self, model: str) -> Optional[int]:
+        response = await _client().post(
+            _native_server_path(self.base_url, "/api/generate"),
+            json = {"model": model},
+            headers = self._auth_headers(),
+            timeout = 120.0,
+        )
+        response.raise_for_status()
+        return await self._read_ollama_loaded_window(model)
+
     async def _read_served_window(self, model: str) -> Optional[int]:
         if self.provider_type == "ollama":
             return await self._read_ollama_loaded_window(model)
