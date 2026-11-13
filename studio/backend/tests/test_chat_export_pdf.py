@@ -113,6 +113,29 @@ def test_narrow_chats_keep_their_font_size():
     assert [round(size, 1) for size in sizes] == [10.5]
 
 
+def test_a_wide_table_shrinks_only_its_own_page():
+    columns = "".join(f"<th>column{index}</th>" for index in range(13))
+    paragraphs = "".join(f"<p>para {index}</p>" for index in range(90))
+    body = f"{paragraphs}<table><tr>{columns}</tr></table>{paragraphs}"
+    response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
+    with pymupdf.open("pdf", response.content) as document:
+        sizes = [
+            {
+                round(span["size"], 1)
+                for block in page.get_text("dict")["blocks"]
+                for line in block.get("lines", [])
+                for span in line["spans"]
+                if span["text"].startswith(("para", "column"))
+            }
+            for page in document
+        ]
+        text = "".join(page.get_text() for page in document)
+    assert "column12" in text
+    assert text.count("para 89") == 2
+    assert sizes[0] == {10.5} and sizes[-1] == {10.5}
+    assert any(max(page) < 10.5 for page in sizes if page)
+
+
 def test_only_data_images_embed(tmp_path):
     png = io.BytesIO()
     pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 4, 4), False)

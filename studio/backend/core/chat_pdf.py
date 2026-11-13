@@ -49,32 +49,12 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
     heading = html.escape(" ".join(title.split()) or "Conversation")
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     document = f"<h1>{heading}</h1><p class='meta'>Exported from Unsloth on {stamp}</p>{body_html}"
-    pdf_bytes, widest = _write_pages(document, 1)
-    if widest > 1.001:
-        # MuPDF never shrinks a table below its natural width, so shrink the page content to fit it instead.
-        pdf_bytes, _ = _write_pages(document, 1 / widest)
-
-    pdf = pymupdf.open("pdf", pdf_bytes)
-    try:
-        pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth"})
-        # The CJK fallback font alone is ~2 MB; keep only the glyphs used.
-        pdf.subset_fonts()
-        return pdf.tobytes(garbage = 3, deflate = True)
-    finally:
-        pdf.close()
-
-
-def _write_pages(document: str, scale: float) -> tuple[bytes, float]:
-    import pymupdf
-
     story = pymupdf.Story(html = document, user_css = _PDF_CSS)
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
     mediabox = pymupdf.paper_rect("a4")
-    width = (mediabox.width - 2 * _PAGE_MARGIN_PT) / scale
-    where = pymupdf.Rect(0, 0, width, (mediabox.height - 2 * _PAGE_MARGIN_PT) / scale)
-    matrix = pymupdf.Matrix(scale, 0, 0, scale, _PAGE_MARGIN_PT, _PAGE_MARGIN_PT)
-    widest = width
+    width = mediabox.width - 2 * _PAGE_MARGIN_PT
+    height = mediabox.height - 2 * _PAGE_MARGIN_PT
     pages = 0
     more = 1
     while more:
@@ -82,13 +62,27 @@ def _write_pages(document: str, scale: float) -> tuple[bytes, float]:
             writer.close()
             raise ChatPdfTooLong(f"export exceeds {MAX_EXPORT_PAGES} pages")
         device = writer.begin_page(mediabox)
-        more, filled = story.place(where)
-        widest = max(widest, filled[2])
-        story.draw(device, matrix)
+        scale = 1.0
+        more, filled = story.place(pymupdf.Rect(0, 0, width, height))
+        # MuPDF never shrinks a table below its natural width: re-place this page shrunk to fit it, so no column is cut off.
+        for _ in range(4):
+            if filled[2] <= width / scale * 1.001:
+                break
+            scale = width / filled[2]
+            more, filled = story.place(pymupdf.Rect(0, 0, width / scale, height / scale))
+        story.draw(device, pymupdf.Matrix(scale, 0, 0, scale, _PAGE_MARGIN_PT, _PAGE_MARGIN_PT))
         writer.end_page()
         pages += 1
     writer.close()
-    return buffer.getvalue(), widest / width
+
+    pdf = pymupdf.open("pdf", buffer.getvalue())
+    try:
+        pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth"})
+        # The CJK fallback font alone is ~2 MB; keep only the glyphs used.
+        pdf.subset_fonts()
+        return pdf.tobytes(garbage = 3, deflate = True)
+    finally:
+        pdf.close()
 
 
 def main() -> int:
