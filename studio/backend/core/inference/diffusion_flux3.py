@@ -589,9 +589,20 @@ class _Flux3KleinPipelineMixin:
         return _hooks()
 
 
+HALF_STORAGE_ENV = "UNSLOTH_DIFFUSION_FLUX3_HALF_STORAGE"
+
+
+def half_storage_disabled() -> bool:
+    """``UNSLOTH_DIFFUSION_FLUX3_HALF_STORAGE=0``: a float16 load widens every component on the host again."""
+    import os
+    return (os.environ.get(HALF_STORAGE_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
 def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
-    """bf16 when a CUDA load computes FLUX.3 in float32: keep bf16 weights and upcast per op instead of doubling
-    the load (about 40 GB for klein). None otherwise."""
+    """bf16 when a CUDA load computes FLUX.3 in float32 or float16: keep the stored bf16 weights (memory-mapped,
+    never copied) and cast per op instead of converting the whole load on the host. float32 would double the load
+    (about 40 GB for klein); a float16 conversion is a second private host copy of each component (about 20 GB for
+    klein, enough to kill a 12 GB host). The cast is exact either way. None otherwise."""
     from .diffusion_manual_cast import manual_cast_disabled
 
     if manual_cast_disabled() or getattr(target, "device", None) != "cuda":
@@ -600,7 +611,35 @@ def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
         import torch
     except Exception:  # noqa: BLE001 - no torch, no load
         return None
-    return torch.bfloat16 if dtype is torch.float32 else None
+    if dtype is torch.float32:
+        return torch.bfloat16
+    if dtype is torch.float16 and not half_storage_disabled():
+        return torch.bfloat16
+    return None
+
+
+def storage_saves_memory(storage_dtype: Any, dtype: Any) -> bool:
+    """Whether computing in ``dtype`` would need more bytes than ``storage_dtype`` holds (float32 over bf16)."""
+    try:
+        import torch
+        return (
+            torch.empty(0, dtype = dtype).element_size()
+            > torch.empty(0, dtype = storage_dtype).element_size()
+        )
+    except Exception:  # noqa: BLE001 - not dtypes: no claim
+        return False
+
+
+def transformer_storage_dtype(
+    storage_dtype: Any, dtype: Any, transformer_storage: Optional[bool]
+) -> Any:
+    """The dtype the FLUX.3 transformer loads at (``load_flux3_pipeline``'s ``transformer_storage``): the storage dtype
+    when asked (True), or by default (None) only when computing in ``dtype`` would take more memory."""
+    if storage_dtype is None or transformer_storage is False:
+        return None
+    if transformer_storage or storage_saves_memory(storage_dtype, dtype):
+        return storage_dtype
+    return None
 
 
 def _component_files(
@@ -735,12 +774,15 @@ def load_flux3_pipeline(
     check_cancelled: Optional[Callable[[], None]] = None,
     family_name: Optional[str] = None,
     storage_dtype: Any = None,
-    transformer_storage: bool = True,
+    transformer_storage: Optional[bool] = None,
 ) -> Any:
     """A ready ``Flux3KleinPipeline`` for ``repo_id`` (on CPU; the caller places it).
 
-    ``storage_dtype`` (``flux3_storage_dtype``): the text encoder, and the transformer unless ``transformer_storage``
-    is False (a transformer quant will rebuild its Linears), load at that dtype and upcast per op to ``dtype``.
+    ``storage_dtype`` (``flux3_storage_dtype``): the text encoder loads at that dtype and casts per op to ``dtype``.
+    The transformer does too when ``transformer_storage`` is True (a native quant rebuilds its Linears from the
+    stored weights, so a same-width float16 conversion would only be a host copy thrown away). None (default): only
+    when ``dtype`` is wider than the storage (float32), since a dense same-width transformer would cast every step.
+    False: never.
 
     ``family_name`` (the family the load resolved) must agree with the block graph the checkpoint runs: a base
     pipeline loaded as the distilled family would run CFG while Studio suppresses its negative prompt, and the
@@ -788,7 +830,7 @@ def load_flux3_pipeline(
             name = "transformer",
             repo_id = repo_id,
             dtype = dtype,
-            storage_dtype = storage_dtype if transformer_storage else None,
+            storage_dtype = transformer_storage_dtype(storage_dtype, dtype, transformer_storage),
             hf_token = token,
             local_files_only = local_files_only,
         )

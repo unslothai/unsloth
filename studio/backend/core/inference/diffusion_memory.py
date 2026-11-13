@@ -2484,8 +2484,14 @@ def _holds_fp8_stored(module: Any) -> bool:
         return False
     try:
         from .diffusion_comfy_quant import fp8_stored_layers
+        from .diffusion_grouped_int8 import grouped_packed_layers
         from .diffusion_packed_block import packed_block_layers
-        return fp8_stored_layers(module) > 0 or packed_block_layers(module) > 0
+
+        return (
+            fp8_stored_layers(module) > 0
+            or packed_block_layers(module) > 0
+            or grouped_packed_layers(module) > 0
+        )
     except Exception:  # noqa: BLE001 - unreadable: today's parameter verdict stands
         return False
 

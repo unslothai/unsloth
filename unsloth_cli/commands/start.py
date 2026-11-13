@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, Optional
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 
 import click
 import typer
@@ -5178,6 +5178,22 @@ def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dic
     return {"id": ids[0], "connection": usable[0].get("display_name") or usable[0]["id"]}
 
 
+def _served_window(base: str, key: str, model_id: str) -> Optional[int]:
+    provider_id, _, model = model_id[len(_CONNECTION_MODEL_PREFIX) :].partition("::")
+    query = urlencode({"model": unquote(model)})
+    try:
+        answer = _http_json(
+            "POST",
+            f"{base}/api/providers/{quote(provider_id, safe = '')}/served-window?{query}",
+            key,
+            timeout = 150,
+        )
+    except (OSError, ValueError):
+        return None
+    window = answer.get("context_length")
+    return window if isinstance(window, int) and window > 0 else None
+
+
 def _connect(
     api_key: Optional[str],
     model: Optional[str],
@@ -5242,9 +5258,10 @@ def _connect(
                     "`unsloth start codex` and `unsloth start opencode`."
                 )
             typer.echo(f"Using {requested} from the Connection {connection['connection']}.")
-            # A Connection reports no context window; an explicit one lets agents size compaction.
-            if load.max_seq_length > 0:
-                connection["context_length"] = load.max_seq_length
+            served = _served_window(base, key, connection["id"])
+            window = min(filter(None, (served, max(load.max_seq_length, 0))), default = None)
+            if window:
+                connection["context_length"] = window
             else:
                 typer.echo(
                     "Pass --max-seq-length with the model's context window so the agent can "
@@ -5864,7 +5881,10 @@ def _check_agent_context(
         suggested = min(suggested, native)
     if entry.get("connection"):
         # --max-seq-length only labels a Connection's window; it cannot grow the provider's.
-        hint = "A Connection's context is set by its provider, so pick a model with a longer one."
+        hint = (
+            "A Connection's context is set by its provider, so raise it there (Ollama reads "
+            "OLLAMA_CONTEXT_LENGTH) or pick a model with a longer one."
+        )
     elif native and (
         native <= window or _agent_compacts_at(agent, native, max_tokens) < prompt_tokens
     ):

@@ -625,6 +625,93 @@ def test_read_past_the_window_stops_when_cancelled():
     assert _read_html(resp, cancel) == ("Failed to fetch URL: cancelled.", b"")
 
 
+def _main_menu_page(content: bytes) -> bytes:
+    menu = _MENU * (510 * 1024 // len(_MENU))
+    return (
+        b"<html><head><title>t</title></head><body><main><nav><ul>"
+        + menu
+        + b"</ul></nav>"
+        + content
+        + b"</main></body></html>"
+    )
+
+
+def test_page_text_after_a_large_menu_inside_main_is_read(monkeypatch):
+    steps = b"".join(b'<p data-pad="%b">Step %d.</p>' % (b"x" * 4096, n) for n in range(10))
+    html = _main_menu_page(
+        b"<article><h1>Install</h1>" + steps + b"<p>BODY-MARK last step.</p></article>"
+    )
+    assert "BODY-MARK last step." in _fetch_with(monkeypatch, html, "text/html")
+
+
+def test_heading_past_the_window_gets_a_full_window():
+    body = (
+        b"<html><head><title>t</title></head><body><nav>"
+        + b"x" * (100 * 1024)
+        + b"</nav><main><script>"
+        + b"x" * (450 * 1024)
+        + b"</script><h1>Start</h1>"
+        + _LINES
+        + b"</main>"
+    )
+    resp = _FakeResp(body, "text/html")
+    error, read = _read_html(resp)
+    window_end = body.index(b"<h1>") + tools._MAX_FETCH_BYTES
+    assert error is None
+    assert window_end <= resp._pos < window_end + 2 * 65536
+    assert read == body[: resp._pos]
+
+
+def test_repeated_articles_keep_the_first_window():
+    body = (
+        b"<html><head><title>t</title></head><body><main>"
+        + b"<article><p>post</p></article>" * (100 * 1024)
+        + b"</main>"
+    )
+    resp = _FakeResp(body, "text/html")
+    assert _read_html(resp) == (None, _first_window(body))
+    assert resp._pos == len(_first_window(body))
+
+
+def test_failed_read_past_a_late_heading_keeps_the_first_window():
+    body = _main_menu_page(b"<article><h1>Start</h1>" + _LINES + b"</article>")
+    resp = _FakeResp(body, "text/html")
+    read = resp.read
+
+    def stalling_read(n = None):
+        if resp._pos > len(_first_window(body)):
+            raise TimeoutError("timed out")
+        return read(n)
+
+    resp.read = stalling_read
+    assert _read_html(resp) == (None, _first_window(body))
+
+
+def test_failed_read_past_a_later_heading_keeps_the_main_window():
+    body = _menu_page(
+        b"<main><p>BODY-MARK install steps.</p>"
+        + b"<p>x</p>" * (300 * 1024 // 8)
+        + b"<h1>Late</h1>"
+        + _LINES
+        + b"</main>"
+    )
+    resp = _FakeResp(body, "text/html")
+    read = resp.read
+    window_end = body.index(b"<main>") + tools._MAX_FETCH_BYTES
+
+    def stalling_read(n = None):
+        if resp._pos > window_end + 65536:
+            raise TimeoutError("timed out")
+        return read(n)
+
+    resp.read = stalling_read
+    error, read_body = _read_html(resp)
+    assert error is None
+    assert b"BODY-MARK install steps." in read_body
+    assert window_end <= len(read_body) <= window_end + 65536
+    assert read_body == body[: len(read_body)]
+
+
 @pytest.mark.parametrize(
     "content_type,body",
     [

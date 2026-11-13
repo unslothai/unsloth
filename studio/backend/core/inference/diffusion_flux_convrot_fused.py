@@ -23,6 +23,7 @@ from typing import Any, Optional
 import torch
 
 from . import diffusion_int8_gemm as _gemm
+from .diffusion_flux3_qk_rope import is_qk_processor, qk_norm_rope
 
 FLUX_CONVROT_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED"
 FLUX3_SPAN_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX3_SPAN_FUSED"
@@ -330,7 +331,7 @@ def _f3_block_ready(block: Any) -> bool:
         return False
     proc = getattr(attn, "processor", None)
     return (
-        type(proc) is _CLS.get("Flux3AttnProcessor")
+        (type(proc) is _CLS.get("Flux3AttnProcessor") or is_qk_processor(proc))
         and type(attn) is _CLS.get("Flux3Attention")
         and not _gemm._hooked(attn)
         and type(ff) is _CLS.get("Flux3FeedForward")
@@ -357,13 +358,8 @@ def _f3_attn_ff(block: Any, x: Any, image_rotary_emb: Any, mod: Any) -> Optional
     query = query.unflatten(-1, (attn.heads, -1))
     key = key.unflatten(-1, (attn.heads, -1))
     value = value.unflatten(-1, (attn.heads, -1))
-    query = attn.norm_q(query.float())
-    key = attn.norm_k(key.float())
-    if image_rotary_emb is not None:
-        # looked up per call: diffusion_flux3_rope may have replaced it
-        query = mod.apply_rotary_emb(query, image_rotary_emb, sequence_dim = 1)
-        key = mod.apply_rotary_emb(key, image_rotary_emb, sequence_dim = 1)
-    query, key = query.to(value.dtype), key.to(value.dtype)
+    # looked up per call: diffusion_flux3_rope may have replaced it
+    query, key = qk_norm_rope(attn, query, key, value.dtype, image_rotary_emb, mod.apply_rotary_emb)
     hidden_states = mod.dispatch_attention_fn(
         query,
         key,

@@ -22,6 +22,7 @@ h1 { font-size: 17pt; margin: 0 0 4pt 0; }
 .conversation-title { font-size: 13.5pt; margin: 16pt 0 8pt 0; }
 .message { margin: 0 0 12pt 0; padding: 6pt 10pt; border-left: 2pt solid #d0d7de; }
 .message.user { background-color: #f6f8fa; border-left: 2pt solid #8c959f; }
+.message.user .content { white-space: pre-wrap; }
 .message.system { border-left: 2pt solid #bf8700; }
 .message.tool { border-left: 2pt solid #8250df; }
 .role { font-size: 8.5pt; font-weight: bold; color: #57606a; margin: 0 0 4pt 0; }
@@ -30,7 +31,7 @@ p { margin: 0 0 6pt 0; }
 pre { background-color: #f6f8fa; padding: 6pt; font-family: monospace; font-size: 8.5pt; white-space: pre-wrap; }
 code { font-family: monospace; font-size: 9pt; }
 blockquote { margin: 0 0 6pt 0; padding: 0 0 0 10pt; border-left: 2pt solid #d0d7de; color: #57606a; }
-th, td { border: 1px solid #d0d7de; padding: 2pt 5pt; }
+th, td { border: 1px solid #d0d7de; padding: 2pt 5pt; overflow-wrap: normal; }
 details { color: #57606a; margin: 0 0 6pt 0; }
 summary { font-style: italic; }
 a { color: #0969da; }
@@ -53,7 +54,8 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
     mediabox = pymupdf.paper_rect("a4")
-    where = mediabox + (_PAGE_MARGIN_PT, _PAGE_MARGIN_PT, -_PAGE_MARGIN_PT, -_PAGE_MARGIN_PT)
+    width = mediabox.width - 2 * _PAGE_MARGIN_PT
+    height = mediabox.height - 2 * _PAGE_MARGIN_PT
     pages = 0
     more = 1
     while more:
@@ -61,8 +63,15 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
             writer.close()
             raise ChatPdfTooLong(f"export exceeds {MAX_EXPORT_PAGES} pages")
         device = writer.begin_page(mediabox)
-        more, _ = story.place(where)
-        story.draw(device)
+        scale = 1.0
+        more, filled = story.place(pymupdf.Rect(0, 0, width, height))
+        # MuPDF never shrinks a table below its natural width: re-place this page shrunk to fit it, so no column is cut off.
+        for _ in range(4):
+            if filled[2] <= width / scale * 1.001:
+                break
+            scale = width / filled[2]
+            more, filled = story.place(pymupdf.Rect(0, 0, width / scale, height / scale))
+        story.draw(device, pymupdf.Matrix(scale, 0, 0, scale, _PAGE_MARGIN_PT, _PAGE_MARGIN_PT))
         writer.end_page()
         pages += 1
     writer.close()
