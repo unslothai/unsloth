@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""FalconH1DecoderLayer_fast_forward must scale the attention input by attention_in_multiplier.
-
-transformers' FalconH1DecoderLayer feeds the attention `hidden_states * attention_in_multiplier`
-and the Mamba mixer the plain normalized stream; Unsloth's own decode loop does the same. The
-function is lifted from source, so the test is CPU-only.
-"""
+"""Attention gets hidden_states * attention_in_multiplier, Mamba the plain norm (transformers FalconH1DecoderLayer)."""
 
 from __future__ import annotations
 
@@ -20,6 +15,7 @@ import torch
 
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "falcon_h1.py"
 FUNCTION = "FalconH1DecoderLayer_fast_forward"
+HELPERS = (FUNCTION, "_attention_input")
 
 
 def _rms_norm(norm, x, *args, **kwargs):
@@ -31,7 +27,8 @@ def _rms_norm(norm, x, *args, **kwargs):
 def _load_layer_forward():
     text = SOURCE_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(text, filename = str(SOURCE_PATH))
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == FUNCTION)
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in HELPERS]
+    assert len(nodes) == len(HELPERS)
     namespace = {
         "torch": torch,
         "Optional": Optional,
@@ -40,13 +37,14 @@ def _load_layer_forward():
         "fast_rms_layernorm_inference": _rms_norm,
         "fast_swiglu_inference": lambda mlp, x: mlp(x),
     }
-    module = ast.Module(body = [node], type_ignores = [])
+    module = ast.Module(body = nodes, type_ignores = [])
     exec(compile(module, str(SOURCE_PATH), "exec"), namespace)
     return namespace[FUNCTION]
 
 
+@pytest.mark.parametrize("multiplier", [0.25, 1.0])
 @pytest.mark.parametrize("generation", [False, True], ids = ["training", "generation_flag"])
-def test_attention_input_is_scaled_by_attention_in_multiplier(generation):
+def test_attention_input_is_scaled_by_attention_in_multiplier(generation, multiplier):
     torch.manual_seed(0)
     hidden = 8
     seen = {}
@@ -69,7 +67,7 @@ def test_attention_input_is_scaled_by_attention_in_multiplier(generation):
         mamba = mamba,
         self_attn = self_attn,
         feed_forward = lambda x: x * 2.0,
-        attention_in_multiplier = 0.25,
+        attention_in_multiplier = multiplier,
         attn_out_multiplier = 0.9,
         ssm_out_multiplier = 0.4,
     )
@@ -82,9 +80,9 @@ def test_attention_input_is_scaled_by_attention_in_multiplier(generation):
 
     normed = _rms_norm(layer.input_layernorm, x)
     torch.testing.assert_close(seen["mamba"], normed)
-    torch.testing.assert_close(seen["attn"], normed * 0.25)
+    torch.testing.assert_close(seen["attn"], normed * multiplier)
 
-    mixed = (normed * 0.5) * 0.4 + (normed * 0.25 + 1.0) * 0.9
+    mixed = (normed * 0.5) * 0.4 + (normed * multiplier + 1.0) * 0.9
     stream = x + mixed
     expected = stream + _rms_norm(layer.pre_ff_layernorm, stream) * 2.0
     torch.testing.assert_close(out, expected)
