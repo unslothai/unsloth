@@ -42,6 +42,21 @@ import { SettingsSection } from "../components/settings-section";
 const GRANTS: ComputerUsePermission[] = ["screen", "input"];
 const ROW_ICON_CLASS = "me-1.5 size-7";
 
+/** A string whose <b>…</b> part is emphasised, so each language keeps its own word order. */
+function bold(text: string): ReactNode {
+  return text
+    .split(/<\/?b>/)
+    .map((part, index) =>
+      index % 2 ? (
+        <strong key={part} className="font-semibold text-foreground">
+          {part}
+        </strong>
+      ) : (
+        part
+      ),
+    );
+}
+
 /** Apps by name, each with Remove: the bordered list of Settings > Browser's site permissions. */
 function AppList({
   apps,
@@ -135,7 +150,7 @@ export function ComputerUseTab() {
           <SettingsRow
             icon={<HugeiconsIcon icon={ComputerUseIcon} strokeWidth={1.75} className={ROW_ICON_CLASS} />}
             label={t("computerUse.settings.anyApp")}
-            description={status.available ? t("computerUse.settings.anyAppDescription") : status.reason}
+            description={status.available ? bold(t("computerUse.settings.anyAppDescription")) : status.reason}
           >
             <Switch
               aria-label={t("computerUse.settings.anyApp")}
