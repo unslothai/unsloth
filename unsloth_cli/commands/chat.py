@@ -63,12 +63,12 @@ def _you_prompt(colors: bool) -> str:
 def _compare_blocked_reason(model_config) -> Optional[str]:
     if model_config.is_gguf:
         return (
-            "GGUF models can't toggle adapters â€” load a LoRA fine-tune "
+            "GGUF models can't toggle adapters — load a LoRA fine-tune "
             "(transformers backend) to compare base vs tuned."
         )
     if not model_config.is_lora:
         return (
-            "this isn't a LoRA adapter â€” compare turns the adapter off for the "
+            "this isn't a LoRA adapter — compare turns the adapter off for the "
             "'base' column, so there's nothing to compare against."
         )
     return None
@@ -266,7 +266,7 @@ def chat(
     compare: bool = typer.Option(
         False,
         "--compare/--no-compare",
-        help = "Answer each prompt twice â€” base vs fine-tuned â€” side by side. "
+        help = "Answer each prompt twice — base vs fine-tuned — side by side. "
         "Needs a LoRA adapter. Toggle live with /compare.",
     ),
     verbose: bool = typer.Option(
@@ -395,7 +395,7 @@ def chat(
         raise typer.Exit(code = 1)
     if server_mode and should_print:
         console.print(
-            "(Unsloth server connected â€” model stays warm after /exit)",
+            "(Unsloth server connected — model stays warm after /exit)",
             style = "bright_black",
         )
     else:
@@ -442,7 +442,7 @@ def chat(
             return False
         if should_print:
             console.print(
-                f"(loading base model {base_id} for compare â€” keeps two models in memory)",
+                f"(loading base model {base_id} for compare — keeps two models in memory)",
                 style = "bright_black",
                 markup = False,
             )
@@ -479,7 +479,7 @@ def chat(
         console.print(f"Chatting with {name}", style = "bold green", markup = False)
         console.print(_HELP, style = "bright_black")
 
-    # legacy_windows: pre-VT consoles print raw ANSI as â†[1;36m garbage.
+    # legacy_windows: pre-VT consoles print raw ANSI as ←[1;36m garbage.
     you_prompt = (
         _you_prompt(console.is_terminal and not console.legacy_windows) if should_print else ""
     )
@@ -581,7 +581,7 @@ def chat(
             try:
                 if compare_mode:
                     if should_print:
-                        console.print("(comparing base vs tunedâ€¦)", style = "bright_black")
+                        console.print("(comparing base vs tuned…)", style = "bright_black")
                     if dual_compare:
                         base_text = collect_stream(generate(backend = base_backend), show_thinking)
                         tuned_text = collect_stream(generate(), show_thinking)
@@ -622,7 +622,7 @@ def chat(
                     else "/reset to clear the history, or reload with a larger --max-seq-length"
                 )
                 console.print(
-                    f"(reply stopped at the token limit â€” {hint})",
+                    f"(reply stopped at the token limit — {hint})",
                     style = "bright_black",
                 )
 
