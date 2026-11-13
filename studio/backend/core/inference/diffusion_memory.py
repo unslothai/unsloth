@@ -7634,10 +7634,33 @@ def _video_exact_pins(
         if logger is not None:
             logger.info(
                 "diffusion.memory: this load writes its cast cache (first load in this home): its pins keep the "
-                "default plan, no encoder prefix"
+                "default pricing"
             )
         return False
     return True
+
+
+# "0": a first video load in a Studio home (still writing its cast cache) pins none of a streamed text encoder that
+# misses the plan-time budget. On a 12.7 GB Colab T4 Wan2.1-T2V-1.3B's 12.5 GiB UMT5 then re-read its memory-mapped
+# weights from disk on every clip (90-115 s of a 342 s clip).
+VIDEO_FIRST_LOAD_PREFIX_ENV = "UNSLOTH_VIDEO_FIRST_LOAD_ENCODER_PREFIX"
+
+
+def _video_late_prefix(
+    pipe: Any,
+    device: Any = None,
+    exact: bool = False,
+) -> bool:
+    """Whether a video load's streamed encoders that miss the plan-time pin pin the prefix free once the load
+    returns: a returning load (``exact``) always did; a first load does too, the cap read at pin start."""
+    if exact:
+        return True
+    return (
+        bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False))
+        and not _env_off(VIDEO_EXACT_PIN_PLAN_ENV)
+        and not _env_off(VIDEO_FIRST_LOAD_PREFIX_ENV)
+        and _fast_pin_supported(device)
+    )
 
 
 def _late_encoder_pin_cap(
@@ -8863,7 +8886,8 @@ def _apply_group_offload(
             gkwargs["low_cpu_mem_usage"] = True
         encoder_cap_mib = 0
         late_prefix = (
-            exact_defer
+            defer
+            and _video_late_prefix(pipe, onload, exact_defer)
             and stream_text_encoders
             and not pin_streamed[1]
             and not small_host
@@ -8972,7 +8996,7 @@ def _apply_group_offload(
                         onload,
                         logger,
                         fast = True,
-                        byte_cap = _late_encoder_pin_cap(pipe, module, onload),
+                        byte_cap = _late_image_encoder_pin_cap(pipe, module, onload),
                     )
                 elif _encoder_defers(module) and (whole or late_image or encoder_left_mib > 0):
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
@@ -9692,7 +9716,8 @@ def _apply_streaming_offload(
                 dit_pin_mib, leaf_mib, logger, device = onload
             )
         late_prefix = (
-            exact_defer
+            defer
+            and _video_late_prefix(pipe, onload, exact_defer)
             and prefetch
             and not pin_encoders
             and not getattr(pipe, "_unsloth_small_host", None)
@@ -9771,7 +9796,7 @@ def _apply_streaming_offload(
                     onload,
                     logger,
                     fast = True,
-                    byte_cap = _late_encoder_pin_cap(pipe, module, onload),
+                    byte_cap = _late_image_encoder_pin_cap(pipe, module, onload),
                 )
             elif enc_defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
                 if pin:
