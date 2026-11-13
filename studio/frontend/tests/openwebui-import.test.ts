@@ -712,6 +712,54 @@ test("non-function call items keep their name, arguments and result", () => {
   assert.deepEqual(calls[1].args, { command: "print(2 + 2)" });
 });
 
+test("builtin calls keep inline outputs and results arrays", () => {
+  const record = recordOf(
+    [
+      {
+        id: "a",
+        parentId: null,
+        role: "assistant",
+        timestamp: 1,
+        content: "done",
+        output: [
+          {
+            type: "code_interpreter_call",
+            id: "ci_1",
+            code: "print(2 + 2)",
+            outputs: [{ type: "logs", logs: "4" }],
+            status: "completed",
+          },
+          {
+            type: "file_search_call",
+            id: "fs_1",
+            queries: ["revenue"],
+            results: [{ file_id: "f1", filename: "q3.pdf", score: 0.9, text: "rev" }],
+            status: "completed",
+          },
+          {
+            type: "local_shell_call",
+            id: "ls_1",
+            action: { type: "exec", command: ["ls", "-la"] },
+          },
+          { type: "web_search_call", id: "ws_1", action: { type: "search", query: "cats" } },
+        ],
+      },
+    ],
+    "a",
+  );
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.deepEqual(calls[0].result, [{ type: "logs", logs: "4" }]);
+  assert.deepEqual(calls[1].result, [
+    { file_id: "f1", filename: "q3.pdf", score: 0.9, text: "rev" },
+  ]);
+  // Client-run calls keep no status-based result; hosted calls default to completed.
+  assert.equal(calls[2].result, undefined);
+  assert.equal(calls[3].result, "completed");
+});
+
 test("a multimodal turn keeps its text and image when detection routes it here", () => {
   // Chat Completions records with id and timestamp also match isOpenWebUIRecord.
   const record = {

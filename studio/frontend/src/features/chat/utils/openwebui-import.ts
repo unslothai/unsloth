@@ -226,6 +226,13 @@ export function reasoningText(source: unknown): string {
 }
 
 const BUILTIN_TOOL_NAMES: Record<string, string> = { shell: "code_execution" };
+// Executed by the client, so neither hosted nor answered on its own (same set as chat-import).
+const CLIENT_RUN_CALLS = new Set([
+  "function_call",
+  "custom_tool_call",
+  "local_shell_call",
+  "computer_call",
+]);
 
 function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: boolean } {
   const parts: unknown[] = [];
@@ -317,7 +324,18 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
                         ? item.action
                         : {},
       };
-      const done = item.output ?? item.error ?? str(item.status);
+      const done =
+        item.output ??
+        (Array.isArray(item.outputs) && item.outputs.length > 0
+          ? item.outputs
+          : undefined) ??
+        (Array.isArray(item.results) && item.results.length > 0
+          ? item.results
+          : undefined) ??
+        item.error ??
+        str(item.status) ??
+        // A recorded hosted call finished; without the default the card spins forever.
+        (!CLIENT_RUN_CALLS.has(item.type as string) ? "completed" : undefined);
       if (done != null) part.result = done;
       toolCallIndex.set(callId, part);
       parts.push(part);
