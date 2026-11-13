@@ -1418,7 +1418,6 @@ def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
         ("Alpha-VLLM/Lumina-Image-2.0", True),
         ("HiDream-ai/HiDream-I1-Full", True),
         ("black-forest-labs/FLUX.1-dev", False),
-        # Small DiTs measured faster under INT8 and inside the LPIPS bar (diffusion_families SMALL_DIT note): INT8.
         ("Tongyi-MAI/Z-Image-Turbo", False),
         ("black-forest-labs/FLUX.2-klein-4B", False),
         ("black-forest-labs/FLUX.2-klein-base-4B", False),
