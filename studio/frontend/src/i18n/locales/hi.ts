@@ -4290,6 +4290,8 @@ export const hi = {
       lrSchedulerOptions: {
         linear: "Linear",
         cosine: "Cosine",
+        constantWithWarmup: "Constant + वार्मअप",
+        constant: "Constant",
       },
       batchSize: "बैच साइज़",
       batchSizeTooltip: "प्रति स्टेप प्रोसेस किए गए सैंपल। अधिक होने पर अधिक VRAM उपयोग करता है।",

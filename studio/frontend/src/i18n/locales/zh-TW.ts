@@ -4357,6 +4357,8 @@ export const zhTW = {
       lrSchedulerOptions: {
         linear: "線性",
         cosine: "餘弦",
+        constantWithWarmup: "恆定 + 暖身",
+        constant: "恆定",
       },
       batchSize: "批次大小",
       batchSizeTooltip: "每個步驟處理的樣本數。數值越高，使用的 VRAM 越多。",

@@ -4304,6 +4304,8 @@ export const ru = {
       lrSchedulerOptions: {
         linear: "Линейный",
         cosine: "Косинусный",
+        constantWithWarmup: "Постоянный + прогрев",
+        constant: "Постоянный",
       },
       batchSize: "Размер батча",
       batchSizeTooltip: "Образцов на шаг. Чем больше, тем больше VRAM.",

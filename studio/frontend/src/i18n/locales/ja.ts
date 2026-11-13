@@ -4238,6 +4238,8 @@ export const ja = {
       lrSchedulerOptions: {
         linear: "Linear",
         cosine: "Cosine",
+        constantWithWarmup: "Constant + ウォームアップ",
+        constant: "Constant",
       },
       batchSize: "バッチサイズ",
       batchSizeTooltip: "ステップごとに処理されるサンプル数。高いほど多くの VRAM を使用します。",

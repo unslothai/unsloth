@@ -4196,6 +4196,8 @@ export const zhCN = {
       lrSchedulerOptions: {
         linear: "线性",
         cosine: "余弦",
+        constantWithWarmup: "恒定 + 预热",
+        constant: "恒定",
       },
       batchSize: "批大小",
       batchSizeTooltip: "每步处理的样本数。越高占用越多 VRAM。",

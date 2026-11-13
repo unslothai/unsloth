@@ -4392,6 +4392,8 @@ export const th = {
       lrSchedulerOptions: {
         linear: "Linear",
         cosine: "Cosine",
+        constantWithWarmup: "Constant + วอร์มอัป",
+        constant: "Constant",
       },
       batchSize: "ขนาดแบตช์",
       batchSizeTooltip: "จำนวนตัวอย่างที่ประมวลผลต่อสเต็ป ค่าที่สูงขึ้นจะใช้ VRAM มากขึ้น",
