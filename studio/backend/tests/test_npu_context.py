@@ -367,6 +367,8 @@ class _Server:
             self.loads.append(json_body)
             self.ctx = json_body["ctx_size"]
             return _Response({"status": "success"})
+        if not self.loads:
+            return _Response({"all_models_loaded": []})
         rows = [
             {
                 "model_name": self.loads[-1]["model_name"],
