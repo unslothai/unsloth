@@ -7670,10 +7670,15 @@ def _late_encoder_pin_cap(
     def cap() -> int:
         budget = _streamed_pin_leftover_mib(0, False, device)
         owed = 0
+        later = False
         for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
             if pinner.module is module:
-                break
-            owed += pinner.outstanding_bytes()
+                later = True
+                continue
+            # a later whole or fixed-cap pin was budgeted by the plan: its bytes are committed before this cap runs
+            committed = getattr(pinner, "byte_cap", callable)
+            if not later or committed is None or isinstance(committed, int):
+                owed += pinner.outstanding_bytes()
         return max(0, (int(budget) << 20) - owed)
 
     return cap

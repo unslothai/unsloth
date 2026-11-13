@@ -339,3 +339,25 @@ def test_no_late_denoiser_pin_without_the_registered_pin(budget, monkeypatch):
     monkeypatch.setattr(dm, "_fast_pin_supported", lambda device = None: seen.append(device) or False)
     assert not dm._late_denoiser_pin_enabled(module, True, "cuda:0")
     assert seen == ["cuda:0"]
+
+
+@pytest.mark.parametrize("committed", [None, 2048 << 20])
+def test_the_late_denoiser_cap_reserves_a_later_encoder_pin_the_plan_committed(budget, committed):
+    # plan (False, True): the encoder is queued after the denoiser for a whole (or fixed-cap) pin of 2 GiB
+    pipe, dit, te = types.SimpleNamespace(), torch.nn.Module(), torch.nn.Module()
+    encoder = types.SimpleNamespace(
+        module = te, byte_cap = committed, outstanding_bytes = lambda: 2048 << 20
+    )
+    setattr(pipe, dm._PENDING_PINS_ATTR, [types.SimpleNamespace(module = dit), encoder])
+    budget["mib"] = 4096
+    assert dm._late_image_encoder_pin_cap(pipe, dit)() == 2048 << 20
+
+
+def test_a_later_late_capped_pinner_owes_nothing_to_an_earlier_one(budget):
+    pipe, dit, te = types.SimpleNamespace(), torch.nn.Module(), torch.nn.Module()
+    late = types.SimpleNamespace(
+        module = te, byte_cap = lambda: 0, outstanding_bytes = lambda: 2048 << 20
+    )
+    setattr(pipe, dm._PENDING_PINS_ATTR, [types.SimpleNamespace(module = dit), late])
+    budget["mib"] = 4096
+    assert dm._late_image_encoder_pin_cap(pipe, dit)() == 4096 << 20
