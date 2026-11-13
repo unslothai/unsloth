@@ -118,6 +118,8 @@ export interface LoadModelRequest {
   llama_extra_args?: string[] | null;
   tensor_parallel?: boolean | null;
   disable_vision?: boolean | null;
+  /** GGUF only: load with the repo's standalone Engram table of this precision; null keeps the quant's own. */
+  engram_precision?: string | null;
   /** "manual": gpu_layers -1 hands sizing to llama.cpp --fit, >= 0 pins layers/n_cpu_moe. */
   gpu_memory_mode?: "auto" | "manual";
   /** -1 = Auto (--fit). */
@@ -175,6 +177,18 @@ export interface GgufVariantDetail {
   partial?: boolean;
   /** Not repo-wide: one repo can hold several GGUF families. Null means the repo is one group. */
   dependency_key?: string | null;
+  /** Precision of the Engram table this quant ships with, when the repo publishes others. */
+  engram_precision?: string | null;
+  /** Engram precisions this quant loads with without downloading anything. */
+  engram_ready?: string[];
+}
+
+/** A standalone Engram table a GGUF repo publishes. */
+export interface EngramTableDetail {
+  precision: string;
+  filename: string;
+  size_bytes: number;
+  downloaded: boolean;
 }
 
 export interface GgufVariantsResponse {
@@ -186,6 +200,10 @@ export interface GgufVariantsResponse {
   context_length?: number | null;
   /** "mlx" for precision folders of an MLX repo. */
   variant_format?: string | null;
+  /** Standalone Engram tables, most precise first; absent or empty when the repo has none. */
+  engram_tables?: EngramTableDetail[];
+  /** Whether this server's llama.cpp takes --ple; null when there are no tables or no probe. */
+  engram_supported?: boolean | null;
 }
 
 export function isMultimodalResponse(
@@ -286,6 +304,8 @@ export interface LoadModelResponse {
   tensor_parallel?: boolean;
   /** Echoes the request, unlike vision_disabled_by_user below. */
   disable_vision?: boolean;
+  /** Standalone Engram table the model runs with; null when it runs with the quant's own. */
+  engram_precision?: string | null;
   vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
@@ -434,6 +454,8 @@ export interface InferenceStatusResponse {
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   disable_vision?: boolean;
+  /** Standalone Engram table the model runs with; null when it runs with the quant's own. */
+  engram_precision?: string | null;
   vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;

@@ -363,6 +363,12 @@ def FalconH1Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
+def _attention_input(layer, hidden_states):
+    # Every released Falcon-H1 config uses 1.0: skip the extra kernel and saved activation.
+    multiplier = layer.attention_in_multiplier
+    return hidden_states if multiplier == 1 else hidden_states * multiplier
+
+
 # Ported from transformers models/falcon_h1/modeling_falcon_h1.py
 def FalconH1DecoderLayer_fast_forward(
     self,
@@ -397,7 +403,7 @@ def FalconH1DecoderLayer_fast_forward(
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         attention_hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states = hidden_states,
+            hidden_states = _attention_input(self, hidden_states),
             causal_mask = causal_mask,
             attention_mask = attention_mask,
             position_ids = position_ids,
@@ -439,7 +445,7 @@ def FalconH1DecoderLayer_fast_forward(
         mamba_hidden_states = mamba_hidden_states * self.ssm_out_multiplier
 
         attention_hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states = hidden_states,
+            hidden_states = _attention_input(self, hidden_states),
             causal_mask = causal_mask,
             attention_mask = attention_mask,
             position_ids = position_ids,
@@ -543,7 +549,7 @@ def _FalconH1_fast_forward_inference(
             )
             attention_hidden_states, present_key_value = attention_fast_forward_inference(
                 decoder_layer.self_attn,
-                hidden_states = X * decoder_layer.attention_in_multiplier,
+                hidden_states = _attention_input(decoder_layer, X),
                 past_key_value = past_key_values[idx],
                 position_ids = position_ids,
                 attention_mask = attention_mask,

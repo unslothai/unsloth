@@ -46,6 +46,7 @@ export {
 export type {
   ApiMonitorEntry,
   BackendModelDetails,
+  EngramTableDetail,
   GgufVariantDetail,
   GgufVariantsResponse,
   InferenceStatusResponse,

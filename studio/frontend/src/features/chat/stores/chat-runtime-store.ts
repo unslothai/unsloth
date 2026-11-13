@@ -2599,6 +2599,9 @@ type ChatRuntimeStore = {
   loadedCtxCheckpoints: number | null;
   cacheRam: number | null;
   loadedCacheRam: number | null;
+  /** GGUF only: standalone Engram table precision as chosen and as the resident load ran it. */
+  engramPrecision: string | null;
+  loadedEngramPrecision: string | null;
   tensorParallel: boolean;
   loadedTensorParallel: boolean | null;
   loadedDisableVision: boolean | null;
@@ -4382,6 +4385,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedCtxCheckpoints: null,
   cacheRam: null,
   loadedCacheRam: null,
+  engramPrecision: null,
+  loadedEngramPrecision: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   loadedDisableVision: null,
@@ -5321,6 +5326,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedCtxCheckpoints: null,
       cacheRam: null,
       loadedCacheRam: null,
+      engramPrecision: null,
+      loadedEngramPrecision: null,
       tensorParallel: false,
       loadedTensorParallel: null,
   loadedDisableVision: null,

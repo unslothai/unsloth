@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import functools
 import gc
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -27,6 +28,7 @@ import os
 import sys
 import time
 import types
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
@@ -125,6 +127,17 @@ VRAM_BUDGET_ENV = "UNSLOTH_H3_IMAGE_VRAM_GB"
 HOST_BUDGET_ENV = "UNSLOTH_H3_IMAGE_HOST_GB"
 # "0": stream from pageable memory (ModuleListStreamer) instead of the pinned prefetch streamer
 PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
+# "0": run every reference through the VAE encoder on every render (no posterior cache)
+REF_CACHE_ENV = "UNSLOTH_H3_IMAGE_REF_CACHE"
+# "0": keep the allocator blocks the load's staging and lever installs freed reserved on the card
+TRIM_AFTER_LOAD_ENV = "UNSLOTH_H3_IMAGE_TRIM_AFTER_LOAD"
+# Posteriors kept per pipeline (a 2720x1536 reference is about 3 MB of mean / log-variance on the device)
+REF_CACHE_ENTRIES = 8
+
+
+def ref_cache_enabled() -> bool:
+    return (os.environ.get(REF_CACHE_ENV) or "1").strip().lower() not in ("0", "off", "false", "no")
+
 
 QUANT_SCHEMES = ("int8", "fp8")
 # ConvRot group: the one the H3 video denoiser and its hosted encoder use (divides 5376, 7168 and 14336).
@@ -1104,6 +1117,8 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         self._unsloth_h3_te_loader: Optional[Callable[[], Any]] = None
         self._unsloth_h3_streamers: list = []
         self._unsloth_h3_last_stats: dict = {}
+        self._unsloth_h3_ref_posteriors: "OrderedDict[tuple, Any]" = OrderedDict()
+        self._unsloth_h3_ref_stats: dict = {"hits": 0, "misses": 0}
 
     @property
     def interrupt(self) -> bool:
@@ -1162,10 +1177,15 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             streamer._host.clear()
         self._unsloth_h3_streamers.clear()
         self._unsloth_h3_te_loader = None
+        self.__dict__.get("_unsloth_h3_ref_posteriors", OrderedDict()).clear()
         owned = getattr(self, "_unsloth_h3_owned", ())
         for name in ("transformer", "text_encoder", "vae"):
             module = getattr(self, name, None)
             if module is not None:
+                if name == "vae":
+                    # the VAE canvas's tile graphs keep their private pools while anything references the VAE
+                    from .diffusion_vae_canvas import release_graphs
+                    release_graphs(module)
                 if name in owned:
                     free_module_storage(module)
                 setattr(self, name, None)
@@ -1185,7 +1205,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         vision_images: Optional[list] = None,
     ) -> tuple:
         """(prompt_embeds, per-row text tags). Named like diffusers' encoder entry point so ``diffusion_prompt_cache``
-        wraps it; VAE reference latents are never cached (seeded sample)."""
+        wraps it; the VAE reference latents are sampled per render from a cached posterior (``_encode_references``)."""
         import torch
 
         tokenizer = self.tokenizer
@@ -1262,10 +1282,27 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             out = []
             r = H3_IMAGE_VAE_SCALE
             for image in images:
-                pixels = torch.from_numpy(np.array(image)).to(device).permute(2, 0, 1)[None]
-                pixels = pixels[..., : pixels.shape[-2] // r * r, : pixels.shape[-1] // r * r]
-                pixels = (pixels.to(torch.float32).div(255.0) - mean) / std
-                posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                array = np.array(image)
+                key = None
+                if ref_cache_enabled():
+                    digest = hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
+                    key = (id(vae), str(vae_dtype), str(device), tuple(array.shape), digest)
+                cache = self.__dict__.setdefault("_unsloth_h3_ref_posteriors", OrderedDict())
+                stats = self.__dict__.setdefault("_unsloth_h3_ref_stats", {"hits": 0, "misses": 0})
+                posterior = cache.get(key) if key is not None else None
+                if posterior is not None:
+                    cache.move_to_end(key)
+                    stats["hits"] += 1
+                else:
+                    pixels = torch.from_numpy(array).to(device).permute(2, 0, 1)[None]
+                    pixels = pixels[..., : pixels.shape[-2] // r * r, : pixels.shape[-1] // r * r]
+                    pixels = (pixels.to(torch.float32).div(255.0) - mean) / std
+                    posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                    if key is not None:
+                        stats["misses"] += 1
+                        cache[key] = posterior
+                        while len(cache) > REF_CACHE_ENTRIES:
+                            cache.popitem(last = False)
                 latents = posterior.sample(generator = generator).to(torch.float16).float()
                 latents = latents[..., : latents.shape[-2] // 2 * 2, : latents.shape[-1] // 2 * 2]
                 out.append((latents - lmean) / lstd)
@@ -1409,7 +1446,12 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         else:
             noise = latents.to(device, torch.float32).reshape(shape)
         target_rows = patchify(noise, patch)
+        ref_hits = int(self.__dict__.get("_unsloth_h3_ref_stats", {}).get("hits", 0))
         reference_latents = self._encode_references(vae_refs, generator) if vae_refs else []
+        if vae_refs:
+            stats["reference_cached"] = (
+                int(self.__dict__.get("_unsloth_h3_ref_stats", {}).get("hits", 0)) - ref_hits
+            )
         grids = [tuple(r.shape[-2:]) for r in reference_latents]
         pos, tags, image_idx, text_idx, n_ref = build_packed_layout(text_tags, grids, lh, lw, patch)
         if reference_latents:
@@ -1480,6 +1522,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             return [final[0]]
         images = self._decode(final, height, width, output_type)
         stats["decode_s"] = time.perf_counter() - t2
+        vae_stats = getattr(self.vae, "__dict__", {}).get("_unsloth_canvas_stats")
+        if vae_stats:
+            stats["vae"] = dict(vae_stats)
         stats["total_s"] = time.perf_counter() - t0
         stats["streamers"] = self._streamer_stats()
         self._unsloth_h3_last_stats = stats
@@ -1866,44 +1911,16 @@ def wrap_row_multiple(module: Any, names: Sequence[str]) -> int:
     return wrapped
 
 
-def resolve_dit_scheme(
-    requested: Optional[str],
-    *,
-    device: Any,
+def _auto_scheme_by_fit(
     vram_gb: Optional[float],
-    width: int = 2048,
-    height: int = 2048,
-    host_gb: Optional[float] = None,
-    te_gb: Optional[float] = None,
-    inflight: int = 1,
+    width: int,
+    height: int,
+    host_gb: Optional[float],
+    te_gb: Optional[float],
+    inflight: int,
 ) -> tuple[Optional[str], str]:
-    """(scheme or None for bf16, reason). Auto: bf16 when the table-form bf16 DiT fits the card beside its working
-    set, else int8. With ``te_gb``, bf16 must also stay resident beside the encoder (48 GB cards go int8).
-    fp8 needs SM 8.9+ (else int8)."""
-    import torch
-
-    req = (requested or "auto").strip().lower()
-    if req in ("bf16", "none", "off", "dense"):
-        return None, "bf16 requested"
-    dev = torch.device(device)
-    if dev.type != "cuda":
-        if req in QUANT_SCHEMES:
-            return None, f"{req} needs a CUDA device; {dev.type} runs bf16"
-        return None, f"{dev.type}: bf16"
-    try:
-        import torchao  # noqa: F401
-    except Exception:  # noqa: BLE001 - torchao absent
-        return None, "torchao unavailable: bf16"
-    if req == "fp8":
-        cap = torch.cuda.get_device_capability(dev)
-        if tuple(cap) < (8, 9):
-            return (
-                "int8",
-                f"fp8 needs compute capability 8.9+ (this card is {cap[0]}.{cap[1]}): int8 instead",
-            )
-        return "fp8", "fp8 requested"
-    if req == "int8":
-        return "int8", "int8 requested"
+    """Auto by fit: bf16 when the table-form bf16 DiT stays on the card (beside the encoder with ``te_gb``), else
+    int8."""
     need = H3_IMAGE_DIT_TABLE_BF16_GB + activation_gb(width, height) + 1.5
     if vram_gb is not None and vram_gb >= need:
         if te_gb is None:
@@ -1934,6 +1951,59 @@ def resolve_dit_scheme(
         "int8",
         f"auto: bf16 DiT would not fit {vram_gb if vram_gb is not None else 0:.1f} GB, int8 ConvRot",
     )
+
+
+def resolve_dit_scheme(
+    requested: Optional[str],
+    *,
+    device: Any,
+    vram_gb: Optional[float],
+    width: int = 2048,
+    height: int = 2048,
+    host_gb: Optional[float] = None,
+    te_gb: Optional[float] = None,
+    inflight: int = 1,
+) -> tuple[Optional[str], str]:
+    """(scheme or None for bf16, reason). Auto on NVIDIA sm_75+: int8, fp8, bf16 (int8 beat bf16 even where bf16 fits:
+    RTX PRO 6000 2048px 2.30 vs 3.52 s/image); ROCm and pre-Turing keep the fit-based pick. Explicit fp8 needs SM 8.9+."""
+    import torch
+
+    req = (requested or "auto").strip().lower()
+    if req in ("bf16", "none", "off", "dense"):
+        return None, "bf16 requested"
+    dev = torch.device(device)
+    if dev.type != "cuda":
+        if req in QUANT_SCHEMES:
+            return None, f"{req} needs a CUDA device; {dev.type} runs bf16"
+        return None, f"{dev.type}: bf16"
+    try:
+        import torchao  # noqa: F401
+    except Exception:  # noqa: BLE001 - torchao absent
+        return None, "torchao unavailable: bf16"
+    if req == "fp8":
+        cap = torch.cuda.get_device_capability(dev)
+        if tuple(cap) < (8, 9):
+            return (
+                "int8",
+                f"fp8 needs compute capability 8.9+ (this card is {cap[0]}.{cap[1]}): int8 instead",
+            )
+        return "fp8", "fp8 requested"
+    if req == "int8":
+        return "int8", "int8 requested"
+    from core._torchao_stub import torch_is_rocm
+
+    from .diffusion_transformer_quant import hosted_auto_scheme_order
+
+    cap = tuple(torch.cuda.get_device_capability(dev))
+    if torch_is_rocm() or cap < (7, 5):
+        # ROCm reports gfx versions through the capability API, and pre-Turing cards have no int8 tensor cores: no
+        # measurement covers either, so they keep the fit-based choice (bf16 only when it fits, else int8).
+        return _auto_scheme_by_fit(vram_gb, width, height, host_gb, te_gb, inflight)
+    order = hosted_auto_scheme_order(H3_IMAGE_FAMILY_NAME, cap)
+    if not order:
+        return None, f"auto: no int8 or fp8 rung on compute capability {cap[0]}.{cap[1]}, bf16"
+    label = "int8 ConvRot" if order[0] == "int8" else order[0]
+    return order[0], f"auto: {label} (auto order int8, fp8, bf16)"
 
 
 def device_budgets(device: Any) -> tuple[Optional[float], Optional[float]]:
@@ -2479,13 +2549,21 @@ def load_h3_image_text_encoder(
 
 
 def pin_room_bytes(plan: H3ImagePlan, pinned: Sequence[Any] = ()) -> Optional[int]:
-    """Host bytes left for pins: host budget less what the plan holds less ``pinned`` streamers' locks. Pins count on
-    top of the pageable copies they replace (those may stay cached). None without a host budget."""
+    """Host bytes left for pins, net of ``pinned`` locks that did not replace counted host copies. None without a budget."""
     if plan.host_gb is None or plan.host_need_gb is None:
         return None
     room = int((float(plan.host_gb) - float(plan.host_need_gb)) * 1e9)
-    room -= sum(int(getattr(s, "pinned_bytes", 0) or 0) for s in pinned if s is not None)
+    room -= sum(
+        max(0, int(getattr(s, "pinned_bytes", 0) or 0) - int(getattr(s, "replaced_bytes", 0) or 0))
+        for s in pinned
+        if s is not None
+    )
     return max(0, room)
+
+
+def pins_replace_counted(plan: H3ImagePlan) -> bool:
+    """Pins may replace counted host copies only where the plan keeps every host copy (the encoder too)."""
+    return bool(plan.host_gb is not None and plan.host_need_gb is not None and plan.te_kept_on_host)
 
 
 def make_list_streamer(
@@ -2498,6 +2576,7 @@ def make_list_streamer(
     pinned: bool = True,
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
+    replaces_counted: bool = False,
 ) -> Any:
     """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``."""
     streamer = None
@@ -2511,6 +2590,8 @@ def make_list_streamer(
             logger = logger,
             reserve_bytes = reserve_bytes,
             max_pin_bytes = max_pin_bytes,
+            replaces_counted = replaces_counted,
+            release_after_forward = role == "text_encoder",
         )
     if streamer is None:
         streamer = ModuleListStreamer(members, device, resident)
@@ -2529,6 +2610,7 @@ def stream_list(
     pinned: bool = True,
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
+    replaces_counted: bool = False,
 ) -> Any:
     """``make_list_streamer``, registered on the pipe by role."""
     streamer = make_list_streamer(
@@ -2540,6 +2622,7 @@ def stream_list(
         pinned = pinned,
         reserve_bytes = reserve_bytes,
         max_pin_bytes = max_pin_bytes,
+        replaces_counted = replaces_counted,
     )
     pipe._unsloth_h3_streamers.append(streamer)
     return streamer
@@ -2565,12 +2648,13 @@ def _place_streamed_dit(
         resident,
         "transformer",
         max_pin_bytes = pin_room_bytes(plan, pinned_already),
+        replaces_counted = pins_replace_counted(plan),
     )
     streamer._unsloth_resident = resident
     return streamer
 
 
-# "0": native attention; "1": probe-gated SageAttention on the DiT blocks; unset: as the checkpoint declares
+# "0": native attention; "1": probe-gated SageAttention, no timing race; unset: kept only where it times faster
 INT8_ATTENTION_ENV = "UNSLOTH_H3_IMAGE_INT8_ATTENTION"
 CHECKPOINT_ATTENTION_ATTR = "_unsloth_checkpoint_attention"
 # the INT8 DiT checkpoint runs INT8 attention on its DiT blocks unless its file says otherwise
@@ -2641,6 +2725,25 @@ def install_checkpoint_attention(
         restore()
         setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
         return None
+    forced = (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
+        "1",
+        "on",
+        "true",
+        "yes",
+    )
+    race = None if forced else race_checkpoint_attention(transformer, saved, dtype)
+    if race is not None and not race["keep"]:
+        restore()
+        setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
+        log.info(
+            "diffusion.minimax_h3_image: INT8 attention (%s) kept off: a DiT block's attention took %.2f ms with it "
+            "against %.2f ms with %s on this card",
+            engaged,
+            race["ms"][1],
+            race["ms"][0],
+            race["native"],
+        )
+        return None
     blocks = {id(m) for b in getattr(transformer, "transformer_blocks", ()) for m in b.modules()}
     restore(only = [m for m in modules if id(m) not in blocks])
     setattr(pipe, ATTENTION_SAVED_ATTR, (saved, tag))
@@ -2650,6 +2753,67 @@ def install_checkpoint_attention(
         sum(1 for m in modules if id(m) in blocks),
     )
     return engaged
+
+
+# Rows of the race's packed sequence: a 2048x2048 canvas (64 x 64 latent patches) plus a prompt.
+_RACE_ROWS = (4096, 300)
+
+
+def race_checkpoint_attention(transformer: Any, saved: dict, dtype: Any) -> Optional[dict]:
+    """Time one resident DiT block's attention module with the engaged INT8 backend against the backend it had
+    (which keeps Studio's strided layout and fused q/k norm + RoPE); ``keep`` when INT8 is more than 2% faster.
+    None when no block's attention is on the card (nothing to time: the caller keeps the INT8 route)."""
+    import torch
+
+    attn = None
+    norm = None
+    for block in getattr(transformer, "transformer_blocks", ()) or ():
+        module = getattr(block, "attn", None)
+        params = list(module.parameters()) if module is not None else []
+        if module in saved and params and all(p.is_cuda for p in params):
+            attn, norm = module, getattr(block, "norm1", None)
+            break
+    rope = getattr(transformer, "rope", None)
+    if attn is None or norm is None or rope is None:
+        return None
+    engaged = attn.processor._attention_backend
+    native = saved[attn]
+    device = next(attn.parameters()).device
+    width = int(norm.normalized_shape[0])
+    image, text = _RACE_ROWS
+    side = int(math.isqrt(image))
+    try:
+        with torch.no_grad(), torch.cuda.device(device):
+            g = torch.Generator(device = "cpu").manual_seed(7)
+            x = torch.randn(1, image + text, width, generator = g).to(device = device, dtype = dtype)
+            idx = torch.arange(image)
+            pos = torch.zeros(image + text, 3, dtype = torch.float64)
+            pos[text:, 1] = (idx // side).double()
+            pos[text:, 2] = (idx % side).double()
+            pos[:text, 0] = torch.arange(text).double()
+            rotary = rope(pos.to(device))
+            ms = []
+            for backend in (native, engaged):
+                attn.processor._attention_backend = backend
+                for _ in range(2):
+                    attn(x, rotary, None)
+                times = []
+                for _ in range(5):
+                    a = torch.cuda.Event(enable_timing = True)
+                    b = torch.cuda.Event(enable_timing = True)
+                    a.record()
+                    attn(x, rotary, None)
+                    b.record()
+                    b.synchronize()
+                    times.append(a.elapsed_time(b))
+                ms.append(sorted(times)[len(times) // 2])
+    except torch.OutOfMemoryError:
+        raise
+    except Exception:  # noqa: BLE001 - untimed: the caller keeps the INT8 route it already engaged
+        return None
+    finally:
+        attn.processor._attention_backend = engaged
+    return {"keep": ms[1] < 0.98 * ms[0], "ms": ms, "native": str(native)}
 
 
 def remove_checkpoint_attention(pipe: Any) -> int:
@@ -2703,6 +2867,7 @@ def _place_text_encoder(
             pinned = not per_prompt,
             reserve_bytes = reserve_bytes,
             max_pin_bytes = pin_room_bytes(plan, pinned_already),
+            replaces_counted = pins_replace_counted(plan),
         )
     return encoder
 
@@ -2726,7 +2891,7 @@ def load_minimax_h3_image_pipeline(
 ) -> Any:
     """A ready ``MiniMaxH3ImagePipeline`` for ``repo_id`` (Hub id or local folder) placed for ``device``.
 
-    ``transformer_quant``: None/"auto" (bf16 when it fits, else int8), "int8", "fp8", "bf16". ``text_encoder_quant``:
+    ``transformer_quant``: None/"auto" (int8, then fp8, then bf16), "int8", "fp8", "bf16". ``text_encoder_quant``:
     "int8" (Studio's hosted ConvRot conditioner) or None (bf16). ``text_encoder`` / ``transformer`` hand in prebuilt
     components (tests, a hosted prequant DiT)."""
     import torch
@@ -2961,9 +3126,21 @@ def load_minimax_h3_image_pipeline(
     from .diffusion_minimax_h3_image_speed import install_h3_image_speed
 
     speed_levers = install_h3_image_speed(pipe, plan, device, logger)
+    speed_levers = tuple(speed_levers) + install_h3_image_vae_canvas(vae, device, logger)
     int8_attention = install_checkpoint_attention(pipe, device, scheme = scheme, logger = logger)
     if int8_attention:
         speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)
+    if device.type == "cuda" and (
+        os.environ.get(TRIM_AFTER_LOAD_ENV) or "1"
+    ).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        # Load staging and probes leave several GB of freed blocks reserved: release them before rendering.
+        gc.collect()
+        _empty_cache()
     report = H3ImageLoadReport(
         scheme = scheme,
         scheme_reason = scheme_reason,
@@ -2984,6 +3161,22 @@ def load_minimax_h3_image_pipeline(
         pass
     logger.info("diffusion.minimax_h3_image: loaded %s", report.as_dict())
     return pipe
+
+
+def install_h3_image_vae_canvas(
+    vae: Any,
+    device: Any,
+    log: Any = None,
+) -> tuple:
+    """Composited-canvas tiled decode (seam-correct corners) plus, under the speed levers on CUDA, tile batching,
+    the tile-graph race and the probed fp16 decoder (``diffusion_vae_canvas``). Never raises."""
+    try:
+        from .diffusion_minimax_h3_image_speed import speed_enabled
+        from .diffusion_vae_canvas import install
+        return install(vae, device, speed = speed_enabled(), half = True, logger = log or logger)
+    except Exception as exc:  # noqa: BLE001 - the stock tiled decode stays
+        (log or logger).warning("diffusion.minimax_h3_image: VAE canvas skipped: %s", exc)
+        return ()
 
 
 def _module_gb(module: Any) -> float:

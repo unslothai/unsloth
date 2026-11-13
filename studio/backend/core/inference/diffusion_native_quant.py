@@ -557,6 +557,16 @@ def native_linear_class():
                     )
             else:
                 weight = linear.weight.detach()
+                if (
+                    isinstance(cast, torch.dtype)
+                    and cast.is_floating_point
+                    and weight.is_floating_point()
+                    and weight.dtype != cast
+                ):
+                    # A manual-cast Linear stores bf16 for a float16 / float32 compute: round to the compute dtype
+                    # first, as a load widened on the host would have (bf16 -> float16 is not exact), so the
+                    # codes are the same either way.
+                    weight = weight.to(cast)
                 with torch.no_grad():
                     w = weight.float()
                     if self.rot_group:
