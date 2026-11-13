@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
-import { validateLibrarySearch } from "@/features/library";
+import { validateLibrarySearch } from "@/features/library/search";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 

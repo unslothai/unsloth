@@ -160,6 +160,8 @@ class TPConfig:
     # {"layers.*.self_attn.q_proj": "colwise", ...}; None = the model's TP plan, else structural discovery.
     plan: Optional[dict] = None
     # Broadcast trainable parameters from tp rank 0 first (every rank must start from the same adapter).
+    # False: the caller guarantees it, e.g. a loaded adapter or the same seed before get_peft_model on every
+    # rank (random LoRA inits draw full-size factors, so per-rank seeds give per-rank factors).
     sync_trainable: bool = True
 
 
@@ -897,6 +899,18 @@ def _refuse_base(
     if getattr(type(base), "_unsloth_mxfp4_packed_linear", False):
         raise ValueError(
             f"Unsloth: tensor parallelism v1 does not support packed MXFP4 weights ({path})."
+        )
+    # Every projection runs through the region's own local-shard GEMM, never the module's forward: fp8
+    # training layers would silently train in 16 bit, and per-shard scales would differ from one process.
+    float8_linear = any(
+        c.__name__ == "Float8Linear" and c.__module__.startswith("torchao.")
+        for c in type(base).__mro__
+    )
+    if "_unsloth_fp8_lora" in base.__dict__ or float8_linear:
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 does not support fp8 training layers ({path}: "
+            f"{'torchao Float8Linear' if float8_linear else 'fp8 LoRA base'}); its local-shard GEMMs "
+            "would bypass the fp8 path. Use UNSLOTH_FSDP2=1 (data parallel) for float8_training, or drop it."
         )
     for module in proj_module.modules():
         forward_qat = any("FakeQuantized" in c.__name__ for c in type(module).__mro__)
@@ -2227,8 +2241,12 @@ def tp_full_state_dict(model, adapters_only = False):
 def _peft_state_dict(model, **kwargs):
     """What PEFT selects for save_pretrained, DTensors gathered; local tensors by reference (PEFT reruns
     its selection inside save_pretrained and must see the same model)."""
+    import inspect
+
     from peft import get_peft_model_state_dict
 
+    # Wrappers (zoo's expert factor swap) return new tensors the id match cannot find; save_pretrained converts.
+    get_peft_model_state_dict = inspect.unwrap(get_peft_model_state_dict)
     raw = model.state_dict(keep_vars = True)
     adapters = kwargs.get("selected_adapters") or list(model.peft_config)
     known = {id(value) for value in raw.values()}
@@ -2316,20 +2334,21 @@ def _preloaded(t):
 
 
 def _refuse_weight_dependent_lora_init(model):
-    """PiSSA / OLoRA / CorDA / EVA / LoftQ build the factors (and residual) from the weight; on a sharded_loading
-    slice that is this rank's slice only, so the factors come out shard-sized and differ per rank."""
+    """PiSSA / OLoRA / CorDA / EVA / LoftQ / MiCA build the factors (and residual) from the weight; on a sharded_loading
+    slice that is this rank's slice only, so the factors come out shard-sized and differ per rank. Orthogonal init
+    reads only the full in / out features and the dtype, so like gaussian it gives full-size factors."""
     configs = {}
     for level in _tp_chain(model):
         configs.update(getattr(level, "peft_config", None) or {})
     bad = {
         name: cfg.init_lora_weights
         for name, cfg in configs.items()
-        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian")
+        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian", "orthogonal")
     }
     if bad:
         raise ValueError(
             f"Unsloth: init_lora_weights {bad} depends on the base weight, which sharded_loading holds only as "
-            "this rank's slice; use init_lora_weights = True / 'gaussian', or load the full model (no "
+            "this rank's slice; use init_lora_weights = True / 'gaussian' / 'orthogonal', or load the full model (no "
             "sharded_loading) before get_peft_model and apply_tensor_parallel."
         )
 
@@ -2881,6 +2900,19 @@ def _tp_meshes(model):
     return tp, dp
 
 
+def _env_data_layout():
+    """(data parallel size, rank) of an UNSLOTH_PARALLEL / UNSLOTH_TP_SIZE layout with context parallel, else
+    None (the dp mesh is then the data mesh)."""
+    import sys
+
+    tp_env = sys.modules.get(__name__.rsplit(".", 1)[0] + ".tp_env")
+    layout = getattr(tp_env, "_LAYOUT", None) if tp_env is not None else None
+    if layout is None or layout is getattr(tp_env, "_UNSET", None) or getattr(layout, "cp", 1) == 1:
+        return None
+    data = layout.data_mesh
+    return (layout.dp, data.get_local_rank() if data is not None else 0)
+
+
 def _ddp_mesh(model):
     return next(
         (m.__dict__[_DDP_MESH] for m in _tp_chain(model) if m.__dict__.get(_DDP_MESH) is not None),
@@ -2939,13 +2971,27 @@ def _print_rank0(message):
         print(message)
 
 
-def _refuse_tp_trainer_args(args, cpu_shards = False):
+def _refuse_tp_trainer_args(
+    args,
+    cpu_shards = False,
+    pipeline = False,
+):
     problems = []
     if getattr(args, "deepspeed", None):
         problems.append("DeepSpeed")
     if getattr(args, "fsdp", None) or getattr(args, "parallelism_config", None) is not None:
         problems.append(
             "accelerate FSDP / ParallelismConfig (use shard_model over mesh['dp'] for data parallel)"
+        )
+    if (
+        not pipeline  # pp_env: the pipeline evaluates, gathering over the dp group only
+        and _env_data_layout()
+        is not None  # cp x tp: the eval loss is not gathered over the data mesh yet
+        and _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no")))
+        != "no"
+    ):
+        problems.append(
+            "evaluation during training with context parallel x tensor parallel (set eval_strategy = 'no')"
         )
     for flag in ("load_best_model_at_end", "push_to_hub"):
         if getattr(args, flag, False):
@@ -3088,7 +3134,7 @@ def tp_trainer_setup(
                 "Unsloth: pass the Trainer the outermost model (the one apply_tensor_parallel was given, or a "
                 "wrapper of it)."
             )
-        ranks = tp_mesh.size() * (dp_mesh.size() if dp_mesh is not None else 1)
+        ranks = tp_mesh.size() * (dp_mesh.size() if dp_mesh is not None else 1) * _pp_size(model)
         if dist.is_initialized() and ranks != dist.get_world_size():
             raise RuntimeError(
                 f"Unsloth: the Trainer on a tensor parallel model needs every rank in the tp mesh, or in the (dp, "
@@ -3101,18 +3147,27 @@ def tp_trainer_setup(
     tp_mesh, dp_mesh = _tp_meshes(model)
     cpu_shards = tp_mesh.device_type == "cpu"
     _tp_bnb_optim(trainer.args, cpu_shards)
-    _refuse_tp_trainer_args(trainer.args, cpu_shards)
+    from .pp_native import is_pipeline_parallel
+
+    pipeline = is_pipeline_parallel(model)
+    _refuse_tp_trainer_args(trainer.args, cpu_shards, pipeline)
     _refuse_full_finetuning_fsdp2(model)
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
-    trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
-    trainer.accelerator.__dict__[_TP_GATHER] = dp_mesh
-    _tp_train_sampler(trainer, dp_size, dp_rank)
+    # The gradient mesh flattens (dp, cp) under context parallel, whose peers read the same rows.
+    cp_data = _env_data_layout()
+    data_size, data_rank = cp_data or (dp_size, dp_rank)
+    trainer.accelerator.__dict__[_TP_DATA] = (data_size, data_rank)
+    if not pipeline:  # pp_env gathers over its own dp group (pp_env._dp_gather)
+        trainer.accelerator.__dict__[_TP_GATHER] = dp_mesh
+    _tp_train_sampler(trainer, data_size, data_rank)
     trainer.__dict__["_unsloth_tensor_parallel"] = (
         True  # the generated TRL trainers skip for_inference()
     )
     _tp_scaler(trainer, dp_size)
     trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
+    for name in ("evaluate", "predict") if cp_data is not None and not pipeline else ():
+        trainer.__dict__[name] = _refuse_tp_trainer_call(name)
     # Trainer checkpoints: per-rank local shards (instance level: before native FSDP2's class hooks, whose
     # full-state gathers do not restore the packed tp part order).
     for name, method in (
@@ -3137,6 +3192,9 @@ def tp_trainer_setup(
         from .fsdp2_native import _inner_optimizer, _mixed_param_groups, _split_mixed_param_groups
 
         inner = _inner_optimizer(optimizer)
+        from ..parallel_capabilities import refuse_shard_unaware_optimizer
+
+        refuse_shard_unaware_optimizer(inner, "tp")  # Muon would orthogonalize the tp shards
         if getattr(trainer, "lr_scheduler", None) is not None and _mixed_param_groups(inner):
             # A prebuilt scheduler keeps one base LR / lambda per original group: split groups would go unscheduled.
             raise ValueError(
@@ -3232,6 +3290,12 @@ def _ckpt_path(directory, rank):
     return os.path.join(directory, _CKPT_DIR, f"rank{rank:05d}.pt")
 
 
+def _cp_width():
+    from . import tp_env
+    layout = tp_env._LAYOUT if tp_env._LAYOUT is not tp_env._UNSET else None
+    return int(getattr(layout, "cp", 1) or 1)
+
+
 def _tp_layout(trainer):
     import torch.distributed as dist
 
@@ -3241,8 +3305,16 @@ def _tp_layout(trainer):
         for name, p in trainer.model.named_parameters()
         if p.requires_grad
     ]
+    pp = _pp_size(trainer.model)
+    cp = _cp_width()
     return {
         "world": dist.get_world_size() if dist.is_initialized() else 1,
+        **(
+            {"pp": pp} if pp > 1 else {}
+        ),  # pp_env Trainer checkpoints (a tp-only layout keeps its old keys)
+        # dp_mesh is the flattened (dp, cp) mesh: without cp, tp=2,cp=2 and tp=2 x 2 replicas look alike, and the
+        # resumed step count would skip the wrong number of rows.
+        **({"cp": cp} if cp > 1 else {}),
         "tp": tp_mesh.size() if tp_mesh is not None else 1,
         "dp": dp_mesh.size() if dp_mesh is not None else 1,
         "dp_kind": None
@@ -3353,13 +3425,13 @@ def _tp_resume_payload(self, checkpoint):
     if want != got:
         diff = {
             k: (got.get(k), want.get(k))
-            for k in ("world", "tp", "dp", "dp_kind")
+            for k in ("world", "pp", "cp", "tp", "dp", "dp_kind")
             if got.get(k) != want.get(k)
         }
         raise RuntimeError(
             f"Unsloth: tensor parallel resume from {checkpoint}: the checkpoint was written on another layout "
             f"({diff or 'trainable parameter names / shard shapes differ'}); resume with the same world size, "
-            "UNSLOTH_TP_SIZE and data parallel mode."
+            "UNSLOTH_TP_SIZE / UNSLOTH_CP_SIZE and data parallel mode."
         )
     self.__dict__["_unsloth_tp_resume"] = (checkpoint, payload)
     return payload
@@ -3428,6 +3500,17 @@ def _dp_gather_object(obj, dp_mesh):
     return [x for y in out for x in y]
 
 
+def _refuse_tp_trainer_call(name):
+    def refuse(*args, **kwargs):
+        raise RuntimeError(
+            f"Unsloth: Trainer.{name} is not supported under context parallel x tensor parallel yet (the eval "
+            "loss is not gathered over the data mesh); evaluate without context parallel, or on one GPU."
+            + _env_hint()
+        )
+
+    return refuse
+
+
 def _tp_trainer_save_model(
     self,
     output_dir = None,
@@ -3476,8 +3559,14 @@ def _install_tp_accelerate_hooks():
     original_gather_for_metrics = Accelerator.gather_for_metrics
 
     def _tp_model(self, model):
-        if self.__dict__.get(_TP_DATA) is None or not is_tensor_parallel(model):
+        if self.__dict__.get(_TP_DATA) is None:
             return False
+        if not is_tensor_parallel(model):
+            from .pp_native import is_pipeline_parallel
+            if not is_pipeline_parallel(
+                model
+            ):  # UNSLOTH_PP_SIZE (pp_env.pp_trainer_setup): no DDP either
+                return False
         try:
             from .fsdp2_native import is_native_fsdp2
         except Exception:
@@ -3519,8 +3608,7 @@ def _install_tp_accelerate_hooks():
                 init_fn.func, *init_fn.args, **{**init_fn.keywords, "rank": dp_rank}
             )
         cls = type(self)
-        # accelerate shards the batches by num_processes / process_index: give it the dp layout, so the tp
-        # ranks of a replica read the same batches.
+        # accelerate shards by process index: give it the dp layout so tp ranks share batches.
         self.__class__ = type(
             "UnslothTensorParallelDataAccelerator",
             (cls,),

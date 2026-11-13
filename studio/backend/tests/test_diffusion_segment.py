@@ -38,9 +38,8 @@ def _no_other_gpu_owner(monkeypatch):
     """
     from core.inference import gpu_arbiter
 
-    # Every correlated global together: acquire_for() in later tests moves the account and epoch
-    # fields with the owner, so restoring only some of them would pair one claim's owner with
-    # another's account in the next test on this worker.
+    # Restore every correlated global together: acquire_for() moves owner, account and epoch as one,
+    # or later tests pair mismatched fields.
     for name, empty in (
         ("_owner", None),
         ("_owner_account", None),
@@ -363,9 +362,8 @@ def test_instance_masks_are_the_union_split_per_detection(tiny_sam3):
 
 
 def test_detailer_budget_moves_only_the_planes_it_keeps(tiny_sam3, monkeypatch):
-    """The Detailer's call (``plane_filter`` + ``max_planes``): the same instances as a plain instance-mask call,
-    bit-identical planes for exactly the detections it keeps (filter first, then the cap, in ``instances`` order),
-    no union mask, and at most ``max_planes`` planes moved off the device."""
+    """Detailer call (plane_filter + max_planes) keeps the instance-mask planes bit-identical,
+    filters before capping, and moves at most max_planes off-device."""
     import torch
     from PIL import Image
 
@@ -462,6 +460,62 @@ def _gpu_loaded(
 
 def _weights(model):
     return {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+
+@pytest.mark.parametrize(
+    "env,pin,fast",
+    [
+        (None, False, True),
+        ("", False, True),
+        ("0", False, False),
+        ("off", False, False),
+        ("1", True, False),
+    ],
+)
+def test_park_pins_with_registered_memory_by_default(monkeypatch, env, pin, fast):
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    _gpu_loaded(monkeypatch, segmenter, _small_model())
+    if env is None:
+        monkeypatch.delenv(seg.ENV_PARK_PIN, raising = False)
+    else:
+        monkeypatch.setenv(seg.ENV_PARK_PIN, env)
+    monkeypatch.setattr(
+        "core.inference.host_pinning.host_pinning_allowed", lambda device = None: True
+    )
+    made = []
+
+    class _Recorder(seg._HostWeights):
+        def __init__(
+            self,
+            pin,
+            fast = False,
+        ):
+            made.append((pin, fast))
+            super().__init__(False)
+
+    monkeypatch.setattr(seg, "_HostWeights", _Recorder)
+    monkeypatch.setattr(segmenter, "_load_weights", lambda *a, **k: None)
+    assert segmenter.release("image generation", wait = True, park = True) is True
+    assert made == [(pin, fast)]
+
+
+def test_fast_park_pin_falls_back_to_pageable_not_the_torch_allocator(monkeypatch):
+    import torch
+
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "registered_pinned_empty", lambda nbytes: None)
+    allocs = []
+    real_empty = torch.empty
+
+    def _empty(*a, **k):
+        allocs.append(k.get("pin_memory", False))
+        return real_empty(*a, **{key: v for key, v in k.items() if key != "pin_memory"})
+
+    monkeypatch.setattr(torch, "empty", _empty)
+    host = seg._HostWeights(False, fast = True)
+    host.park(_small_model())
+    assert host.pin is False and allocs[0] is False
 
 
 def test_park_keeps_the_model_in_host_ram_and_the_next_load_reuses_it(monkeypatch):
@@ -1396,8 +1450,7 @@ def test_a_release_timing_out_as_the_call_settles_still_unloads(monkeypatch):
     )
     worker.start()
     assert settled.wait(10)
-    # Timed out on a call that will not see the flag: the handover waits out the tail and unloads, never letting the
-    # next owner in beside the resident weights.
+    # Handover waits out the tail and unloads, so no new owner loads beside resident weights.
     assert segmenter.release("handover", wait = True, timeout = 0.05, handover = True) is True
     worker.join(10)
     assert not segmenter.loaded and segmenter._timer is None and segmenter._release_pending is False
@@ -1512,8 +1565,7 @@ def test_a_call_queued_across_a_handover_stays_off_the_card(tiny_sam3, monkeypat
         while not segmenter._run_lock.locked() and time.monotonic() < deadline:
             time.sleep(0.01)
         time.sleep(0.1)  # the queued call is now blocked on _run_lock
-        # The handover's release waits on the call in flight; it ends, the release takes and drops the lock, and the
-        # new owner goes on to register.
+        # Release waits on the in-flight call, then takes and drops the lock for the new owner.
         releaser = threading.Thread(
             target = lambda: segmenter.release("handover", wait = True, handover = handover)
         )
@@ -1673,7 +1725,7 @@ def test_no_find_starts_while_a_render_is_on_its_way(monkeypatch):
     )
     seen = []
 
-    async def _run(request):
+    async def _run(request, pinned_load = None):
         # The render released SAM 3 and has not taken the slot yet: a Find is refused, and frees the slot it took.
         with pytest.raises(seg.SegmenterBusyError, match = "generating"):
             seg.segment_image(_png_b64(), "sofa")

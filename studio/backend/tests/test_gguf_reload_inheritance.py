@@ -372,8 +372,7 @@ class TestRepeatLoadMatchesTheEffectiveCache:
 
     @staticmethod
     def _backend_running(effective):
-        """A backend carrying only the field the comparison reads: the per-axis
-        pair the live child was launched with."""
+        """Stub backend holding only the per-axis cache pair the live child was launched with."""
         from core.inference.llama_cpp import LlamaCppBackend
 
         b = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -417,8 +416,7 @@ class TestRepeatLoadMatchesTheEffectiveCache:
         assert "_norm(self._cache_type_kv)!=_norm(intent.cache_type_kv)" not in src
 
     def test_a_launch_time_rewrite_does_not_force_a_reload(self):
-        """Compare requested cache types, not launched ones: a launch-time f16 rewrite would force
-        reloads."""
+        """Compare requested cache types; a launch-time f16 rewrite would force reloads."""
         from core.inference.llama_cpp import (
             LlamaCppBackend,
             _effective_main_cache_types,
@@ -543,9 +541,7 @@ def test_canonical_model_identity_keeps_other_local_paths():
 
 
 def test_inheritance_works_when_stored_is_snapshot_and_load_is_repo():
-    """Storing extras under a snapshot-path identifier and resolving on a JIT
-    auto-switch load of the same repo id must still inherit them.
-    """
+    """Extras stored under a snapshot path still reach a JIT auto-switch load of the same repo id."""
     from routes.inference import _resolve_inherited_extra_args
 
     class FakeRequest:
@@ -714,8 +710,7 @@ def test_explicit_empty_extras_still_clears():
 
 
 def test_missing_extra_args_source_refuses_without_raising():
-    """Stored extras with no recorded source are not inherited, and the refusal log
-    must not index into the missing source."""
+    """Extras with no recorded source are not inherited, and the refusal log must not raise."""
     from routes.inference import _resolve_inherited_extra_args
     import routes.inference as _routes
 

@@ -13,6 +13,7 @@ import {
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { memoOnArray } from "@/components/assistant-ui/message-derived";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { cn } from "@/lib/utils";
 import { Badge, badgeVariants, type BadgeProps } from "./badge";
 import {
@@ -131,23 +132,31 @@ export interface SourceData {
   description?: string;
 }
 
-const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
+const SourceBadge: FC<{
+  source: SourceData;
+  allowRemoteIcons?: boolean;
+  showLinkPreviews: boolean;
+}> = ({
   source,
   allowRemoteIcons = true,
+  showLinkPreviews,
 }) => {
   const domain = extractDomain(source.url);
   const displayTitle = source.title || domain;
+  const badge = (
+    <span className="inline-block">
+      <Source href={source.url}>
+        <SourceIcon url={source.url} allowRemoteIcons={allowRemoteIcons} />
+        <SourceTitle>{displayTitle}</SourceTitle>
+      </Source>
+    </span>
+  );
+
+  if (!showLinkPreviews) return badge;
 
   return (
     <HoverCard openDelay={0} closeDelay={0}>
-      <HoverCardTrigger asChild>
-        <span className="inline-block">
-          <Source href={source.url}>
-            <SourceIcon url={source.url} allowRemoteIcons={allowRemoteIcons} />
-            <SourceTitle>{displayTitle}</SourceTitle>
-          </Source>
-        </span>
-      </HoverCardTrigger>
+      <HoverCardTrigger asChild>{badge}</HoverCardTrigger>
       <HoverCardContent
         side="top"
         align="start"
@@ -180,8 +189,7 @@ const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
 
 const NO_SOURCES: readonly SourceData[] = [];
 
-// The URL sources of a message as a string, so the selector result keeps its value while a
-// reply streams: every token rebuilds the content array, but not its source parts.
+// A string selector stays equal while streaming rebuilds the content array.
 const urlSourcesKey = memoOnArray((content: readonly unknown[]): string => {
   const sources: SourceData[] = [];
   for (const item of content) {
@@ -237,6 +245,7 @@ const SourcesGroupView = memo<{
   sources: readonly SourceData[];
   allowRemoteIcons: boolean;
 }>(({ sources, allowRemoteIcons }) => {
+  const showLinkPreviews = useChatPreferencesStore((s) => s.showLinkPreviews);
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -311,7 +320,12 @@ const SourcesGroupView = memo<{
 
       <div className="flex flex-wrap gap-1">
         {displayedSources.map((source) => (
-          <SourceBadge key={source.id} source={source} allowRemoteIcons={allowRemoteIcons} />
+          <SourceBadge
+            key={source.id}
+            source={source}
+            allowRemoteIcons={allowRemoteIcons}
+            showLinkPreviews={showLinkPreviews}
+          />
         ))}
         {shouldCollapse && !expanded && (
           <button

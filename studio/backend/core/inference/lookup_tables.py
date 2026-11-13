@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from typing import Mapping, Optional
 
+PLE_TABLE_TENSOR = "per_layer_token_embd.weight"
 LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
-    "gemma4": ("per_layer_token_embd.weight",),
-    "qwen4exp": ("per_layer_token_embd.weight",),
-    "deepseek41": ("per_layer_token_embd.weight",),
+    "gemma4": (PLE_TABLE_TENSOR,),
+    "qwen4exp": (PLE_TABLE_TENSOR,),
+    "deepseek41": (PLE_TABLE_TENSOR,),
 }
 LAZY_READ_AUTO_MIN_BYTES = 4 * 1024**3
 # Archs whose table a build marked by HOST_FORCED_TABLE_MARKER keeps on the host whatever -ot

@@ -258,6 +258,18 @@ async def remember_catalog_account(provider_id: str, account_id: str) -> None:
         save_oauth_bundle(provider_id, bundle)
 
 
+async def remember_plan_catalog(
+    provider_id: str, account_id: str, models: list[dict[str, Any]]
+) -> None:
+    """Kept in the bundle so it leaves with the account: a new sign-in writes a bundle without it."""
+    async with provider_oauth_write_guard(provider_id):
+        bundle = load_oauth_bundle(provider_id)
+        if not bundle or bundle.get("account_id") != account_id:
+            return
+        bundle["plan_catalog"] = {"account_id": account_id, "models": models}
+        save_oauth_bundle(provider_id, bundle)
+
+
 def load_oauth_bundle(provider_id: str) -> dict[str, Any] | None:
     raw = credential_secrets.get_secret(credential_secrets.OPENAI_CODEX_OAUTH_KIND, provider_id)
     if not raw:
@@ -289,15 +301,24 @@ async def _token_request(data: dict[str, Any]) -> dict[str, Any]:
     if response.status_code >= 400:
         error_code = ""
         try:
-            error = response.json().get("error")
-            error_code = error.get("code", "") if isinstance(error, dict) else str(error or "")
+            payload = response.json()
+            error = payload.get("error")
+            error_code = error.get("code") if isinstance(error, dict) else error
+            # Codex CLI falls back to a top-level code and compares case-insensitively.
+            error_code = str(error_code or payload.get("code") or "").lower()
         except Exception:
             pass
-        if data.get("grant_type") == "refresh_token" and error_code in {
-            "invalid_grant",
-            "invalid_refresh_token",
-            "refresh_token_expired",
-        }:
+        if data.get("grant_type") == "refresh_token" and (
+            response.status_code == 401
+            or error_code
+            in {
+                "invalid_grant",
+                "invalid_refresh_token",
+                "refresh_token_expired",
+                "refresh_token_reused",
+                "refresh_token_invalidated",
+            }
+        ):
             raise CodexReauthorizationRequired(
                 "ChatGPT authorization is no longer valid. Please reconnect."
             )
@@ -345,6 +366,18 @@ async def _exchange_code(
         flow.server = None
 
 
+async def _fail_on_callback_error(flow: OAuthFlow, query: dict[str, list[str]]) -> None:
+    if query.get("error") and not flow.consumed:
+        flow.consumed = True
+        flow.status = "error"
+        flow.message = "ChatGPT authorization was denied or failed. Start a new connection."
+        if flow.server:
+            flow.server.close()
+            flow.server = None
+        await _persist_terminal_flow(flow)
+        raise CodexAuthError(flow.message)
+
+
 async def _loopback_handler(
     flow: OAuthFlow, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
@@ -355,6 +388,7 @@ async def _loopback_handler(
         query = parse_qs(parsed.query)
         if parsed.path != OPENAI_CODEX_CALLBACK_PATH or query.get("state", [""])[0] != flow.state:
             raise CodexAuthError("Authorization state did not match.")
+        await _fail_on_callback_error(flow, query)
         code = query.get("code", [""])[0]
         if not code or flow.consumed:
             raise CodexAuthError("Authorization callback was invalid or already used.")
@@ -641,6 +675,7 @@ async def complete_browser_flow(provider_id: str, flow_id: str, callback_url: st
     query = parse_qs(parsed.query)
     if not secrets.compare_digest(query.get("state", [""])[0], flow.state):
         raise CodexAuthError("Authorization state did not match.")
+    await _fail_on_callback_error(flow, query)
     code = query.get("code", [""])[0]
     if not code:
         raise CodexAuthError("The callback URL did not contain an authorization code.")
@@ -879,5 +914,7 @@ async def resolve_access(
             proof = current.get("catalog_account_id")
             if proof is not None and refreshed.get("account_id") == current.get("account_id"):
                 refreshed["catalog_account_id"] = proof
+            if current.get("plan_catalog"):
+                refreshed["plan_catalog"] = current["plan_catalog"]
             save_oauth_bundle(provider_id, refreshed)
             return refreshed["access_token"], refreshed["account_id"]

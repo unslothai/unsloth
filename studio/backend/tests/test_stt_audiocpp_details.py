@@ -598,3 +598,18 @@ def test_training_moves_the_server_only_when_its_placement_changes(
         training[0] = active
         side.transcribe(wav_bytes(), QWEN3, "en")
     assert len(fake.starts) == (3 if gpu_visible else 1)
+
+
+def test_a_device_less_load_follows_the_saved_voice_setting(fake, side, monkeypatch, tmp_path):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    studio_db.upsert_app_settings({"stt_device": "cpu"}, read_back = False)
+    side.transcribe(wav_bytes(), QWEN3, "en")
+    assert side.device == "cpu"
+    # None keeps the running server: saving Auto later does not restart it under a caller.
+    studio_db.upsert_app_settings({"stt_device": "auto"}, read_back = False)
+    side.transcribe(wav_bytes(), QWEN3, "en")
+    assert side.device == "cpu" and len(fake.starts) == 1

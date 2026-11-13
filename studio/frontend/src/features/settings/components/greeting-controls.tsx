@@ -18,7 +18,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  Image01Icon,
+  ImageIcon,
   SmileIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -279,7 +279,7 @@ function GreetingTiles({ mode }: { mode: GreetingMode }) {
         className="max-h-8 max-w-[80%] object-contain"
       />
     ) : (
-      <HugeiconsIcon icon={Image01Icon} strokeWidth={1.75} className="size-5" />
+      <HugeiconsIcon icon={ImageIcon} strokeWidth={1.75} className="size-5" />
     ),
     off: (
       <HugeiconsIcon

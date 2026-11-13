@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const es419 = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, con marcador",
+    bookmark: "Marcar turno",
+    removeBookmark: "Quitar marcador",
+    navigator: "Turnos",
+  },
   chatBackground: {
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
@@ -200,12 +207,16 @@ export const es419 = {
         history: "Leyendo tu historial de navegación",
         move: "Moviendo el mouse",
         drag: "Arrastrando",
+        tabs: "Revisando las pestañas",
+        readFile: "Leyendo el archivo",
+        editFile: "Editando el archivo",
       },
     },
     title: "Navegador",
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
     newTabFullView: "Nueva pestaña en vista completa",
+    newTabFloating: "Nueva pestaña en ventana flotante",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -356,6 +367,8 @@ export const es419 = {
     askBeforeDownloadingSetting: "Preguntar antes de descargar",
     askBeforeDownloadingSettingDescription:
       "Confirma los archivos de sitios web antes de guardarlos.",
+    askBeforeProgramDownloadsSetting: "Preguntar antes de descargar programas",
+    askBeforeProgramDownloadsSettingDescription: "Confirma los archivos que pueden ejecutar programas, como .exe o .dmg, aunque las demás descargas no pregunten.",
     downloadSitesSetting: "Permisos de descarga por sitio",
     downloadSitesSettingDescription:
       "Sitios cuyas descargas elegiste permitir o bloquear siempre.",
@@ -364,6 +377,7 @@ export const es419 = {
     downloadSitesFor: "Descargas de {host}",
     downloadSitesRemove: "Olvidar {host}",
     downloadSiteAllow: "Permitir siempre",
+    downloadSiteAllowAll: "Permitir también programas",
     downloadSiteBlock: "Bloquear siempre",
     downloadPrompt: {
       title: "¿Descargar este archivo?",
@@ -371,6 +385,9 @@ export const es419 = {
       dangerous:
         "Los archivos como este pueden ejecutar programas en tu computadora. Descárgalo solo si confías en {host}.",
       remember: "Recordar para la próxima vez",
+      once: "Preguntar la próxima vez",
+      site: "Siempre para {host}",
+      all: "Descargar siempre, desde cualquier sitio",
       cancel: "Cancelar",
       download: "Descargar",
       blocked: "Se bloqueó una descarga de {host}.",
@@ -419,6 +436,12 @@ export const es419 = {
       openChat: "Abrir en vista completa",
       moveLeft: "Mover al panel izquierdo",
       moveRight: "Mover al panel derecho",
+    },
+    floating: {
+      enter: "Ventana flotante",
+      dock: "Acoplar al costado",
+      close: "Cerrar ventana flotante",
+      handle: "Mover la ventana. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
     },
     annotate: {
       countOne: "1 anotación",
@@ -729,10 +752,14 @@ export const es419 = {
       "Cerrar esto no detiene la configuración. El resultado aparece en Configuración > Seguridad.",
   },
   composerSettings: {
+    shareDraft: "Compartir borradores entre chats",
+    shareDraftDescription: "Usa un borrador para los chats y las comparaciones. Desactivado por defecto; cada chat conserva su propio borrador.",
     title: "Redactor",
     plainText: "Redactor de texto sin formato",
     plainTextDescription:
       "Mantiene el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",
+    richPaste: "Pegar texto con formato",
+    richPasteDescription: "Pega enlaces, tablas y formato como Markdown. {shortcut} pega texto sin formato. Pronto, un editor de texto enriquecido completo.",
     showContext: "Uso de la ventana de contexto",
     sendShortcut: "Atajo para enviar",
     sendMultiline: "{mod} + Enter en mensajes de varias líneas",
@@ -873,6 +900,9 @@ export const es419 = {
     unifiedTightFit: "Ajuste justo",
     unifiedTightFitHint:
       "Puede cargarse con un contexto más corto o funcionar más lento en esta Mac.",
+    residentToRun: "para ejecutar",
+    residentToRunHint:
+      "Memoria de GPU que la comprobación de carga requiere durante la ejecución",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",
@@ -1006,7 +1036,7 @@ export const es419 = {
       showMore: "Mostrar más",
       showLess: "Mostrar menos",
       settings: "Configuración",
-      api: "API",
+      api: "Monitor de API",
       lightMode: "Modo claro",
       darkMode: "Modo oscuro",
       guidedTour: "Recorrido guiado",
@@ -1162,6 +1192,7 @@ export const es419 = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Elige la contraseña del propietario de la instalación antes de agregar otra cuenta. La usarás para iniciar sesión cuando esta instalación tenga varias cuentas.",
       signsInAs: "Inicia sesión como {username}",
       signsInAsOwner: "Inicia sesión como {alias} o {username}",
       signInName: "Tu nombre de inicio de sesión",
@@ -1193,6 +1224,9 @@ export const es419 = {
         "Un modelo por línea, por ejemplo unsloth/Qwen3-4B-GGUF, o unsloth/* para toda una organización. Déjalo vacío para permitir todos los modelos.",
       modelAccessSave: "Guardar",
       modelAccessLimited: "Acceso a modelos limitado",
+      rename: "Cambiar nombre",
+      renameTitle: "Cambiar el nombre de {username}",
+      renameDescription: "Elige el nombre con el que inicia sesión esta cuenta. Sus chats, archivos y claves de API se quedan en la cuenta. Se cerrará su sesión y volverá a iniciarla con el nuevo nombre y su contraseña actual.",
       empty: "Aún no hay otras cuentas",
       setupCode: "Código de configuración",
       setupFor: "Código de configuración para {username}",
@@ -1813,6 +1847,13 @@ export const es419 = {
         audioUploadCancel: "Cancelar transcripción",
         audioUploadTranscribing: "Transcribiendo audio…",
         sectionTitle: "Dictado",
+        micTargetLabel: "Botón del micrófono",
+        micTargetAsr: "Transcribir con ASR",
+        micTargetModel: "Enviar audio al modelo",
+        micTargetAsrDescription: "El botón del micrófono escribe lo que dices en el cuadro de mensaje.",
+        micTargetModelDescription: "Con un modelo con entrada de audio cargado, el micrófono graba un clip y lo adjunta a tu mensaje. Los demás modelos siguen usando dictado.",
+        micTargetModelUnavailable: "Carga un modelo que acepte entrada de audio (por ejemplo, LFM3-Omni) para enviarle tu voz.",
+        micRecordForModel: "Grabar audio para el modelo",
         engineLabel: "Motor de dictado",
         engineBrowser: "Navegador",
         engineBrowserDescription:
@@ -1838,6 +1879,13 @@ export const es419 = {
         sttQuantDescription:
           "Elige o busca un modelo STT para ejecutarlo de forma local y luego su cuantización.",
         sttDeviceLabel: "Cargar en",
+        sttContextLabel: "Contexto de voz",
+        sttContextAuto: "Automático (recomendado)",
+        sttContextAutoDescription:
+          "Se ajusta a cada grabación y usa más memoria para audios más largos. Los entornos de ejecución más antiguos pueden necesitar un tamaño fijo para reducir la memoria. Se aplica a Qwen3-ASR en Voz y Transcribir.",
+        sttContextFixedDescription:
+          "Los límites más pequeños usan menos memoria. Las grabaciones que no caben necesitan un límite mayor o Automático. Se aplica a Qwen3-ASR en Voz y Transcribir.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU cuando esté disponible",
         sttDeviceCpu: "RAM de la CPU",
         sttDeviceAutoDescription:
@@ -2052,6 +2100,26 @@ export const es419 = {
       autoTitleNewChats: "Poner título automático a los chats nuevos",
       autoTitleNewChatsDescription:
         "Genera un título a partir del primer mensaje.",
+      mlWarmup: {
+        sectionTitle: "Rendimiento al iniciar",
+        description: "Prepara las funciones seleccionadas para acelerar su primer uso. Todas están desactivadas de forma predeterminada. Estas opciones pueden cargar dependencias compartidas y aumentar el uso de RAM en reposo.",
+        restartRequired: "Los cambios se aplican después de reiniciar Unsloth.",
+        hardwareLabel: "Detección de hardware",
+        hardwareDescription: "Detectar las GPU y preparar PyTorch.",
+        textLabel: "Modelos de texto",
+        textDescription: "Preparar el soporte de Transformers para modelos de texto.",
+        datasetsLabel: "Preparación de conjuntos de datos",
+        datasetsDescription: "Preparar Datasets y sus dependencias para las vistas previas y el procesamiento.",
+        mediaLabel: "Modelos de imagen y video",
+        mediaDescription: "Preparar Diffusers y las dependencias compartidas de los modelos.",
+        advanced: "Avanzado",
+        quantizationLabel: "Verificaciones previas de cuantización de imagen",
+        quantizationDescription: "Verificar la compatibilidad antes de cargar por primera vez un modelo de imagen cuantizado. Puede aumentar brevemente el uso de RAM.",
+        requiredBySelections: "Necesario para las opciones seleccionadas.",
+        disabledByEnv: "Desactivado por UNSLOTH_STUDIO_DISABLE_TORCH_WARM en el entorno del backend.",
+        loadError: "No se pudo cargar la configuración de preparación al iniciar.",
+        saveError: "No se pudo guardar la configuración de preparación al iniciar.",
+      },
       helperLlm: {
         sectionTitle: "LLM auxiliar",
         preloadOnStartup: "Precargar el LLM auxiliar en caché al iniciar",
@@ -2122,6 +2190,7 @@ export const es419 = {
           "No se pudo guardar la configuración de cambio automático de modelo.",
         idleError:
           "Ingresa 0 para mantener el modelo cargado, o al menos 60 segundos.",
+        idleUnsaved: "Aún no se guardó.",
         keepKv: "Conservar el contexto del chat entre descargas de memoria",
         keepKvDescription:
           "Guarda la caché KV antes de liberar el modelo por inactividad, o antes de que un modelo de imagen o video ocupe la GPU, para que los chats reanudados no tengan que volver a leer el historial. Hasta 10 GB en disco.",
@@ -2191,6 +2260,14 @@ export const es419 = {
           off: "Ejecuta todas las llamadas a herramientas sin preguntar. El código de Python y terminal sigue ejecutándose en el sandbox, que limita a qué archivos de tu computadora puede acceder. Sin un sandbox del sistema que funcione, las llamadas riesgosas preguntan primero.",
           full: "Ejecuta todas las llamadas a herramientas sin preguntar y desactiva el sandbox de código, así que el código de Python y terminal puede leer y cambiar cualquier archivo al que tenga acceso tu cuenta.",
         },
+      },
+      display: {
+        title: "Visualización",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Muestra las horas en formato de 12 o 24 horas.",
+        timeFormatSystem: "Predeterminado del sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
       },
       notifications: {
         sectionTitle: "Notificaciones",
@@ -2274,6 +2351,12 @@ export const es419 = {
           "Elige según la computadora y cambia a HTTPS si Xet se atasca o falla aquí.",
         autoCurrently: "Auto está usando {transport} en esta computadora.",
         xetMissing: "Xet no está disponible porque hf_xet no está instalado.",
+        speedLimit: "Límite de velocidad de descarga",
+        speedLimitDescription:
+          "Sin límite a menos que se indique un valor. Una descarga limitada usa HTTPS.",
+        speedLimitNoLimit: "Sin límite",
+        speedLimitInvalid: "Ingresa un número en Mbit/s o deja el campo vacío.",
+        speedLimitUsesHttps: "Las descargas usan HTTPS mientras haya un límite de velocidad. Los archivos de más de 50 GB siguen usando Xet, sin el límite.",
       },
       uploads: {
         sectionTitle: "Subidas",
@@ -2566,6 +2649,9 @@ export const es419 = {
         standard: "Estándar",
         moreThemes: "Más temas",
       },
+      composer: {
+        title: "Editor",
+      },
       code: {
         title: "Código",
         fontDescription: "Bloques de código en el chat, vistas previas de archivos y ejemplos de la API.",
@@ -2668,6 +2754,10 @@ export const es419 = {
         contrast: {
           label: "Contraste",
         },
+        elementOutline: {
+          label: "Contorno de los elementos",
+          description: "Intensidad del borde de botones, campos, tarjetas y menús.",
+        },
         reduceMotion: {
           label: "Reducir el movimiento",
           description:
@@ -2731,7 +2821,22 @@ export const es419 = {
           "Mira lo que otras apps envían a la API de este servidor en cuanto llega.",
         summary: "Solicitudes en vivo, errores y uso de tokens",
         status: "{active} activas · {recent} recientes · {model}",
-        noModelLoaded: "ningún modelo cargado",
+        noModelLoaded: "Ningún modelo cargado",
+        memory: "Memoria",
+        gpuInUse: "GPU en uso",
+        availableForModels: "Disponible para modelos",
+        refreshRate: "Frecuencia de actualización",
+        refreshRateDescription: "Con qué frecuencia el monitor flotante lee el uso de memoria y GPU mientras está abierto.",
+        refreshEvery: "Cada {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Otras apps",
+        otherInUse: "Otro uso",
+        freeLabel: "Libre",
+        unslothApp: "App de Unsloth",
+        unslothShare: "Mostrar la parte de Unsloth",
+        unslothShareDescription: "Divide la memoria en lo que usa Unsloth, lo que usan otras apps y lo que está libre.",
+        modelBreakdown: "Desglosar por modelo",
+        modelBreakdownDescription: "Divide la parte de Unsloth en la barra de memoria entre cada modelo cargado y el resto de la app.",
         autoOpen: "El monitor flotante se abre automáticamente",
         autoOpenDescription:
           "Abre un panel pequeño cuando llega tráfico de la API.",
@@ -2748,8 +2853,7 @@ export const es419 = {
         gpuUnusableDetail: "Detectada, pero PyTorch no puede usarla",
         detailedView: "Vista detallada",
         detailedViewDescription:
-          "Muestra la carga de la CPU y la carga, temperatura y consumo de cada GPU en la ventana flotante.",
-        cpuLoad: "Carga de CPU",
+          "Muestra la carga, temperatura y consumo de cada GPU en la ventana flotante.",
         gpuLoad: "Carga de GPU",
         temperature: "Temperatura",
         power: "Consumo",
@@ -2766,7 +2870,7 @@ export const es419 = {
         detecting: "Buscando GPU...",
         unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
-          "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
+          "No se detectó una GPU dedicada.",
         noUsableGpu: "PyTorch no puede usar ninguna GPU de esta computadora.",
         mismatchCpuBuild:
           "PyTorch es una compilación solo para CPU ({version}), así que las GPU de abajo no se pueden usar. Repara la instalación para restaurar la compatibilidad con GPU.",
@@ -2854,7 +2958,7 @@ export const es419 = {
           "llama.cpp backend gguf inferencia inference cuda rocm hip vulkan metal cpu gpu acelerador accelerator prebuilt precompilado cambiar switch motor engine personalizado custom ruta path carpeta folder directorio directory llama-server ejecutable executable binario binary",
       },
       modelMemory: {
-        title: "Memoria del modelo",
+        title: "Carga del modelo",
         keepResident: "Mantener el modelo en la memoria de GPU",
         keepResidentDescription: "Permanece en la VRAM entre prompts.",
         keepResidentHint:
@@ -3055,7 +3159,7 @@ export const es419 = {
       configurationDocs: "documentación",
       configurationFlagsSuffix: "para ver las opciones.",
       modelNote:
-        "Codex requiere un modelo GGUF servido por llama-server. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo que ya está cargado en Unsloth.",
+        "Claude Code y Codex requieren un modelo GGUF servido por llama-server o un modelo MLX. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo que ya está cargado en Unsloth.",
       subagent: {
         title: "Usar un modelo local como subagente",
         description:
@@ -3133,6 +3237,8 @@ export const es419 = {
     },
     chat: {
       groups: {
+        replies: { title: "Respuestas" },
+        thinkingTools: { title: "Razonamiento y herramientas" },
         conversations: {
           title: "Conversaciones",
         },
@@ -3221,6 +3327,8 @@ export const es419 = {
         "Las notificaciones están bloqueadas. Permítelas para Unsloth en la configuración del navegador o del sistema y vuelve a intentarlo.",
       replyNotificationKeywords:
         "notificación avisar alerta terminado completado listo respuesta segundo plano minimizado escritorio sonido notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Vistas previas de enlaces",
+      showLinkPreviewsDescription: "Mostrar vistas previas al pasar el cursor sobre los enlaces a fuentes.",
       showResponseModel: "Modelo de la respuesta",
       showResponseModelDescription:
         "Muestra los detalles del modelo en las respuestas del asistente.",
@@ -3229,17 +3337,27 @@ export const es419 = {
         "Muestra debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora reloj fecha cuándo terminó llegó respuesta mensaje timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Detalles de generación",
+      showGenerationDetails: "Información detallada de velocidad",
       showGenerationDetailsDescription:
-        "Muestra en vivo las velocidades del prompt y de la respuesta con el recuento de tokens, y dónde se cargaron las capas de un modelo.",
+        "Agrega a las lecturas en vivo la velocidad de lectura del prompt, el conteo de tokens y la aceptación de borradores.",
       showGenerationDetailsKeywords:
-        "detallado desarrollador estadísticas velocidad capas trasladar expertos verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "detallado desarrollador estadísticas velocidad verbose developer stats speed tok/s prefill decode",
+      generationStatsUpdates: "Estadísticas de velocidad y contexto",
+      generationStatsUpdatesDescription:
+        "En tiempo real cuenta los tokens por segundo y el uso del contexto mientras se transmite una respuesta. Al terminar los actualiza cuando termina cada respuesta.",
+      generationStatsUpdatesHint:
+        "En tiempo real actualiza el indicador de tokens por segundo bajo una respuesta y la barra de contexto en la parte superior del chat varias veces por segundo mientras se escribe la respuesta. Al terminar los actualiza una vez, cuando termina cada respuesta. En tiempo real puede causar lentitud o menor rendimiento, sobre todo en equipos antiguos u ocupados.",
+      generationStatsUpdatesSettled: "Al terminar",
+      generationStatsUpdatesRealtime: "En tiempo real",
+      generationStatsUpdatesKeywords:
+        "tiempo real en vivo actualizar velocidad contexto estadísticas realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription:
         "Mantén Editar respuesta en cada respuesta, en lugar de en el menú Más.",
-      composerAtBottom: "Cuadro de mensaje abajo",
-      composerAtBottomDescription:
-        "Empieza los chats nuevos con el cuadro de mensaje en la parte inferior de la página en lugar del centro.",
+      turnNavigation: "Navegación por turnos",
+      turnNavigationDescription: "Muestra tus mensajes como una barra en el borde izquierdo de los chats largos. Pasa el cursor para ver un turno, haz clic para ir a él y márcalo para encontrarlo después.",
+      composerPosition: "Posición del cuadro de mensaje",
+      composerPositionDescription: "Dónde aparece el cuadro de mensaje al iniciar un chat nuevo, desde arriba de la página hasta abajo.",
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
         "Haz que los nuevos archivos adjuntos del chat estén disponibles para todos los chats del proyecto.",
@@ -3385,12 +3503,10 @@ export const es419 = {
       exportingAction: "Exportando...",
       exportConversations: "Exportar Recientes y Proyectos",
       exportConversationsDescription:
-        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, CSV, ShareGPT JSONL o Markdown, combinados o por chat. Message JSONL está disponible por chat.",
+        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML o PDF, combinados o por chat. Message JSONL está disponible por chat.",
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recientes",
       exportScopeAll: "Recientes + Proyectos",
-      exportCombinedSuffix: "(combinado)",
-      exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
         "Importa archivos JSON, JSONL, NDJSON, CSV o Markdown a Recientes.",
@@ -3765,6 +3881,9 @@ export const es419 = {
         docsLabel: "Abrir la documentación de la API de decisiones",
         description:
           "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en esta computadora o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
+        codeTitle: "Llámalo desde código",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Otros clientes MCP se conectan aquí con el mismo token.",
         enable: "Atender solicitudes",
         enableDescription:
           "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
@@ -3824,7 +3943,7 @@ export const es419 = {
       mcp: {
         title: "Acceso de agentes (MCP)",
         description:
-          "Permite que agentes de programación como Claude Code y Codex usen Unsloth mediante MCP. Los agentes inician sesión con una clave de API de Unsloth de esta página.",
+          "Permite que agentes de programación como Claude Code y Codex usen Unsloth mediante MCP.",
         enable: "Permitir conexiones de agentes",
         enableDescription:
           "Sirve /mcp/ a las solicitudes que incluyen una clave de API de Unsloth.",
@@ -3833,10 +3952,93 @@ export const es419 = {
         saveError: "No se pudo guardar la opción de acceso de agentes.",
         agent: "Agente",
         exportKeyHint:
-          "Define {name} con una clave de API de Unsloth de esta página antes de iniciar el agente.",
+          "Define {name} con una clave de API de Unsloth antes de iniciar el agente.",
         configFileHint: "Agrega esto a {path}.",
         keywords:
           "mcp protocolo de contexto de modelo agentes agente herramientas model context protocol agents claude codex tools",
+      },
+    },
+    mcp: {
+      title: "Unsloth MCP",
+      keyHint: "Los agentes inician sesión con una clave de API de Unsloth.",
+      createKey: "Crear una clave de API",
+      tools: {
+        title: "Herramientas",
+        count: "{on} de {total} activadas",
+        choose: "Elegir herramientas",
+        dialogTitle: "Herramientas de Unsloth MCP",
+        allTools: "Todas las herramientas",
+        selectAll: "Seleccionar todo",
+        selectNone: "No seleccionar nada",
+        description:
+          "Cada herramienta activada se suma a lo que los agentes leen antes de empezar, así que desactiva las que no necesites. Los agentes nunca ven una herramienta desactivada y sus llamadas se rechazan. Los agentes ya conectados ven el cambio al volver a conectarse.",
+        saveError: "No se pudo guardar la configuración de herramientas de Unsloth MCP.",
+        chatNote: "El chat nunca recibe {tools}.",
+        groups: {
+          models: "Modelos",
+          generate: "Generar",
+          training: "Entrenamiento y exportación",
+          library: "Datos y biblioteca",
+          jobs: "Tareas",
+          other: "Otras",
+        },
+      },
+      status: {
+        on: "Activado",
+        off: "Desactivado",
+      },
+      apiKeysRow: {
+        open: "Abrir en Agentes",
+      },
+      toolLabels: {
+        studioStatus: "Estado",
+        listModels: "Listar modelos",
+        loadModel: "Cargar modelo",
+        unloadModel: "Descargar de memoria",
+        planLoad: "Planificar una carga",
+        downloadModel: "Descargar modelo",
+        chat: "Chat",
+        embed: "Incrustar texto",
+        systemOne: "Modelo de decisión",
+        generateImage: "Generar imágenes",
+        generateAudio: "Generar audio",
+        transcribe: "Transcribir",
+        analyzeAudio: "Analizar audio",
+        generateVideo: "Generar video",
+        runRecipe: "Ejecutar Data Recipe",
+        getJob: "Estado de la tarea",
+        datasets: "Conjuntos de datos",
+        startTraining: "Iniciar entrenamiento",
+        listTrainingRuns: "Entrenamientos",
+        exportModel: "Exportar modelo",
+        listMedia: "Contenido guardado",
+        voices: "Voces",
+        cancel: "Cancelar trabajo",
+      },
+      toolDescriptions: {
+        studioStatus: "Ver qué está cargado, en marcha y libre en esta computadora.",
+        listModels: "Listar los modelos que los agentes pueden cargar.",
+        loadModel: "Cargar un modelo para que los agentes chateen o generen con él.",
+        unloadModel: "Descargar un modelo de la memoria para liberarla.",
+        planLoad: "Ver el tamaño de descarga y la memoria de una carga sin cargar.",
+        downloadModel: "Descargar un modelo de Hugging Face.",
+        chat: "Chatear con el modelo cargado.",
+        embed: "Convertir texto en vectores u ordenar textos por similitud.",
+        systemOne: "Hacer al modelo de decisión preguntas de sí o no, de opción o de puntuación.",
+        generateImage: "Generar imágenes y guardarlas en la galería.",
+        generateAudio: "Generar voz u otro audio.",
+        transcribe: "Convertir voz en texto.",
+        analyzeAudio: "Comprobar los hablantes, los tiempos y el ajuste de un clip a un guion.",
+        generateVideo: "Generar un video.",
+        runRecipe: "Ejecutar una Data Recipe para crear un dataset.",
+        getJob: "Seguir una tarea larga hasta que termine.",
+        datasets: "Listar y subir datasets.",
+        startTraining: "Iniciar un fine-tuning.",
+        listTrainingRuns: "Listar los entrenamientos y sus resultados.",
+        exportModel: "Exportar un modelo entrenado, por ejemplo a GGUF.",
+        listMedia: "Ver las imágenes, audios y videos guardados.",
+        voices: "Listar, guardar, renombrar o eliminar voces.",
+        cancel: "Detener un trabajo en curso, como un entrenamiento o una exportación.",
       },
     },
     about: {
@@ -3921,8 +4123,6 @@ export const es419 = {
         repoCheckoutFallback:
           "Si aún tienes el checkout del repositorio, ejecuta el instalador local desde ahí:",
         restartAfterUpdate: "Reinicia Unsloth después de actualizar.",
-        desktopManaged:
-          "La app de escritorio busca nuevas versiones automáticamente. También puedes buscar o actualizar aquí en cualquier momento.",
         desktopReady: "Actualizaciones de la app de escritorio",
         desktopReadyDescription:
           "Verifica si hay disponible una versión más reciente de la app de escritorio.",
@@ -3933,7 +4133,7 @@ export const es419 = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "La aplicación se conectó a un servidor de Unsloth que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
+          "Conectada a un servidor de Unsloth en el puerto {port} que esta aplicación no inició, como `unsloth studio` en una terminal. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudieron buscar actualizaciones",
@@ -4255,8 +4455,6 @@ export const es419 = {
             "Este conjunto de datos parece contener imágenes, que no se pueden transmitir.",
           audioDataset:
             "Este conjunto de datos parece contener audio, que no se puede transmitir.",
-          appleSilicon:
-            "El streaming todavía no es compatible con Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "solo respuestas del asistente",
@@ -5532,6 +5730,8 @@ export const es419 = {
     removeLevel: "Quitar el nivel {n}",
     addLevel: "Agregar nivel",
     jsonHelp: "El cuerpo de la solicitud. Ejecutar lo envía tal cual.",
+    copyBody: "Copiar cuerpo",
+    copyCurl: "Copiar como cURL",
     examples: "Ejemplos",
     presetToolApproval: "Aprobar llamadas a herramientas de agentes",
     presetPromptInjection: "Detectar inyección de prompts",
@@ -5592,6 +5792,7 @@ export const es419 = {
     monitor: {
       dragHandleLabel:
         "Mover el monitor en vivo. Las teclas de flecha lo desplazan un poco; con doble clic se restablece.",
+      resizeHint: "Arrastra un borde o una esquina para cambiar el ancho. Doble clic lo restablece.",
       reconnecting: "Reconectando...",
     },
   },
@@ -5911,8 +6112,7 @@ export const es419 = {
     skippedVersion: "{component} {version} omitido por ahora",
     skippedUpdate: "Actualización de {component} omitida por ahora",
     skippedUpdates: "Actualizaciones de {components} omitidas por ahora",
-    vulkanFaster:
-      "Vulkan es más de un 10 % más rápido que ROCM. No hace falta reiniciar",
+    vulkanFaster: "Más de un 10 % más rápido",
     noRestart: "No hace falta reiniciar",
     downloadSize: "Descarga de {size}",
     backendChange: "Backend {change}",
@@ -5921,8 +6121,8 @@ export const es419 = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} actualizaciones...",
     bundleTitle: "{count} actualizaciones del runtime",
-    newBackend: "Nuevo backend de {component}",
-    newUpdate: "Nueva actualización de {component}",
+    newBackend: "Nuevo backend del runtime",
+    newUpdate: "Nueva actualización del runtime",
     hideUpdate:
       "Ocultar la actualización de {component} hasta que se vuelva a abrir Unsloth",
     hideUpdates:
@@ -5932,5 +6132,61 @@ export const es419 = {
     later: "Más tarde",
     update: "Actualizar",
     undo: "Deshacer",
+  },
+  generationStats: {
+    working: "Procesando...",
+    processingPrompt: "Procesando el prompt {percent}%",
+    compactingContext: "Compactando el contexto...",
+    timeLeft: "quedan {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "borrador {accepted}/{drafted} aceptados ({percent}%)",
+    timing: {
+      trigger: "Tiempos del mensaje",
+      firstToken: "Primer token",
+      speedInStep: "Velocidad (por paso)",
+      effective: "Efectiva",
+      output: "Salida",
+      denoising: "Eliminación de ruido",
+      stepsOne: "{count} paso",
+      steps: "{count} pasos",
+      blocksOne: "{count} bloque",
+      blocks: "{count} bloques",
+      canvas: "Lienzo",
+      generation: "Generación",
+      answerTokens: "Tokens de respuesta",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Fragmentos",
+      promptEval: "Evaluación del prompt",
+      promptSpeed: "Velocidad del prompt",
+      speed: "Velocidad",
+      tokens: "Tokens",
+      draftAccepted: "Borrador aceptado",
+      denoisingSteps: "Pasos de eliminación de ruido",
+      blocksLabel: "Bloques",
+      cacheHits: "Aciertos de caché",
+      cacheWrites: "Escrituras en caché",
+      stopReason: "Motivo de parada",
+      stoppedByYou: "Detenido por ti",
+      endOfTurn: "Fin del turno",
+      lengthLimit: "Límite de longitud",
+      toolCall: "Llamada a herramienta",
+      contentFilter: "Filtro de contenido",
+    },
+    placement: {
+      title: "Ubicación de los pesos",
+      allOnCpu: "Las {total} capas en la CPU",
+      split: "{gpu} de {total} capas en la GPU, {cpu} en la CPU",
+      allOnGpu: "Las {total} capas en la GPU",
+      expertCache: "Las {total} capas en la GPU, todos los expertos en RAM ({amount} de caché de expertos en la GPU)",
+      expertSpillOne: "Las {total} capas en la GPU, pesos de expertos de {count} capa en RAM",
+      expertSpill: "Las {total} capas en la GPU, pesos de expertos de {count} capas en RAM",
+      inUnifiedMemory: "{amount} en memoria unificada",
+      inSharedMemory: "{amount} en memoria compartida",
+      inVram: "{amount} en VRAM",
+      inRam: "{amount} en RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

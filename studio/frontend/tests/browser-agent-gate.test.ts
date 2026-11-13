@@ -66,6 +66,22 @@ test("a site the user named, already reached, or linked from the page opens with
   assert.equal(gateNavigation("https://other.example/?d=secret", navigation({ pageLinks: new Set(["https://other.example/a"]) })).kind, "ask");
 });
 
+test("another port on an approved host is another site, and asks", () => {
+  const known = navigation({ knownHosts: new Set(["example.edu"]), userText: "open example.edu" });
+  const gate = gateNavigation("http://example.edu:8081/?d=secret", known);
+  assert.equal(gate.kind === "ask" && gate.prompt, "Open example.edu:8081?");
+  for (const url of ["http://example.edu/", "https://www.example.edu:443/a", "http://example.edu:80/"]) {
+    assert.equal(gateNavigation(url, navigation({ knownHosts: new Set(["example.edu"]) })).kind, "allow");
+  }
+  assert.equal(gateNavigation("http://example.edu:8081/a", navigation({ knownHosts: new Set(["example.edu:8081"]) })).kind, "allow");
+  assert.equal(gateNavigation("http://example.edu:8082/a", navigation({ knownHosts: new Set(["example.edu:8081"]) })).kind, "ask");
+  assert.equal(gateNavigation("http://example.edu:8081/", navigation({ userText: "open example.edu:8081" })).kind, "allow");
+  assert.equal(gateNavigation("http://wikipedia.org:8081/", navigation({ userText: "search wikipedia" })).kind, "ask");
+  const form = element({ submits: true, formMethod: "post" });
+  const submit = gateElement("click", form, "http://example.edu:8081/", open, NONE);
+  assert.equal(submit.kind === "ask" && submit.host, "example.edu:8081");
+});
+
 test("an address the model made up for a new site asks first", () => {
   const gate = gateNavigation("https://collector.example/?q=secret", navigation({ userText: "summarize my notes" }));
   assert.equal(gate.kind, "ask");
@@ -75,6 +91,9 @@ test("an address the model made up for a new site asks first", () => {
   assert.equal(gateNavigation("https://e.com/x", navigation({ userText: "open example.com" })).kind, "ask");
   // The site's name alone approves only the big generic TLDs, not a lookalike the model made up.
   assert.equal(gateNavigation("https://wikipedia.xyz/?d=secret", navigation({ userText: "search wikipedia" })).kind, "ask");
+  assert.equal(gateNavigation("https://notes.com/?d=secret", navigation({ userText: "summarize my notes" })).kind, "ask");
+  assert.equal(gateNavigation("https://search.com/?d=secret", navigation({ userText: "search wikipedia" })).kind, "ask");
+  assert.equal(gateNavigation("https://notes.com/a", navigation({ userText: "open notes.com" })).kind, "allow");
 });
 
 test("consequential labels ask in the languages Studio ships in", () => {

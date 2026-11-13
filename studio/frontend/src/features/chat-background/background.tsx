@@ -6,28 +6,22 @@ import {
 	useState,
 	type CSSProperties,
 } from "react";
+import { useAppearanceCustomStore } from "@/features/settings/stores/appearance-custom-store";
 import { useChatBackground, setBackgroundError } from "./storage";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
 import {
 	type ChatBackgroundValue,
-	type ImageSizing,
 	fadeKey,
 	visibilityKey,
 } from "./model";
-import { useMaterialStore } from "./material";
+import { useAppliedMaterial } from "./material";
 import { ComposerGlassLenses } from "./lens";
+import { WallpaperArtwork } from "./artwork";
+import { useWallpaperHostFlags } from "./host-flags";
 import { type ImageTone, glassReadability, measureTone } from "./tone";
 
 type Frame = { url: string; value: ChatBackgroundValue };
-const BACKGROUND_SIZE: Record<ImageSizing, string> = {
-	cover: "cover",
-	contain: "contain",
-	width: "100% auto",
-	height: "auto 100%",
-	stretch: "100% 100%",
-	original: "auto",
-};
 // The window titlebar sits outside the wallpaper's subtree, so a ready wallpaper marks the root
 // rather than having CSS ask html:has(), which re-matches on every DOM change.
 export const ROOT_READY = "data-chat-wallpaper-ready";
@@ -124,6 +118,9 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		};
 	}, [skin.safe, enabled, active]);
 	const outline = value?.outline;
+	const composerOutline = useAppearanceCustomStore(
+		(s) => s.customization.composerOutline,
+	);
 	useEffect(() => {
 		// The composer is a sibling subtree of the wallpaper, so the ring strength goes on the shared parent.
 		const parent = host.current?.parentElement;
@@ -217,7 +214,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		[],
 	);
 	const shownReady = Boolean(value && active && frames.current);
-	const glass = useMaterialStore((s) => s.material !== "solid");
+	const glass = useAppliedMaterial() !== "solid";
 	const [appWallpaper, setAppWallpaper] = useState<HTMLDivElement | null>(null);
 	const [tone, setTone] = useState<ImageTone | null>(null);
 	const frameUrl = frames.current?.url;
@@ -278,6 +275,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			setAppWallpaper(null);
 		};
 	}, [shownReady]);
+	useWallpaperHostFlags(host);
 	if (!value || !active) return null;
 	return (
 		<div
@@ -286,7 +284,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			className="chat-wallpaper"
 			data-ready={Boolean(frames.current) || undefined}
 			data-reduced={skin.reduced || undefined}
-			data-outline={value.outline > 0}
+			data-outline={(composerOutline ?? value.outline) > 0}
 			style={{ "--wallpaper-safe": skin.safe } as CSSProperties}
 		>
 			{[frames.previous, frames.current].map((frame, i) => {
@@ -311,18 +309,13 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 							className="chat-wallpaper-image"
 							data-fade={adjustment[fadeKey(glass)]}
 						>
-							<div
-								className="chat-wallpaper-artwork"
-								style={{
-									backgroundImage: `url("${frame.url}")`,
-									backgroundPosition: adjustment.position,
-									backgroundSize: BACKGROUND_SIZE[adjustment.sizing],
-									transform: `scale(${adjustment.zoom / 100})`,
-									transformOrigin: adjustment.position,
-									filter: adjustment.blur
-										? `blur(${adjustment.blur}px)`
-										: undefined,
-								}}
+							<WallpaperArtwork
+								url={frame.url}
+								sizing={adjustment.sizing}
+								position={adjustment.position}
+								zoom={adjustment.zoom}
+								blur={adjustment.blur}
+								bakeable={i === 1}
 							/>
 						</div>
 					</div>

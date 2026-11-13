@@ -698,7 +698,7 @@ test("a custom section's menu edits it, acts on its chats, and removes it", () =
   assert.match(menu, /onSelect=\{\(\) => clearThreadsUnread\(unreadInSection\)\}/);
   assert.match(menu, /disabled=\{chats\.length === 0\}\n\s*onSelect=\{\(\) => void archiveSection\(\)\.catch\(\(\) => undefined\)\}/);
   assert.match(menu, /await archiveChatItems\(all\);/);
-  assert.match(menu, /icon=\{Settings01Icon\}[\s\S]*icon=\{Tick02Icon\}[\s\S]*icon=\{Archive03Icon\}[\s\S]*icon=\{Cancel01Icon\}/);
+  assert.match(menu, /icon=\{Settings01Icon\}[\s\S]*icon=\{Tick02Icon\}[\s\S]*icon=\{ArchiveIcon\}[\s\S]*icon=\{Cancel01Icon\}/);
   assert.doesNotMatch(menu, /variant="destructive"|renderSortSubmenu/);
 });
 

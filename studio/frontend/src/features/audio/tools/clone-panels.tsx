@@ -16,7 +16,9 @@ import type { ReactNode } from "react";
 import { INDEX_TTS2_EMOTIONS } from "../clone-policy";
 import { AudioSourceInput } from "../components/audio-source-input";
 import { Field, FieldLabel } from "../components/field";
+import { InstructionsField } from "../components/instructions-fields";
 import {
+  type CloneDescriptionValue,
   type CosyVoiceMode,
   type CosyVoiceModeValue,
   type EmotionMode,
@@ -26,6 +28,7 @@ import {
   type SpeedDialectValue,
   type TimbreOnlyValue,
   chatterboxExpressivenessLogic,
+  cloneDescriptionLogic,
   cosyVoiceModeLogic,
   emotionSourceProblem,
   f5SpeedDialectLogic,
@@ -57,6 +60,22 @@ export function PanelSection({
     </section>
   );
 }
+
+const cloneDescriptionPanel: AudioToolPanel<CloneDescriptionValue> = {
+  ...cloneDescriptionLogic,
+  Component: ({ value, onChange, disabled }) => (
+    <InstructionsField
+      instructionsKind="voice"
+      musicNeedsDescription={false}
+      cloning={true}
+      disabled={disabled}
+      audioInstructions={value.instructions}
+      setAudioInstructions={(instructions) =>
+        onChange({ ...value, instructions })
+      }
+    />
+  ),
+};
 
 const qwen3TimbrePanel: AudioToolPanel<TimbreOnlyValue> = {
   ...qwen3TimbreLogic,
@@ -296,6 +315,7 @@ const f5SpeedDialectPanel: AudioToolPanel<SpeedDialectValue> = {
 };
 
 export const CLONE_TOOL_PANELS = [
+  cloneDescriptionPanel,
   qwen3TimbrePanel,
   indexTts2EmotionPanel,
   chatterboxExpressivenessPanel,

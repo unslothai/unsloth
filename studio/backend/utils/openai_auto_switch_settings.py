@@ -373,6 +373,7 @@ DRAFTER_MODEL_SPEC_TYPES = DRAFT_N_MAX_SPEC_TYPES | {"auto", "default"}
 SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
 # Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp default and is not stored: an entry holding it would pin what a build may redefine.
 VALID_LOAD_MODES = frozenset({"none", "mmap", "mlock", "mmap+mlock", "dio"})
+_ENGRAM_PRECISION_RE = re.compile(r"[A-Za-z0-9_]{1,32}")
 # Mirrors CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX_MIB in llama_server_args.py.
 CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MIN_MIB = -1
@@ -401,8 +402,7 @@ LEGACY_GPU_INDEX_KIND = "physical"
 
 
 def _mlx_kv_quant_of(entry: dict[str, Any]) -> Optional[str]:
-    """This entry's cache quantization, reading the width it superseded when that is all it
-    holds. Only an entry omitting the field predates the setting."""
+    """Cache quantization for the entry, read from the old bit width when that is all it has."""
     if "mlx_kv_quant" in entry:
         return _clean_str(entry["mlx_kv_quant"], VALID_MLX_KV_QUANT)
     bits = entry.get("mlx_kv_bits")
@@ -531,6 +531,13 @@ def normalize_model_override(
     if load_mode:
         entry["load_mode"] = load_mode
 
+    # A repo's standalone Engram table by precision; absent loads the quant's own table.
+    engram_precision = payload.get("engram_precision")
+    if isinstance(engram_precision, str) and _ENGRAM_PRECISION_RE.fullmatch(
+        engram_precision.strip()
+    ):
+        entry["engram_precision"] = engram_precision.strip()
+
     # 0 and -1 are meaningful (no checkpoints; no cache limit), so these store on "is not None" rather than on truth, unlike the batch sizes above.
     ctx_checkpoints = _bounded_int(
         payload.get("ctx_checkpoints"), minimum = 0, maximum = CTX_CHECKPOINTS_MAX
@@ -583,7 +590,7 @@ def normalize_model_override(
     if _clean_str(payload.get("gpu_memory_mode"), VALID_GPU_MEMORY_MODES) == "manual":
         entry["gpu_memory_mode"] = "manual"
 
-    gpu_layers = _bounded_int(payload.get("gpu_layers"), minimum = 0, maximum = 1024)
+    gpu_layers = _bounded_int(payload.get("gpu_layers"), minimum = 0, maximum = 2**31 - 1)
     if gpu_layers is not None:
         entry["gpu_layers"] = gpu_layers
 
@@ -725,7 +732,13 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:
             kwargs["n_ubatch"] = override["n_ubatch"]
-        for key in ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram"):
+        for key in (
+            "load_mode",
+            "spec_draft_cache_type",
+            "ctx_checkpoints",
+            "cache_ram",
+            "engram_precision",
+        ):
             if override.get(key) is not None:
                 kwargs[key] = override[key]
         if override.get("gpu_memory_mode") is not None:
@@ -742,34 +755,36 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
 
     if kwargs.get("llama_extra_args"):
         # One entry can hold a pass-through flag AND the field it shadows, and llama.cpp's last-wins parse would hand the load the stale flag, so the /load stripper (_resolve_inherited_extra_args) is imported, not mirrored. The settings page has no control for flags, so a save carries the stored ones over (routes/settings.py); the allow-list this module stays out of is validate_extra_args.
-        from core.inference.llama_server_args import (
-            matches_explicit_ctx_override,
-            strip_shadowing_flags,
-        )
-
-        # Context's load-time value is a VRAM-fit target. A MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold and survives, while stale and malformed flags are still stripped; /props then publishes what was really allocated.
-        matching_explicit_ctx = matches_explicit_ctx_override(
-            kwargs["llama_extra_args"], kwargs.get("max_seq_length")
-        )
-
-        kwargs["llama_extra_args"] = strip_shadowing_flags(
-            kwargs["llama_extra_args"],
-            # Only the groups this override actually supplies, as the route gates on its request's set fields: a flag with no first-class field behind it is the user's only way to set that knob and still passes through.
-            strip_context = "max_seq_length" in kwargs and not matching_explicit_ctx,
-            strip_cache = "cache_type_kv" in kwargs,
-            strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
-            strip_template = "chat_template_override" in kwargs,
-            strip_reasoning_budget = "reasoning_budget" in kwargs,
-            strip_reasoning_budget_message = "reasoning_budget_message" in kwargs,
-            # Sent only when on, so it is always the Tensor Parallelism toggle overriding the flag; an override that leaves the toggle off keeps a row/none/layer split mode.
-            strip_split_mode = bool(kwargs.get("tensor_parallel")),
-            strip_batch = "n_batch" in kwargs,
-            strip_ubatch = "n_ubatch" in kwargs,
-            strip_ctx_checkpoints = "ctx_checkpoints" in kwargs,
-            strip_cache_ram = "cache_ram" in kwargs,
-            strip_spec_draft_cache = "spec_draft_cache_type" in kwargs,
-        )
+        kwargs["llama_extra_args"] = strip_args_shadowed_by(kwargs["llama_extra_args"], kwargs)
     return kwargs
+
+
+def strip_args_shadowed_by(args, fields: dict[str, Any], **extra_strips) -> list[str]:
+    from core.inference.llama_server_args import (
+        matches_explicit_ctx_override,
+        strip_shadowing_flags,
+    )
+
+    # Context's load-time value is a VRAM-fit target. A MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold and survives, while stale and malformed flags are still stripped; /props then publishes what was really allocated.
+    matching_explicit_ctx = matches_explicit_ctx_override(args, fields.get("max_seq_length"))
+    return strip_shadowing_flags(
+        args,
+        # Only the groups these fields actually supply, as the route gates on its request's set fields: a flag with no first-class field behind it is the user's only way to set that knob and still passes through.
+        strip_context = "max_seq_length" in fields and not matching_explicit_ctx,
+        strip_cache = "cache_type_kv" in fields,
+        strip_spec = "speculative_type" in fields or "spec_draft_n_max" in fields,
+        strip_template = "chat_template_override" in fields,
+        strip_reasoning_budget = "reasoning_budget" in fields,
+        strip_reasoning_budget_message = "reasoning_budget_message" in fields,
+        # Sent only when on, so it is always the Tensor Parallelism toggle overriding the flag; an override that leaves the toggle off keeps a row/none/layer split mode.
+        strip_split_mode = bool(fields.get("tensor_parallel")),
+        strip_batch = "n_batch" in fields,
+        strip_ubatch = "n_ubatch" in fields,
+        strip_ctx_checkpoints = "ctx_checkpoints" in fields,
+        strip_cache_ram = "cache_ram" in fields,
+        strip_spec_draft_cache = "spec_draft_cache_type" in fields,
+        **extra_strips,
+    )
 
 
 def _looks_like_filesystem_path(model_id: str) -> bool:

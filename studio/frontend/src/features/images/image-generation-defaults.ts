@@ -56,6 +56,8 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 25, guidance: 3 },
   { match: "ideogram", steps: 20, guidance: 7 },
+  // MiniMax-H3-Image: 6 distilled steps, one output head each, no CFG (the backend refuses anything else).
+  { match: "minimax-h3-image", steps: 6, guidance: 1 },
   { match: "moss-image", steps: 25, guidance: 2.5 },
   { match: "moss_image", steps: 25, guidance: 2.5 },
   { match: "mossimage", steps: 25, guidance: 2.5 },
@@ -68,6 +70,15 @@ const MODEL_DEFAULTS: Array<{
   { match: "stable-diffusion-xl", steps: 25, guidance: 7 },
   { match: "sdxl", steps: 25, guidance: 7 },
 ];
+
+// Families whose step count is part of the checkpoint (one distilled output head per step): the backend refuses any
+// other count, so the slider is locked to it.
+const FIXED_STEPS: Readonly<Record<string, number>> = { "minimax-h3-image": 6 };
+
+/** The step count the loaded family requires, or null when the user may choose. */
+export function fixedStepsFor(family: string | null | undefined): number | null {
+  return FIXED_STEPS[(family ?? "").trim().toLowerCase()] ?? null;
+}
 
 // The Steps slider's usual top, and the request's (DiffusionGenerateRequest.steps is 1-100).
 export const STEPS_SLIDER_MAX = 50;

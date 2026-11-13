@@ -58,6 +58,26 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
     };
   }
 
+  if (record.role === "system") {
+    const textPart = {
+      type: "text" as const,
+      text: content
+        .filter(
+          (part): part is Extract<typeof part, { type: "text" }> =>
+            part.type === "text",
+        )
+        .map((part) => part.text)
+        .join("\n"),
+    };
+    return {
+      id: record.id,
+      createdAt: new Date(record.createdAt),
+      role: "system",
+      content: [textPart],
+      metadata: { custom: (record.metadata as Record<string, unknown>) ?? {} },
+    };
+  }
+
   const custom = (record.metadata as Record<string, unknown>) ?? {};
   const savedTiming = custom.timing as
     | import("@assistant-ui/react").MessageTiming

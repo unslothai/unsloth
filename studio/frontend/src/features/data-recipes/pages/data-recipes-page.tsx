@@ -29,9 +29,8 @@ import { ShineBorder } from "@/components/ui/shine-border";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toastError } from "@/shared/toast";
-import { TrashIcon } from "@/lib/hugeicons-derived";
+import { Album02Icon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Album02Icon,
   BookOpen01Icon,
   CodeIcon,
   CookBookIcon,
