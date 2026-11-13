@@ -61,8 +61,11 @@ from backend.utils.kernel_install import (
     uninstall_command,
 )
 from backend.utils.wheel_utils import (
+    I8GEMM_DISTRIBUTION,
+    I8GEMM_VERSION,
     flash_attn_package_version,
     flash_attn_wheel_url,
+    int8_gemm_wheel_url,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -7887,6 +7890,49 @@ def _remove_stale_flash_attn() -> None:
         )
 
 
+def _int8_gemm_install_disabled() -> bool:
+    if os.getenv("UNSLOTH_STUDIO_SKIP_I8GEMM_INSTALL") == "1":
+        return True
+    return (os.getenv("UNSLOTH_DIFFUSION_INT8_CUTLASS") or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _ensure_int8_gemm() -> None:
+    """Optional prebuilt int8 GEMM wheel (diffusion INT8, sm75 / sm8x); every failure only warns."""
+    if _int8_gemm_install_disabled() or NO_TORCH or IS_MACOS:
+        return
+    if _installed_distribution_version(I8GEMM_DISTRIBUTION) == I8GEMM_VERSION:
+        return
+    env = probe_torch_wheel_env(include_windows = True)
+    wheel_url = int8_gemm_wheel_url(env)
+    if not wheel_url or not url_exists(wheel_url):
+        return
+    _count_install_action()
+    with _install_heartbeat("int8 GEMM"):
+        outcome = install_prebuilt(
+            wheel_url,
+            install = install_wheel,
+            verify = lambda: _installed_distribution_version(I8GEMM_DISTRIBUTION) == I8GEMM_VERSION,
+            on_failed = lambda installer, wheel_result: _print_optional_install_failure(
+                f"Installing the prebuilt int8 GEMM wheel with {installer}",
+                wheel_result,
+            ),
+            use_uv = USE_UV,
+            uv_needs_system = UV_NEEDS_SYSTEM,
+            reinstall = _installed_distribution_version(I8GEMM_DISTRIBUTION) is not None,
+        )
+    if outcome != "installed":
+        _step(
+            "warning",
+            "Continuing without the prebuilt int8 GEMM (diffusion INT8 keeps Triton / cuBLAS)",
+            _warn,
+        )
+
+
 def _flash_attn_gpu_below_floor() -> bool:
     """Visible CUDA GPU below sm80 (a T4); no visible GPU is False, since image builds install first."""
     return gpu_below_flash_attn_floor()
@@ -12181,6 +12227,7 @@ def install_python_stack() -> int:
         _progress("flash-attn")
         _ensure_flash_attn()
         _remove_stale_ssm_kernels()
+        _ensure_int8_gemm()
 
     # 8. Unsloth dependencies
     if not _skip_step(REQ_ROOT / "studio.txt", "Unsloth Studio deps", no_deps = False):

@@ -448,7 +448,7 @@ def test_foreign_button_start_does_not_close_html_button(foreign, main_content):
     assert "Menu text" in out and "After" in out
 
 
-@pytest.mark.parametrize("root, descendant", [("svg", "foreignObject"), ("math", "mi")])
+@pytest.mark.parametrize("root, descendant", [("svg", "foreignObject"), ("math", "annotation-xml")])
 @pytest.mark.parametrize("main_content", [False, True])
 def test_foreign_root_end_closes_through_foreign_descendant(root, descendant, main_content):
     html = f"<{root}><{descendant}>Hidden</{root}><p>Real text</p>"
@@ -3947,3 +3947,127 @@ def test_deeply_nested_tags_stay_linear():
             runs.append(time.perf_counter() - start)
         timings.append(min(runs))
     assert timings[1] < timings[0] * 12, timings
+
+
+_KATEX_HTML_COPY = (
+    '<span class="katex-html" aria-hidden="true"><span class="base">'
+    '<span class="mord mathnormal">y</span><span class="mrel">=</span>'
+    '<span class="mord mathnormal">x</span><span class="mord mathnormal">A</span>'
+    '<span class="mord mathnormal">T</span><span class="mbin">+</span>'
+    '<span class="mord mathnormal">b</span></span></span>'
+)
+
+
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        (
+            'incoming data: <span class="katex"><span class="katex-mathml"><math '
+            'xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>y</mi><mo>=</mo>'
+            "<mi>x</mi><msup><mi>A</mi><mi>T</mi></msup><mo>+</mo><mi>b</mi></mrow>"
+            '<annotation encoding="application/x-tex">y = xA^T + b</annotation></semantics>'
+            f"</math></span>{_KATEX_HTML_COPY}</span>.",
+            "incoming data: $y = xA^T + b$.",
+        ),
+        (
+            'keys of dimension <math class="ltx_Math" alttext="d_{k}" display="inline">'
+            "<semantics><msub><mi>d</mi><mi>k</mi></msub>"
+            '<annotation-xml encoding="MathML-Content"><apply><csymbol cd="ml">subscript'
+            "</csymbol><ci>d</ci><ci>k</ci></apply></annotation-xml>"
+            '<annotation encoding="application/x-tex">d_{k}</annotation>'
+            '<annotation encoding="application/x-llamapun">ITALIC_d start_POSTSUBSCRIPT'
+            "</annotation></semantics></math>, and values",
+            "keys of dimension $d_{k}$, and values",
+        ),
+        (
+            'the form <math xmlns="http://www.w3.org/1998/Math/MathML"><mrow>\n<mstyle><mi>a'
+            "</mi><msup><mi>x</mi><mrow><mn>2</mn></mrow></msup><mo>+</mo><mi>b</mi><mi>x</mi>"
+            "<mo>+</mo><mi>c</mi><mo>=</mo><mn>0</mn></mstyle>\n</mrow></math>, with",
+            "the form $ax^{2}+bx+c=0$, with",
+        ),
+        (
+            "roots <math><mi>x</mi><mo>=</mo><mfrac><mrow><mo>&minus;</mo><mi>b</mi>"
+            "<mo>&pm;</mo><msqrt><msup><mi>b</mi><mn>2</mn></msup><mo>&minus;</mo><mn>4</mn>"
+            "<mi>a</mi><mi>c</mi></msqrt></mrow><mrow><mn>2</mn><mi>a</mi></mrow></mfrac></math>",
+            "roots $x=\\frac{−b±\\sqrt{b^{2}−4ac}}{2a}$",
+        ),
+        (
+            "sum <math><munderover><mo>&sum;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow>"
+            "<mi>n</mi></munderover><msub><mi>x</mi><mi>i</mi></msub></math> and "
+            "<math><mi>sin</mi><mo>&#x2061;</mo><mi>x</mi></math>",
+            "sum $∑_{i=1}^{n}x_{i}$ and $sin x$",
+        ),
+        (
+            "<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr>"
+            "<mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></math>",
+            "$a & b \\\\ c & d$",
+        ),
+        (
+            "set <math><mo>{</mo><mover><mi>x</mi><mo>&macr;</mo></mover><mo>&gt;</mo><mn>50</mn>"
+            "<mi>%</mi><mo>}</mo><mtext>&nbsp;for all&nbsp;</mtext><mi>n</mi>"
+            "<mphantom><mi>y</mi></mphantom></math>",
+            "set $\\{\\overset{¯}{x}>50\\%\\}\\text{ for all }n$",
+        ),
+    ],
+)
+def test_formulas_reach_the_model_once(markup, expected):
+    assert html_to_markdown(f"<p>{markup}</p>") == expected
+
+
+def test_display_formula_gets_its_own_paragraph():
+    html = (
+        '<p>We compute:</p><math alttext="E=mc^{2}" display="block"><mi>E</mi></math>'
+        "<p>where c is the speed of light.</p>"
+    )
+    assert html_to_markdown(html) == (
+        "We compute:\n\n$$E=mc^{2}$$\n\nwhere c is the speed of light."
+    )
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        '<p>Shown</p><div hidden><math alttext="x"><mi>x</mi></math></div>',
+        '<p>Shown</p><math style="display:none" alttext="x"><mi>x</mi></math>',
+        '<p>Shown</p><nav><math alttext="x"><mi>x</mi></math></nav>',
+        "<p>Shown</p><math><mi></mi></math>",
+    ],
+)
+def test_hidden_or_empty_formulas_stay_out(html):
+    assert html_to_markdown(html) == "Shown"
+
+
+def test_formula_counts_as_article_text():
+    prose = "Attention weighs every key against the query. " * 6
+    html = (
+        f"<nav>Menu</nav><article><p>{prose}keys of dimension "
+        '<math alttext="d_{k}"><mi>d</mi></math>.</p></article>'
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("$d_{k}$") == 1 and "Menu" not in out
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        '<p>Value <math alttext=" "><mi>x</mi></math> here.</p>',
+        '<p>Value <math alttext="x"><semantics><mi>y</mi>'
+        '<annotation encoding="application/x-tex"> </annotation></semantics></math> here.</p>',
+    ],
+)
+def test_blank_tex_source_falls_back(html):
+    assert html_to_markdown(html) == "Value $x$ here."
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "<math><mi>x</mi><mo>+</mo><mi>y</mi>",
+        '<math alttext="x+y"><semantics><mi>z</mi><annotation encoding="application/x-tex">x+',
+        "<math><semantics><mi>x</mi><mo>+</mo><mi>y</mi>"
+        '<annotation encoding="application/x-tex">x+',
+    ],
+)
+def test_formula_cut_off_at_end_of_page_is_kept(tail, main_content):
+    assert html_to_markdown(f"<p>Then {tail}", main_content = main_content) == "Then $x+y$"

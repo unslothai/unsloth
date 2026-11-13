@@ -1022,9 +1022,11 @@ test("the chords that need one target do not fire where there are two", async ()
     chatPage,
     /enabled: headerPickersShown,\n\s*claims: chatUncovered,\n\s*\}/,
   );
-  // Both panes mount the last message, and the chord would go to whichever
-  // registered its listener first. `If last` carries the other half.
-  assert.match(thread, /enabled: chatActive && !inComparePane && !forkDisabled/);
+  // Both panes mount a thread, and the chord would go to whichever registered its listener first.
+  assert.match(
+    thread,
+    /enabled: lastId !== undefined && chatActive && !inComparePane && !forkDisabled/,
+  );
   assert.match(
     toolCard,
     /soleRequest &&\n\s*!selectionActive &&\n\s*showControls &&/,
@@ -1137,18 +1139,14 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
     "the per-instance flag is what let two forks run",
   );
 
-  const mounts = THREAD.match(
-    /<MessagePrimitive\.If last=\{true\}>\n\s*<ForkChatShortcut \/>\n\s*<\/MessagePrimitive\.If>/g,
+  // Once per thread, beside the windowed rows: a row holding it unmounts when scrolled away.
+  assert.ok(!THREAD.includes("<MessagePrimitive.If last={true}>\n        <ForkChatShortcut />"));
+  assert.equal(THREAD.match(/<ForkChatShortcut \/>/g)?.length, 1);
+  assert.match(THREAD, /viewportRef=\{viewportElRef\}\n\s*\/>\n\s*<ForkChatShortcut \/>/);
+  assert.match(
+    block,
+    /const lastId = useAuiState\(\(\{ thread \}\) => thread\.messages\.at\(-1\)\?\.id\);/,
   );
-  assert.equal(mounts?.length, 2);
-  for (const role of ["const AssistantMessage", "const UserMessage: FC"]) {
-    const at = THREAD.indexOf(role);
-    assert.notEqual(at, -1, `${role} moved`);
-    assert.ok(
-      THREAD.slice(at, THREAD.indexOf("\n};", at)).includes("<ForkChatShortcut />"),
-      `${role} does not mount the fork chord`,
-    );
-  }
 });
 
 // The tour's opener pins the picker and an effect unpins it when no tour runs.

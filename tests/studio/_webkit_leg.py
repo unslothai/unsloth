@@ -263,7 +263,7 @@ class WebKitPage(am.Page):
         self.attr_before, self.focusins_before, self.hovered = None, 0, False
         page.goto(f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 180_000)
         page.wait_for_function(
-            "(n) => document.querySelectorAll('[data-role]').length >= n",
+            am.THREAD_LOADED,
             arg = 2 * turns,
             timeout = 180_000,
         )

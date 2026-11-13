@@ -12,6 +12,7 @@ registerBundlerResolver();
 const {
   DEFAULT_PER_MODEL_CONFIG,
   normalizePerModelConfig,
+  sameEngramPrecision,
   storedSpeculativeAuto,
 } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
@@ -36,6 +37,7 @@ const { perModelConfigsEqual } = loadWithStubs<{
     "./per-model-config": {
       normalizeMaxSeqLength: (value: number | null | undefined) =>
         value ?? null,
+      sameEngramPrecision,
     },
   },
 );

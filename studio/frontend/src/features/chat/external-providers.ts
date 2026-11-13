@@ -506,7 +506,7 @@ export function allowsManualModelIdsWithCatalog(
   providerType: string | null | undefined,
 ): boolean {
   if (!providerType) return false;
-  if (providerType === "openrouter") return true;
+  if (providerType === "openrouter" || DECISION_PROVIDER_TYPES.has(providerType)) return true;
   return supportsRemoteModelCatalog(providerType);
 }
 

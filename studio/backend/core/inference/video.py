@@ -952,7 +952,7 @@ def _assert_video_precision_for_target(
     if (
         te_mode == "int8"
         and model_kind in ("pipeline", "single_file")
-        and family_te_int8_convrot(fam, "text_encoder") is not None
+        and family_te_int8_convrot(fam, "text_encoder", include_pending = True) is not None
         and int8_convrot_te_runs_on(target)
     ):
         # An unpublished file otherwise failed inside the load, after the eviction.
@@ -1213,6 +1213,17 @@ class _CompletedStepTicker:
             self._events.append((enqueued, event))
             self._event_backed = True
 
+    def caught_up(self, lead: int) -> bool:
+        """Whether the device has finished every step but the last ``lead`` enqueued; never blocks."""
+        with self._lock:
+            if self._enqueued >= self.total or len(self._events) <= lead:
+                return True
+            event = self._events[-1 - lead][1]
+        try:
+            return bool(event.query())
+        except Exception:  # noqa: BLE001 -- an unqueryable marker counts as finished
+            return True
+
     def completed(self) -> int:
         """Steps the GPU has finished. Never decreases, never exceeds what was enqueued, never
         blocks, and never raises."""
@@ -1246,6 +1257,19 @@ def _hold_off_cuda_graph_capture():
         return
     with guard() as clear:
         yield clear
+
+
+def _hold_for_device(
+    ticker: Any,
+    cancel: Any,
+    lead: int = 1,
+) -> None:
+    """Keeps the host at most ``lead`` steps ahead of the device: an enqueued step cannot be cancelled."""
+    while not cancel.is_set():
+        with _hold_off_cuda_graph_capture() as clear:
+            if not clear or ticker.caught_up(lead):
+                return
+        cancel.wait(0.002)
 
 
 @contextlib.contextmanager
@@ -14214,6 +14238,7 @@ class VideoBackend:
                             return
                         ticker.record(enqueued)
                         _report(ticker.completed())
+                    _hold_for_device(ticker, cancel)
 
                 def _finish_denoise() -> None:
                     """Finish the bar once the denoise is over: H3 makes 29 scheduler.step calls for
@@ -14261,15 +14286,14 @@ class VideoBackend:
                     if static_skip:
                         mark_step_end(_skip_pipe(state, pipe))
                     # Called after scheduler.step, so the step's latent update is already submitted.
+                    if not cancel.is_set():
+                        _tick(step_index + 1)
+                        if previewer is not None:
+                            previewer.on_step(
+                                callback_kwargs.get("latents"), getattr(p, "scheduler", None)
+                            )
                     if cancel.is_set():
                         p._interrupt = True
-                        cross_forward_step(p, step_index, timestep = timestep)
-                        return callback_kwargs
-                    _tick(step_index + 1)
-                    if previewer is not None:
-                        previewer.on_step(
-                            callback_kwargs.get("latents"), getattr(p, "scheduler", None)
-                        )
                     cross_forward_step(p, step_index, timestep = timestep)
                     return callback_kwargs
 
