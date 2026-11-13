@@ -12514,6 +12514,7 @@ class LlamaCppBackend:
         gpu_memory_mode: Optional[str] = None,
         gpu_layers: Optional[int] = None,
         n_cpu_moe: int = 0,
+        cpu_child: bool = False,
     ) -> int:
         """Weight bytes a full-offload Windows ROCm APU load puts in the BIOS carve-out, which
         Windows does not count as RAM; 0 unless the placement and carve-out are both known.
@@ -12522,7 +12523,7 @@ class LlamaCppBackend:
         shared heap (Windows RAM) to it. Host-pinned inputs (token_embd, per-layer tables) get no credit."""
         if sys.platform != "win32" or not model_size or model_size <= 0 or not model_path:
             return 0
-        if not self._amd_apu_wants_unified_memory(gpu_indices):
+        if cpu_child or not self._amd_apu_wants_unified_memory(gpu_indices):
             return 0
         argv = [str(arg) for arg in extra_args or ()]
         # Mirrors the launch: manual -1 is Auto and stays with the fitter.
@@ -12542,10 +12543,11 @@ class LlamaCppBackend:
             return 0
         try:
             carve_out = self._igpu_dedicated_memory_bytes(gpu_indices, rocm_fallback = False)
-            scan = self._gguf_tensor_scan(model_path)
+            scan = self._gguf_tensor_scan(model_path) if carve_out else None
+            used = self._windows_apu_gpu_used_bytes() if scan is not None else None
         except Exception:
             return 0
-        if not carve_out or carve_out <= 0 or scan is None:
+        if not carve_out or carve_out <= 0 or scan is None or used is None:
             return 0
         lazy_mode = (
             _effective_lazy_mode(
@@ -12555,7 +12557,8 @@ class LlamaCppBackend:
             else "off"
         )
         on_device = int(model_size) - _host_pinned_input_bytes(scan, argv, env, lazy_mode = lazy_mode)
-        credit = max(0, min(int(carve_out), on_device))
+        # Used (dedicated + shared) fills the carve-out first, so this never over-credits.
+        credit = max(0, min(int(carve_out) - int(used), on_device))
         if credit:
             logger.info(
                 "Windows ROCm APU full offload: %.1f GiB of weights sit in the %.1f GiB "
@@ -12564,6 +12567,20 @@ class LlamaCppBackend:
                 carve_out / (1024**3),
             )
         return credit
+
+    @staticmethod
+    def _windows_apu_gpu_used_bytes() -> Optional[float]:
+        """System-wide APU bytes in use from the WDDM counters; an idle adapter under the counter
+        floor reads as the floor; None when unreadable or ambiguous."""
+        from utils.hardware import hardware as hw
+
+        dedicated = hw._rocm_windows_perf_counter_vram_by_adapter()
+        if not dedicated:
+            return None
+        used = hw._rocm_windows_unified_used_bytes(dedicated)
+        if used is None and all(v < hw._ROCM_WIN_ADAPTER_MIN_BYTES for _n, v in dedicated):
+            return float(hw._ROCM_WIN_ADAPTER_MIN_BYTES)
+        return used
 
     # PHYSICAL integrated ids, keyed per visibility mask; integratedness cannot change under a fixed mask.
     _INTEGRATED_CUDA_IDS: dict[tuple, set[int]] = {}
@@ -28894,6 +28911,13 @@ class LlamaCppBackend:
                         is_vulkan_backend = False,
                         cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
                     )
+                    _apu_cpu_child = sys.platform == "win32" and self._child_runs_on_cpu(
+                        binary,
+                        _apu_lazy_extras,
+                        _apu_lazy_env,
+                        cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                        tensor_parallel = tensor_parallel,
+                    )
                     _apu_resident_model_size = max(
                         1,
                         model_size
@@ -28907,6 +28931,7 @@ class LlamaCppBackend:
                             gpu_memory_mode = gpu_memory_mode,
                             gpu_layers = gpu_layers,
                             n_cpu_moe = n_cpu_moe,
+                            cpu_child = _apu_cpu_child,
                         )
                         - self._lazy_read_host_bytes(
                             model_path,
@@ -32424,6 +32449,8 @@ class LlamaCppBackend:
                                     gpu_indices = _remaining,
                                     extra_args = cmd,
                                     env = env,
+                                    cpu_child = sys.platform == "win32"
+                                    and self._child_runs_on_cpu(binary, cmd, env),
                                 )
                                 - self._lazy_read_host_bytes(
                                     model_path,

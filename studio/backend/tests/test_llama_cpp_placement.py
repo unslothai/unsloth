@@ -2633,7 +2633,16 @@ def _apu_backend(tmp_path, *, gguf_gb, avail_mib, monkeypatch):
     return backend, gguf
 
 
-def _windows_apu_backend(tmp_path, monkeypatch, *, carve_gb, pal_pool_gb, model_gb, ple_gb):
+def _windows_apu_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    carve_gb,
+    pal_pool_gb,
+    model_gb,
+    ple_gb,
+    used_gb = 0.5,
+):
     """Strix Halo on Windows: 21 GB of RAM left to Windows, the rest a BIOS carve-out."""
     import utils.hardware.hardware as hw
 
@@ -2656,6 +2665,7 @@ def _windows_apu_backend(tmp_path, monkeypatch, *, carve_gb, pal_pool_gb, model_
         "_rocm_selected_pool_mib",
         staticmethod(lambda _gpu_indices = None: int(pal_pool_gb * 1024)),
     )
+    backend._windows_apu_gpu_used_bytes = lambda: (None if used_gb is None else used_gb * 1024**3)
     record = {
         "name": "AMD Radeon(TM) 8060S Graphics",
         "dedicated_memory_bytes": int(carve_gb * 1024**3),
@@ -2684,8 +2694,26 @@ _W96 = dict(carve_gb = 96, pal_pool_gb = 107.87)
         # A 32 GB carve-out under an 89 GB HIP total: the overflow lands in shared Windows RAM.
         (dict(carve_gb = 32, pal_pool_gb = 89.465, model_gb = 62, ple_gb = 0), ["-ngl", "49"], False),
         (dict(_W96, model_gb = 62, ple_gb = 0), ["-ngl", "24"], False),
+        # Another workload holds 60 GiB of the carve-out, or its occupancy is unreadable.
+        (dict(_W96, model_gb = 62, ple_gb = 0, used_gb = 60), ["-ngl", "49"], False),
+        (dict(_W96, model_gb = 62, ple_gb = 0, used_gb = None), ["-ngl", "49"], False),
+        (
+            dict(_W96, model_gb = 62, ple_gb = 0),
+            ["-ngl", "49", "--split-mode", "none", "--main-gpu", "-1"],
+            False,
+        ),
     ],
-    ids = ["on_direct", "lazy_on", "dense", "lazy_off", "carve32", "partial"],
+    ids = [
+        "on_direct",
+        "lazy_on",
+        "dense",
+        "lazy_off",
+        "carve32",
+        "partial",
+        "occupied",
+        "occupancy_unknown",
+        "cpu_child",
+    ],
 )
 def test_windows_rocm_apu_full_offload_prices_the_carve_out_apart_from_ram(
     tmp_path, monkeypatch, setup, extra_args, keeps_none
@@ -2699,6 +2727,26 @@ def test_windows_rocm_apu_full_offload_prices_the_carve_out_apart_from_ram(
 
     assert (_unmapped_tokens(cmd) == ["--load-mode", "none"]) is keeps_none, cmd
     assert ("unified-memory APU" in (backend.last_load_warning or "")) is not keeps_none
+
+
+@pytest.mark.parametrize(
+    "dedicated, shared, expected",
+    [
+        ([("luid_0x1_phys_0", 2.0 * 1024**3)], [("luid_0x1_phys_0", 1.0 * 1024**3)], 3.0 * 1024**3),
+        ([("luid_0x1_phys_0", 1024.0)], [], 64 * 1024**2),
+        (None, [], None),
+        ([], [], None),
+    ],
+    ids = ["busy", "idle_under_floor", "unreadable", "no_adapters"],
+)
+def test_windows_apu_gpu_used_bytes(monkeypatch, dedicated, shared, expected):
+    import utils.hardware.hardware as hw
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_perf_counter_vram_by_adapter",
+        lambda counter = "Dedicated Usage": dedicated if counter == "Dedicated Usage" else shared,
+    )
+    assert LlamaCppBackend._windows_apu_gpu_used_bytes() == expected
 
 
 @pytest.mark.parametrize(
