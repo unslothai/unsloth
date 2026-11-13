@@ -9,6 +9,7 @@ import { fetchGalleryAudioSignedUrl } from "../api";
 export function useRowPreview(
   srcById: Readonly<Record<string, string>>,
   active: boolean,
+  shownIds: readonly string[],
 ) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -37,12 +38,14 @@ export function useRowPreview(
     };
   }, []);
 
+  // Off-page, or its row left the list (selected, archived, deleted): nothing would show its Pause.
+  const shown = active && (playingId === null || shownIds.includes(playingId));
   useEffect(() => {
-    if (active) return;
+    if (shown) return;
     requestRef.current += 1;
     audioRef.current?.pause();
     setPlayingId(null);
-  }, [active]);
+  }, [shown]);
 
   const toggle = useCallback(
     async (id: string) => {

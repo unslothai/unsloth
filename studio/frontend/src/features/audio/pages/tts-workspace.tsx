@@ -659,11 +659,15 @@ export function TtsOutput({
       return next;
     });
   const siblings = variationSiblings(clips, selectedClip?.id ?? null);
-  const rowPreview = useRowPreview(srcById, active);
   const tab = audioWorkflowTab(workflow);
   // The player is the selected clip's expanded row, so the list below leaves it out.
   const listRows = historyRows(clips, openGroups).filter(
     ({ clip, header }) => header || !selectedClip || clip.id !== selectedClip.id,
+  );
+  const rowPreview = useRowPreview(
+    srcById,
+    active,
+    listRows.flatMap(({ clip, header }) => (header ? [] : [clip.id])),
   );
   const clipMenu = (clip: AudioGalleryClip, variant: "row" | "toolbar") => (
     <GalleryItemMenu
