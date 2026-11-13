@@ -1724,6 +1724,15 @@ def test_python_shell_command_terminal_asks_about_is_high_risk(command, template
             True,
         ),
         ("import timeit\ntimeit.timeit('sorted(x)', setup='x = [3, 1, 2]', number=10)", False),
+        (
+            "import os, asyncio\nf = asyncio.create_subprocess_exec\nf = os.system\nf('git reset --hard')",
+            True,
+        ),
+        (
+            "import timeit\ns: str = \"import shutil; shutil.rmtree('d')\"\ntimeit.timeit(s, number=1)",
+            True,
+        ),
+        ("import timeit\ns = 'sum(range(9))'\ntimeit.timeit(s)", False),
         ("from timeit import timeit\ntimeit(\"__import__('os').remove('x')\", number=1)", True),
         ("import timeit as t\nt.timeit('sum(range(100))', number=1000)", False),
         ("import timeit\ns = 'sum(range(100))'\ntimeit.timeit(s, number=1000)", False),
@@ -1738,6 +1747,11 @@ def test_python_shell_command_terminal_asks_about_is_high_risk(command, template
 )
 def test_python_code_string_and_spawn_apis_are_screened(code, high_risk):
     assert is_high_risk_tool_call("python", {"code": code}) is high_risk
+
+
+def test_starred_spawn_arguments_do_not_crash_the_classifier():
+    code = "import os\nos.spawnlp(*(os.P_WAIT, 'echo', 'echo', 'ok'))"
+    assert isinstance(is_high_risk_tool_call("python", {"code": code}), bool)
 
 
 @pytest.mark.parametrize("code", ["value = " + "+".join(["1"] * 400), "value = data" + "[0]" * 400])

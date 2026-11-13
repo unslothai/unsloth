@@ -8680,7 +8680,7 @@ def _python_is_high_risk(code: str) -> bool:
     def _code_strings(arg) -> "tuple[list[str], bool]":
         """Candidate sources for a runner argument, and whether any binding stayed unresolved."""
         values = name_bindings.get(arg.id) if isinstance(arg, ast.Name) else None
-        if not values or len(values) == 1:
+        if not values:
             values = [arg]
         sources, unresolved = [], False
         for value in values:
@@ -18558,6 +18558,16 @@ def _check_signal_escape_patterns(code: str):
                 all_call_args = list(positional) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
                 argv_start = _VARIADIC_ARGV_START.get(shell_func)
+                # A name bound to several spawners must not get argv semantics from just one.
+                targets = {
+                    f"{module}.{attr}"
+                    for owner, attr in self._lookups(func)
+                    for module in self._modules_of(owner)
+                }
+                if any(
+                    t in _SHELL_EXEC_FUNCS and t not in _VARIADIC_ARGV_START for t in targets
+                ) or any(isinstance(a, ast.Starred) for a in positional[: (argv_start or 0) + 1]):
+                    argv_start = None
                 if argv_start is None:
                     shell_commands.extend(
                         s for s in map(_extract_string_from_node, all_call_args) if s is not None
