@@ -95,6 +95,7 @@ STATE = """() => {
     mounted: rows.length,
     positions: rows.map((row) => Number(row.getAttribute('aria-posinset'))),
     sizes: [...new Set(rows.map((row) => row.getAttribute('aria-setsize')))],
+    roles: [...new Set(rows.map((row) => row.getAttribute('role')))],
     scrollTop: viewport.scrollTop,
     scrollHeight: viewport.scrollHeight,
     clientHeight: viewport.clientHeight,
@@ -326,6 +327,10 @@ def check_ordinals(
     assert state["sizes"] == [str(state["length"])], (
         f"{label}: rows must all publish the thread's length {state['length']} as aria-setsize, "
         f"got {state['sizes']}"
+    )
+    assert state["roles"] == ["article"], (
+        f"{label}: every windowed row must carry role=article, the role its ordinals need, got "
+        f"{state['roles']}"
     )
     assert positions == sorted(positions), f"{label}: rows are out of order: {positions}"
     if pinned is not None:
