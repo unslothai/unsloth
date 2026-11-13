@@ -491,6 +491,19 @@ def gemm_disabled() -> bool:
     return raw in ("0", "off", "false", "no") or disabled()
 
 
+def load_switches() -> tuple:
+    """(fused quant, fused GEMM) allowed by this load's kill switches."""
+    return (not disabled(), not gemm_disabled())
+
+
+def _set_load_switches(transformer: Any) -> None:
+    from .diffusion_native_quant import is_native_linear
+    rotq_on, gemm_on = load_switches()
+    for m in transformer.modules():
+        if is_native_linear(m):
+            m._cuda_rotq_load, m._cuda_gemm_load = rotq_on, gemm_on
+
+
 def gemm_shape_ok(in_features: int, out_features: int) -> bool:
     from .diffusion_int8_gemm import _K_ALIGN, _N_ALIGN
     return int(in_features) % _K_ALIGN == 0 and int(out_features) % _N_ALIGN == 0
@@ -1292,7 +1305,13 @@ def install(
 ) -> int:
     """Before the first compiled forward: probe the card the denoiser computes on (``device``, else its weights' card,
     else the current one); returns the native W8A8 Linears that will take the kernel (0 = none or switched off)."""
-    if transformer is None or disabled():
+    if transformer is None:
+        return 0
+    try:
+        _set_load_switches(transformer)
+    except Exception:  # noqa: BLE001
+        pass
+    if disabled():
         return 0
     n = candidates(transformer)
     if not n:

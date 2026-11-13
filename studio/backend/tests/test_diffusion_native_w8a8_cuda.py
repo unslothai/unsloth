@@ -614,3 +614,28 @@ def test_rotq_kernel_norm_prologue_flags():
     assert "libdevice.rsqrt(rss / (NG * G) + NORM_EPS)" in src
     sig = inspect.signature(cq._rotq_launch)
     assert {"prologue", "scale", "shift", "tokens", "norm_eps"} <= set(sig.parameters)
+
+
+@pytest.mark.parametrize("env", ["UNSLOTH_NATIVE_INT8_ROTQ", "UNSLOTH_NATIVE_INT8_GEMM"])
+def test_a_later_load_with_the_switch_off_does_not_inherit_the_route(cr, monkeypatch, env):
+    import torch
+
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    cr._STATE["op"] = object()
+    cr._STATE["on"] = {0: True}  # an earlier load in this process armed the route on this card
+    cr._STATE["gemm"] = {0: True}
+    cr._STATE["gemm_op"] = object()
+    first = _linear()
+    monkeypatch.setenv(env, "0")
+    later = _linear()
+    t = _wrap(later)
+    monkeypatch.setattr(cr, "prepare", lambda device = None: True)
+    cr.install(t)
+    assert first._cuda_rotq_on(_fake_x()) and first._cuda_gemm_load
+    if env == "UNSLOTH_NATIVE_INT8_ROTQ":
+        assert not later._cuda_rotq_on(_fake_x())
+    else:
+        assert later._cuda_rotq_on(_fake_x()) and not later._cuda_gemm_load
+    monkeypatch.delenv(env)
+    cr.install(t)  # a reload with the switch back on re-arms the same denoiser
+    assert later._cuda_rotq_on(_fake_x()) and later._cuda_gemm_load
