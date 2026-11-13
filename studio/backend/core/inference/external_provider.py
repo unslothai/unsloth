@@ -1195,7 +1195,6 @@ def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
         slim["created"] = m.get("created") or 0
         models.append(slim)
     models.sort(key = lambda m: m["created"], reverse = True)
-    # OpenRouter's own routers, then its "~" latest aliases, lead the list.
     models.sort(key = lambda m: (not m["id"].startswith("openrouter/"), not m["id"].startswith("~")))
     return models
 
