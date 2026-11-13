@@ -435,6 +435,21 @@ test("a reset over a link survives the next status replay", async () => {
   assert.equal(live().systemPrompt, "");
 });
 
+test("an edit over a link keeps the link's untouched values through a replay", async () => {
+  useChatRuntimeStore.setState({
+    paramsByModel: { [QWEN]: { topP: 0.5, systemPrompt: "Old prompt." } },
+  });
+  await switchTo(QWEN);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, temperature: 0.9 });
+  store.setActivePresetSource("modified");
+  loadOrPoll(QWEN);
+  await Promise.resolve();
+  assert.equal(live().temperature, 0.9);
+  assert.equal(useChatRuntimeStore.getState().params.topP, 0.8);
+  assert.equal(live().systemPrompt, "Cite your sources.");
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);

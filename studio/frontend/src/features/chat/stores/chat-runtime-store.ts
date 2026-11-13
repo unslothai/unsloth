@@ -6776,20 +6776,23 @@ export function presetSourceForModel(modelId: string): ChatPresetSource {
   return state.activePresetSource;
 }
 
-/** A replay lays the model's memory and the chat's own values back on; a link still showing,
- *  unedited, stays on top of them without touching either. */
+/** A replay lays the model's memory and the chat's own values back on; a link still showing keeps
+ *  every key the user has not moved since, so an edit overrides only itself. */
 function withLinkOverlay(params: InferenceParams): InferenceParams {
   if (linkShown === null) return params;
   const state = useChatRuntimeStore.getState();
-  if (state.activePreset !== linkShown || state.activePresetSource !== "custom") return params;
+  if (state.activePreset !== linkShown) return params;
   const preset = getLinkedPreset(params.checkpoint, state.modelPresets, state.customPresets);
   if (preset?.name !== linkShown) return params;
-  // Only while the live values are still the link's: a reset or edit is the user's override.
-  const owned = JSON.stringify(getPresetOwnedParams(state.params));
-  const linked = JSON.stringify(
-    getPresetOwnedParams(applyPresetForProvider(state.params, preset, null)),
+  const live = getPresetOwnedParams(state.params);
+  const linked = getPresetOwnedParams(applyPresetForProvider(state.params, preset, null));
+  const kept = Object.fromEntries(
+    Object.entries(linked).filter(
+      ([key, value]) =>
+        JSON.stringify(live[key as keyof typeof live]) === JSON.stringify(value),
+    ),
   );
-  return owned === linked ? applyPresetForProvider(params, preset, null) : params;
+  return { ...params, ...kept };
 }
 
 /** A pick by hand replaces whatever a link put on, so leaving the model keeps it. */
