@@ -46,6 +46,7 @@ export {
 export type {
   ApiMonitorEntry,
   BackendModelDetails,
+  EngramTableDetail,
   GgufVariantDetail,
   GgufVariantsResponse,
   InferenceStatusResponse,
@@ -95,6 +96,7 @@ export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/part
 export type { PlacementPool } from "./lib/partial-offload";
 export {
   betweenToolRounds,
+  runningReplyTail,
   formatLiveDecode,
   formatPrefillDetails,
   formatPrefillTimeLeft,
@@ -669,10 +671,12 @@ export {
   effectiveSendShortcut,
   followUpSubmitIntent,
   imeKeydownBlocksComposerSubmit,
+  parkedSendSteer,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
+  type ParkedSendSteerState,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
 

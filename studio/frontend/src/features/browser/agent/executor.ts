@@ -30,7 +30,7 @@ import {
   setActiveAction,
   useBrowserAgentStore,
 } from "./agent-store";
-import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
+import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks, siteOfUrl } from "./gate";
 import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
 import { type FileTabKind, MAX_EDIT_BYTES, applyFileEdit, numberedLines } from "./file-tab";
@@ -223,7 +223,7 @@ function record(session: Session, op: string, url: string): void {
 
 function admit(url: string, gate: Gate, context: Run): void {
   if (context.fullAccess === true) return;
-  const host = hostOfUrl(url);
+  const host = siteOfUrl(url);
   if (!host) return;
   context.session.reachedHosts.add(host);
   if (!(gate.kind === "allow" && gate.linked)) context.session.knownHosts.add(host);
@@ -729,7 +729,7 @@ function navigationContext(action: BrowserAction, context: Run) {
   return {
     policy: action.policy,
     permissions: permissions(context),
-    currentUrl: reachedHosts.has(hostOfUrl(currentUrl)) ? currentUrl : "",
+    currentUrl: reachedHosts.has(siteOfUrl(currentUrl)) ? currentUrl : "",
     knownHosts,
     pageLinks,
     userText: context.userText,
@@ -849,7 +849,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       const blocked = navigationBlocks(destination, action.policy, permissions(context));
       const gate: Gate = blocked
         ? { kind: "block", reason: blocked }
-        : hostOfUrl(destination) === hostOfUrl(before) && reachedHosts.has(hostOfUrl(before))
+        : siteOfUrl(destination) === siteOfUrl(before) && reachedHosts.has(siteOfUrl(before))
           ? { kind: "allow" }
           : gateNavigation(destination, navigationContext(action, context));
       const refused = await pass(gate, context);
@@ -982,7 +982,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
   const formAction = submits && gated.formAction ? gated.formAction : "";
   const formGate =
-    formAction && hostOfUrl(formAction) !== hostOfUrl(here) ? gateNavigation(formAction, navigationContext(action, context)) : null;
+    formAction && siteOfUrl(formAction) !== siteOfUrl(here) ? gateNavigation(formAction, navigationContext(action, context)) : null;
   if (formAction) {
     // A submit button's own click gate already asks what a submit would.
     if (!info.submits) gates.push(gateElement("submit", info, here, action.policy, permissions(context)));
@@ -1447,7 +1447,7 @@ function gateable(info: ElementInfo, context: Run): ElementInfo {
 /** An unlabelled point (a canvas) may be a Buy button nothing can read: ask once per site per chat. */
 function opaqueGate(info: ElementInfo, pageUrl: string, context: Run): (Gate & { kind: "ask" }) | null {
   if (info.role !== "element" || info.name.trim() || info.href) return null;
-  const host = hostOfUrl(pageUrl);
+  const host = siteOfUrl(pageUrl);
   const rule = ruleFor(pageUrl, permissions(context)).rule;
   if (!host || context.session.opaqueHosts.has(host) || rule.actions === "allow" || rule.unlabelled === "allow") return null;
   return { kind: "ask", ask: "pointer", host, name: "", detail: info.tag, prompt: `Click unlabelled parts of ${host}?` };
@@ -1471,7 +1471,7 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, b
   // The document the user sees as they approve: a reload or a page at the same address is another one.
   const doc = (await pageCall(tab, { op: "status" })).doc;
   if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
-  const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, context);
+  const refused = await pass({ kind: "ask", ask: "script", host: siteOfUrl(before), name: "", detail: script, prompt: "" }, context);
   if (refused) return { ok: false, error: refused };
   if (signal?.aborted) return { ok: false, error: STOPPED };
   // Settings can change while the question is open.
@@ -1533,11 +1533,11 @@ async function arrive(
   note?: string,
 ): Promise<Result> {
   const url = tabUrl(tab);
-  const host = hostOfUrl(url);
+  const host = siteOfUrl(url);
   if (url) {
     const blocked = navigationBlocks(url, action.policy, permissions(context));
     if (blocked) return { ok: false, error: `The page went to ${host}, but ${blocked}. Go back.` };
-    if (host && host !== hostOfUrl(requested) && !context.session.reachedHosts.has(host)) {
+    if (host && host !== siteOfUrl(requested) && !context.session.reachedHosts.has(host)) {
       const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: requested });
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: `The page went to ${host}. ${refused}` };
@@ -1546,6 +1546,8 @@ async function arrive(
     if (host && context.fullAccess !== true) context.session.reachedHosts.add(host);
     record(context.session, action.op, url);
   }
+  // The last page's links don't vouch for addresses once the tab has moved.
+  context.session.pageLinks = new Set();
   return observeLoaded(tab, context, since, note);
 }
 
@@ -1553,7 +1555,7 @@ async function arrive(
  *  its own, or the user declined where a redirect landed and it is still loaded. */
 async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Run): Promise<string | null> {
   const url = tabUrl(tab);
-  const host = hostOfUrl(url);
+  const host = siteOfUrl(url);
   if (!host) return null;
   const blocked = navigationBlocks(url, action.policy, permissions(context));
   if (blocked) return `The page is on ${host}, but ${blocked}. Use browser_navigate to go elsewhere.`;

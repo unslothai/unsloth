@@ -1140,6 +1140,10 @@ def test_jobs_differing_only_in_member_fields_batch_in_queue_order(batching, tmp
         {"optim": "adamw_torch_fused"},
         {"gpu_ids": [0, 1]},
         {"start_request_id": "retry-1"},
+        {"target_modules": ["q_proj", "embed_tokens"]},
+        {"target_modules": ["q_proj", "lm_head"]},
+        {"target_modules": ["model.embed_tokens", "v_proj"]},
+        {"target_modules": ["all-linear", "lm_head"]},
     ],
 )
 def test_an_excluded_setting_trains_alone(batching, tmp_path, fields):
@@ -1151,6 +1155,16 @@ def test_an_excluded_setting_trains_alone(batching, tmp_path, fields):
     plain = _entry(tmp_path, "c")
     batching.insert(0, plain)
     assert openai_fine_tuning._batch_for(plain) == [plain]
+
+
+@pytest.mark.parametrize(
+    "targets", [[], ["all-linear"], ["q_proj", "v_proj"], ["model.layers.0.self_attn.q_proj"]]
+)
+def test_projection_targets_still_batch(batching, tmp_path, targets):
+    head = _entry(tmp_path, "a", target_modules = targets)
+    other = _entry(tmp_path, "b", target_modules = targets)
+    batching.extend([head, other])
+    assert openai_fine_tuning._batch_for(head) == [head, other]
 
 
 @pytest.mark.parametrize(
