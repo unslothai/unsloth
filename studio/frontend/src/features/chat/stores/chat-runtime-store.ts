@@ -1257,7 +1257,7 @@ function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
     }
     kept[key] = held;
   }
-  return hasKeys(kept) ? { ...params, ...kept } : params;
+  return withLinkOverlay(hasKeys(kept) ? { ...params, ...kept } : params);
 }
 
 /** Take the open chat's own values out of a snapshot about to be remembered against a model,
@@ -6723,11 +6723,7 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
         params: getPresetOwnedParams(withoutActiveThreadParams(state, state.params)),
       };
     }
-    // fromPreset drops this model's memory here only, or the next status replay put it back on top.
-    state.setParams(applyPresetForProvider(state.params, preset, null), {
-      persist: false,
-      fromPreset: true,
-    });
+    state.setParams(applyPresetForProvider(state.params, preset, null), { persist: false });
     useChatRuntimeStore.setState({
       activePreset: preset.name,
       activePresetSource: getPresetSource(preset.name),
@@ -6776,6 +6772,16 @@ export function presetSourceForModel(modelId: string): ChatPresetSource {
     return pickBeforeLink.source;
   }
   return state.activePresetSource;
+}
+
+/** A replay lays the model's memory and the chat's own values back on; a link still showing,
+ *  unedited, stays on top of them without touching either. */
+function withLinkOverlay(params: InferenceParams): InferenceParams {
+  if (linkShown === null) return params;
+  const state = useChatRuntimeStore.getState();
+  if (state.activePreset !== linkShown || state.activePresetSource !== "custom") return params;
+  const preset = getLinkedPreset(params.checkpoint, state.modelPresets, state.customPresets);
+  return preset?.name === linkShown ? applyPresetForProvider(params, preset, null) : params;
 }
 
 /** A pick by hand replaces whatever a link put on, so leaving the model keeps it. */

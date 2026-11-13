@@ -390,6 +390,31 @@ test("a status replay of the linked model keeps its preset over the model's memo
   assert.equal(live().systemPrompt, "Cite your sources.");
 });
 
+test("a status replay keeps the link over an open chat's pins, which come back on leaving", async () => {
+  const store = useChatRuntimeStore.getState();
+  await switchTo(LLAMA);
+  store.setActiveThreadId("chat-p");
+  store.applyThreadScopedSettings("chat-p", { temperature: 0.4 });
+  try {
+    await switchTo(QWEN);
+    loadOrPoll(QWEN);
+    await Promise.resolve();
+    assert.equal(live().temperature, 0.2);
+    assert.equal(live().systemPrompt, "Cite your sources.");
+    await switchTo(LLAMA);
+    assert.equal(live().temperature, 0.4);
+  } finally {
+    store.setActiveThreadId(null);
+    store.applyThreadScopedSettings(null, null);
+  }
+});
+
+test("the link's overlay leaves the model's own memory in place", async () => {
+  useChatRuntimeStore.setState({ paramsByModel: { [QWEN]: { temperature: 0.66 } } });
+  await switchTo(QWEN);
+  assert.equal(useChatRuntimeStore.getState().paramsByModel[QWEN]?.temperature, 0.66);
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);
