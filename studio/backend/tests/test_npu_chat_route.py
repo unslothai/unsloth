@@ -1833,3 +1833,34 @@ def test_a_compact_epoch_replays_when_tool_calls_are_off(
     status, _ = _call(messages = follow, tool_choice = "none", **fields)
     assert status == 200
     assert len(recorded[-1]["body"]["messages"]) < len(follow)
+
+
+def test_a_reset_after_a_controller_reprompt_keeps_the_users_turn(
+    monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    import core.inference.llama_cpp as lc
+    import routes.inference as ri
+    from storage import studio_db
+
+    monkeypatch.setattr(lc, "_can_reset_epoch", lambda *a, **k: True)
+    chat = _long_chat(turns = 4)
+    chat[-1] = {"role": "user", "content": "the real task"}
+    _seed_thread(studio_db, "nudge", chat)
+    call = {"id": "c1", "type": "function", "function": {"name": "python", "arguments": "{}"}}
+    loop = chat + [
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "RESULT"},
+        {"role": "user", "content": "You are out of tool calls. Answer now."},
+    ]
+    payload = ChatCompletionRequest(
+        messages = chat,
+        thread_id = "nudge",
+        context_overflow = "truncate_oldest",
+        context_window = 8192,
+        compaction_threshold = 6144,
+        compact_context = True,
+    )
+    fitted, _, _ = ri._fit_external_context(
+        loop, payload, tools = [], branch = chat, tool_loop = True, can_reset = True
+    )
+    assert {"role": "user", "content": "the real task"} in fitted

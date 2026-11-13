@@ -29083,8 +29083,13 @@ def _fit_external_context(
         )
     # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
+    # A controller re-prompt is not the user's turn: anchor the branch's own, as the GGUF loop does.
+    asked = (can_reset or replays_manual) and next(
+        (m for m in reversed(branch or ()) if m.get("role") == "user"), None
+    )
     fitted, truncation = _fit_with_instruction_pins(
         messages,
+        anchor_ids = {id(m) for m in messages if asked and m == asked} or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
