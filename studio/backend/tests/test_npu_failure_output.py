@@ -744,3 +744,14 @@ def test_a_log_that_cannot_reopen_names_no_older_file(tmp_path, monkeypatch):
     )
     assert server._open_log_file(4243) is None
     assert server.log_path is None
+
+
+def test_a_reason_lemond_only_wraps_in_a_prefix_is_not_repeated(tmp_path, log):
+    # As seen on a real XDNA2 NPU: lemond's line restates the error it returned.
+    server = _server(tmp_path)
+    window = server.open_window()
+    _prints(
+        server, _line("Error", "Router", "Backend load failed: FLM pull failed with exit code: 1")
+    )
+    message = "Failed to load model 'qwen3-0.6b-FLM': FLM pull failed with exit code: 1"
+    assert nb._explain(server, window, message) == message
