@@ -100,7 +100,7 @@ export type BrowserTab = {
   chat: string;
 };
 
-type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean; floating: boolean };
+type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean; floating: boolean; floatedForAgent?: boolean };
 
 /** The chat on screen before the chat page names it (chat-page.tsx `shownChatKey`). */
 export const NEW_CHAT = "new";
@@ -505,7 +505,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         // Another chat's: it shows there next time, without moving this chat's panel.
         const saved = state.chats[chat];
         const activeTabId = background && saved?.activeTabId ? saved.activeTabId : owned.id;
-        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, floating: saved?.floating ?? false, activeTabId } } };
+        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, floating: saved?.floating ?? false, floatedForAgent: saved?.floatedForAgent, activeTabId } } };
       }
       return {
         open: true,
@@ -538,7 +538,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
           open: state.open,
           activeTabId: state.activeTabId,
           fullView: state.fullView,
-          floating: state.floating && !state.floatedForAgent,
+          floating: state.floating,
+          floatedForAgent: state.floatedForAgent,
         };
       } else {
         delete chats[state.chat];
@@ -560,7 +561,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         fullView: open && (saved ? saved.fullView : state.fullView),
         // Each chat floats only once it was floated there; a chat new to the browser opens beside it.
         floating: saved?.floating ?? false,
-        floatedForAgent: false,
+        floatedForAgent: (saved?.floating && saved.floatedForAgent) ?? false,
         annotateTabId: null,
         renamingTabId: null,
       });
@@ -590,6 +591,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
             open: true,
             fullView: state.chats[chat]?.fullView ?? false,
             floating: state.chats[chat]?.floating ?? false,
+            floatedForAgent: state.chats[chat]?.floatedForAgent,
             activeTabId: tabId,
           },
         },

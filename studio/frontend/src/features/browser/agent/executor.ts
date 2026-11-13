@@ -1546,6 +1546,8 @@ async function arrive(
     if (host && context.fullAccess !== true) context.session.reachedHosts.add(host);
     record(context.session, action.op, url);
   }
+  // The last page's links don't vouch for addresses once the tab has moved.
+  context.session.pageLinks = new Set();
   return observeLoaded(tab, context, since, note);
 }
 
