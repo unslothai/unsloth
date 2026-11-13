@@ -45,7 +45,7 @@ class OAICompatTransport:
         model: str,
         continue_final_message: bool | None = None,
         message_fitter: Callable[
-            [list[dict[str, Any]]],
+            [list[dict[str, Any]], list[dict[str, Any]] | None],
             Awaitable[tuple[list[dict[str, Any]], int | None, str | None]],
         ]
         | None = None,
@@ -113,7 +113,7 @@ class OAICompatTransport:
     ) -> AsyncIterator[str]:
         request_kwargs = dict(self._request_kwargs)
         if self._message_fitter is not None:
-            messages, max_tokens, truncation_line = await self._message_fitter(messages)
+            messages, max_tokens, truncation_line = await self._message_fitter(messages, tools)
             request_kwargs["max_tokens"] = max_tokens
             if truncation_line:
                 yield truncation_line

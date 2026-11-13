@@ -573,15 +573,12 @@ class _MemberLossScale:
         self.good_steps = [0] * members
         self.growth_interval = growth_interval
 
-    def scale_backward(self, logits, adapter_ids):
-        """GradScaler's loss scaling per token, in fp32: a logit's gradient comes only from its member's loss."""
+    def grad_scale(self, adapter_ids, device):
+        """GradScaler's loss scaling per row or token, in fp32: a logit's gradient comes only from its member's loss."""
         import torch
 
-        scale = torch.tensor(self.scale, dtype = torch.float32, device = logits.device)
-        per_token = scale[adapter_ids.to(logits.device).clamp_min(0)]
-        per_token = per_token[:, None, None] if per_token.dim() == 1 else per_token[..., None]
-        logits.register_hook(lambda grad: grad * per_token)
-        return logits
+        scale = torch.tensor(self.scale, dtype = torch.float32, device = device)
+        return scale[adapter_ids.to(device).clamp_min(0)]
 
     def unscale_(self, slot: int, params: list) -> bool:
         """Unscales the member's gradients; False (and its gradients dropped) when any is not finite."""
@@ -1363,8 +1360,6 @@ def _build_sft_trainer(
                     attention_mask = inputs["attention_mask"],
                     use_cache = False,
                 ).logits
-            if self.loss_scale is not None:
-                logits = self.loss_scale.scale_backward(logits.float(), ids)
             loss, per = per_adapter_loss(
                 logits,
                 inputs["labels"],
@@ -1372,6 +1367,9 @@ def _build_sft_trainer(
                 U,
                 model = self.model,
                 num_items_in_batch = num_items_in_batch,
+                grad_scale = None
+                if self.loss_scale is None
+                else self.loss_scale.grad_scale(ids, logits.device),
             )
             self.round_losses += per.detach().float().cpu()
             return loss

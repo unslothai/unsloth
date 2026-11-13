@@ -194,7 +194,7 @@ def _h3():
             53.97,
             True,
             False,
-        ),  # L4 VM: the streamed DiT blocks pin, the 24 GB encoder stays pageable
+        ),  # L4 VM, old accounting: the streamed DiT blocks pin, the 24 GB encoder stays pageable
         (
             40.0,
             False,
@@ -203,7 +203,7 @@ def _h3():
     ],
 )
 def test_pins_fit_the_plans_host_room(host, dit_room, te_pinned):
-    """Pinned copies are counted on top of what the plan holds on the host, so a host the plan fits still fits."""
+    """Old accounting (pins on top of every copy the plan holds), kept for the plan room arithmetic."""
     h3i = _h3()
     vram = 41.96 if host > 80 else 23.46
     plan = h3i.plan_placement(vram_gb = vram, host_gb = host, dit_gb = 21.9, te_gb = 27.2, inflight = 2)
@@ -277,3 +277,249 @@ def test_the_global_pin_opt_out_keeps_the_pageable_streamer(monkeypatch, value):
     stack = _Stack()
     assert op.stream_module_list(stack, stack.layers, "cuda", 2) is None
     assert not stack.layers[3]._forward_pre_hooks
+
+
+class _Plan:
+    def __init__(self, pinned: int, replaced: int) -> None:
+        self.pinned_bytes = pinned
+        self.replaced_bytes = replaced
+
+
+@pytest.mark.parametrize("host, credited", [(86.55, True), (53.97, True), (40.0, False)])
+def test_pins_that_replace_counted_copies_cost_the_plan_nothing(host, credited):
+    """L4: the 24 GB encoder's pins take the place of the host copy the plan counts, so it pins beside the DiT."""
+    h3i = _h3()
+    vram = 41.96 if host > 80 else 23.46
+    plan = h3i.plan_placement(vram_gb = vram, host_gb = host, dit_gb = 21.9, te_gb = 27.2, inflight = 2)
+    assert h3i.pins_replace_counted(plan) == credited
+    base = h3i.pin_room_bytes(plan)
+    # a lock that replaced its counted copy leaves the room as it was; one on top still counts
+    assert h3i.pin_room_bytes(plan, [_Plan(9_000_000_000, 9_000_000_000)]) == base
+    assert h3i.pin_room_bytes(plan, [_Plan(3_000_000_000, 0)]) == max(0, base - 3_000_000_000)
+    assert h3i.pin_room_bytes(plan, [_Plan(3_000_000_000, 1_000_000_000), None]) == max(
+        0, base - 2_000_000_000
+    )
+
+
+def _budget_only(monkeypatch, budget_mib: int) -> list:
+    """Records reaching the pinning step, then raises so the call returns None."""
+    import core.inference.diffusion_memory as dm
+
+    went_on: list = []
+    monkeypatch.setattr(op, "_list_stream_refusal", lambda device: None)
+    monkeypatch.setattr(op, "_go", lambda: type("_Go", (), {"ModuleGroup": object}))
+    monkeypatch.setattr(
+        dm, "install_group_offload_buffer_restore", lambda: went_on.append(1) or 1 / 0
+    )
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: budget_mib)
+    return went_on
+
+
+def test_replaces_counted_skips_the_callers_cap_but_not_the_live_budget(monkeypatch):
+    stack = _Stack()
+    went_on = _budget_only(monkeypatch, 1 << 20)
+    assert op.stream_module_list(stack, stack.layers, "cuda", 2, max_pin_bytes = 0) is None
+    assert went_on == []
+    assert (
+        op.stream_module_list(
+            stack, stack.layers, "cuda", 2, max_pin_bytes = 0, replaces_counted = True
+        )
+        is None
+    )
+    assert went_on == [1]
+    went_on = _budget_only(monkeypatch, 0)
+    assert (
+        op.stream_module_list(
+            stack, stack.layers, "cuda", 2, max_pin_bytes = 0, replaces_counted = True
+        )
+        is None
+    )
+    assert went_on == [] and not stack.layers[3]._forward_pre_hooks
+
+
+@pytest.mark.parametrize("value", ["0", "off"])
+def test_the_replace_kill_switch_restores_the_old_cap(monkeypatch, value):
+    stack = _Stack()
+    went_on = _budget_only(monkeypatch, 1 << 20)
+    monkeypatch.setenv(op.PIN_REPLACES_HOST_ENV, value)
+    assert not op.pin_replaces_host_enabled()
+    assert (
+        op.stream_module_list(
+            stack, stack.layers, "cuda", 2, max_pin_bytes = 0, replaces_counted = True
+        )
+        is None
+    )
+    assert went_on == [] and not stack.layers[3]._forward_pre_hooks
+
+
+class _Encoder(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        stack = _Stack()
+        lm = torch.nn.Module()
+        lm.inp = stack.inp
+        lm.layers = stack.layers
+        model = torch.nn.Module()
+        model.language_model = lm
+        self.model = model
+        self.stack = [stack]
+
+
+def _record_stream_calls(monkeypatch) -> list:
+    seen: list = []
+    monkeypatch.setattr(op, "stream_module_list", lambda *a, **k: seen.append(k) or None)
+    return seen
+
+
+@pytest.mark.parametrize(
+    "host, per_prompt, want",
+    [
+        (53.97, False, True),  # L4: the encoder's pins replace its counted host copy
+        (40.0, False, False),  # host barely fits: pins stay on top of the copies
+        (53.97, True, None),  # per-prompt encoder: never pinned, no call
+    ],
+)
+def test_the_encoder_routes_through_the_counted_copy_credit(monkeypatch, host, per_prompt, want):
+    h3i = _h3()
+    seen = _record_stream_calls(monkeypatch)
+    plan = h3i.plan_placement(vram_gb = 23.46, host_gb = host, dit_gb = 21.9, te_gb = 27.2, inflight = 2)
+    assert plan.placement == h3i.PLACE_STREAM
+
+    class _Pipe:
+        pass
+
+    pipe = _Pipe()
+    pipe._unsloth_h3_streamers = []
+    enc = _Encoder()
+    h3i._place_text_encoder(pipe, enc, plan, "cpu", per_prompt = per_prompt)
+    (streamer,) = pipe._unsloth_h3_streamers
+    assert isinstance(streamer, h3i.ModuleListStreamer) and streamer._unsloth_role == "text_encoder"
+    if want is None:
+        assert seen == []
+    else:
+        assert len(seen) == 1 and seen[0]["replaces_counted"] is want
+        # the encoder runs once per request: its copy stream's cache goes back after each encode
+        assert seen[0]["release_after_forward"] is True
+    x = torch.randn(4, 64)
+    stack = enc.stack[0]
+    with torch.no_grad():
+        got = stack(x)
+    streamer.remove()
+    with torch.no_grad():
+        assert torch.equal(got, stack(x))
+
+
+def test_the_dit_routes_through_the_counted_copy_credit(monkeypatch):
+    h3i = _h3()
+    seen = _record_stream_calls(monkeypatch)
+    plan = h3i.plan_placement(vram_gb = 23.46, host_gb = 53.97, dit_gb = 21.9, te_gb = 27.2, inflight = 2)
+    stack = _Stack()
+
+    class _T(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.inp = stack.inp
+            self.transformer_blocks = stack.layers
+
+    class _V(torch.nn.Module):
+        pass
+
+    streamer = h3i._place_streamed_dit(_T(), _V(), "cpu", plan, pinned_already = [_Plan(5, 5)])
+    assert len(seen) == 1 and seen[0]["replaces_counted"] is True
+    assert seen[0]["max_pin_bytes"] == h3i.pin_room_bytes(plan)
+    # the DiT streams every step: its copy stream keeps its cache
+    assert seen[0]["release_after_forward"] is False
+    streamer.remove()
+
+
+@cuda
+def test_a_counted_stream_pins_bit_identically_and_reports_its_bytes(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 1 << 20)
+    ref = _Stack().cuda().eval()
+    stack = _Stack().eval()
+    stack.inp.cuda()
+    streamer = op.stream_module_list(
+        stack, stack.layers, "cuda", 1, max_pin_bytes = 0, replaces_counted = True
+    )
+    assert streamer is not None and streamer.replaced_bytes == streamer.pinned_bytes > 0
+    for g in streamer.groups:
+        assert all(t.is_pinned() for t in g.cpu_param_dict.values())
+    x = torch.randn(8, 64, device = "cuda")
+    with torch.no_grad():
+        want = ref(x)
+        for _ in range(3):
+            assert torch.equal(stack(x), want)
+    assert streamer.stats()["pinned_bytes"] == streamer.pinned_bytes
+    streamer.remove()
+
+
+@cuda
+@pytest.mark.parametrize(
+    "release, credit, releases",
+    [
+        (False, True, False),
+        (True, True, True),
+        (True, False, False),
+    ],  # (True, False): pinned before, keeps its cache
+)
+def test_an_encoder_stream_hands_its_cache_back_after_each_forward(
+    monkeypatch, release, credit, releases
+):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 1 << 20)
+    ref = _Stack().cuda().eval()
+    stack = _Stack().eval()
+    stack.inp.cuda()
+    kw = {"max_pin_bytes": 0, "replaces_counted": True} if credit else {}
+    streamer = op.stream_module_list(
+        stack, stack.layers, "cuda", 0, release_after_forward = release, **kw
+    )
+    assert streamer is not None
+    calls = []
+    real = torch.cuda.empty_cache
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(1) or real())
+    x = torch.randn(8, 64, device = "cuda")
+    with torch.no_grad():
+        want = ref(x)
+        for _ in range(2):
+            assert torch.equal(stack(x), want)
+        stack.stop_after = 2
+        with pytest.raises(_Stop):
+            stack(x)
+        stack.stop_after = None
+        assert torch.equal(stack(x), want)
+    assert len(calls) == (4 if releases else 0)
+    streamer.remove()
+
+
+class _CapturingPrefetcher:
+    def __init__(self, capturing):
+        self.capturing = capturing
+        self.ended = 0
+
+    def end(self):
+        self.ended += 1
+        self.capturing = False
+
+
+@pytest.mark.parametrize(
+    "release, pf_capturing, cuda_capturing, want",
+    [
+        (True, False, False, 1),
+        (True, True, False, 0),  # end() clears the flag: it must be read before end()
+        (True, False, True, 0),
+        (False, False, False, 0),
+    ],
+)
+def test_the_end_of_a_streamed_forward_never_empties_the_cache_inside_a_capture(
+    monkeypatch, release, pf_capturing, cuda_capturing, want
+):
+    calls = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(1))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: cuda_capturing)
+    pf = _CapturingPrefetcher(pf_capturing)
+    op._end_stream_forward(pf, release)
+    assert pf.ended == 1 and len(calls) == want
