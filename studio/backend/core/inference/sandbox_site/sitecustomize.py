@@ -731,14 +731,19 @@ def _recorded_files(
     return files
 
 
-def _claimed(entry, root, skip):
+def _claimed(root, skip):
+    # Every site dir of the prefix (purelib and platlib can differ): a companion's RECORD may sit in the other.
     claimed = set()
-    try:
-        names = [n for n in os.listdir(entry) if n.endswith(".dist-info") and n not in skip]
-    except OSError:
-        return claimed
-    for name in names:
-        claimed |= _recorded_files(entry, name, root, True)
+    for entry in sys.path:
+        if not entry or not os.path.normcase(os.path.abspath(entry)).startswith(root):
+            continue
+        try:
+            names = [n for n in os.listdir(entry) if n.endswith(".dist-info")]
+        except OSError:
+            continue
+        for name in names:
+            if (entry, name) not in skip:
+                claimed |= _recorded_files(entry, name, root, True)
     return claimed
 
 
@@ -798,9 +803,10 @@ def _prune_stale_dist_info():
                     sys.path[:] = saved
 
                 stamped.sort()
-                keep = _recorded_files(entry, stamped[-1][1], root) if stamped else set()
+                # A copy: _recorded_files hands out its cached sets.
+                keep = set(_recorded_files(entry, stamped[-1][1], root)) if stamped else set()
                 # Files another surviving distribution now ships stay too.
-                keep |= _claimed(entry, root, {name for _, name in stamped[:-1]})
+                keep |= _claimed(root, {(entry, name) for _, name in stamped[:-1]})
                 for _, name in stamped[:-1]:
                     # Also the files only the replaced version had, as pip's uninstall would remove.
                     _remove_files(_recorded_files(entry, name, root) - keep, entry)
@@ -840,7 +846,7 @@ def _retire_rewritten(snapshot):
                 continue
         except OSError:
             continue
-        _remove_files(files - _claimed(entry, root, ()), entry)
+        _remove_files(files - _claimed(root, ()), entry)
 
 
 if os.environ.get("PIP_PREFIX"):

@@ -1344,6 +1344,32 @@ def test_an_editable_mapping_never_replaces_a_stdlib_module(monkeypatch, tmp_pat
     assert not marker.exists()
 
 
+def test_retirement_keeps_what_a_distribution_in_the_other_site_dir_ships(tmp_path):
+    """purelib and platlib can be separate dirs: a companion's RECORD there still protects its files."""
+    prefix = tmp_path / "prefix"
+    pure, plat = prefix / "lib" / "site-packages", prefix / "lib64" / "site-packages"
+    (prefix / "bin").mkdir(parents = True)
+    (prefix / "bin" / "tool").write_text("")
+    for version, stamp in (("1.0", 1), ("2.0", 2)):
+        info = pure / f"unsloth_pure-{version}.dist-info"
+        info.mkdir(parents = True)
+        rows = "../../bin/tool,,\n" if version == "1.0" else ""
+        (info / "RECORD").write_text(rows + f"{info.name}/RECORD,,\n")
+        os.utime(info / "RECORD", ns = (stamp * 10**9, stamp * 10**9))
+    companion = plat / "unsloth_plat-1.0.dist-info"
+    companion.mkdir(parents = True)
+    (companion / "RECORD").write_text(f"../../bin/tool,,\n{companion.name}/RECORD,,\n")
+    code = "import sitecustomize as s; s._prune_stale_dist_info()"
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": os.pathsep.join([tools._SANDBOX_SITE_DIR, str(pure), str(plat)]),
+        "PIP_PREFIX": str(prefix),
+    }
+    subprocess.run([sys.executable, "-c", code], env = env, check = True)
+    assert not (pure / "unsloth_pure-1.0.dist-info").exists()
+    assert (prefix / "bin" / "tool").exists()
+
+
 def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
     """Every OS: Studio's pip installs into the chat folder; nothing else it starts, nor another venv, inherits that."""
     packages = str(tmp_path / os_sandbox.SESSION_PACKAGES_RELPATH)
