@@ -1778,3 +1778,58 @@ def test_a_later_pass_that_overflows_counts_the_full_branch(
     assert later[-1]["dropped_messages"] >= first["dropped_messages"]
     # The refit is what the next pass extends, so the fresh tool result is never evicted.
     assert "tool" in [m["role"] for m in recorded[-1]["body"]["messages"]]
+
+
+def test_a_compact_epoch_replays_when_tool_calls_are_off(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-replay"
+    chat = _long_chat(turns = 4)
+    _seed_thread(studio_db, thread, chat)
+
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded = flm(tools = True)
+    fields = dict(
+        stream = True,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+    )
+    _, body = _call(messages = chat, compact_context = True, **fields)
+    [truncation] = _truncations(body)
+    count = len(chat) - 1
+    studio_db.upsert_chat_message(
+        {
+            "id": f"{thread}-{count}",
+            "threadId": thread,
+            "role": "assistant",
+            "content": [{"type": "text", "text": "answer"}],
+            "metadata": {"custom": {"contextTruncation": truncation}},
+            "createdAt": count + 2,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": f"{thread}-{count + 1}",
+            "threadId": thread,
+            "role": "user",
+            "content": [{"type": "text", "text": "follow up"}],
+            "createdAt": count + 3,
+        }
+    )
+    follow = chat + [
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "follow up"},
+    ]
+    status, _ = _call(messages = follow, tool_choice = "none", **fields)
+    assert status == 200
+    assert len(recorded[-1]["body"]["messages"]) < len(follow)

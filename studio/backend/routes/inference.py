@@ -28993,10 +28993,12 @@ def _fit_external_context(
     tool_loop: bool = False,
     can_reset: bool = False,
     first_pass: bool = True,
+    replays_manual: bool = False,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
-    ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs."""
+    ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
+    replays a /compact epoch on a request that may not start one."""
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
         estimate_messages_tokens_conservative,
@@ -29055,13 +29057,13 @@ def _fit_external_context(
     force_reset = first_pass and can_reset and getattr(payload, "compact_context", None) is True
     sticky, sticky_is_checkpoint = (None, None) if first_pass else (0, True)
     sticky_manual = False
-    if can_reset and first_pass:
+    if (can_reset or replays_manual) and first_pass:
         # Read before the fits check: a /compact epoch replays while the chat still fits.
         sticky, sticky_is_checkpoint, sticky_manual = _sticky_compaction_details(
             thread_id,
             messages,
             context_policy = policy,
-            can_reset = True,
+            can_reset = can_reset,
             compaction_headroom_ratio = ratio,
         )
     if (
@@ -29070,7 +29072,7 @@ def _fit_external_context(
         and not sticky_manual
     ):
         return messages, None, max_tokens
-    if not can_reset and first_pass:
+    if not (can_reset or replays_manual) and first_pass:
         # Recall below is inline and rolling (every evicting fit), so a checkpoint reset may not start.
         sticky, sticky_is_checkpoint = _sticky_compaction_state(
             thread_id,
@@ -29931,6 +29933,7 @@ async def _proxy_to_external_provider(
                     # The NPU has no compaction of its own, so /compact resets here as on GGUF.
                     can_reset = managed is not None and not _tool_calls_are_disabled(payload),
                     first_pass = first_pass,
+                    replays_manual = managed is not None,
                 )
 
             refit = not later
@@ -29986,6 +29989,7 @@ async def _proxy_to_external_provider(
             # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
             can_reset = bool(managed is not None and managed.supports_tools)
             and not _tool_calls_are_disabled(payload),
+            replays_manual = managed is not None,
         )
         try:
             _refuse_what_ollama_would_cut(
