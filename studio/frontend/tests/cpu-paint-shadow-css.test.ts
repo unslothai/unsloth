@@ -9,8 +9,8 @@ import { readSrc } from "./helpers/kit.ts";
 const CSS = readSrc("index.css");
 const RUNTIME = readSrc("lib/cpu-paint-shadows.ts");
 const GATE = "html.tauri.render-linux.webkit-cpu-paint";
-const POPUP_GATE = `${GATE}:not([data-glass])`;
-const COMPOSER_GATE = `${GATE}:not([data-glass], [data-composer-outline="on"])`;
+const POPUP_GATE = `${GATE}:not([data-glass], [data-glass-clear])`;
+const COMPOSER_GATE = `${GATE}:not([data-glass], [data-glass-clear], [data-composer-outline="on"])`;
 
 /** Every rule as [selector, body], comments dropped, at-rule wrappers kept out of the selector. */
 function rules(): [string, string][] {
@@ -127,7 +127,7 @@ test("dialogs that change their corner radius take an image cut for that radius"
   // Tailwind's max-sm is width < 40rem; the phone-width rules sit in that media query.
   assert.match(
     CSS,
-    /@media \(width < 40rem\) \{\s*html\.tauri\.render-linux\.webkit-cpu-paint:not\(\[data-glass\]\)\s*:is\(\[data-slot="dialog-content"\]/,
+    /@media \(width < 40rem\) \{\s*html\.tauri\.render-linux\.webkit-cpu-paint:not\(\[data-glass\], \[data-glass-clear\]\)\s*:is\(\[data-slot="dialog-content"\]/,
   );
 
   // Every corner override written on a dialog is one of the handled ones.
@@ -346,5 +346,14 @@ test("the runtime redraws when an attribute that sets a root shadow token change
       for (const m of part.matchAll(/\[([a-z-]+)/g))
         assert.ok(watched.has(m[1]), `${part.trim()}: ${m[1]} is observed`);
     }
+  }
+});
+
+test("Transparent turns every image off and the runtime notices it", () => {
+  assert.match(RUNTIME, /"data-glass-clear",/);
+  for (const [selector, body] of rules()) {
+    if (!selector.startsWith(GATE) || !/--cpu-|border-width/.test(body)) continue;
+    for (const part of selector.split(/,(?![^(]*\))/))
+      assert.match(part, /^html\.tauri\.render-linux\.webkit-cpu-paint:not\(\[data-glass\], \[data-glass-clear\]/, part);
   }
 });

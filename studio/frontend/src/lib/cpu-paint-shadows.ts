@@ -396,6 +396,7 @@ export function startCpuPaintShadows(
       "data-palette",
       "data-contrast-adjust",
       "data-glass",
+      "data-glass-clear",
       "data-glass-cpu",
       "style",
     ],

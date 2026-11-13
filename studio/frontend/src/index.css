@@ -1885,79 +1885,79 @@ html.tauri.render-linux .media-stage-shadow {
    surfaces paint the same shadow from a pre-blurred 9-slice image (lib/cpu-paint-shadows.ts).
    border-image-outset draws outside the box without moving it or being clipped by its overflow.
    --cpu-*-rest is what stays a box-shadow; until an image is drawn it is the whole shadow.
-   Glass, wallpapers and the composer outline set these surfaces' shadows on the element, where the
+   Glass, Transparent, wallpapers and the composer outline set these surfaces' shadows on the element, where the
    root-level images cannot follow, so those states keep the CSS shadow. */
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]) {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear]) :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]) {
 	--popup-shadow: var(--cpu-popup-rest);
 	border-image: var(--cpu-popup);
 }
 /* The image is cut for one corner radius. Square dialogs (fullscreen viewers, the phone-width
    viewport layout) take the square image, and the 2xl phone-width ones their own. */
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass])
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear])
 	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]):is([class~="rounded-none"], [class~="rounded-none!"]) {
 	--popup-shadow: var(--cpu-sheet-rest);
 	border-image: var(--cpu-sheet);
 }
 @media (width < 40rem) {
-	html.tauri.render-linux.webkit-cpu-paint:not([data-glass])
+	html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear])
 		:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[class*="max-sm:rounded-none"] {
 		--popup-shadow: var(--cpu-sheet-rest);
 		border-image: var(--cpu-sheet);
 	}
-	html.tauri.render-linux.webkit-cpu-paint:not([data-glass])
+	html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear])
 		:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[class*="max-sm:rounded-2xl"] {
 		--popup-shadow: var(--cpu-popup-compact-rest);
 		border-image: var(--cpu-popup-compact);
 	}
 }
 /* border-image replaces a sheet's one-sided border line, so it comes back as an inset layer. */
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass]) [data-slot="sheet-content"] {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear]) [data-slot="sheet-content"] {
 	--popup-shadow: var(--cpu-sheet-edge, 0 0 #0000), var(--cpu-sheet-rest);
 	border-width: 0;
 	border-image: var(--cpu-sheet);
 }
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass]) [data-slot="sheet-content"][data-side="right"] {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear]) [data-slot="sheet-content"][data-side="right"] {
 	--cpu-sheet-edge: inset 1px 0 0 0 var(--border);
 }
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass]) [data-slot="sheet-content"][data-side="left"] {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear]) [data-slot="sheet-content"][data-side="left"] {
 	--cpu-sheet-edge: inset -1px 0 0 0 var(--border);
 }
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass]) [data-slot="sheet-content"][data-side="top"] {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear]) [data-slot="sheet-content"][data-side="top"] {
 	--cpu-sheet-edge: inset 0 -1px 0 0 var(--border);
 }
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass]) [data-slot="sheet-content"][data-side="bottom"] {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear]) [data-slot="sheet-content"][data-side="bottom"] {
 	--cpu-sheet-edge: inset 0 1px 0 0 var(--border);
 }
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-composer-outline="on"]) :is(.chat-composer-surface, .unsloth-composer-surface):not([data-wallpaper-ready] *) {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear], [data-composer-outline="on"]) :is(.chat-composer-surface, .unsloth-composer-surface):not([data-wallpaper-ready] *) {
 	--composer-shadow: var(--cpu-composer-rest);
 	border-image: var(--cpu-composer);
 }
 /* Before the focus glow below, which still shows in the dock as it does without images. */
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-composer-outline="on"]) .chat-full-view-dock :is(.unsloth-composer-surface):not([data-wallpaper-ready] *) {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear], [data-composer-outline="on"]) .chat-full-view-dock :is(.unsloth-composer-surface):not([data-wallpaper-ready] *) {
 	border-image: none;
 }
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-composer-outline="on"])[data-palette="neon-cyberpunk"]
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear], [data-composer-outline="on"])[data-palette="neon-cyberpunk"]
 	:is(.chat-composer-surface, .unsloth-composer-surface):not([data-wallpaper-ready] *):focus-within {
 	box-shadow: var(--cpu-composer-focus-rest);
 	border-image: var(--cpu-composer-focus);
 }
 /* Each image comes with its own leftover box-shadow; the two are published together. */
 @container composer-shell (max-width: 22rem) {
-	html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-composer-outline="on"]) :is(.unsloth-composer-surface):not([data-wallpaper-ready] *) {
+	html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear], [data-composer-outline="on"]) :is(.unsloth-composer-surface):not([data-wallpaper-ready] *) {
 		--composer-shadow: var(--cpu-composer-compact-rest);
 		border-image: var(--cpu-composer-compact);
 	}
-	html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-composer-outline="on"])[data-palette="neon-cyberpunk"] :is(.unsloth-composer-surface):not([data-wallpaper-ready] *):focus-within {
+	html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear], [data-composer-outline="on"])[data-palette="neon-cyberpunk"] :is(.unsloth-composer-surface):not([data-wallpaper-ready] *):focus-within {
 		box-shadow: var(--cpu-composer-focus-compact-rest);
 		border-image: var(--cpu-composer-focus-compact);
 	}
 }
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass]) [data-sonner-toast][data-styled='true'] {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear]) [data-sonner-toast][data-styled='true'] {
 	--composer-shadow: var(--cpu-toast-rest);
 	border-image: var(--cpu-toast);
 }
 /* Dragging draws a foreground border line, which border-image would hide; it keeps the CSS shadow. */
-html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-composer-outline="on"]).dark .unsloth-files-panel:not([data-dragging="true"], [data-wallpaper-ready] *) {
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear], [data-composer-outline="on"]).dark .unsloth-files-panel:not([data-dragging="true"], [data-wallpaper-ready] *) {
 	--composer-shadow: var(--cpu-files-rest);
 	border-image: var(--cpu-files);
 }
