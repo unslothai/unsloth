@@ -24,6 +24,7 @@ def budget(monkeypatch):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(dm, "host_pinning_allowed", lambda *a, **k: True)
     monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda device = None: True)
     state = {"mib": 0, "trims": 0}
     monkeypatch.setattr(dm, "_pin_budget_mib", lambda: state["mib"])
 
@@ -329,3 +330,12 @@ def test_streaming_route_whole_pins_small_host_and_video_are_unchanged(budget, m
     # video loads defer their own pins (request_background_pins): no late denoiser cap
     pipe, _applied, deferred, _waits = _stream_route(monkeypatch, video = True)
     assert all(not callable(kw.get("byte_cap")) for _m, kw in deferred)
+
+
+def test_no_late_denoiser_pin_without_the_registered_pin(budget, monkeypatch):
+    # ROCm or UNSLOTH_VIDEO_FAST_PIN=0: the pin_memory() fallback rounds past the page-rounded byte cap
+    module = torch.nn.Linear(2, 2)
+    seen = []
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda device = None: seen.append(device) or False)
+    assert not dm._late_denoiser_pin_enabled(module, True, "cuda:0")
+    assert seen == ["cuda:0"]

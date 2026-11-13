@@ -7710,12 +7710,18 @@ def _late_image_encoder_pin_cap(
 LATE_DENOISER_PIN_ENV = "UNSLOTH_DIFFUSION_LATE_DENOISER_PIN"
 
 
-def _late_denoiser_pin_enabled(module: Any, use_stream: bool) -> bool:
+def _late_denoiser_pin_enabled(
+    module: Any,
+    use_stream: bool,
+    device: Any = None,
+) -> bool:
+    # Needs the registered pin: the byte cap prices page-rounded bytes, per-tensor pin_memory() rounds to a power of two.
     return (
         bool(use_stream)
         and not _env_off(LATE_DENOISER_PIN_ENV)
         and not _env_off(PARTIAL_ENCODER_PIN_ENV)
         and not _torchao_weight_classes(module)
+        and _fast_pin_supported(device)
     )
 
 
@@ -8950,7 +8956,7 @@ def _apply_group_offload(
                 if (
                     not defer
                     and gkwargs.get("low_cpu_mem_usage", False)
-                    and _late_denoiser_pin_enabled(module, use_stream)
+                    and _late_denoiser_pin_enabled(module, use_stream, onload)
                     and _defer_late_denoiser_pin(pipe, module, onload, logger)
                 ):
                     defer_dit_pin = True
@@ -9810,7 +9816,7 @@ def _apply_streaming_offload(
                 and offload_type == "block_level"
                 and kwargs.get("use_stream")
                 and kwargs.get("low_cpu_mem_usage")
-                and _late_denoiser_pin_enabled(module, True)
+                and _late_denoiser_pin_enabled(module, True, onload)
                 and _defer_late_denoiser_pin(pipe, module, onload, logger)
             ):
                 deferred_dits += 1
