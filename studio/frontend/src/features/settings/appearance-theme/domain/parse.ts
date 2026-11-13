@@ -76,7 +76,6 @@ function isDict(value: unknown): value is Dict {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Null when absent; a non-object is reported and treated as absent. */
 function readObject(value: unknown, path: string, warn: Warn): Dict | null {
   if (value === undefined || value === null) return null;
   if (!isDict(value)) {
@@ -182,10 +181,7 @@ function readBackground(assets: Dict | null, warn: Warn): ThemeBackground | null
   return { dataUrl, adjustments };
 }
 
-/**
- * Parses and sanitizes a theme file. Never throws on hostile input: every field is read through an
- * own-property check, and anything wrong falls back to a default with a warning.
- */
+/** Never throws on hostile input: anything wrong falls back to a default with a warning. */
 export function parseThemeFile(text: string): ThemeParseResult {
   if (text.length > MAX_THEME_FILE_CHARS) return { ok: false, error: "tooLarge" };
   let root: unknown;
@@ -228,7 +224,6 @@ export function parseThemeFile(text: string): ThemeParseResult {
   const meta = readMeta(section("meta"), warn);
   const palette = readPalette(section("base"), warn);
 
-  // Start from the defaults and copy only what the file has.
   const raw: Dict = { ...DEFAULT_CUSTOMIZATION };
   let layoutPresent = false;
   for (const name of CUSTOMIZATION_SECTIONS) {

@@ -45,7 +45,6 @@ async function backgroundDataUrl(blob: Blob, budget: number): Promise<string | n
   }
 }
 
-/** Saves the current look, and optionally layout and assets, as a theme file. */
 export async function exportThemeFile(opts: {
   name: string;
   author?: string;

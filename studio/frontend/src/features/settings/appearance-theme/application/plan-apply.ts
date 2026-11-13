@@ -76,7 +76,6 @@ function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Theme fonts first, then the current fonts the theme does not replace by name. */
 function mergeFonts(themeFonts: ImportedFont[], currentFonts: ImportedFont[]): ImportedFont[] {
   const names = new Set(themeFonts.map((font) => font.name));
   return [...themeFonts, ...currentFonts.filter((font) => !names.has(font.name))];
@@ -156,7 +155,6 @@ export function planUndo(
   for (const key of Object.keys(now.glass) as (keyof AppearanceSnapshot["glass"])[]) {
     glass[key] = revert(before.glass[key], applied.glass[key], now.glass[key]);
   }
-  // A font picked after the apply keeps its face even when the font list itself reverts.
   const reverted = sanitizeCustomization(customization);
   const nowNames = new Set(now.customization.importedFonts.map((font) => font.name));
   return {

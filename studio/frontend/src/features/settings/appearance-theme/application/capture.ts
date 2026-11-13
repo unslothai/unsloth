@@ -17,16 +17,12 @@ export type CaptureOptions = {
   author?: string;
   includeLayout: boolean;
   includeAssets: boolean;
-  /** Already sized and encoded by the caller; capture only places it in the file. */
   backgroundDataUrl?: string | null;
 };
 
 type Dict = Record<string, unknown>;
 
-/**
- * Builds the file for the look, and optionally the layout and assets. Personal fields, the theme
- * mode and the interface scale never leave the device.
- */
+/** Personal fields, the theme mode and the interface scale never leave the device. */
 export function captureTheme(snapshot: AppearanceSnapshot, opts: CaptureOptions): Dict {
   const c = snapshot.customization;
   const meta: ThemeMeta = {
