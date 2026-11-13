@@ -396,6 +396,7 @@ def discard_request(pipe: Any) -> None:
         module._unsloth_video_pending = None
         module._unsloth_video_pre_extra = None
         module._unsloth_video_decode_room = None
+        module._unsloth_video_lend = None
         window = getattr(module, "_unsloth_video_window", None)
         module._unsloth_video_window = None
         if window is not None:
@@ -459,6 +460,75 @@ def _keyed_graphs_live(pipe: Any, key: Any) -> bool:
         return "cuda_graph" in live
     except Exception:  # noqa: BLE001 - unreadable: no key names this render
         return False
+
+
+def begin_denoise(pipe: Any, *, logger: Any = None) -> int:
+    """At the denoise loop's entry (after the prompt encode): make the groups ``fit_for_request`` found room for in the
+    denoise alone resident, never more than the card holds now. Returns the MiB promoted. Never raises."""
+    module = getattr(pipe, "transformer", None)
+    lend = getattr(module, "_unsloth_video_lend", None) if module is not None else None
+    pending = getattr(module, "_unsloth_video_pending", None) if module is not None else None
+    if lend is None or pending is None:
+        return 0
+    try:
+        import torch
+
+        from .diffusion_memory import (
+            _keep_groups_resident,
+            _user_budget_reserve_mib,
+            cuda_reusable_cache_bytes,
+        )
+
+        module._unsloth_video_lend = None
+        room_at_fit, pre = lend
+        work, start, dev = pending
+        free, total = torch.cuda.mem_get_info(dev)
+        held = resident_mib(module)
+        room = min(
+            int(room_at_fit),
+            max(
+                0,
+                lend_room_mib(
+                    free_mib = int(free) >> 20,
+                    unused_cache_mib = cuda_reusable_cache_bytes(dev) >> 20,
+                    resident_mib_now = held,
+                    pre_decode_extra_mib = int(pre),
+                )
+                - _user_budget_reserve_mib(int(total) >> 20),
+            ),
+        )
+        decode_room = getattr(module, "_unsloth_video_decode_room", None)
+        if decode_room is None or room <= held:
+            module._unsloth_video_decode_room = None
+            return 0
+        before = resident_bytes(module)
+        _keep_groups_resident(module, room, dev, logger)
+        promoted = max(0, resident_bytes(module) - before)
+        if promoted <= 0:
+            module._unsloth_video_decode_room = None
+            return 0
+        module._unsloth_resident_room = int(room)
+        # the denoise phase is measured above its resident set, as the whole request is
+        module._unsloth_video_pending = (work, int(start) + promoted, dev)
+        _COUNTS["lends"] += 1
+        _COUNTS["lent_mib"] += promoted >> 20
+        if logger is not None:
+            logger.info(
+                "video.dit_resident: %d MiB more of the denoiser resident for the denoise (denoise peak %d MiB); "
+                "%d MiB stay resident through the decode",
+                promoted >> 20,
+                int(pre),
+                int(decode_room),
+            )
+        return promoted >> 20
+    except Exception as exc:  # noqa: BLE001 -- the denoise runs on the whole-request residency
+        if logger is not None:
+            logger.warning("video.dit_resident: no groups lent to the denoise (%s)", exc)
+        try:
+            module._unsloth_video_decode_room = None
+        except AttributeError:
+            pass
+        return 0
 
 
 def prepare_decode(pipe: Any, *, logger: Any = None) -> int:
@@ -530,6 +600,7 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         pre = getattr(module, "_unsloth_video_pre_extra", None)
         module._unsloth_video_pre_extra = None
         module._unsloth_video_decode_room = None
+        module._unsloth_video_lend = None
         if pre is not None:
             extra = max(extra, int(pre))
         completed = getattr(module, "_unsloth_video_calibration_key", None)
@@ -682,7 +753,7 @@ def fit_for_request(
             if top is not None:
                 lend = min(lend, top) if top else 0
             if lend > room:
-                decode_room, room = room, lend
+                decode_room = room
         released = promoted = 0
         over = resident_bytes(module) - (room << 20)
         if over > 0:
@@ -705,12 +776,11 @@ def fit_for_request(
             # release_resident_groups' restore reads it back; keep it at this request's room
             module._unsloth_resident_room = room if room > 0 else None
             module._unsloth_video_decode_room = decode_room
+            # promoted by begin_denoise, after the prompt encode (which would only stream them again)
+            module._unsloth_video_lend = (lend, pre) if decode_room is not None else None
             module._unsloth_video_pre_extra = None
         except AttributeError:
             pass
-        if decode_room is not None:
-            _COUNTS["lends"] += 1
-            _COUNTS["lent_mib"] += max(0, room - decode_room)
         _COUNTS["fits"] += 1
         _COUNTS["promoted_mib"] += promoted
         _COUNTS["released_mib"] += released
@@ -732,8 +802,7 @@ def fit_for_request(
                 room,
                 (f"measured peak {measured} MiB" if measured is not None else "estimate")
                 + (
-                    f"; {room - decode_room} MiB of it lent to the denoise (denoise peak {pre} MiB), "
-                    f"{decode_room} MiB kept for the decode"
+                    f"; the denoise borrows up to {lend} MiB (denoise peak {pre} MiB)"
                     if decode_room is not None
                     else ""
                 ),
@@ -788,6 +857,7 @@ def stream_after_oom(pipe: Any, *, logger: Any = None) -> bool:
         # no re-pin (encode lend restore, decode restore) until the next request's fit
         module._unsloth_resident_room = None
         module._unsloth_video_decode_room = None
+        module._unsloth_video_lend = None
         gc.collect()
         torch.cuda.empty_cache()
         pending = getattr(module, "_unsloth_video_pending", None)

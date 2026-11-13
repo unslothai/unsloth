@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Streamed video denoiser: the VAE decode's share of the residency room is lent to the denoise once this process has
-measured the denoise alone, and streamed again at the decode's entry (video_stream_residency.prepare_decode)."""
+measured the denoise alone. The fit keeps today's room; the lent groups come on the card when the denoise loop opens
+(after the prompt encode, begin_denoise) and stream again at the decode's entry (prepare_decode)."""
 
 from __future__ import annotations
 
@@ -126,7 +127,9 @@ class _Card:
         denoise_peak = DENOISE_PEAK,
         decode_peak = WHOLE_PEAK,
     ):
-        """One request after the fit: denoise peak, the decode hook, decode peak, then the record."""
+        """One request after the fit: the denoise hook, denoise peak, the decode hook, decode peak, the record."""
+        vr.begin_denoise(self.pipe, logger = logging.getLogger("t"))
+        self.lent_seen = self.held
         self.peak = self.allocated + (denoise_peak << 20)
         vr.prepare_decode(self.pipe, logger = logging.getLogger("t"))
         self.peak = max(self.peak, self.allocated + (decode_peak << 20))
@@ -151,9 +154,15 @@ def test_first_render_only_measures_the_denoise_then_the_next_lends_the_decode_r
     assert card.released == []
     assert vr.pre_decode_extra_mib(card.module, WORK) == DENOISE_PEAK
     card.fit()
-    assert card.kept[-1] == _lend_room()
+    # the fit itself keeps today's room: the prompt encode would only stream lent groups again
+    assert card.held == _base_room()
     assert card.module._unsloth_video_decode_room == _base_room()
+    assert card.module._unsloth_video_lend == (_lend_room(), DENOISE_PEAK)
+    vr.begin_denoise(card.pipe)
+    assert card.kept[-1] == _lend_room()
     assert card.held == _lend_room()
+    assert card.module._unsloth_resident_room == _lend_room()
+    assert vr.begin_denoise(card.pipe) == 0  # once per request
 
 
 def test_the_decode_starts_from_the_whole_request_residency_and_records_on_it(monkeypatch):
@@ -161,10 +170,10 @@ def test_the_decode_starts_from_the_whole_request_residency_and_records_on_it(mo
     card.fit()
     card.render()
     card.fit()
-    lent = card.held - _base_room()
-    assert lent > 0
     resets = card.resets
     assert card.render() == WHOLE_PEAK
+    lent = card.lent_seen - _base_room()
+    assert lent > 0
     # streamed again down to exactly the whole-request room, before the decode allocated anything
     assert card.released == [(lent, "the VAE decode (lent to the denoise)")]
     assert card.held == _base_room()
@@ -233,6 +242,7 @@ def test_prepare_decode_is_a_no_op_without_a_request_and_runs_once_per_request(m
     card.fit()
     card.render()
     card.fit()
+    vr.begin_denoise(card.pipe)
     card.peak = card.allocated + (DENOISE_PEAK << 20)
     first = vr.prepare_decode(card.pipe)
     assert first > 0
@@ -265,3 +275,51 @@ def test_the_video_decode_hook_returns_lent_groups():
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "prepare_decode"
     ]
     assert calls
+
+
+def test_the_denoise_borrows_no_more_than_the_card_holds_when_the_loop_opens(monkeypatch):
+    card = _Card(monkeypatch)
+    card.fit()
+    card.render()
+    card.fit()
+    # something else took 2 GiB between the fit and the loop
+    monkeypatch.setattr(
+        torch.cuda,
+        "mem_get_info",
+        lambda device = None: ((FREE - card.held - 2048) << 20, 23034 << 20),
+    )
+    vr.begin_denoise(card.pipe)
+    assert card.held == _lend_room() - 2048
+
+
+def test_the_denoise_phase_is_measured_above_the_lent_groups(monkeypatch):
+    card = _Card(monkeypatch)
+    card.fit()
+    card.render()
+    card.fit()
+    card.render(denoise_peak = 2500, decode_peak = 100)
+    assert (
+        vr.pre_decode_extra_mib(card.module, WORK) == DENOISE_PEAK
+    )  # max of 3200 and 2500, not inflated
+
+
+def test_the_video_denoise_hook_promotes_lent_groups():
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(src)
+    hook = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_on_denoise_entry"
+    )
+    assert any(
+        isinstance(n, ast.Call) and getattr(n.func, "id", None) == "begin_denoise"
+        for n in ast.walk(hook)
+    )
+    assert any(
+        isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "_denoise_phase"
+        and any(getattr(a, "id", None) == "_on_denoise_entry" for a in n.args)
+        for n in ast.walk(tree)
+    )

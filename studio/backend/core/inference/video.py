@@ -14212,6 +14212,13 @@ class VideoBackend:
                     if self._gen.get("phase") == "encode":
                         self._gen.update(phase = "denoise")
 
+                def _on_denoise_entry() -> None:
+                    """The loop opens after the prompt encode: the groups lent to the denoise come on the card."""
+                    _enter_denoise()
+                    from .video_stream_residency import begin_denoise
+
+                    begin_denoise(state.pipe, logger = logger)
+
                 ticker = _CompletedStepTicker(steps)
 
                 def _report(done: int) -> None:
@@ -14332,7 +14339,7 @@ class VideoBackend:
                                 )
                             )
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
-                        stack.enter_context(_denoise_phase(pipe, _enter_denoise))
+                        stack.enter_context(_denoise_phase(pipe, _on_denoise_entry))
                         if fam.name == "minimax-h3":
                             from .video_minimax_h3_forward import h3_render_scope
 
