@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton sm_8x prefetch fix for 8-bit tl.dot loops (triton-lang/triton#12486).
+"""Skip Triton >= 3.8's sm_8x prefetch pass for 8-bit tt.dot modules (triton-lang/triton#12486: spills, ~7x slower).
 
-From Triton 3.8 the sm_8x prefetch pass carries an 8-bit dot's next K slice across the loop one
-byte per register, so int8 / fp8 tl.dot loops spill (255 registers, ~550 B of stack) and run up
-to ~7x slower than on 3.7.1. The pass is skipped only for TTIR modules that hold an 8-bit tt.dot
-on sm_8x; every other kernel, card and Triton version compiles exactly as before.
-
-Triton's cache key does not see the skip. That is harmless: the skip only moves when the next
-K slice is read from shared memory, the MMA sequence is unchanged and the results are the same,
-so a cached cubin from a process without the fix (or the reverse) differs in speed, never in output.
+The cache key ignores the skip; harmless since only load timing changes, never output.
 """
 
 from __future__ import annotations
@@ -78,8 +71,7 @@ def fix_triton_sm8x_8bit_prefetch():
     if _TRITON_PREFETCH_PIPELINE.search(source) is None:
         return False  # this Triton no longer adds the pass for sm_8x where we expect it
 
-    # The skip flag lives on the installed pass wrapper, so whichever copy of this fix runs
-    # second drives the same flag the first one installed.
+    # skip flag lives on the pass wrapper, shared by any second copy of this fix
     state = getattr(original_prefetch, _TRITON_PREFETCH_SENTINEL, None)
     if not isinstance(state, threading.local):
         state = threading.local()
@@ -117,10 +109,7 @@ def fix_triton_sm8x_8bit_prefetch():
     return True
 
 
-# Inductor compiles Triton kernels in a sidecar process (torch._inductor.compile_worker) that forks the
-# workers, so a fix installed only here would leave its kernels alone, and the parent would then load the
-# sidecar's spilling cubin from the shared Triton cache. The sidecar imports the pickler class it is given by
-# name, so the pool is handed this module's pickler: importing it there installs the fix before the fork.
+# Inductor's compile sidecar would cache spilling cubins; it imports the pickler by name, so ours installs the fix there.
 _INDUCTOR_POOL_MODULE = "torch._inductor.compile_worker.subproc_pool"
 _TRITON_COMPILER_MODULE = "triton.backends.nvidia.compiler"
 _WORKER_PICKLER = "_UnslothTritonPrefetchPickler"
@@ -137,7 +126,6 @@ def _worker_pickler_class():
 
 def __getattr__(name):
     if name == _WORKER_PICKLER:
-        # Reached by name from the compile sidecar: install the fix there, then hand back the pickler.
         try:
             fix_triton_sm8x_8bit_prefetch()
         except Exception:
@@ -147,8 +135,7 @@ def __getattr__(name):
 
 
 def _workers_can_import_this_module():
-    """The sidecar gets the parent's sys.path as PYTHONPATH (or TORCH_CUSTOM_PYTHONPATH); a name it
-    cannot import would kill the pool, so the pickler is only swapped when this module is reachable."""
+    """An unimportable pickler name kills the sidecar pool, so swap only when this module is reachable."""
     if __name__ == "__main__" or not __name__.count("."):
         return False
     root = Path(__file__).resolve().parents[__name__.count(".")]
@@ -217,7 +204,7 @@ class _PostImportLoader(importlib.abc.Loader):
 
 
 class _PostImportFinder(importlib.abc.MetaPathFinder):
-    """At the front of sys.meta_path until both modules are imported; never changes what is imported."""
+    """Runs post-import hooks; never changes what is imported."""
 
     __slots__ = (_TRITON_PREFETCH_SENTINEL, "_finding")
 
@@ -256,8 +243,7 @@ def triton_prefetch_fix_installed():
 
 
 def install_triton_prefetch_fix():
-    """Studio entry points call this: patches Triton and Inductor's compile pool now when they are already
-    imported, else as they import. Nothing is imported here. Returns False when the kill switch is set."""
+    """Patch Triton and Inductor's pool now or on import (imports nothing); False when the kill switch is set."""
     if _triton_8bit_prefetch_fix_mode() in ("0", "off", "false", "no"):
         return False
     pending = False
