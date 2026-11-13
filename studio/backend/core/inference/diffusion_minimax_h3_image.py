@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import functools
 import gc
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -27,6 +28,7 @@ import os
 import sys
 import time
 import types
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
@@ -125,6 +127,17 @@ VRAM_BUDGET_ENV = "UNSLOTH_H3_IMAGE_VRAM_GB"
 HOST_BUDGET_ENV = "UNSLOTH_H3_IMAGE_HOST_GB"
 # "0": stream from pageable memory (ModuleListStreamer) instead of the pinned prefetch streamer
 PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
+# "0": run every reference through the VAE encoder on every render (no posterior cache)
+REF_CACHE_ENV = "UNSLOTH_H3_IMAGE_REF_CACHE"
+# "0": keep the allocator blocks the load's staging and lever installs freed reserved on the card
+TRIM_AFTER_LOAD_ENV = "UNSLOTH_H3_IMAGE_TRIM_AFTER_LOAD"
+# Posteriors kept per pipeline (a 2720x1536 reference is about 3 MB of mean / log-variance on the device)
+REF_CACHE_ENTRIES = 8
+
+
+def ref_cache_enabled() -> bool:
+    return (os.environ.get(REF_CACHE_ENV) or "1").strip().lower() not in ("0", "off", "false", "no")
+
 
 QUANT_SCHEMES = ("int8", "fp8")
 # ConvRot group: the one the H3 video denoiser and its hosted encoder use (divides 5376, 7168 and 14336).
@@ -1104,6 +1117,8 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         self._unsloth_h3_te_loader: Optional[Callable[[], Any]] = None
         self._unsloth_h3_streamers: list = []
         self._unsloth_h3_last_stats: dict = {}
+        self._unsloth_h3_ref_posteriors: "OrderedDict[tuple, Any]" = OrderedDict()
+        self._unsloth_h3_ref_stats: dict = {"hits": 0, "misses": 0}
 
     @property
     def interrupt(self) -> bool:
@@ -1162,6 +1177,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             streamer._host.clear()
         self._unsloth_h3_streamers.clear()
         self._unsloth_h3_te_loader = None
+        self.__dict__.get("_unsloth_h3_ref_posteriors", OrderedDict()).clear()
         owned = getattr(self, "_unsloth_h3_owned", ())
         for name in ("transformer", "text_encoder", "vae"):
             module = getattr(self, name, None)
@@ -1189,7 +1205,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         vision_images: Optional[list] = None,
     ) -> tuple:
         """(prompt_embeds, per-row text tags). Named like diffusers' encoder entry point so ``diffusion_prompt_cache``
-        wraps it; VAE reference latents are never cached (seeded sample)."""
+        wraps it; the VAE reference latents are sampled per render from a cached posterior (``_encode_references``)."""
         import torch
 
         tokenizer = self.tokenizer
@@ -1266,10 +1282,27 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             out = []
             r = H3_IMAGE_VAE_SCALE
             for image in images:
-                pixels = torch.from_numpy(np.array(image)).to(device).permute(2, 0, 1)[None]
-                pixels = pixels[..., : pixels.shape[-2] // r * r, : pixels.shape[-1] // r * r]
-                pixels = (pixels.to(torch.float32).div(255.0) - mean) / std
-                posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                array = np.array(image)
+                key = None
+                if ref_cache_enabled():
+                    digest = hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
+                    key = (id(vae), str(vae_dtype), str(device), tuple(array.shape), digest)
+                cache = self.__dict__.setdefault("_unsloth_h3_ref_posteriors", OrderedDict())
+                stats = self.__dict__.setdefault("_unsloth_h3_ref_stats", {"hits": 0, "misses": 0})
+                posterior = cache.get(key) if key is not None else None
+                if posterior is not None:
+                    cache.move_to_end(key)
+                    stats["hits"] += 1
+                else:
+                    pixels = torch.from_numpy(array).to(device).permute(2, 0, 1)[None]
+                    pixels = pixels[..., : pixels.shape[-2] // r * r, : pixels.shape[-1] // r * r]
+                    pixels = (pixels.to(torch.float32).div(255.0) - mean) / std
+                    posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                    if key is not None:
+                        stats["misses"] += 1
+                        cache[key] = posterior
+                        while len(cache) > REF_CACHE_ENTRIES:
+                            cache.popitem(last = False)
                 latents = posterior.sample(generator = generator).to(torch.float16).float()
                 latents = latents[..., : latents.shape[-2] // 2 * 2, : latents.shape[-1] // 2 * 2]
                 out.append((latents - lmean) / lstd)
@@ -1413,7 +1446,12 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         else:
             noise = latents.to(device, torch.float32).reshape(shape)
         target_rows = patchify(noise, patch)
+        ref_hits = int(self.__dict__.get("_unsloth_h3_ref_stats", {}).get("hits", 0))
         reference_latents = self._encode_references(vae_refs, generator) if vae_refs else []
+        if vae_refs:
+            stats["reference_cached"] = (
+                int(self.__dict__.get("_unsloth_h3_ref_stats", {}).get("hits", 0)) - ref_hits
+            )
         grids = [tuple(r.shape[-2:]) for r in reference_latents]
         pos, tags, image_idx, text_idx, n_ref = build_packed_layout(text_tags, grids, lh, lw, patch)
         if reference_latents:
@@ -2602,7 +2640,7 @@ def _place_streamed_dit(
     return streamer
 
 
-# "0": native attention; "1": probe-gated SageAttention on the DiT blocks; unset: as the checkpoint declares
+# "0": native attention; "1": probe-gated SageAttention, no timing race; unset: kept only where it times faster
 INT8_ATTENTION_ENV = "UNSLOTH_H3_IMAGE_INT8_ATTENTION"
 CHECKPOINT_ATTENTION_ATTR = "_unsloth_checkpoint_attention"
 # the INT8 DiT checkpoint runs INT8 attention on its DiT blocks unless its file says otherwise
@@ -2673,6 +2711,25 @@ def install_checkpoint_attention(
         restore()
         setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
         return None
+    forced = (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
+        "1",
+        "on",
+        "true",
+        "yes",
+    )
+    race = None if forced else race_checkpoint_attention(transformer, saved, dtype)
+    if race is not None and not race["keep"]:
+        restore()
+        setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
+        log.info(
+            "diffusion.minimax_h3_image: INT8 attention (%s) kept off: a DiT block's attention took %.2f ms with it "
+            "against %.2f ms with %s on this card",
+            engaged,
+            race["ms"][1],
+            race["ms"][0],
+            race["native"],
+        )
+        return None
     blocks = {id(m) for b in getattr(transformer, "transformer_blocks", ()) for m in b.modules()}
     restore(only = [m for m in modules if id(m) not in blocks])
     setattr(pipe, ATTENTION_SAVED_ATTR, (saved, tag))
@@ -2682,6 +2739,67 @@ def install_checkpoint_attention(
         sum(1 for m in modules if id(m) in blocks),
     )
     return engaged
+
+
+# Rows of the race's packed sequence: a 2048x2048 canvas (64 x 64 latent patches) plus a prompt.
+_RACE_ROWS = (4096, 300)
+
+
+def race_checkpoint_attention(transformer: Any, saved: dict, dtype: Any) -> Optional[dict]:
+    """Time one resident DiT block's attention module with the engaged INT8 backend against the backend it had
+    (which keeps Studio's strided layout and fused q/k norm + RoPE); ``keep`` when INT8 is more than 2% faster.
+    None when no block's attention is on the card (nothing to time: the caller keeps the INT8 route)."""
+    import torch
+
+    attn = None
+    norm = None
+    for block in getattr(transformer, "transformer_blocks", ()) or ():
+        module = getattr(block, "attn", None)
+        params = list(module.parameters()) if module is not None else []
+        if module in saved and params and all(p.is_cuda for p in params):
+            attn, norm = module, getattr(block, "norm1", None)
+            break
+    rope = getattr(transformer, "rope", None)
+    if attn is None or norm is None or rope is None:
+        return None
+    engaged = attn.processor._attention_backend
+    native = saved[attn]
+    device = next(attn.parameters()).device
+    width = int(norm.normalized_shape[0])
+    image, text = _RACE_ROWS
+    side = int(math.isqrt(image))
+    try:
+        with torch.no_grad(), torch.cuda.device(device):
+            g = torch.Generator(device = "cpu").manual_seed(7)
+            x = torch.randn(1, image + text, width, generator = g).to(device = device, dtype = dtype)
+            idx = torch.arange(image)
+            pos = torch.zeros(image + text, 3, dtype = torch.float64)
+            pos[text:, 1] = (idx // side).double()
+            pos[text:, 2] = (idx % side).double()
+            pos[:text, 0] = torch.arange(text).double()
+            rotary = rope(pos.to(device))
+            ms = []
+            for backend in (native, engaged):
+                attn.processor._attention_backend = backend
+                for _ in range(2):
+                    attn(x, rotary, None)
+                times = []
+                for _ in range(5):
+                    a = torch.cuda.Event(enable_timing = True)
+                    b = torch.cuda.Event(enable_timing = True)
+                    a.record()
+                    attn(x, rotary, None)
+                    b.record()
+                    b.synchronize()
+                    times.append(a.elapsed_time(b))
+                ms.append(sorted(times)[len(times) // 2])
+    except torch.OutOfMemoryError:
+        raise
+    except Exception:  # noqa: BLE001 - untimed: the caller keeps the INT8 route it already engaged
+        return None
+    finally:
+        attn.processor._attention_backend = engaged
+    return {"keep": ms[1] < 0.98 * ms[0], "ms": ms, "native": str(native)}
 
 
 def remove_checkpoint_attention(pipe: Any) -> int:
@@ -2997,6 +3115,17 @@ def load_minimax_h3_image_pipeline(
     int8_attention = install_checkpoint_attention(pipe, device, scheme = scheme, logger = logger)
     if int8_attention:
         speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)
+    if device.type == "cuda" and (
+        os.environ.get(TRIM_AFTER_LOAD_ENV) or "1"
+    ).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        # Load staging and probes leave several GB of freed blocks reserved: release them before rendering.
+        gc.collect()
+        _empty_cache()
     report = H3ImageLoadReport(
         scheme = scheme,
         scheme_reason = scheme_reason,
