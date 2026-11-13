@@ -27,6 +27,8 @@ const code = ts.transpileModule(
   const useChatRuntimeStore = select => select({incognito: props.incognito});
   const useChatPreferencesStore = select => select({shareComposerDraft: props.share});
   const NewChatDraftIdContext = null;
+  const nativeAttachmentTargetKey = props.batch ? "single:batch" : null;
+  const isBatchTargetKey = (key) => key === "single:batch";
   const useContext = () => props.nonce;
   const justSentRef = useRef(null), draftKeyRef = useRef(null), imeSessionOpenRef = useRef(false);
   const setIsWritingExpanded = () => {};
@@ -44,6 +46,7 @@ type Props = {
   nonce: string | undefined;
   incognito: boolean;
   share: boolean;
+  batch?: boolean;
   text: string;
   attachments: Attachment[];
 };
@@ -241,6 +244,30 @@ for (const flushed of [false, true]) {
     );
   });
 }
+
+test("a batch chat opens blank and leaves the unsent New chat draft alone", async (t) => {
+  const h = await harness();
+  t.after(h.close);
+  await h.type("unsent draft");
+  await h.paste("unsent paste");
+  h.flush();
+  await h.update({ runtimeId: "batch-1", nonce: "batch-1", batch: true });
+  assert.equal(h.props.text, "");
+  assert.equal(h.props.attachments.length, 0);
+  await h.type("batch prompt");
+  await h.send();
+  await h.update({ remoteId: "batch-saved" });
+  await h.update({ threadId: "batch-saved" });
+  await h.update({
+    threadId: null,
+    runtimeId: "new-2",
+    remoteId: undefined,
+    nonce: "nonce-2",
+    batch: false,
+  });
+  assert.equal(h.props.text, "unsent draft");
+  assert.equal(h.props.attachments[0]?.file.paste, "unsent paste");
+});
 
 test("enabling sharing in New chat adopts text and pastes before the debounce", async (t) => {
   const h = await harness();

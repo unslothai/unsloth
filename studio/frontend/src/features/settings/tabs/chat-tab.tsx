@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 import {
   Download01Icon,
   LayoutTwoColumnIcon,
+  MessageMultiple01Icon,
   LibrariesIcon,
   McpServerIcon,
   Scroll01Icon,
@@ -151,6 +152,17 @@ const PLUS_MENU_SETTINGS: {
     icon: (
       <HugeiconsIcon
         icon={BookmarkIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "batchNewChats",
+    labelKey: "settings.chat.menu.batchNewChats",
+    icon: (
+      <HugeiconsIcon
+        icon={MessageMultiple01Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />

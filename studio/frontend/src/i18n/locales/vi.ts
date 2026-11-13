@@ -3256,6 +3256,7 @@ export const vi = {
         mcp: "MCP",
         skills: "Kỹ năng",
         savedPrompts: "Lời nhắc đã lưu",
+        batchNewChats: "Gửi từng tệp trong một cuộc trò chuyện mới",
         compareChat: "So sánh trò chuyện",
         exportChat: "Xuất cuộc trò chuyện",
         reset: "Đặt lại về mặc định",

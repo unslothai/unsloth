@@ -3171,6 +3171,7 @@ export const sv = {
         mcp: "MCP",
         skills: "Färdigheter",
         savedPrompts: "Sparade uppmaningar",
+        batchNewChats: "Skicka varje fil i en ny chatt",
         compareChat: "Jämför chatt",
         exportChat: "Exportera chatt",
         reset: "Återställ standard",

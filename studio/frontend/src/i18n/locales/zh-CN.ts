@@ -2967,6 +2967,7 @@ export const zhCN = {
         mcp: "MCP",
         skills: "技能",
         savedPrompts: "已保存的提示词",
+        batchNewChats: "将每个文件发送到新聊天",
         compareChat: "对比聊天",
         exportChat: "导出聊天",
         reset: "恢复默认",

@@ -3255,6 +3255,7 @@ export const tr = {
         mcp: "MCP",
         skills: "Beceriler",
         savedPrompts: "Kayıtlı istemler",
+        batchNewChats: "Her dosyayı yeni bir sohbette gönder",
         compareChat: "Sohbeti karşılaştır",
         exportChat: "Sohbeti dışa aktar",
         reset: "Varsayılana sıfırla",

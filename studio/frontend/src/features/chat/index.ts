@@ -337,6 +337,11 @@ export {
   type PlusMenuItemId,
 } from "./stores/plus-menu-prefs-store";
 export {
+  pickFilesForNewChats,
+  useBatchNewChatsComposer,
+} from "./batch/use-batch-new-chats";
+export { isBatchTargetKey, useBatchNewChatsStore } from "./batch/batch-new-chats";
+export {
   useChatModelRuntime,
   resyncInferenceStatusAfterKeptModelsUnload,
   resyncInferenceStatusAfterServerModelChange,
@@ -537,6 +542,7 @@ export {
   latestDraft,
   latestPasteDraft,
   NEW_CHAT_DRAFT_ID,
+  BATCH_CHAT_DRAFT_ID,
   stageComposerDraft,
   publishDraft,
   subscribeDraft,

@@ -2671,6 +2671,8 @@ export function SharedComposer({
         <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       </DropdownMenuItem>
     ),
+    // A compare composer sends to several models at once, so it has no one chat to batch into.
+    batchNewChats: null,
     exportChat: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger disabled={exportThreadIds.length === 0}>

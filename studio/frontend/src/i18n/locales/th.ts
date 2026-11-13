@@ -3124,6 +3124,7 @@ export const th = {
         mcp: "MCP",
         skills: "สกิล",
         savedPrompts: "พรอมต์ที่บันทึกไว้",
+        batchNewChats: "ส่งแต่ละไฟล์ในแชตใหม่",
         compareChat: "เปรียบเทียบแชท",
         exportChat: "ส่งออกแชท",
         reset: "รีเซ็ตเป็นค่าเริ่มต้น",

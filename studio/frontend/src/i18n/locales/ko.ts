@@ -3002,6 +3002,7 @@ export const ko = {
         mcp: "MCP",
         skills: "스킬",
         savedPrompts: "저장된 프롬프트",
+        batchNewChats: "각 파일을 새 채팅으로 보내기",
         compareChat: "채팅 비교",
         exportChat: "채팅 내보내기",
         reset: "기본값으로 재설정",

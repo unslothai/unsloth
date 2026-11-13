@@ -3022,6 +3022,7 @@ export const ru = {
         mcp: "MCP",
         skills: "Навыки",
         savedPrompts: "Сохранённые промпты",
+        batchNewChats: "Отправить каждый файл в новом чате",
         compareChat: "Сравнить чаты",
         exportChat: "Экспортировать чат",
         reset: "Сбросить по умолчанию",

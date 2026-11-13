@@ -351,6 +351,7 @@ import {
   flushComposerDraft,
   latestDraft,
   NEW_CHAT_DRAFT_ID,
+  BATCH_CHAT_DRAFT_ID,
   stageComposerDraft,
   latestPasteDraft,
   publishDraft,
@@ -380,6 +381,10 @@ import {
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   useBookmarkedTurnsStore,
+  pickFilesForNewChats,
+  useBatchNewChatsComposer,
+  useBatchNewChatsStore,
+  isBatchTargetKey,
   writeComposerDraft,
   normalizeChatImage,
 } from "@/features/chat";
@@ -464,6 +469,7 @@ import {
   ImageIcon,
   LayoutTwoColumnIcon,
   McpServerIcon,
+  MessageMultiple01Icon,
   Refresh01Icon,
   Scroll01Icon,
   Telescope02Icon,
@@ -4121,7 +4127,9 @@ const Composer: FC<{
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
   // Route and active IDs can lead the runtime switch; drafts belong to the composer on screen.
-  const draftThreadId = threadListItemRemoteId ?? NEW_CHAT_DRAFT_ID;
+  const draftThreadId =
+    threadListItemRemoteId ??
+    (isBatchTargetKey(nativeAttachmentTargetKey) ? BATCH_CHAT_DRAFT_ID : NEW_CHAT_DRAFT_ID);
   const restoredDraftScopeRef = useRef<string | undefined>(undefined);
   const previousDraftIdentityRef = useRef({
     draftThreadId,
@@ -4166,7 +4174,8 @@ const Composer: FC<{
       !incognito &&
       !previous.incognito &&
       !shareDraft &&
-      previous.draftThreadId === NEW_CHAT_DRAFT_ID &&
+      (previous.draftThreadId === NEW_CHAT_DRAFT_ID ||
+        previous.draftThreadId === BATCH_CHAT_DRAFT_ID) &&
       aui.threadListItem().getState().remoteId === draftThreadId &&
       previous.threadListItemId === threadListItemId &&
       previous.draftThreadId !== draftThreadId
@@ -5517,6 +5526,7 @@ const Composer: FC<{
     formRef.current = node;
     setComposerEl(node);
   }, []);
+  useBatchNewChatsComposer(aui, nativeAttachmentTargetKey, formRef);
   // Published so the API monitor panel opens clear of Send.
   usePublishedFrame(composerEl);
   const dictationBaseTextRef = useRef("");
@@ -6761,9 +6771,8 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
   return pickerAcceptForTextBasenames(enabledAccept);
 }
 
-function usePickComposerAttachment(): () => void {
-  const aui = useAui();
-  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
+function useAudioAttachmentsEnabled(): boolean {
+  return useChatRuntimeStore((s) => {
     const activeCheckpoint = s.params.checkpoint;
     // No model yet: offer audio too, since files attached now wait for the model loaded next.
     if (!activeCheckpoint || s.modelLoading) {
@@ -6772,6 +6781,11 @@ function usePickComposerAttachment(): () => void {
     const activeModel = s.models.find((m) => m.id === activeCheckpoint);
     return Boolean(activeModel?.hasAudioInput);
   });
+}
+
+function usePickComposerAttachment(): () => void {
+  const aui = useAui();
+  const audioAttachmentsEnabled = useAudioAttachmentsEnabled();
   return useCallback(() => {
     const attachmentAccept = attachmentAcceptForPicker(
       aui.composer().getState().attachmentAccept,
@@ -6895,6 +6909,8 @@ const ComposerToolsMenu: FC<{
     ({ composer }) => composer.isEditing,
   );
   const pickAttachment = usePickComposerAttachment();
+  const batchRunning = useBatchNewChatsStore((s) => s.run !== null);
+  const audioAttachmentsEnabled = useAudioAttachmentsEnabled();
   // Straight to the picker, skipping the "+" menu the item lives in. Off-route
   // the chat pane is hidden rather than unmounted, so the chords gate on it
   // being the visible tab; a window listener does not care about `inert`.
@@ -7111,6 +7127,24 @@ const ComposerToolsMenu: FC<{
       <DropdownMenuItem onSelect={() => startCompare()}>
         <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} />
         Compare chat
+      </DropdownMenuItem>
+    ),
+    batchNewChats: (
+      <DropdownMenuItem
+        disabled={batchRunning || !composerCanAddAttachments}
+        onSelect={() =>
+          pickFilesForNewChats(
+            aui,
+            navigate,
+            attachmentAcceptForPicker(
+              aui.composer().getState().attachmentAccept,
+              audioAttachmentsEnabled,
+            ),
+          )
+        }
+      >
+        <HugeiconsIcon icon={MessageMultiple01Icon} strokeWidth={2} />
+        Send each file in a new chat…
       </DropdownMenuItem>
     ),
     exportChat: (

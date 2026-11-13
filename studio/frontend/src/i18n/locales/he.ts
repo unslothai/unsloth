@@ -3090,6 +3090,7 @@ export const he = {
         mcp: "MCP",
         skills: "מיומנויות",
         savedPrompts: "פרומפטים שמורים",
+        batchNewChats: "שליחת כל קובץ בצ'אט חדש",
         compareChat: "השוואת צ'אט",
         exportChat: "ייצוא צ'אט",
         reset: "איפוס לברירת המחדל",
