@@ -1877,9 +1877,8 @@ def resolve_dit_scheme(
     te_gb: Optional[float] = None,
     inflight: int = 1,
 ) -> tuple[Optional[str], str]:
-    """(scheme or None for bf16, reason). Auto: int8, then fp8, then bf16 (``hosted_auto_scheme_order``), on every
-    card: int8 was faster than bf16 on cards that hold bf16 (RTX PRO 6000 2048px 2.30 vs 3.52 s/image, LPIPS 0.045).
-    An explicit fp8 needs SM 8.9+ (else int8). The size arguments are kept for callers; auto no longer reads them."""
+    """(scheme or None for bf16, reason). Auto: int8, fp8, bf16 on every card (int8 beat bf16 even where bf16 fits:
+    RTX PRO 6000 2048px 2.30 vs 3.52 s/image). Explicit fp8 needs SM 8.9+. Size arguments are unused by auto."""
     import torch
 
     req = (requested or "auto").strip().lower()
