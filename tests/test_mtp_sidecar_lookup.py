@@ -19,7 +19,11 @@ def reattach():
     # Importing the full loader requires the accelerator stack; execute its actual helper here.
     path = Path(__file__).resolve().parents[1] / "unsloth/models/loader.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_reattach_saved_mtp_head")
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_reattach_saved_mtp_head"
+    )
     namespace = {"os": os, "__package__": "unsloth.models"}
     exec(compile(ast.Module(body = [node], type_ignores = []), str(path), "exec"), namespace)
     return namespace[node.name]
@@ -28,7 +32,9 @@ def reattach():
 @pytest.mark.parametrize(
     "failure", [LocalEntryNotFoundError("not cached"), OSError("connection reset")]
 )
-def test_uncertain_remote_lookup_warns_without_exposing_error_details(reattach, monkeypatch, capsys, failure):
+def test_uncertain_remote_lookup_warns_without_exposing_error_details(
+    reattach, monkeypatch, capsys, failure
+):
     def fail(*args, **kwargs):
         raise failure
 

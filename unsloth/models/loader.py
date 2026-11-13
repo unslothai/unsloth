@@ -1149,7 +1149,6 @@ def _reattach_saved_mtp_head(
         except Exception as error:
             try:
                 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
-
                 missing = isinstance(error, EntryNotFoundError) and not isinstance(
                     error, LocalEntryNotFoundError
                 )
