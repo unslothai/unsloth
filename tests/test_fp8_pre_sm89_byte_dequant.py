@@ -343,7 +343,9 @@ def test_real_rocm_device_takes_bytes_kernel_bit_exact(pre_sm89, monkeypatch, sh
     )
     out = fp8.weight_dequant(w, s, out_dtype)
     loop_case = m % 128 or n % 128 or fp8._fp8_kernel_unsupported(w)
-    if not (fp8._rocm_bytes_dequant_arch(w.device) and loop_case and out_dtype != torch.float16):
+    # fp16 takes the byte decoder only with the integer fp16 rounding (the ROCm default).
+    exact = out_dtype != torch.float16 or fp8._fp8_exact_f16_round(out_dtype)
+    if not (fp8._rocm_bytes_dequant_arch(w.device) and loop_case and exact):
         assert not calls
         return
     assert calls == [1]
