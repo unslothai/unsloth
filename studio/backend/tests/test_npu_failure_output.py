@@ -172,8 +172,7 @@ def test_output_since_waits_for_a_drain_that_runs_late(tmp_path):
 
     server = _server(tmp_path)
     mark = server.output_mark()
-    threading.Timer(0.15, _prints, (server, "late error")).start()
-    threading.Timer(0.25, _prints, (server, "later detail")).start()
+    threading.Timer(0.15, _prints, (server, "late error", "later detail")).start()
     assert server.output_since(mark, settle = 1.0) == ["late error", "later detail"]
 
 
@@ -315,7 +314,7 @@ def test_pending_chat_keeps_its_original_daemon(tmp_path, log):
     assert backend.explain_failure(window, "chat failed") == "chat failed (original failure)"
 
 
-@pytest.mark.parametrize("path", ["/v1/pull", "/v1/delete"])
+@pytest.mark.parametrize("path", ["/v1/pull", "/v1/delete", "/v1/models?show_all=true"])
 def test_chat_cannot_claim_a_background_model_operation(tmp_path, monkeypatch, log, path):
     server = _server(tmp_path)
     server.port = 4242
@@ -333,7 +332,8 @@ def test_chat_cannot_claim_a_background_model_operation(tmp_path, monkeypatch, l
             with server.stream("POST", path, json_body = {}) as response:
                 assert response.status_code == 500
         else:
-            assert server.request("POST", path).status_code == 500
+            method = "GET" if path.startswith("/v1/models") else "POST"
+            assert server.request(method, path).status_code == 500
 
     assert nb._explain(server, chat, "chat failed") == "chat failed"
     del chat
@@ -398,3 +398,15 @@ def test_a_window_alone_still_gets_its_reason(tmp_path, log):
     _prints(server, _line("Error", "WrappedServer", "FastFlowLM process has terminated"))
     assert "terminated" in nb._explain(server, window, "boom")
     assert log.fields["overlapped_another_request"] is False
+
+
+def test_a_log_that_cannot_reopen_names_no_older_file(tmp_path, monkeypatch):
+    server = _server(tmp_path)
+    server.log_dir = tmp_path / "logs"
+    assert server._open_log_file(4242) is not None
+    assert server.log_path is not None
+    monkeypatch.setattr(
+        "builtins.open", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    assert server._open_log_file(4243) is None
+    assert server.log_path is None

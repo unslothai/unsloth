@@ -323,9 +323,12 @@ class LemonadeServer:
         try:
             self.log_dir.mkdir(parents = True, exist_ok = True)
             path = self.log_dir / f"lemonade-{int(time.time())}-port-{port}.log"
-            handle = open(path, "w", encoding = "utf-8", buffering = 1)
+            # Append: a restart in the same second on the same port reuses the name.
+            handle = open(path, "a", encoding = "utf-8", buffering = 1)
         except OSError as exc:
             logger.warning("Could not open a Lemonade log file: %s", exc)
+            with self._log_lock:
+                self.log_path = None
             return None
         # After the open, so the cap counts this file and can never delete it.
         prune_log_dir(self.log_dir, "lemonade-*.log", protect = path)
@@ -420,8 +423,10 @@ class LemonadeServer:
         if not self.is_alive():
             raise LemonadeUnavailable("Lemonade is not running.")
         try:
-            # The load caller already owns its window. Reads do not mutate the runtime.
-            other = method == "POST" and path != "/v1/load"
+            # The load owns its window; of the reads only a catalog listing makes lemond print.
+            other = path != "/v1/load" and (
+                method == "POST" or path.partition("?")[0] == "/v1/models"
+            )
             with self._other_operation() if other else nullcontext():
                 return self._client.request(
                     method,
