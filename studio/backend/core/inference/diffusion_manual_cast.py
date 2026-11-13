@@ -177,6 +177,51 @@ def apply_manual_cast_(module: Any, compute_dtype: Any) -> int:
     return kept_bytes
 
 
+def undo_same_width_manual_cast_(module: Any) -> int:
+    """Turn every manual-cast Linear / Embedding whose compute dtype is as wide as its stored dtype (bf16 kept for a
+    float16 compute) back into a plain module holding compute-dtype weights; returns the bytes converted. Such a
+    cast saves no memory, only adds one per call, and the converted weights are exactly what a load at the compute
+    dtype holds. Called once a quant has rebuilt the big Linears from the stored weights."""
+    import torch
+
+    if not _CLASSES:
+        return 0
+    linear_cls, embedding_cls = _CLASSES["linear"], _CLASSES["embedding"]
+    plain = {linear_cls: torch.nn.Linear, embedding_cls: torch.nn.Embedding}
+    converted = 0
+    with torch.no_grad():
+        for sub in module.modules():
+            base = plain.get(type(sub))
+            dtype = getattr(sub, "_unsloth_compute_dtype", None)
+            weight = getattr(sub, "weight", None)
+            if (
+                base is None
+                or not isinstance(dtype, torch.dtype)
+                or not isinstance(weight, torch.Tensor)
+            ):
+                continue
+            if (
+                weight.dtype != dtype
+                and weight.element_size() != torch.empty(0, dtype = dtype).element_size()
+            ):
+                continue
+            for name in ("weight", "bias"):
+                t = getattr(sub, name, None)
+                if isinstance(t, torch.Tensor) and t.is_floating_point() and t.dtype != dtype:
+                    converted += t.numel() * t.element_size()
+                    t.data = t.data.to(dtype)
+            sub.__class__ = base
+            del sub._unsloth_compute_dtype
+    info = manual_cast_info(module)
+    if info is not None:
+        if any(type(sub) in plain for sub in module.modules()):
+            info["kept_bytes"] = max(0, int(info.get("kept_bytes", 0)) - converted)
+        else:
+            # Nothing is cast per call any more: the module is what a compute-dtype load builds, marker included.
+            delattr(module, MANUAL_CAST_ATTR)
+    return converted
+
+
 def manual_cast_info(module: Any) -> Optional[dict]:
     info = getattr(module, MANUAL_CAST_ATTR, None)
     return info if isinstance(info, dict) else None

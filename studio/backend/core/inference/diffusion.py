@@ -9960,22 +9960,28 @@ class DiffusionBackend:
                                             family_name = fam.name,
                                             storage_dtype = flux3_storage_dtype(target, dtype),
                                             # fp16-card native build reads Linears as stored (bf16, manual cast).
+                                            # A dense transformer reads as stored only when that saves memory.
                                             transformer_storage = (
-                                                transformer_quant_pinned is None
-                                                and native_scheme is None
-                                                and native_offload_scheme is None
-                                            )
-                                            or (
-                                                fp16_card_quant_storage_enabled()
-                                                and native_scheme is not None
-                                                and native_offload_scheme is None
-                                                and fp16_card_int8_host(target)
-                                                and native_quant_scheme(
-                                                    target,
-                                                    transformer_quant_pinned,
-                                                    family = getattr(fam, "name", None),
+                                                True
+                                                if (
+                                                    fp16_card_quant_storage_enabled()
+                                                    and native_scheme is not None
+                                                    and native_offload_scheme is None
+                                                    and fp16_card_int8_host(target)
+                                                    and native_quant_scheme(
+                                                        target,
+                                                        transformer_quant_pinned,
+                                                        family = getattr(fam, "name", None),
+                                                    )
+                                                    is None
                                                 )
-                                                is None
+                                                else None
+                                                if (
+                                                    transformer_quant_pinned is None
+                                                    and native_scheme is None
+                                                    and native_offload_scheme is None
+                                                )
+                                                else False
                                             ),
                                         )
                                     finally:
