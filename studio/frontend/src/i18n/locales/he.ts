@@ -613,7 +613,6 @@ export const he = {
   },
   computerUse: {
     label: "שימוש במחשב",
-    setUp: "הגדרת שימוש במחשב",
     pill: "מחשב",
     turnOff: "כיבוי השימוש במחשב",
     needs: {

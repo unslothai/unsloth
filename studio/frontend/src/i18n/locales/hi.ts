@@ -593,7 +593,6 @@ export const hi = {
   },
   computerUse: {
     label: "कंप्यूटर उपयोग",
-    setUp: "कंप्यूटर उपयोग सेट अप करें",
     pill: "कंप्यूटर",
     turnOff: "कंप्यूटर उपयोग बंद करें",
     needs: {

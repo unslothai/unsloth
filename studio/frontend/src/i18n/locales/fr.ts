@@ -593,7 +593,6 @@ export const fr = {
   },
   computerUse: {
     label: "Utilisation de l'ordinateur",
-    setUp: "Configurer l'utilisation de l'ordinateur",
     pill: "Ordinateur",
     turnOff: "Désactiver l'utilisation de l'ordinateur",
     needs: {

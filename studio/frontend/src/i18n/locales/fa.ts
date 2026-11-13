@@ -654,7 +654,6 @@ export const fa = {
   },
   computerUse: {
     label: "استفاده از رایانه",
-    setUp: "راه‌اندازی استفاده از رایانه",
     pill: "رایانه",
     turnOff: "خاموش کردن استفاده از رایانه",
     needs: {

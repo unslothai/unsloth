@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ComputerUseIcon } from "@/lib/computer-use-icon";
+import { Cursor02Icon } from "@hugeicons/core-free-icons";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat";
 import { parseExternalModelId } from "@/features/chat/external-providers";
@@ -54,8 +54,8 @@ export function ComputerUseMenuItem() {
         useComputerUseStore.getState().setEnabled(!enabled);
       }}
     >
-      <HugeiconsIcon icon={ComputerUseIcon} strokeWidth={2} />
-      {ready ? t("computerUse.label") : t("computerUse.setUp")}
+      <HugeiconsIcon icon={Cursor02Icon} strokeWidth={2} />
+      {t("computerUse.label")}
       {on ? <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" /> : null}
     </DropdownMenuItem>
   );
@@ -79,7 +79,7 @@ export function ComputerUsePill({ glyph }: { glyph: (icon: ReactNode) => ReactNo
       title={problem ? t(`computerUse.needs.${problem}`) : undefined}
     >
       {glyph(
-        <HugeiconsIcon icon={ComputerUseIcon} className="size-[calc(17px*var(--ui-space-scale,1))]" strokeWidth={2} />,
+        <HugeiconsIcon icon={Cursor02Icon} className="size-[calc(17px*var(--ui-space-scale,1))]" strokeWidth={2} />,
       )}
       <span>{t("computerUse.pill")}</span>
     </button>

@@ -594,7 +594,6 @@ export const ja = {
   },
   computerUse: {
     label: "コンピュータ操作",
-    setUp: "コンピュータ操作を設定",
     pill: "コンピュータ",
     turnOff: "コンピュータ操作をオフにする",
     needs: {

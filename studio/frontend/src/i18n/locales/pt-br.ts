@@ -593,7 +593,6 @@ export const ptBR = {
   },
   computerUse: {
     label: "Uso do computador",
-    setUp: "Configurar o uso do computador",
     pill: "Computador",
     turnOff: "Desativar o uso do computador",
     needs: {

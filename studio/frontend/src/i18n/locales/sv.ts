@@ -619,7 +619,6 @@ export const sv = {
   },
   computerUse: {
     label: "Datoranvändning",
-    setUp: "Ställ in datoranvändning",
     pill: "Dator",
     turnOff: "Stäng av datoranvändning",
     needs: {

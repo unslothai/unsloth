@@ -627,7 +627,6 @@ export const zhTW = {
   },
   computerUse: {
     label: "電腦操作",
-    setUp: "設定電腦操作",
     pill: "電腦",
     turnOff: "關閉電腦操作",
     needs: {

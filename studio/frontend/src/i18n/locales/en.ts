@@ -590,7 +590,6 @@ export const en = {
   },
   computerUse: {
     label: "Computer use",
-    setUp: "Set up computer use",
     pill: "Computer",
     turnOff: "Turn off computer use",
     needs: {

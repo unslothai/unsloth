@@ -655,7 +655,6 @@ export const id = {
   },
   computerUse: {
     label: "Penggunaan komputer",
-    setUp: "Siapkan penggunaan komputer",
     pill: "Komputer",
     turnOff: "Matikan penggunaan komputer",
     needs: {

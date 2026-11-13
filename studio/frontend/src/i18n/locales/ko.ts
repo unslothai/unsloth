@@ -593,7 +593,6 @@ export const ko = {
   },
   computerUse: {
     label: "컴퓨터 사용",
-    setUp: "컴퓨터 사용 설정",
     pill: "컴퓨터",
     turnOff: "컴퓨터 사용 끄기",
     needs: {

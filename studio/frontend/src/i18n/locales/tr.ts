@@ -655,7 +655,6 @@ export const tr = {
   },
   computerUse: {
     label: "Bilgisayar kullanımı",
-    setUp: "Bilgisayar kullanımını ayarla",
     pill: "Bilgisayar",
     turnOff: "Bilgisayar kullanımını kapat",
     needs: {

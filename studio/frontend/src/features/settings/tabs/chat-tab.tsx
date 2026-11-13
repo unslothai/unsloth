@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ComputerUseIcon } from "@/lib/computer-use-icon";
 import { LazyImportBoundary } from "@/components/lazy-import-boundary";
 import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
@@ -32,6 +31,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  Cursor02Icon,
   Download01Icon,
   LayoutTwoColumnIcon,
   LibrariesIcon,
@@ -111,7 +111,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.computerUse",
     icon: (
       <HugeiconsIcon
-        icon={ComputerUseIcon}
+        icon={Cursor02Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />

@@ -590,7 +590,6 @@ export const it = {
   },
   computerUse: {
     label: "Uso del computer",
-    setUp: "Configura l'uso del computer",
     pill: "Computer",
     turnOff: "Disattiva l'uso del computer",
     needs: {

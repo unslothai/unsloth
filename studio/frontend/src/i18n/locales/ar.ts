@@ -593,7 +593,6 @@ export const ar = {
   },
   computerUse: {
     label: "استخدام الحاسوب",
-    setUp: "إعداد استخدام الحاسوب",
     pill: "الحاسوب",
     turnOff: "إيقاف استخدام الحاسوب",
     needs: {

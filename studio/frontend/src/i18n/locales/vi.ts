@@ -656,7 +656,6 @@ export const vi = {
   },
   computerUse: {
     label: "Sử dụng máy tính",
-    setUp: "Thiết lập sử dụng máy tính",
     pill: "Máy tính",
     turnOff: "Tắt sử dụng máy tính",
     needs: {

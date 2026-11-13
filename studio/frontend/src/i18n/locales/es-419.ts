@@ -659,7 +659,6 @@ export const es419 = {
   },
   computerUse: {
     label: "Uso de la computadora",
-    setUp: "Configurar el uso de la computadora",
     pill: "Computadora",
     turnOff: "Desactivar el uso de la computadora",
     needs: {

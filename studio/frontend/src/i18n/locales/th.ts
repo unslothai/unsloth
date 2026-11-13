@@ -629,7 +629,6 @@ export const th = {
   },
   computerUse: {
     label: "การใช้คอมพิวเตอร์",
-    setUp: "ตั้งค่าการใช้คอมพิวเตอร์",
     pill: "คอมพิวเตอร์",
     turnOff: "ปิดการใช้คอมพิวเตอร์",
     needs: {

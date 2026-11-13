@@ -593,7 +593,6 @@ export const zhCN = {
   },
   computerUse: {
     label: "电脑操作",
-    setUp: "设置电脑操作",
     pill: "电脑",
     turnOff: "关闭电脑操作",
     needs: {

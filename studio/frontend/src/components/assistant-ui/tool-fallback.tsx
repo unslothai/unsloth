@@ -3,7 +3,6 @@
 
 "use client";
 
-import { ComputerUseIcon } from "@/lib/computer-use-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -51,7 +50,7 @@ import {
   describeComputerCall,
   plainComputerResult,
 } from "@/features/computer-use/summary";
-import { Alert02Icon, CancelCircleIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, CancelCircleIcon, Cursor02Icon } from "@hugeicons/core-free-icons";
 import { LoaderIcon } from "lucide-react";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { WrenchIcon } from "@/lib/wrench-icon";
@@ -178,7 +177,7 @@ function completeToolIcon(name: string): ElementType {
 }
 
 function ComputerGlyph(props: { className?: string }) {
-  return <HugeiconsIcon icon={ComputerUseIcon} strokeWidth={2} {...props} />;
+  return <HugeiconsIcon icon={Cursor02Icon} strokeWidth={2} {...props} />;
 }
 
 // Stroke 2 like InternetGlyph beside it.

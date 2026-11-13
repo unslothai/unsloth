@@ -655,7 +655,6 @@ export const cs = {
   },
   computerUse: {
     label: "Ovládání počítače",
-    setUp: "Nastavit ovládání počítače",
     pill: "Počítač",
     turnOff: "Vypnout ovládání počítače",
     needs: {

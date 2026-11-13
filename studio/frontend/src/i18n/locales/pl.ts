@@ -658,7 +658,6 @@ export const pl = {
   },
   computerUse: {
     label: "Korzystanie z komputera",
-    setUp: "Skonfiguruj korzystanie z komputera",
     pill: "Komputer",
     turnOff: "Wyłącz korzystanie z komputera",
     needs: {

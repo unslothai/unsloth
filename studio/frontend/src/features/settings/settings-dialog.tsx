@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ComputerUseIcon } from "@/lib/computer-use-icon";
 import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { useIsAccountOwner } from "@/features/auth";
 import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
@@ -22,6 +21,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
+  Cursor02Icon,
   ApiIcon,
   BotIcon,
   Cancel01Icon,
@@ -312,7 +312,7 @@ const TABS: TabDef[] = [
   {
     id: "computer-use",
     labelKey: "computerUse.settings.title",
-    icon: ComputerUseIcon,
+    icon: Cursor02Icon,
   },
   {
     id: "keyboard-shortcuts",

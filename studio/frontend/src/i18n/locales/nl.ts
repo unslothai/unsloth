@@ -659,7 +659,6 @@ export const nl = {
   },
   computerUse: {
     label: "Computergebruik",
-    setUp: "Computergebruik instellen",
     pill: "Computer",
     turnOff: "Computergebruik uitschakelen",
     needs: {

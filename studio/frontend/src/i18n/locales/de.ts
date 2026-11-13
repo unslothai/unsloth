@@ -593,7 +593,6 @@ export const de = {
   },
   computerUse: {
     label: "Computernutzung",
-    setUp: "Computernutzung einrichten",
     pill: "Computer",
     turnOff: "Computernutzung ausschalten",
     needs: {
