@@ -344,7 +344,6 @@ function loraMeta(lora: LoraModelOption): ModelSelectorChangeMeta {
     isLora,
     isDownloaded: true,
     isGguf: lora.isDirectGguf === true,
-    // A fine-tuned TTS/STT checkpoint reaches the Audio page by its codec.
     ...(lora.audioType
       ? {
           pipelineTag: audioPipelineTagFor(lora.audioType, true, isLora),
@@ -1343,8 +1342,8 @@ export function ComposerModelPicker({
   align = "end",
 }: { side?: "top" | "bottom"; align?: "start" | "end" }) {
   const rawSource = useComposerModelPickerSource();
-  // Every pick passes here first: Chat cannot load an audio model, so that pick opens the page
-  // that runs it. A ref, as the routing reads inventory this render has not built yet.
+  // Chat cannot load an audio model, so its pick opens the page that runs it; a ref, as routing
+  // reads inventory this render has not built.
   const routeMediaPick = useRef<
     (id: string, meta: ModelSelectorChangeMeta) => boolean
   >(() => false);
@@ -1565,7 +1564,7 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults, fitOf]);
-  // MLX and safetensors rows have no quant to size: the header picker's checkpoint rule judges them.
+  // Non-GGUF rows have no quant to size: the header picker's checkpoint rule judges them.
   const hubCheckpointFits = useMemo(() => {
     const map = new Map<string, boolean>();
     for (const r of hubResults) {
@@ -1749,7 +1748,7 @@ export function ComposerModelPicker({
       });
     }
     for (const lora of loraModels ?? []) {
-      // Native-audio checkpoints load only as merged exports, as the header picker gated them.
+      // Native-audio checkpoints load only as merged exports.
       if (
         (lora.audioType && !listsAudio) ||
         !nativeAudioCheckpointIsLoadable(lora.audioType, lora.exportType)
@@ -1938,7 +1937,6 @@ export function ComposerModelPicker({
         libraryName: cached?.library_name,
       })
     ) {
-      // Loading here would evict the chat model for a repo neither surface can run.
       toast.error(
         `${id} is not an audio model Unsloth can run yet. The Audio page lists the families it supports.`,
         { duration: 7000 },
@@ -2122,7 +2120,6 @@ export function ComposerModelPicker({
   const chosenId = chosen?.id;
   // A pick names the chip at once; the checkpoint follows only once its load lands.
   const [pendingPick, setPending] = useState<Row | null>(null);
-  // An outside selection names its pick itself.
   const pending = pane ? null : pendingPick;
   useEffect(() => {
     if (!pending) {
@@ -2341,7 +2338,6 @@ export function ComposerModelPicker({
       );
     }
     if (viewed === CONNECTED_TAB && connectedSort === "provider") {
-      // Each connection folds under its own heading.
       return found.filter(
         (row) => !collapsedSections.has(`${viewed}:${row.tab}`),
       );
@@ -2465,8 +2461,7 @@ export function ComposerModelPicker({
     openModelCard(row);
   };
 
-  // A Discover repo already on disk loads its cached copy; without isDownloaded the pick is staged
-  // as a download.
+  // A Discover repo on disk loads its cached copy; without isDownloaded it stages a download.
   const wholeHubMeta = (row: Row): ModelSelectorChangeMeta => {
     const id = row.id.toLowerCase();
     const device = row.onDevice
@@ -2629,8 +2624,7 @@ export function ComposerModelPicker({
     }
   };
   useEffect(() => () => offerAbort.current?.abort(), []);
-  // A listing still in flight when the picker closes or the tab changes must not pick its lone
-  // quant: that would start a download the user walked away from.
+  // A listing still in flight at close or tab change must not pick (and download) its lone quant.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `open` and `viewed` are the triggers.
   useEffect(() => {
     offerAbort.current?.abort();
@@ -2754,7 +2748,6 @@ export function ComposerModelPicker({
       } finally {
         setResolving((now) => (now === row.key ? null : now));
       }
-      // A newer pick owns the view now.
       if (pickSeq.current === seq) {
         resetView();
       }
@@ -2897,8 +2890,7 @@ export function ComposerModelPicker({
       ?.scrollIntoView({ block: "nearest" });
   }, [active, isExpanded]);
 
-  // Rows and the quants open under them, in list order: arrows walk both, so a quant is reachable
-  // without tabbing past every row's actions.
+  // Arrows walk rows and their open quants in list order.
   const navNeighbour = (from: Element | null | undefined, dir: 1 | -1) => {
     const items = Array.from(
       listRef.current?.querySelectorAll<HTMLElement>(
@@ -2908,7 +2900,6 @@ export function ComposerModelPicker({
     const at = from ? items.indexOf(from as HTMLElement) : -1;
     return at < 0 ? undefined : items[at + dir];
   };
-  /** Moves from a focused row or quant; a row hands focus back to the search field. */
   const navFrom = (from: HTMLElement, dir: 1 | -1) => {
     const next = navNeighbour(from, dir);
     if (!next) {
@@ -3062,8 +3053,7 @@ export function ComposerModelPicker({
       return cachedMeta(row);
     }
     if (row.kind === "loaded") {
-      // As residentModelConfigTarget: a standalone .gguf keys its settings by the bare path, its
-      // quant only a label from the filename.
+      // A standalone .gguf keys its settings by the bare path, as residentModelConfigTarget does.
       return isStandaloneGgufPath(row.id)
         ? { ...residentMeta(row), ggufVariant: undefined, isGguf: true }
         : residentMeta(row);
@@ -3365,8 +3355,7 @@ export function ComposerModelPicker({
     const onDisk = deviceQuants.get(row.key) ?? NO_QUANTS;
     const soleQuant = onDisk.length === 1 ? onDisk[0].quant : null;
     const manyQuants = onDisk.length > 1;
-    // Known without a quant listing, so the menu can offer Reset run settings and the gear can
-    // show that settings are saved, as the header picker does.
+    // Known without a quant listing, for Reset run settings and the gear's saved state.
     const savedMeta =
       row.kind === "gguf" && onDisk.length === 1
         ? ggufMeta(row, onDisk[0], true, true, row.gguf?.has_vision)
@@ -4283,7 +4272,6 @@ export function ComposerModelPicker({
     return out;
   };
 
-  // Shared by the On Device and Discover menus, as the header picker shares one format filter.
   const formatGroup = (
     <>
       <DropdownMenuLabel className={MENU_LABEL}>Format</DropdownMenuLabel>

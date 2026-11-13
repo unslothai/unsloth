@@ -1543,8 +1543,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   );
 });
 
-// The picker's chip leaves with its composer (dictation, a minimized browser dock, the base view under
-// Compare): opening then would arm a popover that appears later or anchors to nothing.
+// The chip leaves with its composer (dictation, browser dock, Compare): opening then anchors to nothing.
 function composerModelChipShown(): boolean {
   return Array.from(
     document.querySelectorAll<HTMLElement>(
@@ -1594,8 +1593,7 @@ function GeneralCompareHeader({
       loraModels,
       externalModels,
       onPick: (id, meta) => {
-        // As the header picker did: a plain pick runs with the model's saved settings, not whatever
-        // the resident was loaded with; Run settings' own config wins.
+        // A plain pick runs with the model's saved settings; Run settings' own config wins.
         const remembered =
           meta.config || meta.source === "external"
             ? null
@@ -2913,9 +2911,8 @@ export function ChatPage({
       projectId: search.project,
     }),
   );
-  // A composer that mounts while a handoff's run settings are open, as on a first Chat visit, would
-  // take focus and dismiss them. Kept until the picker closes: a new chat can remount the composer
-  // (dock to centre) after adoption, and the new picker must land on the same settings.
+  // Held until the picker closes: a composer mounting meanwhile (first visit, or a new chat's
+  // dock-to-centre remount) would otherwise steal focus or drop the settings.
   const [ownedConfigRequest, setOwnedConfigRequest] =
     useState<typeof modelConfigRequest>(null);
   const handoffOwnsPicker = ownedConfigRequest !== null;

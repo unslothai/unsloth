@@ -189,7 +189,6 @@ export const CONNECTED_MODALITY_LABEL: Record<ConnectedModality, string> = {
   imageGen: "Image gen",
 };
 
-/** By connection (each one's models by name), or by name across every connection. */
 export function sortConnectedRows<T extends PickerRow>(
   rows: readonly T[],
   key: ConnectedSort,
@@ -393,8 +392,7 @@ export function pickerSide(
   return above < PICKER_MIN_ROOM && below > above ? "bottom" : "top";
 }
 
-/** Radix `alignOffset` that slides the panel back inside the window on a narrow screen: the side is
- * fixed, so Radix's own shift is off with its flip. */
+/** Slides a fixed-side panel back inside a narrow window, since Radix's own shift is off. */
 export const PICKER_WIDTH = 404;
 export function pickerAlignOffset(
   align: "start" | "end",
@@ -412,12 +410,10 @@ export function pickerAlignOffset(
     PICKER_EDGE,
     Math.min(left, viewportWidth - PICKER_EDGE - width),
   );
-  // An end-aligned offset counts leftward.
   return align === "end" ? left - clamped : clamped - left;
 }
 
-// llama.cpp's 260K-parameter test fixtures (stories260K and its uploads): Discover searches every
-// uploader, so they surface beside the probe repo the hidden-model list already covers.
+// llama.cpp's stories260K test fixtures, which Discover's all-uploader search surfaces.
 const TEST_FIXTURE = /stories\d+k/i;
 export function isTestFixtureRepo(id: string): boolean {
   return TEST_FIXTURE.test(id);

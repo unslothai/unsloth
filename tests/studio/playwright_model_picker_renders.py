@@ -38,8 +38,7 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5237"))
-# A row's arrows hand focus back to the search field, which names the option it points at
-# (the combobox pattern); a focused option names itself.
+# Arrows keep focus in the search field, which names the active option (combobox pattern).
 ACTIVE_OPTION_JS = """() => {
     const el = document.activeElement;
     return el ? el.getAttribute("aria-activedescendant") || el.id : null;

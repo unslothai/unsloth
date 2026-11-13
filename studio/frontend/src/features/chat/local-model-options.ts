@@ -39,7 +39,7 @@ export function chatLocalModelOptions(
   const options: LoraModelOption[] = [];
   const seen = new Set<string>();
   for (const model of rows) {
-    // Image and video checkpoints in a scanned folder belong to Images / Video, not the chat loader.
+    // Image and video checkpoints belong to Images / Video.
     if (
       !CHAT_LOCAL_SOURCES.has(model.source) ||
       seen.has(model.id) ||
@@ -59,7 +59,6 @@ export function chatLocalModelOptions(
       // A GGUF directory needs no `gguf` in its name: the scan's format says so.
       isGguf: isDirectGguf || model.model_format === "gguf" ? true : undefined,
       isDirectGguf: isDirectGguf ? true : undefined,
-      // Lets the chat pickers drop speech checkpoints, as they do cached ones.
       audioType: model.audio_type ?? undefined,
     });
   }
