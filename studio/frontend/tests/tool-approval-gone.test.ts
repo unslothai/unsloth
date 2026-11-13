@@ -40,6 +40,7 @@ function harness(response: ReturnType<typeof jsonResponse>, epoch = { value: 0 }
         new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
         {},
       ),
+      "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
       "@/features/auth": {
         getAuthSessionEpoch: () => epoch.value,
         authFetch: async (url: string, init?: RequestInit) => {

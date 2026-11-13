@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
+import { takeSseFrame } from "@/lib/sse-framing";
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
 
@@ -483,20 +484,20 @@ export async function streamExportLogs(options: {
 
       buffer += decoder.decode(value, { stream: true });
 
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
+      for (
+        let frame = takeSseFrame(buffer);
+        frame;
+        frame = takeSseFrame(buffer)
+      ) {
+        const rawEvent = frame.event;
+        buffer = frame.remainder;
 
         if (rawEvent.startsWith("retry:") || rawEvent.startsWith(":")) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
 
         const parsed = parseSseMessage(rawEvent);
         if (!parsed) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
 
@@ -538,8 +539,6 @@ export async function streamExportLogs(options: {
         } catch (err) {
           if (isAbortError(err)) return;
         }
-
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
     }
   } catch (err) {
