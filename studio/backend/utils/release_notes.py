@@ -26,10 +26,10 @@ from packaging.version import InvalidVersion, Version
 
 from .update_status import DISABLE_ENV_VAR, RELEASE_NOTES_URL
 
-# A release entry carries its whole body (~40 KiB lately), so per_page=100 would be ~4 MiB, twice the cap below, and the fetch would fail outright. 30 is ~1.2 MiB, newest first.
-RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=30"
+# Each entry carries its whole body plus asset list (up to ~100 KiB), and only the newest is used: 30 was ~2 MiB, which a link under ~6 Mbit/s could not fetch in time. 10 still spans the asset-only releases (`Windows-ARM64`, `prebuilt-wheels-*`).
+RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=10"
 RELEASES_URL_ENV_VAR = "UNSLOTH_RELEASES_URL"
-RELEASES_TIMEOUT_SECONDS = 3
+RELEASES_TIMEOUT_SECONDS = 10
 RELEASES_MAX_BYTES = 2 * 1024 * 1024
 _RELEASES_CHUNK_BYTES = 64 * 1024
 _RELEASES_MIN_READ_SECONDS = 0.05
