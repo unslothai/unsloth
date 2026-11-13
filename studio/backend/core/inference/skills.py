@@ -1175,23 +1175,26 @@ def _list_skill_files(
             or os.path.samestat(os.stat(skill_dir, follow_symlinks = False), identity)
         )
 
-    def classify(scan, parts: tuple[str, ...]) -> list[tuple[str, bool, bool, bool]]:
+    def classify(scan, parts: tuple[str, ...]) -> list[tuple[str, bool]]:
         # Types are read while the scan is open: DT_UNKNOWN entries stat through its descriptor.
         nonlocal max_entries
-        taken = list(itertools.islice(scan, max_entries))
-        max_entries -= len(taken)
-        return sorted(
-            (
-                entry.name,
-                entry.is_symlink()
-                or (not _SCANDIR_FD and _is_linked_path(skill_dir.joinpath(*parts, entry.name))),
-                entry.is_dir(follow_symlinks = False),
-                entry.is_file(follow_symlinks = False),
-            )
-            for entry in taken
-        )
+        listed = []
+        for entry in itertools.islice(scan, max_entries):
+            max_entries -= 1
+            if entry.name.startswith(".") or entry.is_symlink():
+                continue
+            if os.name == "nt":
+                attributes = entry.stat(follow_symlinks = False).st_file_attributes
+                if attributes & (stat.FILE_ATTRIBUTE_HIDDEN | stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                    continue
+            elif not _SCANDIR_FD and _is_linked_path(skill_dir.joinpath(*parts, entry.name)):
+                continue
+            is_dir = entry.is_dir(follow_symlinks = False)
+            if is_dir or entry.is_file(follow_symlinks = False):
+                listed.append((entry.name, is_dir))
+        return sorted(listed)
 
-    def entries(parts: tuple[str, ...]) -> list[tuple[str, bool, bool, bool]]:
+    def entries(parts: tuple[str, ...]) -> list[tuple[str, bool]]:
         # Same pinning as resource reads: no-follow descriptors, else per-component link checks.
         if _SCANDIR_FD:
             descriptor = _open_within(skill_dir, identity, parts)
@@ -1220,23 +1223,22 @@ def _list_skill_files(
             return []
         while pending and max_entries > 0:
             parts = pending.pop(0)
-            for name, linked, is_dir, is_file in entries(parts):
-                if name.startswith(".") or linked:
-                    continue
+            for name, is_dir in entries(parts):
                 relative = "/".join((*parts, name))
                 try:
-                    size = len(relative.encode("utf-8"))
-                except UnicodeEncodeError:
+                    if _normalize_resource_path(relative).as_posix() != relative:
+                        continue
+                except SkillError:
                     continue
                 if is_dir:
-                    if size < MAX_SKILL_RESOURCE_PATH_BYTES:
-                        pending.append((*parts, name))
-                    continue
-                if not is_file:
+                    pending.append((*parts, name))
                     continue
                 if len(found) == limit or sum(map(len, found)) + len(relative) > max_chars:
                     return found + ["..."] if pinned() else []
                 found.append(relative)
+        # At the entry cap we cannot establish completeness without reading another entry.
+        if found and max_entries == 0:
+            found.append("...")
         return found if pinned() else []
     except SkillError:
         return []

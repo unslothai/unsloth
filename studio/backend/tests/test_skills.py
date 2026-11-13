@@ -6,6 +6,8 @@ import json
 import contextlib
 import os
 import re
+import stat
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -271,6 +273,64 @@ def test_missing_resource_lists_the_skill_files(isolated_skills):
     assert str(error.value).endswith("Files in this skill: SKILL.md, scripts/lint.py.")
 
 
+@pytest.mark.skipif(os.name != "nt", reason = "Windows hidden file attribute")
+def test_missing_resource_listing_skips_windows_hidden_entries(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "reader")
+    hidden_file = root / "desktop.ini"
+    hidden_file.touch()
+    hidden_dir = root / "cache"
+    hidden_dir.mkdir()
+    (hidden_dir / "notes.txt").touch()
+    for path in (hidden_file, hidden_dir):
+        subprocess.run(["attrib", "+H", str(path)], check = True)
+        if not path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_HIDDEN:
+            pytest.skip("filesystem does not persist the Windows hidden attribute")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("reader", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
+def test_missing_resource_listing_applies_reader_path_limit(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "reader")
+    (root / "docs").mkdir()
+    (root / "docs" / "yes.txt").touch()
+    (root / "docs" / "long.txt").touch()
+    monkeypatch.setattr(skills, "MAX_SKILL_RESOURCE_PATH_BYTES", len("docs/yes.txt"))
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("reader", "missing", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md, docs/yes.txt.")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX names rejected by the portable reader")
+def test_missing_resource_listing_skips_unusable_names(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "reader")
+    (root / "aux.txt").touch()
+    (root / "old\\notes.txt").touch()
+    (root / "con").mkdir()
+    (root / "con" / "notes.txt").touch()
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("reader", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
+def test_missing_resource_listing_marks_exhausted_entry_budget(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "reader")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "lint.py").touch()
+
+    assert skills._list_skill_files(root, root.stat(), max_entries = 2) == ["SKILL.md", "..."]
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX byte filenames")
 def test_missing_resource_listing_skips_undecodable_names(isolated_skills):
     home, _ = isolated_skills
@@ -314,6 +374,14 @@ def test_missing_resource_listing_refuses_a_subfolder_swapped_after_queueing(
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "private-filename.txt").write_text("", encoding = "utf-8")
+    replacement = tmp_path / "replacement"
+    try:
+        replacement.symlink_to(outside, target_is_directory = True)
+    except OSError as exc:
+        if os.name != "nt" or exc.winerror != 1314:
+            pytest.skip(f"cannot create a directory symlink on this filesystem: {exc}")
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(replacement))
     real_scandir = os.scandir
     queued = []
     swapped = []
@@ -322,7 +390,7 @@ def test_missing_resource_listing_refuses_a_subfolder_swapped_after_queueing(
         # Swap between queueing scripts/ as a real directory and scanning it.
         if queued and not swapped:
             (root / "scripts").rename(root / "scripts-old")
-            os.symlink(outside, root / "scripts", target_is_directory = True)
+            replacement.rename(root / "scripts")
             swapped.append(True)
         with real_scandir(target) as scan:
             entries = list(scan)
