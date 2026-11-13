@@ -316,8 +316,7 @@ export function titleCheckpoint(
   activeCheckpoint: string,
 ): string {
   if (parseExternalModelId(answeredWith) !== null) return answeredWith;
-  // The NPU keeps one conversation cache: a title request evicts the chat's, so the next turn
-  // re-prefills everything. The heuristic title is used instead.
+  // A title request takes one of FastFlowLM's few conversation caches and can evict the chat's.
   if (isNpuModelId(activeCheckpoint)) return "";
   return parseExternalModelId(activeCheckpoint) === null
     ? activeCheckpoint
