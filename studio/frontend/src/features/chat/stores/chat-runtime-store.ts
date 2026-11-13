@@ -5475,6 +5475,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   applyThreadScopedSettings: (threadId, settings) => {
+    const shownBefore = getPresetOwnedParams(get().params);
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
       // The pending write belongs to the outgoing thread, so it goes out before the swap.
@@ -5676,7 +5677,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     });
     // A chat's own values landing under a link still showing go under it, as a replay's do.
-    reapplyShownLink();
+    reapplyShownLink(shownBefore);
   },
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
@@ -6854,8 +6855,11 @@ function withLinkOverlay(params: InferenceParams): InferenceParams {
   return { ...params, ...kept };
 }
 
-function reapplyShownLink(): void {
-  if (linkShown === null) return;
+/** `shownBefore`: the values before the chat's landed; a key the user had already moved keeps
+ *  whatever the chat put there. */
+function reapplyShownLink(shownBefore: ReturnType<typeof getPresetOwnedParams>): void {
+  if (linkShown === null || linkValues === null) return;
+  const applied = linkValues;
   const state = useChatRuntimeStore.getState();
   if (state.activePreset !== linkShown || !state.settingsHydrated) return;
   const preset = getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
@@ -6863,14 +6867,19 @@ function reapplyShownLink(): void {
   // Only what a chat restore displaces: the chat's own keys. Max Tokens and the like keep any edit.
   const linked = linkedParams(state.params, preset);
   const chatKeys = Object.fromEntries(
-    THREAD_SCOPED_PARAM_KEYS.map((key) => [key, linked[key]]),
+    THREAD_SCOPED_PARAM_KEYS.filter(
+      (key) =>
+        JSON.stringify(shownBefore[key as keyof typeof shownBefore]) ===
+        JSON.stringify(applied[key as keyof typeof applied]),
+    ).map((key) => [key, linked[key]]),
   ) as Partial<InferenceParams>;
+  if (Object.keys(chatKeys).length === 0) return;
   state.setParams({ ...state.params, ...chatKeys }, { persist: false });
   const owned = getPresetOwnedParams(useChatRuntimeStore.getState().params);
   linkValues = {
-    ...(linkValues ?? owned),
+    ...applied,
     ...Object.fromEntries(
-      THREAD_SCOPED_PARAM_KEYS.map((key) => [key, owned[key as keyof typeof owned]]),
+      Object.keys(chatKeys).map((key) => [key, owned[key as keyof typeof owned]]),
     ),
   };
 }

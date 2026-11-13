@@ -782,6 +782,16 @@ test("opening another chat on a linked model keeps a Max Tokens edit", async () 
   }
 });
 
+test("an edit before a new chat's first send survives its pairing", async () => {
+  const store = useChatRuntimeStore.getState();
+  await switchTo(QWEN);
+  const s = useChatRuntimeStore.getState();
+  s.setParams({ ...s.params, temperature: 0.77 });
+  await settled();
+  store.applyThreadScopedSettings(null, null);
+  assert.equal(live().temperature, 0.77);
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);
