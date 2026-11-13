@@ -337,6 +337,31 @@ def test_a_rejected_continuation_does_not_charge_the_reply_it_continues(method):
     assert _pools()["combined"]["used"] == 100
 
 
+@pytest.mark.parametrize(
+    "metadata, local, api",
+    [
+        ({"resumeTiming": {"tokenCount": 100}, "tokenUsageProvider": "openai"}, 0, 100),
+        ({"resumeTiming": {"tokenCount": 150}, "tokenUsagePriorCount": 100}, 50, 0),
+    ],
+)
+def test_a_reply_saved_only_mid_stream_is_still_charged(metadata, local, api):
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "live",
+            "threadId": "t1",
+            "role": "assistant",
+            "createdAt": now + 1,
+            "content": [{"type": "text", "text": "half"}],
+            "metadata": metadata,
+        }
+    )
+    _enable(mode = "split", localLimit = 1000, apiLimit = 1000)
+    pools = _pools()
+    assert (pools["local"]["used"], pools["api"]["used"]) == (local, api)
+
+
 def test_usage_before_the_period_does_not_count():
     start, end = token_limit.period_window("day", "UTC")
     _thread("t1", start - 10_000)
@@ -426,7 +451,13 @@ def test_an_interrupted_tool_run_still_debits_its_finished_pass(final_usage):
         "context_tokens": 1000,
         "cached_tokens": 0,
     }
-    events = [("chunk", pass_end)]
+    events = [
+        (
+            "chunk",
+            {**pass_end, "prompt_tokens": 700, "completion_tokens": 50, "context_tokens": 750},
+        ),
+        ("chunk", pass_end),
+    ]
     if final_usage:
         events.append(
             (
@@ -437,7 +468,8 @@ def test_an_interrupted_tool_run_still_debits_its_finished_pass(final_usage):
     runs.append_events("run", token, events)
     runs.finish_run("run", worker_token = token, status = "completed" if final_usage else "cancelled")
     _enable(limit = 100)
-    assert _pools()["combined"]["used"] == (1250 if final_usage else 1000)
+    # Interrupted: the last prompt plus both passes' completions, as the final frame would report.
+    assert _pools()["combined"]["used"] == (1250 if final_usage else 900 + 50 + 100)
 
 
 @pytest.mark.parametrize("via_api_key", [False, True])

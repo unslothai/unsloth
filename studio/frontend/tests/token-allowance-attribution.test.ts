@@ -30,10 +30,10 @@ test("live, final and failed replies all carry the provider stamp", () => {
   assert.match(final, /tokenUsageProvider,/);
 });
 
-test("cumulative timings name the continued reply's count so it is not charged twice", () => {
+test("live, final and failed counts name the continued reply's tokens so they are not charged twice", () => {
   assert.equal(
     ADAPTER.match(/tokenUsagePriorCount: priorTiming\?\.tokenCount,/g)?.length,
-    2,
+    3,
   );
 });
 

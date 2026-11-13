@@ -5939,6 +5939,7 @@ export function createOpenAIStreamAdapter(
       const liveCustom = () => ({
         tokenUsageParentId: continuation?.sourceMessageId,
         tokenUsageProvider,
+        tokenUsagePriorCount: priorTiming?.tokenCount,
         ...reasoningDurationTracker.metadata(),
         resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
         openaiCodexReasoning: codexReasoningLedger,

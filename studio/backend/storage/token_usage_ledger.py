@@ -23,8 +23,12 @@ def _usage_columns(row: str) -> str:
     )
     usage_completion = _count(row, "$.contextUsage.completionTokens")
     server_completion = _count(row, "$.serverTimings.predicted_n")
+    # Live snapshots carry only resumeTiming; both counts include the continued reply's tokens.
+    saved_count = _count(row, "$.timing.tokenCount")
+    live_count = _count(row, "$.resumeTiming.tokenCount")
     timing_completion = (
-        f"MAX({_count(row, '$.timing.tokenCount')} - {_count(row, '$.tokenUsagePriorCount')}, 0)"
+        f"MAX((CASE WHEN {saved_count} > 0 THEN {saved_count} ELSE {live_count} END)"
+        f" - {_count(row, '$.tokenUsagePriorCount')}, 0)"
     )
     return f"""
         CASE WHEN {usage_prompt} > 0 THEN {usage_prompt} ELSE {server_prompt} END AS prompt_tokens,
@@ -158,8 +162,23 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
 
 def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None:
     metadata = {}
-    # A tool-loop pass reports its usage before an approval wait the run may never leave.
-    usage = chunk if chunk.get("type") == "context_usage" else chunk.get("usage")
+    usage = chunk.get("usage")
+    if chunk.get("type") == "context_usage":
+        # A pass reports before an approval wait the run may never leave; debit what the final
+        # frame would: this prompt plus every pass's completion.
+        (completion,) = conn.execute(
+            """SELECT COALESCE(SUM(CAST(json_extract(payload_json, '$.completion_tokens') AS INTEGER)), 0)
+               FROM chat_generation_events WHERE run_id = ? AND event_type = 'chunk'
+               AND json_extract(payload_json, '$.type') = 'context_usage'""",
+            (run_id,),
+        ).fetchone()
+        prompt = chunk.get("prompt_tokens") or 0
+        usage = {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+            "context_tokens": chunk.get("context_tokens"),
+        }
     if isinstance(usage, dict):
         metadata["contextUsage"] = {
             camel: usage.get(snake, 0)
