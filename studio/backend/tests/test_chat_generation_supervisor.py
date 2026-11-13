@@ -767,6 +767,30 @@ async def test_event_batch_flushes_while_upstream_is_idle(durable_run, monkeypat
     await task
 
 
+@pytest.mark.asyncio
+async def test_multibyte_text_split_across_stream_pieces_stays_intact(durable_run, monkeypatch):
+    chunk = {"choices": [{"delta": {"content": "h\u00e9llo \u4e16\u754c"}}]}
+    line = f"data: {json.dumps(chunk, ensure_ascii = False)}\n\n".encode("utf-8")
+    cut_a = line.index("é".encode()) + 1  # inside the two-byte é
+    cut_b = line.index("\u4e16".encode()) + 1  # inside the three-byte char
+
+    async def body():
+        yield line[:cut_a]
+        yield line[cut_a:cut_b]
+        yield line[cut_b:]
+        yield b"data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+    stored = [e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"]
+    assert stored == [chunk]
+    assert runs_db.get_run("run-1", "alice")["status"] == "completed"
+
+
 def test_event_flush_interval_is_one_display_frame():
     assert _EVENT_FLUSH_SECONDS <= 1 / 60
 

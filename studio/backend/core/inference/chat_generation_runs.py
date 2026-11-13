@@ -18,6 +18,7 @@ from typing import Any, AsyncIterator, Iterator
 from starlette.requests import Request
 
 from core.inference.llama_keepwarm import InferenceActivityReservation
+from core.inference.sse import SSEDecoder
 from core.training.account_jobs import sweepable_job_accounts
 from utils.account_context import current_account_id, run_as
 from utils.first_token_timeout import FirstTokenWait, track_first_token_wait
@@ -43,23 +44,6 @@ _MAX_ADMISSION_INTERVAL_SECONDS = 24.0 * 60.0 * 60.0
 _LEASE_TIMEOUT_SECONDS = 1200.0
 _LEASE_SWEEP_INTERVAL_SECONDS = 60.0
 _LEASE_ERROR = "Generation stopped making progress"
-
-
-class _SSEDecoder:
-    def __init__(self) -> None:
-        self.buffer = ""
-
-    def feed(self, text: str) -> list[str]:
-        self.buffer += text.replace("\r\n", "\n")
-        values: list[str] = []
-        while "\n\n" in self.buffer:
-            block, self.buffer = self.buffer.split("\n\n", 1)
-            data = "\n".join(
-                line[5:].lstrip() for line in block.splitlines() if line.startswith("data:")
-            )
-            if data:
-                values.append(data)
-        return values
 
 
 def _background_request(
@@ -753,7 +737,7 @@ class ChatGenerationSupervisor:
             iterator = getattr(response, "body_iterator", None)
             if iterator is None:
                 raise RuntimeError("Local generation did not return an event stream")
-            decoder = _SSEDecoder()
+            decoder = SSEDecoder()
             last_keepalive = time.monotonic()
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
@@ -805,8 +789,8 @@ class ChatGenerationSupervisor:
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s
                         await self._try_touch_progress(run_id)
-                for encoded in decoder.feed(text):
-                    if encoded == "[DONE]":
+                for encoded in decoder.feed(raw):
+                    if encoded.strip() == "[DONE]":
                         saw_done = True
                         break
                     try:
@@ -821,6 +805,24 @@ class ChatGenerationSupervisor:
                     quote_cut = quote_cut or chunk.get("quote_cut") is True
                 if saw_done:
                     break
+
+            # A stream truncated mid-event still gets its last event before the run is judged;
+            # after [DONE] nothing else counts, terminated or not.
+            if not saw_done:
+                for encoded in decoder.flush():
+                    if encoded.strip() == "[DONE]":
+                        saw_done = True
+                        break
+                    try:
+                        chunk = json.loads(encoded)
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    pending.append(("chunk", chunk, db.now_ms()))
+                    finish_reason = _chunk_finish_reason(chunk) or finish_reason
+                    error = _chunk_error(chunk) or error
+                    quote_cut = quote_cut or chunk.get("quote_cut") is True
 
             failure = await settle_write()
             if held_cancel is not None:

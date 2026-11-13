@@ -176,6 +176,7 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.sse import SSELineDecoder, iter_sse_lines
 from core.inference import model_slots
 from core.inference.llama_cpp import (
     _TERMINAL_RETIREMENT_HOOKS,
@@ -7933,24 +7934,20 @@ def _monitor_anthropic_response(
 
     async def _monitored_body():
         terminal = False
+        decoder = SSELineDecoder()
+
+        def _watch(line: str) -> None:
+            nonlocal terminal
+            if _monitor_anthropic_sse_line(monitor_id, line.strip(), context_length) == "error":
+                terminal = True
+
         try:
             async for chunk in body_iterator:
-                text = (
-                    chunk.decode("utf-8", errors = "ignore")
-                    if isinstance(chunk, (bytes, bytearray))
-                    else str(chunk)
-                )
-                for line in text.splitlines():
-                    if (
-                        _monitor_anthropic_sse_line(
-                            monitor_id,
-                            line.strip(),
-                            context_length,
-                        )
-                        == "error"
-                    ):
-                        terminal = True
+                for line in decoder.feed(chunk):
+                    _watch(line)
                 yield chunk
+            for line in decoder.flush():
+                _watch(line)
             if not terminal:
                 api_monitor.finish(
                     monitor_id,
@@ -30566,14 +30563,16 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
 
     async def _lines():
         body = response.body_iterator
+        lines = iter_sse_lines(body)
         try:
-            async for piece in body:
-                text = piece.decode("utf-8") if isinstance(piece, bytes) else piece
-                for line in text.split("\n"):
-                    if line.strip():
-                        yield line
+            async for line in lines:
+                if line.strip():
+                    yield line
         finally:
-            await body.aclose()
+            try:
+                await lines.aclose()
+            finally:
+                await body.aclose()
 
     if wants_stream:
 
@@ -31241,20 +31240,22 @@ def _restore_connection_tool_extras(subject: Optional[str], messages: Any) -> No
 
 async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
     recorder = _ConnectionExtrasRecorder(subject)
-    pending = ""
+    decoder = SSELineDecoder()
+
+    def _record(line: str) -> None:
+        if line.startswith("data:") and ('"tool_calls"' in line or '"extra_content"' in line):
+            try:
+                recorder.chunk(json.loads(line[5:]))
+            except ValueError:
+                pass
+
     try:
         async for chunk in chunks:
             yield chunk
-            pending += chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
-            *complete, pending = pending.split("\n")
-            for line in complete:
-                if line.startswith("data:") and (
-                    '"tool_calls"' in line or '"extra_content"' in line
-                ):
-                    try:
-                        recorder.chunk(json.loads(line[5:]))
-                    except ValueError:
-                        pass
+            for line in decoder.feed(chunk):
+                _record(line)
+        for line in decoder.flush():
+            _record(line)
     finally:
         await chunks.aclose()
 
@@ -31337,7 +31338,13 @@ async def _collect_chat_completion(lines, model: str):
             break
         if not data:
             continue
-        chunk = json.loads(data)
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            logger.warning("chat connection stream dropped an unparsable data line")
+            continue
+        if not isinstance(chunk, dict):
+            continue
         error = chunk.get("error")
         if error:
             message = error.get("message") if isinstance(error, dict) else str(error)
@@ -41145,21 +41152,25 @@ class _InProcessChatStream:
     async def chunks(self):
         """Each chat chunk as a dict, or ``_LLAMA_STREAM_KEEPALIVE`` for a stall keepalive."""
         self._started = True
-        async for raw in self._iterator:
-            text = raw.decode() if isinstance(raw, bytes) else raw
-            for line in text.split("\n"):
+        lines = iter_sse_lines(self._iterator)
+        try:
+            async for line in lines:
                 if line.startswith(":"):
                     yield _LLAMA_STREAM_KEEPALIVE
                     continue
-                if not line.startswith("data: "):
+                if not line.startswith("data:"):
                     continue
-                data = line[6:]
+                data = line[5:]
+                if data.startswith(" "):
+                    data = data[1:]
                 if data.strip() == "[DONE]":
                     return
                 try:
                     yield json.loads(data)
                 except json.JSONDecodeError:
                     continue
+        finally:
+            await lines.aclose()
 
     async def next_chunk(self, chunks):
         """The next of ``chunks``, or None at its end, a Stop the source raised included."""
@@ -41269,17 +41280,16 @@ async def _responses_in_process_stream(
 
 
 async def _sse_data_lines(chunks):
-    pending = ""
+    # Forwards every reframed line (data, comments, blanks); this wrapper owns closing chunks.
+    lines = iter_sse_lines(chunks)
     try:
-        async for chunk in chunks:
-            pending += chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            *complete, pending = pending.split("\n")
-            for line in complete:
-                yield line
-        if pending:
-            yield pending
+        async for line in lines:
+            yield line
     finally:
-        await chunks.aclose()
+        try:
+            await lines.aclose()
+        finally:
+            await chunks.aclose()
 
 
 async def _responses_stream(
@@ -41601,6 +41611,8 @@ async def _responses_stream(
                     chunk_data = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(chunk_data, dict):
+                    continue
                 for event in translator.feed(chunk_data):
                     yield event
                 if translator.terminated:
@@ -41896,7 +41908,12 @@ async def _responses_from_stream(response: StreamingResponse, payload: Responses
     terminal = None
     async for line in _sse_data_lines(response.body_iterator):
         if line.startswith("data:"):
-            event = json.loads(line[5:])
+            try:
+                event = json.loads(line[5:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
             if event.get("type") in (
                 "response.completed",
                 "response.incomplete",
@@ -43594,7 +43611,12 @@ async def _anthropic_events_from_openai_sse(
                 break
             if not data:
                 continue
-            parsed = json.loads(data)
+            try:
+                parsed = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
             if parsed.get("error"):
                 yield _anthropic_connection_error_event(parsed["error"])
                 return
@@ -46496,14 +46518,16 @@ async def _anthropic_passthrough_stream(
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
-                if not raw_line or not raw_line.startswith("data: "):
+                if not raw_line or not raw_line.startswith("data:"):
                     continue
-                data_str = raw_line[6:]
+                data_str = raw_line[5:]
                 if data_str.strip() == "[DONE]":
                     break
                 try:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(chunk, dict):
                     continue
                 lines, failed = _anthropic_passthrough_chunk_lines(
                     emitter, chunk, request, disable_parallel_tool_use

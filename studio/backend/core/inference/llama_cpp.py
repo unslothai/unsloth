@@ -37282,9 +37282,9 @@ class LlamaCppBackend:
                 line, pending = pending.split("\n", 1)
                 data = None
                 stripped = line.strip()
-                if stripped.startswith("data: ") and stripped != "data: [DONE]":
+                if stripped.startswith("data:") and stripped[5:].strip() != "[DONE]":
                     try:
-                        data = json.loads(stripped[6:])
+                        data = json.loads(stripped[5:])
                     except json.JSONDecodeError:
                         pass
                 if is_tool_parse_rejection(data):
@@ -38293,11 +38293,13 @@ class LlamaCppBackend:
                                     yield cumulative
                             _stream_done = True
                             break  # exit inner while
-                        if not line.startswith("data: "):
+                        if not line.startswith("data:"):
                             continue
 
                         try:
-                            data = json.loads(line[6:])
+                            data = json.loads(line[5:])
+                            if not isinstance(data, dict):
+                                continue
                             _report_live_llama_timings(perf_callback, data)
                             # Diffusion frame from the shim: forward untouched, never into content.
                             if data.get("type") == "diffusion_frame":
@@ -39482,11 +39484,13 @@ class LlamaCppBackend:
                                             }
                                 _stream_done = True
                                 break  # exit inner while
-                            if not line.startswith("data: "):
+                            if not line.startswith("data:"):
                                 continue
 
                             try:
-                                chunk_data = json.loads(line[6:])
+                                chunk_data = json.loads(line[5:])
+                                if not isinstance(chunk_data, dict):
+                                    continue
                                 if on_decode_slot is not None:
                                     slot = self.decode_slot_from_chunk(chunk_data)
                                     if slot is not None:
@@ -42101,11 +42105,13 @@ class LlamaCppBackend:
                                         yield {"type": "content", "text": cumulative}
                                 _stream_done = True
                                 break  # exit inner while
-                            if not line.startswith("data: "):
+                            if not line.startswith("data:"):
                                 continue
 
                             try:
-                                chunk_data = json.loads(line[6:])
+                                chunk_data = json.loads(line[5:])
+                                if not isinstance(chunk_data, dict):
+                                    continue
 
                                 _report_live_llama_timings(perf_callback, chunk_data)
                                 # Capture server timings/usage from final chunks.

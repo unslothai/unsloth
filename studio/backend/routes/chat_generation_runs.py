@@ -497,7 +497,7 @@ async def chat_generation_events(
                 return
             if not events:
                 # Carries the progress stamp so followers can detect a wedged run; comment framing keeps
-                # _SSEDecoder ignoring it.
+                # the producer's SSEDecoder ignoring it.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
     async def stream_while_attended():
