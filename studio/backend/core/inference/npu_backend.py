@@ -169,7 +169,6 @@ class NpuResident:
     requested_context_length: Optional[int]
     base_url: str
     api_key: str
-    # Largest context free RAM held at load time; None when it could not be priced.
     fitted_context_length: Optional[int] = None
 
     @property
@@ -760,8 +759,7 @@ class LemonadeNpuBackend:
                 if not model.downloaded:
                     raise NpuError(f"{model.id} is not downloaded yet.")
                 files = self._model_files(model.checkpoint, self._flm_binary())
-                # Release the resident weights, active KV and any populated prefix slots
-                # before taking the free-RAM sample. unload() also handles a failed unload.
+                # Unload first so the free-RAM sample excludes the old weights and caches.
                 if self._loaded is not None:
                     replaced = True
                     self.unload()

@@ -32,8 +32,7 @@ HOST_RAM_HEADROOM_MIB = 2048
 CONTEXT_STEP = 1024
 # FastFlowLM keeps K and V in bf16, for full-attention layers only.
 _KV_BYTES = 2
-# flm serve's --prefix-slots and --prefix-cache-mb defaults (FastFlowLM 1.0.12); lemond sets neither.
-# Each slot saves up to a context's worth of KV rows in host RAM.
+# flm serve's --prefix-slots / --prefix-cache-mb defaults (FastFlowLM 1.0.12), host RAM; lemond sets neither.
 _PREFIX_SLOTS = 8
 _PREFIX_CACHE_MIB = 4096
 # Recurrent layers in hybrid models (Qwen3.5/3.6 linear attention, LFM2 conv) keep no KV.

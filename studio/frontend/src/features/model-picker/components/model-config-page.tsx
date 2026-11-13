@@ -507,7 +507,6 @@ function MaxSeqLengthSetting({
   pinned?: boolean;
   fittedToMemory?: boolean;
   windowUnknown?: boolean;
-  /** Shown while the window is unknown, e.g. "Auto" until a load sizes it. */
   unknownLabel?: string;
   hint?: string;
 }) {
