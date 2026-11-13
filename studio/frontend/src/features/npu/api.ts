@@ -110,7 +110,6 @@ export function npuCapabilities(model: NpuModel): NpuCapability[] {
   return out;
 }
 
-/** "32K context", or null when the server did not report one. */
 export function npuContextLabel(tokens: number | null): string | null {
   if (tokens == null || tokens <= 0) return null;
   return tokens >= 1024 && tokens % 1024 === 0
