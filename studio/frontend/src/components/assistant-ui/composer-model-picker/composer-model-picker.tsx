@@ -42,6 +42,7 @@ import {
 } from "@/features/chat/external-providers";
 import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
 import {} from "@/features/chat/model-catalog";
+import { providerLogoPath } from "@/features/chat/provider-logo-path";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
@@ -260,6 +261,16 @@ const MAKER_PREFIX = "maker:";
 const MAKER_TAB_MIN_MODELS = 3;
 const EXPANDED_KEY = "unsloth_composer_picker_expanded";
 const TAB_KEY = "unsloth_composer_picker_tab";
+const TAB_ORDER_KEY = "unsloth_composer_picker_tab_order";
+
+function readTabOrder(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TAB_ORDER_KEY) ?? "[]");
+    return Array.isArray(raw) ? raw.filter((v) => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 function readExpanded(): boolean {
   try {
@@ -574,11 +585,12 @@ function opticalStyle(id: string | undefined): CSSProperties | undefined {
   return k ? { scale: String(k) } : undefined;
 }
 
-function providerLogo(providerType: string): ReactNode {
+function providerLogo(providerType: string, name?: string): ReactNode {
   return (
     <span className="flex shrink-0" style={opticalStyle(providerType)}>
       <ApiProviderLogo
         providerType={providerType}
+        name={name}
         className="size-[calc(15px*var(--ui-space-scale,1))]"
       />
     </span>
@@ -631,7 +643,7 @@ function MakerMark({
 function RowMark({
   row,
 }: {
-  row?: Pick<Row, "kind" | "providerType"> & {
+  row?: Pick<Row, "kind" | "providerType" | "providerName"> & {
     id?: string;
     lora?: LoraModelOption;
   };
@@ -662,7 +674,11 @@ function RowMark({
   if (row?.kind === "external") {
     return row.providerType ? (
       <span className="flex shrink-0" style={opticalStyle(row.providerType)}>
-        <ApiProviderLogo providerType={row.providerType} className={size} />
+        <ApiProviderLogo
+          providerType={row.providerType}
+          name={row.providerName}
+          className={size}
+        />
       </span>
     ) : (
       <HugeiconsIcon icon={CloudIcon} strokeWidth={1.75} className={size} />
@@ -683,17 +699,34 @@ interface SourceTab {
   icon: ReactNode;
   /** A coloured logo: faded, not greyed, while not shown. */
   brand?: boolean;
+  /** Maker and connection tabs: draggable, past the pinned four. */
+  movable?: boolean;
+  logo?: string;
+  /** A connection whose logo another tab also wears. */
+  cloudBadge?: boolean;
 }
 
 function TabButton({
   tab,
   shown,
   onSelect,
+  dragging,
+  onDragTab,
+  drop,
+  onDropTarget,
+  onDropTab,
 }: {
   tab: SourceTab;
   shown: boolean;
   onSelect: () => void;
+  dragging: string | null;
+  onDragTab: (value: string | null) => void;
+  drop: TabDrop | null;
+  onDropTarget: (drop: TabDrop | null) => void;
+  onDropTab: (from: string, to: TabDrop) => void;
 }) {
+  const accepts = Boolean(tab.movable && dragging && dragging !== tab.value);
+  const edge = drop?.value === tab.value ? drop.edge : null;
   return (
     <Hint label={tab.label}>
       <button
@@ -702,10 +735,47 @@ function TabButton({
         aria-selected={shown}
         aria-label={tab.label}
         onClick={onSelect}
+        draggable={tab.movable}
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", tab.value);
+          onDragTab(tab.value);
+        }}
+        onDragEnd={() => {
+          onDragTab(null);
+          onDropTarget(null);
+        }}
+        onDragOver={(event) => {
+          if (!accepts) {
+            return;
+          }
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          const box = event.currentTarget.getBoundingClientRect();
+          onDropTarget({
+            value: tab.value,
+            edge: event.clientX < box.left + box.width / 2 ? "before" : "after",
+          });
+        }}
+        onDragLeave={() => {
+          if (edge) {
+            onDropTarget(null);
+          }
+        }}
+        onDrop={(event) => {
+          if (accepts && dragging && edge) {
+            event.preventDefault();
+            onDropTab(dragging, { value: tab.value, edge });
+          }
+          onDragTab(null);
+          onDropTarget(null);
+        }}
         className={cn(
           // Sized to the icon: outline glyphs run narrower than logos, so fixed boxes spaced them unevenly.
           "group/tab relative grid h-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center px-[calc(7.5px*var(--ui-space-scale,1))] transition-colors hover:text-foreground",
           shown ? "text-foreground" : "text-muted-foreground",
+          dragging === tab.value && "opacity-40",
+          edge && TAB_DROP_CUE[edge],
         )}
       >
         {tab.brand ? (
@@ -716,6 +786,13 @@ function TabButton({
             )}
           >
             {tab.icon}
+            {tab.cloudBadge ? (
+              <HugeiconsIcon
+                icon={CloudIcon}
+                strokeWidth={1.5}
+                className="absolute right-[calc(3.25px*var(--ui-space-scale,1))] bottom-[calc(6px*var(--ui-space-scale,1))] size-[calc(10px*var(--ui-space-scale,1))] text-muted-foreground [&_path]:fill-popover dark:[&_path]:fill-card"
+              />
+            ) : null}
           </span>
         ) : (
           tab.icon
@@ -789,6 +866,14 @@ const FAVORITE_DROP_CUE = {
   top: `${FAVORITE_DROP_CUE_BASE} before:top-0`,
   bottom: `${FAVORITE_DROP_CUE_BASE} before:bottom-0`,
 } as const;
+// The favorites' drop line, stood upright between tabs.
+const TAB_DROP_CUE_BASE =
+  "before:pointer-events-none before:absolute before:inset-y-[calc(6px*var(--ui-space-scale,1))] before:z-10 before:w-0 before:border-l-[1.5px] before:border-primary before:content-['']";
+const TAB_DROP_CUE = {
+  before: `${TAB_DROP_CUE_BASE} before:left-0`,
+  after: `${TAB_DROP_CUE_BASE} before:right-0`,
+} as const;
+type TabDrop = { value: string; edge: keyof typeof TAB_DROP_CUE };
 
 const CURRENT_ROW_BG =
   "bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] hover:bg-[color-mix(in_oklab,var(--sidebar-accent),black_2.5%)] dark:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)] dark:hover:bg-[color-mix(in_oklab,var(--sidebar-accent),white_5%)]";
@@ -2125,6 +2210,8 @@ export function ComposerModelPicker({
         value: `${MAKER_PREFIX}${maker.id}`,
         label: maker.name,
         brand: true,
+        movable: true,
+        logo: maker.logoPath,
         // Solid marks read larger than the outline glyphs at one size, so tabs draw them at 15px.
         icon: (
           <MakerMark
@@ -2137,6 +2224,9 @@ export function ComposerModelPicker({
     return out;
   }, [rows]);
 
+  const [tabOrder, setTabOrder] = useState(readTabOrder);
+  const [draggingTab, setDraggingTab] = useState<string | null>(null);
+  const [tabDrop, setTabDrop] = useState<TabDrop | null>(null);
   const tabs = useMemo<SourceTab[]>(() => {
     // Scaled (not resized, which would move the tab gaps) to a little under the logos' 15px of ink.
     const glyph = (icon: typeof StarIcon, scale: string) => (
@@ -2155,19 +2245,19 @@ export function ComposerModelPicker({
       {
         value: RECOMMENDED_TAB,
         label: "Discover models",
-        icon: glyph(Navigation05Icon, "scale-[1.08]"),
+        icon: glyph(Navigation05Icon, "scale-[1.1]"),
       },
       {
         value: DEVICE_TAB,
         label: "On Device",
-        icon: glyph(Download01Icon, "scale-[1.15]"),
+        icon: glyph(Download01Icon, "scale-[1.21]"),
       },
       ...(connectionsOn || (externalModels?.length ?? 0) > 0
         ? [
             {
               value: CONNECTED_TAB,
               label: "Connected models",
-              icon: glyph(CloudIcon, "scale-[1.1]"),
+              icon: glyph(CloudIcon, "scale-[1.2]"),
             },
           ]
         : []),
@@ -2183,11 +2273,63 @@ export function ComposerModelPicker({
         value: `${EXT_PREFIX}${m.providerId}`,
         label: m.providerName,
         brand: true,
-        icon: providerLogo(m.providerType),
+        movable: true,
+        logo: providerLogoPath(m.providerType),
+        icon: providerLogo(m.providerType, m.providerName),
       });
     }
-    return out;
-  }, [externalModels, makerTabs, connectionsOn]);
+    const logos = new Map<string, number>();
+    for (const t of out) {
+      if (t.logo) {
+        logos.set(t.logo, (logos.get(t.logo) ?? 0) + 1);
+      }
+    }
+    for (const t of out) {
+      if (
+        t.value.startsWith(EXT_PREFIX) &&
+        t.logo &&
+        (logos.get(t.logo) ?? 0) > 1
+      ) {
+        t.cloudBadge = true;
+        // The maker's own mark, so the pair match in size and differ only by the cloud.
+        const twin = out.find(
+          (m) => m.value.startsWith(MAKER_PREFIX) && m.logo === t.logo,
+        );
+        if (twin) {
+          t.icon = twin.icon;
+        }
+      }
+    }
+    const rank = new Map(tabOrder.map((value, index) => [value, index]));
+    const pinned = out.filter((t) => !t.movable);
+    const movable = out
+      .filter((t) => t.movable)
+      .map((t, index) => ({ t, index }))
+      .sort(
+        (a, b) =>
+          (rank.get(a.t.value) ?? Number.MAX_SAFE_INTEGER) -
+            (rank.get(b.t.value) ?? Number.MAX_SAFE_INTEGER) ||
+          a.index - b.index,
+      )
+      .map(({ t }) => t);
+    return [...pinned, ...movable];
+  }, [externalModels, makerTabs, connectionsOn, tabOrder]);
+  const moveTab = (from: string, to: TabDrop) => {
+    const order = tabs.filter((t) => t.movable).map((t) => t.value);
+    const at = order.indexOf(from);
+    if (at < 0 || !order.includes(to.value)) {
+      return;
+    }
+    order.splice(at, 1);
+    const target = order.indexOf(to.value) + (to.edge === "after" ? 1 : 0);
+    order.splice(target, 0, from);
+    setTabOrder(order);
+    try {
+      localStorage.setItem(TAB_ORDER_KEY, JSON.stringify(order));
+    } catch {
+      // Unavailable storage: the order holds for this session.
+    }
+  };
 
   const chosen = findChosenRow(rows, checkpoint);
   const chosenId = chosen?.id;
@@ -4829,6 +4971,11 @@ export function ComposerModelPicker({
                     tab={t}
                     shown={viewed === t.value}
                     onSelect={() => setTab(t.value)}
+                    dragging={draggingTab}
+                    onDragTab={setDraggingTab}
+                    drop={tabDrop}
+                    onDropTarget={setTabDrop}
+                    onDropTab={moveTab}
                   />
                 ))}
               </div>

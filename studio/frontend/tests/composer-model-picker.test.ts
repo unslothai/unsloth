@@ -965,6 +965,23 @@ test("a Discover GGUF lists every quant, so a cached partial is never picked alo
   );
 });
 
+test("maker and connection tabs reorder by drag; a connection sharing a logo wears a cloud", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // The pinned four never move; only movable tabs drag, and the order is saved.
+  assert.match(picker, /const pinned = out\.filter\(\(t\) => !t\.movable\);/);
+  assert.match(picker, /draggable=\{tab\.movable\}/);
+  assert.match(
+    picker,
+    /localStorage\.setItem\(TAB_ORDER_KEY, JSON\.stringify\(order\)\)/,
+  );
+  assert.match(
+    picker,
+    /t\.value\.startsWith\(EXT_PREFIX\) &&\s+t\.logo &&\s+\(logos\.get\(t\.logo\) \?\? 0\) > 1/,
+  );
+});
+
 test("an interrupted quant counts as a variant, so the row names no quant", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
