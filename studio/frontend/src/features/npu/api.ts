@@ -59,6 +59,9 @@ export interface NpuModel {
   supports_tools: boolean;
   max_context_length: number | null;
   resume_percent: number | null;
+  /** FastFlowLM's Hugging Face repo (owner/name) and revision; absent from older servers. */
+  hf_repo?: string | null;
+  hf_revision?: string | null;
 }
 
 export function npuRowsFor(
@@ -92,6 +95,27 @@ export function npuRuntimeLabel(
     if (version) parts.push(`${name} v${version.replace(/^v/, "")}`);
   }
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+export interface NpuCapability {
+  key: "vision" | "reasoning" | "tools";
+  label: string;
+}
+
+export function npuCapabilities(model: NpuModel): NpuCapability[] {
+  const out: NpuCapability[] = [];
+  if (model.supports_vision) out.push({ key: "vision", label: "Vision" });
+  if (model.supports_reasoning)
+    out.push({ key: "reasoning", label: "Reasoning" });
+  if (model.supports_tools) out.push({ key: "tools", label: "Tools" });
+  return out;
+}
+
+export function npuContextLabel(tokens: number | null): string | null {
+  if (tokens == null || tokens <= 0) return null;
+  return tokens >= 1024 && tokens % 1024 === 0
+    ? `${tokens / 1024}K context`
+    : `${tokens.toLocaleString("en-US")} context`;
 }
 
 export function npuSizeLabel(sizeGb: number | null): string | null {
