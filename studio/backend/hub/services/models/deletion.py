@@ -435,15 +435,19 @@ def _delete_gguf_variant_from_repos(
 
         companion_matches: list[tuple[Path, Optional[Path], str]] = []
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
+            from core.inference.engram_tables import engram_table_precision
             companion_matches = _repo_file_matches(
                 target_repo,
-                # no main GGUF remains, so its companions cannot be launched.
-                lambda name: _is_gguf_filename(name)
-                and (
-                    _is_mmproj_filename(name)
-                    or _is_reclaimable_drafter_path(name)
-                    or _is_imatrix_filename(name)
-                ),
+                # no main GGUF remains, so its companions and Engram tables cannot be launched.
+                lambda name: (
+                    _is_gguf_filename(name)
+                    and (
+                        _is_mmproj_filename(name)
+                        or _is_reclaimable_drafter_path(name)
+                        or _is_imatrix_filename(name)
+                    )
+                )
+                or engram_table_precision(name) is not None,
             )
             for snap, _blob, name in companion_matches:
                 try:
@@ -514,11 +518,18 @@ def _delete_gguf_variant_from_repos(
     if cleanup_variant is None:
         incomplete_result = gguf_variants.VariantIncompleteDeleteResult(deleted = 0, unresolved = False)
     else:
+        # A --ple download's partial standalone table: its hash is in the job's manifest only.
+        from core.inference.engram_tables import engram_table_precision
+        table_hashes = {
+            expected.sha256
+            for expected in (manifest.expected_files if manifest is not None else ())
+            if expected.sha256 and engram_table_precision(expected.path) and not sibling_active
+        }
         incomplete_result = gguf_variants.delete_variant_incomplete_blobs_result(
             repo_id,
             cleanup_variant,
             hf_token,
-            extra_hashes = frozenset(completed_hashes),
+            extra_hashes = frozenset(completed_hashes | table_hashes),
             companions = not sibling_active,
             root = root,
         )

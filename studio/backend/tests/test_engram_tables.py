@@ -657,9 +657,7 @@ class TestManualQaFindings:
             download_registry, "download_transport_unavailable_reason", lambda t: None
         )
         monkeypatch.setattr(download_registry, "_modelscope_is_source", lambda: False)
-        monkeypatch.setattr(
-            lc, "_cached_hf_snapshot_file", lambda *a, **k: "/x" if cached else None
-        )
+        monkeypatch.setattr(lc, "_cached_engram_table_path", lambda *a: "/x" if cached else None)
         reason = lc._engram_table_unfetchable_reason(
             REPO, EngramTable("Q8_0", _table_name("Q8_0"), size)
         )
@@ -797,3 +795,64 @@ class TestCachedQuantLoads:
         monkeypatch.setattr(dm, "write_manifest", resumed)
         with pytest.raises(_Resumed if resumes else SystemExit):
             w._download_gguf_variant(REPO, "UD-IQ1_S", None, "http", engram_precision = requested)
+
+    def test_a_large_table_cached_in_a_remembered_root_is_not_refused(self, monkeypatch, tmp_path):
+        from core.inference.engram_tables import EngramTable
+        from hub.utils import download_registry
+        import huggingface_hub.constants as hf_constants
+
+        snap, _ = _swapped_snapshot(tmp_path, absent = 3)
+        size = 54_400_261_312
+        with open(_write(snap / _table_name("Q8_0"), b""), "ab") as f:
+            f.truncate(size)
+        monkeypatch.setattr(hf_constants, "HF_HUB_DISABLE_XET", True, raising = False)
+        monkeypatch.setattr(download_registry, "_modelscope_is_source", lambda: False)
+        monkeypatch.setattr(lc, "_cached_gguf_snapshots", lambda repo: [snap])
+        table = EngramTable("Q8_0", _table_name("Q8_0"), size)
+        assert lc._engram_table_unfetchable_reason(REPO, table) is None
+        assert lc._engram_table_unfetchable_reason(REPO, table.__class__("Q8_0", "x", size))
+
+    def test_a_resumed_plan_owns_its_standalone_table_like_a_shard(self):
+        from hub.utils.download_manifest import ExpectedFile
+        from hub.utils.gguf_plan import plan_from_expected_files
+
+        shard = "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"
+        plan = plan_from_expected_files(
+            "UD-IQ1_S",
+            [ExpectedFile(shard, 1, "a" * 64), ExpectedFile(_table_name("Q5_1"), 1, "b" * 64)],
+        )
+        assert plan.main_hashes == {"a" * 64, "b" * 64}
+
+    @pytest.mark.parametrize("last, reclaimed", [(True, True), (False, False)])
+    def test_deleting_the_last_quant_reclaims_its_standalone_table(self, tmp_path, last, reclaimed):
+        from hub.services.models.deletion import _delete_gguf_variant_from_repos
+        from test_mtp_drafter_companion import _cache_repo
+
+        names = ["M-UD-IQ1_S.gguf", "engram/M-engram-Q5_1.gguf_file"]
+        repo, snap = _cache_repo(tmp_path, REPO, names + ([] if last else ["M-Q8_0.gguf"]))
+        _delete_gguf_variant_from_repos(REPO, "UD-IQ1_S", [repo], None, root = tmp_path)
+        assert not (snap / names[0]).is_symlink()
+        assert (snap / names[1]).is_symlink() is not reclaimed
+
+    @pytest.mark.parametrize("sibling_active", [False, True])
+    def test_deleting_a_quant_drops_the_partial_table_its_job_left(
+        self, monkeypatch, tmp_path, sibling_active
+    ):
+        from hub.services.models import deletion, gguf_variants
+        from hub.utils import download_manifest as dm
+        from hub.utils.download_manifest import ExpectedFile
+        from test_mtp_drafter_companion import _cache_repo
+
+        table_hash = "c" * 64
+        repo, _ = _cache_repo(tmp_path, REPO, ["M-UD-IQ1_S.gguf"])
+        partial = repo.repo_path / "blobs" / f"{table_hash}.incomplete"
+        partial.write_bytes(b"x")
+        manifest = SimpleNamespace(
+            expected_files = [ExpectedFile(_table_name("Q8_0"), 1, table_hash)], commit_hash = None
+        )
+        monkeypatch.setattr(dm, "read_manifest", lambda *a, **k: manifest)
+        monkeypatch.setattr(gguf_variants, "gguf_variant_blob_hashes", lambda *a, **k: frozenset())
+        deletion._delete_gguf_variant_from_repos(
+            REPO, "UD-IQ1_S", [repo], None, root = tmp_path, sibling_active = sibling_active
+        )
+        assert partial.exists() is sibling_active

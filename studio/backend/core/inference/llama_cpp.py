@@ -4129,7 +4129,7 @@ def _engram_table_unfetchable_reason(hf_repo: str, table: EngramTable) -> Option
     is fixed at startup; HTTPS refuses a file over its size ceiling (50 GB)."""
     from hub.utils import download_registry
 
-    if _cached_hf_snapshot_file(hf_repo, table.filename, expected_size = table.size_bytes):
+    if _cached_engram_table_path(hf_repo, table):
         return None
     try:
         from huggingface_hub import constants as hf_constants
@@ -4150,6 +4150,18 @@ def _engram_table_unfetchable_reason(hf_repo: str, table: EngramTable) -> Option
         "off for this Studio (HF_HUB_DISABLE_XET, UNSLOTH_DISABLE_XET or UNSLOTH_STABLE_DOWNLOADS, "
         "or hf_xet is not installed). Turn Xet on, or pick a table under the limit."
     )
+
+
+def _cached_engram_table_path(hf_repo: str, table: EngramTable) -> Optional[str]:
+    """A whole cached copy of ``table`` in the snapshots _cached_engram_listing reads."""
+    for snapshot in _cached_gguf_snapshots(hf_repo):
+        path = snapshot.joinpath(*table.filename.split("/"))
+        try:
+            if path.stat().st_size == table.size_bytes:
+                return str(path)
+        except OSError:
+            continue
+    return None
 
 
 def _cached_engram_listing(hf_repo: str, split: list[str]) -> dict[str, int]:

@@ -583,7 +583,14 @@ def plan_from_expected_files(
     companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
     # companion_files also holds the MTP drafter, so keep an mmproj-only view for the manifest-resume fallback.
     mmproj_files = tuple(file for file in companion_files if is_mmproj_filename(file.path))
-    main_hashes = frozenset(file.sha256 for file in main_files if file.sha256)
+    from core.inference.engram_tables import engram_table_precision
+
+    # A standalone Engram table in a resumed --ple plan is one of its weights, as in with_engram.
+    main_hashes = frozenset(
+        file.sha256
+        for file in expected
+        if file.sha256 and (file in main_files or engram_table_precision(file.path))
+    )
     companion_hashes = frozenset(file.sha256 for file in companion_files if file.sha256)
     required_hashes = frozenset(file.sha256 for file in expected if file.sha256)
     main_size = sum(max(0, int(file.size or 0)) for file in main_files)
