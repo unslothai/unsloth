@@ -644,8 +644,9 @@ def test_forward_dispatches_the_raced_route(monkeypatch):
     assert calls == ["_int8"]
 
 
-def test_race_candidates_follow_the_card_decisions():
+def test_race_candidates_follow_the_card_decisions(monkeypatch):
     layer = _cpu_layer()
+    monkeypatch.setattr(layer, "_fused_covers", lambda x: True)
     x = torch.randn(32, 512, dtype = torch.bfloat16)
     names = lambda: [r for r, _ in layer._routes(x)]  # noqa: E731
     layer._tuned, layer._rotq, layer._fused_ok = True, True, True
@@ -699,3 +700,20 @@ def test_load_time_card_decision_arms_every_route(monkeypatch):
     monkeypatch.setattr(gi, "_rotq_on", lambda i: False)
     gi.decide_on_card(layer, 0)  # made once: a later call keeps the decision
     assert layer._rotq is True
+
+
+def test_fused_route_only_where_a_tile_covers_the_rows(monkeypatch):
+    layer = _cpu_layer()  # 6-bit, K = 512
+    layer._tuned, layer._rotq, layer._fused_ok = True, True, True
+    rule = (64, (64, 64, 128, 8, 4, 3, 2, 0), (6,))
+    monkeypatch.setitem(gi._FUSED, None, (rule,))  # a CPU tensor's device index
+    small = torch.randn(64, 512, dtype = torch.bfloat16)
+    big = torch.randn(65, 512, dtype = torch.bfloat16)
+    assert layer._fused_covers(small) and "fused" in [r for r, _ in layer._routes(small)]
+    assert not layer._fused_covers(big) and "fused" not in [r for r, _ in layer._routes(big)]
+    monkeypatch.setitem(
+        gi._FUSED, None, ((64, rule[1], (4,)),)
+    )  # a 4-bit-only rule skips a 6-bit layer
+    assert not layer._fused_covers(small)
+    monkeypatch.setitem(gi._FUSED, None, None)
+    assert not layer._fused_covers(small)

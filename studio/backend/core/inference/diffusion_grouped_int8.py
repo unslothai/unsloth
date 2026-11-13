@@ -820,11 +820,21 @@ def grouped_linear_class():
                 )
             return out.reshape(*x.shape[:-1], self.out_features)
 
+        def _fused_covers(self, x: Any) -> bool:
+            """The fused unpack GEMM has a measured tile for this row count / bit depth on this card (it decodes each
+            weight once per M tile, so it pays only at small batches; larger ones keep decode + the int8 GEMM)."""
+            try:
+                from .diffusion_grouped_int8_gemm import tile_for
+                rows = x.numel() // max(1, self.in_features)
+                return tile_for(_FUSED.get(x.device.index), rows, self.bits) is not None
+            except Exception:  # noqa: BLE001
+                return False
+
         def _routes(self, x: Any) -> tuple:
             """``(name, forward)`` candidates the race times here: the incumbents first, then the added routes."""
             routes = [("int8", self._int8), ("dense", self._dense)]
             if x.dtype == torch.bfloat16:
-                if self._fused_ok and self._rotq:
+                if self._fused_ok and self._rotq and self._fused_covers(x):
                     routes.append(("fused", self._fused))
                 if not self._tuned and self._rotq:
                     routes.append(("int8r", self._int8r))
@@ -965,6 +975,7 @@ def grouped_linear_class():
                         and x.dtype == torch.bfloat16
                         and self._fused_ok
                         and self._rotq
+                        and not torch.compiler.is_compiling()  # raced in eager only; a trace keeps the int8 route
                     ):
                         return self._fused(x)
                     if route == "int8r" and x.dtype == torch.bfloat16 and self._rotq:
