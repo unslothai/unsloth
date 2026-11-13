@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""NVIDIA inventory read from the driver's own libraries, for a host nvidia-smi cannot answer for.
-
-An absent, stale or hanging nvidia-smi read as a CPU host, which is fatal to the install.
-Ollama, Jan and lemonade ask NVML or the CUDA driver API instead, which ship with the driver.
-
-* NVML (`libnvidia-ml.so.1` / `nvml.dll`): the PHYSICAL inventory, unmasked like nvidia-smi;
-  the caller applies CUDA_VISIBLE_DEVICES.
-* the CUDA driver API (`libcuda.so.1` / `nvcuda.dll`): honours the mask; used when NVML is
-  unavailable.
-
-Always a child process with a deadline: these libraries block in-process in the states that
-hang nvidia-smi. Failing both, `/proc/driver/nvidia/version` names the driver, and the driver
-major bounds the CUDA major (13 needs R580+, 12 R525+, 11 R450+).
-"""
+"""NVIDIA inventory from driver libraries when nvidia-smi is absent or hangs. NVML gives physical
+devices (caller applies CUDA_VISIBLE_DEVICES); the CUDA driver API honours the mask. Always a
+child with a deadline; last resort /proc/driver/nvidia/version, whose major bounds the CUDA
+major."""
 
 from __future__ import annotations
 

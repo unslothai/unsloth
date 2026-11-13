@@ -1,36 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in speed optimisations for the local diffusion backend.
-
-Off by default, so the default render path stays bit-identical (the regression harness checks
-this). On opt-in it applies the near-lossless speedups in the diffusers-recommended order
-(channels_last + cudnn.benchmark -> compile, with TF32 / fused-QKV under "max"):
-
-  off     - nothing (default; bit-identical reference).
-  eager   - everything lossless EXCEPT torch.compile: channels_last VAE + cudnn.benchmark +
-            attention backend + the shared eager monkey-patches (fused RMSNorm / AdaLayerNorm
-            + per-arch addcmul, see diffusion_eager_patches.py / diffusion_arch_patches.py). The
-            fast first-image / casual path, no compile tax.
-  default - LIGHT compile. GGUF: compile ONLY the dequant op chain (~70-80% of eager GGUF time)
-            for ~1.24-1.64x at a small one-time compile (~7.5-10.4s), zero extra VRAM,
-            resolution-invariant; the block stays eager. Dense: no dequant, so falls back to
-            regional compile of the repeated block; a U-Net (SDXL, no repeated-block list) gets a
-            whole-module STATIC compile (1.61x at LPIPS 0.034, see ``_UNET_WHOLE_COMPILE``).
-  max     - FULL compile: regional max-autotune compile of the repeated block (fuses GGUF dequant
-            + matmul/norm/elementwise in one graph -- ~3.2x on GGUF Z-Image, PSNR ~36 dB, above
-            the Q4 noise floor) plus TF32 matmul and fused QKV.
-
-``default`` is the cheap always-amortising compile; ``max`` pays the larger regional tax for the
-bigger warm speedup. The compiled dequant is skipped under ``max``, which subsumes it.
-
-Knobs, safe unset: ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1`` (DiT VAE decode compile; ``auto`` = ``max`` only),
-and in their own modules ``UNSLOTH_NVFP4_FAST_BIAS``, ``_FAST_DISPATCH``, ``_ZERO_BUFFER`` and ``_BACKEND``.
-
-The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
-``restore_backend_flags`` let the caller restore prior values at unload, keeping a later ``off``
-load bit-identical. torch imported lazily.
-"""
+"""Opt-in speed modes off/eager/default/max (off by default); TF32 and cudnn.benchmark are process-
+wide, restore at unload; torch imported lazily"""
 
 from __future__ import annotations
 
@@ -44,6 +16,7 @@ from typing import Any, Callable, Iterator, Optional
 
 from . import diffusion_compile_config as compile_config
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
+from .diffusion_bg_compile import yield_point as _bg_yield_point
 from . import diffusion_gguf_compile as gguf_compile
 from .diffusion_autoopt import targets as _targets
 
@@ -219,6 +192,17 @@ def snapshot_backend_flags() -> Optional[dict]:
     return state
 
 
+def release_rocm_tunableop(pipe: Any) -> None:
+    """Unload: drop this pipe's TunableOp claim (process-global, so not in snapshot_backend_flags)."""
+    mod = sys.modules.get(f"{__package__}.diffusion_rocm_tunableop")
+    if mod is None or pipe is None:
+        return
+    try:
+        mod.release(pipe)
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def restore_backend_flags(state: Optional[dict]) -> None:
     """Restore the flags captured by ``snapshot_backend_flags``. No-op on None. Each flag is
     restored independently so one failure can't leak the others."""
@@ -377,10 +361,9 @@ def compile_eligible(
     family: Any,
     probe: bool = True,
 ) -> bool:
-    """Whether the denoiser's repeated block should be regionally compiled: CUDA (incl. ROCm) bf16, or fp16 on NVIDIA
-    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only.
-    ``probe=False`` never runs the allocating ROCm probe (preflight / status, before eviction): an unprobed install
-    counts as eligible, a recorded failure does not."""
+    """Whether the repeated block is regionally compiled: CUDA or ROCm bf16, or fp16 on NVIDIA
+    sm_75+, compile-friendly family with inductor; probe=False never runs the ROCm probe,
+    unprobed counts eligible, a recorded failure does not."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -543,12 +526,28 @@ def apply_speed_optims(
             _warn(logger, "vae attention chunks", exc)
     # Stability, not speed, so also before the `off` return.
     _enable_miopen_immediate(logger)
+    if getattr(target, "backend", None) == "rocm":
+        try:
+            from . import diffusion_rocm_tunableop as rocm_tunableop
+            if mode == SPEED_OFF:
+                rocm_tunableop.uninstall(pipe)
+            else:
+                rocm_tunableop.install_for_pipe(pipe, getattr(target, "device", None), logger)
+        except Exception as exc:  # noqa: BLE001 - keep torch's default GEMM pick
+            _warn(logger, "rocm tunableop", exc)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
+        # Bit-identical, so "off" keeps it: torchao's eager int8 Linear is ~3x a bf16 one on sm_120.
+        if _install_eager_int8_gemm(
+            pipe, logger, offload_active = offload_active, denoiser_offloaded = denoiser_offloaded
+        ):
+            applied["int8_gemm_eager"] = True
         return applied
     if mode in (SPEED_DEFAULT, SPEED_MAX):
         _pin_compile_defaults()
+        if is_gguf:
+            _prepare_lowbit_iq_tables(pipe, target)
 
     if getattr(target, "backend", None) == "rocm":
         try:
@@ -659,9 +658,16 @@ def apply_speed_optims(
         except Exception:  # noqa: BLE001
             pass
 
+    if not applied["compiled"] and on_cuda:
+        # Keyed only when engaged, so a load with no int8 Linear reports what it did before.
+        if _install_eager_int8_gemm(
+            pipe, logger, offload_active = offload_active, denoiser_offloaded = denoiser_offloaded
+        ):
+            applied["int8_gemm_eager"] = True
+
+    if mode in (SPEED_DEFAULT, SPEED_MAX) and on_cuda and tf32_enabled():
+        applied["tf32"] = _enable_tf32(logger)
     if mode == SPEED_MAX:
-        if on_cuda:
-            applied["tf32"] = _enable_tf32(logger)
         applied["fused_qkv"] = _fuse_qkv(pipe, logger)
 
     # Deliberately NOT gated on applied["compiled"]: a launch-bound step survives the compile.
@@ -711,6 +717,93 @@ def apply_speed_optims(
     return applied
 
 
+def _install_eager_int8_gemm(
+    pipe: Any,
+    logger: Any = None,
+    *,
+    offload_active: bool,
+    denoiser_offloaded: Optional[bool],
+) -> bool:
+    """``install_eager`` on every uncompiled, non-moved denoiser; True when any engaged."""
+    if pipe is None:
+        return False
+    moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
+    if moved:
+        return False
+    try:
+        from .diffusion_int8_gemm import candidates, install_eager
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "int8 eager gemm", exc)
+        return False
+    engaged = False
+    for transformer in _denoiser_dits(pipe):
+        # a dense denoiser never imports the kernels
+        if bool(getattr(transformer, "_unsloth_int8_gemm", 0)) or not candidates(transformer):
+            continue
+        try:
+            n = install_eager(transformer, logger)
+            if n:
+                transformer._unsloth_int8_gemm = n
+                engaged = True
+        except Exception as exc:  # noqa: BLE001 - optimisation only, torchao's path stays
+            _warn(logger, "int8 eager gemm", exc)
+    return engaged
+
+
+def install_streamed_eager_int8_gemm(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+) -> bool:
+    """After placement: ``install_streamed_eager`` on every uncompiled int8 denoiser the pinned prefetcher streams
+    (it copies into the same parameters, so the call-time device check sees each onload); True when any engaged."""
+    if pipe is None or device is None:
+        return False
+    try:
+        from .diffusion_cfg_batch import compiled_denoiser
+        from .diffusion_int8_gemm import candidates, install_streamed_eager
+        from .diffusion_offload_prefetch import module_prefetcher
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "streamed int8 eager gemm", exc)
+        return False
+    engaged = False
+    for transformer in _denoiser_dits(pipe):
+        if (
+            bool(getattr(transformer, "_unsloth_int8_gemm", 0))
+            or module_prefetcher(transformer) is None
+            # a compiled block would trace the swapped forward (not the eager routes)
+            or compiled_denoiser(transformer) is not None
+            or not candidates(transformer)
+        ):
+            continue
+        try:
+            n = install_streamed_eager(transformer, device, logger)
+            if n:
+                transformer._unsloth_int8_gemm = n
+                engaged = True
+        except Exception as exc:  # noqa: BLE001 - optimisation only, torchao's path stays
+            _warn(logger, "streamed int8 eager gemm", exc)
+    return engaged
+
+
+def _prepare_lowbit_iq_tables(pipe: Any, target: Any) -> None:
+    """Low-bit IQ lookup tables on the execution device before compile, so a compiled block reads a device constant."""
+    device = getattr(target, "torch_device", None)
+    if not isinstance(device, str) or not device:
+        return
+    try:
+        from .diffusion_gguf_lowbit import prepare_lowbit_iq_tables
+
+        modules = list(_denoiser_dits(pipe))
+        unet = _denoiser_unet(pipe)
+        if unet is not None:
+            modules.append(unet)
+        if modules:
+            prepare_lowbit_iq_tables(device, *modules)
+    except Exception:  # noqa: BLE001 - optimisation only: the lookup still builds traceably
+        pass
+
+
 def _onload_device(target: Any) -> Optional[str]:
     """Onload device of an offloaded denoiser, else None. NVIDIA only: ROCm runs int8 weight-only, never this GEMM."""
     if getattr(target, "device", None) != "cuda" or getattr(target, "backend", "cuda") != "cuda":
@@ -738,6 +831,20 @@ def arm_graphs_after_placement(
             pipe._unsloth_cuda_graphs = ()
             pipe._unsloth_cuda_graph_reason = "offload active"
             applied["cuda_graph"] = False
+            return applied
+        from .diffusion_cfg_batch import cfg_pair_decline  # noqa: PLC0415 - import cycle
+
+        if cfg_pair_decline(pipe, graphs = False) is None:
+            cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+            pipe._unsloth_cuda_graphs = ()
+            pipe._unsloth_cuda_graph_after_placement = False
+            pipe._unsloth_cuda_graph_reason = "guidance branches pair per streamed block"
+            applied["cuda_graph"] = False
+            if logger is not None:
+                logger.info(
+                    "diffusion.cuda_graph: off for this load (both guidance branches share each streamed "
+                    "block's upload instead)"
+                )
             return applied
         handles, reason = cuda_graph.arm_after_placement(pipe, logger = logger)
         pipe._unsloth_cuda_graph_after_placement = False
@@ -1008,6 +1115,43 @@ def _denoiser_unet(pipe: Any) -> Any:
     return None
 
 
+def fused_qkv_added_bytes(pipe: Any) -> int:
+    """Device bytes the default tier's U-Net QKV fuse adds. diffusers' ``fuse_projections`` builds ``to_qkv`` /
+    ``to_kv`` beside the ``to_q`` / ``to_k`` / ``to_v`` it keeps, so a U-Net that moves whole (model offload) or stays
+    resident carries both (SDXL: 4897 MiB grows to 6132 MiB). 0 when the tier would not fuse."""
+    unet = _denoiser_unet(pipe)
+    if unet is None:
+        return 0
+    try:
+        import torch
+
+        if _quantised_projections(pipe) or _layerwise_cast_projections(pipe):
+            return 0
+        if unfused_projections_will_drop(unet):
+            return 0  # the fused weights replace the projections they were built from
+        total = 0
+        for module in unet.modules():
+            if not callable(getattr(module, "fuse_projections", None)) or getattr(
+                module, "fused_projections", False
+            ):
+                continue
+            names = (
+                ("to_k", "to_v")
+                if getattr(module, "is_cross_attention", False)
+                else ("to_q", "to_k", "to_v")
+            )
+            if getattr(module, "add_q_proj", None) is not None:
+                names += ("add_q_proj", "add_k_proj", "add_v_proj")
+            for name in names:
+                linear = getattr(module, name, None)
+                for t in (getattr(linear, "weight", None), getattr(linear, "bias", None)):
+                    if isinstance(t, torch.Tensor):
+                        total += t.numel() * t.element_size()
+        return total
+    except Exception:  # noqa: BLE001 - unreadable: no extra bytes claimed
+        return 0
+
+
 def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     """Whether this load's compiled artifacts are per-(width, height, batch); the compile cache keys on it."""
     mode = normalize_speed_mode(speed_mode)
@@ -1034,10 +1178,10 @@ def _denoiser_dits(pipe: Any) -> list:
 def int8_gemm_live(pipe: Any, optims: Any) -> list:
     """``speed_optims`` with ``int8_gemm`` dropped once a deferred install's first-forward probe swapped nothing."""
     optims = list(optims or ())
-    if "int8_gemm" in optims and not any(
-        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
-    ):
-        optims.remove("int8_gemm")
+    live = any(bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe))
+    for key in ("int8_gemm", "int8_gemm_eager", "int8_gemm_streamed"):
+        if key in optims and not live:
+            optims.remove(key)
     return optims
 
 
@@ -1177,15 +1321,18 @@ def _compile_repeated_blocks(
     try:
         from . import diffusion_aot_cache
         diffusion_aot_cache.install(logger)
+        diffusion_aot_cache.pin_autotune_key(logger)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
-        # Whole-module U-Net compile: dynamic always False, so each new (height, width, batch) recompiles.
+        # dynamic always False, so each new (height, width, batch) recompiles.
         unet_kwargs: dict[str, Any] = {"fullgraph": kwargs["fullgraph"], "dynamic": False}
         if max_autotune:
             unet_kwargs["mode"] = "max-autotune-no-cudagraphs"
         if filter_reductions:
             pin_reduction_configs(unet_kwargs, logger)
+        if unet_compiles_regionally(unet, max_autotune = max_autotune):
+            return _compile_unet_blocks(unet, unet_kwargs, logger)
         try:
             unet.compile(**unet_kwargs)
             return True
@@ -1237,8 +1384,7 @@ def _compile_repeated_blocks(
                 )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
-        # Registered per-denoiser patches after the int8 GEMM swap (Qwen RoPE, Z-Image fused attention, Q2.1 ConvRot
-        # sharing, which reads the swap's leftovers).
+        # Patches run after the int8 GEMM swap; ConvRot sharing reads the swap's leftovers.
         _install_compile_patches(
             "pre_compile",
             transformer,
@@ -1286,6 +1432,70 @@ def _compile_repeated_blocks(
     return engaged
 
 
+def _unet_blocks(unet: Any) -> list:
+    names = set(_targets.UNET_REGIONAL_BLOCKS)
+    try:
+        return [m for m in unet.modules() if m is not unet and type(m).__name__ in names]
+    except Exception:  # noqa: BLE001 - not a torch module
+        return []
+
+
+def unet_compiles_regionally(unet: Any, *, max_autotune: bool = False) -> bool:
+    return (
+        unet is not None
+        and not max_autotune
+        and _targets.unet_regional_enabled()
+        and bool(_unet_blocks(unet))
+    )
+
+
+_UNET_RECOMPILE_LIMIT = 256
+
+
+def _compile_unet_blocks(unet: Any, unet_kwargs: dict[str, Any], logger: Any) -> bool:
+    """Compile each repeated U-Net block (guarded; the outer forward stays eager for the CUDA graph)."""
+    count = 0
+    try:
+        # One ResnetBlock2D forward serves ~14 graphs per (height, width, batch): 64 would stop at the 5th size.
+        import torch
+        dynamo_cfg = getattr(getattr(torch, "_dynamo", None), "config", None)
+        for _limit_attr in ("recompile_limit", "cache_size_limit"):
+            if dynamo_cfg is not None and hasattr(dynamo_cfg, _limit_attr):
+                current = compile_config.get_knob(_DYNAMO_MODULE, _limit_attr) or 0
+                compile_config.set_knob(
+                    _DYNAMO_MODULE, _limit_attr, max(current, _UNET_RECOMPILE_LIMIT)
+                )
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "unet recompile limit", exc)
+    try:
+        for module in _unet_blocks(unet):
+            module.compile(**unet_kwargs)
+            count += 1
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "unet regional compile", exc)
+        for module in unet.modules():
+            if module is not unet and getattr(module, "_compiled_call_impl", None) is not None:
+                module._compiled_call_impl = None
+        return False
+    if not count:
+        return False
+    guard_compiled_blocks(unet, logger)
+    try:
+        unet._unsloth_regional_compile_kwargs = dict(unet_kwargs)
+        unet._unsloth_bg_yield = True
+    except Exception:  # noqa: BLE001 - not a settable module (tests/fakes)
+        pass
+    if logger is not None:
+        logger.info(
+            "diffusion.speed: %s compiles per block (%d blocks: %s); set %s=0 for the whole-module compile",
+            type(unet).__name__,
+            count,
+            ", ".join(_targets.UNET_REGIONAL_BLOCKS),
+            _targets.UNET_REGIONAL_ENV,
+        )
+    return True
+
+
 def _install_compile_patches(
     stage: str,
     transformer: Any,
@@ -1318,6 +1528,9 @@ def pin_reduction_configs(kwargs: dict[str, Any], logger: Any = None) -> bool:
             from torch._inductor import list_mode_options
             options = {**list_mode_options(mode, kwargs.get("dynamic")), **options}
         options[REDUCTION_FILTER_OPTION] = True
+        # Max's coordinate descent retimes the filtered config in every process (its guard reads deterministic).
+        if options.get("coordinate_descent_tuning"):
+            options["coordinate_descent_tuning"] = False
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "reduction config filter", exc)
         return False
@@ -1443,6 +1656,7 @@ class _CompileGuard:
         def guarded(*args: Any, **kwargs: Any) -> Any:
             # Compile still in flight in the background: entering it here would compile inline.
             if guard.error is None and not _bg_eager_forced():
+                _bg_yield_point()
                 compile_config.apply()
                 try:
                     return compiled(*args, **kwargs)
@@ -1499,6 +1713,13 @@ def _guarded_dits(pipe: Any) -> list:
         extra = getattr(pipe, attr, None)
         if extra is not None and extra not in dits:
             dits.append(extra)
+    unet = _denoiser_unet(pipe)
+    if (
+        unet is not None
+        and unet not in dits
+        and getattr(unet, "_unsloth_compile_guard", None) is not None
+    ):
+        dits.append(unet)
     return dits
 
 
@@ -1618,9 +1839,7 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on.
-
-    Never when the fused eager VAE path engages: it is faster than the compiled decode, with no cold compile."""
+    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE."""
     if _fused_vae_planned(pipe):
         return False
     if _denoiser_unet(pipe) is not None:
@@ -1884,6 +2103,14 @@ def _enable_miopen_immediate(logger: Any) -> bool:
         return False
 
 
+TF32_ENV = "UNSLOTH_DIFFUSION_TF32"
+
+
+def tf32_enabled() -> bool:
+    import os
+    return (os.environ.get(TF32_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
 def _enable_tf32(logger: Any) -> bool:
     try:
         import torch
@@ -1939,15 +2166,74 @@ def _enable_fp16_accumulation(
         return False
 
 
-def _fuse_qkv(pipe: Any, logger: Any) -> bool:
-    from .diffusion_native_quant import is_native_quantised
+def _quantised_projections(pipe: Any) -> bool:
+    """Whether a denoiser keeps native int8 / fp8 or packed nvfp4 / mxfp8 / W4A8 / W6A8 Linears, whose ``.weight`` is a dense
+    widen: diffusers' fuse would concatenate those into a persistent dense ``to_qkv`` beside the compact buffers."""
+    from .diffusion_grouped_int8 import is_grouped_linear
+    from .diffusion_native_quant import is_native_linear
+    from .diffusion_packed_block import is_packed_block_linear
 
-    # Fusing reads each projection's .weight, which a native layer dequantises: a dense to_qkv beside the int8 buffers.
-    if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+    # the pipe-level fuse reaches any U-Net, not only the whole-compile ones
+    for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):
+        if model is None or not callable(getattr(model, "modules", None)):
+            continue
+        try:
+            if any(
+                is_native_linear(m) or is_packed_block_linear(m) or is_grouped_linear(m)
+                for m in model.modules()
+            ):
+                return True
+        except Exception:  # noqa: BLE001 -- a probe must never replace the failure it describes
+            continue
+    return False
+
+
+def _layerwise_cast_projections(pipe: Any) -> bool:
+    """Whether a denoiser Linear carries diffusers' layerwise-casting hook (weights stored in one dtype, cast per call,
+    e.g. a memory-mapped small-host denoiser): a fused ``to_qkv`` is a plain Linear without that hook."""
+    import torch
+
+    for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):
+        if model is None or not callable(getattr(model, "modules", None)):
+            continue
+        try:
+            for m in model.modules():
+                reg = getattr(m, "_diffusers_hook", None)
+                if (
+                    isinstance(m, torch.nn.Linear)
+                    and reg is not None
+                    and reg.get_hook("layerwise_casting") is not None
+                ):
+                    return True
+        except Exception:  # noqa: BLE001 - unreadable: treat as not cast
+            continue
+    return False
+
+
+def _fuse_qkv(pipe: Any, logger: Any) -> bool:
+    # Fusing reads each projection's .weight, which a quantised layer dequantises: a dense to_qkv beside its buffers.
+    if _quantised_projections(pipe):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (quantised projections stay unfused)")
+        return False
+    if _layerwise_cast_projections(pipe):
         if logger is not None:
             logger.info(
-                "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
+                "diffusion.speed: fuse_qkv skipped (layerwise-cast projections stay unfused)"
             )
+        return False
+    from . import diffusion_lora_quant_merge as lora_quant_merge
+    from .diffusion_manual_cast import manual_cast_info
+
+    # A fused to_qkv is a plain Linear at the stored dtype, which a manual-cast (float32) forward cannot feed.
+    if any(manual_cast_info(m) for m in _denoiser_dits(pipe)):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (manual-cast weights stay unfused)")
+        return False
+    # A fused to_qkv copy would miss in-place re-merges of merged adapter weights.
+    if lora_quant_merge.merged(pipe):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (merged LoRA weights change in place)")
         return False
     # Prefer pipe-level fuse (covers every component); else fuse each DiT so dual-DiT families fuse both.
     fn = getattr(pipe, "fuse_qkv_projections", None)
@@ -1964,6 +2250,7 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
             ):  # the pipe-level fuse resets every VAE processor to FusedAttnProcessor2_0
                 from . import diffusion_vae_fused  # noqa: PLC0415
                 diffusion_vae_fused.install_attention_processors(vae)
+            drop_unfused_projections(_denoiser_unet(pipe), logger)
             return True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "fuse_qkv_projections", exc)
@@ -1978,6 +2265,151 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "fuse_qkv_projections", exc)
     return engaged
+
+
+DROP_UNFUSED_QKV_ENV = "UNSLOTH_DIFFUSION_DROP_UNFUSED_QKV"
+_DROPPED_ATTR = "_unsloth_dropped_projections"
+
+
+def _fused_attention_drops(module: Any) -> tuple:
+    """The projections diffusers' fused processor no longer calls: self attention runs ``to_qkv`` (q, k, v unused),
+    cross attention ``to_q`` + ``to_kv`` (k, v unused)."""
+    if not getattr(module, "fused_projections", False):
+        return ()
+    if getattr(module, "is_cross_attention", False):
+        return ("to_k", "to_v") if getattr(module, "to_kv", None) is not None else ()
+    return ("to_q", "to_k", "to_v") if getattr(module, "to_qkv", None) is not None else ()
+
+
+def _drop_unfused_enabled() -> bool:
+    return (os.environ.get(DROP_UNFUSED_QKV_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _droppable_projection(module: Any, name: str) -> bool:
+    """A projection the drop may delete: a plain Linear without hooks (quantised / wrapped ones are left alone)."""
+    from torch import nn
+
+    p = getattr(module, name, None)
+    return type(p) is nn.Linear and not (
+        p._forward_pre_hooks or p._forward_hooks or hasattr(p, "_hf_hook")
+    )
+
+
+def _drop_plan(unet: Any) -> list:
+    """``(module, names)`` the drop would delete on a fused ``unet``; empty when it is off, a PEFT adapter is attached
+    (it targets to_q / to_k / to_v) or any projection is not a plain hook-free Linear (all or nothing)."""
+    if unet is None or not _drop_unfused_enabled():
+        return []
+    if any(hasattr(m, "lora_A") for m in unet.modules()):
+        return []
+    plan = []
+    for module in unet.modules():
+        names = _fused_attention_drops(module)
+        if not names:
+            continue
+        if not all(_droppable_projection(module, n) for n in names):
+            return []
+        plan.append((module, names))
+    return plan
+
+
+def unfused_projections_will_drop(unet: Any) -> bool:
+    """Whether the fuse's unfused copies will be dropped on this (not yet fused) U-Net: drop on, no PEFT adapter, and
+    every projection the fused processor stops calling is a plain hook-free Linear."""
+    if unet is None or not _drop_unfused_enabled():
+        return False
+    try:
+        if any(hasattr(m, "lora_A") for m in unet.modules()):
+            return False
+        seen = False
+        for module in unet.modules():
+            if not callable(getattr(module, "fuse_projections", None)) or getattr(
+                module, "fused_projections", False
+            ):
+                continue
+            if getattr(module, "add_q_proj", None) is not None:
+                return False  # the added projections are fused too and never dropped
+            names = (
+                ("to_k", "to_v")
+                if getattr(module, "is_cross_attention", False)
+                else ("to_q", "to_k", "to_v")
+            )
+            if not all(_droppable_projection(module, n) for n in names):
+                return False
+            seen = True
+        return seen
+    except Exception:  # noqa: BLE001 - unreadable: count the copies
+        return False
+
+
+def drop_unfused_projections(unet: Any, logger: Any = None) -> int:
+    """Delete the unfused projections a U-Net QKV fuse left beside ``to_qkv`` / ``to_kv`` (SDXL: 1235 MiB). Kept when
+    a PEFT adapter is attached (it targets them) or the modules carry hooks; ``restore_unfused_projections`` rebuilds
+    them bit-exactly from the fused weights. UNSLOTH_DIFFUSION_DROP_UNFUSED_QKV=0 keeps them."""
+    try:
+        import torch
+
+        plan = _drop_plan(unet)
+        freed = 0
+        for module, names in plan:
+            shapes = []
+            for n in names:
+                p = getattr(module, n)
+                freed += sum(t.numel() * t.element_size() for t in p.parameters())
+                shapes.append((n, p.in_features, p.out_features, p.bias is not None))
+                delattr(module, n)
+            setattr(module, _DROPPED_ATTR, tuple(shapes))
+        if plan and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if plan and logger is not None:
+            logger.info(
+                "diffusion.speed: dropped the unfused projections beside the fused QKV on %d attention modules "
+                "(%d MiB)",
+                len(plan),
+                freed >> 20,
+            )
+        return freed
+    except Exception as exc:  # noqa: BLE001 - memory only: a failed drop keeps what is left
+        _warn(logger, "dropping the unfused projections", exc)
+        return 0
+
+
+def restore_unfused_projections(unet: Any) -> int:
+    """Rebuild the projections ``drop_unfused_projections`` deleted, row slices of the fused weights (bit-exact: the
+    fuse concatenated them unchanged). Returns the modules restored."""
+    if unet is None:
+        return 0
+    import torch
+    from torch import nn
+
+    restored = 0
+    for module in unet.modules():
+        shapes = getattr(module, _DROPPED_ATTR, None)
+        if not shapes:
+            continue
+        fused = module.to_kv if getattr(module, "is_cross_attention", False) else module.to_qkv
+        rows = 0
+        for name, fin, fout, has_bias in shapes:
+            lin = nn.Linear(fin, fout, bias = has_bias, device = "meta")
+            with torch.no_grad():
+                grad = bool(fused.weight.requires_grad)
+                lin.weight = nn.Parameter(
+                    fused.weight[rows : rows + fout].clone(), requires_grad = grad
+                )
+                if has_bias:
+                    lin.bias = nn.Parameter(
+                        fused.bias[rows : rows + fout].clone(), requires_grad = grad
+                    )
+            setattr(module, name, lin)
+            rows += fout
+        delattr(module, _DROPPED_ATTR)
+        restored += 1
+    return restored
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

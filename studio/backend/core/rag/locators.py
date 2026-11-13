@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Map a chunk to highlight rectangles on its page (computed at ingest).
-
-The chunk's leading phrase is anchored in the page word list (``get_text("words")``),
-so matching survives ligatures and dehyphenation that glyph-exact ``search_for``
-misses. Matched words union per line into rects normalized to 0..1. Missing
-PyMuPDF, a too-short anchor, or no unique match yields no regions (never a guess).
-"""
+"""Highlight rects for a chunk, anchored on its leading phrase in PyMuPDF word list (survives
+ligatures); missing PyMuPDF, short anchor or no unique match yields no regions, never a guess."""
 
 from __future__ import annotations
 
@@ -42,8 +37,14 @@ def _anchor_tokens(page_text: str, match: LocatorMatch) -> list[str]:
     raw = segment.replace("|", " ").split()
     if len(raw) >= MIN_ANCHOR_WORDS + 2:
         raw = raw[1:-1]
-    tokens = [t for t in (_norm_token(w) for w in raw) if t]
-    return tokens[:MAX_ANCHOR_WORDS]
+    tokens: list[str] = []
+    for w in raw:
+        t = _norm_token(w)
+        if t:
+            tokens.append(t)
+            if len(tokens) == MAX_ANCHOR_WORDS:
+                break
+    return tokens
 
 
 def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
@@ -59,8 +60,8 @@ def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
     return out
 
 
-def _locate(page_words: list, needle: list[str]) -> list[int] | None:
-    """Skip punctuation-only words so they never break a phrase."""
+def _page_tokens(page_words: list) -> tuple[list[str], list[int]]:
+    """Normalized tokens (punctuation-only words skipped) and their ``page_words`` indices."""
     tokens: list[str] = []
     idx_map: list[int] = []
     for j, w in enumerate(page_words):
@@ -68,7 +69,15 @@ def _locate(page_words: list, needle: list[str]) -> list[int] | None:
         if t:
             tokens.append(t)
             idx_map.append(j)
+    return tokens, idx_map
 
+
+def _locate(
+    page_words: list,
+    needle: list[str],
+    page_tokens: tuple[list[str], list[int]] | None = None,
+) -> list[int] | None:
+    tokens, idx_map = page_tokens if page_tokens is not None else _page_tokens(page_words)
     ambiguous_first: list[int] | None = None
     for size in range(len(needle), MIN_ANCHOR_WORDS - 1, -1):
         sub = needle[:size]
@@ -113,22 +122,59 @@ def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float
     return out
 
 
-def _regions_for_match(doc: Any, page_text: str, match: LocatorMatch) -> list[dict[str, Any]]:
+class _PageMemo:
+    """One-page cache of words, tokens and size: chunks arrive in page order. Failed
+    reads are not cached, so the next chunk retries them."""
+
+    __slots__ = ("index", "page", "words", "tokens", "size")
+
+    def __init__(self) -> None:
+        self.index = None
+        self.page = None
+        self.words = None
+        self.tokens = None
+        self.size = None
+
+    def words_for(self, doc: Any, index: int):
+        if self.index != index:
+            self.index = self.page = self.words = self.tokens = self.size = None
+            page = doc[index]
+            words = page.get_text("words") or []
+            self.index, self.page, self.words = index, page, words
+        return self.page, self.words
+
+    def tokens_for(self, words: list) -> tuple[list[str], list[int]]:
+        if self.tokens is None:
+            self.tokens = _page_tokens(words)
+        return self.tokens
+
+    def size_for(self, page: Any) -> tuple[float, float]:
+        if self.size is None:
+            self.size = (float(page.rect.width), float(page.rect.height))
+        return self.size
+
+
+def _regions_for_match(
+    doc: Any,
+    page_text: str,
+    match: LocatorMatch,
+    memo: _PageMemo | None = None,
+) -> list[dict[str, Any]]:
     try:
         if match.page_index < 0 or match.page_index >= len(doc):
             return []
         needle = _anchor_tokens(page_text, match)
         if len(needle) < MIN_ANCHOR_WORDS:
             return []
-        page = doc[match.page_index]
-        page_words = page.get_text("words") or []
+        if memo is None:
+            memo = _PageMemo()
+        page, page_words = memo.words_for(doc, match.page_index)
         if not page_words:
             return []
-        indices = _locate(page_words, needle)
+        indices = _locate(page_words, needle, memo.tokens_for(page_words))
         if not indices:
             return []
-        pw = float(page.rect.width)
-        ph = float(page.rect.height)
+        pw, ph = memo.size_for(page)
         if pw <= 0 or ph <= 0:
             return []
         rects = _rects_from_words(page_words, indices, pw, ph)
@@ -154,6 +200,7 @@ def pdf_regions_for_chunks(pdf_path: Path, pages: list, chunks: list) -> list[li
         return [[] for _ in chunks]
 
     regions: list[list[dict[str, Any]]] = []
+    memo = _PageMemo()
     try:
         for chunk in chunks:
             page_index = getattr(chunk, "source_page_index", None)
@@ -171,7 +218,7 @@ def pdf_regions_for_chunks(pdf_path: Path, pages: list, chunks: list) -> list[li
                 start = int(start),
                 end = int(end),
             )
-            regions.append(_regions_for_match(doc, pages[page_index].text, match))
+            regions.append(_regions_for_match(doc, pages[page_index].text, match, memo))
         return regions
     finally:
         doc.close()

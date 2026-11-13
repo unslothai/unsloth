@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Settings policy: the account, shared and owner routers decide who may reach each
-/api/settings path."""
+"""Access to each /api/settings path is decided by the account, shared and owner routers"""
 
 import asyncio
 import functools
@@ -15,7 +14,7 @@ from typing import Annotated, Any, Literal, Optional, Union, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import (
     BaseModel,
@@ -56,12 +55,24 @@ from hub.utils.hf_tokens import (
 from routes.provider_credentials import current_credential_write, require_ui_session
 
 from storage import credential_secrets
+from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
 from core.rag.config import (
     default_gguf_repo,
     effective_gguf_repo_for_embedding_model,
 )
 from loggers import get_logger
 from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
+from utils.device_sync_settings import (
+    MAX_BACKGROUND_IMAGE_BYTES,
+    background_image_path,
+    background_lock,
+    clear_background,
+    get_chat_background,
+    get_client_preferences,
+    save_background_adjustments,
+    save_background_image,
+    update_client_preferences,
+)
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
@@ -72,18 +83,27 @@ from utils.personalization_settings import (
 from utils.upload_limits import (
     MAX_UPLOAD_LIMIT_MB,
     MIN_UPLOAD_LIMIT_MB,
+    audio_input_max_bytes,
     default_upload_limit_mb,
     get_upload_limit_mb,
     set_upload_limit_mb,
     upload_limit_bytes,
     upload_limit_label,
 )
-from utils.cache_inventory import CACHE_KEYS, cache_inventory, purge_caches
+from utils.cache_inventory import CACHE_KEYS, cache_inventory, cache_breakdown, purge_caches
 from utils.xet_notice_settings import reserve_xet_notice
 from utils.chat_preferences_settings import (
     get_show_model_disclaimer,
     migrate_show_model_disclaimer,
     set_show_model_disclaimer,
+)
+from utils.ml_warmup_settings import (
+    ML_WARMUP_FEATURES,
+    MlWarmupFeature,
+    effective_ml_warmup_features,
+    get_ml_warmup_features,
+    ml_warmup_disabled_by_env,
+    set_ml_warmup_features,
 )
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
@@ -93,6 +113,10 @@ from utils.helper_precache_settings import (
 )
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils import video_cpu_settings
+from utils.download_speed_limit import (
+    get_download_speed_limit_mbps,
+    set_download_speed_limit_mbps,
+)
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -167,7 +191,12 @@ from utils.keyless_api_access import (
     get_keyless_api_access_settings,
     set_keyless_api_access,
 )
-from utils.mcp_access import forced_by_env, is_mcp_enabled, set_mcp_enabled
+from utils.mcp_access import (
+    UnknownMcpToolError,
+    forced_by_env,
+    owner_record as mcp_owner_record,
+    set_mcp_settings,
+)
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
@@ -210,6 +239,7 @@ from utils.embedding_model_settings import (
     set_rag_embedding_model,
     validate_embedding_model,
 )
+from utils.stt_device_settings import set_stt_device
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
 from utils.llama_cpp_path_settings import (
     MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
@@ -254,8 +284,8 @@ class ImageGenerationPresetParams(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     negativePrompt: str = ""
-    width: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
-    height: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
+    width: int = Field(default = 1024, ge = 256, le = MAX_REQUEST_SIDE, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = MAX_REQUEST_SIDE, multiple_of = 16)
     steps: int = Field(default = 9, ge = 1, le = 100)
     guidance: float = Field(default = 0, ge = 0, le = 20)
     batchSize: int = Field(default = 1, ge = 1, le = 32)
@@ -275,6 +305,50 @@ class VideoGenerationPresetParams(BaseModel):
     guidance: float = Field(default = 1, ge = 0, le = 20)
     flowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
     audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+    # None = the family's default rate; only families with a frame-rate picker store one.
+    fps: Optional[int] = Field(default = None, ge = 1, le = 120)
+
+
+class TrainingPresetParams(BaseModel):
+    """Image LoRA training form. Numbers carry no bounds: the form autosaves mid-edit, and
+    DiffusionTrainingStartRequest validates them on Start."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    familyName: str = Field(default = "", max_length = 80)
+    baseChoice: str = Field(default = "", max_length = 1024)
+    customBase: str = Field(default = "", max_length = 4096)
+    durationUnit: Literal["steps", "epochs"] = "steps"
+    steps: float = Field(default = 500, allow_inf_nan = False)
+    epochs: float = Field(default = 10, allow_inf_nan = False)
+    learningRate: float = Field(default = 0.0001, allow_inf_nan = False)
+    rank: float = Field(default = 16, allow_inf_nan = False)
+    resolution: float = Field(default = 768, allow_inf_nan = False)
+    batchSize: float = Field(default = 1, allow_inf_nan = False)
+    gradAccum: float = Field(default = 1, allow_inf_nan = False)
+    seed: float = Field(default = 42, allow_inf_nan = False)
+    saveSteps: float = Field(default = 0, allow_inf_nan = False)
+    sampleEvery: float = Field(default = 0, allow_inf_nan = False)
+    saveTotalLimit: float = Field(default = 2, allow_inf_nan = False)
+    lrScheduler: Literal[
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+    ] = "constant"
+    lrWarmupSteps: float = Field(default = 0, allow_inf_nan = False)
+    gradCheckpoint: bool = True
+    bucketing: bool = True
+    randomFlip: bool = False
+    cfgDropout: float = Field(default = 0, allow_inf_nan = False)
+    loraDropout: float = Field(default = 0, allow_inf_nan = False)
+    flowShiftMode: Literal["default", "custom"] = "default"
+    flowShift: float = Field(default = 3, allow_inf_nan = False)
+    precision: Literal["bf16", "fp16", "no"] = "bf16"
+    basePrecision: Literal["nf4", "bf16", "int8", "fp8", "mxfp8", "auto"] = "auto"
+    compileTransformer: Literal["off", "on", "auto"] = "auto"
 
 
 class MediaGenerationPreset(BaseModel):
@@ -299,6 +373,10 @@ class VideoGenerationPreset(MediaGenerationPreset):
     params: VideoGenerationPresetParams
 
 
+class TrainingPreset(MediaGenerationPreset):
+    params: TrainingPresetParams
+
+
 class MediaGenerationPresetState(BaseModel):
     """A saved generation recipe and the selection that owns it.
 
@@ -320,6 +398,10 @@ class VideoGenerationPresetState(MediaGenerationPresetState):
     currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
 
 
+class TrainingPresetState(MediaGenerationPresetState):
+    currentParams: TrainingPresetParams = Field(default_factory = TrainingPresetParams)
+
+
 class ImageGenerationPresetSettings(ImageGenerationPresetState):
     # No cap on read: upsert_media_generation_preset owns the limit; a cap here would 500 the GET.
     customPresets: list[ImageGenerationPreset] = Field(default_factory = list)
@@ -328,6 +410,11 @@ class ImageGenerationPresetSettings(ImageGenerationPresetState):
 
 class VideoGenerationPresetSettings(VideoGenerationPresetState):
     customPresets: list[VideoGenerationPreset] = Field(default_factory = list)
+    saved: bool = False
+
+
+class TrainingPresetSettings(TrainingPresetState):
+    customPresets: list[TrainingPreset] = Field(default_factory = list)
     saved: bool = False
 
 
@@ -518,8 +605,33 @@ def update_video_generation_preset_settings(
     return {"saved": True}
 
 
+@_account_settings_router.get(
+    "/generation-presets/training",
+    response_model = TrainingPresetSettings,
+)
+def get_training_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> TrainingPresetSettings:
+    return _get_generation_preset_settings("training", TrainingPresetSettings)
+
+
+@_account_settings_router.put("/generation-presets/training")
+def update_training_preset_settings(
+    payload: TrainingPresetState, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    set_media_generation_preset_settings(
+        "training",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            TrainingPresetState, stored, submitted
+        ),
+    )
+    return {"saved": True}
+
+
 def _upsert_custom_generation_preset(
-    kind: Literal["image", "video"], payload: ImageGenerationPreset | VideoGenerationPreset
+    kind: Literal["image", "video", "training"],
+    payload: ImageGenerationPreset | VideoGenerationPreset | TrainingPreset,
 ) -> dict[str, bool]:
     try:
         schema = type(payload)
@@ -547,9 +659,16 @@ def upsert_custom_video_generation_preset(
     return _upsert_custom_generation_preset("video", payload)
 
 
+@_account_settings_router.put("/generation-presets/training/custom")
+def upsert_custom_training_preset(
+    payload: TrainingPreset, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("training", payload)
+
+
 @_account_settings_router.delete("/generation-presets/{kind}/custom")
 def delete_custom_generation_preset(
-    kind: Literal["image", "video"],
+    kind: Literal["image", "video", "training"],
     name: str,
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
@@ -594,6 +713,8 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+    # Audio page upload cap; None means no cap.
+    audio_input_max_bytes: Optional[int] = None
 
 
 class ToolResultLimitPayload(BaseModel):
@@ -726,6 +847,7 @@ class SystemOneSettingsResponse(BaseModel):
     input_modalities: list[str] = ["text"]
     # "laya", "clef" or "gguf" for the configured model, so env-configured local checkpoints get runtime controls.
     layout: Optional[str] = None
+    has_gguf_form: bool = False
 
 
 class SystemOneSettingsPayload(BaseModel):
@@ -744,6 +866,16 @@ class SystemOneDownloadPlan(BaseModel):
     size_bytes: int
     cached: bool
     error: Optional[str] = None
+
+
+class MlWarmupPayload(BaseModel):
+    features: list[MlWarmupFeature]
+
+
+class MlWarmupResponse(BaseModel):
+    features: list[MlWarmupFeature]
+    effective_features: list[MlWarmupFeature]
+    disabled_by_env: bool
 
 
 class HelperPrecachePayload(BaseModel):
@@ -784,6 +916,14 @@ class DownloadTransportResponse(BaseModel):
     xet_unavailable_reason: Optional[str] = None
     auto_resolves_to: str
     auto_reason: Optional[str] = None
+
+
+class DownloadSpeedLimitPayload(BaseModel):
+    mbps: Optional[float] = Field(default = None, ge = 0)
+
+
+class DownloadSpeedLimitResponse(BaseModel):
+    mbps: Optional[float] = None
 
 
 class HubSettingsPayload(BaseModel):
@@ -904,6 +1044,10 @@ class CacheEntryResponse(BaseModel):
     # Clearing costs a re-download, so it is never folded into a clear-everything action.
     opt_in: bool
     paths: list[str]
+    measured_paths: list[str] = Field(default_factory = list)
+    clear_size_bytes: Optional[int] = None
+    clear_entry_count: Optional[int] = None
+    system_disk_bytes: Optional[int] = None
     size_bytes: int
     entry_count: int
     present: bool
@@ -917,6 +1061,7 @@ class CacheInventoryResponse(BaseModel):
     reclaimable_bytes: int
     free_bytes: Optional[int] = None
     total_disk_bytes: Optional[int] = None
+    refreshing: bool = False
 
 
 class CachePurgePayload(BaseModel):
@@ -1053,9 +1198,15 @@ class ModelOverridePayload(BaseModel):
     # Reasoning pair came after the four, so a build mirroring the four may predate it; own flag.
     mirrors_reasoning_budget: bool = False
     mirrors_spec_draft_model: bool = False
+    # A standalone Engram table by precision (LoadRequest.engram_precision); carried like the
+    # tuning group for a client that does not mirror it.
+    engram_precision: Optional[str] = Field(default = None, max_length = 32, pattern = r"^[A-Za-z0-9_]*$")
+    mirrors_engram_precision: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
+    mlx_ane_prefill: bool = False
+    mlx_fast_verify: bool = False
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -1072,7 +1223,7 @@ class ModelOverridePayload(BaseModel):
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
-    gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
+    gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 2**31 - 1)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
     tensor_split: Optional[list[float]] = Field(default = None, min_length = 2, max_length = MAX_GPU_IDS)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
@@ -1163,6 +1314,17 @@ def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
         max_upload_size_bytes = upload_limit_bytes(limit_mb),
         max_upload_size_label = upload_limit_label(limit_mb),
         default_upload_size_mb = default_upload_limit_mb(),
+        audio_input_max_bytes = audio_input_max_bytes(limit_mb),
+    )
+
+
+def _ml_warmup_response(features: frozenset[str] | None = None) -> MlWarmupResponse:
+    selected = get_ml_warmup_features() if features is None else features
+    effective = effective_ml_warmup_features(selected)
+    return MlWarmupResponse(
+        features = [feature for feature in ML_WARMUP_FEATURES if feature in selected],
+        effective_features = [feature for feature in ML_WARMUP_FEATURES if feature in effective],
+        disabled_by_env = ml_warmup_disabled_by_env(),
     )
 
 
@@ -1397,6 +1559,19 @@ async def get_caches(
     return CacheInventoryResponse(**inventory)
 
 
+@_owner_settings_router.get("/caches/{key}/breakdown")
+async def get_cache_breakdown(
+    key: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    require_ui_session(via_api_key)
+    try:
+        return await asyncio.to_thread(cache_breakdown, key)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 @_owner_settings_router.post("/caches/purge", response_model = CachePurgeResponse)
 async def purge_caches_endpoint(
     payload: CachePurgePayload,
@@ -1577,6 +1752,19 @@ def update_tool_result_limit(
     return _tool_result_limit_response()
 
 
+@_shared_settings_router.get("/ml-warmup", response_model = MlWarmupResponse)
+def get_ml_warmup(current_subject: str = Depends(get_current_subject)) -> MlWarmupResponse:
+    return _ml_warmup_response()
+
+
+@_owner_settings_router.put("/ml-warmup", response_model = MlWarmupResponse)
+def update_ml_warmup(
+    payload: MlWarmupPayload, current_subject: str = Depends(get_current_subject)
+) -> MlWarmupResponse:
+    """Save the selected ML warmup features for the next Unsloth startup."""
+    return _ml_warmup_response(set_ml_warmup_features(payload.features))
+
+
 @_shared_settings_router.get("/helper-precache", response_model = HelperPrecacheResponse)
 def get_helper_precache(
     current_subject: str = Depends(get_current_subject),
@@ -1642,7 +1830,8 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 
     only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
     if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
-        only = {} if only_mlx else {"llama_cpp_only": True}
+        # A non-Clef MLX-only entry (Decider) is flagged too, so its runtime row stays reachable.
+        only = {} if only_mlx and checkpoint.layout == "clef" else {"llama_cpp_only": True}
         # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
@@ -1658,6 +1847,12 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 
 
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
+    from core.systemone.native_worker import reuse_found_binary
+    with reuse_found_binary():
+        return _systemone_answer(request)
+
+
+def _systemone_answer(request: Request) -> SystemOneSettingsResponse:
     from pathlib import Path
 
     from core.systemone import catalog, laya_runtime
@@ -1733,6 +1928,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         fallback_reason = fallback if effective == "pytorch" or effective is None else None,
         input_modalities = laya_runtime.input_modalities(configured),
         layout = getattr(configured, "layout", None),
+        has_gguf_form = laya_runtime.has_native_form(configured),
     )
 
 
@@ -1904,6 +2100,30 @@ def update_download_transport(
             log = logger,
         ) from exc
     return _download_transport_response(mode)
+
+
+@_shared_settings_router.get("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
+def get_download_speed_limit(
+    current_subject: str = Depends(get_current_subject),
+) -> DownloadSpeedLimitResponse:
+    return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+
+
+@_owner_settings_router.put("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
+def update_download_speed_limit(
+    payload: DownloadSpeedLimitPayload, current_subject: str = Depends(get_current_subject)
+) -> DownloadSpeedLimitResponse:
+    try:
+        mbps = set_download_speed_limit_mbps(payload.mbps)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid download speed limit."),
+            event = "settings.update_download_speed_limit_failed",
+            log = logger,
+        ) from exc
+    return DownloadSpeedLimitResponse(mbps = mbps)
 
 
 def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
@@ -2089,8 +2309,7 @@ def _last_local_model_key(subject: str) -> str:
 
 
 def _read_last_local_model(subject: str) -> "dict | None":
-    """The subject's record, falling back to the pre-scoping shared row so an
-    upgrade keeps the model the install already remembered."""
+    """Subject's record, else the pre-scoping shared row so upgrades keep the remembered model."""
     from storage.studio_db import get_app_setting
 
     stored = get_app_setting(_last_local_model_key(subject), None)
@@ -2536,9 +2755,7 @@ def _fallback_supplies_reasoning_flag(model_id: str, target_id: str) -> bool:
 
 
 def _owner_fallback_answers(model_id: str, target_id: str) -> bool:
-    """Whether a managed account's load for this model would fall through to the owner's row once its own
-    entry empties out. That fallback takes the owner's row whole, so a save left at the defaults has to keep
-    a row of its own or the account gets the owner's flags, context and layers back."""
+    """A defaults save keeps its own row, or the account inherits the owner's flags, context and layers."""
     from utils.openai_auto_switch_settings import cached_repo_alias_keys, get_model_override
 
     if is_owner_context():
@@ -2561,9 +2778,7 @@ def _owner_fallback_answers(model_id: str, target_id: str) -> bool:
 
 
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
-    """Whether a quant of ``bare_id`` other than the ones being removed still has an entry. Such a quant has its
-    own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
-    forget the last one for the model"."""
+    """Whether another quant of bare_id keeps an entry; quants never read the bare fallback."""
     from utils.openai_auto_switch_settings import split_quant_suffix
 
     removed = {key.strip().lower() for key in removed_ids}
@@ -2661,6 +2876,7 @@ def update_openai_auto_switch_override(
                 "mirrors_server_tuning",
                 "mirrors_reasoning_budget",
                 "mirrors_spec_draft_model",
+                "mirrors_engram_precision",
             },
             exclude_none = True,
         )
@@ -2671,6 +2887,8 @@ def update_openai_auto_switch_override(
                 not payload.tensor_parallel
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
+                and not payload.mlx_ane_prefill
+                and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
                 and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
@@ -2678,7 +2896,14 @@ def update_openai_auto_switch_override(
                     key: value
                     for key, value in saved_fields.items()
                     if key
-                    not in ("tensor_parallel", "disable_vision", "mlx_int8_prefill", "load_in_4bit")
+                    not in (
+                        "tensor_parallel",
+                        "disable_vision",
+                        "mlx_int8_prefill",
+                        "mlx_ane_prefill",
+                        "mlx_fast_verify",
+                        "load_in_4bit",
+                    )
                 }
             )
         if requested_extra_args is None and not is_removal:
@@ -2735,15 +2960,17 @@ def update_openai_auto_switch_override(
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
         _reasoning_fields = ("reasoning_budget", "reasoning_budget_message")
         _drafter_fields = ("spec_draft_model",)
+        _engram_fields = ("engram_precision",)
         _kept_tuning = {
             name: getattr(payload, name)
-            for name in _tuning_fields + _reasoning_fields + _drafter_fields
+            for name in _tuning_fields + _reasoning_fields + _drafter_fields + _engram_fields
         }
         # Each group is carried only for a client that does not mirror it.
         _carried_fields = (
             (() if payload.mirrors_server_tuning else _tuning_fields)
             + (() if payload.mirrors_reasoning_budget else _reasoning_fields)
             + (() if payload.mirrors_spec_draft_model else _drafter_fields)
+            + (() if payload.mirrors_engram_precision else _engram_fields)
         )
         _alias_row: dict = {}
         if not is_removal:
@@ -2899,9 +3126,12 @@ def update_openai_auto_switch_override(
                 spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
                 ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
                 cache_ram = _kept_tuning["cache_ram"],
+                engram_precision = _kept_tuning["engram_precision"],
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
                 mlx_int8_prefill = payload.mlx_int8_prefill,
+                mlx_ane_prefill = payload.mlx_ane_prefill,
+                mlx_fast_verify = payload.mlx_fast_verify,
                 load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
@@ -3004,6 +3234,31 @@ class EmbeddingModelResponse(BaseModel):
 
 class EmbeddingDevicePayload(BaseModel):
     device: Literal["auto", "cpu", "gpu"]
+
+
+class SttDevicePayload(BaseModel):
+    device: Literal["auto", "cpu", "gpu"]
+    only_if_unset: bool = False
+
+
+class SttDeviceResponse(BaseModel):
+    device: Literal["auto", "cpu", "gpu"] = "auto"
+    locked: bool = False
+    # Distinguishes an unset preference from a saved Auto choice.
+    saved: bool = False
+
+
+def _stt_device_response() -> SttDeviceResponse:
+    from core.inference.audio_device import audio_device_env_locked, stt_device_default
+    from utils.stt_device_settings import stt_device_is_saved
+    try:
+        return SttDeviceResponse(
+            device = stt_device_default(),  # type: ignore[arg-type]
+            locked = audio_device_env_locked(),
+            saved = stt_device_is_saved(),
+        )
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return SttDeviceResponse()
 
 
 def _embedding_device_state() -> tuple[str, bool]:
@@ -3252,20 +3507,11 @@ def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
 
 
 def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
-    """Whether a search hit names a conversion of exactly ``base``. Prefix matching is unsafe (``foo`` must
-    never resolve to ``foo-bar-GGUF``); the Hub filter already requires GGUF, so this accepts only the
-    common conversion suffix spellings and the exact model name."""
+    """Exact name or a common -gguf/_gguf/.gguf conversion suffix; prefix matching is unsafe (foo
+    must never match foo-bar-GGUF)."""
     name = hit_name.casefold()
     base = base.casefold()
     return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
-
-
-def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
-    """The complete downloadable file family for a picked GGUF. llama-server opens split siblings implicitly,
-    so a single selected shard is not a usable plan, and incomplete published families are rejected.
-    Deferred to the loader so the plan offered here and the transfer name one set."""
-    from core.rag.embed_llama_server import LlamaServerBackend
-    return LlamaServerBackend._split_family(names, picked)
 
 
 def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
@@ -3277,9 +3523,7 @@ def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
 
 
 def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
-    """``(repo, files)`` for a GGUF conversion of ``model`` published by the same owner under a name the -GGUF
-    candidates do not cover. Same owner only: a third party's "Qwen3-Embedding-8B-GGUF" is an unverified
-    re-upload, and picking unsloth/X must download unsloth's own weights."""
+    """Same owner only: a third-party re-upload is unverified; unsloth/X must download its weights."""
     from core.rag import config as rag_config
 
     # Under an explicit repo override the loader cannot open a discovered mirror, so none is returned.
@@ -3394,8 +3638,7 @@ def _st_backend_available() -> bool:
 
 
 def _is_st_weight_name(basename: str) -> bool:
-    """Whether a filename is a checkpoint, not just something ending in a suffix. Shared with the loader
-    so the plan and the cache check cannot disagree."""
+    """Whether a filename is a checkpoint, not just a suffix match; shared with the loader so both agree."""
     from utils.utils import is_st_weight_name
     return is_st_weight_name(basename)
 
@@ -3955,6 +4198,34 @@ def update_embedding_device(
     return _embedding_model_response()
 
 
+@_owner_settings_router.get("/stt-device", response_model = SttDeviceResponse)
+def get_stt_device_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> SttDeviceResponse:
+    """Voice Settings "Load into": where a cold STT API load places the model (#15280)."""
+    return _stt_device_response()
+
+
+@_owner_settings_router.put("/stt-device", response_model = SttDeviceResponse)
+def update_stt_device_setting(
+    payload: SttDevicePayload, current_subject: str = Depends(get_current_subject)
+) -> SttDeviceResponse:
+    """Persist Voice Settings "Load into" so ``/v1/audio/transcriptions`` honours it on a cold load.
+
+    ``UNSLOTH_AUDIO_DEVICE`` still wins when set. An already-resident model is not moved;
+    the next cold load (or an explicit ``device`` on ``/audio/stt/load``) applies the choice.
+    """
+    from core.inference.audio_device import audio_device_env_locked
+
+    if audio_device_env_locked():
+        raise HTTPException(
+            status_code = 409, detail = "The STT device is set by UNSLOTH_AUDIO_DEVICE."
+        )
+    set_stt_device(payload.device, only_if_unset = payload.only_if_unset)
+    logger.info("settings.stt_device_updated subject=%s device=%s", current_subject, payload.device)
+    return _stt_device_response()
+
+
 @_owner_settings_router.delete("/embedding-model", response_model = EmbeddingModelResponse)
 def reset_embedding_model(
     current_subject: str = Depends(get_current_subject),
@@ -3992,7 +4263,29 @@ class KeylessApiAccessResponse(BaseModel):
 
 
 class McpAccessPayload(BaseModel):
-    enabled: StrictBool
+    # Either or both; a bare ``enabled`` comes from an older client.
+    enabled: Optional[StrictBool] = None
+    disabled_tools: Optional[list[StrictStr]] = None
+    # One tool's switch, merged into the stored list on the server so concurrent toggles both land.
+    tool_states: Optional[dict[StrictStr, StrictBool]] = None
+
+    @model_validator(mode = "after")
+    def at_least_one(self):
+        if not self.model_fields_set:
+            raise ValueError("Send enabled, disabled_tools or tool_states.")
+        if {"disabled_tools", "tool_states"} <= self.model_fields_set:
+            raise ValueError("Send disabled_tools or tool_states, not both.")
+        for name in self.model_fields_set:
+            if getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null.")
+        return self
+
+
+class McpToolSetting(BaseModel):
+    name: str
+    area: str
+    enabled: bool
+    chat: bool
 
 
 class McpAccessResponse(BaseModel):
@@ -4000,6 +4293,8 @@ class McpAccessResponse(BaseModel):
     forced_by_env: bool
     # Display only: where an agent should point. Agents connect to whatever address reaches this server.
     url: str
+    # Null when unreadable, so a client never saves a full list from a fake "every tool off" view.
+    tools: Optional[list[McpToolSetting]]
 
 
 class PreviewSharingPayload(BaseModel):
@@ -4159,6 +4454,7 @@ class LanAccessAddressesPayload(BaseModel):
 class LanAccessAddress(BaseModel):
     address: str
     public: bool = False
+    host_only: bool = False
 
 
 class LanAccessResponse(BaseModel):
@@ -4490,10 +4786,27 @@ def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_ap
 
 
 def _mcp_access_response(request: Request) -> McpAccessResponse:
+    from mcp_server import tool_catalog, withheld
+
+    from_chat = withheld()
+
+    record = mcp_owner_record()
+    tools = None
+    if record is not None:
+        disabled = record[1]
+        tools = [
+            McpToolSetting(
+                **entry,
+                enabled = disabled is not None and entry["name"] not in disabled,
+                chat = entry["name"] not in from_chat,
+            )
+            for entry in tool_catalog()
+        ]
     return McpAccessResponse(
-        enabled = is_mcp_enabled(),
+        enabled = forced_by_env() or (record is not None and record[0]),
         forced_by_env = forced_by_env(),
         url = str(request.base_url).rstrip("/") + "/mcp/",
+        tools = tools,
     )
 
 
@@ -4513,12 +4826,26 @@ def update_mcp_access(
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session_for_mcp),
 ) -> McpAccessResponse:
-    """Turn agent access over MCP on or off for the whole installation."""
-    if forced_by_env():
+    """Turn agent access over MCP on or off for the whole installation, and choose which tools agents get."""
+    # The env var forces only the switch; the owner still picks tools.
+    if payload.enabled is not None and forced_by_env():
         raise HTTPException(status_code = 409, detail = "Set by UNSLOTH_STUDIO_ENABLE_MCP.")
-    enabled = set_mcp_enabled(payload.enabled)
-    logger.info("settings.mcp_access_updated subject=%s enabled=%s", current_subject, enabled)
-    return _mcp_access_response(request)
+    try:
+        set_mcp_settings(
+            enabled = payload.enabled,
+            disabled_tools = payload.disabled_tools,
+            tool_states = payload.tool_states,
+        )
+    except UnknownMcpToolError as exc:
+        raise HTTPException(status_code = 422, detail = str(exc))
+    response = _mcp_access_response(request)
+    logger.info(
+        "settings.mcp_access_updated subject=%s enabled=%s disabled=%s",
+        current_subject,
+        response.enabled,
+        None if response.tools is None else sum(not tool.enabled for tool in response.tools),
+    )
+    return response
 
 
 def _is_bundled_avatar_url(value: str) -> bool:
@@ -4534,6 +4861,11 @@ def _is_bundled_avatar_url(value: str) -> bool:
     return path[path.index(marker) :].lower().endswith(".png")
 
 
+_GREETING_DATA_URL_PATTERN = r"^data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$"
+MAX_GREETING_ICON_DATA_URL_LENGTH = 96 * 1024
+MAX_GREETING_IMAGE_DATA_URL_LENGTH = MAX_AVATAR_DATA_URL_BYTES
+
+
 class PersonalizationProfile(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
@@ -4542,6 +4874,25 @@ class PersonalizationProfile(BaseModel):
     avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
     showGreetingSloth: bool = True
+    greetingStyle: Literal["text", "image"] = "text"
+    greetingIcon: Literal["sloth", "custom", "none"] = "sloth"
+    greetingIconDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_ICON_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+    greetingText: str = Field("", max_length = 100)
+    greetingImageDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_IMAGE_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+
+    @field_validator("greetingStyle", "greetingIcon", mode = "before")
+    @classmethod
+    def _known_greeting_choice(cls, value: object, info) -> object:
+        allowed = get_args(cls.model_fields[info.field_name].annotation)
+        return value if value in allowed else cls.model_fields[info.field_name].default
 
     @field_validator("avatarDataUrl")
     @classmethod
@@ -4729,9 +5080,14 @@ class PersonalizationCustomization(BaseModel):
     chatWidth: Literal["standard", "wide", "full"] = "standard"
     sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
+    composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
+    elementOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
-    reduceMotion: Literal["system", "on", "off"] = "system"
+    reduceMotion: Literal["system", "on", "off"] = "on"
     fontSmoothing: bool = True
+    codeLineNumbers: bool = False
+    codeWordWrap: bool = False
+    codeLigatures: bool = True
     sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
         default_factory = _default_sidebar_menu,
         max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
@@ -4787,8 +5143,6 @@ class PersonalizationAppearance(BaseModel):
     theme: Literal["light", "dark", "system"] = "system"
     palette: Literal[
         "standard",
-        "classic",
-        "minimal",
         "blueberry",
         "butterfly-pea",
         "cherry",
@@ -4811,6 +5165,7 @@ class PersonalizationAppearance(BaseModel):
         "taro",
         "wasabi",
         "yuzu",
+        "trick-or-treat",
     ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(
@@ -4837,6 +5192,7 @@ class PersonalizationResponse(PersonalizationPayload):
     sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
+    greetingCustomSaved: bool = False
 
 
 @_account_settings_router.get("/personalization", response_model = PersonalizationResponse)
@@ -4856,6 +5212,7 @@ def get_personalization_settings(
     )
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
+    response.greetingCustomSaved = isinstance(profile, dict) and "greetingStyle" in profile
     return response
 
 
@@ -4890,6 +5247,192 @@ def update_personalization_settings(
         ) from exc
     # Return the stored record, not the defaults-filled request, so it matches the next GET.
     return PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
+
+
+class BrowserPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    openLinksInBrowser: Optional[bool] = None
+    openFilesInBrowser: Optional[bool] = None
+    searchEngine: Optional[Literal["duckduckgo", "google", "bing", "brave"]] = None
+    showFullUrl: Optional[bool] = None
+    bookmarksToolbar: Optional[Literal["always", "newtab", "never"]] = None
+    showBookmarkEditor: Optional[bool] = None
+    hiddenSuggestions: Optional[list[Annotated[str, Field(max_length = 253)]]] = Field(
+        None, max_length = 500
+    )
+    switchToNewTabs: Optional[bool] = None
+    defaultZoom: Optional[float] = Field(None, ge = 0.25, le = 5)
+    showSuggestedSites: Optional[bool] = None
+    showRecentPages: Optional[bool] = None
+    saveHistory: Optional[bool] = None
+    historyRetentionDays: Optional[int] = Field(None, ge = 0, le = 3650)
+    saveDownloadHistory: Optional[bool] = None
+    askWhereToSave: Optional[bool] = None
+    askBeforeDownloading: Optional[bool] = None
+    askBeforeProgramDownloads: Optional[bool] = None
+    annotationScreenshots: Optional[Literal["always", "never"]] = None
+
+
+_DisplayVisibility = Literal["collapsed", "auto", "expanded"]
+
+
+class ChatPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    shareComposerDraft: Optional[bool] = None
+    plainTextComposer: Optional[bool] = None
+    showContextWindowUsage: Optional[bool] = None
+    sendShortcut: Optional[Literal["enter", "mod-enter-multiline", "mod-enter"]] = None
+    followUpBehavior: Optional[Literal["queue", "steer"]] = None
+    confirmDeleteChats: Optional[bool] = None
+    alwaysDeleteChatFiles: Optional[bool] = None
+    showResponseModel: Optional[bool] = None
+    showLinkPreviews: Optional[bool] = None
+    showReplyTimes: Optional[bool] = None
+    showGenerationDetails: Optional[bool] = None
+    showInlineEditResponse: Optional[bool] = None
+    thinkingVisibility: Optional[_DisplayVisibility] = None
+    toolVisibility: Optional[_DisplayVisibility] = None
+    foldToolActivityIntoThinking: Optional[bool] = None
+    pastedTextMinChars: Optional[Literal[0, 2000, 4000, 8000, 16000]] = None
+    autoScrollWhileGenerating: Optional[bool] = None
+    newChatComposerPosition: Optional[int] = Field(None, ge = 0, le = 100)
+    showTurnNavigation: Optional[bool] = None
+    richTextPaste: Optional[bool] = None
+    generationStatsUpdates: Optional[Literal["settled", "realtime"]] = None
+
+
+_PlusMenuId = Annotated[str, Field(max_length = 64)]
+_PinnedId = Annotated[str, Field(max_length = 256)]
+
+
+class PlusMenuPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    pins: Optional[dict[_PlusMenuId, bool]] = Field(None, max_length = 64)
+    order: Optional[list[_PlusMenuId]] = Field(None, max_length = 64)
+    pinnedPromptIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
+    pinnedListIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
+
+
+class ClientPreferencesPayload(BaseModel):
+    interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
+    browser: Optional[BrowserPrefsPayload] = None
+    chat: Optional[ChatPrefsPayload] = None
+    plusMenu: Optional[PlusMenuPrefsPayload] = None
+    timeFormat: Optional[Literal["system", "12h", "24h"]] = None
+    spellcheck: Optional[bool] = None
+
+
+class ClientPreferencesResponse(ClientPreferencesPayload):
+    saved: bool = False
+    updatedAt: Optional[int] = None
+
+
+def _client_preferences_response(stored: dict) -> ClientPreferencesResponse:
+    response = ClientPreferencesResponse.model_validate(
+        {k: stored.get(k) for k in (*ClientPreferencesPayload.model_fields, "updatedAt")}
+    )
+    response.saved = bool(stored)
+    return response
+
+
+@_account_settings_router.get("/client-preferences", response_model = ClientPreferencesResponse)
+def get_client_preferences_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ClientPreferencesResponse:
+    return _client_preferences_response(get_client_preferences())
+
+
+@_account_settings_router.put("/client-preferences", response_model = ClientPreferencesResponse)
+def update_client_preferences_settings(
+    payload: ClientPreferencesPayload, current_subject: str = Depends(get_current_subject)
+) -> ClientPreferencesResponse:
+    changes = payload.model_dump(exclude_none = True)
+    return _client_preferences_response(update_client_preferences(changes))
+
+
+class ChatBackgroundImageMeta(BaseModel):
+    sha256: str
+    type: str
+    size: int
+
+
+class ChatBackgroundAdjustmentsPayload(BaseModel):
+    adjustments: dict[str, Union[str, int, float, bool, None]] = Field(max_length = 32)
+
+
+class ChatBackgroundResponse(BaseModel):
+    saved: bool = False
+    adjustments: Optional[dict[str, Union[str, int, float, bool, None]]] = None
+    image: Optional[ChatBackgroundImageMeta] = None
+    updatedAt: Optional[int] = None
+
+
+def _chat_background_response(stored: dict) -> ChatBackgroundResponse:
+    response = ChatBackgroundResponse.model_validate(
+        {k: stored.get(k) for k in ("adjustments", "image", "updatedAt")}
+    )
+    response.saved = bool(stored)
+    return response
+
+
+@_account_settings_router.get("/chat-background", response_model = ChatBackgroundResponse)
+def get_chat_background_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ChatBackgroundResponse:
+    return _chat_background_response(get_chat_background())
+
+
+@_account_settings_router.get("/chat-background/image")
+def get_chat_background_image(current_subject: str = Depends(get_current_subject)) -> Response:
+    with background_lock():
+        image = get_chat_background().get("image")
+        path = background_image_path()
+        if not isinstance(image, dict) or not path.is_file():
+            raise HTTPException(status_code = 404, detail = "No background image is saved.")
+        return Response(
+            content = path.read_bytes(),
+            media_type = image.get("type", "application/octet-stream"),
+            headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+
+@_account_settings_router.put("/chat-background/image", response_model = ChatBackgroundResponse)
+async def update_chat_background_image(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> ChatBackgroundResponse:
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BACKGROUND_IMAGE_BYTES:
+        raise HTTPException(status_code = 413, detail = "Background image is too large.")
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > MAX_BACKGROUND_IMAGE_BYTES:
+            raise HTTPException(status_code = 413, detail = "Background image is too large.")
+    try:
+        stored = await asyncio.to_thread(save_background_image, bytes(data))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _chat_background_response(stored)
+
+
+@_account_settings_router.put("/chat-background", response_model = ChatBackgroundResponse)
+def update_chat_background_settings(
+    payload: ChatBackgroundAdjustmentsPayload, current_subject: str = Depends(get_current_subject)
+) -> ChatBackgroundResponse:
+    try:
+        return _chat_background_response(save_background_adjustments(payload.adjustments))
+    except LookupError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
+
+@_account_settings_router.delete("/chat-background", response_model = ChatBackgroundResponse)
+def delete_chat_background_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ChatBackgroundResponse:
+    return _chat_background_response(clear_background())
 
 
 # Backs Settings > Logs: the session log existed, but its path went only to an unseen console.
@@ -5304,8 +5847,12 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
     )
     terminal_exe, shell = _sandbox_terminal_target()
     # On Windows the choice above just probed this executable.
+    terminal_force = force and not windows_refresh
+    if sys.platform in ("linux", "darwin") and python.available:
+        # Reuse a successful POSIX probe; an undecided check can leave an older cached pass.
+        terminal_force = False
     terminal = os_sandbox.capability_snapshot(
-        force = force and not windows_refresh,
+        force = terminal_force,
         execution_kind = "terminal",
         selected_executable = terminal_exe,
     )

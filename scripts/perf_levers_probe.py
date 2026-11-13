@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Measure the next-phase diffusion levers on the real model, vs today's compiled baseline.
-
-Variants (Z-Image dense bf16, regional compile = the shipped "default" speed profile):
-  baseline            -- channels_last + compile_repeated_blocks (reference image)
-  inductor_flags      -- + the lossless inductor autotune flags (conv_1x1_as_mm,
-                         coordinate_descent_tuning(+all_dirs), epilogue_fusion=False)
-  attn_cudnn          -- + set_attention_backend("_native_cudnn") (exact)
-  attn_flash4         -- + set_attention_backend("flash_4_hub")   (exact, SM100)
-  attn_sage           -- + set_attention_backend("sage")          (INT8 QK, quantized)
-  fbcache             -- + First-Block-Cache (threshold 0.12)      (few-step headroom test)
-
-Reports median latency, vs-baseline speedup, peak VRAM, and LPIPS vs baseline. One CUDA GPU."""
+"""Benchmarks inductor flags, attention backends and FBCache against the compiled Z-Image baseline."""
 
 from __future__ import annotations
 

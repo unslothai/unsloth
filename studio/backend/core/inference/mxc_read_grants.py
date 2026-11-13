@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""One-time AppContainer read grants on Studio's runtime folders for MXC's AppContainer + DACL tier.
-
-On that tier wxc-exec grants every readonly path per launch with an inheritable ACE, which Windows
-propagates to every file below it and reverts on exit, so a Python environment costs 10+ s per
-command (microsoft/mxc#572). wxc-exec skips a path whose DACL already grants ALL APPLICATION PACKAGES
-read and execute, as Windows ships C:\\Windows and Program Files. Granting that once on the runtime
-folders Studio owns lets every later launch skip the walk. Read and execute only, never write.
-"""
+"""Read/execute-only AppContainer grant on runtime folders lets wxc-exec skip the per-launch ACE walk."""
 
 from __future__ import annotations
 

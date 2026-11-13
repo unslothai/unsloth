@@ -155,7 +155,14 @@ def _decoder_itemsize(vae: Any) -> int:
 
 
 def _free_bytes(device: Any) -> Optional[int]:
-    """Device free memory plus torch's reusable cache (not CUDA graph pools), less the user's VRAM Budget reserve (raw at the default)."""
+    """Free device memory + torch's reusable cache (not graph pools) minus the VRAM Budget reserve; CPU: cgroup-capped MemAvailable."""
+    if getattr(device, "type", device) == "cpu":
+        try:
+            from .diffusion_memory import _available_system_memory_mib
+            mib = _available_system_memory_mib()
+        except Exception:  # noqa: BLE001
+            return None
+        return None if mib is None else max(0, int(mib)) * 2**20
     try:
         import torch
 
@@ -168,6 +175,26 @@ def _free_bytes(device: Any) -> Optional[int]:
         return None
 
 
+# torch's CPU allocator refusals: ``not enough memory`` (Windows commit limit), ``can't allocate memory`` (POSIX ENOMEM).
+_CPU_ALLOC_REFUSALS = ("not enough memory", "can't allocate memory")
+
+
+def _is_oom(exc: BaseException) -> bool:
+    from .diffusion_batched import is_oom_error
+
+    if is_oom_error(exc):
+        return True
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur).lower()
+        if any(s in msg for s in _CPU_ALLOC_REFUSALS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _in_chain(fn: Any, target: Any) -> bool:
     for _ in range(16):
         if fn is None:
@@ -178,6 +205,50 @@ def _in_chain(fn: Any, target: Any) -> bool:
 
         fn = next_layer(fn)
     return False
+
+
+# Under model CPU offload the denoiser is still on the card until the VAE's hook runs inside decode. "0" = old behaviour.
+FREE_AFTER_OFFLOAD_ENV = "UNSLOTH_VIDEO_VAE_FREE_AFTER_OFFLOAD"
+
+
+def _free_after_offload_enabled() -> bool:
+    return os.environ.get(FREE_AFTER_OFFLOAD_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _on_device(module: Any) -> bool:
+    try:
+        first = next(iter(module.parameters()), None)
+    except Exception:  # noqa: BLE001
+        return False
+    return first is not None and first.device.type != "cpu"
+
+
+def run_offload_hook_first(vae: Any, logger: Any = None) -> bool:
+    """Run the VAE's offload pre-hook before the fit check so it sees the decode's free memory (the decode's own hook
+    call then moves nothing). True when the hook ran."""
+    if not _free_after_offload_enabled():
+        return False
+    hook = getattr(vae, "_hf_hook", None)
+    if hook is None or "CpuOffload" not in type(hook).__name__:
+        return False
+    pre_forward = getattr(hook, "pre_forward", None)
+    if not callable(pre_forward):
+        return False
+    prev_model = getattr(getattr(hook, "prev_module_hook", None), "model", None)
+    if not (prev_model is not None and _on_device(prev_model)) and _on_device(vae):
+        return False
+    try:
+        pre_forward(vae)
+    except Exception as exc:  # noqa: BLE001 - the decode's own hook call still moves them
+        if logger is not None:
+            logger.debug("video.vae_untiled: offload hook before the fit check failed (%s)", exc)
+        return False
+    return True
 
 
 def _decode_device(vae: Any, z: Any) -> Any:
@@ -281,14 +352,12 @@ def install_untiled_decode(
                 )
             import torch
 
-            from .diffusion_batched import is_oom_error
-
             try:
                 out = decode(z, *args, **kwargs)
                 stats["wide"] += 1
                 return out
             except Exception as exc:  # noqa: BLE001
-                if not is_oom_error(exc):
+                if not _is_oom(exc):
                     raise
             finally:
                 (
@@ -310,15 +379,13 @@ def install_untiled_decode(
             return decode(z, *args, **kwargs)
         import torch
 
-        from .diffusion_batched import is_oom_error
-
         vae.use_tiling = False
         try:
             out = decode(z, *args, **kwargs)
             stats["untiled"] += 1
             return out
         except Exception as exc:  # noqa: BLE001
-            if not is_oom_error(exc):
+            if not _is_oom(exc):
                 raise
         finally:
             vae.use_tiling = True
@@ -337,6 +404,7 @@ def install_untiled_decode(
 
     def untiled_when_fits(*args: Any, **kwargs: Any) -> Any:
         try:
+            run_offload_hook_first(vae, logger)
             return gated(*args, **kwargs)
         finally:
             # A failed VAE compile restores its eager decode into this slot; the guarded inner call already runs eager.

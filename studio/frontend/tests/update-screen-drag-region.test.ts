@@ -29,6 +29,7 @@ const { UpdateScreen } = loadWithStubs<typeof UpdateScreenModule>(
     },
     "@/components/ui/button": { Button: () => null },
     "@/components/ui/spinner": { Spinner: () => null },
+    "@/i18n": { useT: () => (key: string) => key },
   },
 );
 

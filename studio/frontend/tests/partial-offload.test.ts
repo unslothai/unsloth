@@ -8,7 +8,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { offloadCountsFrom, offloadWarning } = await import(
+const { expertSpillNote, offloadCountsFrom, offloadWarning } = await import(
   "../src/features/chat/lib/partial-offload.ts"
 );
 
@@ -98,6 +98,14 @@ test("every load path reads the response the same way", () => {
       // biome-ignore lint/style/useNamingConvention: api schema
       gpu_backend_unavailable: false,
       // biome-ignore lint/style/useNamingConvention: api schema
+      overflow_layers: 7,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      expert_cache_mib: null,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      gpu_weights_mib: 1228.8,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      host_weights_mib: 2048,
+      // biome-ignore lint/style/useNamingConvention: api schema
       metal_unsupported_weight_types: null,
     }),
     {
@@ -108,6 +116,10 @@ test("every load path reads the response the same way", () => {
       offloadOverridden: false,
       cpuFallbackReason: null,
       gpuBackendUnavailable: false,
+      overflowLayers: 7,
+      expertCacheMib: null,
+      gpuWeightsMib: 1228.8,
+      hostWeightsMib: 2048,
       metalUnsupportedWeightTypes: null,
     },
   );
@@ -204,6 +216,88 @@ test("the advice does not promise that a smaller quantization fits", () => {
   }
 });
 
+test("the notice says how much of the weights is on the GPU and on the CPU", () => {
+  // A T4 load of a 27B: CUDA0 12677.16 MiB, CPU_Mapped 5833.19 MiB.
+  assert.match(
+    offloadWarning({ offloaded: 45, total: 66, gpuWeightsMib: 12677.16, hostWeightsMib: 5833.19 })
+      ?.description ?? "",
+    /may let more of it fit on the GPU\. Model weights: 12 GiB on the GPU, 5\.7 GiB on the CPU\.$/,
+  );
+  assert.match(
+    offloadWarning({ offloaded: 0, total: 60, gpuWeightsMib: 0, hostWeightsMib: 22400 })
+      ?.description ?? "",
+    /may leave room on the GPU\. Model weights: 22 GiB on the CPU\.$/,
+  );
+  assert.match(
+    offloadWarning({ offloaded: 9, total: 25, gpuWeightsMib: 40 })?.description ?? "",
+    /Model weights: 40 MiB on the GPU\.$/,
+  );
+  assert.doesNotMatch(
+    offloadWarning({ offloaded: 54, total: 66, gpuWeightsMib: 19456, hostWeightsMib: 4813 })
+      ?.description ?? "",
+    /VRAM|RAM/,
+  );
+});
+
+test("missing or nonsense weight figures leave the notice as it was", () => {
+  for (const weights of [
+    {},
+    { gpuWeightsMib: null, hostWeightsMib: null },
+    { gpuWeightsMib: 0, hostWeightsMib: 0 },
+    { gpuWeightsMib: -5, hostWeightsMib: Number.NaN },
+  ]) {
+    assert.match(
+      offloadWarning({ offloaded: 38, total: 60, ...weights })?.description ?? "",
+      /may let more of it fit on the GPU\.$/,
+    );
+  }
+});
+
+test("expert weights the fit kept on the CPU are stated, not warned about", () => {
+  // gemma-4-26B-A4B Q8_0 on a 3090: llama.cpp logs "offloaded 31/31" with seven layers' experts in CUDA_Host.
+  const spill = {
+    offloaded: 31,
+    total: 31,
+    gpuMemoryMode: "auto",
+    gpuLayers: -1,
+    overflowLayers: 7,
+    gpuWeightsMib: 20709.15,
+    hostWeightsMib: 5639.4,
+  };
+  assert.equal(offloadWarning(spill), null);
+  assert.equal(
+    expertSpillNote(spill),
+    "All 31 layers are on the GPU. The expert weights of 7 layers are on the CPU. Model weights: 20 GiB on the GPU, 5.5 GiB on the CPU.",
+  );
+  assert.match(expertSpillNote({ ...spill, overflowLayers: 1 }) ?? "", /of 1 layer are on the CPU/);
+  assert.equal(
+    expertSpillNote({ offloaded: 31, total: 31, overflowLayers: 30, expertCacheMib: 6144 }),
+    "All 31 layers are on the GPU. Every expert is on the CPU, with a 6.0 GiB cache of the most used ones on the GPU.",
+  );
+});
+
+test("only a spill nobody chose, on an otherwise full load, gets the expert note", () => {
+  const spill = { offloaded: 31, total: 31, overflowLayers: 7 };
+  assert.equal(expertSpillNote({ offloaded: 31, total: 31, overflowLayers: 0 }), null);
+  assert.equal(expertSpillNote({ offloaded: 31, total: 31 }), null);
+  assert.equal(expertSpillNote({ ...spill, gpuMemoryMode: "manual", gpuLayers: 31 }), null);
+  assert.equal(expertSpillNote({ ...spill, offloadOverridden: true }), null);
+  // Manual with GPU Layers on Auto is still the fit's doing.
+  assert.notEqual(expertSpillNote({ ...spill, gpuMemoryMode: "manual", gpuLayers: -1 }), null);
+  assert.equal(expertSpillNote({ ...spill, offloaded: 20 }), null);
+  assert.equal(expertSpillNote({ ...spill, cpuFallbackReason: "vulkan_startup_crash" }), null);
+  assert.equal(expertSpillNote({}), null);
+});
+
+test("a full count with every buffer in system memory is not a success", () => {
+  const hostOnly = { offloaded: 29, total: 29, gpuWeightsMib: 0, hostWeightsMib: 499.8 };
+  const broken = offloadWarning({ ...hostOnly, gpuBackendUnavailable: true });
+  assert.equal(broken?.titleSuffix, ", on CPU");
+  assert.match(broken?.description ?? "", /could not use it/);
+  // The same buffers on a machine with no GPU to miss are the expected placement.
+  assert.equal(offloadWarning(hostOnly), null);
+});
+
 test("weights Metal cannot run are reported even when every layer is offloaded", () => {
   // #15409: MiniMax-M3.1-Flash on an M3 Ultra logs 61/61 layers while its NVFP4 experts run on the CPU.
   const counts = offloadCountsFrom({
@@ -217,14 +311,13 @@ test("weights Metal cannot run are reported even when every layer is offloaded",
   const warning = offloadWarning(counts);
   assert.equal(warning?.titleSuffix, ", partly on CPU");
   assert.match(warning?.description ?? "", /Metal cannot run this model's NVFP4 weights/);
-  assert.match(warning?.description ?? "", /without NVFP4 tensors runs fully on the GPU/);
-  // A layer split the user pinned does not explain these weights away.
+  assert.match(warning?.description ?? "", /Update llama\.cpp: newer builds run NVFP4 on the GPU\.$/);
+  assert.equal(expertSpillNote(counts), null);
+  // A pinned layer split does not explain these weights away.
   assert.notEqual(offloadWarning({ ...counts, gpuMemoryMode: "manual", gpuLayers: 61 }), null);
-  assert.match(
-    offloadWarning({ ...counts, metalUnsupportedWeightTypes: ["nvfp4", "tq1_0"] })?.description ?? "",
-    /NVFP4 and TQ1_0 weights/,
-  );
-  // Nothing reported, or nothing on the GPU at all: the existing messages stand.
+  const both = offloadWarning({ ...counts, metalUnsupportedWeightTypes: ["nvfp4", "tq1_0"] });
+  assert.match(both?.description ?? "", /NVFP4 and TQ1_0 weights/);
+  assert.match(both?.description ?? "", /A quantization without NVFP4 and TQ1_0 tensors runs fully on the GPU\.$/);
   assert.equal(offloadWarning({ offloaded: 61, total: 61, metalUnsupportedWeightTypes: [] }), null);
   assert.match(
     offloadWarning({ offloaded: 0, total: 61, metalUnsupportedWeightTypes: ["nvfp4"] })?.description ?? "",

@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Normalize chat-message `content` (string or OpenAI multimodal list) to text.
-
-String-only formatting paths called string ops directly on `content` and broke
-on the list form (#4383). `content_to_text` collapses either shape to a string,
-dropping non-text parts. No heavy imports, so it is unit-testable alone.
-"""
+"""Collapses message content (string or OpenAI multimodal list) to text, dropping non-text parts; no
+heavy imports, so unit-testable alone."""
 
 from __future__ import annotations
 
@@ -18,8 +14,7 @@ _PASTED_TEXT_CLOSE = "</pasted_text>"
 
 
 def content_to_text(content: Any) -> str:
-    """Plain text of a `content`: str unchanged, list/tuple text parts newline-joined
-    (non-text dropped), None to "", else str(content)."""
+    """Plain text of content: text parts newline-joined, non-text dropped, None as empty."""
     if content is None:
         return ""
     if isinstance(content, str):

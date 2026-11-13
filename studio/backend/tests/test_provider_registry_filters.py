@@ -71,8 +71,7 @@ def test_openai_drops_families_that_are_not_on_the_responses_endpoint():
 
 
 def test_openai_drops_deep_research_models():
-    # Deep research rejects a request with no data source; a default Studio
-    # turn sends no tools.
+    # Deep research rejects a request with no data source; default Studio turns send no tools.
     dropped = _apply(
         "openai",
         ["o3-deep-research", "o4-mini-deep-research", "gpt-6-deep-research"],
@@ -236,6 +235,8 @@ def test_anthropic_surfaces_every_live_model_including_dated_ids():
 
 
 def test_anthropic_default_models_match_filter():
-    info = PROVIDER_REGISTRY["anthropic"]
-    surviving = _apply("anthropic", list(info["default_models"]))
-    assert surviving == list(info["default_models"]), surviving
+    from core.inference.providers import provider_default_models
+
+    defaults = provider_default_models("anthropic")
+    surviving = _apply("anthropic", list(defaults))
+    assert defaults and surviving == defaults, surviving

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Library state in studio.db.
-
-The Library lists files that already live elsewhere (chat uploads, generated images, sandbox
-files), so it only stores what those sources cannot: folders, and a per-item overlay of display
-name, favorite flag and folder. Files uploaded straight into the Library are the one source it
-owns; their bytes sit under ``account_path("library")``.
-"""
+"""Library state (studio.db): folders and an overlay for files kept elsewhere, except Library uploads"""
 
 import sqlite3
 import threading
@@ -336,9 +330,7 @@ def mark_opened(item_id: str, fingerprint: Optional[str] = None) -> None:
 
 
 def reconcile_entries(adopt: list[tuple[str, str]], stale: list[tuple[str, str]]) -> None:
-    """Fingerprint legacy rows with the file found at their path (``adopt``), and drop rows kept
-    for a file since replaced (``stale``). Each only while the row still reads as the listing saw
-    it, so a write that landed in between is kept."""
+    """Each update applies only if the row is unchanged since the listing; a newer write is kept."""
     if not adopt and not stale:
         return
     conn = get_connection()

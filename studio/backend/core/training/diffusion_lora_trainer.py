@@ -56,6 +56,7 @@ from core.training.diffusion_train_common import (  # noqa: F401
     _config_from_dict,
     _CONFIG_ALIASES,
     _emit,
+    training_fetch_repo,
     resolve_train_device,
     _latent_cache_forced,
     _latent_cache_over_budget,
@@ -81,7 +82,12 @@ from core.training.diffusion_samples import (
     sample_seed,
     SampleRoundStopped,
 )
-from core.training.diffusion_train_extras import BucketBatchSampler, cover_resize_dims
+from core.training.diffusion_train_extras import (
+    BucketBatchSampler,
+    accumulate_loss,
+    cover_resize_dims,
+    loss_value,
+)
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
     discard_preexisting_checkpoints,
@@ -93,6 +99,12 @@ from core.training.diffusion_checkpoint import (
     with_resolved_revision,
     preflight_resume,
 )
+
+
+def _parts_to_device(parts, device):
+    import torch
+    moved = [p.to(device, non_blocking = True) for p in parts]
+    return moved[0] if len(moved) == 1 else torch.cat(moved)
 
 
 def compute_sdxl_add_time_ids(resolution: int) -> tuple[int, int, int, int, int, int]:
@@ -173,9 +185,7 @@ def _load_image_tensor_planned(
 def _encode_sdxl_prompts(
     prompts: list[str], tokenizers: list, text_encoders: list, device: Any
 ) -> tuple:
-    """Encode a batch of prompts with both SDXL text encoders. Returns
-    (prompt_embeds [B, T, 2048], pooled_prompt_embeds [B, 1280]). Text encoders are
-    frozen, so this runs without grad."""
+    """Encode prompts with both SDXL text encoders to [B, T, 2048] embeds and [B, 1280] pooled; no grad."""
     import torch
 
     embeds_list = []
@@ -370,8 +380,7 @@ def run_diffusion_lora_training(
         pairs = discover_image_caption_pairs(
             cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
         )
-        # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every
-        # downstream read agrees.
+        # Resolve num_epochs to train_steps now the size is known; rebind cfg so reads agree.
         cfg = replace(
             cfg,
             train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
@@ -395,7 +404,12 @@ def run_diffusion_lora_training(
                     "GPUs only, so expect slow steps and previews."
                 ),
             )
-        _emit(on_event, "model_load_started", num_images = len(pairs))
+        _emit(
+            on_event,
+            "model_load_started",
+            num_images = len(pairs),
+            fetch_repo = training_fetch_repo(cfg),
+        )
 
         # Honour a stop requested before the (slow) base model load.
         if _check_stop():
@@ -412,9 +426,12 @@ def run_diffusion_lora_training(
             )
             return str(out_dir)
 
-        pipe = StableDiffusionXLPipeline.from_pretrained(
-            cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
-        )
+        from core.training.diffusion_load_progress import report_model_load_progress
+
+        with report_model_load_progress(on_event):
+            pipe = StableDiffusionXLPipeline.from_pretrained(
+                cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
+            )
         unet, vae = pipe.unet, pipe.vae
         tokenizers = [pipe.tokenizer, pipe.tokenizer_2]
         text_encoders = [pipe.text_encoder, pipe.text_encoder_2]
@@ -442,8 +459,7 @@ def run_diffusion_lora_training(
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
 
-        # Regionally torch.compile the U-Net repeated blocks via the DiT trainer's never-fatal wrapper (failure
-        # falls back to eager).
+        # Regional torch.compile of U-Net blocks; never-fatal, falls back to eager.
         from core.training.diffusion_dit_trainer import (
             _compile_engagement_warning,
             _dynamo_compile_counters,
@@ -460,8 +476,7 @@ def run_diffusion_lora_training(
         )
         # A frozen fp16 UNet (pre-Ampere / RDNA2 fallback) underflows the LoRA gradients without loss scaling.
         scaler = torch.amp.GradScaler("cuda", enabled = weight_dtype is torch.float16)
-        # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the
-        # accumulation factor would stretch warmup.
+        # Scheduler ticks per optimizer update: warmup counts optimizer steps, not micro-steps.
         lr_sched = get_scheduler(
             cfg.lr_scheduler,
             optimizer = optimizer,
@@ -472,8 +487,7 @@ def run_diffusion_lora_training(
         vae_scale = vae.config.scaling_factor
         prediction_type = noise_scheduler.config.prediction_type
 
-        # Deterministic, so the precomputed embeddings are bit-identical to in-loop encoding; the ~1.5 GB
-        # CLIP encoders are freed afterwards.
+        # Deterministic, so precomputed embeds are bit-identical; the ~1.5 GB CLIP is freed.
         precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
         caption_embeds: dict[str, tuple] = {}
         sample_plan = plan_samples(cfg, "sdxl", [c for _, c in pairs])
@@ -551,8 +565,7 @@ def run_diffusion_lora_training(
                     torch.cuda.empty_cache()
         if sample_plan is not None and vae is not None:
             sample_vae = vae
-        # Variant picks use their own stream so the loop index/noise draws stay seed-deterministic whether
-        # or not the cache is enabled.
+        # Variant picks use a separate RNG; seeded loop draws match with or without the cache.
         variant_rng = random.Random(cfg.seed + 1)
 
         _emit(on_event, "model_load_completed", compiled = compiled)
@@ -561,9 +574,8 @@ def run_diffusion_lora_training(
         # Env override and over-budget fallback disable the cache; the paths draw crops from different RNGs.
         identity = with_cache_mode(identity, latent_cache is not None)
 
-        # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a
-        # short run does not leave a small dataset partly unseen.
-        # Bucketed runs draw each batch from one bucket so its latents stack into one shape.
+        # Each image once per cycle so short runs see all; bucketed batches draw from one bucket to
+        # stack.
         index_sampler = (
             PermutationBatchSampler(len(pairs), rng)
             if canvases is None
@@ -571,8 +583,7 @@ def run_diffusion_lora_training(
         )
 
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
-            # Draw the full configured batch, not min(batch, n): the sampler refills across cycles so a small
-            # dataset still yields that many indices.
+            # Draw the full batch, not min(batch, n): the sampler refills across cycles.
             idx = index_sampler.next_batch(cfg.train_batch_size)
             if canvases is not None:
                 idx = idx[1]
@@ -597,8 +608,7 @@ def run_diffusion_lora_training(
         if scaler.is_enabled() and isinstance(scaler_state, dict) and scaler_state:
             # Continue at the scale the run had backed off to, not 2**16, which would overflow again.
             scaler.load_state_dict(scaler_state)
-        # Bound HERE: the checkpoint scan and the periodic saves both need it, and the two earlier
-        # assignments live inside early-return branches.
+        # Bound here: earlier assignments sit in early-return branches; scan and saves need it.
         out_dir = Path(cfg.output_dir).expanduser()
         # Foreign bundles in a reused output_dir must be cleared or they outrank this run.
         resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
@@ -728,7 +738,7 @@ def run_diffusion_lora_training(
                 stopped = True
                 break
             optimizer.zero_grad(set_to_none = True)
-            step_loss = 0.0
+            step_acc = None
             for _ in range(cfg.gradient_accumulation_steps):
                 idx, img_paths, captions = _next_batch()
                 if latent_cache is not None:
@@ -767,8 +777,10 @@ def run_diffusion_lora_training(
                 noisy = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 if precompute:
-                    prompt_embeds = torch.cat([caption_embeds[c][0] for c in captions]).to(device)
-                    pooled = torch.cat([caption_embeds[c][1] for c in captions]).to(device)
+                    prompt_embeds = _parts_to_device(
+                        [caption_embeds[c][0] for c in captions], device
+                    )
+                    pooled = _parts_to_device([caption_embeds[c][1] for c in captions], device)
                 else:
                     prompt_embeds, pooled = _encode_sdxl_prompts(
                         captions, tokenizers, text_encoders, device
@@ -799,7 +811,7 @@ def run_diffusion_lora_training(
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
 
                 scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
-                step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
+                step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
                 micro += 1
 
             # max_grad_norm <= 0 disables clipping; clip_grad_norm_(0.0) would zero all grads.
@@ -810,6 +822,7 @@ def run_diffusion_lora_training(
                 grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
                 if not math.isfinite(grad_norm):
                     grad_norm = None
+            step_loss = loss_value(step_acc)
             scale_before = scaler.get_scale() if scaler.is_enabled() else None
             scaler.step(optimizer)
             scaler.update()
@@ -956,7 +969,10 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         # normalized() validates the family; the registry sends DiT families to their own trainer.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
-        trainer(cfg, on_event = on_event, should_stop = should_stop)
+        from .diffusion_download_progress import TrainingDownloadProgress
+
+        with TrainingDownloadProgress(on_event) as report:
+            trainer(cfg, on_event = report, should_stop = should_stop)
     except Exception as exc:  # noqa: BLE001 -- surfaced to the parent as an error event
         # Emit both keys: the diffusion service reads ``message``, the generic worker reads ``error``.
         event_queue.put(

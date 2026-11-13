@@ -386,13 +386,18 @@ def _cached_model_path(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a fully downloaded GGML file in the shared HF cache, else None."""
+    """Path of a fully downloaded GGML file in *hub_cache* (default: every cache find_in_hub_caches covers) or None."""
+    if hub_cache is None:
+        from core.inference.model_cache_search import find_in_hub_caches
+        return find_in_hub_caches(
+            GGML_STT_REPOS[model_id],
+            lambda root: _cached_model_path(model_id, hub_cache = root, revision = revision),
+        )
+
     from huggingface_hub import hf_hub_download
 
-    from core.inference.stt_sidecar import _active_hf_hub_cache
-
     repo_id = GGML_STT_REPOS[model_id]
-    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+    root = hub_cache
 
     def cached_at(candidate_revision: str) -> Optional[str]:
         try:
@@ -923,7 +928,7 @@ class GgmlSttSidecar:
     ) -> None:
         """A None device keeps the running server's placement, so a caller that sends none cannot
         move it."""
-        from core.inference.audio_device import audio_device_forces_cpu
+        from core.inference.audio_device import stt_device_forces_cpu
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -937,7 +942,7 @@ class GgmlSttSidecar:
             force_cpu = (
                 self._forced_cpu
                 if device is None and self._process_alive()
-                else audio_device_forces_cpu(device)
+                else stt_device_forces_cpu(device)
             )
             if (
                 self._process_alive()
@@ -1070,8 +1075,7 @@ class GgmlSttSidecar:
         port: int,
         route: str = "",
     ) -> bool:
-        """One readiness probe: our child is alive and the responder looks like
-        whisper.cpp's server (its index page and errors identify whisper)."""
+        """Child alive, responder looks like whisper.cpp (index page and errors name whisper)."""
         if process.poll() is not None:
             return False
         try:

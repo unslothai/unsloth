@@ -23,20 +23,17 @@ import { resumesThought } from "@/features/model-picker";
 import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
   CollapseIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Folder02Icon,
-  FolderExportIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PinIcon,
@@ -46,8 +43,10 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { ForkIcon } from "@/lib/fork-icon";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -72,7 +71,12 @@ import {
   getSidebarItemThreadIds,
   regenerateChatTitleWithToast,
 } from "./chat-row-menu";
-import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
+import {
+  chatFolderSessionId,
+  OpenChatFolderItem,
+  UploadToChatFolderItem,
+} from "./open-chat-folder-item";
+import { ExportFormatItems } from "./export-format-items";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -233,6 +237,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.menu.regenerateTitle")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}
         onSelect={menu.togglePin}
@@ -289,6 +294,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.chats.menu.fork")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="gap-2.5">
           <HugeiconsIcon
@@ -315,7 +321,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
               {menu.projects.map((entry) => (
                 <Item
                   key={entry.id}
-                  icon={Folder02Icon}
+                  icon={ProjectIcon}
                   onSelect={() => menu.moveToProject(entry.id)}
                 >
                   {entry.name}
@@ -387,23 +393,25 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
           {t("common.export")}
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className={cn(MENU, "w-48")}>
-          {chatExportOptions().map(({ label: name, format }) => (
-            <DropdownMenuItem
-              key={format}
-              onSelect={() => void exportAs(format)}
-            >
-              {name}
-            </DropdownMenuItem>
-          ))}
+          <ExportFormatItems
+            options={chatExportOptions().map(({ label, format }) => ({
+              key: format,
+              label,
+            }))}
+            onSelect={(format) => void exportAs(format)}
+            subContentClassName={cn(MENU, "w-48")}
+          />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
+      {/* Only with the folder items, or it doubles the next separator. */}
+      {chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null}
       <OpenChatFolderItem item={menu.item} />
       <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
-      <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
+      <Item icon={ArchiveIcon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}
       </Item>
-      <Item icon={Delete02Icon} onSelect={menu.remove} destructive={true}>
+      <Item icon={TrashIcon} onSelect={menu.remove} destructive={true}>
         {t("common.delete")}
       </Item>
     </>

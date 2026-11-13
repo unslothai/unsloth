@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Library API: one view over uploads, chat attachments, generated images and audio, fine-tuned
-models and sandbox files, plus folders, favorites and renames. See ``core.library`` for the sources."""
+"""Library API over uploads, attachments, media, models and sandbox files; sources in core.library."""
 
 import hashlib
 import hmac
@@ -67,8 +66,7 @@ def _model_ref(item_id: str) -> Optional[tuple[str, str]]:
 
 
 def _for_caller(item_id: str, via_api_key: bool) -> str:
-    """A fine-tune's id names its folder; an API key gets a reference in its place, as the Hub
-    inventory routes give it, which ``_from_caller`` turns back."""
+    """A fine-tune id names its folder; API-key callers get a reference that _from_caller reverses."""
     from hub.utils.host_paths import cache_reference, host_paths_visible
 
     ref = _model_ref(item_id)

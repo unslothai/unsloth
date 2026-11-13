@@ -26,17 +26,15 @@ import { toast } from "@/lib/toast";
 import {
   Cancel01Icon,
   FlimSlateIcon,
-  Delete02Icon,
   Download01Icon,
-  Folder01Icon,
-  FolderExportIcon,
-  Image02Icon,
+  ImageIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon, FolderClosedIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -107,8 +105,8 @@ type EmptyCopy = [icon: typeof Folder01Icon, title: TranslationKey, description:
 const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
   suggested: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
   favorites: [StarPointedIcon, "library.empty.favoritesTitle", "library.empty.favoritesDescription"],
-  folders: [Folder01Icon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
-  images: [Image02Icon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
+  folders: [FolderClosedIcon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
+  images: [ImageIcon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
   videos: [FlimSlateIcon, "library.empty.videosTitle", "library.empty.videosDescription"],
   audio: [AiSpeechIcon, "library.empty.audioTitle", "library.empty.audioDescription"],
   models: [TestTubeOutlineIcon, "library.empty.modelsTitle", "library.empty.modelsDescription"],
@@ -117,6 +115,7 @@ const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
 };
 
 const EMPTY_LINKS = {
+  images: ["/images", "library.empty.generateImage"],
   videos: ["/video", "library.empty.generateVideo"],
   audio: ["/audio", "library.empty.generateAudio"],
   models: ["/studio", "library.empty.trainModel"],
@@ -815,7 +814,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     if (tab === "folders") {
       return (
         <Button
-          variant="dark"
+          variant="muted"
           className="rounded-full"
           onClick={() => setNameDialog({ mode: "create", parentId: null })}
         >
@@ -825,11 +824,20 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     if (!(tab in EMPTY_LINKS)) return uploadButton;
     const [to, label] = EMPTY_LINKS[tab as keyof typeof EMPTY_LINKS];
-    return (
+    const generate = (
       <Button variant="muted" className="rounded-full" onClick={() => void navigate({ to })}>
         {t(label)}
       </Button>
     );
+    if (tab === "images" || tab === "videos") {
+      return (
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {uploadButton}
+          {generate}
+        </div>
+      );
+    }
+    return generate;
   }
 
   function renderFavorites() {
@@ -1124,7 +1132,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                 "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
               )}
             >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
               {t("common.delete")}
             </button>
             <DropdownMenu>
@@ -1150,7 +1158,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                     </DropdownMenuItem>
                     {bulkDestinations().map((folder) => (
                       <DropdownMenuItem key={folder.id} onSelect={() => bulkMove(folder.id)}>
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.75} className="size-icon" />
                         <span className="truncate">{folder.name}</span>
                       </DropdownMenuItem>
                     ))}

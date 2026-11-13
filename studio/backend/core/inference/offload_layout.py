@@ -1,19 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF tensor layout, bucketed by where each tensor is allowed to live.
-
-Split out from ``offload_planner`` on purpose: this half does file IO and knows
-about GGUF key names, the other half is pure arithmetic. The planner can then be
-tested exhaustively from hand-built layouts with no fixtures on disk.
-"""
+"""GGUF tensor layout by placement bucket; file IO and GGUF keys live here, not in offload_planner."""
 
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Sequence
 import os
 
 from core.inference.lookup_tables import is_per_layer_embedding
@@ -114,8 +109,7 @@ _SPLIT_SHARD_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 
 
 def split_shard_paths(path: str) -> Optional[list[str]]:
-    """Every shard of the split *path* belongs to, in order, or None when the name
-    is not llama.cpp's ``<prefix>-NNNNN-of-MMMMM.gguf`` (llama_split_path)."""
+    """Every shard of the split, in order; None unless the name is llama.cpp's split pattern."""
     directory, name = os.path.split(path)
     match = _SPLIT_SHARD_RE.match(name)
     if not match:
@@ -127,8 +121,14 @@ def split_shard_paths(path: str) -> Optional[list[str]]:
     ]
 
 
-def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
-    """Returns an incomplete layout rather than raising, so the planner abstains; all_shards reads every sibling shard, and all must be present"""
+def layout_from_gguf(
+    path: str,
+    *,
+    all_shards: bool = False,
+    files: Optional[Sequence[str]] = None,
+) -> ModelLayout:
+    """Returns an incomplete layout rather than raising, so the planner abstains; all_shards reads every sibling shard, and all must be present.
+    ``files`` (with all_shards) is the exact set llama-server reads instead, ``path`` first: a split whose Engram table comes from --ple."""
     try:
         import struct
 
@@ -157,6 +157,10 @@ def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
                 return offs - orig_offs, [raw_itype, alen], [], types
 
         readers = [_LayoutReader(path)]
+        if all_shards and files:
+            return _layout_from_readers(
+                readers + [_LayoutReader(p) for p in files[1:]], complete = True
+            )
         if all_shards and int(_field(readers[0], "split.count") or 0) > 1:
             shards = split_shard_paths(path)
             if not shards or not all(os.path.isfile(p) for p in shards):
@@ -178,11 +182,12 @@ def _layout_from_reader(reader) -> ModelLayout:
     return _layout_from_readers([reader])
 
 
-def _layout_from_readers(readers) -> ModelLayout:
-    """One reader per shard, the first carrying the metadata."""
+def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
+    """One reader per file, the first carrying the metadata; ``complete`` vouches that they are
+    every file llama-server reads, whatever split.count says."""
     reader = readers[0]
     # Split GGUF: GGUFReader maps one shard, so a partial read undercounts and can OOM under --fit off; abstain unless every shard is given
-    if (int(_field(reader, "split.count") or 0) or 1) != len(readers):
+    if not complete and (int(_field(reader, "split.count") or 0) or 1) != len(readers):
         return ModelLayout()
 
     arch = str(_field(reader, "general.architecture") or "")
@@ -194,8 +199,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         return ModelLayout()
     blocks_total = int(blocks_total)
 
-    # llama.cpp keeps embedded MTP blocks out of the target context and prices their cache separately, so the attention
-    # count must not include them.
+    # MTP blocks sit outside llama.cpp's target context, so the attention count excludes them.
     nextn = int(_field(reader, f"{arch}.nextn_predict_layers") or 0)
     n_layers = max(0, blocks_total - nextn)
 
@@ -237,8 +241,7 @@ def _layout_from_readers(readers) -> ModelLayout:
     # Full context on every layer is safe for TOTAL but cannot show which layers hold the big caches.
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
 
-    # Mamba conv + SSM state, one f32 copy per sequence. Mirrors llama.cpp's own sizing; zero when the model has no
-    # recurrent layers.
+    # Mamba conv and SSM state, one f32 copy per sequence; zero without recurrent layers.
     d_inner = int(_field(reader, f"{arch}.ssm.inner_size") or 0)
     d_state = int(_field(reader, f"{arch}.ssm.state_size") or 0)
     n_group = int(_field(reader, f"{arch}.ssm.group_count") or 0)
@@ -272,8 +275,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         if match:
             index = int(match.group(1))
             tail = match.group(2)
-            # Shared experts (ffn_*_shexp) and routers (ffn_gate_inp*) run on every token: dense-FFN bandwidth for a
-            # rounding error of size. Not spillable.
+            # Shared experts and routers run on every token, so they are not spillable.
             spillable = _MOE_EXPERT_RE.match(tail) or (not is_moe and _DENSE_FFN_RE.match(tail))
             if spillable:
                 spill[index] = spill.get(index, 0) + nbytes

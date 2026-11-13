@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which Audio page workflows (Speak, Clone, Edit, Convert, Music, Separate, Transcribe) a model
-or a clip belongs to.
-
-Mirrors ``studio/frontend/src/features/audio/workflows.ts``. This module reads the audio.cpp
-constants; ``audio_cpp_models`` never imports it.
-"""
+"""Which Audio page workflows (Speak, Clone, Edit, Convert, Music, Separate, Transcribe) a model or
+clip belongs to; mirrors studio/frontend/src/features/audio/workflows.ts. Reads audio.cpp
+constants; audio_cpp_models never imports it."""
 
 from __future__ import annotations
 

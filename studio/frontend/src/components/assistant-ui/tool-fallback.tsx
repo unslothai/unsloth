@@ -6,10 +6,11 @@
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  UnmeasuredCollapsible as Collapsible,
+  UnmeasuredCollapsibleContent as CollapsibleContent,
+  UnmeasuredCollapsibleTrigger as CollapsibleTrigger,
+  CLOSE_FALLBACK_MARGIN_MS,
+} from "@/components/ui/unmeasured-collapsible";
 import { Spinner } from "@/components/ui/spinner";
 // eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
@@ -43,9 +44,10 @@ import {
   type ToolCallMessagePartStatus,
   useAuiState,
 } from "@assistant-ui/react";
-import { AlertCircleIcon } from "@hugeicons/core-free-icons";
-import { LoaderIcon, WrenchIcon, XCircleIcon } from "lucide-react";
+import { Alert02Icon, CancelCircleIcon } from "@hugeicons/core-free-icons";
+import { LoaderIcon } from "lucide-react";
 import { InternetGlyph } from "@/lib/internet-icon";
+import { WrenchIcon } from "@/lib/wrench-icon";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -104,7 +106,7 @@ function ToolFallbackRoot({
   if (syncedUncontrolledState !== uncontrolledState) {
     setUncontrolledState(syncedUncontrolledState);
   }
-  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen =
@@ -164,16 +166,25 @@ type ToolStatus = ToolCallMessagePartStatus["type"];
 
 // Not a tick: "Used tool" already says it finished.
 function completeToolIcon(name: string): ElementType {
-  return name.startsWith("browser_") ? InternetGlyph : WrenchIcon;
+  return name.startsWith("browser_") ? InternetGlyph : WrenchGlyph;
+}
+
+// Stroke 2 like InternetGlyph beside it.
+function WrenchGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={WrenchIcon} strokeWidth={2} {...props} />;
+}
+
+function CancelCircleGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={CancelCircleIcon} {...props} />;
 }
 
 function AlertCircleGlyph(props: { className?: string }) {
-  return <HugeiconsIcon icon={AlertCircleIcon} {...props} />;
+  return <HugeiconsIcon icon={Alert02Icon} {...props} />;
 }
 
 const statusIconMap: Record<Exclude<ToolStatus, "complete">, ElementType> = {
   running: LoaderIcon,
-  incomplete: XCircleIcon,
+  incomplete: CancelCircleGlyph,
   "requires-action": AlertCircleGlyph,
 };
 
@@ -288,15 +299,12 @@ function ToolFallbackContent({
   return (
     <CollapsibleContent
       data-slot="tool-fallback-content"
+      closeDurationMs={ANIMATION_DURATION}
       className={cn(
         "aui-tool-fallback-content relative overflow-hidden text-trace-foreground text-sm outline-none",
         "group/collapsible-content ease-out",
-        "data-[state=closed]:animate-collapsible-up",
-        "data-[state=open]:animate-collapsible-down",
-        "data-[state=closed]:fill-mode-forwards",
         "data-[state=closed]:pointer-events-none",
-        "data-[state=open]:duration-(--animation-duration)",
-        "data-[state=closed]:duration-(--animation-duration)",
+        "duration-(--animation-duration)",
         className,
       )}
       {...props}
@@ -382,6 +390,28 @@ function ToolFallbackMcpApp({
   );
 }
 
+function ToolFallbackImages({
+  images,
+  className,
+}: {
+  images: McpImageResult["images"];
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex flex-col gap-2", className)}>
+      {images.map((img, i) => (
+        <img
+          key={i}
+          src={`data:${img.mimeType};base64,${img.data}`}
+          alt={`Tool result ${i + 1}`}
+          loading="lazy"
+          className="max-w-full rounded-lg border border-border"
+        />
+      ))}
+    </div>
+  );
+}
+
 function ToolFallbackResult({
   result,
   className,
@@ -411,17 +441,7 @@ function ToolFallbackResult({
               {stripAnsi(imageResult.text)}
             </pre>
           )}
-          <div className="mt-2 flex flex-col gap-2">
-            {imageResult.images.map((img, i) => (
-              <img
-                key={i}
-                src={`data:${img.mimeType};base64,${img.data}`}
-                alt={`Tool result ${i + 1}`}
-                loading="lazy"
-                className="max-w-full rounded-lg border border-border"
-              />
-            ))}
-          </div>
+          <ToolFallbackImages images={imageResult.images} className="mt-2" />
         </>
       ) : (
         <pre className="aui-tool-fallback-result-content whitespace-pre-wrap text-xs">
@@ -499,6 +519,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         ? plainBrowserResult(result)
         : (widget?.text ?? result);
 
+  const picture =
+    !isCancelled && toolName === "view_image" && isMcpImageResult(shown) ? shown : null;
+
   // Open while it waits on Allow / Deny, so what is being approved is readable.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
 
@@ -527,8 +550,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
           argsText={argsText}
           className={cn(isCancelled && "opacity-60")}
         />
-        {!isCancelled && <ToolFallbackResult result={shown} />}
+        {!isCancelled && <ToolFallbackResult result={picture ? picture.text : shown} />}
       </ToolFallbackContent>
+      {picture && <ToolFallbackImages className="ml-5 mt-2" images={picture.images} />}
       {/* Files stay outside even when the card is collapsed (#10425) */}
       {created && (
         <SandboxFiles

@@ -67,6 +67,76 @@ _PINNED_COMMITS = {
         "ibm-research/dac.speech.v1.0",
         "1ea7f64cd0678415e2d8c32d67b190722cb9b149",
     ): "3268c083add6c07ae3c4a36650863eb2c3bb6717",
+    (
+        "model",
+        "ggml-org/clef-flash-gguf",
+        "4a192915ef971886004b5b13294f2b4c7a7fc39d",
+    ): "7b759102aa09974f325b52ee533bbbd47126c87b",
+    (
+        "model",
+        "ggml-org/clef-gguf",
+        "63840a1a68cb7084c88610cffc328509356b04cb",
+    ): "9680d82742044d42d2e77fc4d1a915454e313955",
+    (
+        "model",
+        "ggml-org/kev-0.8b-gguf",
+        "e551e319d483ff57e1ff208924b349d397cffc1c",
+    ): "9b1e85197d3a20c2e37fa9ac804b9bbfe2a3e392",
+    (
+        "model",
+        "ggml-org/kev-4b-gguf",
+        "d924f2e2c3872da8b8aaf3eb4453b4126deceb79",
+    ): "444aa7a51432034cc45eda7733f0dab31319b0b3",
+    (
+        "model",
+        "ggml-org/kev-9b-gguf",
+        "ec2bbfe6620218aee2e01cc93bb78dee2a96ed58",
+    ): "1910374c3e4fbec4e5ce4da7453df3f2b4aa91ad",
+    (
+        "model",
+        "ggml-org/lev-gguf",
+        "3e9286a79ae857b4e1de051c92fab6dc574581ce",
+    ): "ddc329eeb7f1d073d692c3e63b53f883c4a36884",
+    (
+        "model",
+        "ggml-org/bespoke-nimble-9b-v3-gguf",
+        "a72bdbadb355ca3014f7f9d2585380917cc59971",
+    ): "39398e9f18dd1268181a0e55aa93015303a3fe0f",
+    (
+        "model",
+        "ggml-org/openjev-gguf",
+        "10840f375658dea7afc5ff4711127bca8218b560",
+    ): "0e92bdc0c205913a707db422da43a12914078026",
+    (
+        "model",
+        "ggml-org/laya-gguf",
+        "22265007700297ba9e128297e82540cf28c5d7d4",
+    ): "968a9847e6f99bdc1440441cdb352635e5a68121",
+    (
+        "model",
+        "ggml-org/julia-1-gguf",
+        "16fee17949206fbf58da9347daea44d792a81211",
+    ): "75a35d1ee9701238e520fce8a3c8c5a546f63c65",
+    (
+        "model",
+        "liquidai/d1-omni-600m-gguf",
+        "8eb2d2a1c5404bba8a34a88bd8e159c242197d51",
+    ): "34f9c859701c5a1b041644078fc7216cc24f9705",
+    (
+        "model",
+        "liquidai/d1-2b-gguf",
+        "e968f6575f0d4fad928312d7af15cad90fd365c0",
+    ): "6eb1050a62fcfd4b9349c596f8b04d67e39c1bd1",
+    (
+        "model",
+        "liquidai/d1-omni-2b-gguf",
+        "c53ae0b1f92b17065e9158d34019c9ca1ea5bcf8",
+    ): "d0a359d1e918b90329fa449baa8519f7c7c2a2ef",
+    (
+        "model",
+        "liquidai/d1-3b-gguf",
+        "bb1e436ea78eb96a3f1acb6da865f70c2fbeb563",
+    ): "49d07e1e9b33827c7dfbdeaeb3437828d63d7e67",
 }
 
 
@@ -236,6 +306,16 @@ async def resolve_revision(kind: str, repo: str, revision: str) -> str:
     return sha
 
 
+async def _listing_missing(kind: str, repo: str, sha: str) -> NotFound:
+    # ModelScope answers an unknown commit of a real repo with the same 404 as a missing repo.
+    await _refs(kind, repo)
+    return NotFound(
+        "RevisionNotFound",
+        f"ModelScope's copy of {repo} has no commit {sha}. "
+        "Switch the model source to Hugging Face in Settings to use this revision.",
+    )
+
+
 async def _file_entries(kind: str, repo: str, sha: str) -> list[dict]:
     source = upstream_id(kind, repo)
     if kind == "model":
@@ -243,7 +323,7 @@ async def _file_entries(kind: str, repo: str, sha: str) -> list[dict]:
             f"/api/v1/models/{source}/repo/files", {"Revision": sha, "Recursive": "true"}
         )
         if data is None:
-            raise repo_missing(repo)
+            raise await _listing_missing(kind, repo, sha)
         return (data.get("Data") or {}).get("Files") or []
     entries: list[dict] = []
     for page in range(1, _TREE_MAX_PAGES + 1):
@@ -258,7 +338,7 @@ async def _file_entries(kind: str, repo: str, sha: str) -> list[dict]:
             },
         )
         if data is None:
-            raise repo_missing(repo)
+            raise await _listing_missing(kind, repo, sha)
         batch = (data.get("Data") or {}).get("Files") or []
         entries.extend(batch)
         if len(batch) < _TREE_PAGE:

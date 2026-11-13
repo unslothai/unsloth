@@ -4,7 +4,7 @@
 // Tokens live in index.css under html[data-palette]. Keep ids in sync with public/theme-boot.js and
 // the backend `palette` Literal in routes/settings.py.
 
-export const UNSLOTH_THEME_IDS = ["standard", "classic", "minimal"] as const;
+export const UNSLOTH_THEME_IDS = ["standard"] as const;
 
 export const FLAVOR_THEME_IDS = [
   "matcha",
@@ -14,7 +14,7 @@ export const FLAVOR_THEME_IDS = [
   "earl-grey",
   "neon-cyberpunk",
   "macaron",
-  "pina-paraiso",
+  "trick-or-treat",
   "mint",
   "taro",
   "licorice",
@@ -29,6 +29,7 @@ export const FLAVOR_THEME_IDS = [
   "peach",
   "yuzu",
   "cotton-candy",
+  "pina-paraiso",
 ] as const;
 
 export const COLOR_THEME_IDS = [
@@ -55,14 +56,6 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
   standard: {
     light: { accent: "#17b88b", background: "#fefefd", foreground: "#0f1114" },
     dark: { accent: "#17b88b", background: "#181818", foreground: "#fcfcfc" },
-  },
-  classic: {
-    light: { accent: "#339cff", background: "#ffffff", foreground: "#1a1c1f" },
-    dark: { accent: "#4dabff", background: "#181818", foreground: "#fcfcfc" },
-  },
-  minimal: {
-    light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
-    dark: { accent: "#ededed", background: "#181818", foreground: "#fcfcfc" },
   },
   matcha: {
     name: "Matcha",
@@ -392,6 +385,21 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#1a1420",
       foreground: "#f5e4f4",
       surface: "#221a29",
+    },
+  },
+  "trick-or-treat": {
+    name: "Trick or Treat",
+    light: {
+      accent: "#f0b400",
+      background: "#f8f2ff",
+      foreground: "#1f0b33",
+      surface: "#efe3ff",
+    },
+    dark: {
+      accent: "#ffc400",
+      background: "#1a0b24",
+      foreground: "#fff4d6",
+      surface: "#251135",
     },
   },
 };

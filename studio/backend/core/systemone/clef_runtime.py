@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cloudflare Clef decision models for the Decision API, served from a spawn child.
-
-Clef is a Qwen3.5 / Qwen3.8 backbone (9B or 27B) with a joint schema head, so it only runs on a
-GPU, through Unsloth's loader and its fast linear attention kernels. Unsloth patches transformers
-process-wide and a CUDA context is never returned while its process lives, so the model gets its
-own process: unloading ends it and the memory goes with it (as core/inference/stt_transformers_worker.py).
-"""
+"""Clef decision models run in a spawn child: CUDA memory is only returned when that process exits."""
 
 from __future__ import annotations
 
@@ -46,10 +40,9 @@ class _Events:
 
 
 def _fast_paths(folder: str) -> None:
-    # Clef is a Qwen3.5 backbone: unsloth_zoo ships its gated delta kernels and Triton causal conv
-    # (prefill and decode), so nothing is installed. Where that conv cannot run (switched off, ROCm,
-    # no Triton, an older zoo) it gets the prebuilt causal-conv1d a training run would; a failed
-    # install leaves transformers' torch path, which is slower but right.
+    # Clef is a Qwen3.5 backbone: the unsloth_zoo Triton causal conv is used and nothing is
+    # installed; where it cannot run, the prebuilt causal-conv1d is installed; a failed install
+    # leaves the slower transformers torch path.
     try:
         from utils.ssm_runtime import zoo_triton_causal_conv1d_usable
 

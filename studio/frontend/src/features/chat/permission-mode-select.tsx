@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Hand, ShieldCheck } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type { ComponentType } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -29,22 +28,24 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { HandIcon, ShieldCheckIcon } from "@/lib/hugeicons-derived";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
+import { openExternalLink } from "@/lib/open-link";
 import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ComputerTerminal01Icon,
-  Folder01Icon,
   InternetIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type SandboxCapability,
   loadSandboxCapability,
   onSandboxCapabilityChange,
 } from "./api/sandbox-capability";
-import { sandboxSwitchState } from "./sandbox-level";
+import { SANDBOX_DOCS_URL, sandboxSwitchState } from "./sandbox-level";
 import {
   pickSandboxLevel,
 } from "./sandbox-pick";
@@ -57,6 +58,28 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 
+type GlyphProps = { className?: string; strokeWidth?: number };
+
+function ApprovalHandIcon({ className, strokeWidth }: GlyphProps) {
+  return (
+    <HugeiconsIcon
+      icon={HandIcon}
+      className={className}
+      strokeWidth={strokeWidth}
+    />
+  );
+}
+
+function ShieldCheckGlyph({ className, strokeWidth }: GlyphProps) {
+  return (
+    <HugeiconsIcon
+      icon={ShieldCheckIcon}
+      className={className}
+      strokeWidth={strokeWidth}
+    />
+  );
+}
+
 /** Full access stays last: it disables approval prompts and the sandbox. */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
@@ -68,13 +91,13 @@ export const PERMISSION_MODE_OPTIONS: readonly {
     value: "ask",
     label: "Ask for approval",
     description: "Ask before using tools or the internet",
-    icon: Hand,
+    icon: ApprovalHandIcon,
   },
   {
     value: "auto",
     label: "Approve for me",
     description: "Only ask for actions that look risky",
-    icon: ShieldCheck,
+    icon: ShieldCheckGlyph,
   },
   {
     value: "off",
@@ -152,7 +175,6 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
   const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
   const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
   const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
-  const openSettings = useSettingsDialogStore((s) => s.openDialog);
   const { permissionMode } = useAccountPermissionMode();
   const capability = useSandboxCapability(sandboxLevel === "high");
   const { checked, disabled } = sandboxSwitchState(sandboxLevel, permissionMode, capability);
@@ -247,13 +269,7 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
           <DropdownMenuPrimitive.Item
             // my-0!: drops the menu item margin so it lines up with the question.
             className="my-0! shrink-0 cursor-pointer rounded-sm font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-[highlighted]:text-foreground data-[highlighted]:decoration-foreground/60"
-            // Deferred past the menu's focus restore.
-            onSelect={() =>
-              setTimeout(
-                () => openSettings("sandbox", { scrollTarget: "sandbox-permissions" }),
-                0,
-              )
-            }
+            onSelect={() => openExternalLink(SANDBOX_DOCS_URL)}
           >
             {t("settings.sandbox.learnMore")}
           </DropdownMenuPrimitive.Item>
@@ -357,9 +373,16 @@ export function PermissionModeMenuItems({
           className={cn(
             "items-start gap-2 py-2",
             permissionMode === option.value && "font-medium",
+            option.value === "full" && "menu-item-full-access",
           )}
         >
-          <option.icon className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
+          <option.icon
+            className={cn(
+              "permission-mode-icon mt-[calc(0.14rem*var(--ui-font-scale,1))] size-[calc(var(--ui-icon-size)*1.15)] shrink-0",
+              option.value === "ask" && "scale-[0.94]",
+            )}
+            strokeWidth={2}
+          />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="text-ui-13 leading-tight">{option.label}</span>
             <span className="text-xs font-normal leading-snug text-muted-foreground">
@@ -381,6 +404,25 @@ export function PermissionModeMenuItems({
 
 export function useActivePermissionMode() {
   return permissionModeOption(useAccountPermissionMode().permissionMode);
+}
+
+export function usePermissionModeChoice() {
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  return {
+    permissionMode,
+    options: PERMISSION_MODE_OPTIONS.filter(
+      (option) => fullAccessAllowed || option.value !== "full",
+    ),
+    choose: (mode: PermissionMode) => {
+      if (mode === permissionMode) return;
+      if (mode === "full") setConfirmOpen(true);
+      else setPermissionMode(mode);
+    },
+    confirmOpen,
+    setConfirmOpen,
+  };
 }
 
 function lastFocusOutsideMenus(): HTMLElement | null {
@@ -462,7 +504,7 @@ export function FullAccessConfirmContent({
       <AlertDialogFooter className="mt-1">
         <AlertDialogCancel variant="muted">Cancel</AlertDialogCancel>
         <AlertDialogAction variant="destructive" onClick={onConfirm}>
-          Turn on
+          Confirm
         </AlertDialogAction>
       </AlertDialogFooter>
     </AlertDialogContent>

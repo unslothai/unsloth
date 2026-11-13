@@ -125,6 +125,26 @@ def test_align_vae_dtype_skips_gguf_packed_uint8_params():
     assert vae2.moved_to is None
 
 
+def test_align_vae_dtype_falls_back_to_pipe_dtype_when_denoiser_is_all_packed():
+    # Qwen-Image-2.1 GGUF Edit: an all-uint8 transformer falls back to the pipe dtype (#16375).
+    import torch
+
+    class _AllPacked:
+        def parameters(self):
+            yield types.SimpleNamespace(dtype = torch.uint8)
+
+    vae = _FakeVae(dtype = torch.float32)
+    te = _FakeVae(dtype = torch.float16)
+    pipe = types.SimpleNamespace(
+        transformer = _AllPacked(),
+        text_encoder = te,
+        dtype = torch.float16,
+        vae = vae,
+    )
+    DiffusionBackend._align_vae_dtype(pipe)
+    assert vae.moved_to == torch.float16
+
+
 def test_sdxl_lora_supported_on_diffusers():
     assert diffusion_lora.supports_lora(
         engine = "diffusers", family = "sdxl", model_kind = "pipeline", transformer_quant = None

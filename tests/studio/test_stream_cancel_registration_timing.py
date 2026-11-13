@@ -540,6 +540,26 @@ def test_streaming_generators_check_cancel_event_in_loop():
     )
 
 
+def _steps_generator_off_loop(fn) -> bool:
+    for sub in ast.walk(fn):
+        if not isinstance(sub, ast.Call):
+            continue
+        f = sub.func
+        if isinstance(f, ast.Name) and f.id == "ThreadStepper":
+            return True
+        if (
+            isinstance(f, ast.Attribute)
+            and f.attr == "to_thread"
+            and isinstance(f.value, ast.Name)
+            and f.value.id == "asyncio"
+            and sub.args
+            and isinstance(sub.args[0], ast.Name)
+            and sub.args[0].id == "next"
+        ):
+            return True
+    return False
+
+
 def test_audio_input_stream_offloads_blocking_next_to_thread():
     audio = None
     for fn in ast.walk(_TREE):
@@ -553,29 +573,14 @@ def test_audio_input_stream_offloads_blocking_next_to_thread():
             it_src = ast.unparse(sub.iter)
             assert "audio_input_generate" not in it_src, (
                 "audio_input_stream must not iterate audio_input_generate() "
-                "directly -- that blocks the event loop. Use "
-                "`await asyncio.to_thread(next, gen, _DONE)` inside a "
-                "`while True` loop instead"
+                "directly -- that blocks the event loop. Step it with "
+                "`ThreadStepper(gen).next` inside a `while True` loop instead"
             )
 
-    found_to_thread_next = False
-    for sub in ast.walk(audio):
-        if not isinstance(sub, ast.Call):
-            continue
-        fn_expr = sub.func
-        if not (
-            isinstance(fn_expr, ast.Attribute)
-            and fn_expr.attr == "to_thread"
-            and isinstance(fn_expr.value, ast.Name)
-            and fn_expr.value.id == "asyncio"
-        ):
-            continue
-        if sub.args and isinstance(sub.args[0], ast.Name) and sub.args[0].id == "next":
-            found_to_thread_next = True
-            break
-    assert found_to_thread_next, (
-        "audio_input_stream must call `asyncio.to_thread(next, gen, ...)` "
-        "to keep the event loop free while whisper yields the next chunk"
+    assert _steps_generator_off_loop(audio), (
+        "audio_input_stream must step its generator with `ThreadStepper(gen).next` "
+        "or `asyncio.to_thread(next, gen, ...)` to keep the event loop free while "
+        "whisper yields the next chunk"
     )
 
 
@@ -600,30 +605,14 @@ def test_generate_stream_offloads_blocking_next_to_thread():
             assert "generate_chat_response" not in it_src, (
                 "generate_stream's inner stream() must not iterate "
                 "backend.generate_chat_response() directly -- that blocks the event "
-                "loop on every blocking subprocess read between tokens. Use "
-                "`await asyncio.to_thread(next, gen, _DONE)` inside a `while True` "
-                "loop instead"
+                "loop on every blocking subprocess read between tokens. Step it with "
+                "`ThreadStepper(gen).next` inside a `while True` loop instead"
             )
 
-    found_to_thread_next = False
-    for sub in ast.walk(inner):
-        if not isinstance(sub, ast.Call):
-            continue
-        fn_expr = sub.func
-        if not (
-            isinstance(fn_expr, ast.Attribute)
-            and fn_expr.attr == "to_thread"
-            and isinstance(fn_expr.value, ast.Name)
-            and fn_expr.value.id == "asyncio"
-        ):
-            continue
-        if sub.args and isinstance(sub.args[0], ast.Name) and sub.args[0].id == "next":
-            found_to_thread_next = True
-            break
-    assert found_to_thread_next, (
-        "generate_stream's inner stream() must call "
-        "`asyncio.to_thread(next, gen, _DONE)` to keep the event loop free while the "
-        "worker subprocess produces the next token"
+    assert _steps_generator_off_loop(inner), (
+        "generate_stream's inner stream() must step its generator with "
+        "`ThreadStepper(gen).next` or `asyncio.to_thread(next, gen, _DONE)` to keep "
+        "the event loop free while the worker subprocess produces the next token"
     )
 
 

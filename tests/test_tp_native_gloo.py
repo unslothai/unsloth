@@ -6,12 +6,12 @@
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None or getattr(
-    multiprocessing.current_process(), "_inheriting", False
+if os.environ.get("UNSLOTH_TEST_RANKS_ON_GPU") != "1" and (
+    multiprocessing.parent_process() is not None
+    or getattr(multiprocessing.current_process(), "_inheriting", False)
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
-import socket  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -36,9 +36,8 @@ _ADAM_EPS = 1e-6
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _grads(model):
@@ -116,8 +115,11 @@ def _case_parity(
     tpn.apply_tensor_parallel(model, mesh["tp"], plan = plan)
     assert tpn.is_tensor_parallel(model)
     assert tpn.apply_tensor_parallel(model, mesh["tp"]) is model  # idempotent
-    with pytest.raises(RuntimeError, match = "generation is not supported"):
-        model.generate(input_ids = torch.zeros(1, 2, dtype = torch.long))
+    # The training forward below releases the generate replica, so parity also covers that release.
+    generated = model.generate(
+        input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0
+    )
+    assert generated.shape == (1, 4), generated.shape
     from test_fsdp2_native_units import _load_native
 
     try:
@@ -189,7 +191,7 @@ def _case_guards(rank, world, tmp):
     import transformers
     from torch.distributed.device_mesh import init_device_mesh
     from unsloth import FastLanguageModel, FastModel
-    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models import fsdp2_native, tp_native, tp_replica
     from unsloth.models._utils import patch_gradient_accumulation_fix
 
     patch_gradient_accumulation_fix(transformers.Trainer)
@@ -217,9 +219,14 @@ def _case_guards(rank, world, tmp):
                 lambda: fsdp2_native._refuse_tensor_parallel_model(level)
             )
             res[f"for_inference:{name}"] = _raised(lambda: FastLanguageModel.for_inference(level))
+            res[f"replica_released:{name}"] = tp_replica.release_replica(level)
             res[f"FastModel.for_inference:{name}"] = _raised(lambda: FastModel.for_inference(level))
+            tp_replica.release_replica(level)
             if name != "decoder":
-                res[f"generate:{name}"] = _raised(lambda: level.generate(input_ids = ids))
+                res[f"generate:{name}"] = _raised(
+                    lambda: level.generate(input_ids = ids, max_new_tokens = 2, pad_token_id = 0)
+                )
+                tp_replica.release_replica(level)
                 res[f"trainer:{name}"] = _raised(
                     lambda: transformers.Trainer(model = level, args = args)
                 )
@@ -382,6 +389,47 @@ def _case_qlora(rank, world, tmp, nested):
         "tp": _train(model, ids, 3, tpn.tp_clip_grad_norm_),
         "shard_err": shard_err,
     }
+
+
+class _DropoutMLP(torch.nn.Module):
+    """LlamaMLP with dropout between the column (gate / up) and row (down) projections."""
+
+    def forward(self, x):
+        return self.down_proj(self.drop(self.act_fn(self.gate_proj(x)) * self.up_proj(x)))
+
+
+def _add_mlp_dropout(model, p = 0.25):
+    for module in list(model.modules()):
+        if type(module).__name__ == "LlamaMLP":
+            module.add_module("drop", torch.nn.Dropout(p))
+            module.__class__ = type("LlamaMLP", (_DropoutMLP, type(module)), {})
+    return model
+
+
+def _case_mlp_dropout(rank, world, tmp, quantized):
+    from torch.distributed.device_mesh import init_device_mesh
+
+    def make():
+        if quantized:
+            return _add_mlp_dropout(_qlora_model(False))
+        return _add_mlp_dropout(build(LLAMA, QLORA_SIZES).train())
+
+    ref, model = make(), make()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    widths = [
+        r.module._unsloth_tp_local_width for r in model._unsloth_tp_plan.regions if r.kind == "mlp"
+    ]
+    ids = _batch(ref)
+    out = {}
+    for name, m, clip in (
+        ("ref", ref, torch.nn.utils.clip_grad_norm_),
+        ("tp", model, tpn.tp_clip_grad_norm_),
+    ):
+        torch.manual_seed(1234)  # the same dropout RNG state on every rank and in the reference
+        out[name] = _train(m, ids, 2, clip)
+    out["widths"] = widths
+    return out
 
 
 def _case_qlora_misaligned(rank, world, tmp):
@@ -617,6 +665,66 @@ def _case_tp_fsdp2_trainable_norms(rank, world, tmp):
     }
 
 
+def _case_tp_fsdp2_writer(
+    rank,
+    world,
+    tmp,
+    head_only = False,
+    compiled = False,
+):
+    """dp 2 x tp 2: the collective saves name one writer for the model, not one per tp group."""
+    import importlib
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_fsdp2_native_units import _load_native
+
+    native = _load_native()
+    save = importlib.import_module("unsloth.models.fsdp2_save")
+    mesh = init_device_mesh("cpu", (2, world // 2), mesh_dim_names = ("dp", "tp"))
+    model = build(*ARCHS["llama"], **({"target_modules": ["lm_head"]} if head_only else {}))
+    expected = {name: p.detach().clone() for name, p in model.named_parameters()}
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    if not native._supports_ignored_params(native._fsdp_api()[2]):
+        return {"unsupported": "torch 2.7+"}
+    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
+    unwrapped_model = model
+    if compiled:
+        model = torch.compile(model, backend = "eager")
+    res = {"writer_rank": save.mesh_writer_rank(model)}
+    with save.fsdp2_gathered(model) as writer:
+        res["writer"] = writer
+        if writer:
+            for name, param in unwrapped_model.named_parameters():
+                torch.testing.assert_close(param, expected[name])
+    state = native.native_full_state_dict(model)
+    res["full_keys"] = len(state)
+    if rank == 0:
+        for name, param in expected.items():
+            torch.testing.assert_close(state[name], param)
+    return res
+
+
+def _case_tp_fsdp2_writer_pipeline_slice(rank, world, tmp):
+    import importlib
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_fsdp2_native_units import _load_native
+
+    from torch.distributed.tensor.parallel import ColwiseParallel, parallelize_module
+
+    native = _load_native()
+    save = importlib.import_module("unsloth.models.fsdp2_save")
+    mesh = init_device_mesh("cpu", (2, 1, 2), mesh_dim_names = ("pp", "dp", "tp"))
+    # One pipeline stage per pp rank: a tp layer sharded by FSDP2 over the stage's dp slice.
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+    model[0].weight.requires_grad_(False)
+    parallelize_module(model[0], mesh["tp"], ColwiseParallel())
+    parallelize_module(model[1], mesh["tp"], ColwiseParallel())
+    fully_shard = native._fsdp_api()[2]
+    if not native._supports_ignored_params(fully_shard):
+        return {"unsupported": "torch 2.7+"}
+    fully_shard(model, mesh = mesh["dp"], ignored_params = set(model[1].parameters()))
+    return {"writer_rank": save.mesh_writer_rank(model)}
+
+
 class _Rows(torch.utils.data.Dataset):
     def __init__(self, ids):
         self.ids = ids
@@ -704,7 +812,10 @@ def _case_trainer(
             )
         for key, overrides in {
             "checkpoints": {"save_strategy": "steps", "save_steps": 1},
-            "eval": {"eval_strategy": "steps", "eval_steps": 1},
+            "eval": {
+                "eval_strategy": "steps",
+                "eval_steps": 1,
+            },  # evaluates over dp (test_tp_eval_gloo.py)
             "optim_8bit": {"optim": "adamw_bnb_8bit"},
         }.items():
             refusals[key] = _raised(
@@ -731,7 +842,6 @@ def _case_trainer(
         model = model, args = _trainer_args(tmp, 2 * dp if tp == 1 else 2), train_dataset = data
     )
     trainer.train()
-    refusals["evaluate"] = _raised(lambda: trainer.evaluate(data)) if tp > 1 else None
     logs = [h for h in trainer.state.log_history if "loss" in h]
     out_dir = os.path.join(tmp, f"adapter_{world}_{rank}")
     trainer.save_model(out_dir)
@@ -758,14 +868,15 @@ def _case_trainer(
 
 
 def _case_sharded_lora_init(rank, world, tmp, ckpt):
-    """Weight-dependent LoRA init (PiSSA) on sharded_loading slices is refused before any mutation."""
+    """Weight-dependent LoRA init (PiSSA) on sharded_loading slices is refused before any mutation;
+    orthogonal init only reads the full in / out features and the dtype, so it is allowed like gaussian."""
     from peft import LoraConfig, get_peft_model
     from torch.distributed.device_mesh import init_device_mesh
     from transformers import AutoModelForCausalLM
 
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     out = {}
-    for init in ("pissa", "gaussian"):
+    for init in ("pissa", "gaussian", "orthogonal"):
         model = tpn.load_tensor_parallel(
             ckpt, mesh["tp"], loader = AutoModelForCausalLM.from_pretrained, torch_dtype = torch.float32
         )
@@ -776,6 +887,211 @@ def _case_sharded_lora_init(rank, world, tmp, ckpt):
     return out
 
 
+def _case_sharded_random_lora_init(rank, world, tmp, ckpt, init, sync_trainable, seed_per_rank):
+    """A random LoRA init on sharded_loading slices vs the same init on a full load in one process. Each rank
+    seeds get_peft_model differently when seed_per_rank, so only the tp rank 0 broadcast can make them agree."""
+    from peft import LoraConfig, get_peft_model
+    from torch.distributed.device_mesh import init_device_mesh
+    from transformers import AutoModelForCausalLM
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
+
+    def peft(model, seed):
+        torch.manual_seed(seed)
+        config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = init)
+        return get_peft_model(model, config)
+
+    def lora(model):
+        return {
+            n: tpn._full(p.detach(), p).clone() for n, p in model.named_parameters() if "lora_" in n
+        }
+
+    ref = peft(AutoModelForCausalLM.from_pretrained(ckpt, **kw), 7)
+    model = tpn.load_tensor_parallel(
+        ckpt, mesh["tp"], loader = AutoModelForCausalLM.from_pretrained, **kw
+    )
+    model = peft(model, 7 + rank if seed_per_rank else 7)
+    error = _raised(
+        lambda: tpn.apply_tensor_parallel(
+            model, mesh["tp"], config = tpn.TPConfig(sync_trainable = sync_trainable)
+        )
+    )
+    if error is not None:
+        return {"error": error}
+    # Replicated factors hold this rank's own copy: the raw local tensors show any per-rank divergence.
+    local = {
+        n: (p.to_local() if tpn._is_dtensor(p) else p).detach().clone()
+        for n, p in model.named_parameters()
+        if "lora_" in n
+    }
+    init_ref, init_tp = lora(ref), lora(model)
+    ids = _batch(ref)
+    ref_out = _train(ref, ids, 1, torch.nn.utils.clip_grad_norm_)
+    tp_out = _train(model, ids, 1, tpn.tp_clip_grad_norm_)
+    return {
+        "error": None,
+        "local": local,
+        "init_ref": init_ref,
+        "init_tp": init_tp,
+        "ref": ref_out,
+        "tp": tp_out,
+        "step_ref": lora(ref),
+        "step_tp": lora(model),
+    }
+
+
+def _case_sampler(rank, world, tmp, dp, strategy):
+    """Rows each rank's dataloader yields under a length-aware sampler, after a rank-local RNG draw."""
+    import transformers
+
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    fields = transformers.TrainingArguments.__dataclass_fields__
+    if strategy == "batch_rebalance" and "train_sampling_strategy" not in fields:
+        return {"skip": "this transformers has no train_sampling_strategy = 'batch_rebalance'"}
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    tp = world // dp
+    model = build(LLAMA)
+    mesh = init_device_mesh("cpu", (dp, tp), mesh_dim_names = ("dp", "tp"))
+    tp_native.apply_tensor_parallel(model, mesh["tp"])
+    if dp > 1:
+        try:
+            fsdp2_native.shard_model(
+                model, fsdp2_native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+            )
+        except Exception as e:
+            if "torch < 2.7" in str(e) or "torch 2.7+" in str(e):
+                return {"skip": "torch < 2.7: tensor parallel x FSDP2 is refused"}
+            raise
+    g = torch.Generator().manual_seed(1)
+    rows = []
+    for i in range(48):
+        ids = torch.randint(3, 100, (4 + int(torch.randint(0, 9, (1,), generator = g)),), generator = g)
+        ids[0] = 3 + i
+        rows.append(ids)
+
+    def collate(features):
+        n = max(len(f["input_ids"]) for f in features)
+        ids = torch.zeros(len(features), n, dtype = torch.long)
+        for i, f in enumerate(features):
+            ids[i, : len(f["input_ids"])] = f["input_ids"]
+        return {"input_ids": ids, "labels": ids.clone()}
+
+    if strategy == "group_by_length" and "train_sampling_strategy" not in fields:
+        overrides = {"group_by_length": True}
+    else:
+        overrides = {"train_sampling_strategy": strategy}
+    trainer = transformers.Trainer(
+        model = model,
+        args = _trainer_args(tmp, 2, dataloader_drop_last = False, **overrides),
+        train_dataset = _Rows(rows),
+        data_collator = collate,
+    )
+    torch.rand(1 + 5 * rank)
+    seen = []
+    for step, batch in enumerate(trainer.get_train_dataloader()):
+        if step == 6:
+            break
+        seen.append([int(r[0]) - 3 for r in batch["input_ids"]])
+    return {"seen": seen}
+
+
+def _case_sampler_resume(rank, world, tmp, dp, strategy):
+    """Rows per rank for an uninterrupted run vs resumes at epoch boundaries and mid epoch."""
+    import transformers
+
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    fields = transformers.TrainingArguments.__dataclass_fields__
+    if strategy == "batch_rebalance" and "train_sampling_strategy" not in fields:
+        return {"skip": "this transformers has no train_sampling_strategy = 'batch_rebalance'"}
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    tp = world // dp
+    mesh = init_device_mesh("cpu", (dp, tp), mesh_dim_names = ("dp", "tp"))
+    g = torch.Generator().manual_seed(1)
+    rows = []
+    for i in range(12 * dp):  # 3 optimizer steps per epoch on every layout
+        ids = torch.randint(3, 100, (4 + int(torch.randint(0, 9, (1,), generator = g)),), generator = g)
+        ids[0] = 3 + i
+        rows.append(ids)
+
+    def collate(features):
+        n = max(len(f["input_ids"]) for f in features)
+        ids = torch.zeros(len(features), n, dtype = torch.long)
+        for i, f in enumerate(features):
+            ids[i, : len(f["input_ids"])] = f["input_ids"]
+        return {"input_ids": ids, "labels": ids.clone()}
+
+    if strategy == "group_by_length" and "train_sampling_strategy" not in fields:
+        overrides = {"group_by_length": True}
+    else:
+        overrides = {"train_sampling_strategy": strategy}
+    ckpt = os.path.join(tmp, "ckpt")
+
+    def run(resume = None):
+        model = build(LLAMA)
+        tp_native.apply_tensor_parallel(model, mesh["tp"])
+        if dp > 1:
+            try:
+                fsdp2_native.shard_model(
+                    model, fsdp2_native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+                )
+            except Exception as e:
+                if "torch < 2.7" in str(e) or "torch 2.7+" in str(e):
+                    return None
+                raise
+        args = _trainer_args(
+            ckpt,
+            2,
+            max_steps = 8,
+            dataloader_drop_last = False,
+            save_strategy = "steps",
+            save_steps = 1,
+            logging_steps = 100,
+            **overrides,
+        )
+        trainer = transformers.Trainer(
+            model = model, args = args, train_dataset = _Rows(rows), data_collator = collate
+        )
+        seen = []
+        training_step = trainer.training_step
+
+        def record(model, inputs, *args, **kwargs):
+            seen.append([int(r[0]) - 3 for r in inputs["input_ids"]])
+            return training_step(model, inputs, *args, **kwargs)
+
+        trainer.training_step = record
+        torch.rand(1 + 5 * rank)  # a rank-local draw on the global RNG
+        trainer.train(resume_from_checkpoint = resume)
+        return seen
+
+    full = run()
+    if full is None:
+        return {"skip": "torch < 2.7: tensor parallel x FSDP2 is refused"}
+    # 3 steps per epoch, 2 micro-batches per step: 3 / 6 are epoch boundaries, 4 / 7 mid epoch 1 / 2.
+    resumed = {k: run(os.path.join(ckpt, f"checkpoint-{k}")) for k in (3, 4, 6, 7)}
+    return {"full": full, "resumed": resumed}
+
+
+def _case_teardown_abort(rank, world, tmp):
+    """Stands in for a C++ thread that aborts the interpreter's teardown after the work is done."""
+    import atexit
+
+    atexit.register(os.abort)
+    return {"rank": rank}
+
+
 CASES = {
     "parity": _case_parity,
     "save_subgroup": _case_save_subgroup,
@@ -783,11 +1099,18 @@ CASES = {
     "guards": _case_guards,
     "qlora": _case_qlora,
     "qlora_misaligned": _case_qlora_misaligned,
+    "mlp_dropout": _case_mlp_dropout,
     "sharded_load": _case_sharded_load,
     "sharded_lora_init": _case_sharded_lora_init,
     "tp_fsdp2": _case_tp_fsdp2,
     "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
+    "tp_fsdp2_one_writer": _case_tp_fsdp2_writer,
+    "tp_fsdp2_writer_pipeline_slice": _case_tp_fsdp2_writer_pipeline_slice,
     "trainer": _case_trainer,
+    "sharded_random_lora_init": _case_sharded_random_lora_init,
+    "sampler": _case_sampler,
+    "sampler_resume": _case_sampler_resume,
+    "teardown_abort": _case_teardown_abort,
 }
 
 
@@ -808,11 +1131,20 @@ def _worker(rank, world, port, case, tmp, kwargs):
     dist.init_process_group(
         "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 120)
     )
+    finished = False
     try:
         res = CASES[case](rank, world, tmp, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
+        finished = True
     finally:
         dist.destroy_process_group()
+    if finished:
+        # Result saved, group torn down. Interpreter teardown can still hit std::terminate on a
+        # joinable C++ thread ("terminate called without an active exception", exit -6), which
+        # failed ranks that had finished; skip teardown so only the case itself decides.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 def _spawn(
@@ -898,6 +1230,24 @@ def test_tp2_qlora_matches_one_process(nested):
         assert norms == pytest.approx(ref_norms, rel = 1e-5)
 
 
+@pytest.mark.parametrize("quantized", [False, True], ids = ["bf16_weights", "4bit_weights"])
+def test_tp2_mlp_dropout_between_column_and_row_matches_one_process(quantized):
+    # The row projection's local in_features is intermediate_size / tp, also once a 4-bit weight is sharded.
+    results = _spawn("mlp_dropout", 2, quantized = quantized)
+    for res in results:
+        assert res["widths"] and set(res["widths"]) == {QLORA_SIZES["intermediate_size"] // 2}, res[
+            "widths"
+        ]
+        ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
+        logits, grads, losses, norms = res["tp"]
+        torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
+        assert set(grads) == set(ref_grads) and grads
+        for name in ref_grads:
+            torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-4, atol = 1e-6, msg = name)
+        assert losses == pytest.approx(ref_losses, rel = 1e-5, abs = 1e-6)
+        assert norms == pytest.approx(ref_norms, rel = 1e-5)
+
+
 def test_tp4_gqa_matches_one_process():
     overrides = {"num_attention_heads": 8, "num_key_value_heads": 4, "intermediate_size": 64}
     _check_parity(_spawn("parity", 4, arch = "qwen3", overrides = overrides), 4)
@@ -913,12 +1263,24 @@ def test_fused_lora_functions_read_local_shards():
             plain["calls"],
             fused["calls"],
         )
-        torch.testing.assert_close(fused["O"], plain["O"], rtol = 1e-5, atol = 1e-5)
-        torch.testing.assert_close(fused["dX"], plain["dX"], rtol = 1e-5, atol = 1e-5)
+        for key in ("O", "dX"):
+            # fp32 sums err by an ulp of their largest term, so a small element that cancels out of large ones
+            # (dX here peaks near 1e3, where one ulp is 1.2e-4) needs an atol at the tensor's scale.
+            atol = max(1e-5, 1e-6 * plain[key].abs().max().item())
+            torch.testing.assert_close(
+                fused[key], plain[key], rtol = 1e-5, atol = atol, msg = lambda m, key = key: f"{key}: {m}"
+            )
         assert set(fused["grads"]) == set(plain["grads"]) and plain["grads"]
         for name in plain["grads"]:
+            # The fused order sums in a different order than PEFT, so as for O / dX an element that cancels out of
+            # large terms needs an atol at the tensor's scale; a wrong shard would be off by O(1).
+            ref = plain["grads"][name]
             torch.testing.assert_close(
-                fused["grads"][name], plain["grads"][name], rtol = 1e-4, atol = 1e-6, msg = name
+                fused["grads"][name],
+                ref,
+                rtol = 1e-4,
+                atol = max(1e-6, 1e-5 * ref.abs().max().item()),
+                msg = lambda m, name = name: f"{name}: {m}",
             )
 
 
@@ -970,7 +1332,7 @@ def test_tp2_tied_norm_weight_is_summed_once():
     _check_parity(_spawn("parity", 2, arch = "qwen3", tie_norms = True), 2)
 
 
-def test_tp2_entry_points_outside_the_regions_are_refused():
+def test_tp2_entry_points_outside_the_regions_are_refused_or_gather():
     results = _spawn("guards", 2)
     if "skip" in results[0]:
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
@@ -986,14 +1348,14 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
                         key,
                         value,
                     )
-                elif "for_inference" in key:
-                    assert value and "for_inference is not supported" in value, (
+                elif "for_inference" in key or key.startswith("generate:"):
+                    assert value is None, (
                         applied,
                         key,
                         value,
-                    )
-                elif key.startswith("generate:"):
-                    assert value and "generation is not supported" in value, (applied, key, value)
+                    )  # gathered a replica (tp_replica.py)
+                elif key.startswith("replica_released:"):
+                    assert value is True, (applied, key, value)
                 elif key.startswith("model_init:"):
                     assert value and "cannot be trained by the Trainer" in value, (
                         applied,
@@ -1054,6 +1416,57 @@ def test_sharded_loading_refuses_weight_dependent_lora_init():
         assert "depends on the base weight" in (res["pissa"] or ""), res
         assert not res["pissa_tp"]
         assert res["gaussian"] is None and res["gaussian_tp"], res
+        assert res["orthogonal"] is None and res["orthogonal_tp"], res
+
+
+@pytest.mark.parametrize("init", ["orthogonal", "gaussian", True])
+def test_sharded_loading_random_lora_init_matches_one_process(init):
+    """Random LoRA inits read only the full in / out features, so the sharded factors are full size; tp rank 0's
+    broadcast makes per-rank seeds agree, and one AdamW step matches the unsharded run from the same seed."""
+    with tempfile.TemporaryDirectory() as ckpt:
+        _save_checkpoint("llama", ckpt, None)
+        results = _spawn(
+            "sharded_random_lora_init",
+            2,
+            ckpt = ckpt,
+            init = init,
+            sync_trainable = True,
+            seed_per_rank = True,
+        )
+    r0, r1 = results
+    assert r0["error"] is None and r1["error"] is None, (r0["error"], r1["error"])
+    assert set(r0["local"]) == set(r1["local"]) and r0["local"]
+    for res in results:
+        assert set(res["init_tp"]) == set(res["init_ref"])
+        for name, ref in res["init_ref"].items():
+            # Bit-identical to the one-process init from tp rank 0's seed: full-size factors, no shard-sized draw.
+            assert torch.equal(res["init_tp"][name], ref), name
+        if init == "orthogonal":
+            for name, A in res["init_ref"].items():
+                if ".lora_A." not in name:
+                    continue
+                B = res["init_ref"][name.replace(".lora_A.", ".lora_B.")]
+                # Orthogonal init: both factors non-zero, B @ A == 0 (rows from complementary halves of one Q).
+                assert A.abs().sum() > 0 and B.abs().sum() > 0, name
+                torch.testing.assert_close(
+                    B @ A, torch.zeros_like(B @ A), rtol = 0, atol = 1e-6, msg = name
+                )
+        ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
+        logits, grads, losses, norms = res["tp"]
+        torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
+        assert set(grads) == set(ref_grads) and grads
+        for name in ref_grads:
+            torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-4, atol = 1e-6, msg = name)
+        assert losses == pytest.approx(ref_losses, rel = 1e-5)
+        assert norms == pytest.approx(ref_norms, rel = 1e-5)
+        for name, ref in res["step_ref"].items():
+            torch.testing.assert_close(res["step_tp"][name], ref, rtol = 1e-4, atol = 1e-6, msg = name)
+    # Every rank's local copy of a replicated factor is the same tensor after the broadcast.
+    for name in r0["local"]:
+        if r0["local"][name].shape == r1["local"][name].shape and name in r0["init_ref"]:
+            full = r0["init_ref"][name]
+            if r0["local"][name].shape == full.shape:
+                assert torch.equal(r0["local"][name], r1["local"][name]), name
 
 
 def test_sharded_loading_refuses_quantized_loads():
@@ -1065,10 +1478,9 @@ def test_sharded_loading_refuses_quantized_loads():
             )
 
 
-# Per-step grad norms over 3 AdamW steps. phi3's fused qkv / gate_up shards add reduction-order noise that the
-# optimizer compounds: on the CI runners its step-3 norm lands 6.9e-5 / 7.7e-5 relative off one process
-# (1.5e-6 at step 1), while this host stays inside 1e-5. The step-1 per-gradient check in the test
-# (rtol 1e-4, atol 1e-6) is what catches a real tp error such as a missed all-reduce, and it is unchanged.
+# phi3 fused qkv / gate_up shards add reduction-order noise the optimizer compounds (step-3 grad
+# norm 6.9e-5 / 7.7e-5 off one process on CI); the step-1 per-gradient check (rtol 1e-4, atol 1e-6)
+# catches real tp errors like a missed all-reduce.
 _TP_FSDP2_NORM_REL = {"phi3": 2e-4}
 
 
@@ -1145,6 +1557,27 @@ def test_tp_x_fsdp2_refuses_trainable_head_norms():
         assert res["error"] and "trainable per-head norms" in res["error"], res
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("head_only", [False, True])
+def test_tp2_x_fsdp2_dp2_saves_from_one_writer(head_only, compiled):
+    """A frozen tp weight's mesh is its own tp group: the writer must not follow it (two writers,
+    two concurrent writes of the same optimizer.pt / scheduler.pt and two Hub pushes)."""
+    skip_unsupported("llama")
+    results = _spawn("tp_fsdp2_one_writer", 4, head_only = head_only, compiled = compiled)
+    if "unsupported" in results[0]:
+        pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused")
+    assert [r["writer_rank"] for r in results] == [0, 0, 0, 0], results
+    assert [r["writer"] for r in results] == [True, False, False, False], results
+    assert [r["full_keys"] > 0 for r in results] == [True, False, False, False], results
+
+
+def test_tp_fsdp2_writer_keeps_pipeline_stages_separate():
+    results = _spawn("tp_fsdp2_writer_pipeline_slice", 4)
+    if "unsupported" in results[0]:
+        pytest.skip("torch < 2.7: no fully_shard(ignored_params)")
+    assert [r["writer_rank"] for r in results] == [0, 0, 2, 2], results
+
+
 def test_trainer_splits_mixed_optimizer_groups_for_tp_only():
     # modules_to_save lm_head: a plain trainable next to the LoRA DTensors (foreach / fused take one kind).
     kw = {"modules_to_save": ["lm_head"]}
@@ -1196,9 +1629,8 @@ def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
         refusals = res["refusals"]
         # Checkpoints are per rank, bitsandbytes AdamW steps local shards (or switches to torch's AdamW).
         assert refusals["checkpoints"] is None, refusals
-        assert "evaluation during training" in (refusals["eval"] or ""), refusals
+        assert refusals["eval"] is None, refusals
         assert refusals["optim_8bit"] is None, refusals
-        assert "Trainer.evaluate is not supported" in (refusals["evaluate"] or ""), refusals
         if dp > 1:
             assert "covers 2 of 4 ranks" in (refusals["no_shard_model"] or ""), refusals
     # The tp ranks of a replica read the same batches; dp replicas read different ones.
@@ -1211,3 +1643,39 @@ def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
     assert set(saved) == set(saved_ref)
     for key in saved_ref:
         torch.testing.assert_close(saved[key], saved_ref[key], rtol = 1e-4, atol = 1e-6, msg = key)
+
+
+@pytest.mark.parametrize("strategy", ["batch_rebalance", "group_by_length"])
+@pytest.mark.parametrize("dp", [1, 2])
+def test_trainer_length_samplers_give_tp_peers_the_same_rows(dp, strategy):
+    results = _spawn("sampler", 2 * dp, dp = dp, strategy = strategy)
+    if "skip" in results[0]:
+        pytest.skip(results[0]["skip"])
+    for rank, res in enumerate(results):
+        assert res["seen"] and res["seen"] == results[rank ^ 1]["seen"], (
+            rank,
+            res,
+            results[rank ^ 1],
+        )
+    if dp > 1:
+        replicas = [{i for batch in results[r]["seen"] for i in batch} for r in (0, 2)]
+        assert not replicas[0] & replicas[1], replicas
+
+
+@pytest.mark.parametrize("strategy", ["batch_rebalance", "group_by_length"])
+@pytest.mark.parametrize("dp", [1, 2])
+def test_trainer_length_samplers_resume_like_an_uninterrupted_run(dp, strategy):
+    results = _spawn("sampler_resume", 2 * dp, dp = dp, strategy = strategy)
+    if "skip" in results[0]:
+        pytest.skip(results[0]["skip"])
+    for rank, res in enumerate(results):
+        peer = results[rank ^ 1]
+        assert res["full"] == peer["full"], (rank, res["full"], peer["full"])
+        for k, seen in res["resumed"].items():
+            assert seen == peer["resumed"][k], (rank, k, seen, peer["resumed"][k])
+            assert seen == res["full"][2 * k :], (rank, k, seen, res["full"][2 * k :])
+
+
+def test_a_rank_that_finished_is_not_failed_by_an_abort_in_teardown():
+    # The sampler-resume ranks finished and then died with -6 in interpreter teardown.
+    assert _spawn("teardown_abort", 2) == [{"rank": 0}, {"rank": 1}]

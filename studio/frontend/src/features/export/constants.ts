@@ -22,7 +22,7 @@ export const EXPORT_METHODS: {
   {
     value: "lora",
     title: "LoRA Only",
-    description: "Lightweight adapter files (~100 MB). Needs base model.",
+    description: "Lightweight adapter files. Needs base model.",
     tooltip:
       "Exports only the trained adapter. Pair with the base model at inference time to save storage.",
   },
@@ -213,7 +213,6 @@ export function mergedFormatPayload(value: string): {
   return { formatType: "16-bit (FP16)", compressedMethod: opt.value };
 }
 
-/** GGUF quants FastFlowLM's Q4NX converter packs directly for the AMD Ryzen AI NPU. */
 export const Q4NX_SOURCE_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
 
 /** Approximate llama.cpp bits per weight; GGUF size ~= fp16_bytes * bpw / 16. */

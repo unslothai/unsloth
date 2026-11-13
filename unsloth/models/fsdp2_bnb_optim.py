@@ -1,25 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bitsandbytes 8-bit (and 32-bit) Adam / AdamW under native FSDP2, stepped on the local shards.
+"""bnb 8-bit (and 32-bit) Adam/AdamW on FSDP2: DTensor params stay in param_groups, only local
+shards go to bnb; 8-bit blocks per local shard, not bitwise 1-GPU; state_dict is world-size
+independent."""
 
-bitsandbytes' kernels take plain tensors, and native FSDP2 parameters are DTensors. Each DTensor
-parameter's local shard is an ordinary tensor sharing the parameter's storage, and its gradient's local
-shard is the matching ordinary tensor, so bitsandbytes can step the shard in place. The optimizer
-keeps the DTensor parameters in its param_groups and its state keyed by them (the LR scheduler, the
-Trainer, gradient clipping, GradScaler and torch.distributed.checkpoint all see the same objects); only
-init_state / update_step hand bitsandbytes the local shards.
-
-The 8-bit state is quantized per 256-element block of each LOCAL shard, so it is not bitwise equal to
-one GPU, where the blocks run over the whole tensor. Which parameters get 8-bit state follows one GPU:
-bitsandbytes' `min_8bit_size` rule is applied to the full parameter size, not the shard size.
-
-state_dict() returns the state dequantized to float32, wrapped as DTensors laid out like each parameter,
-so the collective full-state save (get_optimizer_state_dict(full_state_dict = True)) gathers a
-world-size-independent checkpoint. load_state_dict() re-quantizes it: the inverse is exact when the
-blocks are unchanged (same world size), so a resume restores the same 8-bit state.
-"""
-
+import contextlib
 import functools
 import os
 
@@ -27,6 +13,7 @@ import torch
 
 __all__ = [
     "bnb_local_shards_enabled",
+    "full_cpu_state_export",
     "is_local_shard_bnb_optimizer",
     "localize_bnb_optimizer",
     "supports_local_shards",
@@ -65,9 +52,7 @@ def _bnb_base_classes():
 
 
 def supports_local_shards(optimizer_or_cls):
-    """bitsandbytes Adam / AdamW (8-bit blockwise, paged or not, or 32-bit): Optimizer2State with
-    optimizer_name 'adam' (AdEMAMix keeps two first moments in one state and is not covered). The class
-    check alone when given a class."""
+    """bnb Adam/AdamW on Optimizer2State with optimizer_name 'adam'; AdEMAMix is not covered."""
     base = _bnb_base_classes()
     if base is None:
         return False
@@ -90,10 +75,7 @@ def supports_local_shards(optimizer_or_cls):
 
 
 def _plain_bnb_class(cls, base):
-    """Only bitsandbytes' own Adam / AdamW / PagedAdam(W) classes: every class above Optimizer2State
-    comes from bitsandbytes and none replaces step / init_state / update_step. A subclass elsewhere
-    (Unsloth's QGaLoreAdamW8bit: optimizer_name 'adam', its own step() projecting whole 2-D weights)
-    cannot be stepped shard by shard."""
+    """Only plain bnb Adam/AdamW/PagedAdam classes; subclasses like QGaLoreAdamW8bit cannot step shards."""
 
     def unwrapped(fn):
         while hasattr(fn, "__wrapped__"):
@@ -150,9 +132,7 @@ def _local_grad(grad, DTensor):
     return grad
 
 
-# Blocks per pass when (de)quantizing a checkpointed state: 16384 blocks = 4M elements, so the
-# temporaries (a float table and int64 indices per candidate scale) stay a few hundred MB however large
-# the shard is. Every block is independent, so the result does not depend on the chunking.
+# Blocks per pass bound the temporaries; blocks are independent, so chunking never changes results.
 _CHUNK_BLOCKS = 16384
 
 
@@ -162,8 +142,7 @@ def _dequantize(
     device,
     chunk_blocks = None,
 ):
-    """float32 copy of state `key` on `device`, built chunk by chunk into the one output tensor. Paged
-    state reports the CPU device (unified memory)."""
+    """float32 copy of a state key, built chunk by chunk; paged state reports the CPU device."""
     value = raw[key]
     if value.dtype != torch.uint8:
         return value.to(device = device, dtype = torch.float32)
@@ -184,8 +163,7 @@ def _dequantize(
 
 
 def _nearest_codes(padded, sorted_code, scale):
-    """Per block: index into sorted_code of the nearest code * scale for each element, and the block's
-    total absolute reconstruction error."""
+    """Per block: nearest sorted_code index for each element, and total reconstruction error."""
     table = sorted_code.unsqueeze(0) * scale.unsqueeze(1)  # (blocks, 256), ascending per row
     hi = torch.searchsorted(table, padded.contiguous()).clamp_(max = table.shape[1] - 1)
     lo = (hi - 1).clamp_(min = 0)
@@ -202,13 +180,9 @@ def _quantize_into(
     out_absmax,
     chunk_blocks = None,
 ):
-    """bitsandbytes' blockwise quantization of `values` (float32) into `out_codes` (uint8, same shape)
-    and `out_absmax` (one float32 per 256 elements), inverting a dequantization exactly. bitsandbytes
-    scales a block by its largest magnitude A, and the signed map has no -1.0: when that element is
-    negative it is stored as min_code * A. The scale is therefore the largest positive value, or the
-    largest |negative| / |min code| (with its float32 neighbours, since that division can round), and
-    each element maps to the nearest code * scale; per block the candidate with the smallest
-    reconstruction error wins (zero for the original scale). Runs `chunk_blocks` blocks at a time."""
+    """bnb blockwise quant of float32 values into uint8 codes (same shape) and one float32 absmax
+    per 256 elements; scale is the largest positive or largest |negative| / |min code| (bnb map
+    has no -1.0); least error wins"""
     device = out_codes.device
     code = code.to(device = device, dtype = torch.float32)
     flat = values.reshape(-1)
@@ -301,6 +275,35 @@ class _LocalShardMixin:
             if work is not local:
                 local.copy_(work)
 
+    @torch.no_grad()
+    def step(self, closure = None):
+        """bitsandbytes' Optimizer8bit.step, but per-parameter device syncs only for paged optimizers
+        (async prefetches) or off the default stream."""
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        if not self.initialized:
+            self.check_overrides()
+            self.to_gpu()
+            self.initialized = True
+        paged = bool(getattr(self, "is_paged", False))
+        fence = paged or _off_default_stream(self)
+        p = None
+        for gindex, group in enumerate(self.param_groups):
+            for pindex, p in enumerate(group["params"]):
+                if p.grad is None:
+                    continue
+                if len(self.state[p]) == 0:
+                    self.init_state(group, p, gindex, pindex)
+                self.prefetch_state(p)
+                self.update_step(group, p, gindex, pindex)
+                if fence:
+                    _sync_device(p)
+        if fence and p is not None:
+            _sync_device(p)
+        return loss
+
     def init_state(self, group, p, gindex, pindex):
         return self._shard_call("init_state", group, p, gindex, pindex, with_grad = False)
 
@@ -324,9 +327,8 @@ class _LocalShardMixin:
         return keys
 
     def _export_aux(self, p, raw, keys, out):
-        """Each rank's history vectors for a DTensor parameter, as one Shard(0) DTensor of shape
-        (world * n,) over the parameter's mesh, so the full checkpoint holds every rank's vector and a
-        same-world-size resume gets its own back; a replicated parameter's vector is plain."""
+        """Each rank history vector as one Shard(0) DTensor of shape (world * n,) over the parameter
+        mesh (plain if replicated), so a same-world-size resume gets its own vector back"""
         DTensor = _dtensor_class()
         local = _local(p, DTensor)
         for key in keys:
@@ -386,10 +388,12 @@ class _LocalShardMixin:
             for gindex, group in enumerate(self.param_groups)
             for pindex, p in enumerate(group["params"])
         ]
-        state_dict["state"] = {
-            index: self._export_state(slots[index][0], raw, slots[index][1])
-            for index, raw in state_dict["state"].items()
-        }
+        to_cpu = getattr(self, "_unsloth_full_cpu_export", False)
+        exported = {}
+        for index, raw in state_dict["state"].items():
+            out = self._export_state(slots[index][0], raw, slots[index][1])
+            exported[index] = _gather_to_cpu(out) if to_cpu else out
+        state_dict["state"] = exported
         return state_dict
 
     def _import_state(self, group, p, gindex, pindex, saved):
@@ -440,9 +444,83 @@ class _LocalShardMixin:
                     self._import_state(*slot_of[saved_id], saved)
 
 
+def _gather_to_cpu(entry):
+    """Mirrors torch _gather_state_dict + cpu_offload for one parameter: CPU on rank 0, None elsewhere."""
+    DTensor = _dtensor_class()
+    dist = torch.distributed
+    keep = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+    out = {}
+    for key, value in entry.items():
+        if DTensor is not None and isinstance(value, DTensor):
+            from torch.distributed.tensor import Replicate
+
+            mesh = value.device_mesh
+            if value.device.type != mesh.device_type:
+                value = value.to(mesh.device_type)
+            value = value.redistribute(
+                device_mesh = mesh, placements = [Replicate() for _ in value.placements]
+            ).to_local()
+            try:
+                from torch.distributed._functional_collectives import AsyncCollectiveTensor
+            except ImportError:
+                AsyncCollectiveTensor = None
+            if AsyncCollectiveTensor is not None and isinstance(value, AsyncCollectiveTensor):
+                value = value.wait()
+        if torch.is_tensor(value):
+            value = value.to("cpu") if keep else None
+        out[key] = value
+    return out
+
+
+@contextlib.contextmanager
+def full_cpu_state_export(optimizer):
+    """Gather + offload each parameter's dequantized state as it is exported, instead of holding all
+    float32 moments on the device until torch gathers. Every rank must enter it (collectives)."""
+    if not is_local_shard_bnb_optimizer(optimizer):
+        yield
+        return
+    optimizer._unsloth_full_cpu_export = True
+    try:
+        yield
+    finally:
+        optimizer._unsloth_full_cpu_export = False
+
+
+def _off_default_stream(optimizer):
+    devices = {p.device for group in optimizer.param_groups for p in group["params"]}
+    for device in devices:
+        if device.type == "cpu":
+            continue
+        if device.type != "cuda":
+            return True
+        if torch.cuda.current_stream(device) != torch.cuda.default_stream(device):
+            return True
+    return False
+
+
+def _sync_device(p):
+    try:
+        from bitsandbytes.utils import sync_gpu
+    except ImportError:
+        sync_gpu = None
+    if sync_gpu is not None:
+        return sync_gpu(p)
+    if p.device.type == "cuda":
+        torch.cuda.synchronize()
+    elif p.device.type == "xpu":
+        torch.xpu.synchronize()
+
+
 @functools.lru_cache(maxsize = None)
 def _local_shard_class(cls):
-    return type(cls.__name__, (_LocalShardMixin, cls), {"__module__": cls.__module__})
+    namespace = {"__module__": cls.__module__}
+    hook_step = getattr(torch.optim.Optimizer, "profile_hook_step", None)
+    if hook_step is not None:
+        # The mixin's step shadows torch's hooked step: re-wrap so step hooks still run once.
+        step = hook_step(_LocalShardMixin.step)
+        step.hooked = True
+        namespace["step"] = step
+    return type(cls.__name__, (_LocalShardMixin, cls), namespace)
 
 
 def localize_bnb_optimizer(optimizer):
@@ -458,7 +536,28 @@ def localize_bnb_optimizer(optimizer):
             "parameters; build it after `shard_model(model)` and before training."
         )
     optimizer.__class__ = _local_shard_class(type(optimizer))
+    _rebind_scheduler_step(optimizer)
     return True
+
+
+def _rebind_scheduler_step(optimizer):
+    """A scheduler built before localization wrapped the old class step on the instance; repoint it."""
+    wrapped = vars(optimizer).get("step")
+    if wrapped is None or not getattr(wrapped, "_wrapped_by_lr_sched", False):
+        return
+    import weakref
+
+    opt_ref = weakref.ref(optimizer)
+    func = type(optimizer).step
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        opt = opt_ref()
+        opt._opt_called = True
+        return func.__get__(opt, opt.__class__)(*args, **kwargs)
+
+    wrapper._wrapped_by_lr_sched = True
+    optimizer.step = wrapper
 
 
 def rename_optimizer_state_for(optimizer, full_state):
@@ -493,11 +592,7 @@ def rename_optimizer_state_for(optimizer, full_state):
 
 
 def _align_param_group_keys(optimizer, full_state):
-    """Saved param groups from the other optimizer carry its own hyperparameter keys (torch AdamW's
-    amsgrad / foreach / ..., bitsandbytes' alpha / t_alpha / ...), which torch's state dict loaders
-    refuse. Keep the keys both optimizers have (lr, betas, eps, weight_decay: the saved values), drop
-    the saved-only ones and take this optimizer's own value for the rest. Only called for a
-    checkpoint of the other optimizer (its state keys were renamed)."""
+    """Keeps shared group keys, drops saved-only ones (torch refuses them); live values fill the rest."""
     saved_groups = full_state.get("param_groups")
     live_groups = getattr(optimizer, "param_groups", None)
     if not isinstance(saved_groups, list) or not live_groups:

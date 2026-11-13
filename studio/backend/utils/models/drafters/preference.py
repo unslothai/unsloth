@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ranking keys that decide which sidecar a load prefers.
-
-The download, the snapshot reuse and the offline cache lookup share them, so a
-repo resolves the same way whichever reaches it first. The local scan does not:
-detect_mtp_file ranks size-first (``_smallest_first``) because a folder holding
-several copies costs disk, while these rank speed-first because the hub path is
-choosing what to spend a download on. Same family, sometimes a different copy.
-"""
+"""Hub download, snapshot and offline lookup rank speed-first; detect_mtp_file ranks size-first."""
 
 from pathlib import Path
 from typing import Iterable, Optional
@@ -21,9 +14,8 @@ from utils.models.drafters.common import (
 
 
 def dspark_precision_rank(name: str) -> int:
-    """Sidecar precision preference: Q8_0 first, the precision the DSpark model
-    card recommends. Shared with the hub download and VRAM-sizing paths so the
-    file Unsloth budgets for is the file it fetches and launches."""
+    """Sidecar precision preference, Q8_0 first as the DSpark model card recommends; shared with hub
+    download and VRAM sizing so budgeted and fetched files match."""
     base = Path(name).name.lower()
     if "-q8_0" in base:
         return 0

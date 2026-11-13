@@ -1,24 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install-completeness manifest for Unsloth Studio.
-
-install_python_stack.py drops the manifest before the dependency pass and writes
-it back only after the last step, so its presence means "the install finished".
-Read by `unsloth studio verify-install`, `desktop-capabilities` (and through it
-the Tauri preflight) and setup.sh/setup.ps1's fast path.
-
-Without it an installer killed part-way leaves a venv with `unsloth` but not
-studio.txt's dependencies, which still answers `-h` and so looked ready right up
-until the backend died on `import structlog`.
-
-Must import inside that half-installed venv: stdlib only, `packaging` optional.
-"""
+"""Install-completeness marker: install_python_stack.py drops it before the dependency pass and
+writes it after the last step, so presence means the install finished. Read by verify-install,
+desktop-capabilities and setup.sh/setup.ps1; stdlib only, packaging optional."""
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import errno
+import functools
 import hashlib
 import json
 import os
@@ -137,11 +129,8 @@ def requirement_digests(req_root: Optional[Path] = None) -> Dict[str, str]:
 
 
 def digest_file(path) -> Optional[str]:
-    """sha256 of one file, or None when it is absent or unreadable.
-
-    None is never equal to a recorded digest, so an input that cannot be read
-    forces the step that consumes it to run. That is the safe direction.
-    """
+    """sha256 of one file, or None when absent or unreadable; None never equals a recorded digest,
+    so an unreadable input forces the consuming step to run."""
     try:
         return _sha256(Path(path))
     except (TypeError, ValueError):
@@ -165,13 +154,9 @@ def _canonical(name: str) -> str:
 
 
 def _metadata_scan_paths() -> List[str]:
-    """This interpreter's site-packages roots, excluding inherited sys.path entries.
-
-    Deduplicated by real path, not by string: purelib hardcodes `lib` while
-    platlib follows sys.platlibdir, so a lib64 build (Fedora, SuSE) names one
-    directory twice through venv's lib64 -> lib symlink. Scanning both would
-    report every package twice and turn a healthy venv into a conflict.
-    """
+    """Site-packages roots minus inherited sys.path entries, deduplicated by real path: purelib
+    hardcodes lib while platlib follows sys.platlibdir, so lib64 builds would list one directory
+    twice."""
     import sysconfig
 
     paths: List[str] = []
@@ -195,36 +180,136 @@ def _metadata_scan_paths() -> List[str]:
     return paths
 
 
-def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path]]]:
-    """Every matching metadata version and its directory, when available."""
+_METADATA_TEXT_FILES = frozenset(("METADATA", "PKG-INFO", ""))
+_SINGLE_READ_TYPE = None
+_METADATA_SCAN: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "unsloth_install_manifest_metadata_scan", default = None
+)
+
+
+def _header_block(text: str) -> str:
+    """*text* through its first blank line, where the email parser stops (the README is unused)."""
+    cut = -1
+    for separator in ("\n\n", "\r\n\r\n"):
+        at = text.find(separator)
+        if at != -1 and (cut == -1 or at + len(separator) < cut):
+            cut = at + len(separator)
+    return text if cut == -1 else text[:cut]
+
+
+def _single_read(dist):
+    """*dist* parsing its metadata headers once (stdlib re-parses per access); errors uncached."""
+    global _SINGLE_READ_TYPE
+    from importlib.metadata import PathDistribution
+
+    if type(dist) is not PathDistribution:
+        return dist
+    if _SINGLE_READ_TYPE is None:
+
+        class _SingleReadDistribution(PathDistribution):
+            def read_text(self, filename):
+                text = super().read_text(filename)
+                if text and filename in _METADATA_TEXT_FILES:
+                    return _header_block(text)
+                return text
+
+            @property
+            def metadata(self):
+                cached = self.__dict__.get("_unsloth_metadata")
+                if cached is None:
+                    cached = super().metadata
+                    self.__dict__["_unsloth_metadata"] = cached
+                return cached
+
+        _SINGLE_READ_TYPE = _SingleReadDistribution
+    return _SINGLE_READ_TYPE(dist._path)
+
+
+@contextlib.contextmanager
+def _one_metadata_scan():
+    """One record scan for the block, never across calls: the installer changes site-packages."""
+    if _METADATA_SCAN.get() is not None:
+        yield
+        return
+    token = _METADATA_SCAN.set({})
+    try:
+        yield
+    finally:
+        _METADATA_SCAN.reset(token)
+
+
+def _one_metadata_scan_per_call(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _one_metadata_scan():
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def _metadata_record_index(backups_only: bool = False) -> Dict[str, list]:
+    """Canonical name -> [(dist, dir, dir-name key)]; nameless records file by dir name, no dist."""
     from importlib.metadata import MetadataPathFinder, distributions
 
-    wanted = _canonical(dist_name)
     paths = _metadata_scan_paths()
     # The listing cache is keyed on directory mtime, so a new dist-info can stay invisible.
     # Via an INSTANCE: invalidate_caches is a classmethod only from 3.11.9 / 3.12.3.
     if getattr(MetadataPathFinder, "invalidate_caches", None) is not None:
         MetadataPathFinder().invalidate_caches()
     kwargs = {"path": paths} if paths else {}
-    found: List[Tuple[str, Optional[Path]]] = []
+    index: Dict[str, list] = {}
     for dist in distributions(**kwargs):
         path = getattr(dist, "_path", None)
         try:
             record_path = Path(os.fspath(path)) if path is not None else None
         except (TypeError, ValueError):
             record_path = None
+        if backups_only and (record_path is None or not record_path.name.startswith("~")):
+            continue
+        stem = record_path.name if record_path is not None else ""
+        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
+        path_key = _canonical(path_name) if stem.endswith(".dist-info") and separator else None
+        dist = _single_read(dist)
         try:
             name = dist.metadata.get("Name")
             if name:
-                if _canonical(name) == wanted:
-                    found.append((dist.version or "", record_path))
+                index.setdefault(_canonical(name), []).append((dist, record_path, path_key))
                 continue
         except Exception:
             pass
-        stem = record_path.name if record_path is not None else ""
-        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
-        if stem.endswith(".dist-info") and separator and _canonical(path_name) == wanted:
+        if path_key is not None:
+            index.setdefault(path_key, []).append((None, record_path, None))
+    return index
+
+
+def _records_named(index: Dict[str, list], key: str) -> List[Tuple[str, Optional[Path]]]:
+    found: List[Tuple[str, Optional[Path]]] = []
+    for dist, record_path, path_key in index.get(key, ()):
+        if dist is None:
             found.append(("", record_path))
+            continue
+        try:
+            found.append((dist.version or "", record_path))
+        except Exception:
+            # An unreadable version leaves only the directory name to match on.
+            if path_key == key:
+                found.append(("", record_path))
+    return _sorted_records(found)
+
+
+def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path]]]:
+    """Every matching metadata version and its directory, when available."""
+    scan = _METADATA_SCAN.get()
+    if scan is None:
+        index = _metadata_record_index()
+    else:
+        index = scan.get("records")
+        if index is None:
+            index = scan["records"] = _metadata_record_index()
+    return _records_named(index, _canonical(dist_name))
+
+
+def _sorted_records(found) -> List[Tuple[str, Optional[Path]]]:
     return sorted(found, key = lambda record: (record[0], os.fspath(record[1] or "")))
 
 
@@ -255,11 +340,11 @@ def pip_backup_metadata_paths(dist_name: str) -> List[Path]:
     still names the real project, so it counts as a duplicate here, but pip
     calls the directory invalid: `pip uninstall <name>` can never consume it.
     """
-    return [
-        path
-        for _version, path in _installed_metadata_records(dist_name)
-        if path is not None and path.name.startswith("~")
-    ]
+    if _METADATA_SCAN.get() is not None:
+        records = _installed_metadata_records(dist_name)
+    else:
+        records = _records_named(_metadata_record_index(backups_only = True), _canonical(dist_name))
+    return [path for _version, path in records if path is not None and path.name.startswith("~")]
 
 
 def metadata_conflict(versions: Sequence[str]) -> bool:
@@ -268,18 +353,15 @@ def metadata_conflict(versions: Sequence[str]) -> bool:
 
 
 def _metadata_is_inconsistent(dist_name: str, versions: Optional[List[str]] = None) -> bool:
-    """Duplicated, unreadable, or standing on a record pip will not honour.
-
-    A sole `~` backup is the case a version count cannot see: one readable
-    version, so nothing looks wrong, while pip refuses the directory and the
-    package tree is usually renamed away with it. Left unflagged, the fast path
-    calls the package up to date and skips the pass that would reinstall it.
-    """
+    """Flags duplicated, unreadable or pip-ignored metadata; a sole ~ backup is invisible to a
+    version count yet pip refuses it, and unflagged the fast path would skip the reinstall that
+    repairs it."""
     if versions is None:
         versions = installed_versions(dist_name)
     return bool(metadata_conflict(versions) or pip_backup_metadata_paths(dist_name))
 
 
+@_one_metadata_scan_per_call
 def installed_version_probe(
     dist_name: str, companion_names: Sequence[str] = ()
 ) -> Tuple[str, bool]:
@@ -349,13 +431,9 @@ def _publish_json(
 
 @contextlib.contextmanager
 def _manifest_lock(root: Optional[Path] = None):
-    """Hold an exclusive lock on LOCK_NAME for the block. Never raises.
-
-    Best effort: this module has to run inside a half-built venv, so a filesystem that cannot
-    lock (a network mount, a read-only prefix, no fcntl or msvcrt) proceeds unserialised
-    rather than failing an install, as it did before this existed. The deadline below bounds
-    the retries, not one stalled syscall.
-    """
+    """Holds an exclusive lock on LOCK_NAME, best effort and never raising: a filesystem that cannot
+    lock (network mount, read-only prefix, no fcntl or msvcrt) runs unserialised rather than
+    failing; the deadline bounds retries, not one stalled syscall."""
     handle = None
     locked = False
     try:
@@ -720,12 +798,9 @@ def no_torch_marker_path(root: Optional[Path] = None) -> Path:
 
 
 def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
-    """Record the mode outside the completion manifest. Never raises.
-
-    Written before the dependency pass so an interrupted install still knows what
-    it was building. Removed when torch is wanted, so migrating out of no-torch
-    does not leave a stale marker behind.
-    """
+    """Records the no-torch mode outside the completion manifest before the dependency pass, so an
+    interrupted install still knows its mode; removed when torch is wanted so no stale marker
+    remains. Never raises."""
     path = no_torch_marker_path(root)
     try:
         if no_torch:
@@ -737,12 +812,9 @@ def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
 
 
 def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
-    """The mode this venv was installed with, or None when unknown.
-
-    None means nothing recorded it: no manifest key and no marker. Callers must
-    fall back to their own detection on None and never to False, so an install
-    made before either existed is not silently switched out of no-torch mode.
-    """
+    """Recorded no-torch mode, or None when no manifest key or marker exists; callers must detect
+    for themselves on None and never assume False, so older installs are not silently switched
+    out of no-torch mode."""
     manifest = read_manifest(root)
     if manifest is not None:
         value = manifest.get("no_torch")
@@ -759,18 +831,9 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
 
 
 def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
-    """The torch flavor this venv was installed with, or None when unknown.
-
-    None means nothing recorded it: no manifest, or one written before the key
-    existed. Callers must treat None as "unknown" and fall back to their own
-    detection, never as "cpu" -- claiming a flavor nobody selected would let a
-    repair reinstall over a deliberate build.
-
-    There is no marker companion here (unlike no_torch): the manifest is dropped
-    before every dependency pass, so this answers only for the PREVIOUS install,
-    which is exactly the question a repair asks. A run whose own setup script
-    exported the flavor never reaches this.
-    """
+    """Torch flavor recorded by the previous install, or None when unknown; never read None as cpu,
+    or a repair reinstalls over a deliberate build; no marker companion, as the manifest is
+    dropped each pass; a run whose setup script exported the flavor never reaches this."""
     manifest = read_manifest(root)
     if manifest is None:
         return None
@@ -782,15 +845,9 @@ def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
 
 
 def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
-    """Whether the recorded flavor was NAMED rather than automatically selected.
-
-    False when nothing recorded it, including a manifest written before the key
-    existed. That is the safe direction here and the opposite of the usual "unknown
-    falls back to the old behaviour": treating an unproven CPU record as deliberate is
-    what leaves a host that has since gained a GPU with no repair offered at all, which
-    is the failure this whole field exists to distinguish. A repair is something the
-    user can decline; a silently CPU-only GPU box is not.
-    """
+    """Whether the recorded flavor was named rather than auto-selected; False when unrecorded, since
+    an unproven CPU record read as deliberate would leave a host that later gained a GPU with no
+    repair offered."""
     manifest = read_manifest(root)
     if manifest is None:
         return False
@@ -799,11 +856,8 @@ def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
 
 
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:
-    """(distribution name, marker, specifier) for a requirement, or None.
-
-    Covers what studio.txt uses: names, specifiers, inline comments, markers.
-    pip flags are skipped.
-    """
+    """Returns (distribution name, marker, specifier) for a requirement line, or None for blanks and
+    pip flags; covers the names, specifiers, inline comments and markers that studio.txt uses."""
     text = line.split("#", 1)[0].strip()
     if not text or text.startswith("-"):
         return None
@@ -857,14 +911,9 @@ def _version_satisfies(version: str, specifier: str) -> bool:
 def missing_requirements(
     req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
 ) -> List[str]:
-    """Distribution names that are missing or outside their required versions.
-
-    Checked via importlib.metadata, not import names, because studio.txt lists
-    PyJWT / python-docx / pymupdf whose import names (jwt, docx, fitz) differ.
-
-    `installed` (canonical distribution name -> version) checks a venv other
-    than the one running this code, which importlib.metadata cannot see.
-    """
+    """Distribution names missing or outside their required versions, checked via importlib.metadata
+    since import names (jwt, docx, fitz) differ; the installed mapping checks another venv, which
+    importlib.metadata cannot see."""
     from importlib.metadata import PackageNotFoundError, distribution
 
     path = req_file or (requirements_root() / BOOT_REQUIREMENT_FILE)
@@ -922,6 +971,7 @@ def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
             # An interrupted pip upgrade leaves ~ame-1.0.dist-info with no payload; pip ignores those.
             if _is_pip_backup(dist):
                 continue
+            dist = _single_read(dist)
             try:
                 name = dist.metadata["Name"]
                 version = dist.version
@@ -1045,6 +1095,7 @@ def closure_unmet_requirements(
     return unmet
 
 
+@_one_metadata_scan_per_call
 def violated_constraints(
     req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
 ) -> List[str]:
@@ -1104,6 +1155,17 @@ _STAGED_LAUNCHER_SUFFIXES = (".update-stale", ".update-backup", ".deleteme")
 
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
+
+def _restored_launcher(parts: Sequence[str]) -> bool:
+    """The managed Windows launcher: an update may restore an older, smaller uv trampoline (#16897)."""
+    return (
+        len(parts) >= 2
+        and ".." in parts
+        and parts[-2].lower() == "scripts"
+        and parts[-1].lower() == _STAGED_LAUNCHER_NAME
+    )
+
+
 # `npm run build` rehashes every asset, so RECORD names files our setup deleted.
 _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
 
@@ -1134,10 +1196,8 @@ def _staged_beside(target) -> bool:
 
 
 def _within(target: Path, anchor: Path) -> bool:
-    """Whether a parent-relative row lands inside the environment.
-
-    One outside it belongs to something else, which reinstalling ours cannot fix.
-    """
+    """Whether a parent-relative row lands inside the environment; one outside it belongs to
+    something else, which reinstalling ours cannot fix."""
     try:
         resolved = target.resolve()
     except OSError:
@@ -1231,6 +1291,7 @@ def _scan_payload_files(
             return found
         seen: set = set()
         for dist in distributions(path = paths):
+            dist = _single_read(dist)
             try:
                 name = _canonical(dist.metadata["Name"] or "")
                 if name not in wanted or name in seen:
@@ -1289,6 +1350,7 @@ def _scan_payload_files(
                         and row[2]
                         and row[2].isdigit()
                         and parts[-1] not in _INSTALLER_REWRITTEN_NAMES
+                        and not _restored_launcher(parts)
                         and info.st_size < int(row[2])
                     ):
                         found.append(f"{rel} is {info.st_size} bytes, expected {row[2]}")
@@ -1299,6 +1361,7 @@ def _scan_payload_files(
     return found
 
 
+@_one_metadata_scan_per_call
 def verify_install(
     root: Optional[Path] = None,
     req_root: Optional[Path] = None,
@@ -1460,6 +1523,7 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
     payload_present = False
     try:
         for dist in distributions(path = [str(root)]):
+            dist = _single_read(dist)
             try:
                 dist_name = dist.metadata.get("Name") or ""
             except Exception:
@@ -1492,12 +1556,9 @@ def _sidecar_damaged_files(
     budget_seconds: float = SIDECAR_SCAN_BUDGET_SECONDS,
     required: Sequence[str] = (),
 ) -> List[str]:
-    """RECORD rows under a sidecar that are gone, truncated, or built for another CPython.
-
-    Fails open everywhere: the caller's answer to a finding is to delete several hundred
-    MB and refetch, so anything unreadable reports nothing rather than guessing. Bounded,
-    because no installer wraps this in a timeout and a stalled mount would wedge setup.
-    """
+    """Finds RECORD rows under a sidecar that are gone, truncated or built for another CPython;
+    fails open since a finding triggers a large delete, and is bounded by budget_seconds since a
+    stalled mount would wedge setup."""
     import csv
     import io
     import stat

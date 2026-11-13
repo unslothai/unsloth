@@ -14,6 +14,6 @@ test("Model hub's Run uses the filled play glyph Library's play buttons use", ()
   assert.match(library, filled);
   assert.match(
     card,
-    /<PlayIcon strokeWidth=\{2\} className="\[&_path\]:fill-current" \/>\s*Run/,
+    /<PlayIcon strokeWidth=\{2\} className="\[&_path\]:fill-current" \/>\s*<span className="hub-run-action-label">Run<\/span>/,
   );
 });

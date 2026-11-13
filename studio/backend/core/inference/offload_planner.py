@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Placement planner: spill weights with ``-ot``, never the KV cache.
-
-llama.cpp's ``--fit on`` spills whole layers through ``n_gpu_layers``, and a
-layer's KV cache is allocated on ``model.dev_layer(il)`` (llama-kv-cache.cpp),
-so spilling a layer drags its cache to host RAM with it. Measured at 128K on one
-B200, that is the expensive direction by a wide margin:
-
-    weights spilled, cache resident   71.63 t/s
-    cache spilled, weights resident    3.24 t/s
-
-``-ot`` overrides tensor buffer types WITHOUT touching layer assignment, so the
-cache stays put: measured ``offloaded 66/66 layers to GPU`` with the whole cache
-on CUDA0 even when every block tensor was forced to the host.
-
-This module is pure arithmetic over a :class:`ModelLayout`. It performs no IO and
-reads no globals, so the whole decision table is testable directly.
-"""
+"""Spill weights with -ot, never the KV cache: spilling a layer moves its cache to host RAM too."""
 
 from __future__ import annotations
 
@@ -126,9 +110,8 @@ class Plan:
 
 
 def _usable_vram(vram_bytes_per_device: Sequence[int], opts: PlanOptions) -> int:
-    """Total creditable VRAM: every device pays the fixed per-device overhead,
-    the split pays for each device AFTER the first, then the pool pays once for
-    whatever sits on a card outside the layout."""
+    """Total VRAM: each device pays overhead; a split pays per device after the first; the pool pays
+    once."""
     pooled = sum(max(0, v - opts.overhead_bytes_per_device) for v in vram_bytes_per_device)
     split = max(0, len(vram_bytes_per_device) - 1) * max(0, opts.pipeline_overhead_bytes)
     return pooled - split - max(0, opts.extra_resident_bytes)
@@ -231,8 +214,7 @@ def all_resident_bytes(
     kv_bytes_floor: int = 0,
     kv_on_host: bool = False,
 ) -> int:
-    """VRAM needed with nothing spilled. token_embd is excluded: it is never
-    GPU-resident (llama-model.cpp pins dev_input to the CPU unconditionally)."""
+    """VRAM needed if nothing spills; token_embd excluded as llama.cpp pins it to the CPU."""
     return (
         resident_floor_bytes(
             layout,

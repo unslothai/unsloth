@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from typing import Any
 
@@ -215,31 +216,45 @@ def gpu_available() -> bool:
 
 
 _LLAMA_GPU_CACHE: list = []  # [(monotonic time, (binary, mtime), answer)]
+_LLAMA_GPU_REFRESH = threading.Lock()
 
 
 def _llama_cpp_has_gpu() -> bool:
-    """Without torch, asks llama-server for its GPUs; cached 60 s per binary path and mtime."""
+    """Asks llama-server for its GPUs without torch; past 60 s, answers from cache and re-probes in the background."""
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
         from core.systemone.native_worker import resolve_binary
 
         binary = resolve_binary()
         if not binary:
             return False
         key = (binary, os.stat(binary).st_mtime_ns)
-        if (
-            _LLAMA_GPU_CACHE
-            and _LLAMA_GPU_CACHE[0][1] == key
-            and time.monotonic() - _LLAMA_GPU_CACHE[0][0] < 60
-        ):
-            return _LLAMA_GPU_CACHE[0][2]
-        # The binary's own devices: a CPU-only build exposes none even with a GPU present.
-        answer = bool(
-            LlamaCppBackend._enumerated_gpu_devices(
-                binary, LlamaCppBackend._llama_server_env_for_binary(binary)
-            )
-        )
+        if _LLAMA_GPU_CACHE and _LLAMA_GPU_CACHE[0][1] == key:
+            checked, _, answer = _LLAMA_GPU_CACHE[0]
+            if time.monotonic() - checked >= 60 and _LLAMA_GPU_REFRESH.acquire(blocking = False):
+                threading.Thread(target = _refresh_llama_gpu, args = (binary, key), daemon = True).start()
+            return answer
+        return _probe_llama_gpu(binary, key)
     except Exception:
         return False
+
+
+def _probe_llama_gpu(binary: str, key: tuple) -> bool:
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    # The binary's own devices: a CPU-only build exposes none even with a GPU present.
+    answer = bool(
+        LlamaCppBackend._enumerated_gpu_devices(
+            binary, LlamaCppBackend._llama_server_env_for_binary(binary)
+        )
+    )
     _LLAMA_GPU_CACHE[:] = [(time.monotonic(), key, answer)]
     return answer
+
+
+def _refresh_llama_gpu(binary: str, key: tuple) -> None:
+    try:
+        _probe_llama_gpu(binary, key)
+    except Exception:
+        pass
+    finally:
+        _LLAMA_GPU_REFRESH.release()

@@ -32,6 +32,7 @@ export interface HardwareInfo {
     xpu: string | null;
     transformers: string | null;
     unsloth: string | null;
+    mlx: string | null;
     llamaCpp: string | null;
     audioCpp: string | null;
     // Whether export can run here (true only on a supported accelerator), with a torch-aware
@@ -63,6 +64,7 @@ const DEFAULT: HardwareInfo = {
     xpu: null,
     transformers: null,
     unsloth: null,
+    mlx: null,
     llamaCpp: null,
     audioCpp: null,
     exportSupported: null,
@@ -127,6 +129,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 xpu: data?.versions?.xpu ?? null,
                 transformers: data?.versions?.transformers ?? null,
                 unsloth: data?.versions?.unsloth ?? null,
+                mlx: data?.versions?.mlx ?? null,
                 llamaCpp: data?.llama_cpp ?? null,
                 audioCpp: data?.audio_cpp ?? null,
                 exportSupported: data?.export_supported ?? null,

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Speed up large Qwen-Image-2.1 ROCm attention with query chunks.
-
-Unmasked, noncausal queries are independent; each chunk keeps all keys and values.
-"""
+"""Query-chunked Qwen-Image-2.1 ROCm attention; chunks keep all keys and values (unmasked, noncausal)."""
 
 from __future__ import annotations
 

@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Does this chat template ever put the tool catalog into the prompt?
-
-Answers Studio's one yes/no per model, deciding whether the tool controls are live.
-
-Do not go back to matching substrings: that reads spelling, not meaning, and called
-Granite 3.3 tool-less for writing `{%- if tools and not available_tools -%}`.
-
-Over-approximates on purpose. A spurious yes shows a control the backend re-checks;
-a spurious no silently disables a working feature, which is the bug this replaces.
-"""
+"""Does a chat template ever put tools in the prompt; errs toward yes, never by substring matching."""
 
 from functools import lru_cache
 
@@ -141,8 +132,7 @@ def _scan_maybe(
     bound = frozenset(),
     killed = frozenset(),
 ):
-    """Walk a body that may not run. Keep what it learns, drop what it unbinds; the
-    body's own `bound`/`killed` names escape in neither direction."""
+    """Body that may not run: keep what it learns, drop what it unbinds; its names never leak."""
     local = (set(aliases) | set(bound)) - set(killed)
     found = _scan(body, local, guarded)
     aliases |= local - (set(bound) - aliases)
@@ -150,9 +140,7 @@ def _scan_maybe(
 
 
 def _join(aliases, arms, exhaustive):
-    """Union the arms: a name holds the catalog if it does on any. Falling past every
-    arm is a path too, so the incoming set counts unless an `{% else %}` is present -
-    which is what keeps a rebinding on every arm a rebinding."""
+    """Arms union: a name holds the catalog if any arm does; incoming set counts unless {% else %}."""
     merged = set() if exhaustive else set(aliases)
     for arm in arms:
         merged |= arm

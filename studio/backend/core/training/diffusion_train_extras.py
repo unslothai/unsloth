@@ -1,34 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Optional extras for the diffusion LoRA trainers: LoRA EMA, the persistent
-conditioning cache, and aspect-ratio bucketing.
-
-Everything here is opt-in and family-agnostic:
-
-- ``LoRAEMA`` keeps an exponential moving average of ONLY the trainable LoRA
-  parameters. Short LoRA runs (a few hundred steps) can't afford the classic
-  0.9999 decay -- the shadow would still be ~frozen at the init when the run
-  ends -- so the default decay is 0.99 with a warmup ramp that keeps early
-  updates responsive. The EMA weights export as a SECOND adapter next to the
-  primary one, so the user can A/B both.
-
-- ``PersistentConditioningCache`` stores the trainer's precomputed conditioning
-  tensors (VAE latent posterior stats + text-encoder embeddings) on disk as one
-  safetensors file per item, keyed by content hash + family + resolution. On a
-  warm start the trainer can skip loading the VAE and the multi-GB text
-  encoders entirely. The cached latent tensors are EXACTLY what the in-memory
-  path produces (the family's ``encode_latent_stats`` output with all
-  normalisation -- including Qwen's per-channel latents_mean/std -- already
-  folded in, held in fp32), so a cache hit is bit-identical to a fresh encode.
-
-- Aspect-ratio bucketing assigns each image a same-area bucket resolution
-  (width/height multiples of a divisor the VAE + patching can consume) and
-  batches only within a bucket, so a mixed-aspect dataset trains without
-  square-cropping away composition.
-
-Pure helpers avoid torch at import time so the CPU unit tests stay light.
-"""
+"""Opt-in extras: LoRA EMA (0.99 default decay, exported as a second adapter), conditioning cache
+(bit-identical to a fresh encode), aspect bucketing; pure helpers avoid torch at import time"""
 
 from __future__ import annotations
 
@@ -39,6 +13,23 @@ import random
 import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+
+def accumulate_loss(acc: Any, loss: Any, accumulation_steps: int) -> Any:
+    """``acc + float(loss) / accumulation_steps`` without a per-micro-step host sync: an fp64 device sum is the same
+    IEEE arithmetic as the Python float one. Devices without fp64 (MPS, Arc / integrated XPUs) keep the Python float.
+    Read with loss_value."""
+    detached = loss.detach()
+    if detached.device.type not in ("cpu", "cuda"):
+        from core.inference.video_minimax_h3_pdd import device_has_fp64
+        if not device_has_fp64(detached.device):
+            return (acc if acc is not None else 0.0) + float(detached) / accumulation_steps
+    term = detached.double() / accumulation_steps
+    return term if acc is None else acc.add_(term)
+
+
+def loss_value(acc: Any) -> float:
+    return 0.0 if acc is None else float(acc)
 
 
 # Effective decay = min(decay, (1 + n) / (WARMUP_OFFSET + n)).
@@ -95,17 +86,36 @@ class LoRAEMA:
         step = self.updates + 1
         return min(self.decay, step / (_EMA_WARMUP_OFFSET + step))
 
+    def _update_lists(self, model: Any) -> tuple[list, list]:
+        """(shadows, params) for ``model``, cached per model."""
+        import weakref
+
+        cached = getattr(self, "_lists", None)
+        if cached is not None and cached[0]() is model:
+            return cached[1], cached[2]
+        shadows, params = [], []
+        for name, p in model.named_parameters():
+            shadow = self._shadow.get(name)
+            if shadow is None:
+                continue
+            shadows.append(shadow)
+            params.append(p.detach())
+        try:
+            self._lists = (weakref.ref(model), shadows, params)
+        except TypeError:  # not weak-referenceable: rebuild each call
+            self._lists = None
+        return shadows, params
+
     def update(self, model: Any) -> None:
         """Apply one EMA update from ``model``'s current trainable params."""
         import torch
 
         decay = self.effective_decay()
-        with torch.no_grad():
-            for name, p in model.named_parameters():
-                shadow = self._shadow.get(name)
-                if shadow is None:
-                    continue
-                shadow.mul_(decay).add_(p.detach(), alpha = 1.0 - decay)
+        shadows, params = self._update_lists(model)
+        if shadows:
+            with torch.no_grad():
+                torch._foreach_mul_(shadows, decay)
+                torch._foreach_add_(shadows, params, alpha = 1.0 - decay)
         self.updates += 1
 
     def state_dict(self) -> dict[str, Any]:
@@ -138,8 +148,7 @@ class LoRAEMA:
         self.updates = max(0, int(updates or 0))
 
     def copy_to(self, model: Any) -> dict[str, Any]:
-        """Write the shadow values into ``model``'s params, returning the
-        displaced originals so ``restore`` can undo the swap."""
+        """Write shadow values into params, returning displaced originals for restore to undo."""
         import torch
 
         backup: dict[str, Any] = {}

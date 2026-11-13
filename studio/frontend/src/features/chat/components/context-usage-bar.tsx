@@ -142,8 +142,10 @@ export const ContextUsageBar: FC<
     /** Side padding of the face, in --spacing units; the widths below count it. */
     padX?: number;
     ringFirst?: boolean;
+    /** Text width, never compacting: the ch widths assume the mono face. */
+    fitContent?: boolean;
   }
-> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2.5, ringFirst = false, ...input }) => {
+> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2.5, ringFirst = false, fitContent = false, ...input }) => {
   const pin = useClickPin(pinOnClick);
   const state = deriveContextUsageBar(input);
   if (!state) return null;
@@ -172,28 +174,39 @@ export const ContextUsageBar: FC<
       {/* The header squeezes this wrapper; the button inside takes only the face it shows. */}
       <div
         style={
-          {
-            "--full": fullWidth,
-            "--compact": compactWidth,
-            gridTemplateColumns: "minmax(var(--compact), var(--full))",
-          } as CSSProperties
+          fitContent
+            ? undefined
+            : ({
+                "--full": fullWidth,
+                "--compact": compactWidth,
+                gridTemplateColumns: "minmax(var(--compact), var(--full))",
+              } as CSSProperties)
         }
-        className={cn("grid shrink! items-center font-mono text-ui-13", className)}
+        className={cn(
+          fitContent ? "flex items-center" : "grid shrink! items-center",
+          "font-mono text-ui-13",
+          className,
+        )}
       >
         <TooltipTrigger asChild>
           <button
             type="button"
             {...pin?.trigger}
             aria-label={state.label}
-            style={{
-              width:
-                "calc(clamp(0px, (100% - var(--full) + 1px) * 999, var(--full)) + clamp(0px, (var(--full) - 100% - 1px) * 999, var(--compact)))",
-            }}
+            style={
+              fitContent
+                ? undefined
+                : {
+                    width:
+                      "calc(clamp(0px, (100% - var(--full) + 1px) * 999, var(--full)) + clamp(0px, (var(--full) - 100% - 1px) * 999, var(--compact)))",
+                  }
+            }
             className={cn(
               "group grid h-full items-center justify-self-end overflow-hidden rounded-[10px] text-chat-icon-fg tabular-nums whitespace-nowrap hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               "[--track:rgb(0_0_0_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]",
             )}
           >
+            {fitContent ? null : (
             <span
               className="col-start-1 row-start-1 flex h-full items-center justify-center overflow-hidden"
               style={{ width: "clamp(0px, (var(--full) - 100% - 1px) * 999, 100%)" }}
@@ -206,11 +219,15 @@ export const ContextUsageBar: FC<
                 <span className={cn("flex h-full shrink-0 items-center", hover)} style={padStyle}><Face face={compactFace} /></span>
               )}
             </span>
+            )}
             <span
               className="col-start-1 row-start-1 h-full overflow-hidden"
-              style={{ width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
+              style={fitContent ? undefined : { width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
             >
-              <span className={cn("flex h-full w-(--full) items-center gap-2", hover)} style={padStyle}>
+              <span
+                className={cn("flex h-full items-center", fitContent ? "gap-1.5" : "w-(--full) gap-2", hover)}
+                style={padStyle}
+              >
                 {showRing && ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
                 <Face face={face} />
                 {showRing && !ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}

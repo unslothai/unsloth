@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Audio errors that are safe to show a client verbatim.
-
-``safe_error_detail`` flattens everything to "An internal error occurred", right for a
-failure but wrong for a capability answer, where the reason is the whole reply. These
-carry no path or user input, so the route passes them straight through.
-"""
+"""Audio errors safe to show clients verbatim, which safe_error_detail would flatten; they hold no
+path or user input, so the route passes them through."""
 
 from __future__ import annotations
 
@@ -90,8 +86,7 @@ def sanitize_runtime_detail(text: str) -> str:
 
 
 def sanitize_runtime_tail(text: str, limit: int = 280) -> str:
-    """The last ``limit`` characters of a runtime log, redacted before the cut so a path or token
-    straddling it is never shown half-redacted."""
+    """Last limit chars of a runtime log, redacted before the cut so none is half-redacted."""
     cleaned = _redacted_line(text)
     if len(cleaned) > limit:
         cleaned = "..." + cleaned[-(limit - 3) :].split(" ", 1)[-1]

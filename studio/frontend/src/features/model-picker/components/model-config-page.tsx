@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AdvancedGpuSlider } from "./advanced-gpu-slider";
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
+import { VramBudgetControl } from "@/features/settings/components/vram-budget-control";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
 import { modelDisplayName } from "../model-config/model-identity";
@@ -65,17 +68,11 @@ import {
 } from "@/features/chat/stores/chat-runtime-store";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
-  type VramBudgetSettings,
   dropVramBudgetRetry,
-  flushVramBudgetSave,
-  isVramBudgetLocked,
   loadVramBudgetSettings,
   setVramBudgetLocked,
   settleVramBudgetSave,
-  stageVramBudgetSave,
-  subscribeVramBudgetLock,
   subscribeVramBudgetSettings,
-  updateVramBudgetSettings,
 } from "@/features/settings/api/vram-budget";
 import {
   type GpuIndexKind,
@@ -148,7 +145,7 @@ import {
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
-import { useInt8PrefillAvailable } from "../hooks/use-int8-prefill-available";
+import { usePrefillOptionAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,
   fromApiOverride,
@@ -238,10 +235,9 @@ import {
   savePerModelConfig,
   storedSpeculativeAuto,
   subscribeAdvancedSettingsOpen,
-  VRAM_BUDGET_PERCENT_STEP,
-  vramFractionToPercent,
-  vramPercentToFraction,
+  sameEngramPrecision,
 } from "../model-config/per-model-config";
+import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import { isNpuModelId, NPU_DEFAULT_CONTEXT_LENGTH } from "../../npu";
 import {
@@ -367,6 +363,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.cacheRam != null ||
     config.tensorParallel ||
     config.disableVision ||
+    config.engramPrecision != null ||
     config.chatTemplateOverride != null ||
     // Hidden flags change behaviour, so do not open collapsed claiming defaults.
     (config.llamaExtraArgs != null && config.llamaExtraArgs.length > 0) ||
@@ -394,6 +391,7 @@ function withoutUnsupportedDiffusionSettings(
     config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
     !config.disableVision &&
+    config.engramPrecision == null &&
     config.nBatch == null &&
     config.nUbatch == null &&
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
@@ -411,6 +409,7 @@ function withoutUnsupportedDiffusionSettings(
     reasoningBudgetMessage: "",
     tensorParallel: false,
     disableVision: false,
+    engramPrecision: null,
     nBatch: null,
     nUbatch: null,
     // The diffusion shim never passes llama-server flags but the load would record them.
@@ -647,259 +646,34 @@ function GgufContextLengthSetting({
   );
 }
 
+function DiffusionContextNote({
+  value,
+  requested,
+  loadedContext,
+}: {
+  value: number;
+  requested: number | null;
+  loadedContext: number | null;
+}) {
+  if (loadedContext == null || value !== requested || value === loadedContext) {
+    return null;
+  }
+  return (
+    <p className="text-ui-11 text-amber-500">
+      DiffusionGemma did not apply this value. It sized the context to fit
+      memory and is running with {loadedContext.toLocaleString()} tokens.
+    </p>
+  );
+}
+
 function clampMaxSeqLength(value: number, max: number): number {
   const normalized = normalizeMaxSeqLength(value) ?? MAX_SEQ_LENGTH_MIN;
   return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(max, normalized));
 }
 
-function AdvancedGpuSlider({
-  label,
-  value,
-  min,
-  max,
-  onChange,
-  onDraft,
-  format,
-  info,
-  inputRef,
-  step = 1,
-  disabled = false,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  onChange: (value: number) => void;
-  onDraft?: (value: number | null) => void;
-  format?: (value: number) => string | undefined;
-  info?: ReactNode;
-  inputRef?: Ref<NumericValueInputHandle>;
-  step?: number;
-  disabled?: boolean;
-}) {
-  const { draft, sliderProps } = useSliderDraft(value, onChange, onDraft);
-  const shown = draft ?? value;
-  return (
-    <div className="space-y-2">
-      <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>{label}</span>
-          {info && <InfoHint>{info}</InfoHint>}
-        </div>
-        <NumericValueInput
-          ref={inputRef}
-          value={shown}
-          min={min}
-          max={max}
-          step={step}
-          onChange={onChange}
-          displayValue={format?.(shown)}
-          ariaLabel={label}
-          className={NUMBER_INPUT_CLASS}
-          fixedWidth={true}
-          size={8}
-          disabled={disabled}
-        />
-      </div>
-      <Slider
-        min={min}
-        max={max}
-        step={step}
-        {...sliderProps}
-        aria-label={label}
-        disabled={disabled}
-      />
-    </div>
-  );
-}
-
-// Server-wide, not per model. Whole percents so a dragged value round-trips exactly.
 function VramBudgetRow() {
-  // macOS sizes Metal from _APPLE_UNIFIED_MEMORY_FRACTION and ignores this budget.
-  const isMac = usePlatformStore((s) => s.deviceType === "mac");
-  const [settings, setSettings] = useState<VramBudgetSettings | null>(null);
-  const [percent, setPercent] = useState<number | null>(null);
-  const [draftPercent, setDraftPercent] = useState<number | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const adviceId = useId();
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
-  const wasModelLoading = useRef(false);
-  // Locked while Run settles the budget, or an edit would be flushed with the load.
-  const [locked, setLocked] = useState(isVramBudgetLocked);
-  useEffect(() => subscribeVramBudgetLock(setLocked), []);
-
-  // A queued edit outranks the publish, or a save landing mid-drag would move the slider.
-  useEffect(() => {
-    if (isMac) {
-      return;
-    }
-    return subscribeVramBudgetSettings((next) => {
-      if (saveTimer.current) {
-        return;
-      }
-      setSettings(next);
-      setPercent(vramFractionToPercent(next.fraction));
-    });
-  }, [isMac]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (isMac) {
-      return;
-    }
-    loadVramBudgetSettings().then((loaded) => {
-      if (cancelled || !loaded) {
-        return;
-      }
-      setSettings(loaded);
-      setPercent(vramFractionToPercent(loaded.fraction));
-    });
-    return () => {
-      cancelled = true;
-    };
-    // deviceType settles once /api/health answers, so re-run if the seed guess flips.
-  }, [isMac]);
-
-  // reloadRequired goes stale when a load finishes; refresh on the falling edge only.
-  useEffect(() => {
-    const finished = wasModelLoading.current && !modelLoading;
-    wasModelLoading.current = modelLoading;
-    if (isMac || !finished) {
-      return;
-    }
-    let cancelled = false;
-    // Forced: an earlier read describes the child being replaced.
-    loadVramBudgetSettings({ force: true }).then((loaded) => {
-      if (cancelled || !loaded) {
-        return;
-      }
-      setSettings(loaded);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [isMac, modelLoading]);
-
-  // Flush, do not drop: the fraction is held nowhere else.
-  useEffect(
-    () => () => {
-      if (saveTimer.current) {
-        clearTimeout(saveTimer.current);
-        saveTimer.current = null;
-      }
-      flushVramBudgetSave()?.catch((error: unknown) => {
-        toast.error(
-          error instanceof Error ? error.message : "Failed to save VRAM budget",
-        );
-      });
-    },
-    [],
-  );
-
-  if (isMac || !settings || percent === null) {
-    return null;
-  }
-
-  const defaultPercent = vramFractionToPercent(settings.defaultFraction);
-  const shownPercent = draftPercent ?? percent;
-  // Stored beats UNSLOTH_VRAM_FRACTION, so once the slider has been touched there is otherwise
-  // no way back to inheriting it. Clearing is what the null the API accepts is for.
-  const resetBudget = () => {
-    if (saveTimer.current) {
-      clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-    }
-    // Drop a queued drag, or its debounce would store back what this clears.
-    stageVramBudgetSave(null);
-    updateVramBudgetSettings(null)
-      .then((next) => {
-        setSettings(next);
-        setPercent(vramFractionToPercent(next.fraction));
-      })
-      .catch((error: unknown) => {
-        toast.error(
-          error instanceof Error ? error.message : "Failed to reset VRAM budget",
-        );
-      });
-  };
-  const commit = (next: number) => {
-    setPercent(next);
-    // Debounced: a held arrow key commits every step, so one press would be dozens of writes, each
-    // invalidating the read cache.
-    if (saveTimer.current) {
-      clearTimeout(saveTimer.current);
-    }
-    stageVramBudgetSave(vramPercentToFraction(next));
-    saveTimer.current = setTimeout(() => {
-      saveTimer.current = null;
-      flushVramBudgetSave()
-        ?.then(setSettings)
-        .catch((error: unknown) => {
-          // The client re-stages it, where the write generation can tell if it is still the newest.
-          toast.error(
-            error instanceof Error ? error.message : "Failed to save VRAM budget",
-          );
-        });
-    }, 400);
-  };
-
-  return (
-    <div className="space-y-1">
-      <AdvancedGpuSlider
-        label="VRAM Budget"
-        value={percent}
-        min={vramFractionToPercent(settings.minFraction)}
-        max={vramFractionToPercent(settings.maxFraction)}
-        step={VRAM_BUDGET_PERCENT_STEP}
-        format={(v) => `${v}%`}
-        onChange={commit}
-        onDraft={setDraftPercent}
-        disabled={locked}
-        info={
-          <div className="flex flex-col gap-1.5">
-            <div>
-              Share of each GPU Unsloth will claim when it sizes the model and
-              context. The rest is left for memory fragmentation, the per-device
-              CUDA context on a multi-GPU split, and MoE routing.
-            </div>
-            <div>
-              Applies to every model, not just this one, and takes effect on the
-              next load. Default {defaultPercent}%. Even at 100% a load leaves a
-              margin on each card, up to the 512 MiB llama.cpp keeps for its own
-              fitter, and never more than the default would have reserved.
-            </div>
-            <div>
-              Reset clears the stored value, so UNSLOTH_VRAM_FRACTION applies
-              again if it is set.
-            </div>
-          </div>
-        }
-      />
-      {shownPercent !== defaultPercent && (
-        <p id={adviceId} className="text-ui-11 text-amber-500">
-          {shownPercent > defaultPercent
-            ? "Above the default fits more context but leaves less slack, so a load can run out of memory. llama.cpp treats that as a hard failure rather than falling back."
-            : "Below the default is safer on a shared GPU, but a tight fit may push layers onto the CPU and generate slowly."}
-        </p>
-      )}
-      {settings.isStored && (
-        <button
-          type="button"
-          disabled={locked}
-          onClick={resetBudget}
-          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-foreground"
-        >
-          Reset to the server default
-        </button>
-      )}
-      {settings.reloadRequired && (
-        <p className="text-ui-11 text-muted-foreground">
-          The loaded model was sized with a different budget. Reload it to apply
-          this one.
-        </p>
-      )}
-    </div>
-  );
+  return <VramBudgetControl modelLoading={modelLoading} />;
 }
 
 // --tensor-split is set per GPU row but not persisted per model.
@@ -1187,7 +961,7 @@ function GpuMemorySettings({
                   </div>
                 )}
                 <Switch
-                  className="panel-switch shrink-0"
+                  className="shrink-0"
                   checked={isGpuChecked(d.index)}
                   onCheckedChange={() => toggleGpu(d.index)}
                   disabled={isGpuChecked(d.index) && singleGpuInUse}
@@ -1320,7 +1094,7 @@ function AdvancedSettingsToggle({
   onCheckedChange: (next: boolean) => void;
 }) {
   return (
-    <div className={`${ROW_CLASS} border-t border-border pt-5`}>
+    <div className={ROW_CLASS}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
@@ -1331,7 +1105,7 @@ function AdvancedSettingsToggle({
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        className="shrink-0"
         checked={checked}
         onCheckedChange={onCheckedChange}
         aria-label="Show advanced settings"
@@ -1454,11 +1228,15 @@ function MlxSpeculativeRows({
   update,
   speculativeFallback,
   modelPath,
+  fastVerifyAvailable,
+  onFastVerifyChange,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   speculativeFallback: string;
   modelPath: string;
+  fastVerifyAvailable: boolean;
+  onFastVerifyChange: (checked: boolean) => void;
 }) {
   const [drafters, setDrafters] = useState<MlxDrafter[]>([]);
   useEffect(() => {
@@ -1595,6 +1373,27 @@ function MlxSpeculativeRows({
           </Select>
         </div>
       )}
+      {/* Only a drafter runs it; stays visible while on so it can be turned off. */}
+      {((fastVerifyAvailable && DRAFTER_MODEL_SPEC_TYPES.has(mode)) || config.mlxFastVerify) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Fast Verify</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Speeds up speculative decoding with faster checks of the drafter's
+              tokens. Answers can change slightly from plain decoding, the same way
+              on every run. Applies only when a drafter loads; changing it reloads.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxFastVerify ?? false}
+            onCheckedChange={onFastVerifyChange}
+          />
+        </div>
+      )}
     </>
   );
 }
@@ -1606,6 +1405,10 @@ function MlxAdvancedSettings({
   servedByMlx,
   int8PrefillAvailable,
   onInt8PrefillChange,
+  anePrefillAvailable,
+  onAnePrefillChange,
+  fastVerifyAvailable,
+  onFastVerifyChange,
   offloadable,
   offloadDecided,
   offloadNotes,
@@ -1620,6 +1423,10 @@ function MlxAdvancedSettings({
   servedByMlx: boolean;
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
+  anePrefillAvailable: boolean;
+  onAnePrefillChange: (checked: boolean) => void;
+  fastVerifyAvailable: boolean;
+  onFastVerifyChange: (checked: boolean) => void;
   offloadable: readonly MlxOffloadablePart[];
   offloadDecided: Record<MlxOffloadablePart, number | null> | null;
   offloadNotes: Record<MlxOffloadablePart, string | null>;
@@ -1685,9 +1492,29 @@ function MlxAdvancedSettings({
             </InfoHint>
           </div>
           <Switch
-            className="panel-switch shrink-0"
+            className="shrink-0"
             checked={config.mlxInt8Prefill ?? false}
             onCheckedChange={onInt8PrefillChange}
+          />
+        </div>
+      )}
+      {servedByMlx && (anePrefillAvailable || config.mlxAnePrefill) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Neural Engine Prefill</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Reads long prompts faster by running part of each layer on the
+              Neural Engine beside the GPU. Answers can change slightly. Loading
+              takes longer the first time while it measures this Mac.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxAnePrefill ?? false}
+            onCheckedChange={onAnePrefillChange}
           />
         </div>
       )}
@@ -1697,6 +1524,8 @@ function MlxAdvancedSettings({
           update={update}
           speculativeFallback={speculativeFallback}
           modelPath={modelPath}
+          fastVerifyAvailable={fastVerifyAvailable}
+          onFastVerifyChange={onFastVerifyChange}
         />
       )}
       {servedByMlx && (
@@ -1799,6 +1628,154 @@ function LoadModeRow({
   );
 }
 
+/** The repo, quant and token the Engram row lists tables for. */
+type EngramTableSource = {
+  repoId: string;
+  ggufVariant: string;
+  hfToken: string | null;
+};
+
+type EngramTableListing = {
+  tables: EngramTableDetail[];
+  own: string;
+  ready: string[];
+  quantDownloaded: boolean;
+  supported: boolean | null;
+};
+
+function formatTableSize(bytes: number): string {
+  return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+/** Tables the repo publishes for this quant, or null when it publishes none (the row then hides). */
+function useEngramTables(source: EngramTableSource | null): EngramTableListing | null {
+  const [listing, setListing] = useState<EngramTableListing | null>(null);
+  const repoId = source?.repoId ?? null;
+  const ggufVariant = source?.ggufVariant ?? null;
+  const hfToken = source?.hfToken ?? null;
+  useEffect(() => {
+    setListing(null);
+    if (!repoId || !ggufVariant) return;
+    const controller = new AbortController();
+    // Not preferLocalCache: a cache-only answer has no Hub listing, so it cannot name the tables.
+    listGgufVariants(repoId, hfToken || undefined, { signal: controller.signal })
+      .then((response) => {
+        if (controller.signal.aborted) return;
+        const tables = response.engram_tables ?? [];
+        const variant = response.variants.find(
+          (v) => v.quant.toLowerCase() === ggufVariant.toLowerCase(),
+        );
+        const own = variant?.engram_precision ?? null;
+        if (tables.length === 0 || !variant || !own) return;
+        setListing({
+          tables,
+          own,
+          ready: variant.engram_ready ?? [],
+          quantDownloaded: variant.downloaded === true,
+          supported: response.engram_supported ?? null,
+        });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [repoId, ggufVariant, hfToken]);
+  return listing;
+}
+
+function EngramTableRow({
+  config,
+  update,
+  source,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  source: EngramTableSource | null;
+}) {
+  const noteId = useId();
+  const listing = useEngramTables(source);
+  if (!listing) return null;
+  const { tables, own, ready, quantDownloaded, supported } = listing;
+  const chosen = config.engramPrecision ?? null;
+  // The quant's own precision is the default, stored as null.
+  const selected =
+    chosen && !sameEngramPrecision(chosen, own)
+      ? (tables.find((t) => sameEngramPrecision(t.precision, chosen))?.precision ?? chosen)
+      : own;
+  const swapped = !sameEngramPrecision(selected, own);
+  const table = tables.find((t) => sameEngramPrecision(t.precision, selected));
+  const ownTable = tables.find((t) => sameEngramPrecision(t.precision, own));
+  const ownReady = ready.some((p) => sameEngramPrecision(p, own));
+  let note: string | null = null;
+  if (supported === false) {
+    note = swapped
+      ? "This llama.cpp build cannot load a separate table, so the next load fails. Update llama.cpp, or pick the built-in table."
+      : "Swapping the table needs a newer llama.cpp. Update it to choose another precision.";
+  } else if (swapped && table && !table.downloaded) {
+    note = `The next load downloads the ${table.precision} table (${formatTableSize(table.size_bytes)}).`;
+    if (!ownReady && ownTable) {
+      note += ` The built-in ${own} table (${formatTableSize(ownTable.size_bytes)}) is not needed.`;
+    }
+  } else if (!swapped && quantDownloaded && !ownReady && ownTable) {
+    // On disk with another table in place of its own.
+    note = `The next load downloads the built-in ${own} table (${formatTableSize(ownTable.size_bytes)}).`;
+  }
+  return (
+    <div className="space-y-1">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Engram Table</span>
+          <InfoHint>
+            Precision of the model's n-gram lookup table. A higher precision
+            stays closer to the original model and takes more disk; a lower
+            one saves disk. The table is read from disk as needed, so it uses
+            little RAM or VRAM. Built-in is the table this quant ships with.
+            Another choice is downloaded once, and the built-in table is then
+            not needed.
+          </InfoHint>
+        </div>
+        <Select
+          value={selected}
+          disabled={supported === false && !swapped}
+          onValueChange={(v) =>
+            update({ engramPrecision: sameEngramPrecision(v, own) ? null : v })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={SELECT_TRIGGER_CLASS}
+            aria-describedby={note ? noteId : undefined}
+          >
+            <SelectValue>{selected}</SelectValue>
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            {tables.map((t) => {
+              const builtIn = sameEngramPrecision(t.precision, own);
+              const downloaded = !builtIn && t.downloaded;
+              return (
+                <SelectItem key={t.precision} value={t.precision}>
+                  <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                    <span>{t.precision}</span>
+                    <span className="text-ui-12 tabular-nums text-muted-foreground">
+                      {formatTableSize(t.size_bytes)}
+                      {builtIn ? " · built-in" : downloaded ? " · downloaded" : ""}
+                    </span>
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+      </div>
+      {note && (
+        <p id={noteId} className="text-ui-11 text-muted-foreground">
+          {note}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -1815,9 +1792,11 @@ function GgufAdvancedSettings({
   onExtraArgsLoadableChange,
   draftKey,
   focusParallelSlots,
+  engramSource,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
+  engramSource: EngramTableSource | null;
   showDraftTokens: boolean;
   showSpecDraftCacheDtype: boolean;
   speculativeFallback: string;
@@ -1845,9 +1824,13 @@ function GgufAdvancedSettings({
       : N_BATCH_LLAMA_DEFAULT;
   const ubatchExceedsBatch =
     config.nUbatch != null && config.nUbatch > effectiveBatch;
+  const showGpuPicker =
+    (pinnableGpuContext(gpuDevices, isDiffusion).ids?.length ?? 0) > 1;
   return (
     <>
+      {(!isDiffusion || showGpuPicker) && (
       <AdvancedGroup title="Memory">
+      {!isDiffusion && (
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
@@ -1882,6 +1865,7 @@ function GgufAdvancedSettings({
           </SelectContent>
         </Select>
       </div>
+      )}
 
       <GpuMemorySettings
         config={config}
@@ -1905,15 +1889,20 @@ function GgufAdvancedSettings({
             </InfoHint>
           </div>
           <Switch
-            className="panel-switch shrink-0"
+            className="shrink-0"
             aria-label="Vision"
             checked={!config.disableVision}
             onCheckedChange={(checked) => update({ disableVision: !checked })}
           />
         </div>
       )}
+      {!isDiffusion && (
+        <EngramTableRow config={config} update={update} source={engramSource} />
+      )}
       </AdvancedGroup>
+      )}
 
+      {!isDiffusion && (
       <AdvancedGroup title="Speed">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
@@ -2143,7 +2132,7 @@ function GgufAdvancedSettings({
             </InfoHint>
           </div>
           <Switch
-            className="panel-switch shrink-0"
+            className="shrink-0"
             aria-label="Tensor Parallelism"
             checked={config.tensorParallel}
             onCheckedChange={(checked) => update({ tensorParallel: checked })}
@@ -2151,6 +2140,7 @@ function GgufAdvancedSettings({
         </div>
       )}
       </AdvancedGroup>
+      )}
 
       <AdvancedGroup title="Output">
       {!isDiffusion && (
@@ -2664,14 +2654,29 @@ export function ModelConfigPage({
     platformDeviceType,
     platformChatOnlyReason,
   );
-  const int8PrefillAvailable = useInt8PrefillAvailable(
+  const prefillOptionPath =
     servedByMlx &&
-      !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
+    !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
       ? target.id
-      : null,
+      : null;
+  const int8PrefillAvailable = usePrefillOptionAvailable(
+    "int8",
+    prefillOptionPath,
+    hfToken || null,
+  );
+  const anePrefillAvailable = usePrefillOptionAvailable(
+    "ane",
+    prefillOptionPath,
     hfToken || null,
   );
   const [int8PrefillConfirmOpen, setInt8PrefillConfirmOpen] = useState(false);
+  const [anePrefillConfirmOpen, setAnePrefillConfirmOpen] = useState(false);
+  const fastVerifyAvailable = usePrefillOptionAvailable(
+    "fast-verify",
+    prefillOptionPath,
+    hfToken || null,
+  );
+  const [fastVerifyConfirmOpen, setFastVerifyConfirmOpen] = useState(false);
   // Read live: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -2695,6 +2700,10 @@ export function ModelConfigPage({
   const [initialMlxInt8Prefill] = useState(
     () => configState.mlxInt8Prefill ?? false,
   );
+  const [initialMlxAnePrefill] = useState(
+    () => configState.mlxAnePrefill ?? false,
+  );
+  const [initialMlxFastVerify] = useState(() => configState.mlxFastVerify ?? false);
   const [initialMlxOffload] = useState(
     () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
   );
@@ -2702,6 +2711,8 @@ export function ModelConfigPage({
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
+  const autoOpenForMlxAnePrefill = servedByMlx && initialMlxAnePrefill;
+  const autoOpenForMlxFastVerify = servedByMlx && initialMlxFastVerify;
   const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
   // Opened to change one field: show its section for this visit, leaving the saved switch alone.
   const [revealForFocus, setRevealForFocus] = useState(focusField != null);
@@ -2711,6 +2722,8 @@ export function ModelConfigPage({
       (autoOpenAdvanced ||
         autoOpenForMlxKvQuant ||
         autoOpenForMlxInt8Prefill ||
+        autoOpenForMlxAnePrefill ||
+        autoOpenForMlxFastVerify ||
         autoOpenForMlxOffload));
   const toggleAdvanced = (open: boolean) => {
     setRevealForFocus(false);
@@ -3258,10 +3271,9 @@ export function ModelConfigPage({
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
-          // The same substitution applyPerModelConfigToRuntime makes at load: a model with no per-model
-          // override sends null, which the backend reads as Auto, while the selector has been showing
-          // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
-          // charged the sidecar for a load that disables it.
+          // Same substitution as applyPerModelConfigToRuntime: no per-model override sends null
+          // (read as Auto) while the selector shows the global fallback, so a global Off row
+          // charged an 11 GB DSpark sidecar.
           speculativeType: resolveSpeculativeType(
             runtimeConfig.speculativeType,
             speculativeFallback,
@@ -3674,11 +3686,10 @@ export function ModelConfigPage({
       : forgets
         ? deletePerModelConfig(configId, target.ggufVariant)
         : true;
-    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
-    // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
-    // native-path lease is the same.
-    // A forget also drops the local records for every other spelling the server reports clearing.
+    // Best-effort mirror for API loads, skipped if the localStorage write failed (they would
+    // disagree); gated on auto-switch reach, not GGUF-ness, since the resolver skips materialized
+    // Ollama links and native-path leases; a forget also clears local records for every other
+    // spelling the server reports.
     if (
       saved &&
       (keep || forgets) &&
@@ -4085,6 +4096,12 @@ export function ModelConfigPage({
             <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
+            <div
+              className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground"
+              aria-live="polite"
+            >
+              {saveStatus || "\u00a0"}
+            </div>
           </div>
         </div>
       )}
@@ -4113,7 +4130,7 @@ export function ModelConfigPage({
               </InfoHint>
             </div>
             <Switch
-              className="panel-switch shrink-0"
+              className="shrink-0"
               aria-label="Load in 4-bit"
               checked={config.loadIn4bit !== false}
               onCheckedChange={(checked) => update({ loadIn4bit: checked })}
@@ -4152,7 +4169,7 @@ export function ModelConfigPage({
         {isActiveModel && target.isGguf && !audioRuntimeGguf ? (
           // The same pool the estimate above names: "Unified" on Apple Silicon, "Shared" on other one-pool machines.
           <LoadedPlacementRow
-            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified memory" : "shared memory") : null}
+            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified" : "shared") : null}
           />
         ) : null}
         {target.isGguf && !audioRuntimeGguf && (
@@ -4173,7 +4190,13 @@ export function ModelConfigPage({
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
               renderWarning={(v) =>
-                isActiveModel &&
+                resolvedIsDiffusion ? (
+                  <DiffusionContextNote
+                    value={v}
+                    requested={loadedConfig?.customContextLength ?? null}
+                    loadedContext={activeLoadedContext}
+                  />
+                ) : isActiveModel &&
                 loadedMaxContextLength != null &&
                 v > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">
@@ -4218,6 +4241,11 @@ export function ModelConfigPage({
                 draftKey={draftKey}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
                 focusParallelSlots={focusField === "parallelSlots"}
+                engramSource={
+                  target.ggufVariant
+                    ? { repoId: target.id, ggufVariant: target.ggufVariant, hfToken: hfToken || null }
+                    : null
+                }
               />
             )}
           </>
@@ -4241,7 +4269,7 @@ export function ModelConfigPage({
               }
               hint={
                 targetIsNpu
-                  ? `Tokens of context FastFlowLM loads the model with. Unset, it loads ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if that is lower.`
+                  ? `Context the NPU loads the model with. Default ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if lower.`
                   : undefined
               }
               onChange={(value) =>
@@ -4265,6 +4293,18 @@ export function ModelConfigPage({
                       checked
                         ? setInt8PrefillConfirmOpen(true)
                         : update({ mlxInt8Prefill: false })
+                    }
+                    anePrefillAvailable={anePrefillAvailable}
+                    onAnePrefillChange={(checked) =>
+                      checked
+                        ? setAnePrefillConfirmOpen(true)
+                        : update({ mlxAnePrefill: false })
+                    }
+                    fastVerifyAvailable={fastVerifyAvailable}
+                    onFastVerifyChange={(checked) =>
+                      checked
+                        ? setFastVerifyConfirmOpen(true)
+                        : update({ mlxFastVerify: false })
                     }
                     offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
                     offloadDecided={mlxOffloadDecidedNow}
@@ -4313,12 +4353,13 @@ export function ModelConfigPage({
         {/* Always rendered so a status change never moves the buttons; the sidebar's name box already does. */}
         <div
           className={cn(
-            "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2 pl-3.5",
+            "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2",
             naming && (variant === "sidebar" ? "hidden" : "invisible"),
           )}
         >
           <Checkbox
             id={alwaysLoadId}
+            className="size-3.5 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
             aria-label="Always load with these settings"
             aria-describedby={saveStatusId}
             checked={selectedSet !== null && selectedSet === pinnedSet}
@@ -4338,7 +4379,7 @@ export function ModelConfigPage({
                 ? "Change a setting or pick a saved one to always load it"
                 : "Every load of this model uses these settings, even after you load it once with others"
             }
-            className="shrink-0 cursor-pointer select-none text-ui-12 text-muted-foreground peer-disabled:cursor-default peer-disabled:opacity-60"
+            className="shrink-0 cursor-pointer select-none text-ui-12 text-foreground/80 peer-disabled:cursor-default peer-disabled:opacity-70"
           >
             {variant === "sidebar" ? "Always load" : "Always load with these settings"}
           </label>
@@ -4403,7 +4444,7 @@ export function ModelConfigPage({
             }
             onClick={() => pickSet(pinnedSet)}
           >
-            Reset
+            Reset all
           </Button>
           {target.isGguf && (
             <SharedRunConfigControls
@@ -4453,6 +4494,62 @@ export function ModelConfigPage({
               onClick={() => {
                 update({ mlxInt8Prefill: true });
                 setInt8PrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={anePrefillConfirmOpen}
+        onOpenChange={setAnePrefillConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Neural Engine Prefill?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Long prompts are read faster, but the model&apos;s answers will
+              change slightly. The first load on this Mac takes longer while it
+              measures whether this helps; when it does not, the model runs as
+              before. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                update({ mlxAnePrefill: true });
+                setAnePrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={fastVerifyConfirmOpen}
+        onOpenChange={setFastVerifyConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Fast Verify?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Speculative decoding runs faster, but the model&apos;s answers will
+              change slightly from plain decoding, the same way on every run. It
+              applies only when a drafter loads, and changing it reloads the
+              model. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                update({ mlxFastVerify: true });
+                setFastVerifyConfirmOpen(false);
               }}
             >
               Turn on

@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hardware-aware auto-policy for the diffusion loader: a pure decision layer.
-
-The loader historically planned memory from the GGUF file size BEFORE considering the dense
-transformer-quant fast path, which hid the fast path where it matters: where the GGUF-size plan
-picks offload, a dense int8/fp8 transformer (~half the bf16 bytes) often fits resident and beats
-the offloaded GGUF. This module supplies the pieces to fix that:
-
-  * a per-family bf16 component-size table (transformer / text encoders / VAE) with per-scheme
-    scaling, so a candidate's footprint is estimated BEFORE anything is downloaded; and
-  * ``resolve_dense_quant_candidate``, which turns a request + device into a concrete estimate the
-    loader re-plans memory against.
-
-It also builds the ``resolved`` record for status: per Advanced control, the engaged value plus
-its provenance (explicit / auto) and a short reason. Pure: no torch import at module import, so the
-decision logic unit-tests on CPU-only hosts.
-"""
+"""Decision layer for the diffusion loader: estimates dense int8/fp8 transformer footprints from a
+per-family bf16 size table before download, so the dense fast path is weighed before GGUF-size
+planning. Builds the resolved record (engaged value, provenance, reason); no torch import."""
 
 from __future__ import annotations
 
@@ -69,6 +56,8 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     # FLUX.3 Image Klein: 5.55B DiT (11.1 GB bf16) + Qwen3-VL-4B (8.9 GB) + the FLUX.2 VAE (stored fp32, 0.17 GB
     # bf16). From the black-forest-labs/flux-3-image-klein component folders; the base shares the architecture.
     "flux.3-klein": (11.1, 8.9, 0.2),
+    # MiniMax-H3-Image: its loader plans placement itself; this row only sizes the hosted pre-quantized DiT.
+    "minimax-h3-image": (66.2, 66.7, 2.3),
     "flux.3-klein-base": (11.1, 8.9, 0.2),
     "flux.2-dev": (64.5, 48.0, 0.4),
     "qwen-image": (40.9, 16.6, 0.3),
@@ -88,11 +77,9 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "lumina-2": (5.2, 5.2, 0.2),
     # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
     "hunyuanimage-2.1": (32.5, 16.3, 0.8),
-    # 17B MoE DiT (34.2 GB bf16) + FOUR text encoders: CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5, plus Llama-3.1-8B (~16 GB
-    # bf16) from the open mirror at load time.
+    # HiDream bf16 sizes: 17B MoE DiT, four text encoders incl. Llama-3.1-8B from an open mirror.
     "hidream-i1": (34.2, 28.8, 0.2),
-    # Two ~9.3B DiTs (Ideogram's dual-branch CFG), both resident, plus a Qwen3-VL encoder. The vendor stores raw float8,
-    # so each doubles at bf16.
+    # Ideogram: two ~9.3B DiTs both resident; the vendor stores raw float8, so sizes double at bf16.
     "ideogram-4": (37.2, 16.3, 0.2),
 }
 
@@ -232,8 +219,7 @@ def base_repo_bf16_components_gb(base_repo: Optional[str]) -> Optional[tuple[flo
 def family_bf16_components_gb(
     fam: Any, base_repo: Optional[str] = None
 ) -> Optional[tuple[float, float, float]]:
-    """(transformer, text encoders, VAE) bf16-resident sizes in GB, or None when the family isn't
-    in the table (callers fall back to file-size estimates)."""
+    """Transformer, text encoder, VAE bf16 sizes in GB; None when the family is missing from the table."""
     override = base_repo_bf16_components_gb(base_repo)
     if override is not None:
         return override
@@ -276,8 +262,7 @@ def estimate_dense_quant(
     base_repo: Optional[str] = None,
     prequant_available: bool = False,
 ) -> Optional[DenseQuantEstimate]:
-    """Estimate the candidate's footprint from the family table, or None when the
-    family (or scheme factor) is unknown."""
+    """Footprint estimate from the family table; None when the family or scheme factor is unknown."""
     from .diffusion_nvfp4_flag import nvfp4_blocked
 
     if nvfp4_blocked(scheme):
@@ -300,8 +285,7 @@ def estimate_dense_quant(
         companions_mib = companions,
         prequant = prequant_available,
         download_transformer_mib = int(transformer_gb * hub_factor * _MIB_PER_GB),
-        # Same conversion as `companions`, of which this is the text-encoder half, so the planner's `companions -
-        # text_encoders` is the VAE and nothing else.
+        # Text-encoder half of the companions conversion; companions minus this leaves just the VAE.
         text_encoders_mib = int(text_encoders_gb * _MIB_PER_GB),
     )
 
@@ -374,8 +358,7 @@ def resolve_dense_quant_candidate(
         return None
     prequant_available = False
     prequant_cached = False
-    # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake), so size the candidate for the dense
-    # build.
+    # force_dense skips the prequant shortcut (e.g. a LoRA bake), so size the candidate as dense.
     if not force_dense:
         try:
             from .diffusion_prequant import prequant_checkpoint_cached, usable_prequant_source
@@ -511,7 +494,9 @@ def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any
             "status": status,
             "reason": reason,
         }
-    return record
+    from .diffusion_nvfp4_route import annotate_resolved
+
+    return annotate_resolved(record)
 
 
 def format_resolved_for_log(record: Optional[dict[str, dict[str, Any]]]) -> str:

@@ -32,6 +32,7 @@ import {
 } from "@/lib/model-lifecycle-events";
 import type { AgentsMdRecord } from "../utils/agents-md";
 import { showLoadWarning } from "../utils/load-warning-toast";
+import { readAdvertisedPatchGuards } from "../utils/openapi-support";
 import { validateRequestBody, wireLoadRequest } from "../lib/load-request";
 import type {
   MessageRecord,
@@ -554,7 +555,9 @@ export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
   decision: "allow" | "deny",
+  fullAccess = false,
 ): Promise<boolean> {
+  const epoch = getAuthSessionEpoch();
   const response = await authFetch("/api/inference/tool-confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -562,12 +565,15 @@ export async function resolveToolConfirmation(
       session_id: sessionId,
       approval_id: approvalId,
       decision,
+      ...(fullAccess ? { permission_mode: "full" } : {}),
     }),
   });
   // Ahead of parseJsonOrThrow, which folds every non-ok status into one bare Error.
   if (response.status === 404) throw new ToolApprovalGoneError();
-  const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
-  return parsed.resolved === true;
+  const parsed = await parseJsonOrThrow<{ resolved?: boolean; full_access_granted?: boolean }>(response);
+  // An older server may allow this call while ignoring the requested upgrade.
+  return getAuthSessionEpoch() === epoch && parsed.resolved === true &&
+    (!fullAccess || parsed.full_access_granted === true);
 }
 
 export interface CachedGgufRepo {
@@ -601,6 +607,8 @@ export async function getGgufDownloadProgress(
   variant: string,
   expectedBytes: number,
   hfToken?: string | null,
+  /** The standalone Engram table the load fetches, so the bar counts it. */
+  engramPrecision?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -611,6 +619,9 @@ export async function getGgufDownloadProgress(
     variant,
     expected_bytes: String(expectedBytes),
   });
+  if (engramPrecision) {
+    params.set("engram_precision", engramPrecision);
+  }
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
     { headers: hubTokenHeader(hfToken) },
@@ -813,6 +824,17 @@ export async function deleteFineTunedModel(args: {
   await parseJsonOrThrow<unknown>(response);
 }
 
+let advertisedPatchGuards: boolean | null = null;
+
+export function advertisedThreadPatchGuards(): boolean | null {
+  return advertisedPatchGuards;
+}
+
+function noteAdvertisedPatchGuards(data: unknown): void {
+  const advertised = readAdvertisedPatchGuards(data);
+  if (advertised !== null) advertisedPatchGuards = advertised;
+}
+
 export async function listChatThreads(
   args: {
     modelType?: ModelType;
@@ -831,6 +853,7 @@ export async function listChatThreads(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
+  noteAdvertisedPatchGuards(data);
   // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.threads) ? data.threads : [];
 }
@@ -904,6 +927,7 @@ export async function fetchSidebarRows(
   if (response.status === 404 || response.status === 405) return null;
   if (response.status === 400 && request.cursor) throw new SidebarCursorRejectedError();
   const data = await parseJsonOrThrow<SidebarRowsPage>(response);
+  noteAdvertisedPatchGuards(data);
   return {
     rows: Array.isArray(data.rows) ? data.rows : [],
     nextCursor: data.nextCursor ?? null,
@@ -1330,16 +1354,22 @@ export async function listChatMessages(
   return data.messages;
 }
 
-/** Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers. */
+/**
+ * Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers.
+ * view "search" trims messages to what the search index reads; older backends ignore it.
+ */
 export async function batchListChatMessages(
   threadIds: string[],
+  options: { view?: "search" } = {},
 ): Promise<Map<string, MessageRecord[]>> {
   const out = new Map<string, MessageRecord[]>();
   if (threadIds.length === 0) return out;
   const response = await authFetch("/api/chat/messages:batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ threadIds }),
+    body: JSON.stringify(
+      options.view ? { threadIds, view: options.view } : { threadIds },
+    ),
   });
   if (response.status === 404 || response.status === 405) {
     const per = await Promise.all(
@@ -1409,19 +1439,15 @@ export async function saveChatMessage(
   const editQuery = options.allowGenerationEdit
     ? "?allowGenerationEdit=true"
     : "";
-  let response: Response;
-  try {
-    response = await authFetch(
-      `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(message),
-      },
-    );
-  } finally {
-    forgetThreadReads([message.threadId]);
-  }
+  const response = await threadWriteFetch(
+    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message),
+    },
+    [message.threadId],
+  );
   // Two failures share this status: a protected message, where the autosave must stop, and a
   // thread-id collision, which the caller must see. Only the header separates them.
   if (
@@ -1519,7 +1545,11 @@ export async function buildBackendChatExport(): Promise<{
   messages: MessageRecord[];
 }> {
   const response = await authFetch("/api/chat/export");
-  return parseJsonOrThrow(response);
+  const data = await parseJsonOrThrow<Awaited<
+    ReturnType<typeof buildBackendChatExport>
+  > | null>(response);
+  if (!data) throw new Error("The chat export did not download completely.");
+  return data;
 }
 
 // Server-side legacy-Dexie import ledger, so a studio.db wipe keeps the import recoverable.

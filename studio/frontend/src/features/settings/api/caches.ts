@@ -32,6 +32,10 @@ export type CacheEntry = {
   group: CacheGroup;
   optIn: boolean;
   paths: string[];
+  measuredPaths?: string[];
+  clearSizeBytes?: number | null;
+  clearEntryCount?: number | null;
+  systemDiskBytes?: number | null;
   sizeBytes: number;
   entryCount: number;
   present: boolean;
@@ -45,6 +49,7 @@ export type CacheInventory = {
   reclaimableBytes: number;
   freeBytes: number | null;
   totalDiskBytes: number | null;
+  refreshing: boolean;
 };
 
 export type CachePurgeResult = {
@@ -67,6 +72,14 @@ type ApiCacheEntry = {
   opt_in: boolean;
   paths: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
+  measured_paths?: string[];
+  // biome-ignore lint/style/useNamingConvention: API schema
+  clear_size_bytes?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  clear_entry_count?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  system_disk_bytes?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
   size_bytes: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   entry_count: number;
@@ -86,6 +99,7 @@ type ApiCacheInventory = {
   free_bytes: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   total_disk_bytes: number | null;
+  refreshing?: boolean;
 };
 
 type ApiCachePurgeResult = {
@@ -110,6 +124,10 @@ function entryFromApi(value: ApiCacheEntry): CacheEntry {
     group: value.group,
     optIn: value.opt_in,
     paths: value.paths,
+    measuredPaths: value.measured_paths,
+    clearSizeBytes: value.clear_size_bytes,
+    clearEntryCount: value.clear_entry_count,
+    systemDiskBytes: value.system_disk_bytes,
     sizeBytes: value.size_bytes,
     entryCount: value.entry_count,
     present: value.present,
@@ -125,6 +143,7 @@ export function inventoryFromApi(value: ApiCacheInventory): CacheInventory {
     reclaimableBytes: value.reclaimable_bytes,
     freeBytes: value.free_bytes,
     totalDiskBytes: value.total_disk_bytes,
+    refreshing: value.refreshing === true,
   };
 }
 
@@ -160,6 +179,48 @@ export async function loadCacheInventory(
   return inventoryFromApi(await response.json());
 }
 
+export type CacheBreakdownEntry = {
+  name: string;
+  path: string;
+  sizeBytes: number;
+  repoId?: string;
+  repoType?: "model";
+  cachePath?: string;
+  deleteAllowed?: boolean;
+};
+
+export async function loadCacheBreakdown(
+  key: CacheKey,
+): Promise<CacheBreakdownEntry[]> {
+  const response = await authFetch(`/api/settings/caches/${key}/breakdown`);
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Failed to measure cache folders"),
+    );
+  }
+  const result = (await response.json()) as {
+    entries: {
+      name: string;
+      path: string;
+      // biome-ignore lint/style/useNamingConvention: API schema
+      size_bytes: number;
+      repo_id?: string;
+      repo_type?: "model";
+      cache_path?: string;
+      delete_allowed?: boolean;
+    }[];
+  };
+  return result.entries.map((entry) => ({
+    name: entry.name,
+    path: entry.path,
+    sizeBytes: entry.size_bytes,
+    repoId: entry.repo_id,
+    repoType: entry.repo_type,
+    cachePath: entry.cache_path,
+    deleteAllowed: entry.delete_allowed === true,
+  }));
+}
+
 export async function purgeCaches(
   keys: readonly CacheKey[],
 ): Promise<CachePurgeOutcome> {
@@ -184,7 +245,7 @@ export function bulkPurgeKeys(inventory: CacheInventory): CacheKey[] {
         entry.present &&
         entry.purgeable &&
         !entry.optIn &&
-        entry.entryCount > 0,
+        (entry.clearEntryCount ?? entry.entryCount) > 0,
     )
     .map((entry) => entry.key);
 }

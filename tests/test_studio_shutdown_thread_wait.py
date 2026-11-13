@@ -131,3 +131,42 @@ def test_cli_entrypoints_wait_before_returning_to_shell():
     assert (
         _calls_shutdown_wait_getattr(tree) >= 3
     ), "Unsloth CLI terminal paths must wait for the backend thread after requesting shutdown"
+
+
+def _is_run_mod_getattr_call(node: ast.AST, attr_name: str) -> bool:
+    if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)):
+        return False
+    func = node.value.func
+    return (
+        isinstance(func, ast.Call)
+        and isinstance(func.func, ast.Name)
+        and func.func.id == "getattr"
+        and len(func.args) >= 2
+        and isinstance(func.args[0], ast.Name)
+        and func.args[0].id == "run_mod"
+        and isinstance(func.args[1], ast.Constant)
+        and func.args[1].value == attr_name
+    )
+
+
+def test_in_process_studio_exits_without_finalizing_only_after_a_clean_shutdown():
+    tree = _parse(_STUDIO_CLI_PY)
+    hits = []
+    for parent in ast.walk(tree):
+        body = getattr(parent, "body", None)
+        if not isinstance(body, list):
+            continue
+        for stmt, after in zip(body, body[1:]):
+            if (
+                isinstance(stmt, ast.Try)
+                and any(
+                    _is_run_mod_getattr_call(s, "_wait_for_server_shutdown") for s in stmt.finalbody
+                )
+                and _is_run_mod_getattr_call(after, "_exit_without_finalizing")
+            ):
+                hits.append(after)
+
+    # After the try, not in its finally: a startup error must still raise with its traceback.
+    assert (
+        len(hits) == 1
+    ), "the in-process studio path must skip finalization after its shutdown wait"

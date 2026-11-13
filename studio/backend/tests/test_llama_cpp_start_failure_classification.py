@@ -132,6 +132,16 @@ class TestUnsupportedNonDiffusionArchitecture:
         assert "updating llama.cpp" in msg.lower()
         assert "cannot be run" not in msg.lower()
 
+    def test_a_parakeet_cpp_arch_does_not_blame_an_old_llama_cpp(self):
+        """mudler/parakeet.cpp GGUFs must not get the 'update llama.cpp' toast (#16273)."""
+        out = "error loading model: unknown model architecture: 'parakeet'"
+        msg = _classify(out, "/models/parakeet-tdt.gguf", "mudler/parakeet-cpp-gguf")
+        assert "parakeet" in msg.lower()
+        assert "updating llama.cpp will not" in msg.lower()
+        assert "Parakeet-TDT-0.6B-v3-GGUF" in msg
+        assert "does not recognise" not in msg.lower()
+        assert "Images page" not in msg
+
     @pytest.mark.parametrize(
         "arch",
         [
@@ -233,7 +243,7 @@ class TestOllamaAndFallback:
         assert "another quant" in msg
         assert "GGUF file is valid" not in msg
 
-    def test_truncated_gguf_keeps_the_generic_message(self):
+    def test_truncated_gguf_explains_how_to_check_the_download(self):
         # What a cut-off download prints: the header parses, the data does not fit.
         out = (
             "llama_model_load: error loading model: tensor 'output.weight' data is not "
@@ -241,8 +251,9 @@ class TestOllamaAndFallback:
             "llama_model_load_from_file_impl: failed to load model\n"
         )
         msg = _classify(out, "/models/m.gguf", "local/m", 1)
-        assert "GGUF file is valid" in msg
-        assert "cannot read this GGUF" not in msg
+        assert "appears incomplete or damaged" in msg
+        assert "Check that the download finished" in msg
+        assert "GPU memory" not in msg
 
     def test_known_type_with_ragged_rows_keeps_the_generic_message(self):
         # A type this build has, with a row length its blocks do not divide: a damaged file.
@@ -255,9 +266,9 @@ class TestOllamaAndFallback:
         assert "GGUF file is valid" in msg
         assert "cannot read this GGUF" not in msg
 
-    def test_generic_oom_keeps_memory_message(self):
+    def test_gpu_oom_has_actionable_memory_guidance(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big")
-        assert "enough memory" in msg.lower()
+        assert "Couldn't allocate memory" in msg
         assert "diffusion" not in msg.lower()
 
     def test_empty_output_is_safe(self):
@@ -306,9 +317,7 @@ class TestOsKillReturncode:
 
 
 class TestMissingSharedLibrary:
-    """The dynamic loader stops llama-server before it prints anything of its
-    own, so a stock container missing libgomp.so.1 used to be reported as an
-    invalid GGUF or too little memory."""
+    """The loader stops llama-server before it prints, so a missing libgomp.so.1 is not a bad GGUF."""
 
     _LOADER_OUT = (
         "/home/tester/.unsloth/llama.cpp/llama-server: error while loading "
@@ -537,7 +546,7 @@ class TestMissingSharedLibrary:
 
     def test_a_normal_failure_is_untouched(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
-        assert "enough memory" in msg.lower()
+        assert "Couldn't allocate memory" in msg
         assert "system library" not in msg
 
     def test_a_named_arch_wins_over_exit_127(self):
@@ -811,7 +820,6 @@ class TestANonGgufFile:
 class TestStartupDiagnostics:
     _UNKNOWN_OUT = (
         "build: 9415 (06d26dfd) with Apple clang version 17.0.0 for arm64-apple-darwin24.6.0\n"
-        "ggml_metal_init: error: failed to allocate buffer\n"
         "GGML_ASSERT(ctx->device != nil) failed"
     )
 
@@ -839,7 +847,7 @@ class TestStartupDiagnostics:
         assert "\x1b" not in msg
         assert "done" in msg
 
-    def test_no_output_and_no_log_keeps_the_old_message_exactly(self):
+    def test_no_output_and_no_log_keeps_the_original_message_exactly(self):
         assert _classify("", "/models/x.gguf", "local/x", 1) == (
             "llama-server failed to start. "
             "Check that the GGUF file is valid and you have enough memory."
@@ -954,8 +962,7 @@ class TestMacOSLoaderEdgeCases:
 
 
 class TestDiagnosticsDoNotLeak:
-    """The output tail is llama-server's own stdout, and llama-server inherits
-    nearly all of Unsloth's environment."""
+    """The output tail can leak secrets because llama-server inherits Unsloth's environment."""
 
     _OUT = "build: 9415\nenv dump: OPENAI_API_KEY=sk-owner-secret-1234567890\nabort"
 
@@ -1029,8 +1036,7 @@ class TestDyldInstallNames:
 
 
 class TestMacOSSymbolProvenance:
-    """Where dyld expected the symbol decides the remedy: reinstalling the same
-    build cannot make the OS export a symbol it does not have."""
+    """The symbol dyld expected decides the fix: reinstalling cannot make the OS export it."""
 
     def test_a_system_framework_symbol_reads_as_a_too_new_build(self):
         out = (
@@ -1089,8 +1095,7 @@ class TestCommandLineSecrets:
 
 
 class TestClassifierScoping:
-    """The classifier is pure text and runs on every platform, so a macOS
-    diagnosis needs macOS evidence, not an English phrase."""
+    """Pure text classifier runs everywhere, so a macOS diagnosis needs macOS evidence."""
 
     def test_a_bare_symbol_not_found_is_not_a_macos_diagnosis(self):
         out = "plugin loader: Symbol not found in module registry\nexiting"
@@ -1592,9 +1597,7 @@ class TestTheRedactionHolesCodexFound:
 
 
 class TestRejectedArguments:
-    """Argument parsing runs before the model is touched, so these are never a
-    bad GGUF or an OOM. The strings are what the bundled llama-server actually
-    prints, captured from it directly rather than written from memory."""
+    """Argument parsing runs before the model loads, so these are never a bad GGUF or an OOM."""
 
     def test_an_unknown_flag_is_named(self):
         msg = _classify("error: invalid argument: --tempp", "/models/x.gguf", "local/x", 1)
@@ -1675,7 +1678,7 @@ class TestRejectedArguments:
 
     def test_an_ordinary_failure_is_untouched(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
-        assert "enough memory" in msg.lower()
+        assert "Couldn't allocate memory" in msg
         assert "argument" not in msg.lower()
 
     def test_the_argument_scan_reads_only_the_tail(self):
@@ -1756,12 +1759,342 @@ class TestTensorSplitQuantizedKvUnsupported:
         )
 
     def test_a_hard_crash_carrying_it_is_not_retried_as_a_projector_fault(self):
-        """_output_has_nonprojector_diagnostic gates the text-only vision retry.
-        Without the marker a doomed tensor load would also pay that retry."""
+        """Without the marker a doomed tensor load would also pay the text-only vision retry."""
         assert LlamaCppBackend._output_has_nonprojector_diagnostic(self._OUT)
 
     def test_it_is_not_the_signal_crash_the_split_axis_latch_requires(self):
-        """It is LLAMA_LOG_ERROR + return nullptr, so exit 1 with no signal --
-        which is why it needs its own recording path rather than the #6415 one."""
+        """LLAMA_LOG_ERROR exits 1 with no signal, so it needs its own path, not issue 6415."""
         assert not LlamaCppBackend._should_record_tensor_split_abort(1, self._OUT)
         assert not LlamaCppBackend._is_tensor_split_assert(self._OUT)
+
+
+class TestActionableStartupFailures:
+    @pytest.mark.parametrize(
+        "output",
+        [
+            _OOM_OUT,
+            "ggml_backend_hip: hipMalloc failed: hipErrorOutOfMemory",
+            "ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory "
+            "VK_ERROR_OUT_OF_DEVICE_MEMORY",
+            "ggml_metal_init: error: failed to allocate buffer",
+            "ggml_cuda_host_malloc: failed to allocate pinned memory: out of memory",
+        ],
+    )
+    def test_gpu_allocation_failure_keeps_evidence_and_gives_next_steps(self, output):
+        msg = _classify(output, "/models/big.gguf", "local/big", 1, log_path = "/tmp/llama.log")
+        assert msg.startswith("Couldn't allocate memory.")
+        assert "lowering the context length" in msg
+        assert "choosing a smaller model" in msg
+        assert output in msg
+        assert "Full log: /tmp/llama.log" in msg
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            "ggml_backend_cpu: failed to allocate buffer",
+            "CUDA device 0 ready\nhost: failed to allocate buffer",
+            "CUDA device 0 ready\nunexpected runtime failure",
+        ],
+    )
+    def test_other_failures_do_not_claim_gpu_memory_exhaustion(self, output):
+        msg = _classify(output, "/models/m.gguf", "local/m", 1)
+        assert "GGUF file is valid" in msg
+        assert "Couldn't allocate memory" not in msg
+
+    @pytest.mark.parametrize("model_id", ["local/m", "ollama/m"])
+    def test_file_open_failure_names_checks_without_guessing_why(self, model_id):
+        output = (
+            "gguf_init_from_file: failed to open GGUF file '/models/vision.gguf'\n"
+            "llama_model_load_from_file_impl: failed to load model"
+        )
+        msg = _classify(output, "/models/main.gguf", model_id, 1, log_path = "/tmp/llama.log")
+        summary = msg.split("\n\n")[0]
+        assert "Couldn't open a model file" in summary
+        assert "Check it exists" in summary
+        assert "permission to read it" in summary
+        assert "main.gguf" not in summary
+        assert "vision.gguf" in msg
+        assert "Full log: /tmp/llama.log" in msg
+        assert "Couldn't allocate memory" not in msg
+
+    def test_corrupt_companion_does_not_blame_main_model(self):
+        output = (
+            "tensor 'vision.weight' data is not within the file bounds, "
+            "model is corrupted or incomplete"
+        )
+        msg = _classify(output, "/models/main.gguf", "local/m", 1, log_path = "/tmp/llama.log")
+        summary = msg.split("\n\n")[0]
+        assert "appears incomplete or damaged" in summary
+        assert "main.gguf" not in summary
+        assert output in msg
+        assert "Full log: /tmp/llama.log" in msg
+
+    def test_ollama_gpu_oom_is_not_misreported_as_format_incompatibility(self):
+        output = _OOM_OUT + "\nllama_model_load_from_file_impl: failed to load model"
+        msg = _classify(output, "/models/m.gguf", "ollama/m", 1)
+        assert msg.startswith("Couldn't allocate memory.")
+        assert "Some Ollama models" not in msg
+
+    def test_unknown_architecture_does_not_certify_the_file(self):
+        msg = _classify("unknown model architecture: 'custom_llm'", "/models/m.gguf", "local/m")
+        assert "The file is valid" not in msg
+        assert "model card" in msg
+        assert "custom runtime" in msg
+
+    def test_missing_metadata_does_not_assert_a_version_mismatch(self):
+        msg = _classify(
+            "key not found in model: deepseek41.context_length",
+            "/models/m.gguf",
+            "local/m",
+        )
+        assert "adapter selected as a full model" in msg
+        assert "required runtime" in msg
+        assert "The file was made" not in msg
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            _OOM_OUT,
+            "gguf_init_from_file: failed to open GGUF file",
+            "tensor data is not within the file bounds",
+            "unexpected runtime failure",
+        ],
+    )
+    def test_new_guidance_preserves_redacted_bounded_diagnostics(self, output):
+        secret = "hf_" + "a" * 34
+        output += "\n" + "x" * 5000 + "\n" + secret
+        msg = _classify(output, "/models/m.gguf", "local/m", 1, log_path = "/tmp/llama.log")
+        assert secret not in msg
+        assert "***" in msg
+        assert len(msg.split("\n\n")[0]) < 150
+        assert msg.count("llama-server output:") == 1
+        assert msg.count("Full log: /tmp/llama.log") == 1
+        assert len(msg) < 4000
+
+
+# llama-server b12246: an embedded template with an escape its lexer does not know.
+_TEMPLATE_PARSE_AT_INIT = (
+    "0.00.095.348 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, "
+    "kv_unified = 'true'\n"
+    "0.00.095.945 E common_chat_templates_init: error: lexer: unknown escape character \\q\n"
+    '...{{ "a\\qb" }}{% for m in messages %}{{ m.content...\n'
+    "          ^\n"
+    "0.00.095.946 E common_chat_templates_init: failed to initialize chat template\n"
+    "0.00.095.946 E common_chat_templates_init: please consider disabling jinja via "
+    "--no-jinja, or using another chat template\n"
+    "0.00.095.995 E srv          init: init: chat template parsing error: std::exception\n"
+    "0.00.095.996 E srv          init: init: please consider disabling jinja via --no-jinja, "
+    "or use a custom chat template via --chat-template\n"
+    "0.00.106.114 E srv  server_run_i: exiting due to model loading error\n"
+)
+# A template that raises once the model's BOS token exists. An embedded template and a custom
+# one that passed the model-less argument check both print exactly this.
+_TEMPLATE_RENDER_AT_INIT = (
+    "0.00.168.520 E srv          init: init: chat template parsing error: Unable to generate "
+    "parser for this template. Automatic parser generation failed: \n"
+    "------------\n"
+    "While executing CallExpression at line 1, column 37 in source:\n"
+    '...{% if bos_token %}{{ raise_exception("bos is set") }}{% endif %}{% for m in ...\n'
+    "                                       ^\n"
+    "Error: Jinja Exception: bos is set\n"
+    "0.00.168.524 E srv          init: init: for example: --no-jinja --chat-template chatml\n"
+    "0.00.169.763 E srv  server_run_i: exiting due to model loading error\n"
+)
+_FILLER = [f"{{# filler line {i} #}}" for i in range(100)]
+# A custom template rejected while parsing arguments: llama-server echoes all of it first.
+_LONG_SYNTAX_ERROR_LINES = [
+    "error: the supplied chat template is not supported: " + _FILLER[0],
+    *_FILLER[1:],
+    '{{ "a\\qb" }}{% for m in messages %}{{ m.content }}{% endfor %}',
+    "0.00.072.313 E common_chat_templates_init: error: lexer: unknown escape character \\q",
+    '... line 98 #}{# filler line 99 #}{{ "a\\qb" }}{% for m in messages %}{{ m.content...',
+    "                                           ^",
+    "0.00.072.315 E common_chat_templates_init: failed to initialize chat template",
+    "0.00.072.326 E common_chat_verify_template: failed to apply template: std::exception",
+]
+_LONG_RAISING_LINES = [
+    "error: the supplied chat template is not supported: " + _FILLER[0],
+    *_FILLER[1:],
+    '{{ raise_exception("this template refuses") }}',
+    "0.00.077.700 E common_chat_verify_template: failed to apply template: Unable to generate "
+    "parser for this template. Automatic parser generation failed: ",
+    "------------",
+    "While executing CallExpression at line 101, column 19 in source:",
+    '...{# filler line 99 #}{{ raise_exception("this template refuses") }}...',
+    "                                           ^",
+    "Error: Jinja Exception: this template refuses",
+]
+
+
+def _backend_with_output(lines):
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._stdout_lines = list(lines)
+    return backend
+
+
+class TestRejectedChatTemplate:
+    """A chat template the Jinja engine rejects is neither a damaged file nor a memory shortfall."""
+
+    def test_names_the_template_and_the_parser_error(self):
+        msg = _classify(
+            _TEMPLATE_PARSE_AT_INIT, "/models/m.gguf", "local/m", 1, log_path = "/tmp/llama.log"
+        )
+        summary = msg.split("\n\n")[0]
+        assert summary.startswith("llama-server rejected this model's chat template ")
+        assert "(lexer: unknown escape character \\q)" in summary
+        assert "Fix it under Chat Template in the model's settings" in summary
+        assert "update llama.cpp" in summary
+        assert "GGUF file is valid" not in msg
+        assert "enough memory" not in msg
+        assert "\n" not in summary
+        assert len(summary) < 200
+        assert "chat template parsing error" in msg
+        assert "Full log: /tmp/llama.log" in msg
+
+    def test_reporters_hex_escape_output_is_classified(self):
+        # What a Flint GGUF printed before llama.cpp's lexer learned hexadecimal escapes.
+        out = (
+            "common_chat_templates_init: error: lexer: unknown escape character \\x\n"
+            "common_chat_templates_init: failed to initialize chat template\n"
+            "srv          init: chat template parsing error: std::exception\n"
+        )
+        summary = _classify(out, "/models/flint.gguf", "unsloth/flint-GGUF", 1).split("\n\n")[0]
+        assert "rejected this model's chat template" in summary
+        assert "(lexer: unknown escape character \\x)" in summary
+        assert "GGUF file is valid" not in summary
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            _TEMPLATE_PARSE_AT_INIT,
+            _TEMPLATE_RENDER_AT_INIT,
+            "\n".join(_LONG_SYNTAX_ERROR_LINES),
+            "\n".join(_LONG_RAISING_LINES),
+        ],
+        ids = ["parse-at-init", "render-at-init", "argument-syntax", "argument-render"],
+    )
+    def test_the_output_never_decides_whose_template_it_was(self, output):
+        # Init-time output is identical for an embedded template and a custom one, so the
+        # message blames neither and gives a remedy that holds for both.
+        summary = _classify(output, "/models/m.gguf", "local/m", 1).split("\n\n")[0]
+        assert "rejected this model's chat template" in summary
+        assert "Fix it under Chat Template in the model's settings" in summary
+        assert "update llama.cpp if the template is the GGUF's own" in summary
+        assert "embedded in this GGUF" not in summary
+        assert "it was started with" not in summary
+        assert "std::exception" not in summary
+        assert "GGUF file is valid" not in summary
+
+    def test_an_ignored_tool_use_template_keeps_the_generic_message(self):
+        # llama-server only warns about this one and keeps starting, so it is not the cause.
+        out = (
+            "common_chat_templates_init: failed to parse tool use chat template (ignoring it): "
+            "lexer: unknown escape character \\q\n"
+            "GGML_ASSERT(ctx->device != nil) failed"
+        )
+        msg = _classify(out, "/models/m.gguf", "local/m", 1)
+        assert "GGUF file is valid" in msg
+        assert "chat template" not in msg.split("\n\n")[0]
+
+    def test_gpu_allocation_failure_is_not_reclassified(self):
+        msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
+        assert msg.startswith("Couldn't allocate memory.")
+
+    def test_the_quoted_parser_error_is_bounded_and_redacted(self):
+        secret = "hf_" + "a" * 34
+        out = (
+            f"common_chat_templates_init: error: lexer: {secret} " + "x" * 5000 + "\n"
+            "common_chat_templates_init: failed to initialize chat template\n"
+        )
+        msg = _classify(out, "/models/m.gguf", "local/m", 1, secrets = (secret,))
+        summary = msg.split("\n\n")[0]
+        assert secret not in msg
+        assert "***" in summary
+        assert len(summary) < 400
+        assert msg.count("llama-server output:") == 1
+
+
+class TestARejectedTemplateEchoedPastTheTail:
+    """llama-server echoes a rejected --chat-template in full, which can fill the 50-line tail."""
+
+    def test_the_rejection_survives_a_template_longer_than_the_tail(self):
+        # Only the first echoed line names the rejection, 107 lines from the end.
+        backend = _backend_with_output(_LONG_RAISING_LINES)
+        assert not LlamaCppBackend._is_chat_template_rejection("\n".join(_LONG_RAISING_LINES[-50:]))
+        output = backend._start_failure_output()
+        assert output == "\n".join(_LONG_RAISING_LINES)
+        summary = _classify(output, "/models/m.gguf", "local/m", 1).split("\n\n")[0]
+        assert "rejected this model's chat template" in summary
+        assert "GGUF file is valid" not in summary
+
+    def test_a_rejection_inside_the_tail_keeps_the_tail(self):
+        backend = _backend_with_output(_LONG_SYNTAX_ERROR_LINES)
+        output = backend._start_failure_output()
+        assert output == "\n".join(_LONG_SYNTAX_ERROR_LINES[-50:])
+        summary = _classify(output, "/models/m.gguf", "local/m", 1).split("\n\n")[0]
+        assert "(lexer: unknown escape character \\q)" in summary
+
+    @pytest.mark.parametrize("count", [0, 3, 50, 51, 400])
+    def test_other_failures_are_still_classified_from_the_last_50_lines(self, count):
+        # An early line must not start steering the classifier for unrelated failures.
+        lines = [_OOM_OUT] + [
+            f"load_tensors: layer {i} assigned to device CPU" for i in range(count)
+        ]
+        backend = _backend_with_output(lines)
+        assert backend._start_failure_output() == "\n".join(lines[-50:])
+
+    def test_the_whole_attempt_stays_bounded_in_the_message(self):
+        output = _backend_with_output(_LONG_RAISING_LINES)._start_failure_output()
+        msg = _classify(output, "/models/m.gguf", "local/m", 1, log_path = "/tmp/llama.log")
+        assert msg.count("llama-server output:") == 1
+        assert "Jinja Exception: this template refuses" in msg
+        assert len(msg) < 4000
+
+
+class TestALoadReportsTheRejectedTemplate:
+    """The load path itself, with llama-server faked: what the caller hands the classifier."""
+
+    @pytest.fixture(autouse = True)
+    def _studio_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+
+    @staticmethod
+    def _load_error(tmp_path, lines):
+        from . import _sidecar_fit_helpers as h
+
+        backend, gguf = h.cuda_backend(tmp_path)
+        raised = []
+        real_load = backend.load_model
+
+        def recording_load(*args, **kwargs):
+            try:
+                return real_load(*args, **kwargs)
+            except Exception as exc:
+                raised.append(str(exc))
+                raise
+
+        backend.load_model = recording_load
+        spawned = h.spawns(
+            backend,
+            gguf,
+            healthy = lambda i, cmd: False,
+            crash = lambda i, cmd: 1,
+            stdout = lambda i, cmd: lines,
+        )
+        assert spawned and raised
+        return raised[-1].split("\n\n")[0]
+
+    def test_a_long_raising_template_is_not_reported_as_a_file_or_memory_problem(self, tmp_path):
+        summary = self._load_error(tmp_path, _LONG_RAISING_LINES)
+        assert "rejected this model's chat template" in summary
+        assert "GGUF file is valid" not in summary
+
+    def test_a_long_syntax_error_names_the_parser_error(self, tmp_path):
+        summary = self._load_error(tmp_path, _LONG_SYNTAX_ERROR_LINES)
+        assert "rejected this model's chat template" in summary
+        assert "(lexer: unknown escape character \\q)" in summary
+
+    def test_an_unrelated_long_failure_keeps_the_generic_message(self, tmp_path):
+        lines = [f"load_tensors: layer {i} assigned to device CPU" for i in range(120)]
+        summary = self._load_error(tmp_path, lines + ["GGML_ASSERT(ctx->device != nil) failed"])
+        assert "GGUF file is valid" in summary

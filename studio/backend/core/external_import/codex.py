@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Codex: ``$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl[.zst]``, grouped by ``session_meta.cwd``.
-
-Lines are ``{timestamp, type, payload}`` (codex-rs ``RolloutLine``). Text comes from the
-``user_message`` / ``agent_message`` events, which is what Codex's own thread history replays:
-the ``response_item`` user messages also carry injected AGENTS.md / environment context.
-"""
+"""Codex text comes from user_message/agent_message events, not response_item (injected context)."""
 
 from __future__ import annotations
 

@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { Field } from "../components/field";
+import { Field, FieldLabel } from "../components/field";
 import { PanelSection } from "./clone-panels";
 import {
   ACE_STEP_BPM,
@@ -76,7 +76,7 @@ export const aceStepMusicalPanel: AudioToolPanel<AceStepMusicalValue> = {
       hint="Optional. Anything left on Auto is chosen by the model."
     >
       <div className="grid gap-1.5">
-        <label
+        <FieldLabel
           htmlFor="music-bpm-auto"
           className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
         >
@@ -89,7 +89,7 @@ export const aceStepMusicalPanel: AudioToolPanel<AceStepMusicalValue> = {
               onChange({ ...value, bpm: on ? ACE_STEP_BPM.default : null })
             }
           />
-        </label>
+        </FieldLabel>
         {value.bpm !== null ? (
           <ParamSlider
             label="BPM"

@@ -11,9 +11,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""
-Auto-tuning cache system for MoE kernels to ensure tuning runs only once at training start.
-"""
+"""Auto-tuning cache system for MoE kernels to ensure tuning runs only once at training start."""
 
 import hashlib
 import json
@@ -556,10 +554,9 @@ def _estimate_smem(
     capability: Tuple[int, int],
     pipelined_dW: bool = False,
 ) -> int:
-    """Shared memory (B) per launch; matches compiled metadata.shared (Triton 3.6-3.8, sm_75..120) or exceeds it by <= 1 KiB.
-
-    pipelined_dW: the per-expert dW kernel with unpermuted operands. Its one M loop is software pipelined (the
-    legacy kernel's nested loop and a gathered load never are), so 16-bit shared memory grows with num_stages."""
+    """Shared memory in bytes per launch, matching compiled metadata.shared (Triton 3.6-3.8,
+    sm_75..120) or exceeding it by <= 1 KiB; for pipelined_dW (per-expert dW, unpermuted
+    operands) 16-bit SMEM grows with num_stages."""
     M, N, K = config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K
     stages = max(int(config.num_stages), 1)
     if kind == "fwd":
@@ -666,6 +663,32 @@ def _fit_configs_to_smem(
     return configs
 
 
+# Smallest dW output (N x K) that the 128-wide N tile speeds up on both dW kernels.
+_WIDE_DW_MIN_OUTPUT = 768 * 1024
+
+
+def _wide_dw_device_ok(device = None) -> bool:
+    """NVIDIA sm80+ only: on T4 (sm75) the 128-wide dW tile was 7-9x slower, and ROCm is unmeasured."""
+    try:
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return False
+        return torch.cuda.get_device_capability(device)[0] >= 8
+    except Exception:
+        return False
+
+
+# Compute capability majors where float32 dW was measured slower on the 128-wide tile: B200 (sm100) 13-15%.
+# L4 (sm89) is 6-18% faster on it, so other architectures keep the wide tile for float32 too.
+_FP32_NARROW_DW_MAJORS = (10,)
+
+
+def _fp32_narrow_dw_device(device = None) -> bool:
+    try:
+        return torch.cuda.get_device_capability(device)[0] in _FP32_NARROW_DW_MAJORS
+    except Exception:
+        return False
+
+
 def _get_heuristic_configs(
     n_dim: Optional[int] = None,
     k_dim: Optional[int] = None,
@@ -724,6 +747,23 @@ def _get_heuristic_configs(
     )
 
     configs = _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
+    # dW tiles N x K and reduces over tokens. When K leaves only BLOCK_SIZE_K 64 (gpt-oss: K = 2880), a 64 x 64
+    # output tile starves the kernel; a 128-wide N tile at 3 stages is faster at the same error. Other K, an N
+    # that 128 does not divide, or an N x K output too small to fill the card at half the programs (the legacy
+    # kernel was 5-23% slower at N 1024 x K <= 576) keep the fitted tile. The SMEM fit below still shrinks it.
+    # float32 activations keep it on sm100, where the wide tile is 13-15% slower (B200).
+    config_bwd_dw = configs[2]
+    if (
+        config_bwd_dw.BLOCK_SIZE_K == 64
+        and k_dim is not None
+        and n_dim is not None
+        and n_dim % 128 == 0
+        and n_dim * k_dim >= _WIDE_DW_MIN_OUTPUT
+        and _wide_dw_device_ok(device)
+        and not (dtype == torch.float32 and _fp32_narrow_dw_device(device))
+    ):
+        config_bwd_dw.BLOCK_SIZE_N = 128
+        config_bwd_dw.num_stages = 3
     return _fit_configs_to_smem(configs, dtype, weight_dtype, **_device_kwargs(device))
 
 

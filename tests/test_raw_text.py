@@ -299,9 +299,8 @@ def test_clean_text_decision_cannot_drift_between_interpreters():
 
 
 def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
-    """smart_chunk_text's single-chunk branch must return a plain list for
-    input_ids even when the tokenizer has no eos_token_id, matching the
-    multi-chunk branch's unconditional tolist()/list() conversion."""
+    """smart_chunk_text's single-chunk branch must return a plain list for input_ids even without an
+    eos_token_id, like the multi-chunk branch's unconditional tolist()/list() conversion."""
 
     class MockTensor:
         def __init__(self, data):
@@ -425,9 +424,8 @@ def test_load_from_file_skips_non_object_json_lines():
 
 
 def test_smart_chunk_text_empty_input_returns_no_chunks():
-    """Empty/whitespace text must yield no chunks. This tokenizer keeps one token
-    per char (like BPE/SentencePiece keeping spaces), so a len(tokens)==0 check
-    would miss whitespace; the fix guards on text.strip() before tokenizing."""
+    """Empty or whitespace text must yield no chunks; this tokenizer keeps a token per char, so a
+    len(tokens)==0 check would miss whitespace, hence the text.strip() guard."""
 
     class WhitespacePreservingTokenizer:
         def __init__(self, eos_token_id):
@@ -823,6 +821,20 @@ def test_chunk_size_one_keeps_the_final_eos_overflow():
         assert restored == list(range(count)) + [99]
 
 
+def test_add_structure_tokens_leaves_code_blocks_alone():
+    """A `# comment` inside a fenced block is code, not a chapter heading."""
+    text = (
+        "# Title\n\n"
+        "```python\n# install deps\n## not a section\nimport os\n```\n\n"
+        "## Section\n\n### Sub\n#### too deep\n"
+    )
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|chapter|>Title<|/chapter|>\n\n"
+        "<|code|python|># install deps\n## not a section\nimport os<|/code|>\n\n"
+        "<|section|>Section<|/section|>\n\n<|subsection|>Sub<|/subsection|>\n#### too deep\n"
+    )
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     test_clean_text_keeps_text_in_any_script()
@@ -841,4 +853,5 @@ if __name__ == "__main__":
     test_tokenized_chunks_reserve_space_for_the_final_eos()
     test_text_chunks_reserve_space_for_the_final_eos()
     test_chunk_size_one_keeps_the_final_eos_overflow()
+    test_add_structure_tokens_leaves_code_blocks_alone()
     sys.exit(0 if success else 1)

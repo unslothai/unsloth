@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Mask credentials in log text before it leaves the process.
-
-Nothing redacts secrets today: loggers/handlers.py:filter_sensitive_data only masks native path leases, and raw output (faulthandler dumps, uvicorn, third party prints) never passes through a structlog processor at all. The log viewer invites users to copy lines into a bug report, so the masking happens on read.
-
-Every pattern is anchored on a known credential prefix or a key name. There is deliberately NO generic "long high entropy string" rule: that would eat sha256 blob digests, HF revisions, snapshot paths and GGUF tensor names, exactly the content someone opened the log to read.
-"""
+"""Masks credentials in logs on read; anchored on known prefixes or key names, never generic entropy."""
 
 from __future__ import annotations
 
@@ -212,6 +207,59 @@ def _redact_cookie(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('sep')}{REDACTED}{tail}"
 
 
+# Per _PATTERNS rule, literals every match contains (None = always run). Those rules are case-sensitive, so substring tests are exact.
+_PATTERN_LITERALS: tuple[tuple[str, ...] | None, ...] = (
+    ("hf_",),
+    ("sk-",),
+    (
+        "gsk_",
+        "xai-",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "glpat-",
+        "xox",
+        "ya29.",
+    ),
+    ("AIza",),
+    ("AKIA", "ASIA"),
+    ("eyJ",),
+    None,
+    ("=",),
+)
+_PATTERN_GATES: tuple[re.Pattern[str] | None, ...] = tuple(
+    None if literals is None else re.compile("|".join(re.escape(literal) for literal in literals))
+    for literals in _PATTERN_LITERALS
+)
+if len(_PATTERN_GATES) != len(_PATTERNS):
+    raise RuntimeError("every _PATTERNS rule needs an entry in _PATTERN_GATES")
+
+_SECRET_KEY_WORDS = ("authorization", "key", "token", "secret", "pass")
+if not all(any(word in key for word in _SECRET_KEY_WORDS) for key in _SECRET_KEYS.split("|")):
+    raise RuntimeError("every _SECRET_KEYS alternative needs a word in _SECRET_KEY_WORDS")
+# Off ASCII, IGNORECASE folds e.g. the Kelvin sign onto "k", so the engine decides.
+_FOLDED_GATE_RES = {
+    words: re.compile("(?i)" + "|".join(words))
+    for words in (("authorization",), ("bearer",), ("cookie",), _SECRET_KEY_WORDS)
+}
+
+
+def _has_folded(text: str, lowered: str | None, words: tuple[str, ...]) -> bool:
+    if lowered is None:
+        return _FOLDED_GATE_RES[words].search(text) is not None
+    for word in words:
+        if word in lowered:
+            return True
+    return False
+
+
+def _lowered(text: str) -> str | None:
+    return text.lower() if text.isascii() else None
+
+
 def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
@@ -219,14 +267,25 @@ def redact_log_text(text: str) -> str:
     # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
         text = _strip_ansi(text)
-    for pattern, replacement in _PATTERNS:
-        text = pattern.sub(replacement, text)
+    for (pattern, replacement), gate in zip(_PATTERNS, _PATTERN_GATES):
+        if gate is None or gate.search(text) is not None:
+            text = pattern.sub(replacement, text)
+    lowered = _lowered(text)
     # Before the key/value rules: _KV_RE captures "Basic" from "Authorization: Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.
-    text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
-    text = _SCHEME_RE.sub(_redact_shaped, text)
-    text = _COOKIE_RE.sub(_redact_cookie, text)
-    text = _KV_RE.sub(_redact_kv, text)
-    text = _FLAG_RE.sub(_redact_kv, text)
+    if _has_folded(text, lowered, ("authorization",)):
+        text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
+        lowered = _lowered(text)
+    if _has_folded(text, lowered, ("bearer",)):
+        text = _SCHEME_RE.sub(_redact_shaped, text)
+        lowered = _lowered(text)
+    if _has_folded(text, lowered, ("cookie",)):
+        text = _COOKIE_RE.sub(_redact_cookie, text)
+        lowered = _lowered(text)
+    if (":" in text or "=" in text) and _has_folded(text, lowered, _SECRET_KEY_WORDS):
+        text = _KV_RE.sub(_redact_kv, text)
+        lowered = _lowered(text)
+    if "--" in text and _has_folded(text, lowered, _SECRET_KEY_WORDS):
+        text = _FLAG_RE.sub(_redact_kv, text)
     try:
         from utils.native_path_leases import redact_native_paths
         text = redact_native_paths(text)

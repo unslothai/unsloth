@@ -22,6 +22,7 @@ import {
   audioVoiceLabel,
   coerceAudioOptionValue,
 } from "./audio-options";
+import { FieldLabel } from "./components/field";
 
 function OptionHint({ text }: { text?: string | null }) {
   return text ? (
@@ -54,7 +55,7 @@ export function AudioOptionFields({
         if (spec.type === "bool") {
           return (
             <div key={spec.name} className="grid gap-1.5">
-              <label
+              <FieldLabel
                 htmlFor={id}
                 className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
               >
@@ -65,7 +66,7 @@ export function AudioOptionFields({
                   disabled={disabled}
                   onCheckedChange={(checked) => onChange(spec.name, checked)}
                 />
-              </label>
+              </FieldLabel>
               <OptionHint text={spec.description} />
             </div>
           );
@@ -91,9 +92,9 @@ export function AudioOptionFields({
         if (spec.type === "enum") {
           return (
             <div key={spec.name} className="grid gap-1.5">
-              <label className="text-ui-13 font-medium text-foreground" htmlFor={id}>
+              <FieldLabel className="text-ui-13 font-medium text-foreground" htmlFor={id}>
                 {label}
-              </label>
+              </FieldLabel>
               <Select
                 value={typeof value === "string" ? value : undefined}
                 onValueChange={(next) => onChange(spec.name, next)}
@@ -117,9 +118,9 @@ export function AudioOptionFields({
         const numeric = spec.type === "int" || spec.type === "float";
         return (
           <div key={spec.name} className="grid gap-1.5">
-            <label className="text-ui-13 font-medium text-foreground" htmlFor={id}>
+            <FieldLabel className="text-ui-13 font-medium text-foreground" htmlFor={id}>
               {label}
-            </label>
+            </FieldLabel>
             <Input
               id={id}
               type={numeric ? "number" : "text"}

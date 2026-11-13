@@ -4495,18 +4495,11 @@ function Install-UnslothStudio {
             if ($script:UnslothVerbose) {
                 # Merge stderr into stdout without flipping $? (5.1 treats stderr records as errors).
                 # Redact per record, verbose mode included.
-                if ($NoMirror -or -not $env:_UNSLOTH_MIRROR_SPARE) {
-                    & $Command 2>&1 | ForEach-Object {
-                        Write-UvDownloadMarker "$_"
-                        Redact-InstallOutput "$_"
-                    } | Out-Host
-                } else {
-                    & $Command 2>&1 | ForEach-Object {
-                        [void]$collected.AppendLine("$_")
-                        Write-UvDownloadMarker "$_"
-                        Redact-InstallOutput "$_"
-                    } | Out-Host
-                }
+                & $Command 2>&1 | ForEach-Object {
+                    [void]$collected.AppendLine("$_")
+                    Write-UvDownloadMarker "$_"
+                    Redact-InstallOutput "$_"
+                } | Out-Host
             } else {
                 # Streamed, not collected, so a marker reaches the app mid-download.
                 & $Command 2>&1 | ForEach-Object {
@@ -4520,6 +4513,7 @@ function Install-UnslothStudio {
                 }
             }
             $exitCode = [int]$LASTEXITCODE
+            $script:LastInstallOutput = if ($exitCode -eq 0) { "" } else { $collected.ToString() }
             if ($exitCode -eq 0) {
                 Clear-TauriInstallError "$Label recovered"
             } else {
@@ -4562,6 +4556,27 @@ function Install-UnslothStudio {
         return $code
     }
 
+    # uv reuses a damaged cached wheel on every run, --refresh included (#17375).
+    function Repair-UvDamagedWheels {
+        param([string]$Output, [hashtable]$Cleaned)
+        $names = @(foreach ($m in [regex]::Matches("$Output", '(?m)Failed to install: \S+ \(([A-Za-z0-9][A-Za-z0-9._-]*)(?:==| @ )[^\r\n]*\r?\n\s*(?:cause|Caused by): The wheel is invalid')) {
+            $n = $m.Groups[1].Value.ToLowerInvariant()
+            if (-not $Cleaned.ContainsKey($n) -and $Cleaned.Count -lt 50) { $Cleaned[$n] = $true; $n }
+        })
+        if (-not $names) { return $false }
+        substep "clearing damaged uv cache entries for $($names -join ', ')..." "Yellow"
+        # Another uv process may hold the cache lock.
+        $prevLock = $env:UV_LOCK_TIMEOUT
+        if (-not $prevLock) { $env:UV_LOCK_TIMEOUT = "60" }
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { & $script:UvExe cache clean @names 2>&1 | Out-Null } finally {
+            $ErrorActionPreference = $prevEap
+            $env:UV_LOCK_TIMEOUT = $prevLock
+        }
+        return ($LASTEXITCODE -eq 0)
+    }
+
     function Invoke-InstallCommandRetry {
         param(
             [Parameter(Mandatory = $true, Position = 0)][ScriptBlock]$Command,
@@ -4578,9 +4593,13 @@ function Install-UnslothStudio {
             $delay = $parsedDelay
         }
         $attempt = 1
+        $cleaned = @{}
         while ($true) {
+            $script:LastInstallOutput = ""
             $code = Invoke-InstallCommand -Command $Command -Label $Label -NoMirror:($attempt -lt $maxAttempts)
             if ($code -eq 0) { return 0 }
+            # Not an attempt: uv names one damaged package per run.
+            if (Repair-UvDamagedWheels -Output $script:LastInstallOutput -Cleaned $cleaned) { continue }
             if ($attempt -ge $maxAttempts) { return $code }
             substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
             Start-Sleep -Seconds $delay
@@ -6999,6 +7018,54 @@ exit 0
         }
     }
 
+    # Hands the 30-40 s delete to a hidden process. The tree is parked as rollback.<stamp>.<deleter PID>,
+    # so the sweep skips it while the deleter lives and removes leftovers once it is gone. Started via
+    # the shell so no inherited handle holds a caller's output pipe. $false = nothing changed, delete here.
+    function Start-StudioVenvRollbackBackgroundDelete {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if ($env:OS -ne 'Windows_NT') { return $false }
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            if (-not $item.PSIsContainer) { return $false }
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            $parent = [System.IO.Path]::GetDirectoryName($item.FullName)
+            if (-not $parent) { return $false }
+            $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            if (-not (Test-Path -LiteralPath $shell -PathType Leaf)) { return $false }
+        } catch {
+            return $false
+        }
+        $stamp = Get-Date -Format "yyyyMMddHHmmss"
+        $parentLiteral = $parent.Replace("'", "''")
+        # Single quotes only: the command travels as one double-quoted argument.
+        $deleteCommand = @(
+            "`$ErrorActionPreference = 'SilentlyContinue'",
+            "`$p = Join-Path '$parentLiteral' ('unsloth_studio.rollback.$stamp.' + `$PID)",
+            "for (`$i = 0; (`$i -lt 600) -and -not (Test-Path -LiteralPath `$p); `$i++) { Start-Sleep -Milliseconds 100 }",
+            "if (Test-Path -LiteralPath `$p) { try { [System.IO.Directory]::Delete(`$p, `$true) } catch { } }",
+            "if (Test-Path -LiteralPath `$p) { Remove-Item -LiteralPath `$p -Recurse -Force }"
+        ) -join '; '
+        $deleter = $null
+        try {
+            $deleter = Start-Process -FilePath $shell `
+                -ArgumentList "-NoProfile -NonInteractive -Command `"$deleteCommand`"" `
+                -WindowStyle Hidden -PassThru -ErrorAction Stop
+        } catch {
+            return $false
+        }
+        if ($null -eq $deleter) { return $false }
+        $parked = Join-Path $parent "unsloth_studio.rollback.$stamp.$($deleter.Id)"
+        try {
+            if (Test-StudioPathPresent -Path $parked) { throw "$parked already exists" }
+            [System.IO.Directory]::Move($item.FullName, $parked)
+        } catch {
+            try { Stop-Process -Id $deleter.Id -Force -ErrorAction SilentlyContinue } catch { }
+            return $false
+        }
+        try { $deleter.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
+        return $true
+    }
+
     function Merge-StudioVenvRollbackTree {
         # Moves every entry of $Source into $Destination without ever overwriting or
         # deleting what is already there. Returns $true only when $Source ends up
@@ -7137,6 +7204,8 @@ exit 0
                 return
             }
         }
+        # Restoration is disarmed above, so nothing reads $backup again.
+        if (Start-StudioVenvRollbackBackgroundDelete -Path $backup) { return }
         Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
     }
 
@@ -9894,14 +9963,124 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.9" }
-    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.9"
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.11.4" }
+    $_unslothZooInstallSpec = "unsloth-zoo>=2026.11.4"
+    # typer 0.29 imports pydantic, so `unsloth studio setup` would hold pydantic_core's .pyd open while
+    # the Studio requirements re-pin pydantic, and Windows refuses to replace a loaded .pyd.
+    $_typerCapSpec = "typer<0.29"
 
     # Twin of install.sh's _relax_unsloth_floors_to_index (#14031).
+    function Resolve-NoTorchPair {
+        param([string]$ReleaseSpec, [string]$ZooSpec)
+        $pairCode = @'
+def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True, uv_executable="uv", install_env=None):
+    """Resolve the pair from wheel metadata without resolving training dependencies."""
+    import re
+    import subprocess
+    import sys
+    import tempfile
+    from importlib.metadata import distributions
+
+    cache = {}
+
+    def metadata(name, requirements):
+        key = (name, tuple(requirements))
+        if key in cache:
+            return cache[key]
+        with tempfile.TemporaryDirectory(prefix="unsloth-pair-") as target:
+            cmd = (
+                [uv_executable, "pip", "install", "--python", sys.executable, "--resolution", "highest"]
+                if use_uv
+                else [sys.executable, "-m", "pip", "install", "--upgrade"]
+            )
+            cmd += ["--no-deps", "--quiet", "--target", target, *requirements]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    env=install_env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=120,
+                    **(
+                        {"creationflags": subprocess.CREATE_NO_WINDOW}
+                        if sys.platform == "win32"
+                        else {}
+                    ),
+                )
+                dist = (
+                    next(
+                        d
+                        for d in distributions(path=[target])
+                        if re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower() == name
+                    )
+                    if result.returncode == 0
+                    else None
+                )
+                value = (dist.version, dist.requires or []) if dist else None
+            except (OSError, subprocess.SubprocessError, StopIteration, ValueError):
+                value = None
+        cache[key] = value
+        return value
+
+    if metadata("unsloth-zoo", [zoo_spec]) is None:
+        zoo_spec = "unsloth-zoo"
+    request, cap, seen = unsloth_spec, [], set()
+    while True:
+        unsloth = metadata("unsloth", [request, *cap])
+        if unsloth is None:
+            if request != "unsloth":
+                request = "unsloth"
+                continue
+            return None
+        version, requires = unsloth
+        if version in seen or not re.fullmatch(r"[0-9][0-9A-Za-z.+!-]*", version):
+            return None
+        seen.add(version)
+        zoo_requires = [r for r in requires if re.match(r"(?i)^unsloth[-_.]zoo\b", r)]
+        zoo = metadata("unsloth-zoo", [zoo_spec, *zoo_requires])
+        if zoo is not None:
+            return version, zoo[0], int(request != unsloth_spec)
+        cap = [f"unsloth<{version}"]
+
+import sys
+pair = _no_torch_pair(sys.argv[1], sys.argv[2], uv_executable=sys.argv[3])
+if pair is None:
+    raise SystemExit(1)
+print(*pair)
+'@
+        $pairScript = [System.IO.Path]::GetTempFileName()
+        try {
+            [System.IO.File]::WriteAllText($pairScript, $pairCode, (New-Object System.Text.UTF8Encoding($false)))
+            & $VenvPython -I $pairScript $ReleaseSpec $ZooSpec $script:UvExe
+        } finally {
+            Remove-Item -LiteralPath $pairScript -ErrorAction SilentlyContinue
+        }
+    }
+
     function Resolve-UnslothFloorsForIndex {
-        param([string]$ReleaseSpec, [string]$ZooSpec, [string]$DesktopVersion, [string]$Marker)
+        param([string]$ReleaseSpec, [string]$ZooSpec, [string]$DesktopVersion, [string]$Marker, [bool]$NoTorch = $false)
         $result = @{ Release = $ReleaseSpec; Zoo = $ZooSpec; Available = $null }
         Remove-Item -LiteralPath $Marker -Force -ErrorAction SilentlyContinue
+        if ($NoTorch) {
+            $pair = Resolve-NoTorchPair $ReleaseSpec $ZooSpec
+            if ($LASTEXITCODE -ne 0 -or -not $pair) {
+                throw "Could not resolve a compatible unsloth / unsloth-zoo pair for no-torch mode"
+            }
+            $parts = ([string]$pair).Split(' ')
+            $result.Release = "unsloth==$($parts[0])"
+            $result.Zoo = "unsloth-zoo==$($parts[1])"
+            if ($parts[2] -eq "1") {
+                $result.Available = $parts[0]
+                if ($DesktopVersion) {
+                    substep "[WARN] your package index cannot meet $ReleaseSpec; installing unsloth $($parts[0]) + unsloth-zoo $($parts[1])" "Yellow"
+                    try {
+                        $json = @{ requested = $DesktopVersion; available = $parts[0] } | ConvertTo-Json -Compress
+                        [System.IO.File]::WriteAllText($Marker, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+                    } catch { }
+                }
+            }
+            return $result
+        }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
@@ -9939,7 +10118,7 @@ main()
         return $result
     }
     $_floors = Resolve-UnslothFloorsForIndex -ReleaseSpec $_unslothReleaseInstallSpec -ZooSpec $_unslothZooInstallSpec `
-        -DesktopVersion $_desktopMinVer -Marker (Join-Path $VenvDir "unsloth_feed_ceiling.json")
+        -DesktopVersion $_desktopMinVer -Marker (Join-Path $VenvDir "unsloth_feed_ceiling.json") -NoTorch ($SkipTorch -and $PackageName -eq "unsloth")
     $_unslothReleaseInstallSpec = $_floors.Release
     $_unslothZooInstallSpec = $_floors.Zoo
     if ($_floors.Available -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec = $_unslothReleaseInstallSpec }
@@ -9975,7 +10154,7 @@ main()
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             $_migOverrides = @()
             if ($script:TorchOverridesFile) { $_migOverrides = @("--overrides", $script:TorchOverridesFile) }
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython @_migOverrides --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython @_migOverrides --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" "$_typerCapSpec" }
             if ($script:TorchOverridesFile) {
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
@@ -10254,21 +10433,21 @@ main()
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" "$_typerCapSpec" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" "$_typerCapSpec" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" "$_typerCapSpec" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" "$_typerCapSpec" }
             }
         }
         if ($baseInstallExit -ne 0) {
@@ -10295,7 +10474,7 @@ main()
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "$_unslothZooInstallSpec" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "$_unslothZooInstallSpec" "$_unslothReleaseInstallSpec" "$_typerCapSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -10314,7 +10493,7 @@ main()
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$_unslothPkg" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$_unslothPkg" "$_typerCapSpec" }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which downloaded media model a requested name means, and whether it is the resident one.
-
-Two halves of one question. The index walks the model roots once per few seconds and maps every
-name a downloaded image or video model answers to onto the load spec its route takes. The
-matching half then decides whether the backend already holds that exact build, which is what
-lets a switch be skipped rather than reloading the model that is already serving.
-
-Only downloaded models are indexed. A name that resolves to nothing is refused by the caller
-rather than answered by whichever model happens to be resident.
-"""
+"""Maps downloaded media model names to load specs and flags the resident build; unresolved names
+are refused by the caller, never answered by the resident model."""
 
 from __future__ import annotations
 
@@ -22,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 logger = get_logger(__name__)
 
@@ -255,7 +248,7 @@ def _add_gguf_picks(
 
 def _loadable_directory(load_dir: Path) -> bool:
     """Only a full pipeline or one checkpoint is loadable: several with no index is ambiguous."""
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
 
     try:
         if any(
@@ -269,6 +262,7 @@ def _loadable_directory(load_dir: Path) -> bool:
     return sole is not None and _loader_can_open(str(load_dir), sole)
 
 
+@in_scan_memo
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
     from routes.models import _local_model_task, collect_local_models
@@ -348,26 +342,82 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
     }
 
 
+# Far above a full scan: past it a waiter scans on its own instead of hanging on a stuck build.
+_JOIN_TIMEOUT_S = 120.0
+
+
+class _Build:
+    __slots__ = ("epoch", "owner", "done", "result")
+
+    def __init__(self, epoch: tuple[int, Optional[int]]) -> None:
+        self.epoch = epoch
+        self.owner = threading.get_ident()
+        self.done = threading.Event()
+        self.result: Optional[dict[str, MediaModelPick]] = None
+
+
+_building: dict[tuple[str, str], _Build] = {}
+_invalidations = 0
+
+
+def _hf_cache_epoch() -> Optional[int]:
+    """Bumped by downloads, deletes and cache setting changes; takes its own lock, so never call under _index_lock."""
+    try:
+        from hub.utils.inventory_scan import hf_cache_scans_epoch
+        return hf_cache_scans_epoch()
+    except Exception:  # noqa: BLE001 -- no inventory module: only invalidate_index() counts
+        return None
+
+
 def _cached_index(task: str) -> dict[str, MediaModelPick]:
     from utils.account_context import current_account_id
-
     key = (current_account_id(), task)
-    now = time.monotonic()
-    with _index_lock:
-        hit = _index.get(key)
-        if hit is not None and now - hit[0] < _INDEX_TTL_S:
-            return hit[1]
-    built = _mark_ambiguous_builds(_build_index(task))
-    with _index_lock:
-        # stamped after the scan, so one slower than the ttl is not already expired
-        _index[key] = (time.monotonic(), built)
-    return built
+    while True:
+        now = time.monotonic()
+        cache_epoch = _hf_cache_epoch()
+        with _index_lock:
+            hit = _index.get(key)
+            if hit is not None and now - hit[0] < _INDEX_TTL_S:
+                return hit[1]
+            epoch = (_invalidations, cache_epoch)
+            build = _building.get(key)
+            if build is None or build.epoch != epoch or build.owner == threading.get_ident():
+                build = _Build(epoch)
+                _building[key] = build
+                owner = True
+            else:
+                owner = False
+        if not owner:
+            # Started no earlier than the last invalidation, finishes after this call: no older than a ttl hit.
+            if not build.done.wait(_JOIN_TIMEOUT_S):
+                # A builder waiting on this thread would deadlock: scan here instead.
+                return _mark_ambiguous_builds(_build_index(task))
+            if build.result is not None:
+                return build.result
+            continue  # that build raised
+        try:
+            built = _mark_ambiguous_builds(_build_index(task))
+            cache_epoch = _hf_cache_epoch()
+            with _index_lock:
+                # Overtaken by an invalidation: its waiters still get it, the cache keeps the fresher scan.
+                if (_invalidations, cache_epoch) == build.epoch:
+                    # stamped after the scan, so one slower than the ttl is not already expired
+                    _index[key] = (time.monotonic(), built)
+            build.result = built
+            return built
+        finally:
+            with _index_lock:
+                if _building.get(key) is build:
+                    del _building[key]
+            build.done.set()
 
 
 def invalidate_index() -> None:
     """Drop the cached scan. For tests and anything that changes what is downloaded."""
+    global _invalidations
     with _index_lock:
         _index.clear()
+        _invalidations += 1
 
 
 def resolve_local_media_model(name: str, *, task: str) -> Optional[MediaModelPick]:

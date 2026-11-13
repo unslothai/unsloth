@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Load EPUB books and, with Calibre installed, MOBI books on CPU.
-
-Pass a Hugging Face fast tokenizer, not model weights. Token counts exclude
-special tokens added later by a trainer; reserve space for those in chunk_size.
-"""
+"""Loads EPUB books, and MOBI books when Calibre is installed, on CPU. Pass a Hugging Face fast
+tokenizer, not model weights; token counts exclude special tokens a trainer adds later, so
+reserve room for them in chunk_size."""
 
 from bisect import bisect_right
 from html.parser import HTMLParser
@@ -19,6 +17,8 @@ import unicodedata
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile
+
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 
 __all__ = ["load_ebook_dataset"]
 
@@ -162,7 +162,7 @@ def _html_text(data):
     text = unicodedata.normalize("NFC", "".join(parser.parts))
     text = re.sub(r"[^\S\n]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = _BLANK_LINE_RUN.sub("\n\n", text).strip()
     return re.sub(
         "\ue000(\\d+)\ue001",
         lambda m: unicodedata.normalize("NFC", parser.preformatted[int(m[1])]),

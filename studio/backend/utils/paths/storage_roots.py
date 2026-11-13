@@ -22,12 +22,20 @@ from loggers import get_logger
 from utils.account_context import current_account, is_owner_context
 from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
 from utils.paths.private_tmp import private_tmp_dir, private_tmp_path
+from utils.scan_memo import memoized
 
 logger = get_logger(__name__)
 
 
 def _infer_studio_home_from_venv() -> Path | None:
     """Needs a share/studio.conf or bin shim sentinel, so a dev venv named unsloth_studio is ignored."""
+    return memoized(
+        ("studio_home_from_venv", sys.prefix, os.environ.get("UNSLOTH_STUDIO_APP")),
+        _infer_studio_home_from_venv_uncached,
+    )
+
+
+def _infer_studio_home_from_venv_uncached() -> Path | None:
     try:
         prefix = Path(sys.prefix).resolve()
     except (OSError, ValueError):
@@ -56,6 +64,10 @@ def _infer_studio_home_from_venv() -> Path | None:
 
 
 def _resolved(value: str) -> Path:
+    return memoized(("resolved", value), lambda: _resolved_uncached(value))
+
+
+def _resolved_uncached(value: str) -> Path:
     try:
         return Path(value).expanduser().resolve()
     except (OSError, ValueError):
@@ -125,8 +137,7 @@ def _recorded_master_root() -> Path | None:
 
 
 def forget_recorded_master_root() -> None:
-    """Drop the cached note reading. For tests, and for an installer that writes the note into
-    a tree this process has already looked at."""
+    """Drops the cached note reading, for tests and installers rewriting an already-read tree."""
     with _recorded_master_lock:
         _recorded_master_roots.clear()
 
@@ -163,8 +174,7 @@ def _warn_unrecognized_portable(raw: str) -> None:
 
 
 def portable_mode() -> bool:
-    """Whether this install keeps everything under one directory. Implied by UNSLOTH_HOME, and
-    settable on its own so an existing install can opt in."""
+    """One-directory install, implied by UNSLOTH_HOME; UNSLOTH_PORTABLE alone opts in."""
     # Case-folded: FALSE must not read as on.
     raw = (os.environ.get("UNSLOTH_PORTABLE") or "").strip()
     value = raw.lower()
@@ -232,6 +242,11 @@ def cache_root() -> Path:
 def llama_slot_cache_root() -> Path:
     """Dir llama-server saves/restores slot KV state in across idle unloads."""
     return cache_root() / "llama-slots"
+
+
+def mlx_prompt_cache_root() -> Path:
+    """Dir the MLX worker saves its prompt cache in, for the next load of the same model."""
+    return cache_root() / "mlx-prompt-cache"
 
 
 def studio_bin_root() -> Path:
@@ -1061,12 +1076,9 @@ def _path_with_first(path: str, first: str) -> str:
 
 
 def _setup_cache_env() -> None:
-    """Set cache env vars for HuggingFace, uv, and vLLM.
-
-    Explicit Hugging Face environment variables take precedence over Unsloth's
-    stored location. Unsloth seeds import-time variables once, while each later
-    worker receives its own captured cache location.
-    """
+    """Sets cache env vars for Hugging Face, uv and vLLM; explicit Hugging Face env vars override
+    Unsloth's stored location, and import-time variables are seeded once while each later worker
+    gets its own captured location."""
     _use_studio_uv_tools()
     root = cache_root()
     from utils.hf_cache_settings import initialize_hf_cache_environment

@@ -152,10 +152,8 @@ def compiled_encoder(
     amp_dtype = None,
     max_length: Optional[int] = None,
 ):
-    """Compile each Laya encoder layer in place for one training run, then go back to eager.
-
-    In place keeps parameter names, saving and LoRA merging unchanged.
-    """
+    """Compile Laya encoder layers in place for one training run, then go back to eager; parameter
+    names stay unchanged so saving and LoRA merging work"""
     layers = _encoder_layers(model)
     if not (layers and _wants_compile(model, forwards)):
         layers = []
@@ -209,8 +207,7 @@ def compiled_encoder(
 
 
 def pad_length(model, inputs: dict) -> dict:
-    # Pads a training batch to the static bucket; padded positions are masked keys and never
-    # gathered, so the loss is unchanged.
+    # Padded keys are masked and never gathered, so the loss is unchanged.
     multiple = model.__dict__.get("_unsloth_pad_multiple", 0)
     extra = -inputs["input_ids"].shape[1] % multiple if multiple and model.training else 0
     if extra:
