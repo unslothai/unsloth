@@ -637,9 +637,7 @@ test("a copy from a field leaves the window alone", () => {
 });
 
 test("rows get their role and ordinals before anything reads their style", () => {
-  // Written in the commit's layout effect, after the anchor reads had computed the new rows'
-  // style, the role restyled every row a second time as the window mounted it: style
-  // recalculation while scrolling rose from 1.7 s to 2.5 s over the window gate's sweep.
+  // Published only in the layout effect, the role restyled every newly mounted row a second time.
   const early = section(GLUE, "useInsertionEffect(() => {\n    const viewport = viewportRef.current;\n    if (!viewport) return;\n    const windowed", "}, [win, count, readMetas, viewportRef]);");
   assert.match(early, /publishOrdinals\(viewport, readMetas\(\), windowed\);/);
   assert.match(early, /ordinalsRef\.current = windowed;/);
