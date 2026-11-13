@@ -78,8 +78,14 @@ KERNEL_CONFIGS: dict = {
 ROCM_KERNEL_CONFIGS: dict = {
     "gfx1151": {
         128: {
-            "bm": 64, "bn": 32, "warps": 4, "stages": 1, "pv": "half_strided", "kscale": "tile",
-            "long_keys": 8000, "long": {"bm": 128, "warps": 8},
+            "bm": 64,
+            "bn": 32,
+            "warps": 4,
+            "stages": 1,
+            "pv": "half_strided",
+            "kscale": "tile",
+            "long_keys": 6000,
+            "long": {"bm": 256, "warps": 16},
         },
         64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "half_strided", "kscale": "tile"},
     },
@@ -123,7 +129,6 @@ def _is_rocm() -> bool:
     import torch
 
     from .rocm_bf16 import is_rocm_torch
-
     return bool(is_rocm_torch(torch))
 
 
@@ -131,7 +136,6 @@ def _gfx_arch(index: int) -> str:
     import torch
 
     from .rocm_bf16 import normalize_gfx_arch
-
     return normalize_gfx_arch(getattr(torch.cuda.get_device_properties(index), "gcnArchName", ""))
 
 
@@ -561,7 +565,6 @@ def int8_attention(
     q, k, v = (x if x.stride(3) == 1 else x.contiguous() for x in (q, k, v))
     if _is_rocm():
         from . import diffusion_int8_attention_triton as triton_kernel
-
         with torch.no_grad(), torch.cuda.device(q.device):
             return triton_kernel.int8_attention(q, k, v, config, scale = scale)
     with torch.no_grad():

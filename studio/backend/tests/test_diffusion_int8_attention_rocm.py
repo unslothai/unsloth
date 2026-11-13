@@ -45,7 +45,8 @@ def _triton_ok() -> bool:
 
 
 needs_rocm_kernel = pytest.mark.skipif(
-    _rocm_config() is None or not _triton_ok(), reason = "needs a ROCm card with an INT8 attention config and Triton"
+    _rocm_config() is None or not _triton_ok(),
+    reason = "needs a ROCm card with an INT8 attention config and Triton",
 )
 
 
@@ -57,7 +58,11 @@ def _clean(monkeypatch):
     I.STATS.update(stats)
 
 
-def _fake_rocm(monkeypatch, arch = "gfx1151:sramecc-:xnack-", found = None):
+def _fake_rocm(
+    monkeypatch,
+    arch = "gfx1151:sramecc-:xnack-",
+    found = None,
+):
     from core.inference import rocm_bf16
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -70,7 +75,15 @@ def _fake_rocm(monkeypatch, arch = "gfx1151:sramecc-:xnack-", found = None):
     monkeypatch.setattr(I, "int8_attention_op", lambda: None)
     seen = []
 
-    def verdict(device, dtype, heads, head_dim, incumbent = None, incumbent_name = "native", timed = True):
+    def verdict(
+        device,
+        dtype,
+        heads,
+        head_dim,
+        incumbent = None,
+        incumbent_name = "native",
+        timed = True,
+    ):
         seen.append((heads, head_dim, incumbent_name, timed))
         return found(head_dim) if callable(found) else found
 
@@ -112,12 +125,15 @@ def test_rocm_config_is_keyed_by_measured_gfx_arch(monkeypatch):
     assert (11, 5) not in I.KERNEL_CONFIGS
     for config in I.ROCM_KERNEL_CONFIGS.values():
         assert set(config) <= set(I.HEAD_DIMS)
-        assert all(c["pv"] in ("int8", "half", "half_strided") and c.get("kscale", "key") in ("key", "tile") for c in config.values())
+        assert all(
+            c["pv"] in ("int8", "half", "half_strided")
+            and c.get("kscale", "key") in ("key", "tile")
+            for c in config.values()
+        )
 
 
 def test_nvidia_keeps_its_capability_table(monkeypatch):
     from core.inference import rocm_bf16
-
     monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: False)
     for capability in [*I.KERNEL_CONFIGS, (9, 0), (7, 5), (11, 5)]:
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, c = capability, **k: c)
@@ -132,17 +148,26 @@ def test_install_on_rocm_engages_only_the_measured_arch(monkeypatch):
     assert [m.processor._unsloth_int8 for m in dit.blocks] == [True, True, True, False]
     assert {s[1] for s in seen} == {128, 64}
     _fake_rocm(monkeypatch, arch = "gfx1100", found = {"ok": True, "min_tokens": 0})
-    assert I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16, force = True) == 0
+    assert (
+        I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16, force = True) == 0
+    )
     # a failed on-card check and the kill switch both keep native attention
     _fake_rocm(monkeypatch, found = {"ok": False, "min_tokens": None})
-    assert I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16, force = True) == 0
+    assert (
+        I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16, force = True) == 0
+    )
     _fake_rocm(monkeypatch, found = {"ok": True, "min_tokens": 0})
     monkeypatch.setenv(I.INT8_ATTENTION_ENV, "0")
-    assert I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16, force = True) == 0
+    assert (
+        I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16, force = True) == 0
+    )
 
 
 def test_install_on_rocm_follows_the_race(monkeypatch):
-    seen = _fake_rocm(monkeypatch, found = lambda head_dim: {"ok": True, "min_tokens": 2560 if head_dim == 128 else None})
+    seen = _fake_rocm(
+        monkeypatch,
+        found = lambda head_dim: {"ok": True, "min_tokens": 2560 if head_dim == 128 else None},
+    )
     dit = _fake_dit()
     assert I.install_int8_attention(dit, device = "cuda", dtype = torch.bfloat16) == 2
     assert [m.processor._unsloth_int8 for m in dit.blocks] == [True, True, False, False]
@@ -155,7 +180,14 @@ def test_rocm_call_runs_the_triton_kernel(monkeypatch):
     _fake_rocm(monkeypatch)
     calls = []
 
-    def fake(q, k, v, config = None, pv = None, scale = None):
+    def fake(
+        q,
+        k,
+        v,
+        config = None,
+        pv = None,
+        scale = None,
+    ):
         calls.append((tuple(q.shape), dict(config), pv, scale))
         return v.clone()
 
@@ -193,7 +225,9 @@ def test_triton_module_imports_without_triton():
             print("OK", e)
         """
     )
-    r = subprocess.run([sys.executable, "-c", code], cwd = BACKEND_DIR, capture_output = True, text = True, timeout = 120)
+    r = subprocess.run(
+        [sys.executable, "-c", code], cwd = BACKEND_DIR, capture_output = True, text = True, timeout = 120
+    )
     assert r.returncode == 0 and "OK" in r.stdout, r.stderr[-2000:]
 
 
@@ -227,7 +261,6 @@ _INTERPRET = textwrap.dedent(
 def _interpreter_ok() -> bool:
     try:
         import triton
-
         return tuple(int(x) for x in triton.__version__.split(".")[:2]) >= (3, 7)
     except Exception:  # noqa: BLE001
         return False
@@ -241,7 +274,11 @@ def test_triton_kernel_numerics_interpreted():
     run by the Triton interpreter on CPU (fp16: the interpreter has no bf16 dot)."""
     env = dict(os.environ, TRITON_INTERPRET = "1")
     r = subprocess.run(
-        [sys.executable, "-c", _INTERPRET], cwd = BACKEND_DIR, env = env, capture_output = True, text = True,
+        [sys.executable, "-c", _INTERPRET],
+        cwd = BACKEND_DIR,
+        env = env,
+        capture_output = True,
+        text = True,
         timeout = 900,
     )
     line = [x for x in r.stdout.splitlines() if x.startswith("RESULT ")]
@@ -272,7 +309,9 @@ def _rotate_ref(x):
 
 
 def _fp64(q, k, v):
-    return F.scaled_dot_product_attention(*(t.double().permute(0, 2, 1, 3) for t in (q, k, v))).permute(0, 2, 1, 3)
+    return F.scaled_dot_product_attention(
+        *(t.double().permute(0, 2, 1, 3) for t in (q, k, v))
+    ).permute(0, 2, 1, 3)
 
 
 def _cos(a, b):
