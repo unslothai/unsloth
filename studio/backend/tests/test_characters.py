@@ -865,15 +865,26 @@ def test_a_card_with_half_an_emoji_imports_and_lists(client):
     assert client.get("/api/characters").status_code == 200
 
 
-def test_a_phone_jpeg_with_extra_pictures_is_a_portrait(client):
-    # Many phone cameras write MPF data into their JPEGs; Pillow opens those as MPO.
+@pytest.mark.parametrize(
+    "fmt, media_type",
+    [
+        ("PNG", "image/png"),
+        ("JPEG", "image/jpeg"),
+        ("MPO", "image/jpeg"),
+        ("WEBP", "image/webp"),
+        ("GIF", "image/gif"),
+    ],
+)
+def test_every_portrait_format_is_accepted(client, fmt, media_type):
+    # MPO is a JPEG with extra pictures (MPF), as many phone cameras write.
     buffer = io.BytesIO()
-    Image.new("RGB", (40, 60), (200, 30, 30)).save(
-        buffer, format = "MPO", save_all = True, append_images = [Image.new("RGB", (20, 30))]
+    extra = (
+        {"save_all": True, "append_images": [Image.new("RGB", (20, 30))]} if fmt == "MPO" else {}
     )
+    Image.new("RGB", (40, 60), (200, 30, 30)).save(buffer, format = fmt, **extra)
     created = client.post("/api/characters", json = {"name": "Rowan"}).json()
     response = client.put(f"/api/characters/{created['id']}/avatar", content = buffer.getvalue())
-    assert response.status_code == 200 and response.json()["avatarType"] == "image/jpeg"
+    assert response.status_code == 200 and response.json()["avatarType"] == media_type
 
 
 def test_a_large_compressed_card_keeps_its_picture():

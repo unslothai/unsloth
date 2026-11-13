@@ -33,8 +33,6 @@ MAX_PORTRAIT_PIXELS = 40_000_000
 _PORTRAIT_FORMATS = {
     "PNG": "image/png",
     "JPEG": "image/jpeg",
-    # A JPEG with extra pictures (MPF), as many phone cameras write; Pillow names it MPO.
-    "MPO": "image/jpeg",
     "WEBP": "image/webp",
     "GIF": "image/gif",
 }
@@ -124,7 +122,9 @@ def checked_portrait(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
     try:
         with Image.open(io.BytesIO(data), formats = tuple(_PORTRAIT_FORMATS)) as image:
             width, height = image.size
-            if _PORTRAIT_FORMATS.get(image.format) != media_type or not (
+            # Pillow's JPEG opener names a JPEG with extra pictures (MPF, as many phone cameras write) MPO.
+            found = "JPEG" if image.format == "MPO" else image.format
+            if _PORTRAIT_FORMATS.get(found) != media_type or not (
                 0 < width * height <= MAX_PORTRAIT_PIXELS
             ):
                 return None
