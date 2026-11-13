@@ -43,6 +43,8 @@ def strided_processor_class() -> Any:
     from diffusers.models.transformers import transformer_flux3 as tf3
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
+    from .diffusion_flux3_qk_rope import qk_norm_rope
+
     class UnslothFlux3StridedAttnProcessor(tf3.Flux3AttnProcessor):
         def __call__(
             self,
@@ -63,14 +65,10 @@ def strided_processor_class() -> Any:
             key = key.unflatten(-1, (attn.heads, -1))
             value = value.unflatten(-1, (attn.heads, -1))
 
-            query = attn.norm_q(query.float())
-            key = attn.norm_k(key.float())
-
-            if image_rotary_emb is not None:
-                # module attribute at call time: the fused RoPE install patches it there
-                query = tf3.apply_rotary_emb(query, image_rotary_emb, sequence_dim = 1)
-                key = tf3.apply_rotary_emb(key, image_rotary_emb, sequence_dim = 1)
-            query, key = query.to(value.dtype), key.to(value.dtype)
+            # module attribute at call time: the fused RoPE install patches it there
+            query, key = qk_norm_rope(
+                attn, query, key, value.dtype, image_rotary_emb, tf3.apply_rotary_emb
+            )
 
             with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
                 out = F.scaled_dot_product_attention(
@@ -172,6 +170,7 @@ def _install(pipe: Any, backend: Any, target: Any, logger: Any) -> int:
     if is_rocm_torch(torch) or not torch.cuda.is_available():
         return 0
     from .diffusion_autoopt.patches import source_digest
+    from .diffusion_flux3_qk_rope import is_qk_processor
     from diffusers.models.transformers import transformer_flux3 as tf3
 
     if source_digest(tf3.Flux3AttnProcessor.__call__) not in _PROCESSOR_DIGESTS or not callable(
@@ -195,7 +194,7 @@ def _install(pipe: Any, backend: Any, target: Any, logger: Any) -> int:
         proc = getattr(attn, "processor", None)
         if type(proc) is cls:
             continue
-        if type(proc) is not tf3.Flux3AttnProcessor:
+        if type(proc) is not tf3.Flux3AttnProcessor and not is_qk_processor(proc):
             continue
         if _backend_value(getattr(proc, "_attention_backend", None)) != _CUDNN:
             continue
@@ -204,6 +203,7 @@ def _install(pipe: Any, backend: Any, target: Any, logger: Any) -> int:
         new = cls()
         new._attention_backend = proc._attention_backend
         new._parallel_config = proc._parallel_config
+        new._unsloth_probe_dtype = dtype
         attn.set_processor(new)
         swapped += 1
     if swapped and logger is not None:
@@ -214,4 +214,62 @@ def _install(pipe: Any, backend: Any, target: Any, logger: Any) -> int:
     return swapped
 
 
-__all__ = ["STRIDED_ATTN_ENV", "enabled", "install", "strided_matches", "strided_processor_class"]
+def verify_cards(
+    pipe: Any,
+    cards: Any,
+    logger: Any = None,
+) -> int:
+    """Probe each split card (install probed the primary only); any failure restores stock processors. Never raises."""
+    try:
+        import torch
+        from diffusers.models.transformers import transformer_flux3 as tf3
+
+        transformer = getattr(pipe, "transformer", None)
+        if transformer is None:
+            return 0
+        cls = strided_processor_class()
+        swapped = [
+            m for m in _attention_modules(transformer) if type(getattr(m, "processor", None)) is cls
+        ]
+        if not swapped:
+            return 0
+        bad = sorted(
+            {
+                int(o)
+                for o in cards
+                for m in swapped
+                if not strided_matches(
+                    torch.device("cuda", int(o)),
+                    getattr(m.processor, "_unsloth_probe_dtype", torch.bfloat16),
+                    int(m.heads),
+                    int(m.head_dim),
+                )
+            }
+        )
+        if not bad:
+            return 0
+        for m in swapped:
+            stock = tf3.Flux3AttnProcessor()
+            stock._attention_backend = m.processor._attention_backend
+            stock._parallel_config = m.processor._parallel_config
+            m.set_processor(stock)
+        if logger is not None:
+            logger.info(
+                "diffusion.flux3_attn: strided cuDNN attention failed its probe on cuda:%s; stock processor kept",
+                ",".join(str(o) for o in bad),
+            )
+        return len(swapped)
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.info("diffusion.flux3_attn: per-card strided attention check skipped (%s)", exc)
+        return 0
+
+
+__all__ = [
+    "STRIDED_ATTN_ENV",
+    "enabled",
+    "install",
+    "strided_matches",
+    "strided_processor_class",
+    "verify_cards",
+]

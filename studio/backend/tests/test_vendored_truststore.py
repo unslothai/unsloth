@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Vendored truststore and laya stay byte-identical to upstream except manifest-recorded patches."""
+"""Vendored truststore, laya and the diffusers MiniMax-H3-Image models stay byte-identical to upstream except manifest-recorded patches."""
 
 from __future__ import annotations
 
@@ -19,11 +19,12 @@ _MANIFESTS = {
     for path in sorted(_VENDOR.glob("*_manifest.json"))
 }
 _MANIFEST = _MANIFESTS["truststore"]
-_PACKAGES = {"truststore", "laya"}
+_PACKAGES = {"truststore", "laya", "diffusers_minimax_h3_image"}
 
 _SIDECARS = {
     "LICENSE",
     "LICENSE.laya",
+    "LICENSE.diffusers",
     "README.md",
     *(f"{name}_manifest.json" for name in _PACKAGES),
 }
@@ -149,7 +150,7 @@ def test_vendored_laya_version_is_the_one_recorded():
     assert f'__version__ = "{_MANIFESTS["laya"]["version"]}"' in init
 
 
-@pytest.mark.parametrize("relative", ["LICENSE", "LICENSE.laya", "README.md"])
+@pytest.mark.parametrize("relative", ["LICENSE", "LICENSE.laya", "LICENSE.diffusers", "README.md"])
 def test_provenance_files_are_present(relative):
     """MIT and Apache-2.0 both require the licence to travel with the copy."""
     assert (_VENDOR / relative).read_text(encoding = "utf-8").strip()

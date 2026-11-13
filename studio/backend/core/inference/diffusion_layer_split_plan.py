@@ -656,6 +656,8 @@ def _backend_cards(
     primary: int,
     secondaries: Sequence[int],
     logger: Any = None,
+    *,
+    guard: bool = True,
 ) -> tuple[tuple[int, ...], Optional[str]]:
     """``(secondaries the engaged attention backend runs on, that backend)``; a card of unknown capability is kept."""
     from . import diffusion_multigpu as mg
@@ -671,7 +673,7 @@ def _backend_cards(
                 break
     cards = tuple(int(o) for o in secondaries)
     if _is_rocm():
-        return _rocm_backend_cards(pipe, primary, cards, logger)
+        return _rocm_backend_cards(pipe, primary, cards, logger, guard = guard)
     if backend is None:
         return cards, None
     need = mg._capability(primary)
@@ -844,6 +846,8 @@ def _rocm_drop_math_only(
     primary: int,
     cards: tuple[int, ...],
     logger: Any = None,
+    *,
+    guard: bool = True,
 ) -> tuple[int, ...]:
     """Drop a secondary whose native SDPA is math-only when the primary's is not: the plan's activation figures were
     priced for the primary's fused kernel, and math SDPA materialises the full score matrix on the card running the
@@ -877,11 +881,21 @@ def _rocm_drop_math_only(
             dtype,
         )
     kept = tuple(o for o in cards if o not in dropped)
-    if kept:
-        with contextlib.suppress(Exception):
-            from .diffusion_attention import guard_rocm_fused_sdpa_cards
-            guard_rocm_fused_sdpa_cards([f"cuda:{int(o)}" for o in (primary, *kept)], dtype, logger)
+    if kept and guard:
+        _rocm_guard_common_sdpa(primary, kept, dtype, logger)
     return kept
+
+
+def _rocm_guard_common_sdpa(
+    primary: int,
+    cards: Sequence[int],
+    dtype: Any,
+    logger: Any = None,
+) -> None:
+    with contextlib.suppress(Exception):
+        from .diffusion_attention import guard_rocm_fused_sdpa_cards
+        engaged = dict.fromkeys(int(o) for o in (primary, *cards))
+        guard_rocm_fused_sdpa_cards([f"cuda:{o}" for o in engaged], dtype, logger)
 
 
 def _math_only_reason(primary: int, cards: Sequence[int]) -> str:
@@ -898,6 +912,8 @@ def _rocm_backend_cards(
     primary: int,
     cards: tuple[int, ...],
     logger: Any = None,
+    *,
+    guard: bool = True,
 ) -> tuple[tuple[int, ...], Optional[str]]:
     """Native SDPA runs on any gfx target (load dtype matched by make_selection), so every card not
     math-only where the primary's is fused is kept; per-target kernels (flash_attn, AITER) keep
@@ -916,7 +932,7 @@ def _rocm_backend_cards(
                 backend, module = tag, candidate
                 break
     if backend is None:
-        return _rocm_drop_math_only(pipe, primary, cards, logger), None
+        return _rocm_drop_math_only(pipe, primary, cards, logger, guard = guard), None
     need = _rocm_gfx(primary)
     if not need:
         return (), backend
@@ -957,7 +973,10 @@ def refine_plan_for_layer_split(
         _record_decline(pipe, f"denoiser cannot be split ({_layout_refusal(pipe)})", logger)
         return plan
     limits: dict[int, int] = {int(selection.primary): int(primary_limit_mib)}
-    secondaries, backend = _backend_cards(pipe, int(selection.primary), candidates, logger)
+    # the SDPA guard is process-wide, so it waits for a placement that fits and covers only the cards it uses
+    secondaries, backend = _backend_cards(
+        pipe, int(selection.primary), candidates, logger, guard = False
+    )
     if not secondaries:
         _record_decline(
             pipe,
@@ -983,6 +1002,10 @@ def refine_plan_for_layer_split(
     if split is None:
         _record_decline(pipe, reason, logger)
         return plan
+    if backend is None and _is_rocm():
+        dtype = _rocm_attention_dtype(pipe)
+        if not _rocm_sdpa_math_only(int(selection.primary), dtype, read_only = True):
+            _rocm_guard_common_sdpa(int(selection.primary), split.cards, dtype, logger)
     reason = f"{reason}; single card would use '{plan.offload_policy}'"
     if logger is not None:
         logger.info("diffusion.multigpu: %s", reason)
@@ -1015,6 +1038,9 @@ def apply_layer_split_plan(
     split = getattr(plan, "layer_split", None)
     if split is None:
         return False
+    with contextlib.suppress(Exception):
+        from .diffusion_flux3_attn import verify_cards
+        verify_cards(pipe, [o for o in split.cards if int(o) != int(split.primary)], logger)
     try:
         place_layer_split(pipe, primary = placement, split = split, logger = logger)
     except Exception as exc:  # noqa: BLE001 - fall back to one card

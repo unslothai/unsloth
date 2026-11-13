@@ -636,8 +636,7 @@ _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = _profile_table("auto_prefer", quan
 _FAMILY_AUTO_SKIP: dict[str, frozenset[str]] = _profile_table("auto_scheme_skip", quant = True)
 
 
-# AUTO keeps bf16 while it fits for these (``FamilyProfile.auto_bf16_when_resident``: measured with both sides compiled,
-# INT8 was at most ~5% faster and failed the default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
+# AUTO keeps bf16 while it fits (image AUTO rule in diffusion_families); INT8 when bf16 would offload.
 _FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = _profile_table(
     "auto_bf16_when_resident", quant = True
 )
@@ -645,6 +644,27 @@ _FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = _profile_table(
 
 def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
     return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
+
+
+# Hosted-checkpoint auto order: int8 from Turing up (``torch._int_mm`` has no capability gate), then fp8, then bf16.
+_HOSTED_AUTO_FLOORS: tuple[tuple[str, tuple[int, int]], ...] = (
+    (TQ_INT8, (7, 5)),
+    (TQ_FP8, (8, 9)),
+)
+
+
+def hosted_auto_scheme_order(
+    family: Optional[str], cap: Optional[tuple[int, int]]
+) -> tuple[str, ...]:
+    """Hosted schemes auto tries for ``family`` at ``cap``, best first; () means bf16. Deny / auto-skip tables apply."""
+    if cap is None:
+        return ()
+    skip = _FAMILY_AUTO_SKIP.get(str(family or "").strip().lower(), frozenset())
+    return tuple(
+        scheme
+        for scheme, floor in _HOSTED_AUTO_FLOORS
+        if tuple(cap) >= floor and scheme not in skip and not _family_denied(family, scheme)
+    )
 
 
 # Schemes denied for TRAINING on top of the inference table (``FamilyProfile.train_scheme_deny``): the inference
@@ -1297,6 +1317,17 @@ def fp16_card_fp8_scheme(
     return TQ_FP8
 
 
+_FAMILY_TURING_AUTO_INT8: dict[str, str] = _profile_table("turing_auto_int8", quant = True)
+
+
+def turing_auto_int8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Measured reason AUTO takes int8 for ``family`` on this Turing fp16 card, else None (AUTO keeps fp16)."""
+    reason = _FAMILY_TURING_AUTO_INT8.get(str(family or "").strip().lower())
+    if reason is None or fp16_card_int8_scheme(target, TQ_INT8, family) != TQ_INT8:
+        return None
+    return reason
+
+
 def fp16_card_native_host(target: Any, requested: Optional[str]) -> bool:
     scheme = normalize_transformer_quant(requested)
     if scheme == TQ_FP8 and not fp16_card_fp8_enabled():
@@ -1396,6 +1427,21 @@ def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
     if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
         return None
     return reason
+
+
+def rdna_explicit_int8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Why an explicit int8 request on this ROCm RDNA card compiles its denoiser from render 1, else None (eager).
+    Weight-only int8 stays the scheme unless the family's AUTO table measured W8A8 faster (``rdna_auto_w8a8_reason``);
+    eager int8 is slower than bf16 on gfx1151 for every measured family. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
+    if not _rocm_cuda(target) or not native_quant_host(target):
+        return None
+    if not _sys.platform.startswith("linux"):
+        return None
+    if int8_act_disabled() or not rocm_rdna_w8a8_ready(getattr(target, "ordinal", None)):
+        return None
+    if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
+        return None
+    return "an explicit int8 request on RDNA is measured compiled"
 
 
 def select_transformer_quant_scheme(
@@ -2116,8 +2162,12 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
 
         from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
 
+        from .diffusion_nvfp4_weight_quant import install_nvfp4_weight_quant_patch
+
         # Before quantize_: the load-time weight pass stays on torchao (eager); compiled activations use the kernel.
         install_nvfp4_act_quant_patch()
+        # Weight scales per UNSLOTH_NVFP4_WEIGHT_QUANT.
+        install_nvfp4_weight_quant_patch()
 
         # Select the CUTLASS FP4 path, not the default Triton kernel (which needs MSLK): on a Blackwell box with
         # CUTLASS FP4 but no MSLK the default fails the smoke probe and falls back to GGUF.
@@ -2358,6 +2408,17 @@ def _quantize_native(
             scale_dtype = scale_dtype,
         ):
             return None
+        if compute_dtype is not None:
+            from .diffusion_manual_cast import undo_same_width_manual_cast_
+
+            # The Linears left dense (bf16 read as stored for a float16 build) become what a float16 load holds.
+            undone = undo_same_width_manual_cast_(transformer)
+            if undone and logger is not None:
+                logger.info(
+                    "diffusion.transformer_quant: %.2f GiB of unquantised stored weights converted to %s",
+                    undone / (1 << 30),
+                    str(compute_dtype).replace("torch.", ""),
+                )
         if scale_dtype is not None:
             from .diffusion_native_quant import probe_mps_int8pack
 

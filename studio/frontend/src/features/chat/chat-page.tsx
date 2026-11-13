@@ -18,6 +18,7 @@ import {
   isServedByMlx,
   loadedContextFields,
   modelConfigHandoffForDestination,
+  resolveInitialConfig,
   resolveResidentInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
@@ -127,7 +128,7 @@ import {
   CONVERSATION_HTML_LABEL,
   CONVERSATION_PDF_FORMAT,
   CONVERSATION_PDF_LABEL,
-} from "./utils/conversation-html";
+} from "./utils/conversation-html-format";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArchiveIcon,
@@ -345,21 +346,17 @@ import {
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./components/export-format-items";
+import { lazyWithoutSuspense, preloadWhenIdle } from "@/lib/lazy-without-suspense";
 
-const BrowserPanel = lazy(() =>
-  import("@/features/browser/browser-panel").then((module) => ({
-    default: module.BrowserPanel,
-  })),
+// Not lazy(): a Suspense reveal is held up to 300 ms, which was most of the pane's first open.
+const BrowserPanel = lazyWithoutSuspense(() =>
+  import("@/features/browser/browser-panel").then((module) => module.BrowserPanel),
 );
-const FullViewChatBar = lazy(() =>
-  import("@/features/browser/full-view-chat").then((module) => ({
-    default: module.FullViewChatBar,
-  })),
+const FullViewChatBar = lazyWithoutSuspense(() =>
+  import("@/features/browser/full-view-chat").then((module) => module.FullViewChatBar),
 );
-const FullViewChatButton = lazy(() =>
-  import("@/features/browser/full-view-chat").then((module) => ({
-    default: module.FullViewChatButton,
-  })),
+const FullViewChatButton = lazyWithoutSuspense(() =>
+  import("@/features/browser/full-view-chat").then((module) => module.FullViewChatButton),
 );
 
 // Sandboxed page frames stay outside the trap: same-origin access would weaken their isolation.
@@ -681,6 +678,8 @@ const SingleContent = memo(function SingleContent({
   const browserOpen = useBrowserStore((state) => state.open);
   const browserOpenSequence = useBrowserStore((state) => state.openSequence);
   const closeBrowser = useBrowserStore((state) => state.closePanel);
+  // Load the pane's module at idle (about 25 ms once) so its first open mounts with the click.
+  useEffect(() => preloadWhenIdle(BrowserPanel.preload), []);
   useBrowserChatHost(chatActive);
   useStagedFixPrompt(pendingFixPrompt, chatActive);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
@@ -2756,6 +2755,14 @@ function ProjectLanding({
   );
 }
 
+/** The Engram table the load will ask for, so a staged download fetches it instead of the quant's own. */
+function stagedEngramPrecision(selection: SelectedModelInput): string | null {
+  if (!selection.ggufVariant) return null;
+  const config =
+    selection.config ?? resolveInitialConfig(selection.id, selection.ggufVariant).config;
+  return config.engramPrecision ?? null;
+}
+
 type PendingHubAutoLoad = {
   selection: SelectedModelInput;
   contextKey: string;
@@ -3702,6 +3709,7 @@ export function ChatPage({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
+            engramPrecision: stagedEngramPrecision(selection),
             expectedBytes: selection.expectedBytes ?? 0,
             presentation: selection.downloadPresentation,
             // Handed over so one start makes one toast.
@@ -3824,6 +3832,7 @@ export function ChatPage({
         kind: DOWNLOAD_KIND.MODEL,
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
+        engramPrecision: stagedEngramPrecision(pending.selection),
         expectedBytes: pending.selection.expectedBytes ?? 0,
         presentation: pending.selection.downloadPresentation,
         // Notice-only: the toast was removed and must not return on an HTTP start or once notices are spent.

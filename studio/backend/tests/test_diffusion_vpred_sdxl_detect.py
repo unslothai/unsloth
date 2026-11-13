@@ -350,6 +350,22 @@ def _stub_header(monkeypatch, keys_by_call):
     return calls
 
 
+def test_catalog_identifies_whole_sdxl_files_by_content_even_when_names_are_neutral(monkeypatch):
+    from hub.routes.inventory import is_sdxl_checkpoint
+
+    keys = [
+        ["transformer.single_transformer_blocks.0.attn.to_k.lora_A.weight"],
+        SDXL_DIFFUSERS_UNET_ONLY_KEYS,
+        SDXL_UNET_KEYS,
+    ]
+    _stub_header(monkeypatch, keys)
+    picks = [
+        is_sdxl_checkpoint("example/checkpoint", filename, "1" * 40, False, "test-user")
+        for filename in ("edition-1.safetensors", "unet.safetensors", "edition-2.safetensors")
+    ]
+    assert picks == [False, False, True]
+
+
 def test_a_denoiser_only_unet_is_not_evidence_for_a_whole_pipeline_family(hub_cache, monkeypatch):
     import huggingface_hub
 
@@ -1028,3 +1044,50 @@ def test_the_marker_read_overlaps_only_a_staged_snapshot():
     assert "_base_local_dir" in gate
     first = calls[0].body.args[0]
     assert ast.unparse(first) == "_base_local_dir"
+
+
+def test_a_managed_account_reads_checkpoint_headers_without_the_installation_token(monkeypatch):
+    import huggingface_hub
+    from fastapi import HTTPException
+
+    from hub.routes import inventory
+    from hub.services.models import account_access
+
+    tokens = []
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        tokens.append(token)
+        return types.SimpleNamespace(
+            tensors = {k: types.SimpleNamespace(shape = [0]) for k in SDXL_UNET_KEYS},
+            metadata = {},
+        )
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    for managed in (False, True):
+        monkeypatch.setattr(account_access, "managed_account", lambda managed = managed: managed)
+        assert inventory.is_sdxl_checkpoint("example/ckpt", "a.safetensors", None, None, "u")
+    assert tokens == [None, False]
+
+    monkeypatch.setattr(account_access, "model_allowlist", lambda: ["allowed/*"])
+    with pytest.raises(HTTPException):
+        inventory.is_sdxl_checkpoint("example/ckpt", "a.safetensors", None, None, "u")
+    assert len(tokens) == 2
+
+
+def test_the_catalog_never_offers_a_checkpoint_the_loader_vetoes_by_name(monkeypatch):
+    from core.inference.diffusion import get_diffusion_backend
+    from hub.routes.inventory import is_sdxl_checkpoint
+
+    _stub_header(monkeypatch, [SDXL_UNET_KEYS])
+    repo = "example/neutral-mix"
+    assert is_sdxl_checkpoint(repo, "edition.safetensors", None, False, "u")
+    assert not is_sdxl_checkpoint(repo, "edition-inpaint.safetensors", None, False, "u")
+    get_diffusion_backend().validate_load_request(
+        repo, gguf_filename = "edition.safetensors", family_override = None, model_kind = "single_file"
+    )

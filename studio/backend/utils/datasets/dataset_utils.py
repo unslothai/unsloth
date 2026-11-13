@@ -442,13 +442,23 @@ def _format_dataset(
 
     multimodal_info = detect_multimodal_dataset(dataset)
 
-    if format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset):
+    auto_raw = (
+        format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset)
+    )
+    if auto_raw:
         # Matches the preview's "raw" verdict; auto would otherwise fail as "unknown".
         format_type = "raw"
 
     if format_type == "raw":
+        # Explicit "raw" already gets EOS from the trainer / MLXTrainingConfig.append_eos.
         raw_result = prepare_raw_text_dataset(
-            dataset, split_name = split_name, text_column = raw_text_column
+            dataset,
+            split_name = split_name,
+            # A processor without Unsloth's patch (MLX VLM) keeps eos_token on its inner tokenizer.
+            eos_token = getattr(tokenizer, "eos_token", None)
+            or getattr(getattr(tokenizer, "tokenizer", None), "eos_token", None),
+            append_eos = auto_raw,
+            text_column = raw_text_column,
         )
         return {
             "dataset": raw_result.dataset,

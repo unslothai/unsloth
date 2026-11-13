@@ -3,6 +3,7 @@
 
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { createWakeDedupe } from "@/lib/wake-dedupe";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ModelRuntime,
@@ -174,8 +175,9 @@ export function useLoadedModels(
       if (document.hidden) return;
       refresh();
     }, POLL_INTERVAL_MS);
+    const isFreshWake = createWakeDedupe();
     const onWake = () => {
-      if (!document.hidden) refresh();
+      if (!document.hidden && isFreshWake()) refresh();
     };
     window.addEventListener("focus", onWake);
     document.addEventListener("visibilitychange", onWake);
