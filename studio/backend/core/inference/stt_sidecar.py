@@ -1681,8 +1681,7 @@ class WhisperSttSidecar:
         task: str = "transcribe",
         prompt: Optional[str] = None,
     ) -> dict:
-        """Accepts any container PyAV can decode; task=translate returns English text. ``prompt`` is
-        Whisper's text prompt (the Transcribe page's speaker accent hint)."""
+        """Accepts any container PyAV can decode; task=translate returns English text."""
         ensure_stt_available()
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")

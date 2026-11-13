@@ -26243,9 +26243,7 @@ async def _transcribe_audio_result(
     context_length: int = 0,
     prompt: Optional[str] = None,
 ) -> dict:
-    """source_path is read in place by audio.cpp; translate is honoured only by the Transformers sidecar.
-    ``prompt`` is a text hint for engines that take one (not audio.cpp); callers check the model's
-    ``accent_hint`` capability first."""
+    """source_path is read in place by audio.cpp; translate is honoured only by the Transformers sidecar."""
     if account_access.managed_account():
         await asyncio.to_thread(
             account_access.require_model_access, _stt_repo_reference(model, engine)
@@ -26670,7 +26668,6 @@ async def transcribe_audio_source(
     _refuse_stt_caps(caps, timestamps = body.timestamps, speakers = body.speakers)
     accent_prompt = stt_capabilities.accent_prompt(body.speaker_accent)
     if accent_prompt and not caps.get("accent_hint"):
-        # Refused rather than dropped, so a hint is never silently ignored.
         raise HTTPException(
             status_code = 422,
             detail = "This model cannot take a speaker accent hint. Clear it, or pick Whisper, "

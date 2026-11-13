@@ -1093,7 +1093,7 @@ class GgmlSttSidecar:
         prompt: Optional[str] = None,
     ) -> dict:
         """Accepts any container PyAV decodes, under the same validation and caps as the
-        Transformers sidecar. ``prompt`` is Whisper's text prompt."""
+        Transformers sidecar."""
         self._raise_if_update_in_progress()
         ensure_engine_available()
         model_id = resolve_ggml_model_id(model)

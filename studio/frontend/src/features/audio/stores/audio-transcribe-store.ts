@@ -12,7 +12,6 @@ export type TranscriptView = "text" | "segments";
 interface AudioTranscribeState {
   source: AudioSourceSelection | null;
   language: string;
-  /** Optional accent description, such as "Chinese-accented English"; "" sends none. */
   speakerAccent: string;
   timestamps: boolean;
   speakers: boolean;

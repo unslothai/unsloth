@@ -1166,8 +1166,7 @@ class MtmdSttSidecar:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
         ``fast`` has no effect: decoding is greedy. A supported ``language``
-        prefills the assistant turn; otherwise the model auto-detects it. ``prompt`` (the speaker
-        accent hint) goes in as Qwen3-ASR's context, the system turn.
+        prefills the assistant turn; otherwise the model auto-detects it.
         """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)

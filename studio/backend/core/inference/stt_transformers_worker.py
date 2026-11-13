@@ -114,7 +114,6 @@ def transcribe_window(
     kwargs = dict(generate_kwargs)
     prompt = kwargs.pop("prompt", None)
     if prompt:
-        # Each window is its own generate call, so every window is conditioned on the same hint.
         kwargs["prompt_ids"] = processor.get_prompt_ids(prompt, return_tensors = "pt").to(
             model.device
         )

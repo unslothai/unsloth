@@ -98,14 +98,12 @@ def max_seconds_for(engine: Optional[str]) -> int:
 
 
 def accent_prompt(accent: Optional[str]) -> Optional[str]:
-    """The text a model is given for a speaker accent hint, or None when there is no hint."""
     accent = " ".join(str(accent or "").split())
     return f"Speaker accent: {accent}." if accent else None
 
 
 def takes_accent_hint(model: str, engine: Optional[str]) -> bool:
-    """Whether ``engine`` passes a text hint to ``model``: Whisper's prompt (Transformers, whisper.cpp)
-    or Qwen3-ASR's context (llama.cpp). audio.cpp and mlx-audio checkpoints take none."""
+    """Whisper's prompt (Transformers, whisper.cpp) or Qwen3-ASR's context (llama.cpp); not audio.cpp / mlx-audio."""
     if engine in ("gguf", "mtmd"):
         return True
     if engine != "transformers":
@@ -116,8 +114,7 @@ def takes_accent_hint(model: str, engine: Optional[str]) -> bool:
 
 
 def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
-    """``timestamps``: "on_request" | "always" | "unsupported"; ``aligner`` only for "on_request".
-    ``accent_hint``: whether a speaker accent hint reaches the model."""
+    """``timestamps``: "on_request" | "always" | "unsupported"; ``aligner`` only for "on_request"."""
     model = str(model or "").strip()
     result = {
         "engine": None,

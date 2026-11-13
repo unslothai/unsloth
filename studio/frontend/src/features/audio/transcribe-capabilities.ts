@@ -31,7 +31,6 @@ export interface TranscribeSwitch {
 }
 
 export interface TranscribeAccent {
-  /** True when the model cannot take the hint: the field is read-only and nothing is sent. */
   disabled: boolean;
   hint: string;
 }
@@ -51,7 +50,6 @@ const ACCENT_HINT =
 const ACCENT_UNSUPPORTED =
   "This model cannot use an accent hint, so none is sent. Whisper, Qwen3-ASR (llama.cpp) and connections can use one.";
 
-/** The accent field, and the hint a run sends: none when the model cannot take it. */
 function accentFor(
   supported: boolean,
   speakerAccent: string,
@@ -161,7 +159,6 @@ export function connectionTranscribeSwitches(
   model: string,
 ): TranscribeSwitches {
   const untimed = OPENAI_UNTIMED_MODEL.test(model);
-  // OpenAI-compatible endpoints take a text prompt with the audio.
   const { accent, speakerAccent } = accentFor(true, prefs.speakerAccent ?? "");
   return {
     timestamps: untimed
