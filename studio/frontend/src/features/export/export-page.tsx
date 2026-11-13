@@ -305,7 +305,6 @@ export function ExportPage() {
   const [npuStatus] = useNpuStatus();
   const hasNpu = !!npuStatus?.supported;
   const [q4nxSummary, setQ4nxSummary] = useState<Q4nxSummary | null>(null);
-  // The summary panel follows the card the user last worked in.
   const [q4nxInUse, setQ4nxInUse] = useState(false);
   const trackCardInUse = (event: { target: EventTarget }) =>
     setQ4nxInUse(

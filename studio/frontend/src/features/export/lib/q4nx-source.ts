@@ -100,7 +100,6 @@ export function q4nxConvertibleFiles<T extends { filename: string; cleanable?: b
   });
 }
 
-/** Directly packed quants first (backend order), then the rest; the first one is the default pick. */
 export function sortQ4nxVariants<T extends Q4nxVariant>(
   variants: T[],
   architecture?: string | null,
@@ -196,7 +195,6 @@ export function q4nxVariantLookup(
   };
 }
 
-/** Which models show their quantizations. "Expand quantizations" opens every model; without it the list is by model, one open at a time. */
 export interface Q4nxExpansion {
   expandAll: boolean;
   /** Models toggled against the default: closed under expandAll, else the one that is open. */
@@ -230,7 +228,6 @@ export interface Q4nxWeights {
 
 type SizedVariant = Q4nxVariant & { size_bytes?: number | null };
 
-/** Size of the 4-bit weights a source converts to: its own when it packs directly, else a sibling that does, else from the parameter count. */
 export function q4nxWeights(
   variant: SizedVariant | null,
   siblings: readonly SizedVariant[] = [],
@@ -262,7 +259,6 @@ export interface Q4nxMemory {
   label: string;
 }
 
-/** A source's NPU memory need against the window this PC can give the NPU (status.memory_window_gb). */
 export function q4nxNpuMemory(
   weights: Q4nxWeights | null,
   windowGb: number | null | undefined,
@@ -316,7 +312,6 @@ export const Q4NX_PACKING_TEXT: Record<Q4nxPacking, string> = {
 
 export interface Q4nxSummaryInput {
   model: string | null;
-  /** The picked GGUF file's name and quant key; null until one is picked. */
   file: string | null;
   quant: string | null;
   packing: Q4nxPacking | null;

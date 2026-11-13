@@ -184,7 +184,6 @@ function NpuMemoryBar({
   );
 }
 
-/** A model's files. Opening one by hand scrolls its row to the top of the list, again once the files load, so they are in view. */
 function ModelFiles({
   reveal,
   loaded,
@@ -385,7 +384,6 @@ export function Q4nxConvertCard({
   // Listings are per token: a new one can list a repo the last one could not.
   const listings = listed.token === accessToken ? listed.byKey : NO_LISTINGS;
   const inFlight = useRef(new Set<string>());
-  // The token requests settle against; null once unmounted.
   const liveToken = useRef<string | undefined | null>(accessToken);
   useEffect(() => {
     liveToken.current = accessToken;
@@ -398,7 +396,6 @@ export function Q4nxConvertCard({
     if (!open && !selectedId) return;
     const lane = `${accessToken ?? ""}\n`;
     for (const row of rows) {
-      // Per token, so listings still in flight for a replaced token do not hold up the new one.
       const busy = [...inFlight.current].filter((f) => f.startsWith(lane));
       if (busy.length >= LISTING_WORKERS) return;
       const key = row.listingKey;
