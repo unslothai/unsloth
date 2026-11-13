@@ -1117,7 +1117,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         self._unsloth_h3_te_loader: Optional[Callable[[], Any]] = None
         self._unsloth_h3_streamers: list = []
         self._unsloth_h3_last_stats: dict = {}
-        # reference posteriors by image content, resampled per render instead of re-encoding
         self._unsloth_h3_ref_posteriors: "OrderedDict[tuple, Any]" = OrderedDict()
         self._unsloth_h3_ref_stats: dict = {"hits": 0, "misses": 0}
 
