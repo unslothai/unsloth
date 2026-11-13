@@ -14213,10 +14213,8 @@ class VideoBackend:
                         self._gen.update(phase = "denoise")
 
                 def _on_denoise_entry() -> None:
-                    """The loop opens after the prompt encode: the groups lent to the denoise come on the card."""
                     _enter_denoise()
                     from .video_stream_residency import begin_denoise
-
                     begin_denoise(state.pipe, logger = logger)
 
                 ticker = _CompletedStepTicker(steps)
@@ -14273,7 +14271,6 @@ class VideoBackend:
                         _enter_decode_phase()
                     from .video_stream_residency import prepare_decode
 
-                    # groups lent to the denoise stream again: the decode starts from the whole-request fit
                     prepare_decode(state.pipe, logger = logger)
                     if carry_by_scheduler:
                         logger.info(

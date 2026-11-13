@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Streamed video denoiser: the VAE decode's share of the residency room is lent to the denoise once this process has
-measured the denoise alone. The fit keeps today's room; the lent groups come on the card when the denoise loop opens
-(after the prompt encode, begin_denoise) and stream again at the decode's entry (prepare_decode)."""
+"""The VAE decode's residency room is lent to the denoise (begin_denoise) and taken back at the decode (prepare_decode)."""
 
 from __future__ import annotations
 
@@ -44,8 +42,6 @@ def _env(monkeypatch):
 
 
 class _Card:
-    """A card whose resident MiB follow the promotions / releases the fit and the decode ask for."""
-
     def __init__(self, monkeypatch):
         self.held = 0
         self.allocated = 20000 << 20
@@ -53,7 +49,6 @@ class _Card:
         self.resets = 0
         self.kept: list = []
         self.released: list = []
-        # resident groups come out of the free memory the card reports
         monkeypatch.setattr(
             torch.cuda, "mem_get_info", lambda device = None: ((FREE - self.held) << 20, 23034 << 20)
         )
@@ -149,7 +144,6 @@ def test_first_render_only_measures_the_denoise_then_the_next_lends_the_decode_r
     card.fit()
     assert card.kept == [_base_room()]
     assert card.module._unsloth_video_decode_room is None
-    # the first request lends nothing, so its decode streams nothing again
     assert card.render() == WHOLE_PEAK
     assert card.released == []
     assert vr.pre_decode_extra_mib(card.module, WORK) == DENOISE_PEAK
@@ -162,7 +156,7 @@ def test_first_render_only_measures_the_denoise_then_the_next_lends_the_decode_r
     assert card.kept[-1] == _lend_room()
     assert card.held == _lend_room()
     assert card.module._unsloth_resident_room == _lend_room()
-    assert vr.begin_denoise(card.pipe) == 0  # once per request
+    assert vr.begin_denoise(card.pipe) == 0
 
 
 def test_the_decode_starts_from_the_whole_request_residency_and_records_on_it(monkeypatch):
@@ -199,7 +193,7 @@ def test_kill_switch_keeps_the_whole_request_room(monkeypatch):
     card.fit()
     card.render()
     card.fit()
-    assert card.kept == [_base_room()]  # the second fit has nothing to add
+    assert card.kept == [_base_room()]
     assert card.held == _base_room()
     assert card.module._unsloth_video_decode_room is None
     card.render()
@@ -282,7 +276,6 @@ def test_the_denoise_borrows_no_more_than_the_card_holds_when_the_loop_opens(mon
     card.fit()
     card.render()
     card.fit()
-    # something else took 2 GiB between the fit and the loop
     monkeypatch.setattr(
         torch.cuda,
         "mem_get_info",
