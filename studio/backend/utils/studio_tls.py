@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HTTPS configuration for Studio.
-
-The command-line ``--ssl-certfile``/``--ssl-keyfile`` options take precedence over
-the matching ``UNSLOTH_STUDIO_SSL_CERTFILE``/``UNSLOTH_STUDIO_SSL_KEYFILE``
-environment variables. A TLS launch also serves plain HTTP on an ephemeral
-127.0.0.1 port (``loopback_http_port``) for Studio's own /v1 self-calls from
-children that cannot trust the cert.
-"""
+"""HTTPS from user-supplied --ssl-certfile/--ssl-keyfile; a TLS launch also serves plain HTTP on an
+ephemeral 127.0.0.1 port (loopback_http_port) for Studio's own /v1 self-calls from children that
+cannot trust the cert."""
 
 from __future__ import annotations
 
@@ -26,21 +21,8 @@ class StudioTLS:
     keyfile: str
 
 
-STUDIO_SSL_CERTFILE_ENV = "UNSLOTH_STUDIO_SSL_CERTFILE"
-STUDIO_SSL_KEYFILE_ENV = "UNSLOTH_STUDIO_SSL_KEYFILE"
-
-
 def resolve_studio_tls(certfile: Optional[str], keyfile: Optional[str]) -> Optional[StudioTLS]:
-    """Resolve and validate the TLS pair before anything binds.
-
-    Explicit arguments win over environment values independently, which keeps
-    ``run_server`` embedders backwards compatible while allowing a Docker or
-    systemd launch to configure HTTPS without adding command-line arguments.
-    """
-    if certfile is None:
-        certfile = os.environ.get(STUDIO_SSL_CERTFILE_ENV)
-    if keyfile is None:
-        keyfile = os.environ.get(STUDIO_SSL_KEYFILE_ENV)
+    """The validated pair, or None for a plain HTTP launch. Exits with a readable message before anything binds."""
     certfile = (certfile or "").strip()
     keyfile = (keyfile or "").strip()
     if not certfile and not keyfile:

@@ -237,7 +237,7 @@ setx UNSLOTH_STUDIO_PROXY_HOSTS studio.example.com              # Windows
 ```
 The proxy must send that hostname as `Host` (cloudflared's default, so leave its HTTP Host Header override unset) or as `X-Forwarded-Host`. Sign in with the password from `Settings > Remote access > Remote password`.
 
-For a direct HTTPS launch with your own certificate, set both variables before starting Studio. Explicit `--ssl-certfile` and `--ssl-keyfile` options override these values:
+To serve HTTPS with your own certificate without passing `--ssl-certfile`/`--ssl-keyfile` (Docker, systemd), set both variables before `unsloth studio`; passing either flag ignores them:
 ```bash
 UNSLOTH_STUDIO_SSL_CERTFILE=/path/to/full-chain.pem \
 UNSLOTH_STUDIO_SSL_KEYFILE=/path/to/private-key.pem \
