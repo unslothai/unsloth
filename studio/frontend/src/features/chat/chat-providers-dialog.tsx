@@ -277,7 +277,6 @@ export function resolveCodexPickerModels(
   const offeredIds = listed.models.map((model) => model.id);
   // "Hide" retires from the picker, not from use; only slugs the plan no longer returns retire.
   const known = new Set((listed.known ?? listed.models).map((model) => model.id));
-  // A connection with nothing saved starts with everything its plan lists.
   const selected =
     savedModels.length > 0 ? savedModels.filter((model) => known.has(model)) : offeredIds;
   const catalog = [...new Set([...offeredIds, ...selected])];
@@ -1317,7 +1316,6 @@ export function ChatProvidersSettings({
     }
     const picker = resolveCodexPickerModels(savedModels, listed);
     if (refresh && listed?.source !== "subscription") {
-      // Without the account's catalog nothing is retired.
       setAvailableModels((previous) => [...new Set([...picker.catalog, ...previous])]);
       setManualModelIds("");
       return true;
