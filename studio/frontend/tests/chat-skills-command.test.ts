@@ -38,7 +38,7 @@ test("the composer opens the Skills dialog instead of sending /skills", () => {
   assert.ok(intercept < submit.indexOf("interceptSend(event)"));
   assert.match(
     submit.slice(intercept),
-    /isSkillsCommand\(composerText\)\s*\) \{\s*event\.preventDefault\(\);\s*aui\.composer\(\)\.setText\(""\);\s*setSkillsDialogOpen\(true\);\s*return;/,
+    /isSkillsCommand\(composerText\)\s*\) \{\s*event\.preventDefault\(\);\s*clearStoredDraft\(\);\s*aui\.composer\(\)\.setText\(""\);\s*setSkillsDialogOpen\(true\);\s*return;/,
   );
   assert.match(
     thread,

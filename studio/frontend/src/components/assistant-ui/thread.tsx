@@ -5778,6 +5778,7 @@ const Composer: FC<{
         isSkillsCommand(composerText)
       ) {
         event.preventDefault();
+        clearStoredDraft();
         aui.composer().setText("");
         setSkillsDialogOpen(true);
         return;

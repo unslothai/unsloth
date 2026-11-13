@@ -261,6 +261,46 @@ def wait_for_settled_shell(
         page.wait_for_timeout(100)
 
 
+def check_skills_command_draft(page, draft_key):
+    composer = page.get_by_label("Message input", exact = True)
+    dialog = page.get_by_role("dialog", name = "Skills", exact = True)
+    user_messages = page.locator('[data-role="user"]')
+    expect(composer).to_be_visible()
+    expect(user_messages).to_have_count(0)
+    composer.fill("/skills")
+    wait_until(
+        lambda: page.evaluate("(key) => localStorage.getItem(key)", draft_key) == "/skills",
+        timeout_s = 10,
+        what = "the command to autosave before submission",
+        page = page,
+    )
+
+    # Read at dialog mount so a slow browser can't let the next autosave hide a stale draft.
+    page.evaluate(
+        """(key) => {
+            window.draftAtSkillsOpen = new Promise(resolve => {
+                const observer = new MutationObserver(() => {
+                    if (!document.querySelector('[role="dialog"]')) return;
+                    observer.disconnect();
+                    resolve(localStorage.getItem(key));
+                });
+                observer.observe(document.body, {childList: true, subtree: true});
+            });
+        }""",
+        draft_key,
+    )
+    composer.press("Enter")
+    expect(dialog).to_be_visible()
+    expect(composer).to_have_value("")
+    expect(user_messages).to_have_count(0)
+    saved_at_open = page.evaluate("window.draftAtSkillsOpen")
+    page.reload(wait_until = "domcontentloaded")
+    expect(composer).to_be_visible()
+    assert saved_at_open is None, f"{draft_key} still contained {saved_at_open!r} when Skills opened"
+    expect(composer).to_have_value("")
+    expect(user_messages).to_have_count(0)
+
+
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
@@ -1240,6 +1280,19 @@ with sync_playwright() as p:
         )
         browser.close()
         sys.exit(0)
+
+    step("consumed /skills draft stays empty after reload")
+    for shared in (False, True):
+        with browser.new_context(storage_state = ctx.storage_state()) as draft_ctx:
+            draft_ctx.add_init_script(
+                """const key = "unsloth_chat_preferences";
+                const prefs = JSON.parse(localStorage.getItem(key)) ?? {state: {}, version: 1};
+                prefs.state.shareComposerDraft = %s;
+                localStorage.setItem(key, JSON.stringify(prefs));""" % json.dumps(shared)
+            )
+            draft_page = draft_ctx.new_page()
+            draft_page.goto(f"{BASE}/chat", wait_until = "domcontentloaded")
+            check_skills_command_draft(draft_page, "chat-draft:latest" if shared else "chat-draft:__new__")
 
     # The frontend stores the bearer under "unsloth_auth_token" (auth/session.ts).
     token = robust_evaluate(
