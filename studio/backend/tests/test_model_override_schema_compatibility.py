@@ -368,3 +368,26 @@ def test_no_tombstone_is_invented_without_a_fallback_to_shadow(override_store):
     _put(MODEL, reasoning_budget = -1, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
     _put(MODEL, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
     assert settings.get_model_override(MODEL) == {}
+
+
+def test_the_engram_table_survives_a_client_that_does_not_mirror_it(override_store):
+    _put(MODEL, **PRE_TUNING_PAYLOAD, engram_precision = "Q8_0", mirrors_engram_precision = True)
+    assert settings.get_model_override(MODEL)["engram_precision"] == "Q8_0"
+
+    # An older panel saves without the field: the stored table stays.
+    _put(MODEL, **PRE_TUNING_PAYLOAD)
+    after = settings.get_model_override(MODEL)
+    assert after["engram_precision"] == "Q8_0"
+    assert settings.model_override_load_kwargs(after, is_gguf = True)["engram_precision"] == "Q8_0"
+
+    # A client that mirrors it clears it by omission.
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_engram_precision = True)
+    assert "engram_precision" not in settings.get_model_override(MODEL)
+
+
+def test_the_engram_mirror_flag_alone_is_a_removal(override_store):
+    _put(MODEL, engram_precision = "Q8_0", mirrors_engram_precision = True)
+    assert settings.get_model_override(MODEL)
+
+    _put(MODEL, mirrors_engram_precision = True)
+    assert settings.get_model_override(MODEL) == {}

@@ -5,6 +5,8 @@ from .factory_base import Factory, seeder
 
 PROVIDER_ID = "prov-openai-config"
 MIGRATE_PROVIDER_ID = "prov-openai-migrate"
+WINDOW_PROVIDER_ID = "prov-openai-window"
+WINDOW_MODEL = "prov-window-model"
 CODEX_PROVIDER_ID = "prov-codex-config"
 CODEX_FLOW_ID = "prov-codex-flow"
 MCP_SERVER_ID = "prov-mcp-server"
@@ -47,7 +49,12 @@ def _encrypt_api_key(plaintext: str) -> str:
     return base64.b64encode(ciphertext).decode("ascii")
 
 
-def _create_provider(provider_id: str, provider_type: str, display_name: str) -> None:
+def _create_provider(
+    provider_id: str,
+    provider_type: str,
+    display_name: str,
+    models: tuple[str, ...] = (),
+) -> None:
     from core.inference.providers import get_base_url
     from storage import providers_db
 
@@ -57,8 +64,8 @@ def _create_provider(provider_id: str, provider_type: str, display_name: str) ->
         provider_type = provider_type,
         display_name = display_name,
         base_url = get_base_url(provider_type),
-        models = [],
-        available_models = [],
+        models = list(models),
+        available_models = list(models),
     )
 
 
@@ -99,6 +106,15 @@ def seed_provider_without_key(account) -> dict[str, str]:
     run_as(account, _create_provider, MIGRATE_PROVIDER_ID, "openai", SENTINEL)
     MIGRATION_BODY["encrypted_api_key"] = _encrypt_api_key(MIGRATED_API_KEY)
     return {"provider_id": MIGRATE_PROVIDER_ID}
+
+
+@seeder("prov-provider-with-model")
+def seed_provider_with_model(account) -> dict[str, str]:
+    from utils.account_context import run_as
+
+    # openai reports no served window, so the route answers without a network read.
+    run_as(account, _create_provider, WINDOW_PROVIDER_ID, "openai", SENTINEL, (WINDOW_MODEL,))
+    return {"provider_id": WINDOW_PROVIDER_ID}
 
 
 @seeder("prov-codex-provider")
@@ -306,6 +322,11 @@ FACTORIES = {
         "prov-provider-without-key",
         MIGRATION_BODY,
         fragment = '"has_api_key":true',
+    ),
+    "routes.providers:POST:/{provider_id}/served-window": Factory(
+        "prov-provider-with-model",
+        query = {"model": WINDOW_MODEL},
+        fragment = '"context_length":null',
     ),
     "routes.openai_codex_auth:GET:/{provider_id}/codex/models": Factory(
         "prov-codex-provider", fragment = '"source":"curated"'

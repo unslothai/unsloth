@@ -12,8 +12,10 @@ Unsloth (TRANSFORMERS_DEFAULT_VERSION).
 
 Two separate target directories are maintained:
   - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)
-  - .venv_t5_550/  — transformers 5.5.0 (Gemma 4)
-  - .venv_t5_510/  — transformers 5.10.2 (Gemma 4 Unified / 12B)
+  - .venv_t5_550/  — transformers 5.5.4 (Gemma 4)
+  - .venv_t5_510/  — transformers 5.13.1 (Gemma 4 Unified / 12B); the highest
+    pre-installed tier. The directory and tier keep their 5.10 names so existing
+    installs and saved routing stay valid.
 
 When loading a LoRA adapter with a custom name, we resolve the base model from
 ``adapter_config.json`` and check *that* against the model list.
@@ -311,7 +313,7 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "lfm2.5-vl-450m",  # LiquidAI/LFM2.5-VL-450M
 )
 
-# Lowercase substrings for models that require transformers 5.10.x (checked first).
+# Lowercase substrings for models that require transformers >= 5.10 (the 510 tier, checked first).
 TRANSFORMERS_510_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4-12b",  # Gemma 4 Unified 12B
     "gemma4-12b",
@@ -333,7 +335,7 @@ TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "higgs-audio-v3-tts",
 )
 
-# Architecture classes / model_type values requiring transformers 5.10.x (via config.json).
+# Architecture classes / model_type values requiring transformers >= 5.10 (the 510 tier, via config.json).
 _TRANSFORMERS_510_ARCHITECTURES: set[str] = {
     "Gemma4UnifiedForConditionalGeneration",
     "Gemma4AssistantForCausalLM",
@@ -351,7 +353,7 @@ _TRANSFORMERS_457_ARCHITECTURES: frozenset[str] = frozenset(
     {"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"}
 )
 
-# Architecture classes / model_type values requiring transformers 5.5.0 (via config.json).
+# Architecture classes / model_type values requiring the transformers 5.5 sidecar (via config.json).
 _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     "DiffusionGemmaForBlockDiffusion",
     # Remote-code text-diffusion LMs: their tokenizers are 5.x-only, and 5.3.0 lacks helpers their code imports
@@ -419,11 +421,12 @@ _config_needs_457_cache: dict[tuple[str, str | None], bool] = {}
 # Keyed by local config.json signature so overwritten checkpoints re-probe, not Hub sha; no huggingface_hub import before sidecar venv activates.
 _probe_tier_cache: dict[str, str] = {}
 
-TRANSFORMERS_510_VERSION = "5.10.2"
-TRANSFORMERS_550_VERSION = "5.5.0"
+# Tier keys and directory names are historical: "510" is the highest pre-installed tier, now 5.13.1.
+TRANSFORMERS_510_VERSION = "5.13.1"
+TRANSFORMERS_550_VERSION = "5.5.4"
 TRANSFORMERS_530_VERSION = "5.3.0"
 TRANSFORMERS_457_VERSION = "4.57.6"
-TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57.6"
+TRANSFORMERS_DEFAULT_VERSION = "5.5.4" if sys.version_info >= (3, 10) else "4.57.6"
 # Backwards-compat alias for the highest 5.x tier; prefer TRANSFORMERS_510_VERSION, TRANSFORMERS_550_VERSION or TRANSFORMERS_530_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
 
@@ -1195,7 +1198,7 @@ def _remote_code_min_version(cfg: dict | None) -> tuple[int, int, int] | None:
     v = _release_tuple(_remote_code_saving_version(cfg))
     if v is None or v[0] < 5:
         return None
-    # Patch releases keep remote-code APIs: 5.5.4 still fits the 5.5.0 default.
+    # Patch releases keep remote-code APIs: 5.5.9 still fits the 5.5.4 default.
     return (v[0], v[1], 0)
 
 
@@ -3115,7 +3118,6 @@ def _ensure_venv_t5_530_exists() -> bool:
 
 
 def _ensure_venv_t5_550_exists() -> bool:
-    """Ensure .venv_t5_550/ exists with transformers 5.5.0."""
     return _ensure_venv_dir(
         _VENV_T5_550_DIR,
         _VENV_T5_550_PACKAGES,
@@ -3124,7 +3126,6 @@ def _ensure_venv_t5_550_exists() -> bool:
 
 
 def _ensure_venv_t5_510_exists() -> bool:
-    """Ensure .venv_t5_510/ exists with transformers 5.10.x."""
     return _ensure_venv_dir(
         _VENV_T5_510_DIR,
         _VENV_T5_510_PACKAGES,

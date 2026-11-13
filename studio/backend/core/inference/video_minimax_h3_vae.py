@@ -20,7 +20,8 @@ H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
 H3_VAE_TILE_BATCH_ENV = "UNSLOTH_H3_VAE_TILE_BATCH"
 H3_VAE_INT8_FUSED_ENV = "UNSLOTH_H3_VAE_INT8_FUSED"
-# "0": batched tile decode keeps every tile for diffusers' _stitch_tiles.
+# "0": batched tile decode keeps every tile for diffusers' _stitch_tiles (only with the canvas off: by default the
+# tiles are composited into one canvas, diffusion_vae_canvas).
 H3_VAE_STREAM_STITCH_ENV = "UNSLOTH_H3_VAE_STREAM_STITCH"
 # sha256[:16] of the mirrored AutoencoderKLMiniMaxH3._stitch_tiles source (0.42.1).
 _STITCH_TILES_SHA = frozenset({"ae481626afa30528"})
@@ -30,6 +31,8 @@ LEVER_FUSED_ENCODER = "fused_encoder"
 LEVER_FP16_ENCODER = "fp16_encoder"
 LEVER_FUSED_DECODER = "fused_decoder"
 LEVER_TILE_BATCH = "tile_batch"
+# composited-canvas stitch inside the batched tile loop (diffusion_vae_canvas)
+LEVER_CANVAS = "canvas"
 LEVER_INT8_DECODER = "int8_decoder"
 LEVER_FP16_ACCUM = "fp16_accum"
 
@@ -1053,7 +1056,9 @@ def _batched_decode_clip(self: Any, z: Any) -> Any:
     batch = _tile_batch_size(z)
     cols = len(x_indices)
     stitch = None
-    if _stream_stitch(self) and all(o > 0 for o in (*y_overlaps, *x_overlaps)):
+    canvas = None
+    plan = _canvas_plan(self, z)
+    if plan is None and _stream_stitch(self) and all(o > 0 for o in (*y_overlaps, *x_overlaps)):
         stitch = _TileStitcher(self, len(y_indices), cols, y_overlaps, x_overlaps)
     decoded: list = []
     start = 0
@@ -1072,17 +1077,51 @@ def _batched_decode_clip(self: Any, z: Any) -> Any:
             continue
         parts = out.split(per) if len(group) > 1 else [out]
         del out
-        if stitch is None:
+        if plan is not None:
+            from .diffusion_vae_canvas import Canvas
+            if canvas is None:
+                (ys, yl, _), (xs, xl, _), _ = plan
+                canvas = Canvas(parts[0], ys[-1] + yl[-1], xs[-1] + xl[-1], plan[0], plan[1])
+            for k in range(len(parts)):
+                i, j = divmod(start + k, cols)
+                canvas.add(i, j, parts[k])
+        elif stitch is None:
             decoded.extend(parts)
         else:
             for k in range(len(parts)):
                 stitch.add(start + k, parts[k])
         del parts  # a live view pins its whole decoder batch
         start += len(group)
+    if canvas is not None:
+        return canvas.out
     if stitch is not None:
         return stitch.result()
     rows = [decoded[r * cols : (r + 1) * cols] for r in range(len(y_indices))]
     return self._stitch_tiles(rows, y_overlaps, x_overlaps)
+
+
+def _canvas_plan(vae: Any, z: Any) -> Optional[tuple]:
+    """The composited-canvas layout (``diffusion_vae_canvas``) for this clip, or None to keep the stock stitch."""
+    import torch
+
+    from .diffusion_vae_canvas import canvas_enabled, layout, stock_tiling
+
+    if not canvas_enabled():
+        return None
+    known = _CANVAS_KNOWN.get(type(vae))
+    if known is None:
+        # inspect.getsource is untraceable; _install_tile_batch fills the verdict eagerly, so this is a fallback.
+        if torch.compiler.is_compiling():
+            return None
+        known = _CANVAS_KNOWN[type(vae)] = stock_tiling(vae)
+    if not known or any(
+        n in getattr(vae, "__dict__", {}) for n in ("_blend", "_stitch_tiles", "_split_tiles")
+    ):
+        return None
+    return layout(vae, z)
+
+
+_CANVAS_KNOWN: dict = {}
 
 
 def _stream_stitch(vae: Any) -> bool:
@@ -1111,7 +1150,7 @@ _STITCH_KNOWN: dict = {}
 
 
 class _TileStitcher:
-    """``_stitch_tiles`` one tile at a time: keeps only the ORIGINAL neighbour strips the stock blend reads (copies,
+    """With the canvas off (``UNSLOTH_DIFFUSION_VAE_CANVAS=0``), ``_stitch_tiles`` one tile at a time: keeps only the ORIGINAL neighbour strips the stock blend reads (copies,
     so each decoder batch is freed), fills one row buffer at a time and joins the rows at the end; bit-identical."""
 
     __slots__ = (
@@ -1184,6 +1223,9 @@ def _install_tile_batch(vae: Any) -> bool:
         return False
     vae._decode_clip = types.MethodType(_batched_decode_clip, vae)
     _stream_stitch(vae)
+    from .diffusion_vae_canvas import stock_tiling
+
+    _CANVAS_KNOWN.setdefault(type(vae), stock_tiling(vae))
     return True
 
 
@@ -1564,6 +1606,9 @@ def apply_h3_vae_speedups(
         _try(LEVER_FUSED_DECODER, lambda: _install_decoder(vae))
     if LEVER_TILE_BATCH in planned:
         _try(LEVER_TILE_BATCH, lambda: _install_tile_batch(vae))
+        from .diffusion_vae_canvas import canvas_enabled
+        if LEVER_TILE_BATCH in engaged and canvas_enabled() and _CANVAS_KNOWN.get(type(vae)):
+            engaged.append(LEVER_CANVAS)
     fp16_accum = LEVER_FP16_ACCUM in planned
     # always installed: also holds the flag OFF when float16 accumulation is not planned
     try:

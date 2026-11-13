@@ -15,6 +15,9 @@ import pytest
 
 import utils.kernels_compat as kc
 
+# Captured before the autouse fixture stubs it.
+_REAL_SCAN = getattr(kc, "_sidecar_transformers_versions", None)
+
 _MARKER_ERR = b"ValueError: Either a revision or a version must be specified.\n"
 
 
@@ -61,6 +64,8 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(kc.importlib, "invalidate_caches", lambda: None)
     monkeypatch.delitem(sys.modules, "kernels", raising = False)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    # The host's real Studio sidecars must not leak in; the sidecar tests below set their own.
+    monkeypatch.setattr(kc, "_sidecar_transformers_versions", lambda: [], raising = False)
     yield
     if sys.modules.get("kernels", object()) is None:
         del sys.modules["kernels"]
@@ -320,3 +325,40 @@ def test_a_concurrent_caller_waits_for_the_repair_in_flight(monkeypatch):
     first.join(5)
     second.join(5)
     assert second_done.is_set() and calls == [1]
+
+
+def test_sidecar_scan_reads_every_tier_and_skips_staging(monkeypatch, tmp_path):
+    for name, version in {
+        ".venv_t5_530": "5.3.0",
+        ".venv_t5_550": "5.5.4",
+        ".venv_t5_510": "5.13.1",
+        ".venv_t5_latest.staging": "5.2.0",
+        ".venv_t5_latest.old": "5.1.0",
+    }.items():
+        (tmp_path / name / f"transformers-{version}.dist-info").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    assert sorted(_REAL_SCAN()) == ["5.13.1", "5.3.0", "5.5.4"]
+
+
+def test_the_install_spec_keys_on_the_oldest_transformers_that_imports_kernels(monkeypatch):
+    # Main env on 5.13+ would allow any kernels, but the 5.3 / 5.5 sidecars import the same kernels.
+    _dists(monkeypatch, transformers = "5.13.1", huggingface_hub = "1.33.0")
+    monkeypatch.setattr(kc, "_sidecar_transformers_versions", lambda: ["5.13.1", "5.5.4", "5.3.0"])
+    assert kc.oldest_transformers_version() == "5.3.0"
+    assert kc.current_kernels_install_spec() == "kernels==0.12.3"
+    monkeypatch.setattr(kc, "_sidecar_transformers_versions", lambda: ["5.13.1", "5.17.0"])
+    assert kc.current_kernels_install_spec() == "kernels>=0.12.3"
+
+
+def test_a_prerelease_sorts_below_its_release(monkeypatch):
+    _dists(monkeypatch, transformers = "5.13.0")
+    monkeypatch.setattr(kc, "_sidecar_transformers_versions", lambda: ["5.13.0rc0"])
+    assert kc.oldest_transformers_version() == "5.13.0rc0"
+    assert kc.current_kernels_install_spec() == "kernels==0.12.3"
+
+
+def test_without_sidecars_only_this_env_counts(monkeypatch):
+    _dists(monkeypatch, transformers = "5.5.4")
+    assert kc.oldest_transformers_version() == "5.5.4"
+    _dists(monkeypatch)
+    assert kc.oldest_transformers_version() is None

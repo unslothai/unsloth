@@ -421,7 +421,8 @@ def quant_layers(path: str) -> dict[str, Any]:
         raise ComponentFileError(
             f"'{os.path.basename(path)}' uses a ComfyUI quantization Unsloth cannot load as a text encoder "
             f"or VAE: {shown}{more}. Supported: unquantized, scaled fp8 (float8_e4m3fn / float8_e5m2), nvfp4, "
-            "mxfp8 and int8_tensorwise (with or without ConvRot); use the bf16 or fp8 file instead."
+            "mxfp8, int8_tensorwise (with or without ConvRot) and the packed asym_w4a8_int8 / w6a8_int8; use the "
+            "bf16 or fp8 file instead."
         )
     return dict(scan.layers)
 
@@ -469,7 +470,7 @@ def resident_bytes(
         dtype = str(entry.get("dtype", ""))
         layer = layers.get(key[: -len(".weight")]) if key.endswith(".weight") else None
         if layer is not None and layer.convrot and layer.format == "int8_tensorwise":
-            total += _numel(shape) + int(shape[0]) * 4
+            total += _numel(_logical_shape(layer, shape)) + int(shape[0]) * 4
         elif layer is not None:
             total += _numel(_logical_shape(layer, shape)) * dtype_itemsize
         elif dtype in ("F32", "F16", "BF16", "F8_E4M3", "F8_E5M2", "I8", "U8") or layer is not None:
@@ -507,6 +508,8 @@ def _logical_shape(layer: Any, shape: Sequence[int]) -> tuple:
     dims = tuple(int(d) for d in shape)
     if layer is not None and layer.format == NVFP4 and len(dims) == 2:
         return (dims[0], dims[1] * 2)
+    if layer is not None and getattr(layer, "packed_bits", 0) and len(dims) == 2:
+        return (dims[0], dims[1] * 8 // layer.packed_bits)
     return dims
 
 
@@ -595,6 +598,19 @@ def build_text_encoder(
             )
             scale = handle.get_tensor(scale_key) if scale_key else None
             codes = handle.get_tensor(src)
+            if getattr(layer, "packed_bits", 0):
+                # W4A8 / W6A8: the int8 grid and the channel scale make it an int8 ConvRot layer
+                from .diffusion_grouped_int8 import decode_int8_torch
+
+                book_key = stem + ".weight_codebook"
+                codes = decode_int8_torch(
+                    codes,
+                    handle.get_tensor(stem + ".weight_s_rel"),
+                    handle.get_tensor(book_key).float() if book_key in header else None,
+                    layer.group_size,
+                    layer.packed_bits,
+                )
+                scale = handle.get_tensor(stem + ".weight_s_channel").to(torch.float32)
             if layer.format == "int8_tensorwise":
                 if scale is None:
                     raise ComponentFileError(f"'{name}': {stem} is int8 with no weight_scale")
