@@ -6724,6 +6724,8 @@ function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
       };
     }
     state.setParams(applyPresetForProvider(state.params, preset, null), { persist: false });
+    // Preset-backed, like a pick: a later edit files only itself into the model's memory.
+    modelsShowingPresetPick.add(modelId);
     useChatRuntimeStore.setState({
       activePreset: preset.name,
       activePresetSource: getPresetSource(preset.name),
@@ -6781,7 +6783,13 @@ function withLinkOverlay(params: InferenceParams): InferenceParams {
   const state = useChatRuntimeStore.getState();
   if (state.activePreset !== linkShown || state.activePresetSource !== "custom") return params;
   const preset = getLinkedPreset(params.checkpoint, state.modelPresets, state.customPresets);
-  return preset?.name === linkShown ? applyPresetForProvider(params, preset, null) : params;
+  if (preset?.name !== linkShown) return params;
+  // Only while the live values are still the link's: a reset or edit is the user's override.
+  const owned = JSON.stringify(getPresetOwnedParams(state.params));
+  const linked = JSON.stringify(
+    getPresetOwnedParams(applyPresetForProvider(state.params, preset, null)),
+  );
+  return owned === linked ? applyPresetForProvider(params, preset, null) : params;
 }
 
 /** A pick by hand replaces whatever a link put on, so leaving the model keeps it. */

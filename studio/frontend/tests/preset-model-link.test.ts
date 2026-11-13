@@ -415,6 +415,26 @@ test("the link's overlay leaves the model's own memory in place", async () => {
   assert.equal(useChatRuntimeStore.getState().paramsByModel[QWEN]?.temperature, 0.66);
 });
 
+test("an edit over a link files only itself into the model's memory", async () => {
+  await switchTo(QWEN);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, topK: 33 });
+  const remembered = useChatRuntimeStore.getState().paramsByModel[QWEN] ?? {};
+  assert.equal(remembered.topK, 33);
+  assert.notEqual(remembered.systemPrompt, "Cite your sources.");
+  assert.notEqual(remembered.temperature, 0.2);
+});
+
+test("a reset over a link survives the next status replay", async () => {
+  await switchTo(QWEN);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, temperature: 0.7, systemPrompt: "" });
+  loadOrPoll(QWEN);
+  await Promise.resolve();
+  assert.equal(live().temperature, 0.7);
+  assert.equal(live().systemPrompt, "");
+});
+
 test("leaving a link under Default for an external model puts the earlier values back", async () => {
   await switchTo(GEMMA);
   await switchTo(QWEN);
