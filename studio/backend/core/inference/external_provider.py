@@ -19,7 +19,7 @@ import uuid
 import weakref
 import wave
 from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -75,15 +75,18 @@ def _json_object_refused_for_schema(
 
 
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
-_SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
+_SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom", "ollama"})
 # refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
 _GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
-_served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+_served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
+_served_vision: dict[tuple[str, str, str, str], tuple[float, Optional[bool]]] = {}
+# outlives the TTL: Ollama unloads an idle model after keep_alive and reloads it at the same window.
+_ollama_last_windows: dict[tuple[str, str, str, str], int] = {}
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -190,8 +193,16 @@ def _merge_concatenated_wav_segments(
 def _append_provider_path(base_url: str, endpoint: str) -> str:
     """Append an API path without moving it behind a base URL's query string."""
     parts = urlsplit(base_url)
-    path = f"{parts.path.rstrip('/')}/{endpoint.lstrip('/')}"
-    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    endpoint_path, _, endpoint_query = endpoint.partition("?")
+    path = f"{parts.path.rstrip('/')}/{endpoint_path.lstrip('/')}"
+    query = "&".join(q for q in (parts.query, endpoint_query) if q)
+    return urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
+
+
+def _native_server_path(base_url: str, endpoint: str) -> str:
+    parts = urlsplit(base_url)
+    root = urlunsplit(parts._replace(path = parts.path.rstrip("/").removesuffix("/v1")))
+    return _append_provider_path(root, endpoint)
 
 
 def caches_at_the_last_block(
@@ -1156,6 +1167,8 @@ _OPENROUTER_CATALOG_RETRY_S = 60.0
 # cache key -> (expires_at, models)
 _openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _openrouter_catalog_locks: dict[str, asyncio.Lock] = {}
+_anthropic_output_caps: dict[tuple[str, str, str], Optional[int]] = {}
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 32000
 _OPENROUTER_MODEL_KEYS = (
     "id",
     "context_length",
@@ -1182,6 +1195,7 @@ def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
         slim["created"] = m.get("created") or 0
         models.append(slim)
     models.sort(key = lambda m: m["created"], reverse = True)
+    models.sort(key = lambda m: (not m["id"].startswith("openrouter/"), not m["id"].startswith("~")))
     return models
 
 
@@ -1660,7 +1674,11 @@ class ExternalProviderClient:
         if (
             base.scheme == "https"
             and base.hostname == "opencode.ai"
-            and (base.path == "/inference/go" or base.path.startswith("/inference/go/"))
+            # /zen/go is the older Go base URL; the gateway still serves and enforces it.
+            and any(
+                base.path == prefix or base.path.startswith(prefix + "/")
+                for prefix in ("/inference/go", "/zen/go")
+            )
         ):
             # Hashed so the raw conversation ID never leaves Studio; titles and probes have no thread.
             headers["x-opencode-session"] = (
@@ -1982,7 +2000,7 @@ class ExternalProviderClient:
         if response_format is not None:
             body["response_format"] = response_format
 
-        url = f"{self.base_url}/chat/completions"
+        url = _append_provider_path(self.base_url, "/chat/completions")
         logger.info(
             "Proxying chat completion to %s (provider=%s, model=%s)",
             url,
@@ -2225,7 +2243,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Two requests: first is internal; second echoes tool args verbatim as the server runs the search."""
-        url = f"{self.base_url}/chat/completions"
+        url = _append_provider_path(self.base_url, "/chat/completions")
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -2559,6 +2577,30 @@ class ExternalProviderClient:
                 self.provider_type,
             )
 
+    async def _anthropic_output_cap(self, model: str) -> Optional[int]:
+        key = (self.base_url, self._credential_digest(), model)
+        if key not in _anthropic_output_caps:
+            try:
+                response = await _client().get(
+                    _append_provider_path(self.base_url, f"/models/{quote(model, safe = '')}"),
+                    headers = self._auth_headers(),
+                    timeout = 10,
+                )
+                if response.status_code == 429 or response.status_code >= 500:
+                    return None
+                cap = response.json().get("max_tokens") if response.is_success else None
+            except httpx.HTTPError:
+                return None
+            except (ValueError, AttributeError):
+                cap = None
+            # The full cap (up to 128k) plus a long prompt can exceed the context window, which Claude rejects.
+            _anthropic_output_caps[key] = (
+                min(cap, _ANTHROPIC_DEFAULT_MAX_TOKENS)
+                if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0
+                else None
+            )
+        return _anthropic_output_caps[key]
+
     async def _stream_anthropic(
         self,
         messages: list[dict[str, Any]],
@@ -2884,7 +2926,7 @@ class ExternalProviderClient:
         body: dict[str, Any] = {
             "model": model,
             "messages": filtered,
-            "max_tokens": max_tokens or 1024,  # required by Anthropic
+            "max_tokens": max_tokens or await self._anthropic_output_cap(model) or 1024,
             "stream": True,
         }
         if not sampling_removed:
@@ -3148,7 +3190,7 @@ class ExternalProviderClient:
         if fast_mode_active:
             body["speed"] = "fast"
 
-        url = f"{self.base_url}/messages"
+        url = _append_provider_path(self.base_url, "/messages")
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
         # Log outgoing config keys (not messages) to prove which thinking / effort fields reached the wire.
@@ -4863,7 +4905,7 @@ class ExternalProviderClient:
             body["cachedContent"] = enable_prompt_caching
 
         # Model id is validated at the top of _stream_gemini, so the URL path cannot be traversed.
-        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
+        url = _append_provider_path(self.base_url, f"/models/{model}:streamGenerateContent?alt=sse")
         completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
 
         logger.info(
@@ -5668,14 +5710,10 @@ class ExternalProviderClient:
                         if _pt == "text" and _part.get("text"):
                             _asst_parts.append(
                                 {
-                                    "type": "input_text",
+                                    "type": "output_text",
                                     "text": _part.get("text", ""),
                                 }
                             )
-                        elif _pt == "image_url":
-                            _u = _part.get("image_url", {}).get("url", "")
-                            if _u:
-                                _asst_parts.append({"type": "input_image", "image_url": _u})
                     if _asst_parts:
                         _turn_items.append({"role": "assistant", "content": _asst_parts})
 
@@ -5741,9 +5779,12 @@ class ExternalProviderClient:
                     part_type = part.get("type")
                     if part_type == "text":
                         translated_parts.append(
-                            {"type": "input_text", "text": part.get("text", "")}
+                            {
+                                "type": "output_text" if role == "assistant" else "input_text",
+                                "text": part.get("text", ""),
+                            }
                         )
-                    elif part_type == "image_url":
+                    elif part_type == "image_url" and role != "assistant":
                         url = part.get("image_url", {}).get("url", "")
                         if url:
                             # Responses takes image_url as a flat string (https:// and data: URLs both accepted).
@@ -6675,6 +6716,9 @@ class ExternalProviderClient:
                                 ):
                                     raw_item_id = item.get("id")
                                     if isinstance(raw_item_id, str) and raw_item_id:
+                                        if reasoning_open:
+                                            yield _chunk_with_text("</think>")
+                                            reasoning_open = False
                                         arguments = _image_generation_arguments(
                                             "",
                                             raw_item_id,
@@ -6693,6 +6737,9 @@ class ExternalProviderClient:
                                 item = event.get("item", {})
                                 if not isinstance(item, dict):
                                     continue
+                                if reasoning_open and item.get("type") != "reasoning":
+                                    yield _chunk_with_text("</think>")
+                                    reasoning_open = False
                                 if item.get("type") == "reasoning":
                                     last_openai_reasoning_replay_item = (
                                         _record_openai_reasoning_replay_item(item)
@@ -7222,7 +7269,7 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
-        url = f"{self.base_url}/chat/completions"
+        url = _append_provider_path(self.base_url, "/chat/completions")
         headers = self._chat_headers(None)
         response = await _client().post(
             url,
@@ -7329,6 +7376,32 @@ class ExternalProviderClient:
         response.raise_for_status()
         return [item["b64_json"] for item in response.json()["data"]]
 
+    async def create_image_edits(
+        self, prompt: str, model: str, n: int, images: list[bytes]
+    ) -> list[str]:
+        """POST PNGs to /images/edits. No ``size`` is sent: the server picks the output size."""
+        field = "image" if len(images) == 1 else "image[]"
+        headers = self._auth_headers()
+        headers.pop("Content-Type", None)
+        response = await _client().post(
+            _append_provider_path(self.base_url, "/images/edits"),
+            headers = headers,
+            # llama-swap routes on the `model` form field.
+            data = {
+                "model": model,
+                "prompt": prompt,
+                "n": str(n),
+                "response_format": "b64_json",
+            },
+            files = [
+                (field, (f"image-{index}.png", image, "image/png"))
+                for index, image in enumerate(images, start = 1)
+            ],
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return [item["b64_json"] for item in response.json()["data"]]
+
     async def create_transcription(
         self,
         audio: bytes,
@@ -7352,7 +7425,7 @@ class ExternalProviderClient:
         headers = self._auth_headers()
         headers.pop("Content-Type", None)
         response = await _client().post(
-            f"{self.base_url}/audio/transcriptions",
+            _append_provider_path(self.base_url, "/audio/transcriptions"),
             headers = headers,
             files = {"file": (filename, audio, content_type)},
             data = data,
@@ -7393,14 +7466,25 @@ class ExternalProviderClient:
         return response.json()
 
     async def list_decision_models(self) -> list[str]:
+        from core.inference.providers import get_provider_info
+
+        native = bool((get_provider_info(self.provider_type) or {}).get("decisions_only"))
         response = await _client().get(
             re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/models",
-            params = {"output_modalities": "decisions"},
+            params = None if native else {"output_modalities": "decisions"},
             headers = self._auth_headers(),
             timeout = self._timeout,
         )
         response.raise_for_status()
         data = response.json()
+        if native:
+            # System One's own list is {"models": [{"name": ...}]}: decision models only, no modality field.
+            models = data.get("models") if isinstance(data, dict) else None
+            return [
+                model["name"]
+                for model in (models if isinstance(models, list) else [])
+                if isinstance(model, dict) and isinstance(model.get("name"), str)
+            ]
         models = data.get("data") if isinstance(data, dict) else None
         return [
             model["id"]
@@ -7443,7 +7527,7 @@ class ExternalProviderClient:
                 return cached[1]
             try:
                 response = await _client().get(
-                    f"{self.base_url}/models",
+                    _append_provider_path(self.base_url, "/models"),
                     headers = self._auth_headers(),
                     timeout = self._timeout,
                 )
@@ -7469,7 +7553,7 @@ class ExternalProviderClient:
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(
-            f"{self.base_url}/models",
+            _append_provider_path(self.base_url, "/models"),
             # Anthropic pages 20 models and native Gemini 50 by default; both cap a page at 1000. A Gemini
             # connection through a proxy gets no native parameter it may reject.
             params = (
@@ -7506,7 +7590,7 @@ class ExternalProviderClient:
                 break
             seen.add(token)
             response = await _client().get(
-                f"{self.base_url}/models",
+                _append_provider_path(self.base_url, "/models"),
                 params = params.set("pageToken", token),
                 headers = self._auth_headers(),
                 timeout = timeout,
@@ -7520,7 +7604,37 @@ class ExternalProviderClient:
             token = page.get("nextPageToken")
         return {**data, "models": models}
 
+    async def _read_ollama_loaded_window(self, model: str) -> Optional[int]:
+        response = await _client().get(
+            _native_server_path(self.base_url, "/api/ps"),
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        body = response.json()
+        loaded = body.get("models") if isinstance(body, dict) else None
+        # /api/ps always names the tag; a bare name means :latest.
+        wanted = (model if ":" in model.rsplit("/", 1)[-1] else f"{model}:latest").casefold()
+        for entry in loaded if isinstance(loaded, list) else []:
+            if isinstance(entry, dict) and wanted in {
+                str(entry.get(k) or "").casefold() for k in ("name", "model")
+            }:
+                return _positive_int(entry.get("context_length"))
+        return None
+
+    async def load_ollama_window(self, model: str) -> Optional[int]:
+        response = await _client().post(
+            _native_server_path(self.base_url, "/api/generate"),
+            json = {"model": model},
+            headers = self._auth_headers(),
+            timeout = 120.0,
+        )
+        response.raise_for_status()
+        return await self._read_ollama_loaded_window(model)
+
     async def _read_served_window(self, model: str) -> Optional[int]:
+        if self.provider_type == "ollama":
+            return await self._read_ollama_loaded_window(model)
         _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)
         by_id = {e["id"]: e for e in entries if isinstance(e.get("id"), str)}
         entry = by_id.get(model) or next(
@@ -7584,11 +7698,11 @@ class ExternalProviderClient:
         if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
             return None
         now = time.monotonic()
-        key = (self.base_url, self._credential_digest(), model)
+        key = (self.provider_type, self.base_url, self._credential_digest(), model)
         cached = _served_windows.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
-        window = None
+        window, failed = None, False
         try:
             # both reads share one deadline because the first token waits for them.
             window = await asyncio.wait_for(
@@ -7597,9 +7711,16 @@ class ExternalProviderClient:
         except httpx.ConnectError as exc:
             # retry a down or restarting server next turn instead of caching the miss for a minute.
             logger.info("No served context window from %s: %s", self.provider_type, exc)
-            return None
+            return _ollama_last_windows.get(key)
         except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
             logger.info("No served context window from %s: %r", self.provider_type, exc)
+            failed = True
+        if self.provider_type == "ollama":
+            if window is not None:
+                _ollama_last_windows[key] = window
+            elif key in _ollama_last_windows or not failed:
+                # /api/ps lists a model only while it is loaded.
+                return _ollama_last_windows.get(key)
         for stale in [k for k, (expiry, _) in _served_windows.items() if expiry <= now]:
             del _served_windows[stale]
         _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
@@ -7639,6 +7760,51 @@ class ExternalProviderClient:
             del _served_templates[stale]
         _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)
         return template
+
+    async def _read_served_vision(self, model: str) -> Optional[bool]:
+        if self.provider_type == "ollama":
+            response = await _client().post(
+                _native_server_path(self.base_url, "/api/show"),
+                json = {"model": model},
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            body = response.json()
+            names = body.get("capabilities") if isinstance(body, dict) else None
+            return "vision" in names if isinstance(names, list) else None
+        response = await _client().get(
+            f"{self.base_url.removesuffix('/v1')}/props",
+            params = {"model": model},
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        body = response.json()
+        modalities = body.get("modalities") if isinstance(body, dict) else None
+        vision = modalities.get("vision") if isinstance(modalities, dict) else None
+        return vision if isinstance(vision, bool) else None
+
+    async def served_model_reads_images(self, model: str) -> Optional[bool]:
+        if self.provider_type not in ("ollama", "llama_cpp"):
+            return None
+        now = time.monotonic()
+        key = (self.provider_type, self.base_url, self._credential_digest(), model)
+        cached = _served_vision.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        vision = None
+        try:
+            vision = await self._read_served_vision(model)
+        except httpx.ConnectError as exc:
+            logger.info("No served vision flag from %s: %s", self.provider_type, type(exc).__name__)
+            return None
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("No served vision flag from %s: %s", self.provider_type, type(exc).__name__)
+        for stale in [k for k, (expiry, _) in _served_vision.items() if expiry <= now]:
+            del _served_vision[stale]
+        _served_vision[key] = (now + _SERVED_WINDOW_TTL_S, vision)
+        return vision
 
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
@@ -7739,7 +7905,7 @@ class ExternalProviderClient:
         """Confirm GET /models returns 200 without buffering the full response body. Used for
         providers with enormous catalogs (e.g. OpenRouter, Hugging Face router) where downloading
         the full JSON would be prohibitive."""
-        url = f"{self.base_url}/models"
+        url = _append_provider_path(self.base_url, "/models")
         try:
             async with _client().stream(
                 "GET",
@@ -7764,7 +7930,7 @@ class ExternalProviderClient:
         router answer /models without one, so that check alone passes any key. Errors other than
         401/403 count as not rejected."""
         if self.provider_type == "openrouter":
-            url = f"{self.base_url}/key"
+            url = _append_provider_path(self.base_url, "/key")
         elif (
             self.provider_type == "huggingface"
             and (urlparse(self.base_url).hostname or "").lower() == "router.huggingface.co"
@@ -7793,7 +7959,7 @@ class ExternalProviderClient:
         them). Only valid against api.openai.com (caller guards is_openai_cloud).
         """
         response = await _client().get(
-            f"{self.base_url}/containers",
+            _append_provider_path(self.base_url, "/containers"),
             headers = self._container_headers(),
             timeout = self._timeout,
         )
@@ -7819,7 +7985,7 @@ class ExternalProviderClient:
             },
         }
         response = await _client().post(
-            f"{self.base_url}/containers",
+            _append_provider_path(self.base_url, "/containers"),
             json = body,
             headers = self._container_headers(),
             timeout = self._timeout,
@@ -7829,7 +7995,7 @@ class ExternalProviderClient:
 
     async def delete_openai_container(self, container_id: str) -> None:
         """Fresh client, since shared-pool DELETEs left containers alive; body must report deleted:true."""
-        url = f"{self.base_url}/containers/{container_id}"
+        url = _append_provider_path(self.base_url, f"/containers/{container_id}")
         headers = self._container_headers()
         logger.info(
             "openai_container_delete.outbound url=%s has_auth=%s openai_beta=%s",

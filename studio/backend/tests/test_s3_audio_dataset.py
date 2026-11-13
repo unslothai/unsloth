@@ -6,8 +6,10 @@ boto3 is faked as in test_s3_dataset.py."""
 
 import csv
 import importlib.util
+import io
 import json
 import os
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -378,3 +380,165 @@ def test_ordinary_keys_stay_inside_the_download_dir(parts, tmp_path):
     if "\\" not in parts[-1]:
         win = s3_dataset._contained_local_path("C:\\data\\download", parts, pathmod = ntpath)
         assert win == ntpath.join("C:\\data\\download", *parts)
+
+
+@pytest.mark.parametrize("manifest_format", ["jsonl", "json", "csv"])
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("audio/clip.wav", "audio//clip.wav"),
+        ("audio/clip.wav", "audio/./clip.wav"),
+        ("audio/A.wav", "audio/a.wav"),
+        ("audio/caf\u00e9.wav", "audio/cafe\u0301.wav"),
+        ("Audio/clip.wav", "audio/clip.wav"),
+        ("caf\u00e9/clip.wav", "cafe\u0301/clip.wav"),
+    ],
+)
+def test_audio_aliases_keep_each_recording_and_its_transcript(
+    monkeypatch, tmp_path, names, manifest_format
+):
+    keys = [f"datasets/{name}" for name in names]
+    records = [
+        {"audio": f"s3://my-bucket/{key}", "text": f"transcript-{i}, heard"}
+        for i, key in enumerate(keys)
+    ]
+    if manifest_format == "csv":
+        handle = io.StringIO()
+        writer = csv.DictWriter(handle, fieldnames = ["audio", "text"])
+        writer.writeheader()
+        writer.writerows(records)
+        manifest = handle.getvalue()
+    elif manifest_format == "json":
+        manifest = json.dumps(records)
+    else:
+        manifest = "\n".join(map(json.dumps, records))
+    manifest_key = f"datasets/train.{manifest_format}"
+    _install(
+        monkeypatch,
+        [manifest_key, *keys],
+        contents = {
+            manifest_key: manifest + "\n",
+            keys[0]: "FIRST",
+            keys[1]: "SECOND",
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    if manifest_format == "csv":
+        with open(files[0], encoding = "utf-8", newline = "") as handle:
+            rows = list(csv.DictReader(handle))
+    elif manifest_format == "json":
+        rows = json.loads(Path(files[0]).read_text())
+    else:
+        rows = _rows(files[0])
+    paths = [row["audio"] for row in rows]
+    assert len({unicodedata.normalize("NFC", path).casefold() for path in paths}) == 2
+    assert [Path(path).read_text() for path in paths] == ["FIRST", "SECOND"]
+    assert [row["text"] for row in rows] == ["transcript-0, heard", "transcript-1, heard"]
+
+
+@pytest.mark.parametrize(
+    "names",
+    [("train.jsonl", "./train.jsonl"), ("TRAIN.jsonl", "train.jsonl")],
+)
+def test_manifest_aliases_keep_all_training_rows(monkeypatch, tmp_path, names):
+    keys = [f"datasets/{name}" for name in names]
+    _install(
+        monkeypatch,
+        [*keys, "datasets/audio/clip.wav"],
+        contents = {
+            key: json.dumps({"audio": "audio/clip.wav", "text": f"transcript-{i}"}) + "\n"
+            for i, key in enumerate(keys)
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert len({unicodedata.normalize("NFC", path).casefold() for path in files}) == 2
+    assert [row["text"] for path in files for row in _rows(path)] == [
+        "transcript-0",
+        "transcript-1",
+    ]
+    assert all(Path(_rows(path)[0]["audio"]).is_file() for path in files)
+
+
+def test_audio_alias_suffixes_do_not_overwrite_another_object(monkeypatch, tmp_path):
+    keys = ["datasets/audio/clip.wav", "datasets/audio//clip.wav", "datasets/audio/clip_1.wav"]
+    _install(
+        monkeypatch,
+        ["datasets/metadata.jsonl", *keys],
+        contents = {
+            "datasets/metadata.jsonl": "\n".join(
+                json.dumps({"audio": f"s3://my-bucket/{key}"}) for key in keys
+            )
+            + "\n",
+            **{key: f"recording-{i}" for i, key in enumerate(keys)},
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert [Path(row["audio"]).read_text() for row in _rows(files[0])] == [
+        "recording-0",
+        "recording-1",
+        "recording-2",
+    ]
+
+
+@pytest.mark.parametrize("existing_name", ["metadata.jsonl", "audio/clip.wav"])
+def test_structured_download_keeps_existing_local_files(monkeypatch, tmp_path, existing_name):
+    existing = tmp_path / existing_name
+    existing.parent.mkdir(parents = True, exist_ok = True)
+    existing.write_text("KEEP")
+    _install(
+        monkeypatch,
+        ["datasets/metadata.jsonl", "datasets/audio/clip.wav"],
+        contents = {
+            "datasets/metadata.jsonl": '{"audio":"audio/clip.wav","text":"new sample"}\n',
+            "datasets/audio/clip.wav": "NEW",
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert existing.read_text() == "KEEP"
+    assert Path(_rows(files[0])[0]["audio"]).read_text() == "NEW"
+
+
+@pytest.mark.parametrize("names", [("clip.wav", "/clip.wav"), ("A.wav", "a.wav")])
+def test_parquet_audio_aliases_download_every_object(monkeypatch, tmp_path, names):
+    keys = [f"datasets/audio/{name}" for name in names]
+    _install(
+        monkeypatch,
+        ["datasets/train.parquet", *keys],
+        contents = {keys[0]: "FIRST", keys[1]: "SECOND"},
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert files == [str(tmp_path / "train.parquet")]
+    audio = sorted(path.read_text() for path in (tmp_path / "audio").iterdir())
+    assert audio == ["FIRST", "SECOND"]
+
+
+def test_parquet_download_keeps_existing_audio(monkeypatch, tmp_path):
+    existing = tmp_path / "clip.wav"
+    existing.write_text("KEEP")
+    _install(monkeypatch, ["datasets/train.parquet", "datasets/clip.wav"])
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert files == [str(tmp_path / "train.parquet")]
+    assert existing.read_text() == "KEEP"
+    assert (tmp_path / "clip_1.wav").read_text() == "content-of:datasets/clip.wav"
+
+
+@pytest.mark.parametrize("second_key", ["./train.parquet", "TRAIN.parquet"])
+def test_parquet_manifest_aliases_keep_both_shards(monkeypatch, tmp_path, second_key):
+    _install(
+        monkeypatch,
+        ["datasets/train.parquet", f"datasets/{second_key}", "datasets/clip.wav"],
+        contents = {
+            "datasets/train.parquet": "FIRST",
+            f"datasets/{second_key}": "SECOND",
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert [Path(path).read_text() for path in files] == ["FIRST", "SECOND"]
+    assert (tmp_path / "clip.wav").is_file()
+
+
+def test_parquet_audio_without_collisions_keeps_its_paths(monkeypatch, tmp_path):
+    _install(monkeypatch, ["datasets/train.parquet", "datasets/audio/clip.wav"])
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert files == [str(tmp_path / "train.parquet")]
+    assert (tmp_path / "audio" / "clip.wav").read_text() == "content-of:datasets/audio/clip.wav"

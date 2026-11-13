@@ -9,7 +9,6 @@ export const PENDING_SECTIONS = [
   "browser",
   "chat",
   "plusMenu",
-  "material",
   "timeFormat",
   "spellcheck",
 ] as const;
@@ -19,36 +18,33 @@ export type Pending = Record<PendingSection, boolean>;
 
 const pendingKey = () => accountDatabaseName("unsloth_client_prefs_pending");
 
-export function nothingPending(): Pending {
-  return Object.fromEntries(
-    PENDING_SECTIONS.map((section) => [section, false]),
-  ) as Pending;
-}
-
-export function anyPending(pending: Pending): boolean {
-  return PENDING_SECTIONS.some((section) => pending[section]);
-}
-
 export function readPending(): Pending {
-  const pending = nothingPending();
+  let saved: Record<string, unknown> | null = null;
   try {
-    const saved = JSON.parse(localStorage.getItem(pendingKey()) ?? "{}");
-    for (const section of PENDING_SECTIONS) {
-      pending[section] = saved?.[section] === true;
-    }
+    saved = JSON.parse(localStorage.getItem(pendingKey()) ?? "{}");
   } catch {
-    // A corrupt marker reads as nothing pending.
+    // nothing pending
   }
-  return pending;
+  return Object.fromEntries(
+    PENDING_SECTIONS.map((section) => [section, saved?.[section] === true]),
+  ) as Pending;
 }
 
 export function writePending(pending: Pending): void {
   try {
-    if (anyPending(pending)) {
+    if (Object.values(pending).some(Boolean)) {
       localStorage.setItem(pendingKey(), JSON.stringify(pending));
     } else {
       localStorage.removeItem(pendingKey());
     }
   } catch {
+    // storage unavailable
   }
+}
+
+// Re-read first: other tabs of this account share the marker.
+export function markPending(sections: readonly PendingSection[], value: boolean): void {
+  const pending = readPending();
+  for (const section of sections) pending[section] = value;
+  writePending(pending);
 }

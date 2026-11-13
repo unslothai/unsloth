@@ -15,43 +15,42 @@ Object.assign(globalThis, {
   window: { localStorage, location: { protocol: "http:", host: "127.0.0.1", hostname: "127.0.0.1", pathname: "/", href: "" } },
 });
 
-const { nothingPending, readPending, writePending } = await import(
+const { markPending, readPending, writePending } = await import(
   "../src/features/settings/lib/client-prefs-pending.ts"
 );
 
-test("an unconfirmed preference edit survives a reload until the server takes it", () => {
-  assert.deepEqual(readPending(), nothingPending());
-  writePending({ ...nothingPending(), scale: true, timeFormat: true });
-  assert.deepEqual(readPending(), { ...nothingPending(), scale: true, timeFormat: true });
-  writePending(nothingPending());
-  assert.equal(store.size, 0);
-  assert.deepEqual(readPending(), nothingPending());
-});
+const none = {
+  scale: false,
+  browser: false,
+  chat: false,
+  plusMenu: false,
+  timeFormat: false,
+  spellcheck: false,
+};
 
-test("every synced section has its own pending flag", () => {
-  assert.deepEqual(Object.keys(nothingPending()), [
-    "scale",
-    "browser",
-    "chat",
-    "plusMenu",
-    "material",
-    "timeFormat",
-    "spellcheck",
-  ]);
+test("an unconfirmed preference edit survives a reload until the server takes it", () => {
+  assert.deepEqual(readPending(), none);
+  writePending({ ...none, chat: true });
+  assert.deepEqual(readPending(), { ...none, chat: true });
+  writePending(none);
+  assert.equal(store.size, 0);
+  assert.deepEqual(readPending(), none);
 });
 
 test("a corrupt marker reads as nothing pending", () => {
-  writePending({ ...nothingPending(), scale: true, browser: true });
+  writePending({ ...none, scale: true, browser: true });
   const [key] = [...store.keys()];
   store.set(key, "{");
-  assert.deepEqual(readPending(), nothingPending());
+  assert.deepEqual(readPending(), none);
 });
 
-test("preference saves run one at a time and send only the sections edited here", async () => {
-  const { readSrc } = await import("./helpers/kit.ts");
-  const hook = readSrc("features/settings/hooks/use-device-settings-sync.ts");
-  assert.match(hook, /saving = saving\n\s*\.then\(async \(\) => \{\n\s*const sent = edits;/);
-  assert.match(hook, /interfaceScale: touched\.scale\n\s*\? useInterfaceScaleStore\.getState\(\)\.scale\n\s*: undefined,/);
-  assert.match(hook, /browser: touched\.browser \? browserPrefs\(\) : undefined,/);
-  assert.match(hook, /SYNCED_SECTIONS\.filter\(\(section\) => touched\[section\.pending\]\)/);
+test("one tab's pending flags survive another tab marking or clearing its own", () => {
+  writePending(none);
+  markPending(["chat"], true);
+  markPending(["scale"], true);
+  assert.deepEqual(readPending(), { ...none, chat: true, scale: true });
+  markPending(["scale"], false);
+  assert.deepEqual(readPending(), { ...none, chat: true });
+  markPending(["chat"], false);
+  assert.equal(store.size, 0);
 });

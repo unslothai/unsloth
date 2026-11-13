@@ -86,6 +86,13 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     "AutoencoderKLMiniMaxH3@16x": Floor(
         16, 4, 16, "decoder works at its 256 px tile; untiled is out of distribution"
     ),
+    # The release's own geometry (256 px tiles, 64 px minimum overlap), which the loader enforces.
+    "AutoencoderKLMiniMaxH3Image@16x": Floor(
+        16,
+        4,
+        16,
+        "seam audit on 16 decodes at 2048: tile ends match plain rows, starts 1.11x, no visible line",
+    ),
     "AutoencoderKLHunyuanVideo15@16x": Floor(
         16, 4, 4, "video seam audit: PSNR >= 50.6 dB, no line at the boundaries"
     ),
@@ -222,6 +229,11 @@ def _vae_class(name: str):
             cls = getattr(importlib.import_module(mod), name, None)
             if cls is not None:
                 break
+    if cls is None:
+        # MiniMax-H3-Image's VAE: diffusers' class when installed, else Studio's vendored copy.
+        h3i = importlib.import_module("core.inference.diffusion_minimax_h3_image")
+        if name == h3i.H3_IMAGE_VAE_CLASS:
+            cls = h3i.vae_class()
     return cls
 
 
@@ -299,14 +311,16 @@ def _latent_channels(config: dict) -> int:
 def _no_memory_reading():
     """Probe the grid a decode takes with no free-memory reading: the smallest tiles, the same on every host.
 
-    Budgeted planners (video_ltx2_vae_tiles) widen tiles, or go untiled, when the reading says they fit; on a CPU
+    Budgeted planners (video_ltx2_vae_tiles, diffusion_vae_tiling) widen tiles, or go untiled, when the reading says they fit; on a CPU
     host that reading is host RAM, so an unpinned probe would see whatever the runner has free.
     """
-    mod = _module("video_vae_untiled")
-    if mod is None or not hasattr(mod, "_free_bytes"):
-        yield
-        return
-    with mock.patch.object(mod, "_free_bytes", lambda device: None):
+    with contextlib.ExitStack() as stack:
+        mod = _module("video_vae_untiled")
+        if mod is not None and hasattr(mod, "_free_bytes"):
+            stack.enter_context(mock.patch.object(mod, "_free_bytes", lambda device: None))
+        image = _module("diffusion_vae_tiling")
+        if image is not None and hasattr(image, "_host_free_mib"):
+            stack.enter_context(mock.patch.object(image, "_host_free_mib", lambda vae, z: None))
         yield
 
 

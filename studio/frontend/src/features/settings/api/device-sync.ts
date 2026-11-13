@@ -11,12 +11,11 @@ export type ClientPreferences = {
   browser: Record<string, unknown> | null;
   chat: Record<string, unknown> | null;
   plusMenu: Record<string, unknown> | null;
-  material: Record<string, unknown> | null;
-  timeFormat: "system" | "12h" | "24h" | null;
+  timeFormat: string | null;
   spellcheck: boolean | null;
 };
 
-export type ClientPreferencesUpdate = Partial<
+export type ClientPreferencesChanges = Partial<
   Omit<ClientPreferences, "saved" | "updatedAt">
 >;
 
@@ -40,7 +39,7 @@ export async function loadClientPreferences(): Promise<ClientPreferences> {
 }
 
 export async function saveClientPreferences(
-  data: ClientPreferencesUpdate,
+  data: ClientPreferencesChanges,
 ): Promise<ClientPreferences> {
   return json(
     await authFetch("/api/settings/client-preferences", {

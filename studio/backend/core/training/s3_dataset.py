@@ -19,6 +19,7 @@ import logging
 import os
 import shutil
 import tempfile
+import unicodedata
 from importlib.util import find_spec
 from typing import Callable, Optional
 from utils.datasets.format_detection import _AUDIO_EXTENSIONS
@@ -158,15 +159,19 @@ def _contained_local_path(
     return pathmod.join(target_dir, *parts)
 
 
+def _local_path_key(path: str) -> str:
+    return unicodedata.normalize("NFC", os.path.normpath(path)).casefold()
+
+
 def _unique_local_path(target_dir: str, filename: str, used_paths: set[str]) -> str:
-    """Return an unused flattened path for an S3 object basename."""
+    """Return an unused local path for an S3 object basename."""
     stem, ext = os.path.splitext(filename)
     candidate = _contained_local_path(target_dir, [filename])
     suffix = 1
-    while candidate in used_paths or os.path.exists(candidate):
+    while _local_path_key(candidate) in used_paths or os.path.exists(candidate):
         candidate = _contained_local_path(target_dir, [f"{stem}_{suffix}{ext}"])
         suffix += 1
-    used_paths.add(candidate)
+    used_paths.add(_local_path_key(candidate))
     return candidate
 
 
@@ -192,8 +197,9 @@ def _key_relative_to_prefix(key: str, prefix: Optional[str]) -> str:
 def _structured_local_paths(
     prefix: Optional[str], keys: list[str], target_dir: str
 ) -> dict[str, str]:
-    """Map ``keys`` to local paths mirroring their prefix-relative layout."""
+    """Map keys to distinct local paths under their prefix-relative directories."""
     local_by_key: dict[str, str] = {}
+    used_paths: set[str] = set()
     for key in keys:
         relative = _key_relative_to_prefix(key, prefix)
         parts = [part for part in relative.split("/") if part not in ("", ".")]
@@ -203,7 +209,10 @@ def _structured_local_paths(
                 f"S3 key {key!r} contains '..' or empty path segments and cannot "
                 "be downloaded into the dataset directory."
             )
-        local_by_key[key] = _contained_local_path(target_dir, parts)
+        path = _contained_local_path(target_dir, parts)
+        local_by_key[key] = _unique_local_path(
+            os.path.dirname(path), os.path.basename(path), used_paths
+        )
     return local_by_key
 
 
@@ -369,8 +378,9 @@ def prepare_s3_dataset_download(
 
         local_files: list[str] = []
         if audio_keys:
-            manifest_local_by_key = _structured_local_paths(prefix, keys, target_dir)
-            audio_local_by_key = _structured_local_paths(prefix, audio_keys, target_dir)
+            local_by_key = _structured_local_paths(prefix, keys + audio_keys, target_dir)
+            manifest_local_by_key = {key: local_by_key[key] for key in keys}
+            audio_local_by_key = {key: local_by_key[key] for key in audio_keys}
             _download_structured(client, bucket, manifest_local_by_key, cancel_callback)
             # Rewrite before the audio download so a bad manifest fails without fetching it.
             _rewrite_audio_references(manifest_local_by_key, audio_local_by_key, bucket, prefix)

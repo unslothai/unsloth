@@ -145,8 +145,7 @@ def _shard_rows_signature(
     file_names,
     read_started_ns: int | None = None,
 ) -> tuple | None:
-    # Stamps must predate the footer read by the settle window, so a mid-read write never
-    # pairs with old counts.
+    # Stamps predate the read by the settle window; mid-read writes never pair with old counts.
     if read_started_ns is None:
         read_started_ns = time.time_ns()
     settled_before_ns = read_started_ns - _SHARD_ROWS_SETTLE_NS
