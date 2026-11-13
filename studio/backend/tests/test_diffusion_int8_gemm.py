@@ -1732,3 +1732,189 @@ def test_eager_install_is_bit_identical_to_torchao_convrot_linear(forced, monkey
     assert g8.call_count() == calls + 1 and cq.h16_call_count() == h16
     assert torch.equal(got, want)
     g8.uninstall(holder)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED_EAGER": "0"},
+        {"UNSLOTH_DIFFUSION_INT8_GEMM_EAGER": "0"},
+    ],
+)
+def test_install_streamed_eager_kill_switches_keep_torchao(monkeypatch, env):
+    called = []
+    monkeypatch.setattr(g8, "install", lambda *a, **k: called.append(k) or 7)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert g8.install_streamed_eager(torch.nn.Linear(2, 2), "cuda:0") == 0 and called == []
+
+
+def test_install_streamed_eager_is_the_exact_call_time_install(monkeypatch):
+    called = []
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_EAGER_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_GEMM_EAGER_ENV, raising = False)
+    monkeypatch.setattr(g8, "install", lambda *a, **k: called.append(k) or 7)
+    assert g8.install_streamed_eager(torch.nn.Linear(2, 2), None) == 0
+    assert g8.install_streamed_eager(torch.nn.Linear(2, 2), "cuda:0") == 7
+    assert called == [{"device": "cuda:0", "exact": True}]
+
+
+def test_streamed_eager_honours_the_streamed_and_global_switches(monkeypatch):
+    seen = []
+    monkeypatch.setattr(g8, "_finalize", lambda t, lg = None, **k: seen.append(k) or 4)
+    lin = torch.nn.Linear(2, 2)
+    monkeypatch.setenv(g8.INT8_GEMM_STREAMED_ENV, "0")
+    assert g8.install_streamed_eager(lin, "cuda:0") == 0
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV)
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "0")
+    assert g8.install_streamed_eager(lin, "cuda:0") == 0
+    monkeypatch.delenv(g8.INT8_GEMM_ENV)
+    assert g8.install_streamed_eager(lin, "cuda:0") == 4
+    assert seen == [{"device": "cuda:0", "exact": True}]
+
+
+def test_shared_rotq_quant_is_exact_only_when_every_linear_is(monkeypatch):
+    """The shared Q / K / V quant takes the dense kernel when the Linears are on the eager routes."""
+    exacts = []
+    monkeypatch.setattr(
+        cq, "convrot_act_quant", lambda x, g, v2, exact = False: exacts.append(exact) or None
+    )
+
+    def rec_for(lin):
+        return ("v2", 256, True, lin.weight, True)
+
+    lins = []
+    for _ in range(3):
+        lin = torch.nn.Linear(4, 4)
+        lin.__dict__[g8._REC] = rec_for(lin)
+        lins.append(lin)
+    monkeypatch.setattr(g8, "_swapped_rec", lambda m: m.__dict__[g8._REC])
+    monkeypatch.setattr(
+        g8, "_payload", lambda kind, w: (types.SimpleNamespace(device = x.device), None)
+    )
+    x = types.SimpleNamespace(
+        dtype = torch.bfloat16,
+        is_cuda = True,
+        device = "cuda:0",
+        shape = (64, 256),
+        numel = lambda: 64 * 256,
+        reshape = lambda *a: x,
+    )
+    assert g8.shared_rotq_linears(x, tuple(lins)) is None
+    for lin in lins:
+        lin.__dict__[g8._EXACT] = True
+    assert g8.shared_rotq_linears(x, tuple(lins)) is None
+    lins[1].__dict__.pop(g8._EXACT)
+    assert g8.shared_rotq_linears(x, tuple(lins)) is None
+    assert exacts == [False, True, False]
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_streamed_eager_follows_the_onloaded_weight_bit_identically(forced, version):
+    """Installed while the weight is on the host; after a prefetcher-style onload (same Parameter, new payload) the
+    call takes the eager routes and matches torchao's Linear bit for bit; on the host it stays torchao's."""
+    from core.inference.diffusion_convrot import _install_rotation
+    from core.inference.diffusion_offload_prefetch import _go, _to_device
+
+    _swap = getattr(_go(), "_swap_torchao_tensor", None)
+    if _swap is None:
+        pytest.skip("diffusers without torchao group-offload swaps")
+    lin = _int8_linear(5376, 1024, True, version)
+    _install_rotation(lin, 256)
+    holder = torch.nn.Sequential(lin)
+    x = _act(1037, 5376, 3).reshape(1, 1037, 5376)
+    with torch.inference_mode():
+        want = lin(x)
+    weight = lin.weight
+    dev = x.device
+
+    def move(device):
+        with torch.no_grad():
+            _swap(lin.weight, _to_device(lin.weight, device))
+            lin.bias.data = lin.bias.data.to(device)
+        torch.cuda.synchronize()
+
+    move("cpu")
+    assert g8.install_streamed_eager(holder, dev) == 1
+    assert g8._EXACT in lin.__dict__ and g8._FF_MARK not in lin.__dict__
+    move(dev)
+    assert lin.weight is weight
+    with torch.inference_mode():
+        h16 = cq.h16_call_count()
+        calls = g8.call_count()
+        got = lin(x)
+    assert g8.call_count() == calls + 1 and cq.h16_call_count() == h16
+    assert torch.equal(got, want)
+    g8.uninstall(holder)
+
+
+@needs_cuda
+def test_streamed_eager_leaves_a_linear_with_its_own_offload_hook_alone(forced):
+    """A Linear directly inside a top-level Sequential / ModuleList carries its own diffusers offload hook; a swap after
+    placement would replace the hooked forward and skip its onload (torchao then sees a host weight)."""
+    from types import SimpleNamespace
+
+    from diffusers.hooks import apply_group_offloading
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference.diffusion_offload_prefetch import install_group_prefetch
+    from core.inference.diffusion_speed import install_streamed_eager_int8_gemm
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.ff = torch.nn.Linear(512, 512)
+
+        def forward(self, x):
+            return x + self.ff(x)
+
+    class DiT(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([Block() for _ in range(3)])
+            self.head = torch.nn.Sequential(torch.nn.Linear(512, 512), torch.nn.SiLU())
+            self.tail = torch.nn.ModuleList([torch.nn.Linear(512, 512)])
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = block(x)
+            return self.tail[0](self.head(x))
+
+    dev = torch.device("cuda", torch.cuda.current_device())
+    x = torch.randn(1, 300, 512, dtype = torch.bfloat16, device = dev)
+    outs = []
+    for install in (False, True):
+        torch.manual_seed(0)
+        model = DiT().to(torch.bfloat16)
+        quantize_(model, Int8DynamicActivationInt8WeightConfig(set_inductor_config = False))
+        apply_group_offloading(
+            model,
+            onload_device = dev,
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
+            use_stream = True,
+            record_stream = True,
+            non_blocking = True,
+        )
+        if not install_group_prefetch(model, dev):
+            pytest.skip("diffusers without stream groups the prefetcher drives")
+        hooked = [
+            m
+            for m in model.modules()
+            if isinstance(m, torch.nn.Linear) and "_diffusers_hook" in m.__dict__
+        ]
+        assert len(hooked) == 2
+        if install:
+            assert install_streamed_eager_int8_gemm(SimpleNamespace(transformer = model), dev)
+            assert all(g8._REC not in m.__dict__ for m in hooked)
+            assert all(g8._REC in b.ff.__dict__ for b in model.blocks)
+        with torch.inference_mode():
+            calls = g8.call_count()
+            outs.append(model(x))
+            torch.cuda.synchronize()
+        assert g8.call_count() - calls == (3 if install else 0)
+        if install:
+            g8.uninstall(model)
+    assert torch.equal(outs[0], outs[1])

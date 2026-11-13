@@ -750,6 +750,42 @@ def _install_eager_int8_gemm(
     return engaged
 
 
+def install_streamed_eager_int8_gemm(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+) -> bool:
+    """After placement: ``install_streamed_eager`` on every uncompiled int8 denoiser the pinned prefetcher streams
+    (it copies into the same parameters, so the call-time device check sees each onload); True when any engaged."""
+    if pipe is None or device is None:
+        return False
+    try:
+        from .diffusion_cfg_batch import compiled_denoiser
+        from .diffusion_int8_gemm import candidates, install_streamed_eager
+        from .diffusion_offload_prefetch import module_prefetcher
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "streamed int8 eager gemm", exc)
+        return False
+    engaged = False
+    for transformer in _denoiser_dits(pipe):
+        if (
+            bool(getattr(transformer, "_unsloth_int8_gemm", 0))
+            or module_prefetcher(transformer) is None
+            # a compiled block would trace the swapped forward (not the eager routes)
+            or compiled_denoiser(transformer) is not None
+            or not candidates(transformer)
+        ):
+            continue
+        try:
+            n = install_streamed_eager(transformer, device, logger)
+            if n:
+                transformer._unsloth_int8_gemm = n
+                engaged = True
+        except Exception as exc:  # noqa: BLE001 - optimisation only, torchao's path stays
+            _warn(logger, "streamed int8 eager gemm", exc)
+    return engaged
+
+
 def _prepare_lowbit_iq_tables(pipe: Any, target: Any) -> None:
     """Low-bit IQ lookup tables on the execution device before compile, so a compiled block reads a device constant."""
     device = getattr(target, "torch_device", None)
@@ -1143,7 +1179,7 @@ def int8_gemm_live(pipe: Any, optims: Any) -> list:
     """``speed_optims`` with ``int8_gemm`` dropped once a deferred install's first-forward probe swapped nothing."""
     optims = list(optims or ())
     live = any(bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe))
-    for key in ("int8_gemm", "int8_gemm_eager"):
+    for key in ("int8_gemm", "int8_gemm_eager", "int8_gemm_streamed"):
         if key in optims and not live:
             optims.remove(key)
     return optims

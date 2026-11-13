@@ -3267,3 +3267,100 @@ def test_int8_gemm_live_drops_the_eager_key_when_nothing_swapped(monkeypatch):
         "int8_gemm_eager",
         "tf32",
     ]
+
+
+def _streamed_gemm_spy(
+    monkeypatch,
+    n = 5,
+    prefetcher = True,
+    compiled = None,
+):
+    from core.inference import diffusion_cfg_batch as cfgb
+    from core.inference import diffusion_int8_gemm as g8
+    from core.inference import diffusion_offload_prefetch as pf
+
+    calls = []
+    dit = types.SimpleNamespace()
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda pipe: [dit])
+    monkeypatch.setattr(g8, "candidates", lambda t, rotated_only = False: n)
+    monkeypatch.setattr(
+        g8, "install_streamed_eager", lambda t, d, lg = None: calls.append((t, d)) or n
+    )
+    monkeypatch.setattr(pf, "module_prefetcher", lambda m: object() if prefetcher else None)
+    monkeypatch.setattr(cfgb, "compiled_denoiser", lambda m: compiled)
+    return dit, calls
+
+
+def test_streamed_eager_int8_gemm_engages_behind_the_prefetcher(monkeypatch):
+    dit, calls = _streamed_gemm_spy(monkeypatch)
+    assert ds_mod.install_streamed_eager_int8_gemm(object(), "cuda:0") is True
+    assert calls == [(dit, "cuda:0")] and dit._unsloth_int8_gemm == 5
+    assert ds_mod.install_streamed_eager_int8_gemm(object(), "cuda:0") is False
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"prefetcher": False},  # diffusers' own onload or a streamer that swaps parameters
+        {"compiled": "the denoiser is compiled"},
+        {"n": 0},  # dense denoiser
+    ],
+)
+def test_streamed_eager_int8_gemm_skips(monkeypatch, kw):
+    _dit, calls = _streamed_gemm_spy(monkeypatch, **kw)
+    assert ds_mod.install_streamed_eager_int8_gemm(object(), "cuda:0") is False and calls == []
+
+
+def test_streamed_eager_int8_gemm_skips_an_installed_denoiser_and_no_device(monkeypatch):
+    dit, calls = _streamed_gemm_spy(monkeypatch)
+    assert ds_mod.install_streamed_eager_int8_gemm(object(), None) is False
+    dit._unsloth_int8_gemm = 3
+    assert ds_mod.install_streamed_eager_int8_gemm(object(), "cuda:0") is False and calls == []
+
+
+def test_streamed_eager_int8_gemm_swallows_an_install_failure(monkeypatch):
+    from core.inference import diffusion_int8_gemm as g8
+
+    dit, _calls = _streamed_gemm_spy(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(g8, "install_streamed_eager", boom)
+    assert ds_mod.install_streamed_eager_int8_gemm(object(), "cuda:0") is False
+    assert not getattr(dit, "_unsloth_int8_gemm", 0)
+
+
+def test_int8_gemm_live_drops_the_streamed_key_when_nothing_swapped(monkeypatch):
+    dit = types.SimpleNamespace(_unsloth_int8_gemm = 0)
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda pipe: [dit])
+    assert ds_mod.int8_gemm_live(object(), ["int8_gemm_streamed", "tf32"]) == ["tf32"]
+
+
+def test_video_wires_the_streamed_eager_install_after_placement():
+    """H3: only for a streamed denoiser the compile did not take; generic families: after the offload hooks."""
+    import ast
+    import inspect
+
+    from core.inference import video as video_mod
+
+    src = inspect.getsource(video_mod)
+    tree = ast.parse(src)
+    hits = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "install_streamed_eager_int8_gemm"
+    ]
+    assert len(hits) == 2
+    h3 = src.index(
+        "compile_blocks_below_offload_hooks(\n                    getattr(pipe, denoiser_component"
+    )
+    assert src.index("elif denoiser_streamed:", h3) < src.index(
+        "install_streamed_eager_int8_gemm(speed_view, device, logger)", h3
+    )
+    generic = src.index("compile_pipe_below_offload_hooks(pipe, logger)")
+    assert (
+        src.index("install_streamed_eager_int8_gemm(view, target.torch_device, logger)") > generic
+    )

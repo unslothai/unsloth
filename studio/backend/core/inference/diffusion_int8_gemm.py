@@ -6,7 +6,9 @@ only behind diffusion_triton_prefetch, without which its int8 dot spills), other
 (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock (ROCm and CPU never reach it);
 Linear output bit-identical, compiled block not end to end; sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
 an uncompiled denoiser gets the bit-identical subset (``install_eager``: dense rotation kernel, no SwiGLU fusion;
-UNSLOTH_DIFFUSION_INT8_GEMM_EAGER=0 keeps torchao's eager path); UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
+UNSLOTH_DIFFUSION_INT8_GEMM_EAGER=0 keeps torchao's eager path), also when the pinned prefetcher streams it
+(``install_streamed_eager``, call-time device check; UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED_EAGER=0 keeps torchao's
+path there); UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
 
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ INT8_GEMM_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED"
 INT8_GEMM_TMA_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TMA"
 INT8_GEMM_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_RACE"
 INT8_GEMM_EAGER_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_EAGER"
+INT8_GEMM_STREAMED_EAGER_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED_EAGER"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -105,6 +108,11 @@ def int8_gemm_mode() -> str:
 
 def eager_enabled() -> bool:
     raw = (os.environ.get(INT8_GEMM_EAGER_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def streamed_eager_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_STREAMED_EAGER_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
 
 
@@ -1542,7 +1550,9 @@ def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
         return None
     from .diffusion_convrot_quant import convrot_act_quant
 
-    q = convrot_act_quant(x.reshape(-1, x.shape[-1]), group, kind == "v2")
+    # every Linear on the eager routes: the shared quant is then the dense kernel each would run alone
+    exact = all(m.__dict__.get(_EXACT) for m in linears)
+    q = convrot_act_quant(x.reshape(-1, x.shape[-1]), group, kind == "v2", exact)
     if q is None:
         return None
     xq, xs = q
@@ -1890,6 +1900,18 @@ def install_eager(
     return install(transformer, logger, offload_active = offload_active, exact = True)
 
 
+def install_streamed_eager(
+    transformer: Any,
+    device: Any,
+    logger: Any = None,
+) -> int:
+    """``install_eager``'s routes, taken only while a Linear's weight is on the activation's card. Needs a streamer
+    that copies into the same parameters; one that swaps them would always fall back."""
+    if not (eager_enabled() and streamed_eager_enabled()) or device is None:
+        return 0
+    return install(transformer, logger, device = device, exact = True)
+
+
 def _finalize(
     transformer: Any,
     logger: Any = None,
@@ -1973,6 +1995,14 @@ def _swap_on(
     multi = len(_split_cards(transformer)) > 1
     recs = [(m, _eligible(m)) for m in transformer.modules()]
     recs = [(m, r) for m, r in recs if r is not None and (not multi or _weight_card(m) == index)]
+    if streamed:
+        # a Linear carrying its own offload hook (a Linear directly in a top-level ModuleList / Sequential): the
+        # swapped forward would replace the hooked one and skip its onload
+        recs = [
+            (m, r)
+            for m, r in recs
+            if not ("_diffusers_hook" in m.__dict__ or "_hf_hook" in m.__dict__)
+        ]
     if not recs:
         return 0
     from .diffusion_convrot_quant import rotquant_device_config
