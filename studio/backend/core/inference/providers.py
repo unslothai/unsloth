@@ -340,7 +340,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "model_id_allowlist": re.compile(
             r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|mistralai|zai-org)/"
         ),
-        # Cap matches at N; the server does not sort, so catalog models are kept first.
         "model_id_limit": 15,
     },
     "vllm": {
