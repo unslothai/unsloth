@@ -363,6 +363,23 @@ from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
 _TRUSTED_NON_GGUF_VIDEO_REPOS = _trusted_repo_ids(_VIDEO_REGISTRY)
 
 
+def _grouped_form_status(pipe: Any) -> Optional[dict]:
+    """``grouped_form_status`` of the denoiser (None for a load without W4A8 / W6A8 layers)."""
+    try:
+        from .diffusion_grouped_int8 import grouped_form_status
+        return grouped_form_status(getattr(pipe, "transformer", None))
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
+
+
+def _grouped_form_note(model: Any) -> str:
+    try:
+        from .diffusion_grouped_int8 import grouped_form_note
+        return grouped_form_note(model)
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return ""
+
+
 def _gguf_quant_token(filename: Optional[str]) -> Optional[str]:
     """The quant a GGUF filename names (``Q4_K_M``, ``BF16``), as the status reports it in ``gguf_variant``."""
     if not filename:
@@ -684,12 +701,16 @@ def _video_comfy_resident_mib(
             "keep_nvfp4": blocks["nvfp4_backend"] is not None,
             "keep_mxfp8": blocks["mxfp8_backend"] is not None,
         }
+    from .diffusion_grouped_int8 import grouped_packed_wanted
+
     return comfy_resident_mib(
         str(path),
         scan,
         keep_int8 = keep_int8,
         keep_fp8 = keep_fp8,
         fp8_stored = fp8_stored,
+        # W4A8 / W6A8 stay packed where the int8 runtime keeps them (the loader's same rule)
+        grouped_packed = grouped_packed_wanted(target, "int8" if keep_int8 else None),
         **keep_block,
         target = target,
         keep_key = keep_key,
@@ -10813,6 +10834,7 @@ class VideoBackend:
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept "
                 f"({comfy_info.get('backend') or comfy_info.get('fp8_backend')} runtime), "
                 f"{comfy_info.get('dequantized', 0)} dequantized"
+                + _grouped_form_note(getattr(pipe, "transformer", None))
             )
             logger.info("video.transformer_quant: %s", transformer_quant_source)
         elif (
@@ -11887,7 +11909,11 @@ class VideoBackend:
         if comfy_scan is not None:
             counts = comfy_scan.counts()
             comfy_scheme = (
-                TQ_INT8 if any(k.startswith("int8") for k in counts) else TQ_FP8 if counts else None
+                TQ_INT8
+                if any(k.startswith("int8") or k in ("w6a8_int8", "asym_w4a8_int8") for k in counts)
+                else TQ_FP8
+                if counts
+                else None
             )
             if _h3_precision_pinned_dense(transformer_quant):
                 comfy_scheme = None
@@ -12015,7 +12041,7 @@ class VideoBackend:
                 f"ComfyUI-quantized denoiser ({Path(comfy_checkpoint).name}): "
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept, "
                 f"{comfy_info.get('fp8_stored', 0)} fp8 stored, "
-                f"{comfy_info.get('dequantized', 0)} dequantized"
+                f"{comfy_info.get('dequantized', 0)} dequantized" + _grouped_form_note(transformer)
                 if engaged is not None
                 else f"ComfyUI denoiser ({Path(comfy_checkpoint).name}) at bfloat16"
             )
@@ -15674,6 +15700,7 @@ class VideoBackend:
                 and state.engine != "sd_cpp",
             },
             "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
+            "packed_weights": _grouped_form_status(getattr(state, "pipe", None)),
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,

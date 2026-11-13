@@ -2131,8 +2131,9 @@ def _enable_fp16_accumulation(
 
 
 def _quantised_projections(pipe: Any) -> bool:
-    """Whether a denoiser keeps native int8 / fp8 or packed nvfp4 / mxfp8 Linears, whose ``.weight`` is a dense
+    """Whether a denoiser keeps native int8 / fp8 or packed nvfp4 / mxfp8 / W4A8 / W6A8 Linears, whose ``.weight`` is a dense
     widen: diffusers' fuse would concatenate those into a persistent dense ``to_qkv`` beside the compact buffers."""
+    from .diffusion_grouped_int8 import is_grouped_linear
     from .diffusion_native_quant import is_native_linear
     from .diffusion_packed_block import is_packed_block_linear
 
@@ -2141,7 +2142,10 @@ def _quantised_projections(pipe: Any) -> bool:
         if model is None or not callable(getattr(model, "modules", None)):
             continue
         try:
-            if any(is_native_linear(m) or is_packed_block_linear(m) for m in model.modules()):
+            if any(
+                is_native_linear(m) or is_packed_block_linear(m) or is_grouped_linear(m)
+                for m in model.modules()
+            ):
                 return True
         except Exception:  # noqa: BLE001 -- a probe must never replace the failure it describes
             continue
