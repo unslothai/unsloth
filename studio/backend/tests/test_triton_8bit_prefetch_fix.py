@@ -491,7 +491,9 @@ def test_real_inductor_compile_worker_runs_with_the_fix(real_triton, monkeypatch
     from torch._inductor.compile_worker import subproc_pool
 
     saved = subproc_pool.SubprocPool.__dict__["__init__"]
-    monkeypatch.setattr(subproc_pool.SubprocPool, "__init__", saved)
+    # an earlier test (any Studio diffusion entry point) may already have wrapped the pool: start from stock
+    stock = saved.__wrapped__ if getattr(saved, patches._TRITON_PREFETCH_SENTINEL, False) else saved
+    monkeypatch.setattr(subproc_pool.SubprocPool, "__init__", stock)
     assert patches._cover_inductor_workers(subproc_pool) is True
     results = {}
     for mode in ("1", "0"):
