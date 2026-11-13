@@ -641,6 +641,29 @@ def test_a_tool_enabled_chat_refuses_a_message_larger_than_the_window_ollama_loa
     assert "4096-token context window" in error["message"]
 
 
+def test_a_withdrawn_tool_catalogue_does_not_count_toward_the_ollama_refusal(monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    message = "word " * 3_000 + "What is the code?"
+    _, sent = _proxy(
+        "ollama",
+        [{"role": "user", "content": message}],
+        handler = _ollama(),
+        model = "qwen3:1.7b",
+        enable_tools = True,
+        enabled_tools = ["python", "edit_file"],
+        tool_choice = "none",
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 30_720,
+        context_window = 40_960,
+    )
+    assert not sent.get("tools")
+    assert sent["messages"][-1]["content"] == message
+
+
 def test_a_message_within_the_window_ollama_loaded_is_still_sent():
     message = "word " * 3_000 + "What is the code?"
     _, sent = _proxy(
