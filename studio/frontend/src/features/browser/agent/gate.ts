@@ -36,6 +36,17 @@ export function hostOfUrl(url: string): string {
   }
 }
 
+/** What an approval covers: the host plus a non-default port; http and https defaults are one site. */
+export function siteOfUrl(url: string): string {
+  const host = hostOfUrl(url);
+  try {
+    const { port } = new URL(url);
+    return host && port ? `${host}:${port}` : host;
+  } catch {
+    return "";
+  }
+}
+
 // As web_access_policy._matches_domain: whole hostnames, so www.example.com covers only itself.
 const matches = (host: string, domain: string) => {
   const bare = domain.toLowerCase().replace(/^\*?\./, "").replace(/\.+$/, "");
@@ -146,7 +157,7 @@ export function gateNavigation(url: string, context: NavigationContext): Gate {
   }
   const blocked = navigationBlocks(url, context.policy, context.permissions);
   if (blocked) return { kind: "block", reason: blocked };
-  const host = hostOfUrl(url);
+  const host = siteOfUrl(url);
   const ask: Gate = { kind: "ask", ask: "open", host, name: "", prompt: `Open ${host}?`, detail: parsed.href };
   const { rule, site } = ruleFor(url, context.permissions);
   if (rule.browsing === "allow") return ALLOW;
@@ -202,7 +213,7 @@ export function gateElement(
   policy: SitePolicy,
   permissions: AgentPermissions,
 ): Gate {
-  const host = hostOfUrl(pageUrl) || "this site";
+  const host = siteOfUrl(pageUrl) || "this site";
   if (info.role === "file-input" || info.type === "file") {
     return { kind: "block", reason: "uploading files is not something the browser agent can do; ask the user to do it" };
   }

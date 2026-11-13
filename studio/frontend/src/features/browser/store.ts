@@ -12,6 +12,7 @@ import { copyTabPageStorage, dropTabPageStorage } from "./page-storage";
 import { setShownBrowserChat } from "./panel-availability";
 import { defaultZoom } from "./prefs-store";
 import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
+import { chatIsUnsaved, loadTabSession, sameKindOfChat, saveTabSession } from "./tab-session";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -104,6 +105,8 @@ type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolea
 
 /** The chat on screen before the chat page names it (chat-page.tsx `shownChatKey`). */
 export const NEW_CHAT = "new";
+/** chat-page.tsx's key for a chat whose thread id it doesn't know yet. */
+const UNNAMED_CHAT = "single:new";
 
 /** A saved chat's key, as chat-page.tsx names the chat on screen. */
 export function chatKeyOfThread(threadId: string): string {
@@ -495,6 +498,30 @@ export function chatTabs(state: Pick<BrowserState, "tabs" | "chat">): BrowserTab
 }
 
 export const useBrowserStore = create<BrowserState>((set, get) => {
+  const session = loadTabSession();
+  const { [NEW_CHAT]: shown, ...restoredChats } = session.chats;
+  // An unsaved chat returns from a reload under a new key: the first chat named takes its tabs and panel.
+  let restoredShown: string | null = null;
+  const claimRestored = (chat: string) => {
+    if (!restoredShown || chat === NEW_CHAT || chat === UNNAMED_CHAT) return;
+    const from = restoredShown;
+    restoredShown = null;
+    const state = get();
+    if (from === chat || !sameKindOfChat(from, chat) || state.tabs.some((tab) => tab.chat === chat)) return;
+    const { [from]: panel, ...chats } = state.chats;
+    const tabs = state.tabs.map((tab) => (tab.chat === from ? { ...tab, chat } : tab));
+    if (!panel) set({ tabs, chats });
+    else if (state.chat !== chat) set({ tabs, chats: { ...chats, [chat]: panel } });
+    else set({ tabs, chats, open: panel.open, activeTabId: panel.activeTabId, fullView: panel.fullView, floating: panel.floating });
+  };
+  if (session.shown) {
+    const shownBefore = session.shown;
+    void chatIsUnsaved(shownBefore).then((unsaved) => {
+      if (!unsaved) return;
+      restoredShown = shownBefore;
+      claimRestored(get().chat);
+    });
+  }
   const openTab = (tab: BrowserTab, background = false, after?: string, chat = get().chat) => {
     set((state) => {
       const owned = { ...tab, chat };
@@ -523,13 +550,14 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
   };
 
   return {
-    open: false,
-    tabs: [],
-    activeTabId: null,
+    open: shown?.open ?? false,
+    tabs: session.tabs,
+    activeTabId: shown?.activeTabId ?? null,
     chat: NEW_CHAT,
-    chats: {},
+    chats: restoredChats,
     showChat: (chat) => {
       forgetDeletedChats();
+      claimRestored(chat);
       const state = get();
       if (chat === state.chat) return;
       const chats = { ...state.chats };
@@ -577,6 +605,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         return { tabs, chats, chat: state.chat === from ? to : state.chat };
       });
       for (const listener of adoptListeners) listener(from, to);
+      claimRestored(to);
     },
     revealIn: (chat, tabId) => {
       if (chat === get().chat) {
@@ -615,8 +644,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     focusAddressSequence: 0,
     bookmarkSequence: 0,
     device: "off",
-    fullView: false,
-    floating: false,
+    fullView: shown?.fullView ?? false,
+    floating: shown?.floating ?? false,
     floatedForAgent: false,
     chatDock: "composer",
     chatSide: "left",
@@ -915,6 +944,11 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
 });
 
 useBrowserStore.subscribe((state) => setShownBrowserChat(state.chat));
+
+const SESSION_FIELDS = ["tabs", "chat", "chats", "open", "activeTabId", "fullView", "floating", "floatedForAgent"] as const;
+useBrowserStore.subscribe((state, previous) => {
+  if (SESSION_FIELDS.some((field) => state[field] !== previous[field])) saveTabSession(state);
+});
 
 const adoptListeners = new Set<(from: string, to: string) => void>();
 
