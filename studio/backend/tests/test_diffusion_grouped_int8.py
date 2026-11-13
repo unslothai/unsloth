@@ -385,7 +385,6 @@ def test_packed_wanted_rule(monkeypatch):
 def test_resident_estimate_prices_packed_int8_and_dense(tmp_path):
     path, _w, _t = _grouped_file(tmp_path, gi.W6A8, group = 32)
     path = str(path)
-    # 16 x 512 weights: packed 6144 B, int8 8192 B, fp32 dense 32768 B (+ scales), rounded up to MiB
     packed = cq.comfy_resident_mib(path, keep_int8 = True, keep_fp8 = False, grouped_packed = True)
     unpacked = cq.comfy_resident_mib(path, keep_int8 = True, keep_fp8 = False)
     dense = cq.comfy_resident_mib(path, keep_int8 = False, keep_fp8 = False, compute_bytes = 4)
@@ -466,7 +465,6 @@ def test_exporter_keeps_source_metadata_and_writes_a_readable_file(tmp_path):
     meta = {"config": json.dumps({"transformer": {"pdd_steps": 6}})}
     path = _save(tmp_path / "src.safetensors", src, meta)
     out = str(tmp_path / "out.safetensors")
-    # one shared codebook tensor for every layer: each written layer must own its copy
     res = gi.export_grouped_file(
         path,
         out,

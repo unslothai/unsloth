@@ -39,7 +39,6 @@ _ARCH_TILES: dict = {
 }
 _FALLBACK_TILES = ((128, _JOIN, (4, 6)),)
 
-# card index -> accepted rules (or None), and per-tile spill counts seen while probing
 _DEVICE: dict = {}
 _SPILLS: dict = {}
 
