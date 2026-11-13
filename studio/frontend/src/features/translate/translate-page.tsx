@@ -132,9 +132,16 @@ export function TranslatePage() {
 
   useEffect(() => () => abortRef.current?.abort(), []);
   // Chat adopts the server's loaded model; a direct visit or reload here never mounts Chat.
+  // Retried while nothing is adopted, since a load still running on the server is skipped.
   useEffect(() => {
+    if (checkpoint) return;
     void tryAdoptServerActiveModel();
-  }, []);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible")
+        void tryAdoptServerActiveModel();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [checkpoint]);
 
   const systemPrompt = useMemo(
     () => buildTranslateSystemPrompt({ source, target, mode, tone }),
@@ -166,17 +173,22 @@ export function TranslatePage() {
       });
       setOutput(result);
       if (result) {
-        addEntry({
-          id: crypto.randomUUID(),
-          createdAt: Date.now(),
-          source,
-          target,
-          mode,
-          tone,
-          input: text,
-          output: result,
-          model,
-        });
+        // Saving is separate: a full localStorage must not report a failed translation.
+        try {
+          addEntry({
+            id: crypto.randomUUID(),
+            createdAt: Date.now(),
+            source,
+            target,
+            mode,
+            tone,
+            input: text,
+            output: result,
+            model,
+          });
+        } catch {
+          // The entry stays in this window's history; only the persisted copy missed it.
+        }
       }
     } catch (error) {
       if (controller.signal.aborted) return;
