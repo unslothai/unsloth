@@ -409,7 +409,7 @@ def test_gemm_kernel_native_flag(monkeypatch):
     assert seen["NATIVE"] is False
 
 
-def _fold_block(cr):
+def _fold_block(cr, tracing_mode = "fake"):
     """A post-grad-like aten graph (make_fx with Inductor's decompositions) of an LTX-2.5 style sublayer pair: RMSNorm +
     AdaLN into a quant, the fused GEMM, tanh GELU into a quant, the GEMM, gated residual."""
     import torch
@@ -445,7 +445,7 @@ def _fold_block(cr):
         torch.rand(k, generator = g) * 1e-3,
     )
     decomp = select_decomp_table()
-    gm = make_fx(block, tracing_mode = "fake", decomposition_table = decomp)(*args)
+    gm = make_fx(block, tracing_mode = tracing_mode, decomposition_table = decomp)(*args)
     ref = make_fx(block, decomposition_table = decomp)(*args)(*args)
     return gm, args, ref
 
@@ -535,6 +535,23 @@ def test_pass_runs_the_folds_it_was_built_with(cr):
     names = _targets(gm)
     assert sum(n.endswith("native_cuda_i8mm_res.default") for n in names) == 1
     assert not any("i8mm_gelu" in n or "rotq_norm" in n for n in names)
+
+
+@pytest.mark.parametrize(
+    "fold, expected", [("fold_gelus", 1), ("fold_norms", 0), ("fold_residuals", 0)]
+)
+def test_folds_keep_a_dynamic_graph_dynamic(cr, fold, expected):
+    """A dynamic=True compile traces symbolic token counts: a fold that bakes the count in adds a shape guard, so the
+    graph recompiles per token count where the stock graph compiles once. The norm and residual folds keep the traced
+    maths there; the GELU fold needs no count and still folds."""
+    _arm_all(cr)
+    gm, _args, _ref = _fold_block(cr, tracing_mode = "symbolic")
+    x = next(n for n in gm.graph.nodes if n.op == "placeholder").meta["val"]
+    env = x.fake_mode.shape_env
+    assert not all(isinstance(d, int) for d in x.shape)  # the graph really is symbolic
+    before = [str(g.expr) for g in env.guards]
+    assert getattr(cr, fold)(gm.graph) == expected
+    assert [str(g.expr) for g in env.guards] == before
 
 
 def test_epilogue_and_prologue_references_on_cpu(cr):

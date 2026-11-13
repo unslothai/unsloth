@@ -1125,6 +1125,8 @@ def fold_norms(graph: Any) -> int:
         if hit is None:
             continue
         x, sc, sh, eps = hit
+        if not (isinstance(v.shape[1], int) and isinstance(_val(x).shape[1], int)):
+            continue  # a symbolic K or token count (dynamic=True): int() would specialise the graph to this shape
         k, group, tokens = int(v.shape[1]), int(node.args[1]), int(_val(x).shape[1])
         with graph.inserting_before(node):
             x2 = _fake_node(graph, torch.ops.aten.reshape.default, (x, [-1, k]))
@@ -1214,6 +1216,8 @@ def fold_residuals(graph: Any) -> int:
         if rv.dim() != 3 or tuple(rv.shape) != tuple(ov.shape) or gv.dim() != 3:
             continue
         b, t, n = rv.shape
+        if not isinstance(t, int):
+            continue  # a symbolic token count (dynamic=True): int(t) would recompile the graph per token count
         if b * t != yv_.shape[0] or n != yv_.shape[1] or gv.shape[2] != n:
             continue
         if gv.shape[1] not in (1, t) or gv.shape[0] not in (1, b):
