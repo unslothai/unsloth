@@ -106,7 +106,7 @@ export const AUDIO_ACTION_BUTTON =
 export const AUDIO_GO_BUTTON =
   "h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85";
 export const AUDIO_STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
-export const AUDIO_NOTE_SLOT = "min-h-[1lh] text-ui-11p5 leading-snug";
+export const AUDIO_NOTE_SLOT = "min-h-[1lh] text-ui-12 leading-normal";
 
 /** Under Generate: why it is off, then the fixes. One alternative sits inline; several share a menu. */
 export function BlockerNote({
@@ -864,7 +864,7 @@ export function TtsOutput({
                         : `Play ${clip.prompt}`
                     }
                     onClick={() => void rowPreview.toggle(clip.id)}
-                    className="relative mx-1.5 grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-wash-8 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="group/play relative mx-1.5 grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-wash-8 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {rowPreview.playingId === clip.id ? (
                       <HugeiconsIcon
@@ -876,11 +876,11 @@ export function TtsOutput({
                         <HugeiconsIcon
                           icon={AiSpeechIcon}
                           className={cn(
-                            "size-3.5 transition-opacity group-hover:opacity-0 group-has-[:focus-visible]:opacity-0 pointer-coarse:opacity-0",
+                            "size-3.5 transition-opacity group-hover:opacity-0 group-focus-visible/play:opacity-0 pointer-coarse:opacity-0",
                             clip.id === selectedId && "text-foreground",
                           )}
                         />
-                        <PlayIcon className="absolute size-3.5 opacity-0 transition-opacity group-hover:opacity-100 group-has-[:focus-visible]:opacity-100 pointer-coarse:opacity-100" />
+                        <PlayIcon className="absolute size-3.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible/play:opacity-100 pointer-coarse:opacity-100" />
                       </>
                     )}
                   </button>

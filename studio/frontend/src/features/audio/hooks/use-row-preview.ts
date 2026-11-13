@@ -12,6 +12,7 @@ export function useRowPreview(
 ) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const requestRef = useRef(0);
 
   useEffect(() => {
     const audio = new Audio();
@@ -35,6 +36,7 @@ export function useRowPreview(
 
   useEffect(() => {
     if (active) return;
+    requestRef.current += 1;
     audioRef.current?.pause();
     setPlayingId(null);
   }, [active]);
@@ -43,6 +45,7 @@ export function useRowPreview(
     async (id: string) => {
       const audio = audioRef.current;
       if (!audio) return;
+      const request = ++requestRef.current;
       if (playingId === id) {
         audio.pause();
         setPlayingId(null);
@@ -50,11 +53,16 @@ export function useRowPreview(
       }
       // Two clips never play over each other.
       for (const element of document.querySelectorAll("audio")) element.pause();
+      audio.pause();
       setPlayingId(id);
       try {
-        audio.src = srcById[id] ?? (await fetchGalleryAudioSignedUrl(id));
+        const src = srcById[id] ?? (await fetchGalleryAudioSignedUrl(id));
+        // A later click (or leaving the page) during the URL fetch wins.
+        if (request !== requestRef.current) return;
+        audio.src = src;
         await audio.play();
       } catch {
+        if (request !== requestRef.current) return;
         setPlayingId(null);
         toast.error("Could not play this clip.");
       }
