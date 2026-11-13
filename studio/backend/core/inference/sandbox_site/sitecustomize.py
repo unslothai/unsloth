@@ -426,20 +426,33 @@ def _stdlib_paths():
     ]
 
 
-def _config_chooses_location():
-    # pip's config files (PIP_CONFIG_FILE, the chat HOME's user files, the interpreter's site file) can set
-    # install.target / prefix / root / user too; PIP_PREFIX would then conflict with them.
-    if os.environ.get("PIP_CONFIG_FILE") == os.devnull:
+def _config_chooses_location(isolated = False):
+    # pip's config files can set install.target / prefix / root / user too; PIP_PREFIX would then conflict.
+    # Same files as pip's Configuration.iter_config_files: --isolated or an existing PIP_CONFIG_FILE drops the user ones.
+    env_file = os.environ.get("PIP_CONFIG_FILE")
+    if env_file == os.devnull:
         return False  # pip then loads no configuration file at all
+    name = "pip.ini" if sys.platform == "win32" else "pip.conf"
     home = os.path.expanduser("~")
-    files = [
-        os.environ.get("PIP_CONFIG_FILE", ""),
-        os.path.join(
-            os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "pip", "pip.conf"
-        ),
-        os.path.join(home, ".pip", "pip.conf"),
-        os.path.join(sys.prefix, "pip.conf"),
-    ]
+    if sys.platform == "win32":
+        system = [os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "pip")]
+        user = [os.path.join(home, "pip"), os.path.join(os.environ.get("APPDATA", home), "pip")]
+    else:
+        if sys.platform == "darwin":
+            system = ["/Library/Application Support/pip"]
+            mac = os.path.join(home, "Library", "Application Support", "pip")
+            config = mac if os.path.isdir(mac) else os.path.join(home, ".config", "pip")
+        else:
+            dirs = os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg"
+            system = [os.path.join(d, "pip") for d in dirs.split(os.pathsep) if d] + ["/etc"]
+            config = os.path.join(
+                os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "pip"
+            )
+        user = [os.path.join(home, ".pip"), config]
+    files = [os.path.join(d, name) for d in system]
+    if not isolated and not (env_file and os.path.exists(env_file)):
+        files += [os.path.join(d, name) for d in user]
+    files += [os.path.join(sys.prefix, name), env_file or ""]
     files = [f for f in files if f and f != os.devnull and os.path.isfile(f)]
     if not files:
         return False
@@ -490,7 +503,8 @@ def _route_pip():
             is_pip = _is_pip_launch()
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             placed = any(_chooses_location(a) for a in sys.argv[1:])
-            if "--isolated" not in sys.argv:
+            isolated = "--isolated" in sys.argv
+            if not isolated:
                 # --isolated makes pip ignore these, so then they choose nothing.
                 truthy = ("y", "yes", "t", "true", "on", "1")
                 placed = placed or any(
@@ -498,7 +512,7 @@ def _route_pip():
                 )
                 placed = placed or os.environ.get("PIP_USER", "").strip().lower() in truthy
                 placed = placed or os.environ.get("PIP_PREFIX", prefix) not in ("", prefix)
-                placed = placed or (is_pip and _config_chooses_location())
+            placed = placed or (is_pip and _config_chooses_location(isolated))
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
@@ -701,14 +715,13 @@ class _SessionPackagesFinder:
         if parent is None or not hasattr(path, "append"):
             return None
         # Only a package the chat installed into: parsing every parent __init__ would tax all imports.
-        portions = [
-            p
-            for p in (os.path.join(e, *parent.name.split(".")) for e in self._entries)
-            if p not in list(path) and os.path.isdir(p)
-        ]
-        if not portions:
+        parts = parent.name.split(".")
+        chat = [p for p in (os.path.join(e, *parts) for e in self._entries) if os.path.isdir(p)]
+        if not chat:
             return None
-        if parent.origin not in (None, "namespace"):
+        listed = {os.path.abspath(p) for p in path}
+        portions = [p for p in chat if os.path.abspath(p) not in listed]
+        if portions and parent.origin not in (None, "namespace"):
             if "ast" not in sys.modules:
                 # _extends_path imports ast: the stdlib one, never a chat-planted copy.
                 saved = sys.path[:]
@@ -721,8 +734,12 @@ class _SessionPackagesFinder:
                 return None
         for portion in portions:
             path.append(portion)
-        # Appended last, yet the session dirs precede Studio's on sys.path: their child wins, as on a fresh start.
-        return self._path_finder.find_spec(name, portions, target)
+        # A late portion sits last in __path__: search it in sys.path order, as a fresh start would, for every child.
+        rank = {}
+        for i, e in enumerate(sys.path):
+            rank.setdefault(os.path.abspath(os.path.join(e, *parts)), i)
+        ordered = sorted(path, key = lambda p: rank.get(os.path.abspath(p), len(rank)))
+        return self._path_finder.find_spec(name, ordered, target)
 
 
 _entries = _session_entries()

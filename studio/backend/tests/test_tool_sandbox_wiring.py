@@ -783,6 +783,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "config_target",
         "flat_then_venv",
         "config_devnull",
+        "config_file_drops_user",
+        "isolated_global_config",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -819,6 +821,13 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # PIP_CONFIG_FILE=/dev/null switches every config file off, the chat's user file included.
         "config_devnull": "mkdir -p .config/pip && printf '[install]\\ntarget = vendor\\n' > "
         f".config/pip/pip.conf && PIP_CONFIG_FILE=/dev/null {_PIP} {wheel} && {show}",
+        # An existing PIP_CONFIG_FILE makes pip skip the user file.
+        "config_file_drops_user": "mkdir -p .config/pip && printf '[install]\\ntarget = vendor\\n' > "
+        f".config/pip/pip.conf && touch empty.ini && PIP_CONFIG_FILE=empty.ini {_PIP} {wheel} && {show}",
+        # --isolated still reads the global and interpreter files.
+        "isolated_global_config": "mkdir -p xdg/pip && printf '[install]\\ntarget = vendor\\n' > xdg/pip/pip.conf"
+        f' && XDG_CONFIG_DIRS="$PWD/xdg" python -m pip --isolated install -q --no-index --no-deps {wheel}'
+        f" && PYTHONPATH=vendor {show}",
         "config_target": f"printf '[install]\\ntarget = vendor\\n' > pip.ini && PIP_CONFIG_FILE=pip.ini "
         f"{_PIP} {wheel} && PYTHONPATH=vendor {show}",
         # A --target install into the chat folder itself must not satisfy a project venv's pip either.
@@ -862,6 +871,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "abbrev_target": str(workdir / "vendor"),
         "config_target": str(workdir / "vendor"),
         "config_devnull": packages,
+        "config_file_drops_user": packages,
+        "isolated_global_config": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
         "clustered_target": str(workdir / "vendor"),
         "own_prefix": str(workdir / "deps"),
@@ -957,9 +968,9 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
         command = f'{_PIP} {wheel} && python -c "{show}"'
     elif case == "namespace_upgrade":
         # Studio's namespace is imported first, then a newer child lands in the chat folder.
-        studio_files = {f"{name}/child.py": ""}
-        wheel = _wheel(workdir, f"{name}_child", {f"{name}/child.py": ""}, "2.0")
-        post = f"import {name}.child as c; print(c.__file__)"
+        studio_files = {f"{name}/child.py": "", f"{name}/other.py": ""}
+        wheel = _wheel(workdir, f"{name}_child", studio_files, "2.0")
+        post = f"import {name}.child as c, {name}.other as o; print(c.__file__); print(o.__file__)"
         command = in_process.format(pre = f"import {name}; ", post = post) + f" {wheel}"
         expected = packages
     elif case == "upgrade":
@@ -1003,6 +1014,8 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
             capture_output = True,
         )
     assert f"{expected}{os.sep}" in out, out
+    if case == "namespace_upgrade":
+        assert out.count(f"{expected}{os.sep}") == 2, out
     if case in ("namespace", "pkgutil_namespace"):
         assert "['a', 'b']" in out, out
 
