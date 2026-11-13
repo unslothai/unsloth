@@ -35,6 +35,14 @@ test("every formatter names a BINARY unit, because every divide is binary", () =
   assert.equal(formatKvRate(1024 * 1024 * 3), "3.0 MiB");
 });
 
+test("formatKvRate moves to MiB when the KiB figure rounds to 1024", () => {
+  assert.equal(formatKvRate(1023 * 1024), "1023 KiB");
+  assert.equal(formatKvRate(1023.4 * 1024), "1023 KiB");
+  assert.equal(formatKvRate(1023.6 * 1024), "1.0 MiB");
+  assert.equal(formatKvRate(1024 * 1024 - 1), "1.0 MiB");
+  assert.equal(formatKvRate(1024 * 1024), "1.0 MiB");
+});
+
 test("the two size formatters take DIFFERENT units, and say so in their names", () => {
   // The old pair shared a name and signature but took bytes vs GiB, off by 1024^3.
   const oneGibAsBytes = GIB;
