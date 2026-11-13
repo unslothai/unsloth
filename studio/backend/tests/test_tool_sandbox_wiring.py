@@ -767,6 +767,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "env_target",
         "pip_user_off",
         "isolated",
+        "pip_python",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -790,6 +791,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "env_target": f"PIP_TARGET=vendor {_PIP} {wheel} && PYTHONPATH=vendor {show}",
         "pip_user_off": f"PIP_USER=0 {_PIP} {wheel} && {show}",
         "isolated": f"python -m pip --isolated install -q --no-index --no-deps {wheel} && {show}",
+        "pip_python": f"python -m venv venv && python -m pip --isolated --python venv/bin/python install -q "
+        f"--no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
         "editable": f"{_PIP} {wheel} && {show}",
         # Python caches the session dirs as missing at startup, before pip creates them.
         "same_process": 'python -c "import subprocess, sys; subprocess.check_call(sys.argv[1:]); '
@@ -818,6 +821,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "env_target": str(workdir / "vendor"),
         "pip_user_off": packages,
         "isolated": packages,
+        "pip_python": str(workdir / "venv"),
         "same_process": packages,
         "editable": str(workdir / "src"),
         "project_venv": str(workdir / "venv"),
@@ -986,6 +990,9 @@ def test_only_studios_pip_gets_the_chat_pip_prefix(tmp_path):
 
     assert f"PIP_PREFIX={packages!r}" in run(sys.executable, "-m", "pip", "config", "debug")
     assert run(sys.executable, *probe).strip() == "None"
+    script = tmp_path / "pipeline.py"
+    script.write_text(probe[1])
+    assert run(sys.executable, str(script)).strip() == "None"
     assert run(str(venv_python), *probe).strip() == "None"
 
 

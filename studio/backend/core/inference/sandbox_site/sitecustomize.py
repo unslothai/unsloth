@@ -336,7 +336,24 @@ class _HostPackagesFinder:
         )
 
 
-_PIP_LOCATION_FLAGS = frozenset(("-t", "--target", "--prefix", "--root", "--home", "--user"))
+# --python hands the install to another interpreter, whose own pip decides.
+_PIP_LOCATION_FLAGS = frozenset(
+    ("-t", "--target", "--prefix", "--root", "--home", "--user", "--python")
+)
+
+
+def _is_pip_script(path):
+    # pip, pip3, pip3.12, pip.exe, pip3-script.py: the console scripts, not any script whose name starts with pip.
+    name = os.path.basename(path).lower()
+    for suffix in (".exe", "-script.py"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    version = name[3:]
+    return (
+        name[:3] == "pip"
+        and not version.startswith(".")
+        and all(c.isdigit() or c == "." for c in version)
+    )
 
 
 _chat_prefix = None
@@ -360,7 +377,7 @@ def _route_pip():
             module = argv[argv.index("-m") + 1] if "-m" in argv[:-1] else ""
             # Python < 3.10 has no orig_argv: any -m launch counts.
             is_pip = module in ("pip", "pip.__main__") or (
-                not module and os.path.basename(sys.argv[0]).lower().startswith(("pip", "-m"))
+                not module and (sys.argv[0] == "-m" or _is_pip_script(sys.argv[0]))
             )
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             placed = any(
