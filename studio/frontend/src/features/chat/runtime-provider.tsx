@@ -1415,6 +1415,27 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       },
     };
   }
+  if (m.role === "system") {
+    const textPart = {
+      type: "text" as const,
+      text: content
+        .filter(
+          (part): part is Extract<typeof part, { type: "text" }> =>
+            part.type === "text",
+        )
+        .map((part) => part.text)
+        .join("\n"),
+    };
+    return {
+      id: m.id,
+      createdAt: new Date(m.createdAt),
+      role: "system" as const,
+      content: [textPart],
+      metadata: {
+        custom: (m.metadata as Record<string, unknown>) ?? {},
+      },
+    };
+  }
   const custom = (m.metadata as Record<string, unknown>) ?? {};
   const savedTiming = custom.timing as
     | import("@assistant-ui/react").MessageTiming
