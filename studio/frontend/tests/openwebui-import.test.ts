@@ -664,8 +664,8 @@ test("built-in Responses tools import as tool parts rather than disappearing", (
     calls.map((call) => call.toolName),
     ["web_search", "code_execution"],
   );
-  assert.deepEqual(calls[0].args, { type: "search", query: "lisbon weather" });
-  assert.deepEqual(calls[1].args, { kind: "bash", command: "ls -la" });
+  assert.deepEqual(calls[0].args, { type: "search", query: "lisbon weather", _server_tool: true });
+  assert.deepEqual(calls[1].args, { kind: "bash", command: "ls -la", _server_tool: true });
   assert.equal(calls[1].result, "total 0");
 });
 
@@ -706,10 +706,10 @@ test("non-function call items keep their name, arguments and result", () => {
   assert.ok(conversation);
   const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
   assert.equal(calls[0].toolName, "filesystem__read_file");
-  assert.deepEqual(calls[0].args, { path: "/tmp/notes.txt" });
+  assert.deepEqual(calls[0].args, { path: "/tmp/notes.txt", _server_tool: true });
   assert.equal(calls[0].result, "file contents");
   assert.equal(calls[1].toolName, "code_interpreter");
-  assert.deepEqual(calls[1].args, { command: "print(2 + 2)" });
+  assert.deepEqual(calls[1].args, { command: "print(2 + 2)", _server_tool: true });
 });
 
 test("builtin calls keep inline outputs and results arrays", () => {
@@ -756,9 +756,11 @@ test("builtin calls keep inline outputs and results arrays", () => {
   assert.deepEqual(calls[1].result, [
     { file_id: "f1", filename: "q3.pdf", score: 0.9, text: "rev" },
   ]);
-  // Client-run calls keep no status-based result; hosted calls default to completed.
+  // Client-run calls keep no status-based result and no hosted marker; hosted calls default to completed.
   assert.equal(calls[2].result, undefined);
+  assert.equal(calls[2].args._server_tool, undefined);
   assert.equal(calls[3].result, "completed");
+  assert.equal(calls[3].args._server_tool, true);
 });
 
 test("a multimodal turn keeps its text and image when detection routes it here", () => {

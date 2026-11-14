@@ -300,6 +300,7 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
       const commands = isDict(item.action) ? item.action.commands : undefined;
       const name = str(item.name) ?? builtin[1];
       const namespace = str(item.namespace) ?? str(item.server_label);
+      const hosted = !CLIENT_RUN_CALLS.has(item.type as string);
       const part: Dict = {
         type: "tool-call",
         toolCallId: callId,
@@ -323,6 +324,8 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
                         ? item.action
                         : {},
       };
+      // Marked like Studio's own hosted-tool cards, so replay never resends them as client calls.
+      if (hosted && isDict(part.args)) part.args = { ...part.args, _server_tool: true };
       const done =
         item.output ??
         (Array.isArray(item.outputs) && item.outputs.length > 0
@@ -333,7 +336,7 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
           : undefined) ??
         item.error ??
         // Client-run calls get their result from a later *_call_output; a hosted call finished.
-        (CLIENT_RUN_CALLS.has(item.type as string) ? undefined : (str(item.status) ?? "completed"));
+        (hosted ? (str(item.status) ?? "completed") : undefined);
       if (done != null) part.result = done;
       toolCallIndex.set(callId, part);
       parts.push(part);
