@@ -11024,6 +11024,7 @@ class DiffusionBackend:
                         logger = logger,
                         target = target,
                         requested = attention_backend,
+                        speed_active = effective_speed != SPEED_OFF,
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.

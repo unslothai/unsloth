@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import sys
 import threading
@@ -15,14 +16,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+import structlog
+
+from core.inference import npu_memory
 from core.inference.flm_files import (
+    FlmDownloadCancelled,
     FlmDownloadError,
     FlmModelFiles,
     download_files,
     read_model_files,
     read_model_repo,
 )
-from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
+from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable, OutputWindow
 from core.inference.npu_context import DEFAULT_CONTEXT_LENGTH, plan_context
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -37,6 +42,7 @@ from utils.process_lifetime import (
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
+_events = structlog.get_logger(__name__)
 
 MODEL_PREFIX = "lemonade:"
 PROVIDER_TYPE = "lemonade"
@@ -70,6 +76,35 @@ _FLM_CONTEXT_LIMITS = {
         32768,
     ),
 }
+_LEMOND_ERROR = re.compile(r"\[(?:Error|Fatal)\]\s*\([^)]*\)\s*(.+)")
+# FastFlowLM failures a user can act on, by what flm or lemond prints. First match wins.
+_FLM_ADVICE = (
+    # FastFlowLM#904 and flm's buffer.hpp. Ahead of the hardware context entry on purpose.
+    (
+        re.compile(
+            r"hw context instruction buffers"
+            r"|Failed to allocate (?:flm_rt::ext::bo|bytes of size)",
+            re.IGNORECASE,
+        ),
+        "The NPU ran out of memory. Windows gives the NPU about half of system RAM, so close "
+        "other apps, lower the context length or pick a smaller model.",
+    ),
+    (
+        re.compile(r"CREATE_HWCTX", re.IGNORECASE),
+        "The NPU could not open a hardware context. Close other apps using the NPU, and update "
+        "the AMD NPU driver if it keeps happening.",
+    ),
+    # FastFlowLM#685: weights from an older flm pass its file check, then crash the load.
+    (
+        re.compile(r"Local model \S+ version: \S+ < "),
+        "These model files are from an older FastFlowLM. Delete the model and download it again.",
+    ),
+    # FastFlowLM#973: STATUS_SYSTEM_INTEGRITY_POLICY_VIOLATION, also as lemond prints an exit code.
+    (
+        re.compile(r"0xC0E90002|-1058471934|\b3236495362\b", re.IGNORECASE),
+        "Windows Smart App Control or an App Control policy blocked FastFlowLM (flm.exe).",
+    ),
+)
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
@@ -96,6 +131,10 @@ class NpuLoadCancelled(NpuError):
     """A load was stopped by cancel_load."""
 
 
+class NpuDownloadCancelled(NpuError):
+    """A download was stopped on request; its partial files stay for a resume."""
+
+
 @dataclass(frozen = True)
 class NpuModel:
     id: str
@@ -107,6 +146,8 @@ class NpuModel:
     resume_percent: Optional[int] = None
     hf_repo: Optional[str] = None
     hf_revision: Optional[str] = None
+    memory_needed_gb: Optional[float] = None
+    fits_memory: Optional[bool] = None
 
     @property
     def vision(self) -> bool:
@@ -139,6 +180,8 @@ class NpuModel:
             "resume_percent": self.resume_percent,
             "hf_repo": self.hf_repo,
             "hf_revision": self.hf_revision,
+            "memory_needed_gb": self.memory_needed_gb,
+            "fits_memory": self.fits_memory,
         }
 
 
@@ -240,6 +283,48 @@ def _failed(response) -> bool:
     except ValueError:
         return False
     return isinstance(body, dict) and ("error" in body or body.get("status") == "error")
+
+
+def _already_said(message: str, reason: str) -> bool:
+    # lemond wraps one failure in prefixes ("Backend load failed: FLM pull failed ...").
+    # A one-word tail ("1" of "exit code: 1") would match digits in a model name.
+    while " " in reason:
+        if reason in message or message in reason:
+            return True
+        reason = reason.partition(": ")[2]
+    return False
+
+
+def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], message: str) -> str:
+    """``message`` plus the first error lemond printed in ``window`` that it does not already
+    say, and what to do about a FastFlowLM failure it names. Logs that output at warning, since
+    lemond's lines are otherwise debug-only, and notes the outcome in the Lemonade log. A window
+    shared with another request gets no reason pinned on it."""
+    lines = server.output_since(window.start) if server is not None and window is not None else []
+    shared = window is not None and window.shared
+    explained = message
+    for line in [] if shared else lines:
+        match = _LEMOND_ERROR.search(line)
+        reason = match.group(1).strip() if match else ""
+        if reason and not reason.endswith(":") and not _already_said(message, reason):
+            explained = f"{message} ({reason[:300]})"
+            break
+    seen = "\n".join([message] if shared else [message, *lines])
+    advice = next((text for pattern, text in _FLM_ADVICE if pattern.search(seen)), "")
+    log_name = server.log_path.name if server is not None and server.log_path else None
+    if server is not None:
+        server.note(f"Request failed: {explained}")
+    if lines:
+        _events.warning(
+            "Lemonade output before the NPU error",
+            error = message,
+            lemonade_log = log_name,
+            lemonade_output = lines,
+            overlapped_another_request = shared,
+        )
+    if explained == message and log_name:
+        explained = f"{message} (Lemonade's output is on the Logs page.)"
+    return f"{explained} {advice}".rstrip()
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -453,6 +538,7 @@ class LemonadeNpuBackend:
             "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
             "versions": self._versions(binary, validated),
+            "memory_window_gb": npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb()),
         }
 
     def _server_for(self, binary: Path) -> LemonadeServer:
@@ -461,6 +547,7 @@ class LemonadeNpuBackend:
             cache_dir = self.root / "cache",
             config_dir = self.root / "config",
             flm_model_dir = self._flm_model_dir,
+            log_dir = self.root.parent / "logs" / "lemonade",
         )
 
     def _require_supported(self) -> None:
@@ -633,6 +720,7 @@ class LemonadeNpuBackend:
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         models: list[NpuModel] = []
         flm_binary = self._flm_binary()
+        window_gb = npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb())
         for row in response.json().get("data") or []:
             if not isinstance(row, dict) or row.get("recipe") != "flm":
                 continue
@@ -640,6 +728,7 @@ class LemonadeNpuBackend:
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
                 continue
             size = row.get("size")
+            size_gb = float(size) if isinstance(size, (int, float)) else None
             checkpoint = str(row.get("checkpoint") or "")
             downloaded = bool(row.get("downloaded"))
             files = None if downloaded else self._model_files(checkpoint, flm_binary)
@@ -648,7 +737,7 @@ class LemonadeNpuBackend:
                 NpuModel(
                     id = str(row.get("id")),
                     checkpoint = checkpoint,
-                    size_gb = float(size) if isinstance(size, (int, float)) else None,
+                    size_gb = size_gb,
                     downloaded = downloaded,
                     labels = labels,
                     max_context_length = _max_context_length(
@@ -657,6 +746,8 @@ class LemonadeNpuBackend:
                     resume_percent = files.resume_percent() if files else None,
                     hf_repo = hf_repo,
                     hf_revision = hf_revision,
+                    memory_needed_gb = npu_memory.npu_memory_needed_gb(size_gb),
+                    fits_memory = npu_memory.fits_npu_memory(size_gb, window_gb),
                 )
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
@@ -680,9 +771,14 @@ class LemonadeNpuBackend:
             raise NpuError(f"{model.id} is not downloaded yet.")
         return model
 
-    def download(self, model_id: str) -> Iterator[dict[str, Any]]:
+    def download(
+        self,
+        model_id: str,
+        cancel: Optional[threading.Event] = None,
+    ) -> Iterator[dict[str, Any]]:
         """Raises unless lemond sends its complete event, since a cut-short stream leaves a partial
-        model."""
+        model. Setting ``cancel`` raises NpuDownloadCancelled at the next chunk."""
+        cancel = cancel or threading.Event()
         model = self._model(model_id)
         server = self._ensure_running()
         files = (
@@ -690,9 +786,12 @@ class LemonadeNpuBackend:
         )
         if files is not None:
             try:
-                yield from download_files(files)
+                yield from download_files(files, cancel = cancel)
+            except FlmDownloadCancelled as exc:
+                raise NpuDownloadCancelled(f"Downloading {model.id} was cancelled.") from exc
             except FlmDownloadError as exc:
                 raise NpuError(str(exc)) from exc
+            yield {"event": "finishing", "percent": 99}
         elif not model.downloaded:
             logger.warning(
                 "FastFlowLM's file list is unreadable; lemond downloads %s, without resume",
@@ -712,6 +811,8 @@ class LemonadeNpuBackend:
                 response.read()
                 raise NpuError(f"Downloading {model.id} failed: {_error_message(response)}")
             for line in response.iter_lines():
+                if cancel.is_set():
+                    raise NpuDownloadCancelled(f"Downloading {model.id} was cancelled.")
                 if line.startswith("event:"):
                     event = line[len("event:") :].strip() or "progress"
                     continue
@@ -731,8 +832,9 @@ class LemonadeNpuBackend:
                 if isinstance(data, dict) and data.get("status") == "error":
                     raise NpuError(f"Downloading {model.id} failed: {data.get('message') or data}")
                 completed = completed or event == "complete"
-                # lemond's per-file percent would move the bar backwards after Studio's download.
-                if isinstance(data, dict) and (files is None or event == "complete"):
+                # After Studio's own download lemond only registers the files: relay nothing, its
+                # per-file percent would move the bar backwards and its complete precedes Studio's.
+                if isinstance(data, dict) and files is None:
                     yield {"event": event, **data}
                 event = "progress"
         if not completed:
@@ -760,6 +862,7 @@ class LemonadeNpuBackend:
             with self._commit_lock:
                 self._load_cancelled.clear()
                 self._loading = model_id
+            window = None
             replaced = False
             loaded = False
             try:
@@ -777,15 +880,23 @@ class LemonadeNpuBackend:
                 ctx = plan.context_length
                 replaced = True
                 self._raise_if_load_cancelled(model_id)
-                response = server.request(
-                    "POST",
-                    "/v1/load",
-                    json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False},
-                    timeout = 900.0,
-                )
-                self._raise_if_load_cancelled(model_id)
-                if _failed(response):
-                    raise NpuError(f"Loading {model.id} failed: {_error_message(response)}")
+                server.note(f"Loading {model.id} with a {ctx}-token context")
+                window = server.open_window()
+                with server.backend_output(window):
+                    response = server.request(
+                        "POST",
+                        "/v1/load",
+                        json_body = {
+                            "model_name": model.id,
+                            "ctx_size": ctx,
+                            "save_options": False,
+                        },
+                        timeout = 900.0,
+                    )
+                    self._raise_if_load_cancelled(model_id)
+                    if _failed(response):
+                        reason = _explain(server, window, _error_message(response))
+                        raise NpuError(f"Loading {model.id} failed: {reason}")
                 resident_ctx = self._resident_context(server, model.id)
                 if resident_ctx is None:
                     raise NpuError(f"Lemonade did not report {model.id} as loaded on the NPU.")
@@ -806,7 +917,8 @@ class LemonadeNpuBackend:
                 return model
             except LemonadeUnavailable as exc:
                 self._raise_if_load_cancelled(model_id)
-                raise NpuError(f"Loading {model_id} failed: {exc}") from exc
+                reason = self.explain_failure(window, str(exc))
+                raise NpuError(f"Loading {model_id} failed: {reason}") from exc
             finally:
                 self._loading = None
                 if replaced and not loaded and self._server is not None:
@@ -870,6 +982,17 @@ class LemonadeNpuBackend:
                     )
                     server.stop()
             return loaded.model.model_path
+
+    def output_mark(self, upstream: ManagedUpstream) -> Optional[OutputWindow]:
+        server = self._server
+        # Each daemon start gets a fresh key. A restart after routing must not claim this chat.
+        if server is None or server.api_key != upstream.api_key:
+            return None
+        return server.open_window()
+
+    def explain_failure(self, window: Optional[OutputWindow], message: str) -> str:
+        """An NPU chat error ``message`` with the reason lemond printed in ``window``."""
+        return _explain(window.server, window, message) if window is not None else message
 
     def upstream(self) -> ManagedUpstream:
         # Lock-free: a chat must not wait behind an enable() or delete() holding the lock.
