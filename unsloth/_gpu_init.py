@@ -373,6 +373,7 @@ from .import_fixes import (
     fix_cudnn_sdpa_backward_grad_layout,
     fix_cudnn_sdpa_known_bad_shapes,
     fix_rocm_windows_fused_sdpa,
+    fix_rocm_sdpa_backward_layout,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
@@ -467,6 +468,8 @@ fix_cudnn_sdpa_backward_grad_layout()
 fix_cudnn_sdpa_known_bad_shapes()
 # Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
 fix_rocm_windows_fused_sdpa()
+# ROCm only, probe-gated: fused SDPA backward strides differ from the fake kernel's (gfx942, #17548).
+fix_rocm_sdpa_backward_layout()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
@@ -535,6 +538,7 @@ del fix_cudnn_sdpa_d256_masked_backward
 del fix_cudnn_sdpa_backward_grad_layout
 del fix_cudnn_sdpa_known_bad_shapes
 del fix_rocm_windows_fused_sdpa
+del fix_rocm_sdpa_backward_layout
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del fix_inductor_reduction_readback_race
