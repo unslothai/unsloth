@@ -47,6 +47,7 @@ import {
   ApiIcon,
   Clock01Icon,
   Download01Icon,
+  TranslateIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -309,6 +310,13 @@ function PaletteContent() {
           >
             <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.tasks")}</span>
+          </PaletteItem>
+          <PaletteItem
+            onSelect={runAndClose(() => void navigate({ to: "/translate" }))}
+            keywords={["translate", "translation", "language"]}
+          >
+            <HugeiconsIcon icon={TranslateIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.translate")}</span>
           </PaletteItem>
           <PaletteItem
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}

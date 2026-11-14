@@ -54,6 +54,7 @@ export type {
 export {
   applyActiveModelStatusToStore,
   resolveInferenceCheckpointId,
+  tryAdoptServerActiveModel,
 } from "./lib/apply-inference-status-to-store";
 export { isSpeechOnlyStatus } from "./lib/speech-only-status";
 export {
@@ -68,6 +69,7 @@ export {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
+export { streamOneShotCompletion } from "./utils/one-shot-completion";
 export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
 export { forgetAgentsMd } from "./utils/agents-md";
 export { refreshContextUsage } from "./utils/refresh-context-usage";
