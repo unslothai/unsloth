@@ -207,8 +207,7 @@ def prepare_bf16_training(model):
 
 def _cpu_update(p, g, m, v, step, lr, seed, beta1, beta2, eps, weight_decay):
     generator = torch.Generator(device = "cpu")
-    # torch's CPU generator keeps only the low 32 bits of a seed, and sr_seed holds the parameter
-    # index in the high 32: mix all 64 bits (splitmix64) so streams do not repeat across parameters.
+    # CPU generators keep only the low 32 seed bits; sr_seed holds the index in the high 32 (splitmix64).
     z = (int(seed) + int(step)) % (2**63 - 1)
     z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & (2**64 - 1)
     z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & (2**64 - 1)
