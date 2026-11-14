@@ -25,6 +25,7 @@ import {
   voiceRevealText,
   takeTypedDraft,
   voiceWroteBox,
+  withoutVoiceText,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
 import { splitStreaming, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
@@ -133,6 +134,7 @@ function speaksWithChatModel(): boolean {
   return isChatModelVoice(s.selectedVoiceModelId) && chatModelSpeaks(s);
 }
 
+const IGNORE_MAX_WORDS = 3;
 const VOICE_COALESCE_MS = 250;
 const VOICE_COALESCE_POLL_MS = 250;
 // After a barge-in cut an unanswered run the user tends to keep going; each restart threw the thinking away.
@@ -188,7 +190,9 @@ export const VoiceEngine: FC = () => {
       // Already listening: startDictation() on a live session tears the mic down.
       if (fresh.getState().dictation) return;
       // assistant-ui appends transcripts onto the box text and the adapter emits the whole turn, so leftovers double up.
-      if (voiceWroteBox(fresh.getState().text) && !isComposerHeldForEdit()) fresh.setText("");
+      // A typed draft ahead of a held fragment stays: only the fragment goes.
+      const typed = isComposerHeldForEdit() ? null : withoutVoiceText(fresh.getState().text);
+      if (typed !== null) fresh.setText(typed);
       // Start dictation via the composer runtime, NOT by clicking the Dictate
       // button: in voice mode that button is hidden/replaced by the orb, so a
       // DOM query returns null and the mic never opens (silent green orb).
@@ -819,13 +823,15 @@ export const VoiceEngine: FC = () => {
     // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
     // on its own, and the two go as one when the reply ends.
     const continuing = queuedUtteranceRef.current.length > 0 && !repeated;
+    // An "ignore" drops the words; past a backchannel's length a wrong one loses a whole correction, so it waits instead.
+    const tooLongToIgnore = text.trim().split(/\s+/).length > IGNORE_MAX_WORDS;
     const awaitingApproval = voicedApprovalCount(useChatRuntimeStore.getState()) > 0;
     const action = interjectUnderApproval(
       sameAsk
         ? "ignore"
         : verdict !== "restart" && repeated
           ? "restart"
-          : continuing && verdict === "ignore"
+          : (continuing || tooLongToIgnore) && verdict === "ignore"
             ? "queue"
             : verdict,
       awaitingApproval,

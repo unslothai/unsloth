@@ -957,3 +957,13 @@ def test_a_detect_that_loads_the_detector_records_its_account(monkeypatch):
         == 200
     )
     assert access._resident_accounts["vad"][0] == BOB.account_id
+
+
+def test_vad_routes_never_read_the_locked_resident_on_the_event_loop():
+    import inspect
+    for route in (inference.vad_unload, inference.vad_detect):
+        source = inspect.getsource(route)
+        assert "sidecar.loaded_model" in source
+        for line in source.splitlines():
+            if "sidecar.loaded_model" in line:
+                assert "asyncio.to_thread(lambda: sidecar.loaded_model)" in line, line

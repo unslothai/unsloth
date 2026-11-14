@@ -827,7 +827,8 @@ class _OnnxJudge:
         from tokenizers import Tokenizer
 
         self.tok = Tokenizer.from_file(str(d / "tokenizer.json"))
-        self.tok.enable_truncation(JUDGE_MAX_LENGTH)
+        # Left: whether a turn is finished is decided by its last words, which right truncation drops.
+        self.tok.enable_truncation(JUDGE_MAX_LENGTH, direction = "left")
         self.session = _ort_session(d / "onnx" / "model_int8.onnx")
         self.inputs = {x.name for x in self.session.get_inputs()}
         self("warm up")
@@ -856,6 +857,7 @@ class _TorchJudge:
         torch.set_num_threads(JUDGE_THREADS)
         self.torch = torch
         self.tok = AutoTokenizer.from_pretrained(d)
+        self.tok.truncation_side = "left"
         self.model = AutoModelForSequenceClassification.from_pretrained(
             d, attn_implementation = "sdpa"
         ).eval()

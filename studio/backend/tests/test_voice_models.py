@@ -605,3 +605,19 @@ def test_voice_pickles_refuse_classes_that_open_files(tmp_path, module, name):
     with pytest.raises(pickle.UnpicklingError, match = "not allowed"):
         vm._TfidfClassifier(tmp_path)
     assert target.read_text(encoding = "utf-8") == "keep me"
+
+
+def test_the_turn_judges_keep_the_end_of_a_long_transcript():
+    import inspect
+
+    from core.inference import voice_models
+
+    assert 'enable_truncation(JUDGE_MAX_LENGTH, direction = "left")' in inspect.getsource(
+        voice_models._OnnxJudge
+    )
+    torch_judge = next(
+        c
+        for c in vars(voice_models).values()
+        if inspect.isclass(c) and getattr(c, "backend", None) == "modernbert"
+    )
+    assert 'self.tok.truncation_side = "left"' in inspect.getsource(torch_judge)
