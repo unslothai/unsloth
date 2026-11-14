@@ -113,3 +113,36 @@ def test_full_history_without_history_reference_preserves_dispatch(
     assert response.status_code == 200
     assert messages_seen == [(item["role"], item["content"]) for item in history]
     assert switch.await_count == int(stream)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("referenced_id", ["msg_0123456789ab", "rs_0123456789ab"])
+def test_item_reference_is_rejected_instead_of_dropped(
+    monkeypatch, responses_client, stream, referenced_id
+):
+    switch = AsyncMock(side_effect = AssertionError("model switch reached"))
+    generate = AsyncMock(side_effect = AssertionError("generation reached"))
+    monkeypatch.setattr(inference, "_maybe_auto_switch_model", switch)
+    monkeypatch.setattr(inference, "_responses_stream", generate)
+    monkeypatch.setattr(inference, "_responses_non_streaming", generate)
+
+    response = responses_client.post(
+        "/v1/responses",
+        json = {
+            "input": [
+                {"role": "user", "content": "My project code is AZURE-317."},
+                {"type": "item_reference", "id": referenced_id},
+                {"role": "user", "content": "What was my project code?"},
+            ],
+            "stream": stream,
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "unsupported_parameter"
+    assert error["param"] == "input"
+    assert "item_reference" in error["message"]
+    assert "full conversation history" in error["message"]
+    switch.assert_not_called()
+    generate.assert_not_called()

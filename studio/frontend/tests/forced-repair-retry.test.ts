@@ -60,7 +60,7 @@ function runRetry(status: string, forced: boolean): Run {
     setCurrentStepIndex: noop,
     setProgressDetail: noop,
     setElevationPackages: noop,
-    setIsExternalServer: noop,
+    setExternalServerPort: noop,
     stopExternalServerPoll: noop,
     stopManagedEnvironmentWait: noop,
   };

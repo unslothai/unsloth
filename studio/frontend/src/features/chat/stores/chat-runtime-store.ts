@@ -20,6 +20,8 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { persistReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
   loadedContextFields,
   type MlxKvQuant,
@@ -448,6 +450,10 @@ export type LiveGenerationProgress = {
   /** Whether "Processing prompt" is up for this pass; see prefillLabelShown. */
   prefillShown: boolean;
   decode: LiveDecodeProgress | null;
+  /** The context fit is evicting turns; ends with this pass's context_truncated or its first prefill sample. */
+  compacting?: boolean;
+  /** This pass's own context_usage has landed: it counts the reply exactly, so live figures step aside. */
+  settled?: boolean;
 };
 export type PendingImageEditReference = {
   threadId: string | null;
@@ -1191,7 +1197,11 @@ function firstSetThreadScopedValue(...values: unknown[]): unknown {
   return values.find((value) => value !== undefined);
 }
 
+/** The model-derived params the latest restore laid the open chat's values over. */
+let paramsUnderChatValues: InferenceParams | null = null;
+
 function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
+  paramsUnderChatValues = params;
   const kept: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     const held = firstSetThreadScopedValue(
@@ -1274,6 +1284,35 @@ function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   return false;
 }
 
+/** Puts the chat's own values back where the store shows the loaded model's or a provider's. */
+function restoreChatOwnedValues(
+  threadId: string,
+  settings: ThreadScopedSettings,
+): void {
+  // A model that cannot stop thinking forces thinking on: that true is the model's, so
+  // persisting it would erase a chat's stored false.
+  if (
+    threadId === threadScopedSettingsThreadId &&
+    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
+    activeThreadScopedSettings?.reasoningEnabled === false &&
+    settings.reasoningEnabled !== false &&
+    useChatRuntimeStore.getState().reasoningAlwaysOn
+  ) {
+    settings.reasoningEnabled = false;
+  }
+  if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
+    const onRecord = reasoningEffortOnRecord();
+    if (onRecord !== undefined) settings.reasoningEffort = onRecord;
+  }
+  // A provider constraint moves pills without persisting: the chat keeps its stored value.
+  if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
+    settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
+  }
+  if (keepsStoredValueUnderConstraint("toolsEnabled", threadId, settings)) {
+    settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
+  }
+}
+
 function buildThreadScopedSnapshot(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
@@ -1288,29 +1327,7 @@ function buildThreadScopedSnapshot(
   ) {
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
-  // And for thinking, which a model that cannot stop thinking forces on: that true is the
-  // model's, so persisting it would erase a chat's stored false.
-  if (
-    threadId === threadScopedSettingsThreadId &&
-    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
-    activeThreadScopedSettings?.reasoningEnabled === false &&
-    settings.reasoningEnabled !== false &&
-    useChatRuntimeStore.getState().reasoningAlwaysOn
-  ) {
-    settings.reasoningEnabled = false;
-  }
-  if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
-    const onRecord = reasoningEffortOnRecord();
-    if (onRecord !== undefined) settings.reasoningEffort = onRecord;
-  }
-  // And for pills a provider constraint moved without persisting: the store holds the
-  // provider's value, so the chat keeps the one it was stored with.
-  if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
-    settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
-  }
-  if (keepsStoredValueUnderConstraint("toolsEnabled", threadId, settings)) {
-    settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
-  }
+  restoreChatOwnedValues(threadId, settings);
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
@@ -1975,6 +1992,48 @@ function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
     : false;
 }
 
+/** `state` with the paired chat's own values where the store shows its model's (pill clamps, a pin). */
+export function withChatOwnedSettings<T extends ChatRuntimeStore>(state: T): T {
+  const owned: ThreadScopedSettings = {
+    reasoningEnabled: state.reasoningEnabled,
+    reasoningEffort: state.reasoningEffort,
+  };
+  for (const key of CLAMPED_PILL_KEYS) {
+    owned[key] = readThreadScopedValue(state, key) === true;
+  }
+  if (threadScopedSettingsThreadId !== null) {
+    restoreChatOwnedValues(threadScopedSettingsThreadId, owned);
+  }
+  // Sampling the chat does not own is left unset: a new model's load supplies it (restoreThreadScopedParams).
+  const params: Record<string, unknown> = { ...state.params };
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (firstSetThreadScopedValue(heldThreadScopedParamValue(key), threadScopedOverride(key)) === undefined) {
+      params[key] = undefined;
+    }
+  }
+  return { ...state, ...owned, params: params as unknown as T["params"] };
+}
+
+/** `run`, which carries the model `live` just loaded, with what that load sets: pill clamps, its effort pin, Think, unowned sampling. */
+export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, live: T): T {
+  const next: Record<string, unknown> = { ...run };
+  for (const key of CLAMPED_PILL_KEYS) {
+    next[key] = run[key] === true && !isPillClampedOff(run, key);
+  }
+  if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
+  // Every load writes Think from the model (pin, forced gates, default), not from the chat.
+  next.reasoningEnabled = live.reasoningEnabled;
+  const loaded = (paramsUnderChatValues?.checkpoint === live.params.checkpoint
+    ? paramsUnderChatValues
+    : live.params) as unknown as Record<string, unknown>;
+  const params: Record<string, unknown> = { ...run.params };
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (params[key] === undefined) params[key] = loaded[key];
+  }
+  next.params = params;
+  return next as T;
+}
+
 /** Read the level live: Full access outlives a chat switch but codeToolsEnabled does not. */
 export function codeToolsOn(
   state: Pick<
@@ -2378,6 +2437,7 @@ type ChatRuntimeStore = {
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
+  loadedNpuContextFit: number | null;
   loadedContextBudget: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
@@ -2540,6 +2600,9 @@ type ChatRuntimeStore = {
   loadedCtxCheckpoints: number | null;
   cacheRam: number | null;
   loadedCacheRam: number | null;
+  /** GGUF only: standalone Engram table precision as chosen and as the resident load ran it. */
+  engramPrecision: string | null;
+  loadedEngramPrecision: string | null;
   tensorParallel: boolean;
   loadedTensorParallel: boolean | null;
   loadedDisableVision: boolean | null;
@@ -2610,7 +2673,7 @@ type ChatRuntimeStore = {
       fromModelDefaults?: boolean;
       maxTokensCap?: number;
       migrateOwnedGlobalQwenDefaults?: boolean;
-      /** A preset pick: not an edit of the loaded model, so its remembered params are dropped
+      /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
     },
@@ -2737,7 +2800,9 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setLivePrefill: (threadId: string | null, prefill: LivePrefillProgress) => void;
   setLiveDecode: (threadId: string | null, decode: LiveDecodeProgress) => void;
+  setLiveCompacting: (threadId: string | null, compacting: boolean) => void;
   clearLiveGenerationForThread: (threadId: string | null) => void;
+  settleLiveGeneration: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
@@ -4188,6 +4253,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedContextEnforced: null,
   loadedContextUnboundedWhenBatched: false,
   loadedParallelSlots: null,
+  loadedNpuContextFit: null,
   loadedContextBudget: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
@@ -4321,6 +4387,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedCtxCheckpoints: null,
   cacheRam: null,
   loadedCacheRam: null,
+  engramPrecision: null,
+  loadedEngramPrecision: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   loadedDisableVision: null,
@@ -5260,6 +5328,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedCtxCheckpoints: null,
       cacheRam: null,
       loadedCacheRam: null,
+      engramPrecision: null,
+      loadedEngramPrecision: null,
       tensorParallel: false,
       loadedTensorParallel: null,
   loadedDisableVision: null,
@@ -5294,6 +5364,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+        if (
+          state.params.checkpoint &&
+          state.supportsReasoning &&
+          !state.reasoningAlwaysOn &&
+          state.supportsReasoningOff
+        ) {
+          persistReasoningEnabled(state.params.checkpoint, reasoningEnabled);
+        }
       } else {
         noteConstraintSuppressedThreadField("reasoningEnabled");
       }
@@ -5991,8 +6069,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             prefill: current?.prefill ?? null,
             prefillShown: current?.prefillShown ?? false,
             decode,
+            ...(current?.settled ? { settled: true } : {}),
           },
         },
+      };
+    }),
+  setLiveCompacting: (threadId, compacting) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (!compacting && !current?.compacting) return state;
+      // A new pass: the last round's prefill and decode figures describe a prompt the fit is replacing.
+      const next: LiveGenerationProgress = compacting
+        ? { prefill: null, prefillShown: false, decode: null, compacting: true }
+        : { ...current!, compacting: false };
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: next },
+      };
+    }),
+  settleLiveGeneration: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      if (current === undefined || current.settled) return state;
+      return {
+        liveGenerationByThreadId: { ...state.liveGenerationByThreadId, [key]: { ...current, settled: true } },
       };
     }),
   clearLiveGenerationForThread: (threadId) =>

@@ -155,7 +155,14 @@ def _decoder_itemsize(vae: Any) -> int:
 
 
 def _free_bytes(device: Any) -> Optional[int]:
-    """Device free memory plus torch's reusable cache (not CUDA graph pools), less the user's VRAM Budget reserve (raw at the default)."""
+    """Free device memory + torch's reusable cache (not graph pools) minus the VRAM Budget reserve; CPU: cgroup-capped MemAvailable."""
+    if getattr(device, "type", device) == "cpu":
+        try:
+            from .diffusion_memory import _available_system_memory_mib
+            mib = _available_system_memory_mib()
+        except Exception:  # noqa: BLE001
+            return None
+        return None if mib is None else max(0, int(mib)) * 2**20
     try:
         import torch
 
@@ -166,6 +173,26 @@ def _free_bytes(device: Any) -> Optional[int]:
         return max(0, int(free) + cached - user_budget_reserve_bytes(device, total))
     except Exception:  # noqa: BLE001
         return None
+
+
+# torch's CPU allocator refusals: ``not enough memory`` (Windows commit limit), ``can't allocate memory`` (POSIX ENOMEM).
+_CPU_ALLOC_REFUSALS = ("not enough memory", "can't allocate memory")
+
+
+def _is_oom(exc: BaseException) -> bool:
+    from .diffusion_batched import is_oom_error
+
+    if is_oom_error(exc):
+        return True
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        msg = str(cur).lower()
+        if any(s in msg for s in _CPU_ALLOC_REFUSALS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _in_chain(fn: Any, target: Any) -> bool:
@@ -325,14 +352,12 @@ def install_untiled_decode(
                 )
             import torch
 
-            from .diffusion_batched import is_oom_error
-
             try:
                 out = decode(z, *args, **kwargs)
                 stats["wide"] += 1
                 return out
             except Exception as exc:  # noqa: BLE001
-                if not is_oom_error(exc):
+                if not _is_oom(exc):
                     raise
             finally:
                 (
@@ -354,15 +379,13 @@ def install_untiled_decode(
             return decode(z, *args, **kwargs)
         import torch
 
-        from .diffusion_batched import is_oom_error
-
         vae.use_tiling = False
         try:
             out = decode(z, *args, **kwargs)
             stats["untiled"] += 1
             return out
         except Exception as exc:  # noqa: BLE001
-            if not is_oom_error(exc):
+            if not _is_oom(exc):
                 raise
         finally:
             vae.use_tiling = True

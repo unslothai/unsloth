@@ -24,7 +24,7 @@ export function isProvisionalVerdict(data: HealthVerdict): boolean {
   return data.hardware_detecting === true;
 }
 
-/** Under UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 nothing settles, so waiting would stall every load. */
+/** A deferred probe has not started; an explicit hardware-dependent operation can request it. */
 export function isDetectionDeferred(data: HealthVerdict): boolean {
   return data.hardware_detection_deferred === true;
 }
@@ -72,7 +72,7 @@ export function resolveVerdict(
   previous: ResolvedVerdict,
 ): ResolvedVerdict {
   if (isDetectionDeferred(data)) {
-    // Nothing will settle, so take the backend's conservative chat_only instead of the browser guess.
+    // Keep a conservative value, but detectionDeferred marks it unmeasured for feature gates.
     return {
       chatOnly: data.chat_only ?? true,
       chatOnlyReason: data.chat_only_reason ?? previous.chatOnlyReason,
@@ -94,4 +94,11 @@ export function resolveVerdict(
     chatOnlyDetail: data.chat_only_detail ?? null,
     chatOnlyHint: data.chat_only_hint ?? null,
   };
+}
+
+/** These pages gate entry on hardware, so an actual visit must start a deferred probe. */
+export function routeNeedsHardware(pathname: string): boolean {
+  return ["/studio", "/export", "/video"].some(
+    (base) => pathname === base || pathname.startsWith(base + "/"),
+  );
 }

@@ -58,7 +58,7 @@ def fake_mx(monkeypatch):
     evaluated = []
     mlx_core = types.ModuleType("mlx.core")
     mlx_core.array = FakeArray
-    mlx_core.eval = lambda arrays: evaluated.append(list(arrays))
+    mlx_core.eval = mlx_core.async_eval = lambda arrays: evaluated.append(list(arrays))
     mlx_core.contiguous = lambda array: FakeArray(array.rows)
     mlx_pkg = types.ModuleType("mlx")
     mlx_pkg.core = mlx_core
@@ -627,7 +627,7 @@ def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx,
     def _fail(_arrays):
         raise MemoryError("no room for a copy")
 
-    monkeypatch.setattr(sys.modules["mlx.core"], "eval", _fail)
+    monkeypatch.setattr(sys.modules["mlx.core"], "async_eval", _fail)
     with Session(store, "m", language_model, make_cache) as session:
         assert session.find_prefix_length(ids + [1]) == 512
         run_generation(language_model, ids + [1], session.cache, 512)
@@ -807,6 +807,49 @@ def test_a_lone_batched_row_holds_its_snapshots_from_the_cache_it_hands_back(rin
     row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: True)
     prefill(row, ids[:700])
     assert len(store) == 2 and not row._skeletons
+
+
+@pytest.mark.parametrize("over_budget", (False, True))
+def test_a_batched_row_banks_a_boundary_without_waiting_on_the_gpu(monkeypatch, over_budget):
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+
+    def positions(start, n):
+        return mx.arange(start, start + n, dtype = mx.float32).reshape(1, 1, n, 1) * mx.ones(
+            (1, 2, 1, 8)
+        )
+
+    def advance(entries, start, n):
+        for entry in entries:
+            if isinstance(entry, cache.ArraysCache):
+                entry[0] = mx.full((1, 8), float(start + n))
+            else:
+                entry.update_and_fetch(positions(start, n), -positions(start, n))
+        mx.async_eval([entry.state for entry in entries])
+
+    def waited(*_args):
+        raise AssertionError("waited on the GPU")
+
+    # Within the budget the copy compacts the window; over it, the skeleton is filled at retire.
+    window = [] if over_budget else [cache.RotatingKVCache(max_size = 16)]
+    layout = lambda: [cache.KVCache(), cache.ArraysCache(size = 1), *window]
+    store = VLMPromptSnapshotStore(max_bytes = 1 if over_budget else 10**9)
+    row = VLMBatchRowCache(store, "m", layout, step = STEP, alone = lambda: True)
+    ids = list(range(STEP + 2))
+    live, _lengths = row.open(ids)
+    advance(live, 0, STEP)
+    with monkeypatch.context() as patch:
+        patch.setattr(mx, "eval", waited)
+        row.checkpoint(STEP, live)
+    advance(live, STEP, 1)
+    row.retire(lambda: live)
+
+    entries, prefix = store.lookup("m", ids, STEP)
+    assert prefix == STEP and entries[0].offset == STEP
+    assert mx.array_equal(entries[0].state[0], positions(0, STEP)).item()
+    assert entries[1][0][0, 0].item() == STEP
+    if not over_budget:
+        assert mx.array_equal(entries[2].keys, positions(STEP - 16, 16)).item()
 
 
 def _prefill_row(state, token_ids):
@@ -992,8 +1035,7 @@ def test_session_defaults_to_mlx_vlm_prefill_step(fake_mx):
     ids = ["none", "zero", "negative", "string", "unreadable"],
 )
 def test_a_step_no_grid_can_be_built_on_falls_back_instead_of_raising(monkeypatch, default):
-    """The step divides every boundary, so one that cannot must never reach a request:
-    it would take generation down, not just the reuse."""
+    """The step divides every boundary; one that cannot must fall back, not fail generation."""
     module = types.ModuleType("mlx_vlm.generate.common")
     module.DEFAULT_PREFILL_STEP_SIZE = default
     monkeypatch.setitem(sys.modules, "mlx_vlm", types.ModuleType("mlx_vlm"))
@@ -1046,8 +1088,7 @@ class FakeDictKV:
 
 
 def test_copy_walks_a_dict_held_state(fake_mx):
-    """A dict of arrays used to fall through the copier and be shared, so the store
-    would hand back a dict the next generation writes through."""
+    """A dict of arrays must be copied, or the next generation writes into the stored copy."""
     live = [FakeCacheList(FakeDictKV())]
     saved = copy_cache_entries(live)
     assert saved[0].caches[0].tensors is not live[0].caches[0].tensors
@@ -1058,9 +1099,8 @@ def test_copy_walks_a_dict_held_state(fake_mx):
 
 
 def test_copy_refuses_a_cache_it_cannot_walk_rather_than_sharing_it(fake_mx):
-    """The top level already refuses an unrecognised entry. Nested, one used to be
-    returned as itself: a live cache in the store, advanced by the turn that served it.
-    Refusing costs the next turn its reuse; sharing costs it its answer."""
+    """Nested unrecognised caches are refused, not shared: sharing lets a turn advance a live cache
+    and costs the next turn its answer, while refusing only costs reuse."""
     with pytest.raises(TypeError):
         copy_cache_entries([FakeCacheList(FakeSlottedKV())])
 
@@ -1107,9 +1147,8 @@ def test_copy_shares_buffers_yet_keeps_what_the_live_cache_overwrites():
 
 
 def test_session_restores_the_model_when_one_host_is_named_twice(fake_mx):
-    """``policy_hosts`` is (model, language_model), and the second falls back to the
-    first when the wrapper exposes no language model, so the same object can be listed
-    twice. Unpatching it twice must not strand the recording class on the model."""
+    """policy_hosts may list one object twice (the language model falls back to the model), so
+    unpatching twice must not strand the recording class."""
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     host = FakeHost()
     before = type(host)
@@ -1120,8 +1159,7 @@ def test_session_restores_the_model_when_one_host_is_named_twice(fake_mx):
 
 
 def test_session_restores_the_model_even_if_unpatching_fails(fake_mx):
-    """Any failure while unpatching leaves the model wrapped otherwise, and every later
-    request on that load then answers through a stale forward record."""
+    """A failed unpatch must still restore the model, or later requests use a stale forward."""
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     host = FakeHost()
     before = type(host)

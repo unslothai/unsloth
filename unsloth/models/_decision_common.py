@@ -35,6 +35,7 @@ __all__ = [
     "_target",
     "_target_for",
     "_clef_question",
+    "_rows_problem",
     "_predicted",
     "_metrics",
     "_fit_temperature",
@@ -50,7 +51,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 TRAIN_MAX_LEN, TRAIN_HEAD_MAX_LEN = 1024, 256
 HOLDOUT_MAX = 400
@@ -261,7 +262,7 @@ def _row_images(row: dict) -> list:
     return found
 
 
-def _internal(question) -> dict:
+def _internal(question, name = "") -> dict:
     if not isinstance(question, dict) or question.get("type") not in QUESTION_TYPES:
         raise DecisionDataError("is not a valid question")
     kind, criteria = question["type"], question.get("criteria")
@@ -275,7 +276,12 @@ def _internal(question) -> dict:
         raise DecisionDataError("needs a list of criteria levels")
     if kind == "noul" and criteria is not None and not isinstance(criteria, dict):
         raise DecisionDataError('criteria may only have "true" and "false"')
-    laya_question = {"type": kind, "instructions": question.get("instructions") or ""}
+    instructions = question.get("instructions")
+    if instructions in (None, ""):
+        instructions = str(name)
+    elif not isinstance(instructions, str):
+        instructions = json.dumps(instructions, ensure_ascii = False)
+    laya_question = {"type": kind, "instructions": instructions}
     if criteria is not None:
         laya_question["criteria"] = criteria
     return _laya().agent.Agent._to_internal(laya_question)
@@ -353,6 +359,53 @@ def _clef_question(question) -> dict:
     if criteria is not None:
         clef_question["criteria"] = criteria
     return clef_question
+
+
+def _rows_problem(
+    rows,
+    clef: bool,
+    validate: Optional[Callable] = None,
+) -> Optional[str]:
+    # None at the first decision that can train, else why none can ("" when there are no rows).
+    skips = {}
+
+    def skip(
+        index,
+        reason,
+        name = None,
+    ):
+        where = f"row {index + 1}" if name is None else f'row {index + 1}: "{name}"'
+        skips.setdefault(reason, [0, f"{where} {reason}"])[0] += 1
+
+    for index, row in enumerate(rows):
+        row = row if isinstance(row, dict) else {}
+        state = _parsed(row.get("state"))
+        questions = _parsed(row.get("questions"))
+        gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
+        if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
+            skip(index, "needs state, questions and gold")
+            continue
+        for name, question in questions.items():
+            if name not in gold:
+                skip(index, "has no gold", name)
+                continue
+            try:
+                if validate is not None:
+                    validate(name, question)
+                if clef:
+                    parsed = _clef_question(question)
+                    internal = {"t": parsed["type"], "crit": parsed.get("criteria")}
+                else:
+                    internal = _internal(question)
+                _target(internal, _parsed(gold[name]))
+            except (TypeError, ValueError, KeyError) as exc:
+                skip(index, str(exc) or "is not a valid question", name)
+                continue
+            return None
+    if not skips:
+        return ""
+    count, example = max(skips.values(), key = lambda skipped: skipped[0])
+    return example if count == 1 else f"{example} (and {count - 1:,} more like it)"
 
 
 def _predicted(question: dict, answer: dict, probabilities: dict) -> dict:
@@ -447,9 +500,8 @@ HEAD_TEMPERATURE_RANGE = (0.05, 20.0)
 
 
 def _calibrate_clef(config: dict, logits, items) -> dict:
-    # Calibrated against being right (the gold label), not the soft gold distribution: Clef's
-    # confidence is read as the chance the answer is correct, and soft gold targets left a tuned
-    # model underconfident (confidence 0.61 at accuracy 0.78 on typed-decisions).
+    # Hard gold: Clef's confidence is the chance an answer is right; soft targets made it
+    # underconfident.
     common = _laya().common
     hard = [
         {**item, "target": [float(j == item["label"]) for j in range(len(z))]}

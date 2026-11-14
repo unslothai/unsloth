@@ -246,8 +246,7 @@ def test_an_offline_host_fails_open(monkeypatch):
 
 
 def test_a_trickling_server_cannot_hold_the_picker_open(monkeypatch):
-    # requests' timeout is per socket read, so a byte-a-second server never times out;
-    # only half-closing the socket ends iter_content (response.close() does not).
+    # Per-read timeout: a trickling server never times out; only half-close ends iter_content.
     interrupted = threading.Event()
 
     class _Trickle:
@@ -292,8 +291,7 @@ def test_a_trickling_server_cannot_hold_the_picker_open(monkeypatch):
 
 
 def test_an_old_urllib3_with_no_shutdown_still_cannot_hold_the_picker_open(monkeypatch):
-    # HTTPResponse.shutdown needs urllib3 >= 2.3.0; older installs fall back to close(),
-    # so the bound comes from abandoning the worker thread, not the interrupt.
+    # urllib3 below 2.3.0 lacks HTTPResponse.shutdown, so the worker thread is abandoned.
     still_reading = threading.Event()
 
     class _Unwakeable:
@@ -481,9 +479,8 @@ def test_a_remembered_hub_failure_still_suppresses_a_re_probe_while_nothing_is_o
 
 
 def test_a_checkpoint_swapped_in_place_is_read_again(monkeypatch, tmp_path):
-    """Same directory, same filename, different checkpoint. Keying the memo on the name alone
-    answers the new file with the old one's dim, which refuses a valid 9B pairing and hands the
-    native backend the 4B text encoders until the process restarts."""
+    """Same directory and filename, different checkpoint: keying the memo on the name alone answers
+    the new file with the old dim, refusing a valid 9B pairing until restart."""
     local = tmp_path / "on-device"
     local.mkdir()
     target = local / KLEIN_4B_FILE
@@ -931,8 +928,7 @@ def test_an_undownloaded_speech_pick_is_refused_before_any_download(monkeypatch)
 
 
 def test_a_runnable_media_pick_in_the_same_repo_still_loads(monkeypatch):
-    """The sibling this refusal exists to protect: catching it too would hide the only checkpoint
-    in the folder the media backends CAN run."""
+    """A runnable media sibling in the repo must still load: catching it too would hide it."""
     _stub_range_reads(monkeypatch, {DENOISER_FILE: _arch_header("flux")})
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, DENOISER_FILE) is None
@@ -1147,9 +1143,8 @@ def test_the_video_and_sd_cpp_helpers_delegate_to_the_one_verdict(monkeypatch):
 
 
 def test_a_media_gguf_republished_as_speech_is_refused(monkeypatch, tmp_path):
-    """The direction that matters more: a stale refusal only costs a pick, but a stale ALLOW
-    hands csm bytes to a media loader after the download and the teardown. So the revalidation
-    cannot be the cheap side of an asymmetry the way the size pairing's is."""
+    """A stale refusal only costs a pick, but a stale ALLOW hands csm bytes to a media loader, so
+    revalidation cannot be the cheap side of the asymmetry."""
     snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "oldsha"
     snapshot.mkdir(parents = True)
     cached = snapshot / CSM_FILE
@@ -1163,8 +1158,7 @@ def test_a_media_gguf_republished_as_speech_is_refused(monkeypatch, tmp_path):
 
 
 def test_an_uncached_pick_never_spends_a_revision_head(monkeypatch):
-    """No cached copy means no revision to be behind, so the symmetric revalidation must not cost
-    every remote pick an extra Hub round trip."""
+    """No cached copy, no revision to be behind: uncached picks must not spend a Hub HEAD."""
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
     asked: list = []
     monkeypatch.setattr(
@@ -1223,9 +1217,8 @@ def test_a_cache_only_probe_does_not_memoise_a_skipped_revision_check(monkeypatc
 
 
 def test_an_uncached_remote_verdict_is_not_memoised_forever(monkeypatch):
-    """An uncached remote pick keys on a local identity of None, so a republish under the same
-    filename changes nothing about the key. Without a TTL the first verdict would outlive the
-    process and keep refusing a checkpoint that is runnable now."""
+    """An uncached remote pick keys on a None identity, so a republish under the same filename
+    changes nothing; without a TTL the verdict would outlive the process."""
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
     bodies = {CSM_FILE: _arch_header("llama-csm")}
     _stub_range_reads(monkeypatch, bodies)
@@ -1364,9 +1357,8 @@ class _HttpxLikeStream:
 
 
 def test_the_ranged_read_works_on_the_httpx_client_hub_1_x_returns(monkeypatch):
-    """huggingface_hub 1.0 swapped requests for httpx, and httpx has no ``stream = True``
-    keyword. Asking for one raised TypeError inside the worker's blanket except, so the probe
-    read nothing and EVERY uncached remote pick failed open: a preflight that refused nothing."""
+    """huggingface_hub 1.0 moved to httpx, which has no stream = True keyword; the TypeError was
+    swallowed by a blanket except, so every uncached remote pick failed open."""
     client = _HttpxLikeClient(_arch_header("llama-csm"))
     monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: client)
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
@@ -1395,9 +1387,8 @@ def test_a_requests_session_is_not_mistaken_for_an_httpx_client(monkeypatch):
 
 
 def test_a_cached_snapshot_verdict_does_not_outlive_its_revision_check(monkeypatch, tmp_path):
-    """A snapshot-backed entry memoises a revision check. Holding it forever meant the Hub was
-    asked once per file per process, so a checkpoint republished later in the session kept the
-    verdict read off bytes that had since been replaced."""
+    """A snapshot-backed entry memoises a revision check; holding it forever meant the Hub was asked
+    once per file per process, so a republished checkpoint kept its stale verdict."""
     cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
     heads: list = []
@@ -1423,8 +1414,7 @@ def test_a_cached_snapshot_verdict_does_not_outlive_its_revision_check(monkeypat
 
 
 def test_an_on_device_verdict_is_still_cached_permanently(monkeypatch, tmp_path):
-    """The other half: an On Device file has no revision to be behind, so its entry is keyed on
-    the file's identity and never needs to age out."""
+    """On Device files have no revision to lag, so the identity-keyed verdict never expires."""
     on_device = tmp_path / CSM_FILE
     on_device.write_bytes(_arch_header("llama-csm"))
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(on_device))
@@ -1436,9 +1426,8 @@ def test_an_on_device_verdict_is_still_cached_permanently(monkeypatch, tmp_path)
 
 
 def test_a_failed_refresh_keeps_the_verdict_it_already_had(monkeypatch, tmp_path):
-    """A HEAD that reports a new revision and a re-read that then fails used to replace a known
-    llama-csm verdict with None, opening the gate on nothing worse than a dropped connection.
-    Failing open on an UNKNOWN pick is the contract; discarding a known one is not."""
+    """A new-revision HEAD followed by a failed re-read must keep a known llama-csm verdict, not
+    replace it with None; failing open is for UNKNOWN picks only."""
     cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
     monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
@@ -1454,8 +1443,7 @@ def test_a_failed_refresh_keeps_the_verdict_it_already_had(monkeypatch, tmp_path
 
 
 def test_every_published_csm_spelling_is_refused_by_the_media_preflight(monkeypatch):
-    """The media half of the same set the chat gate uses: a bundle's vocoder reaches a media
-    loader exactly like its backbone does."""
+    """A bundle's vocoder reaches media loaders too, so every CSM spelling must be refused."""
     for arch in ("llama-csm", "csm", "csm-tts", "mimi"):
         _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header(arch)})
         assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None, arch
@@ -1512,8 +1500,7 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
         "assert m.LlamaCppBackend._SPEECH_ARCHES is SPEECH_GGUF_ARCHS\n"
         "print('ok')\n"
     )
-    # A subprocess because this pytest session has already imported yaml, and a meta_path
-    # blocker cannot un-import it.
+    # Subprocess: yaml is already imported here, and meta_path blockers cannot un-import it.
     result = subprocess.run(
         [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 300
     )

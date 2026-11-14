@@ -166,8 +166,7 @@ def read_header_bytes(path: Any) -> Optional[bytes]:
 
 
 def _content_identity(real: str, st: Any) -> str:
-    """Payload identity: the Hub blob name (its sha256), else stat incl. inode + ctime, which a size/mtime-preserving
-    replacement still changes."""
+    """Hub blob sha256 name, else stat with inode and ctime, which catch size/mtime-preserving swaps."""
     name = os.path.basename(real)
     if len(name) == 64 and all(c in "0123456789abcdef" for c in name):
         return "blob:" + name
@@ -1496,7 +1495,9 @@ def _cgroup_memory_bytes() -> tuple[Optional[int], Optional[int]]:
                     for ln in (node / "memory.stat").read_text(encoding = "utf-8").splitlines()
                     if ln.strip()
                 )
-                avail = max(0, limit - used + int(stat.get("file", 0)))
+                # ``file`` counts tmpfs / shared memory too (cgroup-v2 docs); only the rest is reclaimable page cache.
+                reclaimable = max(0, int(stat.get("file", 0)) - int(stat.get("shmem", 0)))
+                avail = max(0, limit - used + reclaimable)
                 if best[1] is None or avail < best[1]:
                     best = (limit, avail)
         except (OSError, ValueError):

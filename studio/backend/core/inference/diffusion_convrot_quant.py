@@ -16,9 +16,11 @@ from .rocm_bf16 import is_rocm_torch
 INT8_ROTQUANT_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT"
 INT8_ROTQUANT_H16_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16"
 INT8_ROTQUANT_SWIGLU_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_SWIGLU"
+INT8_ROTQUANT_PRODUCER_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_PRODUCER"
 _OP_NAMESPACE = "unsloth_studio"
 _ROTQ_OP_NAME = "convrot_act_quant_int8"
 _SWIGLU_OP_NAME = "convrot_swiglu_act_quant_int8"
+_PRODUCER_OP_NAME = "convrot_producer_act_quant_int8"
 
 # (BLOCK_M group rows, BLOCK_K, num_warps, num_stages) per (major, minor); measured end to end. Absent = stock.
 _ROTQ_CONFIG = {
@@ -39,6 +41,9 @@ _ROTQ_K_TILES: dict = {
 _ROTQ_QPARAMS = {
     "v1": (-127.0, 127.0, 127.0, 1e-5),
     "v2": (-128.0, 127.0, 127.5, 1.1920928955078125e-07),
+    # diffusion_native_quant ``_int_mm_rows`` (NativeWeightOnlyLinear W8A8): EPS is the clamp floor, DIV the fp32
+    # reciprocal of 127 ATen's CUDA ``div_(127.0)`` multiplies by
+    "native": (-127.0, 127.0, 0.007874015718698502, 1e-12),
 }
 # device index -> probed rotq tile (None = stock), and the per-K rules whose tile passed the probe there.
 _ROTQ_DEVICE: dict = {}
@@ -52,6 +57,13 @@ _SWIGLU_DEVICE: dict = {}
 _H16_CALLS = [0]
 _SWIGLU_CALLS = [0]
 _SWIGLU_HANDLE: Any = None
+# device index -> rotq_h16x (producer loads fused in front of the rotation) passed its probe
+_PRODUCER_DEVICE: dict = {}
+_PRODUCER_CALLS = [0]
+_PRODUCER_HANDLE: Any = None
+_PRODUCER_VERDICT_OFF: set = (
+    set()
+)  # devices whose last load had the switch off (the probe verdict is kept)
 # 16 group rows per program: fastest (within 2%) on L4; 128 rows overflow 100 KB smem. One masked row per program at
 # K 12288 was 1.2x slower on A100 and spilled on B200.
 _H16_TILE_ROWS = 16
@@ -86,6 +98,11 @@ def rotquant_h16_enabled() -> bool:
 def rotquant_swiglu_enabled() -> bool:
     """False only under ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_SWIGLU=0``."""
     return _env_mode(INT8_ROTQUANT_SWIGLU_ENV) != "off"
+
+
+def rotquant_producer_enabled() -> bool:
+    """False only under ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_PRODUCER=0`` (the producer writes bf16, ``rotq_h16`` reads it)."""
+    return _env_mode(INT8_ROTQUANT_PRODUCER_ENV) != "off"
 
 
 def rotquant_mode() -> str:
@@ -151,24 +168,33 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         silu = _rbf16(gf * tl.sigmoid(gf))
         return (silu * v.to(tl.float32)).to(tl.bfloat16)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def rotq_i8(
         x_ptr,
         h_ptr,
         q_ptr,
         s_ptr,
+        pa_ptr,
+        pb_ptr,
         M,
         NG,
-        G: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_K: tl.constexpr,
-        ROWS: tl.constexpr,
-        ROWS_P2: tl.constexpr,
-        QMIN: tl.constexpr,
-        QMAX: tl.constexpr,
-        DIV: tl.constexpr,
-        EPS: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        T,
+        stride_pb,
+        stride_pt,
+        G: tl.constexpr,  # rotation group width
+        BLOCK_M: tl.constexpr,  # group rows per program
+        BLOCK_K: tl.constexpr,  # K step inside a group
+        ROWS: tl.constexpr,  # activation rows per program (from K)
+        ROWS_P2: tl.constexpr,  # ROWS next pow2
+        QMIN: tl.constexpr,  # int8 clamp min
+        QMAX: tl.constexpr,  # int8 clamp max
+        DIV: tl.constexpr,  # amax divisor (127)
+        EPS: tl.constexpr,  # norm epsilon, per model
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear's quant: fp32 s = max(amax, EPS) * DIV, fp32 1 / s
+        PRO: tl.constexpr = 0,  # prologue on the loaded bf16 x: 0 none, 2 RMSNorm (no affine) [+ AdaLN]
+        MOD: tl.constexpr = False,  # PRO 2: x * (1 + pa) + pb, pa / pb rows (row // T, row % T)
+        NORM_EPS: tl.constexpr = 1e-6,  # PRO 2: RMSNorm epsilon
     ):
         # one program = ROWS whole activation rows, so the per-row amax closes inside the tile
         pid = tl.program_id(0)
@@ -179,27 +205,56 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         rg = tl.where(live, row * NG + (t % NG), 0)
         offs_k = tl.arange(0, BLOCK_K)
         offs_n = tl.arange(0, G)
+        j = tl.arange(0, ROWS_P2)
+        sel = lr[:, None] == j[None, :]
         acc = tl.zeros((BLOCK_M, G), dtype = tl.float32)
         a_ptrs = x_ptr + rg[:, None] * G + offs_k[None, :]
         h_ptrs = h_ptr + offs_k[:, None] * G + offs_n[None, :]
+        if PRO == 2:
+            # whole-row sum of squares first (fp32), then rs = rsqrt(mean + eps) per row, back on every group row
+            ss = tl.zeros((BLOCK_M,), dtype = tl.float32)
+            for _k in range(0, G // BLOCK_K):
+                a = tl.load(a_ptrs, mask = live[:, None], other = 0.0).to(tl.float32)
+                ss += tl.sum(a * a, axis = 1)
+                a_ptrs += BLOCK_K
+            a_ptrs -= G
+            rss = tl.sum(tl.where(sel, ss[:, None], 0.0), axis = 0)
+            rs = libdevice.rsqrt(rss / (NG * G) + NORM_EPS)
+            rs_t = tl.max(tl.where(sel, rs[None, :], 0.0), axis = 1)
+            if MOD:
+                pbase = (row // T) * stride_pb + (row % T) * stride_pt + (t % NG) * G
+                p_off = pbase[:, None] + offs_k[None, :]
         for _k in range(0, G // BLOCK_K):
             a = tl.load(a_ptrs, mask = live[:, None], other = 0.0)
+            if PRO == 2:
+                # diffusers RMSNorm (bf16 out), then the block's AdaLN modulation in fp32, one bf16 round
+                a = _rbf16(a.to(tl.float32) * rs_t[:, None])
+                if MOD:
+                    sc = tl.load(pa_ptr + p_off, mask = live[:, None], other = 0.0).to(tl.float32)
+                    sh = tl.load(pb_ptr + p_off, mask = live[:, None], other = 0.0).to(tl.float32)
+                    a = libdevice.fma_rn(a, sc + 1.0, sh)
+                    p_off += BLOCK_K
+                a = a.to(tl.bfloat16)
             acc = tl.dot(a, tl.load(h_ptrs), acc, out_dtype = tl.float32)
             a_ptrs += BLOCK_K
             h_ptrs += BLOCK_K * G
         z = _rbf16(acc)
         # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s))))
         # FP32_SCALE (torchao >= 0.18 Int8Tensor) keeps the reciprocal and the product in fp32.
-        j = tl.arange(0, ROWS_P2)
-        sel = lr[:, None] == j[None, :]
         amax = tl.max(tl.where(sel, tl.max(tl.abs(z), axis = 1)[:, None], 0.0), axis = 0)
-        s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
-        inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
-        if not FP32_SCALE:
-            inv = _rbf16(inv)
+        if NATIVE:
+            # ``_int_mm_rows`` on CUDA: clamp_(min = EPS).div_(127) multiplies by fp32(1 / 127) (DIV here, as ATen does
+            # for a scalar divisor), then reciprocal() and x * recip, all fp32 round-to-nearest
+            s = libdevice.mul_rn(tl.maximum(amax, EPS), DIV)
+            inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
+        else:
+            s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
+            inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
+            if not FP32_SCALE:
+                inv = _rbf16(inv)
         inv_t = tl.max(tl.where(sel, inv[None, :], 0.0), axis = 1)
         p = z * inv_t[:, None]
-        if not FP32_SCALE:
+        if not FP32_SCALE and not NATIVE:
             p = _rbf16(p)
         p = libdevice.rint(p)
         p = tl.minimum(tl.maximum(p, QMIN), QMAX)
@@ -215,9 +270,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         live,
         h,
         h32,
-        TM: tl.constexpr,
-        SWIGLU: tl.constexpr,
-        TF32X3: tl.constexpr,
+        TM: tl.constexpr,  # 256-wide groups per tile
+        SWIGLU: tl.constexpr,  # fuse swiglu before rotation
+        TF32X3: tl.constexpr,  # tf32x3 dot for fp32 accuracy
     ):
         # X[a, b] = x[16 a + b]; Y = X . H16 on tensor cores (H16 entries +-1/4: exact products), Z = H16 . Y in fp32.
         offs = tl.arange(0, 256)
@@ -241,9 +296,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         q_ptr,
         gidx,
         live,
-        QMIN: tl.constexpr,
-        QMAX: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        QMIN: tl.constexpr,  # int8 clamp min
+        QMAX: tl.constexpr,  # int8 clamp max
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         offs = tl.arange(0, 256)
         p = z * inv_t[:, None]
@@ -265,10 +320,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         NG,
         h,
         h32,
-        CG: tl.constexpr,
-        ROWS: tl.constexpr,
-        SWIGLU: tl.constexpr,
-        TF32X3: tl.constexpr,
+        CG: tl.constexpr,  # groups per chunk
+        ROWS: tl.constexpr,  # activation rows per program (from K)
+        SWIGLU: tl.constexpr,  # fuse swiglu before rotation
+        TF32X3: tl.constexpr,  # tf32x3 dot for fp32 accuracy
     ):
         live = row < M
         gidx = tl.where(live, row * NG + c * CG + gl, 0)
@@ -289,20 +344,20 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         NG,
         h,
         h32,
-        CG: tl.constexpr,
-        ROWS: tl.constexpr,
-        SWIGLU: tl.constexpr,
-        TF32X3: tl.constexpr,
-        QMIN: tl.constexpr,
-        QMAX: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        CG: tl.constexpr,  # groups per chunk
+        ROWS: tl.constexpr,  # activation rows per program (from K)
+        SWIGLU: tl.constexpr,  # fuse swiglu before rotation
+        TF32X3: tl.constexpr,  # tf32x3 dot for fp32 accuracy
+        QMIN: tl.constexpr,  # int8 clamp min
+        QMAX: tl.constexpr,  # int8 clamp max
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         live = row < M
         gidx = tl.where(live, row * NG + c * CG + gl, 0)
         z = _h16_tile(x_ptr, v_ptr, gidx, live, h, h32, ROWS * CG, SWIGLU, TF32X3)
         _h16_quant_store(z, inv_t, q_ptr, gidx, live, QMIN, QMAX, FP32_SCALE)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def rotq_h16(
         x_ptr,
         v_ptr,
@@ -312,18 +367,18 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         s_ptr,
         M,
         NG,
-        NCH: tl.constexpr,
-        CG: tl.constexpr,
-        ROWS: tl.constexpr,
-        ONE_PASS: tl.constexpr,
-        UNROLL: tl.constexpr,
-        SWIGLU: tl.constexpr,
-        TF32X3: tl.constexpr,
-        QMIN: tl.constexpr,
-        QMAX: tl.constexpr,
-        DIV: tl.constexpr,
-        EPS: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        NCH: tl.constexpr,  # chunks per row
+        CG: tl.constexpr,  # groups per chunk
+        ROWS: tl.constexpr,  # activation rows per program (from K)
+        ONE_PASS: tl.constexpr,  # whole row fits one chunk
+        UNROLL: tl.constexpr,  # unroll the chunk loop
+        SWIGLU: tl.constexpr,  # fuse swiglu before rotation
+        TF32X3: tl.constexpr,  # tf32x3 dot for fp32 accuracy
+        QMIN: tl.constexpr,  # int8 clamp min
+        QMAX: tl.constexpr,  # int8 clamp max
+        DIV: tl.constexpr,  # amax divisor (127)
+        EPS: tl.constexpr,  # norm epsilon, per model
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         # ONE_PASS: rotate, amax, quantize from registers. Else an amax pass, then recompute + quant (row re-read from L2).
         TM: tl.constexpr = ROWS * CG
@@ -407,7 +462,407 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         srow = pid.to(tl.int64) * ROWS + tl.arange(0, ROWS)
         tl.store(s_ptr + srow, s.to(s_ptr.dtype.element_ty), mask = srow < M)
 
-    return types.SimpleNamespace(rotq_i8 = rotq_i8, rotq_h16 = rotq_h16, triton = triton)
+    @triton.jit
+    def _h16x_load(
+        g_ptr,
+        v_ptr,
+        a_ptr,
+        row,
+        grp,
+        live,
+        sg,
+        sv,
+        NA,
+        SEQ,
+        sab,
+        sas,
+        sah,
+        CAT: tl.constexpr,  # groups below NA come from the attention prefix
+        HD: tl.constexpr,  # prefix head width
+    ):
+        # bf16 [TM, 256] of the activation the producer would have written: silu(gate) * value, after the prefix
+        offs = tl.arange(0, 256)
+        if CAT:
+            pre = live & (grp < NA)
+            col = grp[:, None] * 256 + offs[None, :]
+            b = row // SEQ
+            s = row - b * SEQ
+            a_off = b[:, None] * sab + s[:, None] * sas + (col // HD) * sah + (col % HD)
+            xa = tl.load(a_ptr + a_off, mask = pre[:, None], other = 0.0)
+            mlp = live & (grp >= NA)
+            mcol = tl.where(mlp, grp - NA, 0)[:, None] * 256 + offs[None, :]
+            g = tl.load(g_ptr + row[:, None] * sg + mcol, mask = mlp[:, None], other = 0.0)
+            v = tl.load(v_ptr + row[:, None] * sv + mcol, mask = mlp[:, None], other = 0.0)
+            x = tl.where(pre[:, None], xa, _swiglu_bf16(g, v))
+        else:
+            col = grp[:, None] * 256 + offs[None, :]
+            g = tl.load(g_ptr + row[:, None] * sg + col, mask = live[:, None], other = 0.0)
+            v = tl.load(v_ptr + row[:, None] * sv + col, mask = live[:, None], other = 0.0)
+            x = _swiglu_bf16(g, v)
+        return x
+
+    @triton.jit
+    def _h16x_rot(
+        x,
+        h,
+        h32,
+        TM: tl.constexpr,  # 256-wide groups per tile
+        TF32X3: tl.constexpr,  # tf32x3 dot for fp32 accuracy
+    ):
+        # _h16_tile's rotation, op for op
+        y = tl.dot(tl.reshape(x, (TM * 16, 16)), h, out_dtype = tl.float32)
+        y = tl.reshape(tl.permute(tl.reshape(y, (TM, 16, 16)), (0, 2, 1)), (TM * 16, 16))
+        if TF32X3:
+            z = tl.dot(y, h32, input_precision = "tf32x3", out_dtype = tl.float32)
+        else:
+            z = tl.dot(y, h32, input_precision = "ieee", out_dtype = tl.float32)
+        z = tl.reshape(tl.permute(tl.reshape(z, (TM, 16, 16)), (0, 2, 1)), (TM, 256))
+        return _rbf16(z)
+
+    @triton.jit
+    def _h16x_chunk(
+        c,
+        g_ptr,
+        v_ptr,
+        a_ptr,
+        row,
+        gl,
+        M,
+        NG,
+        sg,
+        sv,
+        NA,
+        SEQ,
+        sab,
+        sas,
+        sah,
+        h,
+        h32,
+        CG: tl.constexpr,  # groups per chunk
+        ROWS: tl.constexpr,  # activation rows per program
+        CAT: tl.constexpr,
+        HD: tl.constexpr,
+        TF32X3: tl.constexpr,
+    ):
+        grp = c * CG + gl
+        live = (row < M) & (grp < NG)  # padded one-pass tiles mask the groups past the row
+        r = tl.where(live, row, 0)
+        x = _h16x_load(g_ptr, v_ptr, a_ptr, r, grp, live, sg, sv, NA, SEQ, sab, sas, sah, CAT, HD)
+        return _h16x_rot(x, h, h32, ROWS * CG, TF32X3)
+
+    @triton.jit
+    def _h16x_amax(
+        c,
+        amax,
+        g_ptr,
+        v_ptr,
+        a_ptr,
+        row,
+        gl,
+        M,
+        NG,
+        sg,
+        sv,
+        NA,
+        SEQ,
+        sab,
+        sas,
+        sah,
+        h,
+        h32,
+        CG: tl.constexpr,
+        ROWS: tl.constexpr,
+        CAT: tl.constexpr,
+        HD: tl.constexpr,
+        TF32X3: tl.constexpr,
+    ):
+        z = _h16x_chunk(
+            c,
+            g_ptr,
+            v_ptr,
+            a_ptr,
+            row,
+            gl,
+            M,
+            NG,
+            sg,
+            sv,
+            NA,
+            SEQ,
+            sab,
+            sas,
+            sah,
+            h,
+            h32,
+            CG,
+            ROWS,
+            CAT,
+            HD,
+            TF32X3,
+        )
+        m = tl.where(row < M, tl.max(tl.abs(z), axis = 1), 0.0)
+        return tl.maximum(amax, tl.max(tl.reshape(m, (ROWS, CG)), axis = 1))
+
+    @triton.jit
+    def _h16x_quant(
+        c,
+        inv_t,
+        g_ptr,
+        v_ptr,
+        a_ptr,
+        q_ptr,
+        row,
+        gl,
+        M,
+        NG,
+        sg,
+        sv,
+        NA,
+        SEQ,
+        sab,
+        sas,
+        sah,
+        h,
+        h32,
+        CG: tl.constexpr,
+        ROWS: tl.constexpr,
+        CAT: tl.constexpr,
+        HD: tl.constexpr,
+        TF32X3: tl.constexpr,
+        QMIN: tl.constexpr,
+        QMAX: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
+    ):
+        z = _h16x_chunk(
+            c,
+            g_ptr,
+            v_ptr,
+            a_ptr,
+            row,
+            gl,
+            M,
+            NG,
+            sg,
+            sv,
+            NA,
+            SEQ,
+            sab,
+            sas,
+            sah,
+            h,
+            h32,
+            CG,
+            ROWS,
+            CAT,
+            HD,
+            TF32X3,
+        )
+        live = (row < M) & (c * CG + gl < NG)
+        gidx = tl.where(live, row * NG + c * CG + gl, 0)
+        _h16_quant_store(z, inv_t, q_ptr, gidx, live, QMIN, QMAX, FP32_SCALE)
+
+    @triton.jit(do_not_specialize = ["M", "SEQ"])
+    def rotq_h16x(
+        g_ptr,
+        v_ptr,
+        a_ptr,
+        h_ptr,
+        h32_ptr,
+        q_ptr,
+        s_ptr,
+        M,
+        NG,
+        sg,
+        sv,
+        NA,
+        SEQ,
+        sab,
+        sas,
+        sah,
+        NCH: tl.constexpr,  # chunks per row
+        CG: tl.constexpr,  # groups per chunk
+        ROWS: tl.constexpr,  # activation rows per program
+        ONE_PASS: tl.constexpr,  # whole row fits one chunk
+        UNROLL: tl.constexpr,  # unroll the chunk loop
+        CAT: tl.constexpr,  # attention prefix before the SwiGLU product (one row = [prefix | product])
+        HD: tl.constexpr,  # prefix head width
+        TF32X3: tl.constexpr,
+        QMIN: tl.constexpr,
+        QMAX: tl.constexpr,
+        DIV: tl.constexpr,
+        EPS: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
+    ):
+        # rotq_h16 with the producer's loads in front: strided SwiGLU halves (and an attention prefix in any layout),
+        # so the bf16 activation never reaches HBM. Same rotation, amax and rounding as rotq_h16.
+        TM: tl.constexpr = ROWS * CG
+        pid = tl.program_id(0)
+        t = tl.arange(0, TM)
+        row = pid.to(tl.int64) * ROWS + t // CG
+        gl = t % CG
+        o16 = tl.arange(0, 16)
+        h = tl.load(h_ptr + o16[:, None] * 16 + o16[None, :])
+        h32 = tl.load(h32_ptr + o16[:, None] * 16 + o16[None, :])
+        if ONE_PASS:
+            z = _h16x_chunk(
+                0,
+                g_ptr,
+                v_ptr,
+                a_ptr,
+                row,
+                gl,
+                M,
+                NG,
+                sg,
+                sv,
+                NA,
+                SEQ,
+                sab,
+                sas,
+                sah,
+                h,
+                h32,
+                CG,
+                ROWS,
+                CAT,
+                HD,
+                TF32X3,
+            )
+            m = tl.where(row < M, tl.max(tl.abs(z), axis = 1), 0.0)
+            amax = tl.max(tl.reshape(m, (ROWS, CG)), axis = 1)
+        else:
+            amax = tl.zeros((ROWS,), dtype = tl.float32)
+            if UNROLL:
+                for c in tl.static_range(NCH):
+                    amax = _h16x_amax(
+                        c,
+                        amax,
+                        g_ptr,
+                        v_ptr,
+                        a_ptr,
+                        row,
+                        gl,
+                        M,
+                        NG,
+                        sg,
+                        sv,
+                        NA,
+                        SEQ,
+                        sab,
+                        sas,
+                        sah,
+                        h,
+                        h32,
+                        CG,
+                        ROWS,
+                        CAT,
+                        HD,
+                        TF32X3,
+                    )
+            else:
+                for c in range(0, NCH):
+                    amax = _h16x_amax(
+                        c,
+                        amax,
+                        g_ptr,
+                        v_ptr,
+                        a_ptr,
+                        row,
+                        gl,
+                        M,
+                        NG,
+                        sg,
+                        sv,
+                        NA,
+                        SEQ,
+                        sab,
+                        sas,
+                        sah,
+                        h,
+                        h32,
+                        CG,
+                        ROWS,
+                        CAT,
+                        HD,
+                        TF32X3,
+                    )
+        s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
+        inv = libdevice.div_rn(tl.full((ROWS,), 1.0, tl.float32), s)
+        if not FP32_SCALE:
+            inv = _rbf16(inv)
+        inv_t = tl.reshape(tl.broadcast_to(inv[:, None], (ROWS, CG)), (TM,))
+        if ONE_PASS:
+            live = (row < M) & (gl < NG)
+            gidx = tl.where(live, row * NG + gl, 0)
+            _h16_quant_store(z, inv_t, q_ptr, gidx, live, QMIN, QMAX, FP32_SCALE)
+        elif UNROLL:
+            for c in tl.static_range(NCH):
+                _h16x_quant(
+                    c,
+                    inv_t,
+                    g_ptr,
+                    v_ptr,
+                    a_ptr,
+                    q_ptr,
+                    row,
+                    gl,
+                    M,
+                    NG,
+                    sg,
+                    sv,
+                    NA,
+                    SEQ,
+                    sab,
+                    sas,
+                    sah,
+                    h,
+                    h32,
+                    CG,
+                    ROWS,
+                    CAT,
+                    HD,
+                    TF32X3,
+                    QMIN,
+                    QMAX,
+                    FP32_SCALE,
+                )
+        else:
+            for c in range(0, NCH):
+                _h16x_quant(
+                    c,
+                    inv_t,
+                    g_ptr,
+                    v_ptr,
+                    a_ptr,
+                    q_ptr,
+                    row,
+                    gl,
+                    M,
+                    NG,
+                    sg,
+                    sv,
+                    NA,
+                    SEQ,
+                    sab,
+                    sas,
+                    sah,
+                    h,
+                    h32,
+                    CG,
+                    ROWS,
+                    CAT,
+                    HD,
+                    TF32X3,
+                    QMIN,
+                    QMAX,
+                    FP32_SCALE,
+                )
+        srow = pid.to(tl.int64) * ROWS + tl.arange(0, ROWS)
+        tl.store(s_ptr + srow, s.to(s_ptr.dtype.element_ty), mask = srow < M)
+
+    return types.SimpleNamespace(
+        rotq_i8 = rotq_i8, rotq_h16 = rotq_h16, rotq_h16x = rotq_h16x, triton = triton
+    )
 
 
 @lru_cache(maxsize = 1)
@@ -493,7 +948,19 @@ def _rotq_rows(k: int, group: int, cfg: tuple) -> int:
     return cfg[0] // (k // group)
 
 
-def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
+def _rotq_launch(
+    x2d: Any,
+    group: int,
+    kind: str,
+    cfg: tuple,
+    prologue: int = 0,
+    scale: Any = None,
+    shift: Any = None,
+    tokens: int = 1,
+    norm_eps: float = 1e-6,
+) -> tuple:
+    """``prologue`` 2: quantise RMSNorm(x) (no affine, ``norm_eps``), times ``1 + scale`` plus ``shift`` when given
+    ([B, T | 1, K], unit last stride, B * ``tokens`` == rows; shift with scale's strides)."""
     import torch
     from .diffusion_convrot import build_convrot_hadamard
 
@@ -505,18 +972,25 @@ def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
     qmin, qmax, div, eps = _ROTQ_QPARAMS[kind]
     h = build_convrot_hadamard(group, device = x2d.device, dtype = torch.bfloat16)
     q = torch.empty((m, k), device = x2d.device, dtype = torch.int8)
-    fp32_scale = _rotq_scale_fp32(kind)
+    native = kind == "native"
+    fp32_scale = native or _rotq_scale_fp32(kind)
     s = torch.empty((m,), device = x2d.device, dtype = torch.float32 if fp32_scale else torch.bfloat16)
     if m == 0:
         return q, s
     with torch.cuda.device(x2d.device):
+        mod = prologue == 2 and scale is not None
         kern.rotq_i8[(triton.cdiv(m, rows),)](
             x2d,
             h,
             q,
             s,
+            scale if mod else h,
+            shift if mod else h,
             m,
             k // group,
+            max(1, int(tokens)),
+            (scale.stride(0) if scale.shape[0] > 1 else 0) if mod else 0,
+            (scale.stride(1) if scale.shape[1] > 1 else 0) if mod else 0,
             G = group,
             BLOCK_M = bm,
             BLOCK_K = bk,
@@ -527,6 +1001,10 @@ def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
             DIV = div,
             EPS = eps,
             FP32_SCALE = fp32_scale,
+            NATIVE = native,
+            PRO = int(prologue),
+            MOD = mod,
+            NORM_EPS = float(norm_eps),
             num_warps = warps,
             num_stages = stages,
             enable_fp_fusion = False,
@@ -590,6 +1068,169 @@ def _h16_launch(
             ONE_PASS = one,
             UNROLL = nch <= _H16_UNROLL_MAX,
             SWIGLU = v2d is not None,
+            TF32X3 = bool(tf32x3),
+            QMIN = qmin,
+            QMAX = qmax,
+            DIV = div,
+            EPS = eps,
+            FP32_SCALE = fp32_scale,
+            num_warps = warps,
+            num_stages = 1,
+            enable_fp_fusion = False,
+        )
+    return q, s
+
+
+# Per-(major, minor) warps and padded one-pass cap from a Colab sweep (A100: 557 vs 601 us two-pass at 4608 x 12288).
+_H16X_WARPS = {(8, 0): (8, 4), (8, 9): (4, 4)}
+_H16X_PAD_CAT = {(8, 0): 64}
+
+
+@lru_cache(maxsize = 16)
+def _device_cap(index: Any) -> Optional[tuple]:
+    try:
+        import torch
+        return tuple(torch.cuda.get_device_capability(index))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _h16x_pad(cap: Optional[tuple], ng: int, cat: bool) -> bool:
+    limit = _H16X_PAD_CAT.get(cap, 0) if cat else 0
+    return 1 < ng <= limit and ng & (ng - 1) != 0
+
+
+def _h16x_warps(cap: Optional[tuple], cat: bool, one: bool, tm: int) -> int:
+    if one and tm > 16:
+        return 16 if tm >= 64 else 8
+    pair = _H16X_WARPS.get(cap)
+    if pair is None:
+        return _H16_WARPS if one else _H16_WARPS_TWO_PASS
+    return pair[0] if cat else pair[1]
+
+
+def _prefix_layout(prefix: Any) -> Optional[tuple]:
+    """(B, S, A, sab, sas, sah, HD) of an attention output ``[B, S, H, D]`` (any strides, unit last stride) or a 2D
+    ``[M, A]`` prefix, else None."""
+    if prefix.stride(-1) != 1:
+        return None
+    if prefix.dim() == 4:
+        b, s, heads, hd = prefix.shape
+        if hd not in (64, 128, 256):
+            return None
+        return b, s, heads * hd, prefix.stride(0), prefix.stride(1), prefix.stride(2), hd
+    if prefix.dim() == 2:
+        return 1, prefix.shape[0], prefix.shape[1], 0, prefix.stride(0), 256, 256
+    return None
+
+
+def producer_layout_ok(prefix: Any, gate: Any, value: Any) -> bool:
+    """``rotq_h16x`` reads this producer as is: bf16 CUDA, gate / value ``[M, F]`` with unit last stride, F and the
+    prefix width multiples of 256, the prefix's rows matching."""
+    import torch
+
+    if (
+        gate.dim() != 2
+        or gate.shape != value.shape
+        or gate.dtype != torch.bfloat16
+        or value.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or gate.device != value.device
+        or gate.stride(-1) != 1
+        or value.stride(-1) != 1
+        or gate.shape[1] % 256
+        or gate.shape[1] < 256
+    ):
+        return False
+    if prefix is None:
+        return True
+    if prefix.dtype != torch.bfloat16 or prefix.device != gate.device:
+        return False
+    lay = _prefix_layout(prefix)
+    return (
+        lay is not None and lay[0] * lay[1] == gate.shape[0] and lay[2] % 256 == 0 and lay[2] >= 256
+    )
+
+
+def producer_reference(prefix: Any, gate: Any, value: Any) -> Any:
+    """The bf16 activation the stock producer writes: ``cat([prefix.flatten, silu(gate) * value], -1)``."""
+    import torch
+
+    prod = swiglu_reference(gate, value)
+    if prefix is None:
+        return prod
+    return torch.cat([prefix.reshape(gate.shape[0], -1), prod], dim = -1)
+
+
+def _h16x_launch(
+    prefix: Any,
+    gate: Any,
+    value: Any,
+    kind: str,
+    tile_rows: int = _H16_TILE_ROWS,
+    tf32x3: Optional[bool] = None,
+    warps: Optional[int] = None,
+    pad: Optional[bool] = None,
+) -> tuple:
+    """``rotq_h16x`` on a producer accepted by ``producer_layout_ok``: (int8 [M, K], scale [M]). Strides stay
+    specialized (multiple-of-16 hints keep the loads vectorized); only M and the sequence length are not."""
+    import torch
+    from .diffusion_convrot import build_convrot_hadamard
+
+    kern = _kernels()
+    m, f = gate.shape
+    if prefix is None:
+        a, seq, sab, sas, sah, hd, cat = 0, max(m, 1), 0, 0, 0, 256, False
+    else:
+        _b, seq, a, sab, sas, sah, hd = _prefix_layout(prefix)
+        cat = True
+    k = a + f
+    ng = k // 256
+    cap = _device_cap(gate.device.index)
+    if pad is None:
+        pad = _h16x_pad(cap, ng, cat)
+    if pad:
+        # one pass: the whole row in one masked power-of-two tile, so nothing is loaded or rotated twice
+        cg, rows, nch, one = 1 << (ng - 1).bit_length(), 1, 1, True
+    else:
+        cg, rows, nch, one = _h16_plan(ng, tile_rows)
+    if warps is None:
+        warps = _h16x_warps(cap, cat, one, cg * rows)
+    if tf32x3 is None:
+        tf32x3 = _H16_DEVICE.get(gate.device.index) == "tf32x3"
+    qmin, qmax, div, eps = _ROTQ_QPARAMS[kind]
+    h = build_convrot_hadamard(16, device = gate.device, dtype = torch.bfloat16)
+    h32 = build_convrot_hadamard(16, device = gate.device, dtype = torch.float32)
+    fp32_scale = _rotq_scale_fp32(kind)
+    q = torch.empty((m, k), device = gate.device, dtype = torch.int8)
+    s = torch.empty((m,), device = gate.device, dtype = torch.float32 if fp32_scale else torch.bfloat16)
+    if m == 0:
+        return q, s
+    with torch.cuda.device(gate.device):
+        kern.rotq_h16x[(kern.triton.cdiv(m, rows),)](
+            gate,
+            value,
+            gate if prefix is None else prefix,
+            h,
+            h32,
+            q,
+            s,
+            m,
+            ng,
+            gate.stride(0),
+            value.stride(0),
+            a // 256,
+            seq,
+            sab,
+            sas,
+            sah,
+            nch,
+            CG = cg,
+            ROWS = rows,
+            ONE_PASS = one,
+            UNROLL = nch <= _H16_UNROLL_MAX,
+            CAT = cat,
+            HD = hd,
             TF32X3 = bool(tf32x3),
             QMIN = qmin,
             QMAX = qmax,
@@ -733,6 +1374,64 @@ def _swiglu_op() -> Any:
     return getattr(getattr(torch.ops, _OP_NAMESPACE), _SWIGLU_OP_NAME)
 
 
+def _producer_run(prefix: Any, gate: Any, value: Any, group: int, v2: bool) -> tuple:
+    """Op body: ``rotq_h16x`` where it passed its probe, else the stock product (and concat), rotation and quant."""
+    _PRODUCER_CALLS[0] += 1
+    kind = "v2" if v2 else "v1"
+    index = gate.device.index
+    if group == 256 and _PRODUCER_DEVICE.get(index) and producer_layout_ok(prefix, gate, value):
+        try:
+            return _h16x_launch(prefix, gate, value, kind)
+        except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
+            _PRODUCER_DEVICE[index] = False
+    return rotquant_reference(producer_reference(prefix, gate, value).contiguous(), group, kind)
+
+
+@lru_cache(maxsize = 1)
+def _producer_op() -> Any:
+    """``unsloth_studio::convrot_producer_act_quant_int8(prefix?, gate, value, group, v2)``: the rotated, quantized
+    ``cat([prefix, silu(gate) * value])`` read straight from the producer's buffers (opaque to Inductor), or None."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    ns = getattr(torch.ops, _OP_NAMESPACE, None)
+    if ns is not None and hasattr(ns, _PRODUCER_OP_NAME):
+        return getattr(ns, _PRODUCER_OP_NAME)
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return None
+    try:
+
+        @custom_op(
+            f"{_OP_NAMESPACE}::{_PRODUCER_OP_NAME}",
+            mutates_args = (),
+            schema = "(Tensor? prefix, Tensor gate, Tensor value, int group, bool v2) -> (Tensor, Tensor)",
+        )
+        def _convrot_producer_act_quant_int8(prefix, gate, value, group, v2):
+            return _producer_run(prefix, gate, value, group, v2)
+
+        @_convrot_producer_act_quant_int8.register_fake
+        def _(prefix, gate, value, group, v2):
+            k = gate.shape[1]
+            if prefix is not None:
+                k = k + (
+                    prefix.shape[-2] * prefix.shape[-1] if prefix.dim() == 4 else prefix.shape[-1]
+                )
+            return (
+                gate.new_empty((gate.shape[0], k), dtype = torch.int8),
+                gate.new_empty(
+                    (gate.shape[0],),
+                    dtype = torch.float32
+                    if _rotq_scale_fp32("v2" if v2 else "v1")
+                    else torch.bfloat16,
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    return getattr(getattr(torch.ops, _OP_NAMESPACE), _PRODUCER_OP_NAME)
+
+
 @lru_cache(maxsize = 1)
 def _rotq_op() -> Any:
     """``unsloth_studio::convrot_act_quant_int8`` (opaque to Inductor, allocation only), or None."""
@@ -782,6 +1481,9 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
             and _kernels() is not None
             and _rotq_op() is not None
         ):
+            hit = _verdict_load(index)
+            if hit is not None:
+                return _adopt_verdict(index, hit)
             cap = torch.cuda.get_device_capability(index)
             want = rotquant_config(cap)
             for cand in (want, _ROTQ_FALLBACK) if want is not None else ():
@@ -818,6 +1520,132 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
         _ROTQ_HANDLE = _rotq_op()
         if sw:
             _SWIGLU_HANDLE = _swiglu_op()
+        _verdict_store(
+            index,
+            {
+                "cfg": list(cfg),
+                "rules": [[lo, hi, list(t)] for lo, hi, t in rules],
+                "h16": h16,
+                "swiglu": bool(sw),
+            },
+        )
+    return cfg
+
+
+# Probes cost ~50 s per process on an L4, so passing verdicts persist per card + toolchain fingerprint (+ this file and
+# diffusion_convrot.py); failures are never stored (may be transient). UNSLOTH_DIFFUSION_PROBE_CACHE=0 disables.
+_VERDICT_FILE = "diffusion_convrot_probe.json"
+_VERDICT_SOURCES = ("diffusion_convrot_quant.py", "diffusion_convrot.py")
+_VERDICT_MAX = 32
+
+
+@lru_cache(maxsize = 1)
+def _verdict_sources() -> str:
+    import hashlib
+    from pathlib import Path
+
+    h = hashlib.sha256()
+    here = Path(__file__).resolve().parent
+    for name in _VERDICT_SOURCES:
+        try:
+            h.update(name.encode())
+            h.update((here / name).read_bytes())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()
+
+
+def _verdict_slot(index: int) -> Optional[tuple]:
+    """(cache file, key, fingerprint) for card ``index``, or None (cache off / unidentifiable card)."""
+    try:
+        import hashlib
+        import json
+
+        from . import diffusion_probe_cache as pc
+
+        if not pc.enabled():
+            return None
+        path = pc._cache_file()
+        fp = pc.fingerprint(f"cuda:{index}")
+        if path is None or fp is None:
+            return None
+        fp = dict(fp, convrot_source = _verdict_sources())
+        key = hashlib.sha256(json.dumps(fp, sort_keys = True).encode()).hexdigest()[:32]
+        return path.with_name(_VERDICT_FILE), key, fp
+    except Exception:  # noqa: BLE001 - no cache: probe
+        return None
+
+
+def _verdict_read(path: Any) -> dict:
+    import json
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001 - absent / torn reads as empty
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _verdict_load(index: int) -> Optional[dict]:
+    slot = _verdict_slot(index)
+    if slot is None:
+        return None
+    path, key, fp = slot
+    entry = _verdict_read(path).get(key)
+    if not isinstance(entry, dict) or entry.get("fingerprint") != fp:
+        return None
+    v = entry.get("verdicts")
+    if not isinstance(v, dict) or not isinstance(v.get("cfg"), list) or len(v["cfg"]) != 4:
+        return None
+    return v
+
+
+def _verdict_store(index: int, update: dict) -> None:
+    """Merge ``update`` into card ``index``'s entry (best effort, atomic replace)."""
+    slot = _verdict_slot(index)
+    if slot is None:
+        return
+    path, key, fp = slot
+    import json
+    import time
+
+    try:
+        data = _verdict_read(path)
+        entry = data.get(key) if isinstance(data.get(key), dict) else {}
+        verdicts = dict(entry.get("verdicts") or {}) if entry.get("fingerprint") == fp else {}
+        verdicts.update(update)
+        data[key] = {"fingerprint": fp, "verdicts": verdicts, "t": time.time()}
+        if len(data) > _VERDICT_MAX:
+            for k in sorted(data, key = lambda k: (data[k] or {}).get("t", 0))[
+                : len(data) - _VERDICT_MAX
+            ]:
+                data.pop(k, None)
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data, sort_keys = True), encoding = "utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - a cache write never fails a load
+        pass
+
+
+def _adopt_verdict(index: int, v: dict) -> Optional[tuple]:
+    """Install a persisted verdict as ``rotquant_device_config`` would after probing (the switches are part of the
+    key, so the stored verdict already reflects them)."""
+    global _ROTQ_HANDLE, _SWIGLU_HANDLE
+    cfg = tuple(int(x) for x in v["cfg"])
+    rules = tuple(
+        (int(lo), int(hi), tuple(int(x) for x in t)) for lo, hi, t in v.get("rules") or ()
+    )
+    h16 = v.get("h16") if v.get("h16") in ("ieee", "tf32x3") else False
+    sw = bool(v.get("swiglu")) and bool(h16) and _swiglu_op() is not None
+    _ROTQ_DEVICE_K[index] = rules
+    _ROTQ_DEVICE[index] = cfg
+    _H16_DEVICE[index] = h16
+    _SWIGLU_DEVICE[index] = sw
+    if isinstance(v.get("producer"), bool) and h16:
+        _PRODUCER_DEVICE[index] = v["producer"]
+    _ROTQ_HANDLE = _rotq_op()
+    if sw:
+        _SWIGLU_HANDLE = _swiglu_op()
     return cfg
 
 
@@ -951,6 +1779,109 @@ def _swiglu_probe(index: int) -> bool:
         return False
 
 
+# (M, prefix (B, heads, head dim) or None, SwiGLU width)
+_PRODUCER_PROBE_SHAPES = (
+    (65, None, 256 * 4),
+    (130, None, 256 * 36),
+    (33, (1, 2, 128), 256 * 3),
+    (2 * 41, (2, 24, 128), 256 * 36),
+)
+
+
+def _producer_probe_inputs(m: int, pre: Optional[tuple], f: int, g: Any, dev: Any) -> tuple:
+    import torch
+
+    both = torch.cat(
+        [(_probe_input(m, f, g).float() * 0.05).to(torch.bfloat16), _probe_input(m, f, g)], dim = 1
+    ).to(dev)
+    gate, value = both[:, :f], both[:, f:]  # halves of one projection output: row stride 2F
+    gate[0, :7] = torch.tensor([-90.0, -20.0, -1e-3, 0.0, 1e-3, 20.0, 90.0], device = dev)
+    prefix = None
+    if pre is not None:
+        b, heads, hd = pre
+        seq = m // b
+        # [B, H, S, D] storage viewed as [B, S, H, D]: what SDPA hands back
+        prefix = (
+            _probe_input(b * heads * seq, hd, g).to(dev).view(b, heads, seq, hd).transpose(1, 2)
+        )
+    return prefix, gate, value
+
+
+def _producer_probe(index: int) -> bool:
+    """``rotq_h16x`` vs the stock producer (``producer_reference``: ATen SiLU product, concat) then the stock rotation +
+    quant: ``codes_close`` on every probe shape, v1 and v2."""
+    import torch
+
+    dev = torch.device("cuda", index)
+    g = torch.Generator(device = "cpu").manual_seed(5)
+    try:
+        for m, pre, f in _PRODUCER_PROBE_SHAPES:
+            prefix, gate, value = _producer_probe_inputs(m, pre, f, g, dev)
+            if not producer_layout_ok(prefix, gate, value):
+                return False
+            ref = producer_reference(prefix, gate, value).contiguous()
+            for kind in ("v1", "v2"):
+                rq, rs = rotquant_reference(ref, 256, kind)
+                q, s = _h16x_launch(prefix, gate, value, kind)
+                if not codes_close(q, s, rq, rs):
+                    return False
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _arm_producer(index: int) -> bool:
+    """Per load, outside any trace, after ``rotq_h16`` was armed on the device: the producer variant's probe (once per
+    device); publishes its op handle. The switch is read here, so it acts without a restart."""
+    global _PRODUCER_HANDLE
+    if not rotquant_producer_enabled() or not _H16_DEVICE.get(index):
+        _PRODUCER_VERDICT_OFF.add(index)
+        return False
+    _PRODUCER_VERDICT_OFF.discard(index)
+    if index not in _PRODUCER_DEVICE:
+        ok = False
+        try:
+            ok = _producer_op() is not None and _producer_probe(index)
+        except Exception:  # noqa: BLE001 - the stock producer stays
+            ok = False
+        _PRODUCER_DEVICE[index] = ok
+        if ok and _ROTQ_DEVICE.get(index) is not None:
+            _verdict_store(index, {"producer": True})
+    if _PRODUCER_DEVICE[index]:
+        _PRODUCER_HANDLE = _producer_op()
+    return bool(_PRODUCER_DEVICE[index])
+
+
+def producer_armed(index: Any) -> bool:
+    """``rotq_h16x`` serves card ``index`` (its probe passed and the switch is on)."""
+    return (
+        _PRODUCER_HANDLE is not None
+        and index not in _PRODUCER_VERDICT_OFF
+        and bool(_PRODUCER_DEVICE.get(index))
+    )
+
+
+def convrot_producer_act_quant(
+    prefix: Any, gate: Any, value: Any, group: int, v2: bool
+) -> Optional[tuple]:
+    """``convrot_act_quant`` of ``cat([prefix, silu(gate) * value], -1)`` read from the producer's own buffers (the
+    projection output halves and the attention output in its native layout), so neither the product nor the concat
+    reaches HBM. None when this device / layout / group is not covered: the caller keeps the stock producer and its
+    own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time."""
+    if group != 256 or _PRODUCER_HANDLE is None or not producer_armed(gate.device.index):
+        return None
+    if not producer_layout_ok(prefix, gate, value):
+        return None
+    return _PRODUCER_HANDLE(prefix, gate, value, group, v2)
+
+
+def producer_call_count() -> int:
+    return _PRODUCER_CALLS[0]
+
+
 def rotquant_call_count() -> int:
     return _ROTQ_CALLS[0]
 
@@ -963,14 +1894,32 @@ def swiglu_call_count() -> int:
     return _SWIGLU_CALLS[0]
 
 
-def convrot_act_quant(x2d: Any, group: int, v2: bool) -> Optional[tuple]:
+def convrot_act_quant(
+    x2d: Any,
+    group: int,
+    v2: bool,
+    exact: bool = False,
+) -> Optional[tuple]:
     """``(int8 [M, K], scale [M])`` of ``x2d @ blockdiag(H_group)`` quantized like torchao (v2 = ``Int8Tensor``, else
     the v1 per-token quant), from the fused kernel; None when this device / shape / group is not covered, so the caller
-    keeps its own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time."""
+    keeps its own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time.
+    ``exact`` (eager only; ignored while tracing): the dense ``rotq_i8`` tile, bit-identical to the stock rotation +
+    quant, never ``rotq_h16``."""
     import torch
 
     if _ROTQ_HANDLE is None or x2d.dim() != 2 or x2d.dtype != torch.bfloat16 or not x2d.is_cuda:
         return None
+    if exact and not torch.compiler.is_compiling():
+        cfg = rotq_tile_for(x2d.device.index, x2d.shape[-1], group)
+        if not rotquant_supported(x2d, group, cfg):
+            return None
+        _ROTQ_CALLS[0] += 1
+        try:
+            return _rotq_launch(
+                x2d if x2d.is_contiguous() else x2d.contiguous(), group, "v2" if v2 else "v1", cfg
+            )
+        except Exception:  # noqa: BLE001 - the caller keeps the stock rotation + quant
+            return None
     if not (
         _h16_ok(x2d, group)
         or rotquant_supported(x2d, group, rotq_tile_for(x2d.device.index, x2d.shape[-1], group))
@@ -1008,6 +1957,7 @@ INT8_ROTQUANT_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED"
 _UNLISTED_DEVICE: dict = {}
 _UNLISTED_TIMING: dict = {}
 _UNLISTED_PROBE: dict = {}  # index -> _h16_probe result (mode independent)
+_UNLISTED_SWIGLU: dict = {}  # index -> _swiglu_probe result on an unlisted card
 _UNLISTED_LATENCY_SHAPES = ((2048, 4096), (1024, 12288))
 
 
@@ -1090,7 +2040,7 @@ def _unlisted_latency(
 def unlisted_device_ok(index: int, stock_quant: Any = None) -> bool:
     """Once per (device, mode), outside any trace / capture: arch gate, ``_h16_probe`` (once per device), latency
     check (auto only). Keyed by mode so switching ``..._UNLISTED`` between loads takes effect without a restart."""
-    global _ROTQ_HANDLE
+    global _ROTQ_HANDLE, _SWIGLU_HANDLE
     mode = unlisted_mode()
     if mode == "off":  # read per load: the switches act without a restart
         return False
@@ -1124,6 +2074,19 @@ def unlisted_device_ok(index: int, stock_quant: Any = None) -> bool:
     if ok:
         _H16_DEVICE[index] = h16
         _ROTQ_HANDLE = _rotq_op()
+        # SwiGLU prologue fused into rotq_h16; unlisted cards probe it once per device
+        sw = False
+        if rotquant_swiglu_enabled() and _swiglu_op() is not None:
+            if index not in _UNLISTED_SWIGLU:
+                try:
+                    _UNLISTED_SWIGLU[index] = bool(_swiglu_probe(index))
+                except Exception:  # noqa: BLE001 - no prologue
+                    _UNLISTED_SWIGLU[index] = False
+            sw = _UNLISTED_SWIGLU[index]
+        _SWIGLU_DEVICE[index] = sw
+        if sw:
+            _SWIGLU_HANDLE = _swiglu_op()
     elif h16:  # probed unlisted card the latency check now rejects: drop a verdict a forced load left behind
         _H16_DEVICE.pop(index, None)
+        _SWIGLU_DEVICE.pop(index, None)
     return ok

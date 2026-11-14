@@ -313,7 +313,7 @@ def test_load_reports_the_context_lemond_started_with(npu, monkeypatch):
     assert load == {"model_name": "qwen3-0.6b-FLM", "ctx_size": 8192, "save_options": False}
 
     npu.load("qwen3-0.6b-FLM", 100_000)
-    assert npu.loaded_context_length == 40960
+    assert npu.loaded_context_length == 32768
     upstream = npu.upstream()
     assert upstream.model == "qwen3-0.6b-FLM"
     assert upstream.public_model == "lemonade:qwen3-0.6b-FLM"
@@ -327,7 +327,7 @@ def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, mon
     npu.enable()
     by_id = {model.id: model for model in npu.catalog()}
     assert by_id["qwen3.8-mtp-27b-FLM"].max_context_length == 8192
-    assert by_id["qwen3-0.6b-FLM"].max_context_length == 40960
+    assert by_id["qwen3-0.6b-FLM"].max_context_length == 32768
 
     npu.load("qwen3.8-mtp-27b-FLM", 16384)
     load = [r["body"] for r in _requests(npu) if r["path"] == "/v1/load"][-1]
@@ -341,7 +341,8 @@ def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, mon
 )
 def test_a_runtime_limit_caps_whatever_lemond_reports(reported, expected):
     assert nb._max_context_length("qwen3.8-mtp:27b", reported) == expected
-    assert nb._max_context_length("qwen3:0.6b", reported) == (reported or None)
+    assert nb._max_context_length("qwen3.8-dflash2:27b", reported) == expected
+    assert nb._max_context_length("unlisted:tag", reported) == (reported or None)
 
 
 def test_the_resident_reports_what_its_load_asked_for(npu):
@@ -794,10 +795,8 @@ def test_stop_ends_the_process(npu):
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PR_SET_PDEATHSIG is Linux")
 def test_lemond_dies_with_a_killed_owner_even_if_it_ignores_sigterm(tmp_path):
-    """A SIGKILLed Unsloth must not leave lemond (and the model FastFlowLM holds) behind.
-
-    The death signal is SIGKILL, not SIGTERM: this lemond ignores SIGTERM outright, and the real one
-    took about 9 s over it with a model loaded."""
+    """A SIGKILLed Unsloth must not leave lemond behind; lemond ignores SIGTERM, so the signal is
+    SIGKILL."""
     import signal
     import subprocess
     import time

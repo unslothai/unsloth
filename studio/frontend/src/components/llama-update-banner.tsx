@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { LlamaUpdateChangelogPanel } from "@/components/update/llama-update-changelog-panel";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/use-chat-model-runtime";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/resync-inference-status-lazy";
 import { LLAMA_BACKEND_LABELS } from "@/features/settings/lib/llama-backend-labels";
 import {
   llamaUpdateOffered,
@@ -404,11 +404,19 @@ export function LlamaUpdateBanner({
       ? rows.reduce((total, row) => total + (row.sizeBytes ?? 0), 0)
       : null,
   );
+  // Bundles leave versions and the restart note to What's new so the line fits.
+  const releaseOf = (row: UpdateRow) =>
+    !bundled && row.versionChanged && row.latestTag
+      ? `${row.component} ${row.latestTag.replace(/^(b\d+)-.+$/, "$1")}`
+      : row.component;
+  const releases = new Intl.ListFormat(locale, { type: "conjunction" }).format(
+    rows.map(releaseOf),
+  );
   const summary = [
-    bundled ? label : null,
+    releases,
     sizeLabel ? t("runtimeUpdate.downloadSize", { size: sizeLabel }) : null,
     backendChange ? t("runtimeUpdate.backendChange", { change: backendChange }) : null,
-    restartNote,
+    bundled ? null : restartNote,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -442,8 +450,8 @@ export function LlamaUpdateBanner({
     title = firstInstall
       ? t("runtimeUpdate.installAudio")
       : backendOnly
-        ? t("runtimeUpdate.newBackend", { component: label })
-        : t("runtimeUpdate.newUpdate", { component: label });
+        ? t("runtimeUpdate.newBackend")
+        : t("runtimeUpdate.newUpdate");
   }
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";
@@ -497,7 +505,7 @@ export function LlamaUpdateBanner({
       data-testid="llama-update-banner"
     >
       {/* fill the height floor even when the changelog content is short. */}
-      <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+      <div className="toast-surface relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {/* Hides the card until the app is reopened, the same skip What's new offers. */}
         {applying ? null : (
           <button
@@ -676,7 +684,7 @@ function SkippedNotice({
       }}
       data-testid="llama-update-skipped"
     >
-      <div className="flex items-center gap-3 rounded-full bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+      <div className="toast-surface flex items-center gap-3 rounded-full bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {/* <output> carries the implicit status role, so screen readers announce the skip. */}
         <output
           className="block min-w-0 grow truncate text-ui-13 text-foreground"

@@ -13,15 +13,21 @@ import asyncio
 import http.server
 import json
 import re
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
+from core.inference import llama_cpp
 from core.inference import search_images
 from core.inference import studio_tool_loop as loop_mod
 from core.inference import tools
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_llama_cpp_tool_loop import _make_backend, _sse as local_sse  # noqa: E402
 
 
 WEB = {
@@ -365,11 +371,24 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         elif host.startswith("private"):
             self._redirect("http://169.254.169.254/latest/meta-data/")
         else:
+            content_type = "text/html"
             body = (
                 b"<html><body><main><h1>Page</h1><p>" + b"word " * 80 + b"</p></main></body></html>"
             )
+            if host.startswith("pdf"):
+                content_type, body = "application/pdf", b"%PDF-1.4\n" + b"0" * 64
+            if host.startswith("links"):
+                links = b"".join(
+                    b'<li><a href="/docs/' + b"section-%d/" % i * 12 + b'">part</a></li>'
+                    for i in range(12)
+                )
+                body = (
+                    b"<html><body><main><h1>Page</h1><ul>"
+                    + links
+                    + b"</ul><p>LAST_FACT_MARKER</p></main></body></html>"
+                )
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -399,6 +418,257 @@ def local_sites(monkeypatch):
     yield server.server_address[1]
     server.shutdown()
     server.server_close()
+
+
+class _SlowPages:
+    def __init__(self, monkeypatch):
+        self.lock = threading.Lock()
+        self.running = 0
+        self.peak = 0
+        self.fetched = []
+        real = tools._download_page
+
+        def fetch(url, *args, **kwargs):
+            with self.lock:
+                self.running += 1
+                self.peak = max(self.peak, self.running)
+                self.fetched.append(url)
+            cancel = kwargs.get("cancel_event")
+            deadline = time.monotonic() + 0.4
+            while time.monotonic() < deadline and not (cancel and cancel.is_set()):
+                time.sleep(0.01)
+            with self.lock:
+                self.running -= 1
+            if cancel and cancel.is_set():
+                return "Fetch cancelled."
+            return real(url, *args, **kwargs)
+
+        monkeypatch.setattr(tools, "_download_page", fetch)
+
+
+def _local_turn(
+    monkeypatch,
+    calls,
+    cancel_event = None,
+    wait_denies = False,
+    **loop_kwargs,
+):
+    if wait_denies:
+        monkeypatch.setattr(llama_cpp, "wait_tool_decision", lambda *a, **k: "deny", raising = False)
+
+    frames = [
+        local_sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": call["id"],
+                        "type": "function",
+                        "function": call["function"],
+                    }
+                ]
+            }
+        )
+        for index, call in enumerate(calls)
+    ]
+    finish = 'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+    streams = [
+        [*frames, finish, "data: [DONE]\n\n"],
+        [local_sse({"content": "done"}), "data: [DONE]\n\n"],
+    ]
+    payloads = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend.count_chat_tokens = lambda *a, **k: 100
+    events = []
+    started = time.monotonic()
+    for event in backend.generate_chat_completion_with_tools(
+        messages = [{"role": "user", "content": "go"}],
+        tools = [WEB, PY],
+        max_tool_iterations = 2,
+        tool_call_timeout = 30,
+        cancel_event = cancel_event or threading.Event(),
+        **{"permission_mode": "off", **loop_kwargs},
+    ):
+        if isinstance(event, dict) and event.get("type") in ("tool_start", "tool_end"):
+            events.append({key: event.get(key) for key in ("type", "tool_call_id", "result")})
+    return events, payloads, time.monotonic() - started
+
+
+def _local_url(index, host, port):
+    return {
+        "id": f"c{index}",
+        "function": {
+            "name": "web_search",
+            "arguments": json.dumps({"url": f"http://{host}.sites.example:{port}/p"}),
+        },
+    }
+
+
+def _tool_replay(payload):
+    return [m for m in payload["messages"] if m.get("role") in ("assistant", "tool")]
+
+
+def test_local_loop_reads_run_together_and_replay_in_order(monkeypatch, local_sites):
+    calls = [_local_url(index, host, local_sites) for index, host in enumerate("abc")]
+    slow = _SlowPages(monkeypatch)
+
+    events, payloads, _ = _local_turn(monkeypatch, calls)
+
+    assert slow.peak == 3
+    assert [(e["type"], e["tool_call_id"]) for e in events] == [
+        (kind, f"c{index}") for index in range(3) for kind in ("tool_start", "tool_end")
+    ]
+    ends = [e["result"] for e in events if e["type"] == "tool_end"]
+    assert all("word word" in result for result in ends)
+    tool_messages = [m for m in _tool_replay(payloads[1]) if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_messages] == ["c0", "c1", "c2"]
+
+
+def test_local_loop_fits_each_started_read_to_its_own_turn(monkeypatch, local_sites):
+    calls = [_local_url(index, host, local_sites) for index, host in enumerate("ab")]
+    budgets = []
+    real = tools.execute_tool
+
+    def execute(name, arguments, **kwargs):
+        budgets.append(kwargs.get("result_budget_tokens"))
+        kwargs["result_budget_tokens"] = 12
+        return real(name, arguments, **kwargs)
+
+    monkeypatch.setattr(tools, "execute_tool", execute)
+    _SlowPages(monkeypatch)
+
+    events, _, _ = _local_turn(monkeypatch, calls)
+
+    assert len(budgets) == 2 and all(budget is not None for budget in budgets)
+    ends = [e["result"] for e in events if e["type"] == "tool_end"]
+    assert len(ends) == 2 and all(len(result) < 400 for result in ends)
+
+
+def test_local_loop_renders_a_started_read_under_its_own_budget(monkeypatch, local_sites):
+    calls = [_local_url(0, "a", local_sites), _local_url(1, "links", local_sites)]
+    real = tools.execute_tool
+
+    def execute(name, arguments, **kwargs):
+        kwargs["result_budget_tokens"] = 200
+        return real(name, arguments, **kwargs)
+
+    monkeypatch.setattr(tools, "execute_tool", execute)
+    slow = _SlowPages(monkeypatch)
+    monkeypatch.setattr(loop_mod, "_WEB_FETCH_CONCURRENCY", 1, raising = False)
+    serial, _, _ = _local_turn(monkeypatch, calls)
+    assert slow.peak == 1
+    monkeypatch.setattr(loop_mod, "_WEB_FETCH_CONCURRENCY", 4, raising = False)
+    overlapped, _, _ = _local_turn(monkeypatch, calls)
+
+    assert slow.peak == 2
+    assert overlapped == serial
+    assert "LAST_FACT_MARKER" in [e["result"] for e in overlapped if e["type"] == "tool_end"][1]
+
+
+def test_local_loop_extracts_started_pdfs_one_at_a_time(monkeypatch, local_sites):
+    from core.rag import parsers
+
+    calls = [_local_url(0, "pdfa", local_sites), _local_url(1, "pdfb", local_sites)]
+    lock = threading.Lock()
+    state = {"running": 0, "peak": 0, "calls": 0}
+
+    def parse(data, max_pages = None):
+        with lock:
+            state["calls"] += 1
+            state["running"] += 1
+            state["peak"] = max(state["peak"], state["running"])
+        time.sleep(0.3)
+        with lock:
+            state["running"] -= 1
+        return [], 1
+
+    monkeypatch.setattr(parsers, "parse_pdf_bytes", parse)
+    slow = _SlowPages(monkeypatch)
+
+    _local_turn(monkeypatch, calls)
+
+    assert slow.peak == 2
+    assert state["calls"] == 2
+    assert state["peak"] == 1
+
+
+def test_local_loop_pdf_read_does_not_time_out_waiting_for_another(monkeypatch, local_sites):
+    from core.rag import parsers
+
+    calls = [_local_url(0, "pdfa", local_sites), _local_url(1, "pdfb", local_sites)]
+
+    def parse(data, max_pages = None):
+        time.sleep(1.0)
+        return [], 1
+
+    monkeypatch.setattr(parsers, "parse_pdf_bytes", parse)
+    # Under two parses, well over one.
+    monkeypatch.setattr(tools, "_url_read_timeout", lambda timeout: 1.8)
+    slow = _SlowPages(monkeypatch)
+
+    events, _, _ = _local_turn(monkeypatch, calls)
+
+    assert slow.peak == 2
+    ends = [e["result"] for e in events if e["type"] == "tool_end"]
+    assert ends == ["(PDF contains no extractable text)"] * 2
+
+
+def test_local_loop_reads_of_one_host_stay_serial(monkeypatch, local_sites):
+    calls = [
+        _local_url(0, "a", local_sites),
+        {
+            "id": "c1",
+            "function": {
+                "name": "web_search",
+                "arguments": json.dumps({"url": f"http://a.sites.example:{local_sites}/q"}),
+            },
+        },
+    ]
+    slow = _SlowPages(monkeypatch)
+
+    _local_turn(monkeypatch, calls)
+
+    assert slow.peak == 1
+    assert len(slow.fetched) == 2
+
+
+def test_local_loop_read_that_asks_first_is_not_started(monkeypatch, local_sites):
+    calls = [_local_url(index, host, local_sites) for index, host in enumerate("ab")]
+    slow = _SlowPages(monkeypatch)
+
+    events, _, _ = _local_turn(
+        monkeypatch, calls, permission_mode = "ask", confirm_tool_calls = True, wait_denies = True
+    )
+
+    assert slow.fetched == []
+    assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == ["c0", "c1"]
+
+
+def test_local_loop_never_starts_a_read_after_another_tool(monkeypatch, local_sites):
+    calls = [
+        _local_url(0, "a", local_sites),
+        {"id": "c1", "function": {"name": "python", "arguments": json.dumps({"code": "1"})}},
+        _local_url(2, "b", local_sites),
+    ]
+    slow = _SlowPages(monkeypatch)
+
+    _local_turn(monkeypatch, calls)
+
+    assert slow.peak == 1
+
+
+def test_local_loop_cancel_stops_started_reads(monkeypatch, local_sites):
+    calls = [_local_url(index, host, local_sites) for index, host in enumerate("abc")]
+    slow = _SlowPages(monkeypatch)
+    cancel = threading.Event()
+    threading.Timer(0.1, cancel.set).start()
+
+    _local_turn(monkeypatch, calls, cancel_event = cancel)
+
+    deadline = time.monotonic() + 2
+    while slow.running and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert slow.running == 0
 
 
 def test_guards_hold_on_every_hop_of_overlapped_reads(monkeypatch, local_sites):

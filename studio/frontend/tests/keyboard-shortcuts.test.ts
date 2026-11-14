@@ -370,10 +370,8 @@ test("the workspace chords land where the guard lets them", async () => {
   }
 });
 
-// A chord behind a hidden developer menu is not one the browser took from the
-// user, and these sets drive a warning the user reads. Safari has ⌥⌘E (and
-// ⌥⌘R, which Firefox's Reader View flags anyway) only once the Develop menu is
-// switched on, so reserving it would tell every macOS user something untrue.
+// Safari has ⌥⌘E and ⌥⌘R only once its Develop menu is switched on (Firefox's Reader View flags ⌥⌘R
+// anyway), so reserving them would falsely warn every macOS user.
 test("an opt-in developer chord is not treated as taken", () => {
   for (const value of ["Mod+Alt+KeyE"]) {
     for (const mac of [true, false]) {
@@ -1024,9 +1022,11 @@ test("the chords that need one target do not fire where there are two", async ()
     chatPage,
     /enabled: headerPickersShown,\n\s*claims: chatUncovered,\n\s*\}/,
   );
-  // Both panes mount the last message, and the chord would go to whichever
-  // registered its listener first. `If last` carries the other half.
-  assert.match(thread, /enabled: chatActive && !inComparePane && !forkDisabled/);
+  // Both panes mount a thread, and the chord would go to whichever registered its listener first.
+  assert.match(
+    thread,
+    /enabled: lastId !== undefined && chatActive && !inComparePane && !forkDisabled/,
+  );
   assert.match(
     toolCard,
     /soleRequest &&\n\s*!selectionActive &&\n\s*showControls &&/,
@@ -1139,18 +1139,14 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
     "the per-instance flag is what let two forks run",
   );
 
-  const mounts = THREAD.match(
-    /<MessagePrimitive\.If last=\{true\}>\n\s*<ForkChatShortcut \/>\n\s*<\/MessagePrimitive\.If>/g,
+  // Once per thread, beside the windowed rows: a row holding it unmounts when scrolled away.
+  assert.ok(!THREAD.includes("<MessagePrimitive.If last={true}>\n        <ForkChatShortcut />"));
+  assert.equal(THREAD.match(/<ForkChatShortcut \/>/g)?.length, 1);
+  assert.match(THREAD, /viewportRef=\{viewportElRef\}\n\s*\/>\n\s*<ForkChatShortcut \/>/);
+  assert.match(
+    block,
+    /const lastId = useAuiState\(\(\{ thread \}\) => thread\.messages\.at\(-1\)\?\.id\);/,
   );
-  assert.equal(mounts?.length, 2);
-  for (const role of ["const AssistantMessage", "const UserMessage: FC"]) {
-    const at = THREAD.indexOf(role);
-    assert.notEqual(at, -1, `${role} moved`);
-    assert.ok(
-      THREAD.slice(at, THREAD.indexOf("\n};", at)).includes("<ForkChatShortcut />"),
-      `${role} does not mount the fork chord`,
-    );
-  }
 });
 
 // The tour's opener pins the picker and an effect unpins it when no tour runs.
@@ -1158,7 +1154,7 @@ test("the model picker chord opens without the tour's pin", async () => {
 
   assert.match(
     CHAT_PAGE,
-    /const openModelSelector = useCallback\(\(\) => \{\n\s*setModelSelectorLocked\(true\);/,
+    /const openModelSelector = useCallback\(\(\) => \{\n\s*if \(!composerModelChipShown\(\)\) return;\n\s*setModelSelectorLocked\(true\);/,
   );
   assert.match(
     CHAT_PAGE,
@@ -1167,7 +1163,7 @@ test("the model picker chord opens without the tour's pin", async () => {
 
   assert.match(
     CHAT_PAGE,
-    /const toggleModelSelector = useCallback\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*if \(modelSelectorLocked\) return;\n\s*setModelSelectorOpen\(\(open\) => !open\);/,
+    /const toggleModelSelector = useCallback\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*if \(modelSelectorLocked\) return;\n\s*setModelSelectorOpen\(\(open\) => !open && composerModelChipShown\(\)\);/,
   );
   assert.match(
     CHAT_PAGE,
@@ -1679,9 +1675,8 @@ test("a selection chord does not fall through to the open chat", async () => {
   assert.match(APP_SIDEBAR, /const SELECTION_ACTION_GRACE_MS = \d+;/);
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
     const body = sidebarShortcut(id);
-    // Both halves name the action. A shared latch would hold back Archive
-    // after Pin took the selection, and that is a different command the user
-    // chose, not the repeat this guard exists for.
+    // Each action stamps the latch under its own name, since a shared latch would hold back Archive
+    // after Pin took the selection, a different command, not a repeat.
     assert.match(
       body,
       new RegExp(`actOnSelection\\("${id}",`),

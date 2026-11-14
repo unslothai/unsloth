@@ -42,13 +42,13 @@ export function setSpellCheck(enabled: boolean): void {
   }
 }
 
-function subscribe(listener: () => void): () => void {
+export function subscribeSpellCheck(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
 export function useSpellCheck(): boolean {
-  return useSyncExternalStore(subscribe, getSpellCheck);
+  return useSyncExternalStore(subscribeSpellCheck, getSpellCheck);
 }
 
 /** Apply the stored choice now and follow toggles made in another tab. */

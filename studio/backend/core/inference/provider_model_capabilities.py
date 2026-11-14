@@ -137,3 +137,52 @@ def trim_models_dev_catalog(raw: dict[str, Any]) -> dict[str, dict[str, dict[str
             if isinstance(model_id, str) and model_id.strip() and isinstance(model, dict):
                 bucket[model_id.strip().lower()] = _trim_models_dev_model(model)
     return catalog
+
+
+MODELS_DEV_MODEL_LIST_SOURCES = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "gemini": "google",
+    "deepseek": "deepseek",
+    "zai": "zai",
+    "kimi": "moonshotai",
+    "mistral": "mistral",
+    "minimax": "minimax",
+    "opencode": "opencode",
+    "opencode_go": "opencode-go",
+    "qwen": "alibaba",
+    "huggingface": "huggingface",
+}
+
+
+def _is_chat_model(model: dict[str, Any]) -> bool:
+    modalities = model.get("modalities")
+    modalities = modalities if isinstance(modalities, dict) else {}
+    inputs, outputs = modalities.get("input"), modalities.get("output")
+    return (
+        model.get("status") != "deprecated"
+        and isinstance(inputs, list)
+        and "text" in inputs
+        and isinstance(outputs, list)
+        and "text" in outputs
+    )
+
+
+def models_dev_chat_models(raw: dict[str, Any]) -> dict[str, list[str]]:
+    catalog: dict[str, list[str]] = {}
+    for provider_type, source in MODELS_DEV_MODEL_LIST_SOURCES.items():
+        provider = raw.get(source)
+        models = provider.get("models") if isinstance(provider, dict) else None
+        if not isinstance(models, dict):
+            continue
+        chat = [
+            (str(model.get("release_date") or ""), model_id.strip())
+            for model_id, model in models.items()
+            if isinstance(model_id, str)
+            and model_id.strip()
+            and isinstance(model, dict)
+            and _is_chat_model(model)
+        ]
+        chat.sort(key = lambda entry: entry[0], reverse = True)
+        catalog[provider_type] = [model_id for _, model_id in chat]
+    return catalog

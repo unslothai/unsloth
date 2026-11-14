@@ -14,6 +14,7 @@ import {
   resolveInferenceCheckpointId,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { AUDIO_DEVICE_KEY } from "@/features/audio/audio-workspace-constants";
 import { audioPickSearch } from "@/features/audio/route-search";
 import { useHubInfiniteScroll } from "@/features/hub";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
@@ -32,8 +33,10 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { useIsCompact } from "@/hooks/use-mobile";
+import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
+import { audioCppCardGb } from "@/lib/gguf-fit";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -117,8 +120,7 @@ import {
 } from "./lib/model-run-selection";
 import { inventoryRowFormat } from "./catalog/inventory-sort";
 import { matchesInventoryCapabilities } from "./lib/model-type-filter";
-import { ownerOf, repoOf } from "./lib/format";
-import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { matchesRecommendedBrowse } from "./lib/recommended-browse";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
 import {
   type RefreshSupersession,
@@ -142,7 +144,6 @@ import {
   isUnslothFinetunable,
   matchesHubCapability,
   matchesFormat,
-  matchesRecommended,
   matchesRecommendedDiffusion,
 } from "./lib/view-models";
 import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
@@ -168,9 +169,6 @@ const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 
-// Under Recommended, iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
-const MIN_ICONLESS_MODEL_LIKES = 30;
-
 // Image and video models skip Recommended's likes rules: new diffusion uploads rarely clear them.
 function isDiffusionResult(result: HfModelResult): boolean {
   return detectCapabilities(result.tags, result.pipelineTag, result.id).some(
@@ -195,14 +193,7 @@ function matchesDiscoverFormat(
     return matchesFormat(detectResultFormat(result), format);
   }
   if (diffusion) return matchesRecommendedDiffusion(result, quantFormats);
-  return (
-    (!browsing ||
-      ((resolveOwnerProviderLogo(ownerOf(result.id), repoOf(result.id)) !==
-        null ||
-        (result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
-        hasRecommendedCheckpointLikes(result))) &&
-    matchesRecommended(result, quantFormats)
-  );
+  return matchesRecommendedBrowse(result, quantFormats, browsing);
 }
 
 function withoutGgufTag(
@@ -419,6 +410,9 @@ export function ModelsPage() {
   // Use the saved VRAM budget so the fit filter matches the badges.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const inferenceGpu = useInferenceGpuInfo();
+  // Audio runs load on the Audio page, so its placement decides how audio.cpp quants are judged.
+  const [audioDevice] = usePersistedChoice(AUDIO_DEVICE_KEY, "auto");
+  const hubAudioCardGb = audioCppCardGb(gpu, audioDevice === "cpu");
   // Judge fit by the runtime that places the row: media repos use the diffusion planner's rule,
   // everything else the GGUF backend's inventory.
   const rowFitsDevice = useCallback(
@@ -1835,6 +1829,7 @@ export function ModelsPage() {
       vramInfo,
       gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
       gpuCount: inferenceGpu.deviceCount,
+      audioCppCardGb: hubAudioCardGb,
       systemRamGb:
         inferenceGpu.systemRamAvailableGb > 0
           ? inferenceGpu.systemRamAvailableGb
@@ -1852,6 +1847,7 @@ export function ModelsPage() {
       inferenceGpu.available,
       inferenceGpu.memoryTotalGb,
       inferenceGpu.deviceCount,
+      hubAudioCardGb,
       inferenceGpu.systemRamAvailableGb,
       inferenceGpu.unifiedLoadBudgetGb,
       inferenceGpu.unifiedLoadCeilingGb,
@@ -2173,8 +2169,9 @@ export function ModelsPage() {
                     : HUB_SPLIT_CUSTOM_WIDTH_CLASS,
                 )
               : "flex-1",
-            // Opaque overlay: remove the catalog from the tab order.
             catalogCovered && "pointer-events-none",
+            // A background image clears the overlay's fill, so hide what it covers.
+            detailOpen && (splitMode ? "max-lg:invisible" : "invisible"),
           )}
           style={splitMode ? splitWidth.style : undefined}
           aria-hidden={catalogCovered || undefined}

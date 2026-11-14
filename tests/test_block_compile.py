@@ -328,6 +328,57 @@ def _install_blocks(M, model, monkeypatch):
     return inner
 
 
+@pytest.mark.parametrize("fp8_first", [False, True])
+def test_fp8_precision_options_are_per_instance_and_reused(monkeypatch, fp8_first):
+    import copy
+
+    M = _load()
+
+    class PrecisionDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, x):
+            return self.proj(x)
+
+    plain, fp8 = PrecisionDecoderLayer(), PrecisionDecoderLayer()
+    fp8.proj._unsloth_fp8_lora = object()
+    options = []
+
+    def compile(fn, **kwargs):
+        precision = kwargs["options"].get("emulate_precision_casts", False)
+        options.append(precision)
+
+        def run(*args, **kw):
+            return fn(*args, **kw) + int(precision)
+
+        return run
+
+    monkeypatch.setattr(torch, "compile", compile)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(M, "_layers", lambda model: [(model, True)])
+    monkeypatch.setattr(M, "_torch_supported", lambda: True)
+    monkeypatch.setattr(M, "_zero3_partitioned", lambda *args: False)
+    original = PrecisionDecoderLayer.forward
+    for layer in (fp8, plain) if fp8_first else (plain, fp8):
+        M.patch_block_compile(layer)
+    x = torch.randn(2, 4, 8)
+    torch.testing.assert_close(plain(x), original(plain, x))
+    torch.testing.assert_close(fp8(x), original(fp8, x) + 1)
+    assert "forward" not in plain.__dict__
+    assert not M._COMPILE_OPTIONS.get("emulate_precision_casts", False)
+    assert options == [False, True]
+    forward = fp8.forward
+    M.patch_block_compile(fp8)
+    assert fp8.forward is forward and options == [False, True]
+    twin = copy.deepcopy(fp8)
+    assert twin.forward.__self__ is twin
+    torch.testing.assert_close(twin(x), original(twin, x) + 1)
+    fp8.eval()
+    torch.testing.assert_close(fp8(x), original(fp8, x))
+
+
 def _outer_loss(
     model,
     ids,
@@ -886,6 +937,10 @@ def test_sm_count_is_read_outside_the_trace(monkeypatch):
 
     fla.get_multiprocessor_count = get_multiprocessor_count
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        torch._C, "_cuda_init", lambda: pytest.fail("CPU test initialized CUDA"), raising = False
+    )
     M._route_sm_count({fla.__name__: fla})
     out = torch.compile(
         lambda x: x * fla.get_multiprocessor_count(0), fullgraph = True, backend = "eager"
@@ -1629,12 +1684,9 @@ def test_router_hooks_are_not_installed_twice_after_an_eager_capture(request, mo
 
 
 def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
-    """A capture hook inside the block appends to an empty scratch list on every call.
-
-    Before: the hook appended to the collector's list and Dynamo guarded on its length (the layer
-    index), so each of 10 layers compiled its own graph. Now <= 2 graphs (static, then dynamic) across
-    10 layers at 10 sequence lengths, and the collected logits match the stock forward in order.
-    """
+    """A capture hook appends to an empty scratch list per call, so Dynamo does not guard on the
+    collector's length, which compiled one graph per layer; now at most 2 graphs across 10 layers
+    and 10 lengths, with logits matching the stock forward."""
     output_capturing = pytest.importorskip("transformers.utils.output_capturing")
     misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
     if not hasattr(misc, "output_capture_scratch"):
@@ -1785,3 +1837,172 @@ def test_graphs_off_compile_gets_the_same_region_limit(monkeypatch):
     for kwargs in seen:
         assert kwargs["isolate_recompiles"] is True
         assert kwargs["recompile_limit"] == M._region_recompile_limit(2) == 48
+
+
+def test_shared_kv_writer_recompute_reuses_the_forward_graph(monkeypatch):
+    """Gemma-4 E2B: recompute saw `shared_kv_states` filled and compiled a second graph (CheckpointError)."""
+    from collections import UserDict
+    from torch._dynamo.testing import CompileCounter
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+    counter = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = counter, fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+
+    class Attn(torch.nn.Module):
+        def __init__(self, store, shared):
+            super().__init__()
+            self.store_full_length_kv, self.is_kv_shared_layer = store, shared
+            self.q = torch.nn.Linear(8, 8)
+            self.k = torch.nn.Linear(8, 8)
+
+        def forward(self, x, shared_kv_states):
+            if self.is_kv_shared_layer:
+                k = shared_kv_states["sliding"]
+            else:
+                k = self.k(x)
+            if self.store_full_length_kv:
+                shared_kv_states["sliding"] = k
+            return self.q(x) * k
+
+    class KvDecoderLayer(torch.nn.Module):
+        def __init__(self, store, shared):
+            super().__init__()
+            self.self_attn = Attn(store, shared)
+
+        def forward(
+            self,
+            hidden_states,
+            shared_kv_states = None,
+            **kwargs,
+        ):
+            return hidden_states + self.self_attn(hidden_states, shared_kv_states)
+
+    torch.manual_seed(0)
+    layers = [
+        KvDecoderLayer(False, False),
+        KvDecoderLayer(True, False),
+        KvDecoderLayer(False, True),
+    ]
+    stock = [KvDecoderLayer(False, False), KvDecoderLayer(True, False), KvDecoderLayer(False, True)]
+    for a, b in zip(stock, layers):
+        b.load_state_dict(a.state_dict())
+    M._wrap(KvDecoderLayer, {})
+    for layer in layers + stock:
+        layer.train()
+    for layer in stock:
+        layer.__dict__["_unsloth_block_mode"] = M._OFF
+
+    def step(stack, x):
+        shared = UserDict()
+        h = x
+        for layer in stack:
+            h = checkpoint(layer, h, shared_kv_states = shared, use_reentrant = False)
+        return h, shared
+
+    x = torch.randn(2, 5, 8)
+    ref, ref_shared = step(stock, x)
+    ref.sum().backward()
+    out, shared = step(layers, x)
+    forward_frames = counter.frame_count
+    out.sum().backward()
+    recompute_frames = counter.frame_count - forward_frames
+    torch._dynamo.reset()
+    assert recompute_frames == 0
+    assert list(shared.keys()) == ["sliding"]
+    torch.testing.assert_close(out, ref)
+    for a, b in zip(stock, layers):
+        for pa, pb in zip(a.parameters(), b.parameters()):
+            torch.testing.assert_close(pa.grad, pb.grad)
+
+
+def test_parametrized_class_is_reused_per_module(monkeypatch):
+    """PEFT's ParamWrapper registers a parametrization per forward: each module keeps one
+    Parametrized<Class> (a stable type id for Dynamo), and two modules never share one."""
+    from torch.nn.utils import parametrize
+
+    monkeypatch.setattr(parametrize, "_inject_new_class", parametrize._inject_new_class)
+    bc = _load()
+    bc._stable_parametrized_classes()
+    bc._stable_parametrized_classes()  # idempotent
+
+    class Double(torch.nn.Module):
+        def forward(self, w):
+            return 2 * w
+
+    a, b = torch.nn.Linear(3, 3), torch.nn.Linear(3, 3)
+    seen = []
+    for _ in range(3):
+        parametrize.register_parametrization(a, "weight", Double())
+        seen.append(type(a))
+        expected = 2 * a.parametrizations["weight"].original
+        assert torch.equal(a.weight, expected)
+        parametrize.remove_parametrizations(a, "weight", leave_parametrized = False)
+        assert type(a) is torch.nn.Linear and "weight" in a._parameters
+    assert seen[0] is seen[1] is seen[2] and seen[0] is not torch.nn.Linear
+    parametrize.register_parametrization(b, "weight", Double())
+    assert type(b) is not seen[0] and torch.equal(
+        b.weight, 2 * b.parametrizations["weight"].original
+    )
+
+
+def test_relax_strict_dynamic_aliases_only_marked_tensors():
+    M = _load()
+    ids = torch.zeros(2, 16, dtype = torch.long)
+    torch._dynamo.mark_dynamic(ids, 1)
+    other = torch.zeros(2, 16)
+    pos = (torch.zeros(1, 16), torch.zeros(1, 16))
+    out = M._relax_strict_dynamic((other, pos, {"ple_input_ids": ids, "x": None}))
+    assert out[0] is other and out[1] is pos
+    alias = out[2]["ple_input_ids"]
+    assert alias is not ids and alias.data_ptr() == ids.data_ptr() and alias.shape == ids.shape
+    assert not getattr(alias, "_dynamo_dynamic_indices", None)
+    assert ids._dynamo_dynamic_indices == {1}  # the caller's tensor keeps its own mark
+    unmarked = (other, {"a": other})
+    assert M._relax_strict_dynamic(unmarked) is unmarked
+
+
+def test_strict_marked_kwarg_does_not_demote_the_block(monkeypatch, capsys):
+    """Qwen4Exp passes input_ids (strictly marked by unsloth_zoo's loss bookkeeping) into every block as
+    ple_input_ids; a length the block specialized raised ConstraintViolationError and the layer kind fell
+    back to the stock forward."""
+    M = _load()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = "eager", fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+
+    class PleDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            ple_input_ids = None,
+            **kwargs,
+        ):
+            out = self.proj(hidden_states)
+            if ple_input_ids.shape[1] == 16:  # a block that specializes the length
+                out = out + 1
+            return out
+
+    M._wrap(PleDecoderLayer, {})
+    layer = PleDecoderLayer().train()
+    x = torch.randn(2, 16, 8, requires_grad = True)
+    ids = torch.zeros(2, 16, dtype = torch.long)
+    torch._dynamo.mark_dynamic(ids, 1)
+    layer(x, ple_input_ids = ids).sum().backward()
+    torch._dynamo.reset()
+    assert "block compile failed" not in capsys.readouterr().out
+    assert layer._unsloth_block_mode != M._OFF
