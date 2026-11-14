@@ -1004,6 +1004,111 @@ def test_codex_revert_and_fork_rebuild_the_inherited_prefix(codex_home):
     assert chain == ["Fork of the retry", "Try again", "List the files"]
 
 
+_PAGINATED_ROLLOUT = Path(__file__).parent / "fixtures" / "codex_paginated_rollout.jsonl"
+_PAGINATED_SID = "01a1d5af-1734-7651-b549-42d9e5803184"
+
+
+def _paginated_rollout(home, old = False):
+    """``old``: what the reader before completed items saw, so the import stores an untagged mark."""
+    records = [json.loads(line) for line in _PAGINATED_ROLLOUT.read_text().splitlines()]
+    if old:
+        records = [r for r in records if r["payload"].get("type") != "item_completed"]
+        records[0]["payload"].pop("history_mode")
+    name = f"rollout-2026-11-13T16-13-04-{_PAGINATED_SID}.jsonl"
+    return _write(home / "sessions" / "2026" / "11" / "13" / name, records)
+
+
+def _turns(sid):
+    return [
+        (m["role"], m["content"][0].get("text") or m["content"][0]["toolName"])
+        for m in _messages(codex.SOURCE, sid)
+    ]
+
+
+_PAGINATED_TURNS = [
+    ("user", "Why does checkout fail on empty carts? MARK-N1"),
+    ("assistant", "Codex reply to MARK-N1"),
+    ("user", "[RUN] run the cart tests MARK-N2"),
+    ("assistant", "shell"),
+    ("assistant", "Codex reply to MARK-N2 after tool"),
+    ("user", "Great, now summarise the fix MARK-N3"),
+    ("assistant", "Codex reply to MARK-N3"),
+]
+
+
+def test_codex_imports_every_turn_of_a_current_rollout(codex_home):
+    _paginated_rollout(codex_home)
+    summary = run_import(codex.SOURCE)
+
+    assert (summary.new_chats, summary.messages) == (1, 7)
+    assert _turns(_PAGINATED_SID) == _PAGINATED_TURNS
+    thread = studio_db.get_chat_thread(thread_id_for(codex.SOURCE, _PAGINATED_SID))
+    assert thread["title"] == "Why does checkout fail on empty carts? MARK-N1"
+
+
+def _completed(
+    kind,
+    text,
+    ts = "2026-11-13T16:20:00Z",
+):
+    part = "text" if kind == "UserMessage" else "Text"
+    item = {"type": kind, "id": text, "content": [{"type": part, "text": text}]}
+    return x_line("event_msg", {"type": "item_completed", "item": item}, ts = ts)
+
+
+def test_codex_reimport_brings_turns_an_older_import_missed(codex_home):
+    path = _paginated_rollout(codex_home, old = True)
+    assert run_import(codex.SOURCE).messages == 1
+    _paginated_rollout(codex_home)
+
+    assert run_import(codex.SOURCE).messages == 7
+    assert _turns(_PAGINATED_SID) == _PAGINATED_TURNS
+    assert run_import(codex.SOURCE).messages == 0
+
+    _append(path, [{**_completed("UserMessage", "One more"), "ordinal": 38}])
+    assert run_import(codex.SOURCE).messages == 1
+    assert _turns(_PAGINATED_SID) == [*_PAGINATED_TURNS, ("user", "One more")]
+
+
+def _old_import(home):
+    _paginated_rollout(home, old = True)
+    run_import(codex.SOURCE)
+    _paginated_rollout(home)
+    tid = thread_id_for(codex.SOURCE, _PAGINATED_SID)
+    return tid, _messages(codex.SOURCE, _PAGINATED_SID)[0]
+
+
+def _parent_texts(sid):
+    rows = {m["id"]: m for m in _messages(codex.SOURCE, sid)}
+
+    def label(m):
+        return m["content"][0].get("text") or m["content"][0]["toolName"]
+
+    return {label(m): label(rows[m["parentId"]]) if m["parentId"] else None for m in rows.values()}
+
+
+def test_codex_backfill_keeps_an_edited_turn_and_moves_it_under_its_prompt(codex_home):
+    tid, shell = _old_import(codex_home)
+    edited = [{**shell["content"][0], "result": "edited in Studio"}]
+    studio_db.sync_chat_messages(tid, [{**shell, "content": edited}], prune_missing = True)
+
+    run_import(codex.SOURCE)
+    rows = {m["id"]: m for m in _messages(codex.SOURCE, _PAGINATED_SID)}
+    assert rows[shell["id"]]["content"] == edited
+    assert _parent_texts(_PAGINATED_SID)["shell"] == "[RUN] run the cart tests MARK-N2"
+    assert _turns(_PAGINATED_SID) == _PAGINATED_TURNS
+
+
+def test_codex_backfill_leaves_a_deleted_turn_deleted(codex_home):
+    tid, shell = _old_import(codex_home)
+    studio_db.sync_chat_messages(tid, [], prune_missing = True)
+
+    assert run_import(codex.SOURCE).messages == 6
+    assert _turns(_PAGINATED_SID) == [t for t in _PAGINATED_TURNS if t[1] != "shell"]
+    parents = _parent_texts(_PAGINATED_SID)
+    assert parents["Codex reply to MARK-N2 after tool"] == "[RUN] run the cart tests MARK-N2"
+
+
 def test_an_empty_tool_output_still_completes_the_call(claude_home):
     path = _session(
         claude_home,
@@ -1019,3 +1124,55 @@ def test_an_empty_tool_output_still_completes_the_call(claude_home):
     )
     call = claude.read_transcript(path, "t", "s1").messages[1]["content"][0]
     assert call["result"] == ""
+
+
+def test_codex_revert_after_an_older_import_brings_the_missed_prefix(codex_home):
+    _paginated_rollout(codex_home, old = True)
+    assert run_import(codex.SOURCE).messages == 1
+    _paginated_rollout(codex_home)
+    meta = {
+        "id": _PAGINATED_SID,
+        "cwd": "/Users/me/webshop",
+        "history_base": {"thread_id": _PAGINATED_SID, "end_ordinal_exclusive": 22},
+    }
+    name = f"rollout-2026-11-14T10-00-00-{_PAGINATED_SID}_r2.jsonl"
+    _write(
+        codex_home / "sessions" / "2026" / "11" / "14" / name,
+        [
+            {**x_line("session_meta", meta), "ordinal": 22},
+            {**_completed("UserMessage", "Try again"), "ordinal": 23},
+        ],
+    )
+    run_import(codex.SOURCE)
+    assert _turns(_PAGINATED_SID) == [*_PAGINATED_TURNS[:4], ("user", "Try again")]
+
+
+def test_codex_deleting_the_base_rollout_keeps_studio_edits(codex_home):
+    base = _paginated_rollout(codex_home)
+    meta = {
+        "id": _PAGINATED_SID,
+        "cwd": "/Users/me/webshop",
+        "history_mode": "paginated",
+        "history_base": {"thread_id": _PAGINATED_SID, "end_ordinal_exclusive": 38},
+    }
+    call = {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c2"}
+    name = f"rollout-2026-11-14T10-00-00-{_PAGINATED_SID}_r2.jsonl"
+    _write(
+        codex_home / "sessions" / "2026" / "11" / "14" / name,
+        [
+            {**x_line("session_meta", meta), "ordinal": 38},
+            {**x_line("response_item", call, ts = "2026-11-14T10:00:01Z"), "ordinal": 39},
+        ],
+    )
+    run_import(codex.SOURCE)
+    tid = thread_id_for(codex.SOURCE, _PAGINATED_SID)
+    rows = _messages(codex.SOURCE, _PAGINATED_SID)
+    tip = next(m for m in rows if m["content"][0].get("toolCallId") == "c2")
+    edited = [{**tip["content"][0], "result": "edited in Studio"}]
+    studio_db.sync_chat_messages(tid, [{**tip, "content": edited}], prune_missing = False)
+
+    base.unlink()
+    run_import(codex.SOURCE)
+    after = {m["id"]: m for m in _messages(codex.SOURCE, _PAGINATED_SID)}
+    assert after[tip["id"]]["content"] == edited
+    assert len(after) == len(rows)
