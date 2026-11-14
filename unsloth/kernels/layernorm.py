@@ -194,8 +194,8 @@ def _layernorm_sum_partials(
     out1,
     n_programs,
     n_cols,
-    BLOCK_ROWS: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,  # BLOCK_ROWS partial rows per program, BLOCK_COLS columns per program
+    BLOCK_ROWS: tl.constexpr,  # partial rows per program
+    BLOCK_COLS: tl.constexpr,  # columns per program
 ):
     # Not torch.sum: Inductor reorders it, so eager and compiled bytes would differ.
     which = tl.program_id(1)

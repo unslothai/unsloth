@@ -104,7 +104,7 @@ test("the defaults are captured when pairing begins, not reconstructed later", (
   // On the first pairing there is no earlier capture, so the default is sampled up front.
   const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
   assert.match(begin, /pairingWindowDefaults =/);
-  assert.match(begin, /readThreadScopedSettings\(/);
+  assert.match(begin, /(?:readThreadScopedSettings|readInstallationDefaults)\(/);
   const capture = slice(
     store,
     "if (threadScopedSettingsThreadId === null) {",
@@ -197,8 +197,10 @@ test("a tab-close write that could not be confirmed is replayed next session", (
 
 test("a model that forces thinking on does not erase a chat's stored preference", () => {
   const build = slice(store, "function buildThreadScopedSnapshot", "\n}");
-  assert.match(build, /activeThreadScopedSettings\?\.reasoningEnabled === false/);
-  assert.match(build, /reasoningAlwaysOn/);
+  assert.match(build, /restoreChatOwnedValues\(threadId, settings\);/);
+  const restore = slice(store, "function restoreChatOwnedValues", "\n}");
+  assert.match(restore, /activeThreadScopedSettings\?\.reasoningEnabled === false/);
+  assert.match(restore, /reasoningAlwaysOn/);
 });
 
 test("compare mode drops the thread-scoped state rather than keeping the last chat's", () => {
@@ -240,7 +242,7 @@ test("the defaults sample is never taken from the outgoing chat's values", () =>
   const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
   assert.match(
     begin,
-    /threadScopedSettingsThreadId === null\s*\?\s*readThreadScopedSettings\(/,
+    /threadScopedSettingsThreadId === null\s*\?\s*(?:readThreadScopedSettings|readInstallationDefaults)\(/,
   );
   assert.match(begin, /:\s*globalThreadScopedDefaults;/);
 });
@@ -491,9 +493,9 @@ test("a provider constraint does not rewrite what the chat stored", () => {
   assert.match(reasoning, /noteConstraintSuppressedThreadField\("reasoningEnabled"\)/);
   const tools = slice(store, "setToolsEnabled: (toolsEnabled, options)", "\n    }),");
   assert.match(tools, /noteConstraintSuppressedThreadField\("toolsEnabled"\)/);
-  const build = slice(store, "function buildThreadScopedSnapshot", "\nconst THREAD_SETTINGS_REPLAY_KEY");
-  assert.match(build, /keepsStoredValueUnderConstraint\("reasoningEnabled", threadId, settings\)/);
-  assert.match(build, /keepsStoredValueUnderConstraint\("toolsEnabled", threadId, settings\)/);
+  const restore = slice(store, "function restoreChatOwnedValues", "\nfunction buildThreadScopedSnapshot");
+  assert.match(restore, /keepsStoredValueUnderConstraint\("reasoningEnabled", threadId, settings\)/);
+  assert.match(restore, /keepsStoredValueUnderConstraint\("toolsEnabled", threadId, settings\)/);
   const keeps = slice(store, "function keepsStoredValueUnderConstraint", "\n}");
   assert.match(keeps, /!explicitlyEditedThreadFields\.has\(key\)/);
   const capture = slice(store, "function captureThreadScopedEdit", "\n}");
@@ -509,8 +511,8 @@ test("the sampling params are read and applied through params", () => {
   );
   assert.equal(
     store.match(/readThreadScopedValue\(state, key\)/g)?.length,
-    3,
-    "the snapshot, the held edit and the sameness check",
+    4,
+    "the snapshot, the held edit, the sameness check and a send's pill choices",
   );
   assert.match(store, /paramsPatch\[key\] = value;/);
   assert.match(
@@ -619,7 +621,7 @@ test("the in-memory defaults follow the model defaults that were just written", 
   // Not ??: a cleared seed is stored as null and must not fall through to the installation pin.
   assert.match(
     store,
-    /firstSetThreadScopedValue\(\s*stored\?\.\[key\],\s*globalThreadScopedDefaults\?\.\[key\],/,
+    /firstSetThreadScopedValue\(\s*stored\?\.\[key\],\s*(?:npuPillDefault\([^)]*\),\s*)?globalThreadScopedDefaults\?\.\[key\],/,
   );
 });
 

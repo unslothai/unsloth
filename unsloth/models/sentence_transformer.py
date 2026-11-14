@@ -702,14 +702,17 @@ def _push_to_hub_gguf(
             )
 
         gguf_basenames = [os.path.basename(f) for f in gguf_files if os.path.exists(f)]
+        if isinstance(tags, str):
+            tags = [tags]
+        card_tags = ["gguf", "llama.cpp", "llama-cpp", "unsloth", "sentence-transformers"]
+        if is_vlm:
+            card_tags.append("vision-language-model")
+        tags_yaml = "".join(
+            f"- {json.dumps(t)}\n" for t in dict.fromkeys(card_tags + list(tags or []))
+        )
         readme_content = f"""---
 tags:
-- gguf
-- llama.cpp
-- unsloth
-- sentence-transformers
-{"- vision-language-model" if is_vlm else ""}
----
+{tags_yaml}---
 
 # {model_name} - GGUF
 
@@ -748,19 +751,6 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
             create_pr = create_pr,
             revision = revision,
         )
-
-    all_tags = ["gguf", "llama-cpp", "unsloth", "sentence-transformers"]
-    if is_vlm:
-        all_tags.append("vision-language-model")
-    if tags is not None:
-        if isinstance(tags, (list, tuple)):
-            all_tags.extend(tags)
-        else:
-            all_tags.append(tags)
-    try:
-        api.add_tags(repo_id = full_repo_id, tags = all_tags, repo_type = "model")
-    except:
-        pass
 
     print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
     return full_repo_id
@@ -1165,28 +1155,6 @@ class FastSentenceTransformer(FastModel):
             )
 
         modeling_distilbert.DistilBertModel.forward = forward
-
-    @staticmethod
-    def _add_unsloth_tags(
-        repo_id,
-        token,
-        tags = None,
-    ):
-        """Add Unsloth + sentence-transformers tags to the HF Hub repo."""
-        from huggingface_hub import HfApi
-
-        api = HfApi(token = token)
-        if tags is None:
-            tags = []
-        tags.extend(["unsloth", "sentence-transformers"])
-        try:
-            api.add_tags(
-                repo_id = repo_id,
-                tags = tags,
-                repo_type = "model",
-            )
-        except:
-            pass
 
     @staticmethod
     def _add_unsloth_branding(save_directory):
@@ -2818,7 +2786,6 @@ class FastSentenceTransformer(FastModel):
                     )
                 except:
                     pass
-                FastSentenceTransformer._add_unsloth_tags(repo_id, hub_token)
                 with tempfile.TemporaryDirectory() as temp_dir:
                     self.save_pretrained_merged(temp_dir, **push_kwargs)
                     api.upload_folder(
@@ -3092,8 +3059,6 @@ class FastSentenceTransformer(FastModel):
                 )
             except:
                 pass
-
-            FastSentenceTransformer._add_unsloth_tags(repo_id, token)
 
             with tempfile.TemporaryDirectory() as temp_dir:
                 self.save_pretrained_merged(temp_dir, **kwargs)

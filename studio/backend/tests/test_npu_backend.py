@@ -172,6 +172,30 @@ def test_catalog_keeps_flm_chat_models_only(npu):
     assert by_id["qwen3-0.6b-FLM"].model_path == "lemonade:qwen3-0.6b-FLM"
 
 
+def test_catalog_rows_name_their_model_card_repo(npu):
+    npu.enable()
+    (npu._flm_binary().parent / "model_list.json").write_text(
+        json.dumps(
+            {
+                "model_path": "models",
+                "models": {
+                    "qwen3": {
+                        "0.6b": {
+                            "name": "Qwen3-0.6B-NPU2",
+                            "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2/resolve/v2",
+                        }
+                    }
+                },
+            }
+        )
+    )
+    by_id = {model.id: model.to_json() for model in npu.catalog()}
+    assert by_id["qwen3-0.6b-FLM"]["hf_repo"] == "FastFlowLM/Qwen3-0.6B-NPU2"
+    assert by_id["qwen3-0.6b-FLM"]["hf_revision"] == "v2"
+    assert by_id["gemma3-4b-FLM"]["hf_repo"] is None
+    assert by_id["gemma3-4b-FLM"]["hf_revision"] is None
+
+
 def test_download_relays_progress_then_completes(npu):
     npu.enable()
     events = list(npu.download("qwen3-0.6b-FLM"))
@@ -332,7 +356,7 @@ def test_load_reports_the_context_lemond_started_with(npu, monkeypatch):
     assert load == {"model_name": "qwen3-0.6b-FLM", "ctx_size": 8192, "save_options": False}
 
     npu.load("qwen3-0.6b-FLM", 100_000)
-    assert npu.loaded_context_length == 40960
+    assert npu.loaded_context_length == 32768
     upstream = npu.upstream()
     assert upstream.model == "qwen3-0.6b-FLM"
     assert upstream.public_model == "lemonade:qwen3-0.6b-FLM"
@@ -346,7 +370,7 @@ def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, mon
     npu.enable()
     by_id = {model.id: model for model in npu.catalog()}
     assert by_id["qwen3.8-mtp-27b-FLM"].max_context_length == 8192
-    assert by_id["qwen3-0.6b-FLM"].max_context_length == 40960
+    assert by_id["qwen3-0.6b-FLM"].max_context_length == 32768
 
     npu.load("qwen3.8-mtp-27b-FLM", 16384)
     load = [r["body"] for r in _requests(npu) if r["path"] == "/v1/load"][-1]
@@ -360,7 +384,8 @@ def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, mon
 )
 def test_a_runtime_limit_caps_whatever_lemond_reports(reported, expected):
     assert nb._max_context_length("qwen3.8-mtp:27b", reported) == expected
-    assert nb._max_context_length("qwen3:0.6b", reported) == (reported or None)
+    assert nb._max_context_length("qwen3.8-dflash2:27b", reported) == expected
+    assert nb._max_context_length("unlisted:tag", reported) == (reported or None)
 
 
 def test_the_resident_reports_what_its_load_asked_for(npu):

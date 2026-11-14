@@ -579,6 +579,56 @@ def test_max_steps_bound_defers_to_an_explicit_slice(monkeypatch):
     assert sliced.shuffle_seeds == []
 
 
+@pytest.mark.parametrize("slice_start, slice_end", [(50, 60), (50, None), (10, None)])
+def test_explicit_slice_start_past_the_last_row_is_refused(monkeypatch, slice_start, slice_end):
+    from hub.utils import dataset_cache
+
+    trainer = _cached_only_loader(monkeypatch, _SizedDataset(10))
+    monkeypatch.setattr(
+        dataset_cache,
+        "load_cached_hf_dataset",
+        lambda *args, **kwargs: _SizedDataset(10),
+    )
+    updates = []
+    trainer._update_progress = lambda **kwargs: updates.append(kwargs)
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+        dataset_slice_start = slice_start,
+        dataset_slice_end = slice_end,
+    )
+
+    assert result is None
+    errors = [u["error"] for u in updates if "error" in u]
+    assert errors == [
+        f"Train Split Start {slice_start} is past the last row of this dataset (10 rows)."
+    ]
+
+
+def test_explicit_slice_end_past_the_last_row_still_clamps(monkeypatch):
+    from hub.utils import dataset_cache
+
+    trainer = _cached_only_loader(monkeypatch, _SizedDataset(10))
+    monkeypatch.setattr(
+        dataset_cache,
+        "load_cached_hf_dataset",
+        lambda *args, **kwargs: _SizedDataset(10),
+    )
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+        dataset_slice_start = 6,
+        dataset_slice_end = 60,
+    )
+
+    assert result is not None
+    assert len(result[0]["dataset"]) == 4
+
+
 def test_max_steps_bound_defers_to_a_split_instruction(monkeypatch):
     train = _SizedDataset(500_000)
     trainer = _cached_only_loader(monkeypatch, train)

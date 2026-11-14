@@ -22,7 +22,10 @@ export function LoadedPlacementRow({ pool }: { pool: PlacementPool | null }) {
       data-slot="loaded-placement"
       className="flex flex-col gap-1 border-b border-border pb-5"
     >
-      <span className="flex min-h-8 items-center text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
+      <span
+        data-placement-title=""
+        className="flex min-h-8 items-center text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground"
+      >
         {t("generationStats.placement.title")}
       </span>
       {layers !== null && (

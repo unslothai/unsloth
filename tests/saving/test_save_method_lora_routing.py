@@ -346,6 +346,100 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
 
 
 @pytest.mark.parametrize(
+    "spelling, canonical",
+    [
+        ("Merged_16bit", "merged_16bit"),
+        ("merged 16bit", "merged_16bit"),
+        ("merged-16bit", "merged_16bit"),
+        (" merged_16bit ", "merged_16bit"),
+        ("Merged_4bit_Forced", "merged_4bit"),
+    ],
+)
+def test_a_respelled_merge_method_reaches_the_merge_canonically(
+    monkeypatch, tmp_path, spelling, canonical
+):
+    """The merge writes config.json only for the exact string, so a respelling saved no config."""
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
+    assert [c["save_method"] for c in calls["merge"]] == [canonical]
+
+
+@pytest.mark.parametrize(
+    "spelling, canonical",
+    [
+        ("Merged_4bit_Forced", "merged_4bit_forced"),
+        ("forced merged 4bit", "forced_merged_4bit"),
+        (" Merged-16bit ", "merged_16bit"),
+        ("LoRA", "lora"),
+    ],
+)
+@pytest.mark.parametrize("by_keyword", [True, False])
+def test_the_fsdp2_gather_placement_reads_the_canonical_method(spelling, canonical, by_keyword):
+    """FSDP2 picks where gathered weights live before unsloth_generic_save canonicalizes, so a
+    respelled merged_4bit offloaded the LoRA operands its in-place merge needs on the GPU."""
+    ns = _load("_merged_save_method", "_fsdp2_merged_offload")
+    args, kwargs = ((), {"save_method": spelling}) if by_keyword else (("d", None, spelling), {})
+    assert ns["_merged_save_method"](args, kwargs) == canonical
+    fsdp2 = types.ModuleType("unsloth.models.fsdp2_save")
+    fsdp2.offload_all_but_4bit_merge_operands = lambda model: "keep-4bit-merge-operands"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "unsloth.models.fsdp2_save", fsdp2)
+        ns["__package__"] = "unsloth"
+        ns["__name__"] = "unsloth.save"
+        offload = ns["_fsdp2_merged_offload"](object(), args, kwargs)
+    assert offload == ("keep-4bit-merge-operands" if "4bit" in canonical else True)
+    assert ns["_merged_save_method"]((), {}) == "merged_16bit"
+    assert ns["_merged_save_method"]((), {"save_method": None}) is None
+
+
+@pytest.mark.parametrize("spelling", ["merged-4bit-forced", "Merged 4bit", "forced-merged-4bit"])
+def test_a_respelled_in_place_merge_is_refused_under_tensor_parallel(spelling):
+    refuse = _load(
+        "_refuse_tp_in_place_merge",
+        _TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit"),
+    )["_refuse_tp_in_place_merge"]
+
+    def fn(
+        save_directory,
+        tokenizer = None,
+        save_method = "merged_16bit",
+    ):
+        pass
+
+    for args, kwargs in ((("d", None, spelling), {}), (("d",), {"save_method": spelling})):
+        with pytest.raises(RuntimeError, match = "tensor parallel"):
+            refuse(fn, "save_pretrained_merged", args, kwargs)
+    refuse(fn, "save_pretrained_merged", ("d",), {"save_method": "merged-16bit"})
+
+
+@pytest.mark.parametrize("spelling", ["Merged_4bit", "merged-4bit", " MERGED 4BIT "])
+def test_unsloth_save_model_guards_a_respelled_merged_4bit(spelling):
+    """unsloth_save_model checked the guard before lowercasing, then merged into 4bit anyway."""
+    save_model = _load(
+        "unsloth_save_model",
+        torch = types.SimpleNamespace(save = None),
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        PreTrainedTokenizerBase = type("T", (), {}),
+        ProcessorMixin = type("P", (), {}),
+        _normalize_safe_serialization = lambda value: True,
+        get_token = lambda: None,
+    )["unsloth_save_model"]
+    with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
+        save_model(object(), None, "d", save_method = spelling)
+
+
+@pytest.mark.parametrize("spelling", ["Merged_4bit", "merged-4bit", " MERGED 4BIT "])
+def test_a_respelled_merged_4bit_still_hits_the_accuracy_guard(monkeypatch, tmp_path, spelling):
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
+        generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
+    assert calls["merge"] == []
+
+
+@pytest.mark.parametrize(
     "save_method, from_modelscope", [("merged_16bit", True), ("merged_4bit_forced", False)]
 )
 def test_modelscope_base_is_fetched_only_when_the_merge_reads_one(

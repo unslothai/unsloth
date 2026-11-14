@@ -3,17 +3,22 @@
 
 export {
   isNpuModelId,
-  NPU_DEFAULT_CONTEXT_LENGTH,
   NPU_MODEL_PREFIX,
   type NpuDownloadPhase,
   type NpuModel,
   type NpuStatus,
+  npuCapabilities,
+  npuContextLabel,
   npuDownloadLabel,
+  npuReadmeNote,
+  npuMemoryTag,
+  npuMemoryWarning,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
 } from "./api";
-export { NpuRuntimeVersions, NpuSetupNotice } from "./npu-setup-notice";
+export { NpuSetupNotice } from "./npu-setup-notice";
+export { npuEngineVersions, npuVersionTag } from "./runtime-versions";
 export {
   type NpuCatalog,
   type NpuPickerSource,

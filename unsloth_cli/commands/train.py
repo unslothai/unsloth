@@ -87,7 +87,7 @@ def _dataset_modalities(
     ensure_studio_backend_path()
     with studio_backend_imports("unsloth train"):
         from hub.services.datasets.local import _load_local_preview_slice
-        from hub.utils.dataset_format import detect_multimodal_dataset
+        from utils.datasets.format_detection import detect_multimodal_dataset
         from utils.datasets.audio_decode import ensure_audio_decoding
         from utils.datasets.cache_safe import load_dataset_cache_safe
         from utils.datasets.saved import load_saved_dataset
@@ -137,7 +137,7 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
     from itertools import islice
 
     from datasets import Audio, Image
-    from hub.utils.dataset_format import (
+    from utils.datasets.format_detection import (
         _AUDIO_EXTENSIONS,
         _has_image_header,
         _holds_images,
@@ -330,6 +330,15 @@ def train(
         cfg.apply_overrides(**config_overrides)
     except (FileNotFoundError, ConfigError) as e:
         typer.echo(f"Error: {e}", err = True)
+        raise typer.Exit(code = 2)
+
+    # Otherwise it trains 0 steps, saves an untrained adapter and exits 0 (Studio refuses this too).
+    if cfg.training.num_epochs <= 0 and cfg.training.max_steps <= 0:
+        typer.echo(
+            "Error: num_epochs (--num-epochs) or max_steps (--max-steps) must be > 0; "
+            f"got num_epochs={cfg.training.num_epochs}, max_steps={cfg.training.max_steps}.",
+            err = True,
+        )
         raise typer.Exit(code = 2)
 
     # CLI/env tokens take precedence; guard against unresolved typer.Option.

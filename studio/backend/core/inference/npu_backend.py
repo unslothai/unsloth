@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import sys
 import threading
@@ -15,14 +16,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+import structlog
+
+from core.inference import npu_memory
 from core.inference.flm_files import (
     FlmDownloadCancelled,
     FlmDownloadError,
     FlmModelFiles,
     download_files,
     read_model_files,
+    read_model_repo,
 )
-from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
+from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable, OutputWindow
+from core.inference.npu_context import DEFAULT_CONTEXT_LENGTH, plan_context
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -36,18 +42,41 @@ from utils.process_lifetime import (
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
+_events = structlog.get_logger(__name__)
 
 MODEL_PREFIX = "lemonade:"
 PROVIDER_TYPE = "lemonade"
-DEFAULT_CONTEXT_LENGTH = 8192
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
 
 # Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
-# Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
-# limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
-_FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
+# Engine limits below checkpoint metadata, from the FastFlowLM v1.0.12 model cards (docs/docs/models)
+# and qwen3_core_backend.hpp; the 27B pair fails above 8192 (ROCm/FastFlowLM#1001). Recheck on pin bumps.
+_FLM_CONTEXT_LIMITS = {
+    "qwen3.8-mtp:27b": 8192,
+    "qwen3.8-dflash2:27b": 8192,
+    **dict.fromkeys(
+        (
+            "qwen3:0.6b",
+            "qwen3:1.7b",
+            "qwen3:4b",
+            "qwen3:8b",
+            "qwen3-core:0.6b",
+            "qwen3-core:1.7b",
+            "qwen3-core:4b",
+            "qwen3-core:8b",
+            "lfm2:1.2b",
+            "lfm2:2.6b",
+            "lfm2-trans:2.6b",
+            "lfm2.5-it:1.2b",
+            "lfm2.5-tk:1.2b",
+            "lfm3:1.7b",
+        ),
+        32768,
+    ),
+}
+_LEMOND_ERROR = re.compile(r"\[(?:Error|Fatal)\]\s*\([^)]*\)\s*(.+)")
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
@@ -87,6 +116,10 @@ class NpuModel:
     labels: tuple[str, ...]
     max_context_length: Optional[int]
     resume_percent: Optional[int] = None
+    hf_repo: Optional[str] = None
+    hf_revision: Optional[str] = None
+    memory_needed_gb: Optional[float] = None
+    fits_memory: Optional[bool] = None
 
     @property
     def vision(self) -> bool:
@@ -117,6 +150,10 @@ class NpuModel:
             "supports_tools": self.tools,
             "max_context_length": self.max_context_length,
             "resume_percent": self.resume_percent,
+            "hf_repo": self.hf_repo,
+            "hf_revision": self.hf_revision,
+            "memory_needed_gb": self.memory_needed_gb,
+            "fits_memory": self.fits_memory,
         }
 
 
@@ -140,6 +177,7 @@ class _Loaded:
     model: NpuModel
     context_length: Optional[int]
     requested_context_length: Optional[int]
+    fitted_context_length: Optional[int] = None
 
 
 @dataclass(frozen = True)
@@ -151,6 +189,13 @@ class NpuResident:
     requested_context_length: Optional[int]
     base_url: str
     api_key: str
+    fitted_context_length: Optional[int] = None
+
+    @property
+    def max_context_length(self) -> Optional[int]:
+        if self.fitted_context_length is not None:
+            return self.fitted_context_length
+        return self.model.max_context_length
 
 
 def is_npu_model_path(model_path: Optional[str]) -> bool:
@@ -210,6 +255,45 @@ def _failed(response) -> bool:
     except ValueError:
         return False
     return isinstance(body, dict) and ("error" in body or body.get("status") == "error")
+
+
+def _already_said(message: str, reason: str) -> bool:
+    # lemond wraps one failure in prefixes ("Backend load failed: FLM pull failed ...").
+    # A one-word tail ("1" of "exit code: 1") would match digits in a model name.
+    while " " in reason:
+        if reason in message or message in reason:
+            return True
+        reason = reason.partition(": ")[2]
+    return False
+
+
+def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], message: str) -> str:
+    """``message`` plus the first error lemond printed in ``window`` that it does not already
+    say. Logs that output at warning, since lemond's lines are otherwise debug-only, and notes the
+    outcome in the Lemonade log. A window shared with another request gets no reason pinned on it."""
+    lines = server.output_since(window.start) if server is not None and window is not None else []
+    shared = window is not None and window.shared
+    explained = message
+    for line in [] if shared else lines:
+        match = _LEMOND_ERROR.search(line)
+        reason = match.group(1).strip() if match else ""
+        if reason and not reason.endswith(":") and not _already_said(message, reason):
+            explained = f"{message} ({reason[:300]})"
+            break
+    log_name = server.log_path.name if server is not None and server.log_path else None
+    if server is not None:
+        server.note(f"Request failed: {explained}")
+    if lines:
+        _events.warning(
+            "Lemonade output before the NPU error",
+            error = message,
+            lemonade_log = log_name,
+            lemonade_output = lines,
+            overlapped_another_request = shared,
+        )
+    if explained == message and log_name:
+        return f"{message} (Lemonade's output is on the Logs page.)"
+    return explained
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -307,6 +391,7 @@ class LemonadeNpuBackend:
             requested_context_length = loaded.requested_context_length,
             base_url = f"http://127.0.0.1:{port}",
             api_key = api_key or "",
+            fitted_context_length = loaded.fitted_context_length,
         )
 
     @property
@@ -422,6 +507,7 @@ class LemonadeNpuBackend:
             "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
             "versions": self._versions(binary, validated),
+            "memory_window_gb": npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb()),
         }
 
     def _server_for(self, binary: Path) -> LemonadeServer:
@@ -430,6 +516,7 @@ class LemonadeNpuBackend:
             cache_dir = self.root / "cache",
             config_dir = self.root / "config",
             flm_model_dir = self._flm_model_dir,
+            log_dir = self.root.parent / "logs" / "lemonade",
         )
 
     def _require_supported(self) -> None:
@@ -602,6 +689,7 @@ class LemonadeNpuBackend:
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         models: list[NpuModel] = []
         flm_binary = self._flm_binary()
+        window_gb = npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb())
         for row in response.json().get("data") or []:
             if not isinstance(row, dict) or row.get("recipe") != "flm":
                 continue
@@ -609,20 +697,26 @@ class LemonadeNpuBackend:
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
                 continue
             size = row.get("size")
+            size_gb = float(size) if isinstance(size, (int, float)) else None
             checkpoint = str(row.get("checkpoint") or "")
             downloaded = bool(row.get("downloaded"))
             files = None if downloaded else self._model_files(checkpoint, flm_binary)
+            hf_repo, hf_revision = read_model_repo(flm_binary, checkpoint)
             models.append(
                 NpuModel(
                     id = str(row.get("id")),
                     checkpoint = checkpoint,
-                    size_gb = float(size) if isinstance(size, (int, float)) else None,
+                    size_gb = size_gb,
                     downloaded = downloaded,
                     labels = labels,
                     max_context_length = _max_context_length(
                         checkpoint, row.get("max_context_window")
                     ),
                     resume_percent = files.resume_percent() if files else None,
+                    hf_repo = hf_repo,
+                    hf_revision = hf_revision,
+                    memory_needed_gb = npu_memory.npu_memory_needed_gb(size_gb),
+                    fits_memory = npu_memory.fits_npu_memory(size_gb, window_gb),
                 )
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
@@ -737,21 +831,26 @@ class LemonadeNpuBackend:
             with self._commit_lock:
                 self._load_cancelled.clear()
                 self._loading = model_id
+            window = None
             replaced = False
             loaded = False
             try:
                 model = self._model(model_id)
                 if not model.downloaded:
                     raise NpuError(f"{model.id} is not downloaded yet.")
-                limit = model.max_context_length
-                ctx = context_length if context_length and context_length > 0 else None
-                ctx = ctx or min(DEFAULT_CONTEXT_LENGTH, limit or DEFAULT_CONTEXT_LENGTH)
-                if limit:
-                    ctx = min(ctx, limit)
+                files = self._model_files(model.checkpoint, self._flm_binary())
+                # Unload first so the free-RAM sample excludes the old weights and caches.
+                if self._loaded is not None:
+                    replaced = True
+                    self.unload()
+                    self._raise_if_load_cancelled(model_id)
                 server = self._ensure_running()
+                plan = plan_context(model, files, context_length)
+                ctx = plan.context_length
                 replaced = True
-                self._loaded = None
                 self._raise_if_load_cancelled(model_id)
+                server.note(f"Loading {model.id} with a {ctx}-token context")
+                window = server.open_window()
                 response = server.request(
                     "POST",
                     "/v1/load",
@@ -760,7 +859,8 @@ class LemonadeNpuBackend:
                 )
                 self._raise_if_load_cancelled(model_id)
                 if _failed(response):
-                    raise NpuError(f"Loading {model.id} failed: {_error_message(response)}")
+                    reason = _explain(server, window, _error_message(response))
+                    raise NpuError(f"Loading {model.id} failed: {reason}")
                 resident_ctx = self._resident_context(server, model.id)
                 if resident_ctx is None:
                     raise NpuError(f"Lemonade did not report {model.id} as loaded on the NPU.")
@@ -772,6 +872,7 @@ class LemonadeNpuBackend:
                         requested_context_length = (
                             context_length if context_length and context_length > 0 else None
                         ),
+                        fitted_context_length = plan.fits,
                     )
                     self._loading = None
                     loaded = True
@@ -780,11 +881,12 @@ class LemonadeNpuBackend:
                 return model
             except LemonadeUnavailable as exc:
                 self._raise_if_load_cancelled(model_id)
-                raise NpuError(f"Loading {model_id} failed: {exc}") from exc
+                reason = self.explain_failure(window, str(exc))
+                raise NpuError(f"Loading {model_id} failed: {reason}") from exc
             finally:
                 self._loading = None
                 if replaced and not loaded and self._server is not None:
-                    # lemond may still hold the previous model, which Studio no longer records.
+                    # lemond may have loaded the replacement before failing its health check.
                     self._server.stop()
 
     def _raise_if_load_cancelled(self, model_id: str) -> None:
@@ -844,6 +946,17 @@ class LemonadeNpuBackend:
                     )
                     server.stop()
             return loaded.model.model_path
+
+    def output_mark(self, upstream: ManagedUpstream) -> Optional[OutputWindow]:
+        server = self._server
+        # Each daemon start gets a fresh key. A restart after routing must not claim this chat.
+        if server is None or server.api_key != upstream.api_key:
+            return None
+        return server.open_window()
+
+    def explain_failure(self, window: Optional[OutputWindow], message: str) -> str:
+        """An NPU chat error ``message`` with the reason lemond printed in ``window``."""
+        return _explain(window.server, window, message) if window is not None else message
 
     def upstream(self) -> ManagedUpstream:
         # Lock-free: a chat must not wait behind an enable() or delete() holding the lock.

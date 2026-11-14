@@ -12,6 +12,8 @@ const IDLE_POLL_MS = 5000;
 
 export function useImageQueue(active: boolean, onFinished: (jobs: ImageQueueJob[]) => void) {
   const [jobs, setJobs] = useState<ImageQueueJob[]>([]);
+  // Until the first poll answers (even a failed one), an empty list means unknown, not idle.
+  const [polled, setPolled] = useState(false);
   const jobsRef = useRef<ImageQueueJob[] | null>(null);
   const finishedRef = useRef(onFinished);
   finishedRef.current = onFinished;
@@ -36,6 +38,7 @@ export function useImageQueue(active: boolean, onFinished: (jobs: ImageQueueJob[
     } catch {
       // transient; the next poll retries
     }
+    setPolled(true);
   }, [apply]);
 
   const busy = queueBusy(jobs);
@@ -46,5 +49,5 @@ export function useImageQueue(active: boolean, onFinished: (jobs: ImageQueueJob[
     return () => clearInterval(timer);
   }, [active, busy, refresh]);
 
-  return { jobs, refresh, apply };
+  return { jobs, polled, refresh, apply };
 }

@@ -417,6 +417,7 @@ def test_preset_bounds_match_the_generation_request(monkeypatch):
         {"steps": 500},
         {"guidance": 100},
         {"width": 8192},
+        {"width": 6288},
         {"height": 64},
         {"width": 257},
         {"height": 257},
@@ -428,7 +429,15 @@ def test_preset_bounds_match_the_generation_request(monkeypatch):
             ).status_code
             == 422
         ), params
-    for params in ({"steps": 100}, {"guidance": 20}, {"width": 2048}, {"height": 256}):
+    # MiniMax-H3-Image 16 MP sizes.
+    for params in (
+        {"steps": 100},
+        {"guidance": 20},
+        {"width": 2048},
+        {"height": 256},
+        {"width": 6272},
+        {"height": 4096},
+    ):
         assert (
             client.put(
                 "/api/settings/generation-presets/image/custom",

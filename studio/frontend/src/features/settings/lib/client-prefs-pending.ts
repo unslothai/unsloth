@@ -9,6 +9,7 @@ export const PENDING_SECTIONS = [
   "browser",
   "chat",
   "plusMenu",
+  "material",
   "timeFormat",
   "spellcheck",
 ] as const;
