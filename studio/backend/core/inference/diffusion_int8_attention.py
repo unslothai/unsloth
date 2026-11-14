@@ -61,6 +61,10 @@ LOG2E = 1.4426950408889634
 # qreg (2 = Q from global memory: sm75 has 64 KB smem per SM), flush_tail placement and an optional register cap.
 # qkw / pvw / spread pick the order the products and the tile copies are issued in (see the kernel source): they
 # move no output bit, so they are per card too.
+# long_keys / long: overrides from that many keys on (select_config). A card runs one block per SM, so a call of a
+# few thousand tokens is a handful of blocks per SM and the last round leaves SMs idle: smaller blocks waste less of
+# it (sm80, head dim 128: 4 warps instead of 8 take 2-10% off the kernel up to 4176 tokens; sm89, head dim 64: 13-20%
+# up to 2048), and bigger ones copy each tile for more rows (3-5% on sm80 from 10011 tokens on).
 # Measured per card; a card missing here keeps native. One bn per head dim, so the output does not depend on the card.
 KERNEL_CONFIGS: dict = {
     (7, 5): {
@@ -68,7 +72,15 @@ KERNEL_CONFIGS: dict = {
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 1, "qreg": 2},
     },
     (8, 0): {
-        128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 2, "qreg": 1},
+        128: {
+            "bn": 128,
+            "wpc": 4,
+            "nq": 1,
+            "stages": 2,
+            "qreg": 1,
+            "long_keys": 4608,
+            "long": {"wpc": 8},
+        },
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
     (8, 6): {
@@ -77,7 +89,15 @@ KERNEL_CONFIGS: dict = {
     },
     (8, 9): {
         128: {"bn": 128, "wpc": 12, "nq": 1, "stages": 2, "max_registers": 168},
-        64: {"bn": 128, "wpc": 8, "nq": 2, "stages": 2, "qreg": 1},
+        64: {
+            "bn": 128,
+            "wpc": 4,
+            "nq": 2,
+            "stages": 2,
+            "qreg": 1,
+            "long_keys": 4608,
+            "long": {"wpc": 8},
+        },
     },
     (12, 0): {
         128: {
@@ -276,6 +296,16 @@ def kernel_defines(head_dim: int, config: dict) -> dict:
     return defines
 
 
+def select_config(config: dict, keys: int) -> dict:
+    """The kernel config of a call with ``keys`` keys: ``config`` with its ``long`` overrides applied from
+    ``long_keys`` keys on, and without those two entries (what is left names one compiled kernel)."""
+    long_keys = config.get("long_keys")
+    chosen = (
+        {**config, **config.get("long", {})} if long_keys and keys >= int(long_keys) else config
+    )
+    return {key: value for key, value in chosen.items() if key not in ("long_keys", "long")}
+
+
 def shared_bytes(head_dim: int, config: dict) -> int:
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
     stage = bn * (head_dim + 16) + head_dim * (bn + 16)
@@ -345,6 +375,9 @@ def _device_index(device: Any) -> int:
 def _functions(index: int, head_dim: int, config: dict) -> tuple:
     """(attention kernel, quantiser kernels, shared bytes) for a device, head dim and config; compiled on first
     use."""
+    config = select_config(
+        config, 0
+    )  # a config with long overrides names its kernel for short sequences
     key = (index, head_dim, tuple(sorted(config.items())), ROT_GROUP)
     found = _LOADED.get(key)
     if found is None:
@@ -398,10 +431,18 @@ def _plans() -> dict:
     return found
 
 
+def _config_key(config: dict) -> tuple:
+    """``config`` by value, hashable (its ``long`` overrides are a dict)."""
+    long = config.get("long")
+    if long is not None:
+        config = {**config, "long": tuple(sorted(long.items()))}
+    return tuple(sorted(config.items()))
+
+
 def _plan_key(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> tuple:
     return (
         index,
-        tuple(sorted(config.items())),
+        _config_key(config),
         q.shape,
         k.shape[1],
         q.dtype,
@@ -426,6 +467,7 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         return plan
     B, Sq, H, D = q.shape
     Sk = k.shape[1]
+    config = select_config(config, Sk)
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
     fn, kernels, shared = _functions(index, D, config)
     # log2(e) turns the kernel's 2^x into e^x; the rotation adds sqrt(group) in norm to Q and to K
@@ -476,6 +518,7 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
 
     plan = {
         "index": index,
+        "config": config,
         "layout": layout,
         "off": off,
         "f32_at": f32_at,
@@ -572,7 +615,7 @@ def quantise(
         shape = plan["shape"],
         pads = plan["pads"],
         dtype = v.dtype,
-        config = config,
+        config = plan["config"],
         inputs = (q, k, v),  # kept alive until the launches that read them are done
     )
 

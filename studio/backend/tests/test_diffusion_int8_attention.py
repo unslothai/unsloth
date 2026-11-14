@@ -210,23 +210,63 @@ def test_alias_is_a_native_pick_with_the_overlay(monkeypatch):
     assert DA.select_attention_backend(target, "unsloth_int8", speed_active = False) is None
 
 
+def _variants(config: dict) -> list:
+    """The kernels a table entry compiles: the one of short calls, and the one from ``long_keys`` keys on."""
+    short = I.select_config(config, 0)
+    long = I.select_config(config, 10**9)
+    return [short] if long == short else [short, long]
+
+
 def test_every_config_fits_its_card():
     assert set(I.KERNEL_CONFIGS) == set(SHARED_LIMIT)
     for capability, table in I.KERNEL_CONFIGS.items():
         assert set(table) == set(I.HEAD_DIMS)
-        for head_dim, config in table.items():
-            assert config["bn"] in (64, 128) and config["nq"] >= 1 and config["stages"] in (1, 2)
-            assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT[capability]
-            cap = config.get("max_registers")
-            if cap is not None:
-                assert 32 * config["wpc"] * cap <= SM_REGISTERS
-            assert (
-                32 * config["wpc"] <= 1024
-            )  # sm75 holds 32 warps per SM, and a block is at most 1024 threads
-            assert I.kernel_config(capability, head_dim) == config
+        for head_dim, entry in table.items():
+            assert ("long" in entry) == ("long_keys" in entry)
+            for config in _variants(entry):
+                assert (
+                    config["bn"] in (64, 128) and config["nq"] >= 1 and config["stages"] in (1, 2)
+                )
+                assert config["bn"] == entry["bn"]  # the tile is what the output bits depend on
+                assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT[capability]
+                cap = config.get("max_registers")
+                if cap is not None:
+                    assert 32 * config["wpc"] * cap <= SM_REGISTERS
+                assert (
+                    32 * config["wpc"] <= 1024
+                )  # sm75 holds 32 warps per SM, and a block is at most 1024 threads
+            assert I.kernel_config(capability, head_dim) == entry
     assert I.kernel_config((9, 0), 128) is None and I.kernel_config((12, 0), 96) is None
     assert I.kernel_config((7, 0), 128) is None and I.kernel_config((6, 1), 128) is None
     assert I.kernel_config(None, 128) is None
+
+
+def test_long_overrides_apply_from_long_keys_on():
+    """A table entry may name another block shape for long sequences: ``select_config`` applies ``long`` from
+    ``long_keys`` keys on and returns a plain config either way (one compiled kernel). sm80 at head dim 128 and
+    sm89 at head dim 64 run 4 warps per block below 4608 keys and 8 from there on; no other entry has overrides."""
+    with_long = {
+        (capability, head_dim)
+        for capability, table in I.KERNEL_CONFIGS.items()
+        for head_dim, entry in table.items()
+        if "long" in entry
+    }
+    assert with_long == {((8, 0), 128), ((8, 9), 64)}
+    entry = I.kernel_config((8, 9), 64)
+    assert I.select_config(entry, 4607)["wpc"] == 4 and I.select_config(entry, 4608)["wpc"] == 8
+    entry = I.kernel_config((8, 0), 128)
+    assert entry["long_keys"] == 4608 and entry["long"] == {"wpc": 8}
+    short, long = (
+        I.select_config(entry, entry["long_keys"] - 1),
+        I.select_config(entry, entry["long_keys"]),
+    )
+    assert short == {"bn": 128, "wpc": 4, "nq": 1, "stages": 2, "qreg": 1}
+    assert long == dict(short, wpc = 8)
+    assert I.select_config(short, 10**9) == short
+    assert I.kernel_defines(128, entry) == I.kernel_defines(128, short)
+    assert I._config_key(entry) != I._config_key(short) and hash(I._config_key(entry)) is not None
+    plain = I.kernel_config((8, 9), 128)
+    assert I.select_config(plain, 0) == I.select_config(plain, 10**9) == plain
 
 
 def test_sm75_has_its_own_config():
@@ -281,28 +321,29 @@ def test_kernel_compiles_for_every_config(capability):
     arch = 10 * capability[0] + capability[1]
     if arch not in _nvrtc_archs():
         pytest.skip(f"NVRTC {K.nvrtc_version()} cannot target sm_{arch}")
-    for head_dim, config in I.KERNEL_CONFIGS[capability].items():
-        ptx = K.compile_ptx(
-            K.KERNEL_SOURCE,
-            f"sm_{arch}",
-            I.kernel_defines(head_dim, config),
-        ).decode(errors = "replace")
-        products = config["nq"] * (
-            (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
-        )
-        if capability < (8, 0):
-            assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
-            assert "m16n8k32" not in ptx and "cp.async" not in ptx
-        else:
-            assert ptx.count("mma.sync.aligned.m16n8k32") == products
-            assert "m8n8k16" not in ptx
-        assert "cvt.rn.f32.s32" not in ptx
+    for head_dim, entry in I.KERNEL_CONFIGS[capability].items():
+        for config in _variants(entry):
+            ptx = K.compile_ptx(
+                K.KERNEL_SOURCE,
+                f"sm_{arch}",
+                I.kernel_defines(head_dim, config),
+            ).decode(errors = "replace")
+            products = config["nq"] * (
+                (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
+            )
+            if capability < (8, 0):
+                assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
+                assert "m16n8k32" not in ptx and "cp.async" not in ptx
+            else:
+                assert ptx.count("mma.sync.aligned.m16n8k32") == products
+                assert "m8n8k16" not in ptx
+            assert "cvt.rn.f32.s32" not in ptx
         quant = K.compile_ptx(
             K.QUANT_SOURCE,
             f"sm_{arch}",
             {
                 "HD": head_dim,
-                "BN": config["bn"],
+                "BN": entry["bn"],
                 "RGX": min(I.ROT_GROUP, head_dim).bit_length() - 5,
             },
         ).decode(errors = "replace")
@@ -1227,6 +1268,26 @@ def test_a_call_signature_is_planned_once(head_dim):
 
 
 @needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_long_overrides_do_not_change_the_output(head_dim):
+    """The block shape moves no output bit (rows do not see each other, the tile is the same), so the kernel a call
+    gets by its key count agrees with the other one; a call runs the long kernel exactly from long_keys keys on."""
+    base = I.select_config(_cuda_config(head_dim), 0)
+    entry = dict(base, long_keys = 300, long = {"wpc": 2 if base["wpc"] != 2 else 4})
+    for keys in (299, 300, 700):
+        q, k, v = _case((1, keys, 2, head_dim), _card_dtype(), seed = keys)
+        q = q[:, :333].contiguous()
+        p = I.quantise(q, k, v, entry)
+        assert p["config"] == I.select_config(entry, keys)
+        assert (p["config"]["wpc"] == base["wpc"]) is (keys < 300)
+        got = I.attend(p)
+        assert torch.equal(got, I.int8_attention(q, k, v, config = base))
+        assert torch.equal(
+            got, I.int8_attention(q, k, v, config = dict(base, wpc = entry["long"]["wpc"]))
+        )
+
+
+@needs_kernel
 def test_inputs_off_the_16_byte_grid_are_copied():
     """A view whose rows do not start on a 16-byte boundary (here one element into a wider buffer) is read from
     an aligned copy: the same bits as the aligned call."""
@@ -1262,14 +1323,14 @@ def test_a_long_call_splits_its_quantiser_grids(monkeypatch, head_dim):
 @pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
 def test_shipped_config_fits(head_dim):
     capability = torch.cuda.get_device_capability()
-    config = _cuda_config(head_dim)
-    fn = I.kernel_function("cuda", head_dim, config)
-    assert fn.local_bytes <= 64, "the kernel spilled more than a few registers to the stack"
-    cap = config.get("max_registers")
-    assert cap is None or fn.registers <= cap
-    # at least one block of this config is resident per SM (registers are granted in multiples of 8 per thread)
-    assert 32 * config["wpc"] * ((fn.registers + 7) // 8 * 8) <= SM_REGISTERS
-    assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT.get(tuple(capability), 99 * 1024)
+    for config in _variants(_cuda_config(head_dim)):
+        fn = I.kernel_function("cuda", head_dim, config)
+        assert fn.local_bytes <= 64, "the kernel spilled more than a few registers to the stack"
+        cap = config.get("max_registers")
+        assert cap is None or fn.registers <= cap
+        # at least one block of this config is resident per SM (registers are granted in multiples of 8 per thread)
+        assert 32 * config["wpc"] * ((fn.registers + 7) // 8 * 8) <= SM_REGISTERS
+        assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT.get(tuple(capability), 99 * 1024)
 
 
 @needs_kernel
