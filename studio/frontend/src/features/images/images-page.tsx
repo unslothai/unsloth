@@ -2822,17 +2822,19 @@ export function ImagesPage({
   const resyncWindow = useCallback(
     async (count: number, stillFresh?: () => boolean) => {
       const ticket = (resyncSeq.current += 1);
+      const fresh = () => resyncSeq.current === ticket && (!stillFresh || stillFresh());
       for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
         const paged = pageEpoch.current;
-        const { images: collected, hasMore: more } = await collectGalleryWindow(
+        const result = await collectGalleryWindow(
           (offset, limit) => getGallery(offset, limit),
           galleryCache.images,
           Math.max(count, galleryCache.images.length, PAGE_SIZE),
           PAGE_SIZE,
           () => galleryCache.selectedId,
+          fresh,
         );
-        if (stillFresh && !stillFresh()) return false;
-        if (resyncSeq.current !== ticket) return false;
+        if (!result) return false;
+        const { images: collected, hasMore: more } = result;
         if (pageEpoch.current !== paged) continue;
         galleryCache.images = collected;
         galleryCache.hasMore = more;

@@ -25,11 +25,16 @@ function fakeGallery(ids: string[]) {
 
 const range = (n: number, prefix = "old") => Array.from({ length: n }, (_, i) => `${prefix}${i + 1}`);
 const strip = (ids: string[]) => ids.map((id) => ({ id }) as GalleryImage);
+async function collect(...args: Parameters<typeof collectGalleryWindow>) {
+  const window = await collectGalleryWindow(...args);
+  assert.ok(window);
+  return window;
+}
 
 test("a finished run that inserts at the front does not push the selected image out of the refreshed window", async () => {
   const gallery = fakeGallery(range(300));
   gallery.insertNewest("new1");
-  const refreshed = await collectGalleryWindow(gallery.fetchPage, strip(range(100)), 100, 50, () => "old100");
+  const refreshed = await collect(gallery.fetchPage, strip(range(100)), 100, 50, () => "old100");
   assert.ok(refreshed.images.some((image) => image.id === "old100"));
   assert.equal(refreshed.images[0].id, "new1");
   assert.equal(refreshed.hasMore, true);
@@ -43,27 +48,35 @@ test("a finished run that inserts at the front does not push the selected image 
 test("without a selection past the window, the refresh fetches the same count as before", async () => {
   const gallery = fakeGallery(range(300));
   gallery.insertNewest("new1");
-  const refreshed = await collectGalleryWindow(gallery.fetchPage, strip(range(100)), 100, 50, () => "old10");
+  const refreshed = await collect(gallery.fetchPage, strip(range(100)), 100, 50, () => "old10");
   assert.equal(refreshed.images.length, 100);
   assert.equal(gallery.calls, 2);
-  const noSelection = await collectGalleryWindow(gallery.fetchPage, strip(range(100)), 100, 50, () => null);
+  const noSelection = await collect(gallery.fetchPage, strip(range(100)), 100, 50, () => null);
   assert.equal(noSelection.images.length, 100);
 });
 
 test("a selection deleted elsewhere costs one extra page on the next refresh, and none after", async () => {
   const gallery = fakeGallery(range(4000));
-  const refreshed = await collectGalleryWindow(gallery.fetchPage, strip(["gone", ...range(99)]), 100, 50, () => "gone");
+  const refreshed = await collect(gallery.fetchPage, strip(["gone", ...range(99)]), 100, 50, () => "gone");
   assert.equal(refreshed.images.length, 150);
   assert.equal(gallery.calls, 3);
   // The page passes the refreshed strip and its length back in; a window growing per refresh would page it all.
-  const again = await collectGalleryWindow(gallery.fetchPage, refreshed.images, 150, 50, () => "gone");
+  const again = await collect(gallery.fetchPage, refreshed.images, 150, 50, () => "gone");
   assert.equal(again.images.length, 150);
   assert.equal(gallery.calls, 6);
 });
 
+test("a refresh superseded during a request stops before the next page", async () => {
+  const gallery = fakeGallery(range(5000));
+  const superseded = () => gallery.calls < 1;
+  const refreshed = await collectGalleryWindow(gallery.fetchPage, strip(range(5000)), 5000, 50, () => "old1", superseded);
+  assert.equal(refreshed, null);
+  assert.equal(gallery.calls, 1);
+});
+
 test("a short gallery stops at its end", async () => {
   const gallery = fakeGallery(range(30));
-  const refreshed = await collectGalleryWindow(gallery.fetchPage, strip(["gone"]), 50, 50, () => "gone");
+  const refreshed = await collect(gallery.fetchPage, strip(["gone"]), 50, 50, () => "gone");
   assert.equal(refreshed.images.length, 30);
   assert.equal(refreshed.hasMore, false);
   assert.equal(gallery.calls, 1);
@@ -79,7 +92,7 @@ test("a pick made while the refresh is fetching is kept, even one pushed past th
       if (gallery.calls === pickDuringCall) selected = "old100";
       return page;
     };
-    const refreshed = await collectGalleryWindow(fetchPage, strip(range(100)), 100, 50, () => selected);
+    const refreshed = await collect(fetchPage, strip(range(100)), 100, 50, () => selected);
     assert.ok(
       refreshed.images.some((image) => image.id === "old100"),
       `picked during request ${pickDuringCall}`,
