@@ -45,6 +45,13 @@ export function sharedMemoryDetail(
   return availableGb === null ? label : `${label}\n${estimate(availableGb)}`;
 }
 
+// A measured zero host-backed split is a dedicated carve-out (Linux ROCm APU), not shared RAM.
+function parkableSharedDevice(device: GpuDevice): boolean {
+  return (
+    sharesHostMemoryDevice(device) && device.shared_memory_host_backed_gb !== 0
+  );
+}
+
 /** An unreadable shared iGPU beside cards that all report usage: shown as shared RAM, not as unknown VRAM used. */
 function parkedSharedDevices(
   devices: GpuDevice[],
@@ -54,7 +61,7 @@ function parkedSharedDevices(
   const rest = devices.filter((device) => !hasSharedMemoryHeadroom(device));
   const unread = rest.filter((device) => !Number.isFinite(device.vram_used_gb));
   return unread.length > 0 &&
-    unread.every(sharesHostMemoryDevice) &&
+    unread.every(parkableSharedDevice) &&
     rest.some((device) => !sharesHostMemoryDevice(device))
     ? unread
     : [];
