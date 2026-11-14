@@ -367,6 +367,17 @@ LIST_CASES = {
 }  # fmt: skip
 
 
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_list_points_a_mac_with_no_route_at_local_network_access(fakes, monkeypatch, platform):
+    monkeypatch.setattr(cli.sys, "platform", platform)
+    fakes.peers, fakes.errors = [worker_peer()], {HOME: "[Errno 65] No route to host"}
+    listed = invoke("cluster", "list")
+    assert listed.exit_code == 0, listed.output
+    assert "unreachable (no route to it on the network" in listed.output
+    hint = "allow Local Network access for the app running Unsloth in System Settings > Privacy & Security > Local Network"
+    assert (hint in listed.output) == (platform == "darwin"), listed.output
+
+
 def test_list_discovery_takes_a_paired_node_id_only_under_its_paired_fingerprint(fakes):
     fakes.peers, fakes.errors = [worker_peer()], {HOME: "refused"}
     assert invoke("cluster", "list").exit_code == 0

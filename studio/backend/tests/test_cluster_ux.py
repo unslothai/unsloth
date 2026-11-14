@@ -181,6 +181,24 @@ def test_a_local_load_gets_no_cluster_wording_but_names_a_left_out_worker(monkey
     assert cluster_ux.dropped_worker_notice() is None
 
 
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_a_mac_master_with_no_route_is_pointed_at_local_network_access(monkeypatch, platform):
+    _cluster_env(monkeypatch, model_bytes = 10 * GIB)
+    run(ss.before_load(_request(), 4))
+    monkeypatch.setattr(cluster_ux.sys, "platform", platform)
+    cs.LINK_DROPPED["studio-2"] = "OSError: [Errno 65] No route to host"
+    notice = cluster_ux.dropped_worker_notice()
+    hint = (
+        " On macOS, allow Local Network access for the app running Unsloth in "
+        "System Settings > Privacy & Security > Local Network."
+    )
+    assert notice.endswith(
+        "then reload the model to use it." + (hint if platform == "darwin" else "")
+    )
+    cs.LINK_DROPPED["studio-2"] = "[Errno 61] Connection refused"
+    assert "Local Network" not in cluster_ux.dropped_worker_notice()
+
+
 def test_status_keeps_the_dropped_worker_notice_until_the_next_load():
     # The client re-shows /status's warning right after a load; a missing notice dismisses the toast.
     from core.inference.llama_cpp import LlamaCppBackend
