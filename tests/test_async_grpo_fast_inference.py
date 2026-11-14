@@ -117,6 +117,36 @@ def _model(llm):
     return model
 
 
+def test_batch_window_is_not_paid_on_each_decode_step():
+    llm = _FakeLLM()
+    remaining = 4
+    finish = llm.llm_engine.step
+
+    def step():
+        nonlocal remaining
+        remaining -= 1
+        return finish() if remaining == 0 else []
+
+    llm.llm_engine.step = step
+    engine = server_module._Engine(llm, None, _Sampling)
+    waits = []
+    wait = engine.cv.wait
+
+    def record_wait(timeout = None):
+        if timeout is not None:
+            waits.append(timeout)
+        return wait(timeout)
+
+    engine.cv.wait = record_wait
+    try:
+        output = engine.submit([1], {}, "model").result(timeout = 10)
+        assert output.finished
+        assert engine.stats["steps"] == 4
+        assert waits == [server_module._BATCH_WAIT_S]
+    finally:
+        engine.stop()
+
+
 @pytest.fixture
 def served():
     llm = _FakeLLM()

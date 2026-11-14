@@ -133,10 +133,16 @@ class _Engine:
             except BaseException as error:
                 self._fail_active(error)
                 continue
+            yield_engine_thread = False
             with self.cv:
-                # Releases the GIL so the HTTP thread can hand over requests that arrived during the step.
                 if not (self.pending or self.commands or self.stopping):
-                    self.cv.wait(_BATCH_WAIT_S)
+                    # Keep the batching window after admissions; steady decode would pay it per token.
+                    if pending:
+                        self.cv.wait(_BATCH_WAIT_S)
+                    else:
+                        yield_engine_thread = True
+            if yield_engine_thread:
+                time.sleep(0)  # Let HTTP handlers enqueue without a fixed per-token delay.
             stats = self.stats
             stats["steps"] += 1
             stats["step_s"] += time.perf_counter() - started
