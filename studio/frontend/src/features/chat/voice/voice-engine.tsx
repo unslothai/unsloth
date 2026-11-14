@@ -418,7 +418,7 @@ export const VoiceEngine: FC = () => {
     const visual = composer
       .getState()
       .attachments.some((a) => a.type === "image" || /^(image|video)\//.test(a.contentType ?? ""));
-    // A spoken reply answers one clip: beside an attached audio file the question goes as its transcript.
+    // A spoken reply (and MLX) takes one clip: beside an attached audio file the question goes as its transcript.
     const attachedAudio = composer
       .getState()
       .attachments.some((a) => a.type === "audio" || /^audio\//.test(a.contentType ?? ""));
@@ -430,7 +430,7 @@ export const VoiceEngine: FC = () => {
     const turnAudio =
       !visual &&
       !toolsOn &&
-      !(attachedAudio && speaksWithChatModel()) &&
+      !(attachedAudio && (speaksWithChatModel() || rt.loadedIsMlx === true)) &&
       voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)
         ? taken
         : null;
@@ -474,11 +474,16 @@ export const VoiceEngine: FC = () => {
         return;
       }
       const bytes = Uint8Array.from(atob(turnAudio), (c) => c.charCodeAt(0));
+      // A chat switch while the clip attaches resets the turn: the old words never go to the new chat.
+      const turn = voiceNotesEpoch();
+      const fromThread = useChatRuntimeStore.getState().activeThreadId;
       void composer
         .addAttachment(new File([bytes], "voice.wav", { type: "audio/wav" }))
         .catch((error: unknown) => voiceTrace("engine.turnAudioAttachFailed", { message: String(error) }))
         .then(() => {
-          if (voiceModeRef.current === "active") sendNow();
+          if (voiceModeRef.current !== "active" || voiceNotesEpoch() !== turn) return;
+          if (useChatRuntimeStore.getState().activeThreadId !== fromThread) return;
+          sendNow();
         });
     };
 
