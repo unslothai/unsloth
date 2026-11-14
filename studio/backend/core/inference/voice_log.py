@@ -301,17 +301,27 @@ def clear() -> int:
     return n
 
 
-def delete_thread_rows(thread_ids) -> int:
-    """Drop every row logged for the given chats; the outcomes side file follows."""
+def delete_thread_rows(thread_ids, account: Optional[str] = None) -> int:
+    """Drop the rows logged for the given chats; the outcomes side file follows. With ``account``,
+    only that account's rows (``None`` rows predate accounts and are the owner's): thread ids
+    come from the caller, and the log is shared by every account."""
+    from utils.account_context import OWNER_ACCOUNT_ID
+
     ids = {str(t) for t in thread_ids or [] if t}
     if not ids:
         return 0
+
+    def doomed(r) -> bool:
+        if r.get("thread_id") not in ids:
+            return False
+        return account is None or (r.get("account") or OWNER_ACCOUNT_ID) == account
+
     with _LOCK:
         rows = _read_lines(log_path())
-        keep = [r for r in rows if r.get("thread_id") not in ids]
+        keep = [r for r in rows if not doomed(r)]
         if len(keep) == len(rows):
             return 0
-        gone = {r.get("id") for r in rows if r.get("thread_id") in ids}
+        gone = {r.get("id") for r in rows if doomed(r)}
         _rewrite(log_path(), keep)
         if outcomes_path().exists():
             _rewrite(
