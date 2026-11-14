@@ -12732,13 +12732,32 @@ class VideoBackend:
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
                 target = types.SimpleNamespace(device = device, dtype = dtype),
             )
+            from . import diffusion_int8_attention as int8_attention
+
+            # INT8 route also over a default SDPA pick (sm75, gfx1151), where the strided processor is otherwise not installed
+            int8_mode = int8_attention.mode()
+            int8_wanted = int8_mode == "force" or (
+                int8_mode != "off" and int8_attention.requested(attention_backend)
+            )
             # speed off stays bit-identical: the fused q/k norm + RoPE only matches stock within a rounding step
-            if effective_speed != SPEED_OFF and strided_install_backend(attention_engaged):
+            if effective_speed != SPEED_OFF and (
+                strided_install_backend(attention_engaged) or int8_wanted
+            ):
                 try:
                     if install_strided_attention(
-                        getattr(pipe, denoiser_component, None), logger = logger
+                        getattr(pipe, denoiser_component, None),
+                        logger = logger,
+                        qk_rope = None if strided_install_backend(attention_engaged) else False,
                     ):
                         h3_attn_levers += ("h3_strided_attn",)
+                        if int8_wanted and int8_attention.install_int8_attention(
+                            getattr(pipe, denoiser_component, None),
+                            device = device,
+                            dtype = dtype,
+                            force = True,
+                            logger = logger,
+                        ):
+                            h3_attn_levers += ("h3_int8_attention",)
                 except Exception as exc:  # noqa: BLE001 -- stock processor stays
                     logger.warning("video.h3_attn: strided attention skipped: %s", exc)
             # FlashInfer SM120 H3 block kernels (opt-in, UNSLOTH_H3_FLASHINFER=1): resident fp8 / nvfp4 blocks, before

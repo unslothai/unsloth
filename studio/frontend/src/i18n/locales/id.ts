@@ -2414,6 +2414,18 @@ export const id = {
         deviceGpu: "GPU",
         deviceLocked: "Diatur oleh {name}.",
         deviceSaveError: "Tidak dapat mengubah perangkat embedding",
+        offlineDocs: {
+          folderLabel: "Dokumentasi Unsloth offline",
+          folderDescription: "Simpan dokumentasi Unsloth lengkap ke folder agar bisa dipakai tanpa internet.",
+          folderHint: "Unsloth mengunduh unsloth.ai/docs/llms-full.txt ke folder ini sebagai \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" dan mengganti salinan sebelumnya. Tautkan folder ke basis pengetahuan untuk mencari dokumentasi di chat saat offline. Folder tetap tersimpan saat pembaruan.",
+          choose: "Pilih",
+          autoUpdateLabel: "Perbarui dokumentasi setiap rilis",
+          autoUpdateDescription: "Unduh salinan baru saat versi Unsloth baru pertama kali dijalankan.",
+          downloadNow: "Unduh sekarang",
+          downloading: "Mengunduh dokumentasi…",
+          notDownloaded: "Belum diunduh",
+          lastUpdated: "Diperbarui {date} untuk {release}",
+        },
       },
       storage: {
         sectionTitle: "Penyimpanan",
@@ -3992,6 +4004,8 @@ export const id = {
       llamaCppVersion: "Versi llama.cpp",
       audioCppVersion: "Versi audio.cpp",
       mlxVersion: "Versi MLX",
+      fastflowlmVersion: "Versi FastFlowLM",
+      lemonadeVersion: "Versi Lemonade",
       whisperCppVersion: "Versi whisper.cpp",
       engines: {
         title: "Engine",

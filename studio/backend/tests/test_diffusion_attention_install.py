@@ -397,7 +397,7 @@ def test_an_imported_old_kernels_is_not_papered_over(monkeypatch):
     log = _Logger()
     att._refresh_diffusers_kernels_version(log)
     assert import_utils._kernels_version == "0.12.1"
-    assert any("after Studio restarts" in w for w in log.warnings)
+    assert any("after Unsloth restarts" in w for w in log.warnings)
 
 
 def test_a_pth_installed_mid_process_is_activated(monkeypatch, tmp_path):

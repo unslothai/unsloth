@@ -22,6 +22,7 @@ from core.inference.flm_files import (
     read_model_files,
 )
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
+from core.inference.npu_context import DEFAULT_CONTEXT_LENGTH, plan_context
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -38,15 +39,36 @@ logger = logging.getLogger(__name__)
 
 MODEL_PREFIX = "lemonade:"
 PROVIDER_TYPE = "lemonade"
-DEFAULT_CONTEXT_LENGTH = 8192
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
 
 # Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
-# Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
-# limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
-_FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
+# Engine limits below checkpoint metadata, from the FastFlowLM v1.0.12 model cards (docs/docs/models)
+# and qwen3_core_backend.hpp; the 27B pair fails above 8192 (ROCm/FastFlowLM#1001). Recheck on pin bumps.
+_FLM_CONTEXT_LIMITS = {
+    "qwen3.8-mtp:27b": 8192,
+    "qwen3.8-dflash2:27b": 8192,
+    **dict.fromkeys(
+        (
+            "qwen3:0.6b",
+            "qwen3:1.7b",
+            "qwen3:4b",
+            "qwen3:8b",
+            "qwen3-core:0.6b",
+            "qwen3-core:1.7b",
+            "qwen3-core:4b",
+            "qwen3-core:8b",
+            "lfm2:1.2b",
+            "lfm2:2.6b",
+            "lfm2-trans:2.6b",
+            "lfm2.5-it:1.2b",
+            "lfm2.5-tk:1.2b",
+            "lfm3:1.7b",
+        ),
+        32768,
+    ),
+}
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
@@ -135,6 +157,7 @@ class _Loaded:
     model: NpuModel
     context_length: Optional[int]
     requested_context_length: Optional[int]
+    fitted_context_length: Optional[int] = None
 
 
 @dataclass(frozen = True)
@@ -146,6 +169,13 @@ class NpuResident:
     requested_context_length: Optional[int]
     base_url: str
     api_key: str
+    fitted_context_length: Optional[int] = None
+
+    @property
+    def max_context_length(self) -> Optional[int]:
+        if self.fitted_context_length is not None:
+            return self.fitted_context_length
+        return self.model.max_context_length
 
 
 def is_npu_model_path(model_path: Optional[str]) -> bool:
@@ -302,6 +332,7 @@ class LemonadeNpuBackend:
             requested_context_length = loaded.requested_context_length,
             base_url = f"http://127.0.0.1:{port}",
             api_key = api_key or "",
+            fitted_context_length = loaded.fitted_context_length,
         )
 
     @property
@@ -727,14 +758,16 @@ class LemonadeNpuBackend:
                 model = self._model(model_id)
                 if not model.downloaded:
                     raise NpuError(f"{model.id} is not downloaded yet.")
-                limit = model.max_context_length
-                ctx = context_length if context_length and context_length > 0 else None
-                ctx = ctx or min(DEFAULT_CONTEXT_LENGTH, limit or DEFAULT_CONTEXT_LENGTH)
-                if limit:
-                    ctx = min(ctx, limit)
+                files = self._model_files(model.checkpoint, self._flm_binary())
+                # Unload first so the free-RAM sample excludes the old weights and caches.
+                if self._loaded is not None:
+                    replaced = True
+                    self.unload()
+                    self._raise_if_load_cancelled(model_id)
                 server = self._ensure_running()
+                plan = plan_context(model, files, context_length)
+                ctx = plan.context_length
                 replaced = True
-                self._loaded = None
                 self._raise_if_load_cancelled(model_id)
                 response = server.request(
                     "POST",
@@ -756,6 +789,7 @@ class LemonadeNpuBackend:
                         requested_context_length = (
                             context_length if context_length and context_length > 0 else None
                         ),
+                        fitted_context_length = plan.fits,
                     )
                     self._loading = None
                     loaded = True
@@ -768,7 +802,7 @@ class LemonadeNpuBackend:
             finally:
                 self._loading = None
                 if replaced and not loaded and self._server is not None:
-                    # lemond may still hold the previous model, which Studio no longer records.
+                    # lemond may have loaded the replacement before failing its health check.
                     self._server.stop()
 
     def _raise_if_load_cancelled(self, model_id: str) -> None:

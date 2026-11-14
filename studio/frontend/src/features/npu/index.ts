@@ -3,7 +3,6 @@
 
 export {
   isNpuModelId,
-  NPU_DEFAULT_CONTEXT_LENGTH,
   NPU_MODEL_PREFIX,
   type NpuModel,
   type NpuStatus,
@@ -13,6 +12,7 @@ export {
   npuSizeLabel,
 } from "./api";
 export { NpuRuntimeVersions, NpuSetupNotice } from "./npu-setup-notice";
+export { npuEngineVersions, npuVersionTag } from "./runtime-versions";
 export {
   type NpuCatalog,
   type NpuPickerSource,
