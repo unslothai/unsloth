@@ -182,3 +182,18 @@ test("non-breaking space indents survive, and blank non-breaking paragraphs do n
   const body = el("body", el("p", el("b", "Retry")), el("p", " "), el("p", "def f():"), el("p", "    return 1"));
   assert.equal(htmlNodeToMarkdown(body), "**Retry**\n\ndef f():\n\n    return 1");
 });
+
+test("Google Docs bold, italic and links keep valid Markdown around their spaces", () => {
+  const docs = "white-space:pre;white-space:pre-wrap;";
+  const span = (text: string, style = "") => el("span", { style: style + docs }, text);
+  const body = el(
+    "body",
+    el(
+      "b",
+      { style: "font-weight:normal;" },
+      el("p", span("This is "), span("bold ", "font-weight:700;"), span("and"), span(" italic", "font-style:italic;")),
+      el("p", el("a", { href: "https://x.com" }, span("https://x.com")), span(" and "), el("a", { href: "https://y.com" }, span("site "))),
+    ),
+  );
+  assert.equal(htmlNodeToMarkdown(body), "This is **bold** and *italic*\n\nhttps://x.com and [site](https://y.com)");
+});

@@ -54,11 +54,20 @@ function clean(text: string): string {
     .replace(new RegExp(`${FENCE_OPEN}(\\d+)${FENCE_CLOSE}`, "g"), (_, i: string) => fences[Number(i)]);
 }
 
+const EDGES = new RegExp(`^([\\s${FENCE_OPEN}${FENCE_CLOSE}]*)([\\s\\S]*?)([\\s${FENCE_OPEN}${FENCE_CLOSE}]*)$`);
+const MARKS = new RegExp(`[${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
+const NOT_MARKS = new RegExp(`[^${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
+
+// Edge whitespace moves out past fence marks, so `**bold **` never forms.
+function edges(inner: string): [string, string, string] {
+  const [, head, body, tail] = EDGES.exec(inner) ?? ["", "", inner, ""];
+  const marks = (s: string) => s.replace(NOT_MARKS, "");
+  return [head.replace(MARKS, ""), `${marks(head)}${body}${marks(tail)}`, tail.replace(MARKS, "")];
+}
+
 function wrap(marker: string, inner: string): string {
-  const body = inner.trim();
-  if (!body) return inner;
-  const lead = inner.slice(0, inner.length - inner.trimStart().length);
-  const trail = inner.slice(inner.trimEnd().length);
+  const [lead, body, trail] = edges(inner);
+  if (!body.replace(MARKS, "")) return inner;
   return `${lead}${marker}${body}${marker}${trail}`;
 }
 
@@ -163,16 +172,16 @@ function table(node: PasteNode, ctx: Ctx): string {
   return [...(title ? [title, ""] : []), line(head), `| ${Array(width).fill("---").join(" | ")} |`, ...body.map(line)].join("\n");
 }
 
-function convert(node: PasteNode, ctx: Ctx): string {
+function convert(node: PasteNode, parent: Ctx): string {
   if (node.nodeType === 3) {
     const text = node.textContent ?? "";
-    return ctx.pre ? `${FENCE_OPEN}${text}${FENCE_CLOSE}` : text.replace(/[^\S\u00a0]+/g, " ");
+    return parent.pre ? `${FENCE_OPEN}${text}${FENCE_CLOSE}` : text.replace(/[^\S\u00a0]+/g, " ");
   }
   if (node.nodeType !== 1) return "";
   const tag = node.nodeName.toUpperCase();
   if (SKIP.has(tag)) return "";
   const style = attr(node, "style").toLowerCase();
-  if (/white-space:\s*pre/.test(style)) ctx = { ...ctx, pre: true };
+  const ctx = /white-space:\s*pre/.test(style) ? { ...parent, pre: true } : parent;
   switch (tag) {
     case "BR":
       return "\n";
@@ -183,10 +192,9 @@ function convert(node: PasteNode, ctx: Ctx): string {
       const href = safeHref(raw);
       const inner = children(node, ctx);
       if (!href) return inner;
-      const text = inner.trim();
-      const lead = inner.slice(0, inner.length - inner.trimStart().length);
-      const trail = inner.slice(inner.trimEnd().length);
-      if (!text || text === raw || text === href || `mailto:${text}` === raw) return `${lead}${href}${trail}`;
+      const [lead, text, trail] = edges(inner);
+      const plain = text.replace(MARKS, "");
+      if (!plain || plain === raw || plain === href || `mailto:${plain}` === raw) return `${lead}${href}${trail}`;
       return `${lead}[${text.replace(/([[\]])/g, "\\$1")}](${href})${trail}`;
     }
     case "STRONG":
