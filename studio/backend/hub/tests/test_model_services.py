@@ -1086,6 +1086,26 @@ def test_inventory_scans_every_dynamic_cache_root(monkeypatch, tmp_path):
     assert [Path(scan.cache_dir) for scan in result] == [first, second]
 
 
+def test_unreadable_ref_keeps_healthy_repos_in_the_same_cache(monkeypatch, tmp_path):
+    for name in ("Healthy", "BadRef"):
+        repo = tmp_path / f"models--Org--{name}"
+        snapshot = repo / "snapshots" / "abc123"
+        snapshot.mkdir(parents = True)
+        (snapshot / "model.safetensors").write_bytes(b"weights")
+        (repo / "refs").mkdir()
+        (repo / "refs" / "main").write_bytes(b"abc123" if name == "Healthy" else b"\xff")
+
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+
+    # The encoding used by huggingface_hub to open refs depends on the host locale.
+    def undecodable_ref(cache_dir):
+        (Path(cache_dir) / "models--Org--BadRef" / "refs" / "main").read_text(encoding = "utf-8")
+
+    monkeypatch.setattr("huggingface_hub.scan_cache_dir", undecodable_ref)
+    scans = inventory_scan._compute_all_hf_cache_scans()
+    assert [repo.repo_id for scan in scans for repo in scan.repos] == ["Org/Healthy"]
+
+
 def test_inventory_applies_download_state_to_its_owning_cache(monkeypatch, tmp_path):
     state_root = tmp_path / "state"
     cache_a = tmp_path / "cache-a"

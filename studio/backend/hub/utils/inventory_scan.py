@@ -423,8 +423,8 @@ def _compute_all_hf_cache_scans() -> list:
             if getattr(scan, "warnings", None):
                 scan = _with_repos_dropped_by_scan(scan, cache_root)
             scans.append(scan)
-        except OSError as exc:
-            # Filesystem errors can abort a whole root (e.g. Windows reparse points); recover read-only.
+        except (OSError, UnicodeDecodeError) as exc:
+            # A filesystem error or an undecodable ref can abort a whole root. Recover its readable repos.
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
             empty_fields = dict(size_on_disk = 0, repos = frozenset(), warnings = [])
             # huggingface_hub 1.x added this required field; older versions lack it.
