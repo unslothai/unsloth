@@ -711,7 +711,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           setTimeout(() => requestVoiceResume(), 0);
           return;
         }
-        heldTurn = null;
+        // An empty continuation keeps the held phrase: the next silence still flushes it.
+        if (transcript) heldTurn = null;
         if (transcript) {
           const total = transcript.length;
           const stepChars = Math.max(
