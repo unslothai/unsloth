@@ -1026,7 +1026,36 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
                     "Unsloth: this DeepSeek-V4.1 checkpoint is in DeepSeek's released layout, which loads on "
                     "transformers >= 5 only. Upgrade transformers, or load a checkpoint saved by Unsloth."
                 )
-        return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        # The engram hashes need the tokenizer's compressed token map; the checkpoint ships the tokenizer.
+        target = model[0] if isinstance(model, tuple) else model
+        if hasattr(target, "_autobind_tokenizer"):
+            hub = {
+                k: kwargs[k]
+                for k in ("cache_dir", "token", "revision", "local_files_only")
+                if k in kwargs
+            }
+            target._autobind_tokenizer(pretrained_model_name_or_path, **hub)
+        return model
+
+    def _autobind_tokenizer(
+        self,
+        path = None,
+        **hub_kwargs,
+    ):
+        text_model = getattr(self, "model", self)
+        hash_state = getattr(text_model, "ngram_hash", None)
+        if hash_state is None or hash_state.bound:
+            return True
+        path = path or getattr(self.config, "_name_or_path", "") or ""
+        if not path:
+            return False
+        try:
+            from transformers import AutoTokenizer
+            hash_state.bind_tokenizer(AutoTokenizer.from_pretrained(str(path), **hub_kwargs))
+            return True
+        except Exception:
+            return False
 
     def _init_weights(self, module):
         std = getattr(self.config.get_text_config(), "initializer_range", 0.02)
@@ -1104,16 +1133,8 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
             self.ngram_hash.bind_token_map(token_map)
 
     def _maybe_autobind(self):
-        if self.ngram_hash is None or self.ngram_hash.bound:
-            return
-        path = getattr(self.config, "_name_or_path", "") or ""
-        if not path:
-            return
-        try:
-            from transformers import AutoTokenizer
-            self.ngram_hash.bind_tokenizer(AutoTokenizer.from_pretrained(path))
-        except Exception:
-            pass
+        if self.ngram_hash is not None and not self.ngram_hash.bound:
+            self._autobind_tokenizer()
 
     def forward(
         self,
@@ -1230,6 +1251,8 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
     ):
         kwargs.pop("num_logits_to_keep", None)
         kwargs.pop("cache_position", None)
+        if self.model.ngram_hash is not None and not self.model.ngram_hash.bound:
+            self._autobind_tokenizer()
         out = self.model(
             input_ids = input_ids,
             attention_mask = attention_mask,
