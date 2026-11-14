@@ -145,11 +145,12 @@ export function voiceWroteBox(text: string): boolean {
   return text.trim() !== "" && text.trim() === voiceBoxText.trim();
 }
 
-/** A draft typed ahead of the loop's own text in the composer: the start of the spoken turn. */
-export function typedDraftIn(box: string): string {
+/** Take a draft typed ahead of the loop's own text: it starts the spoken turn, so the box is the turn's now. */
+export function takeTypedDraft(box: string): string {
   const own = voiceBoxText.trim();
   const text = box.trim();
   if (!own || text === own || !text.endsWith(own)) return "";
+  voiceBoxText = text;
   return text.slice(0, text.length - own.length).trim();
 }
 // Bumped by clearHeldTurn (voice off, thread switch, stop, typed send): a transcript still
