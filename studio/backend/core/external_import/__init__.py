@@ -56,6 +56,9 @@ class Transcript:
     # at ``inherited``, the count of leading messages carried over from the previous revision.
     revision: str = ""
     inherited: int = 0
+    # {older revision of this parser: where its n-th turn ends in ``messages``}, so a parser
+    # that now keeps more turns resumes after what it imported instead of re-sending edited ones.
+    earlier: dict[str, list[int]] = field(default_factory = dict)
 
 
 @dataclass(frozen = True)
@@ -228,9 +231,14 @@ def _pending_messages(
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
     turns, revision = mark
-    pending = transcript.messages[
-        turns if revision == transcript.revision else transcript.inherited :
-    ]
+    if revision == transcript.revision:
+        start = turns
+    elif revision in transcript.earlier:
+        ends = transcript.earlier[revision]
+        start = ends[min(turns, len(ends) - 1)]
+    else:
+        start = transcript.inherited
+    pending = transcript.messages[start:]
     # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
     # does not orphan it (the frontend refuses a thread with a missing parent).
     present = {message["id"] for message in stored}

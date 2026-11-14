@@ -28,6 +28,8 @@ from core.external_import import (
 _COMMAND = re.compile(r"<command-(?:name|message|args)>")
 _TYPED_COMMAND = re.compile(r"<command-(name|args)>(.*?)</command-\1>", re.DOTALL)
 _LOCAL_STDOUT = re.compile(r"</?local-command-stdout>")
+# Ledger revision: "" counted turns before typed commands and pasted images were imported.
+_REVISION = "commands"
 
 
 def list_projects(home: Path) -> list[SourceProject]:
@@ -64,39 +66,39 @@ def _result_text(content: Any) -> str:
     return clean_text(content) if isinstance(content, str) else ""
 
 
-def _parts(record: dict, message_id: str, expanded: bool) -> tuple[list[dict], dict[str, str]]:
-    """Text and tool-call parts, plus ``{tool_use_id: result}`` this record answers. Thinking is dropped."""
+def _parts(
+    record: dict, message_id: str, expanded: bool
+) -> tuple[list[dict], dict[str, str], bool]:
+    """Parts, ``{tool_use_id: result}`` this record answers, and whether revision "" kept it. Thinking is dropped."""
     content = record.get("message", {}).get("content")
     if isinstance(content, str):
         content = [{"type": "text", "text": content}]
     if not isinstance(content, list):
-        return [], {}
+        return [], {}, False
     user = record.get("type") == "user"
-    parts, results = [], {}
+    parts, results, legacy = [], {}, False
     for position, block in enumerate(content):
         if not isinstance(block, dict):
             continue
         kind = block.get("type")
         if kind == "text":
-            text = block.get("text") or ""
-            text = _user_text(text, expanded) if user else clean_text(text)
+            raw = block.get("text") or ""
+            text = _user_text(raw, expanded) if user else clean_text(raw)
             if text:
                 parts.append({"type": "text", "text": text})
+                legacy = legacy or not (user and _COMMAND.search(raw))
         elif kind == "image" and user:
             source = block.get("source") or {}
-            if source.get("type") == "base64" and source.get("media_type") and source.get("data"):
-                parts.append(
-                    {
-                        "type": "image",
-                        "image": f"data:{source['media_type']};base64,{source['data']}",
-                    }
-                )
+            media = str(source.get("media_type") or "")
+            if source.get("type") == "base64" and media.startswith("image/") and source.get("data"):
+                parts.append({"type": "image", "image": f"data:{media};base64,{source['data']}"})
         elif kind == "tool_use" and not user:
+            legacy = True
             parts.append(tool_call(str(block.get("id") or f"{message_id}-{position}"), block))
         elif kind == "tool_result" and user and block.get("tool_use_id"):
             # empty output still marks a finished call; Studio replays "" differently from none
             results[str(block["tool_use_id"])] = _result_text(block.get("content"))
-    return parts, results
+    return parts, results, legacy
 
 
 def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
@@ -135,6 +137,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     active_blocks: list[int] = []
     open_calls: dict[str, dict] = {}
     messages: list[dict] = []
+    legacy_ends = [0]
     for index, (record, node, parent_node) in enumerate(records):
         uuid = str(record.get("uuid") or "")
         reply = record.get("message", {}).get("id") if record["type"] == "assistant" else None
@@ -151,7 +154,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             active_reply = reply
             active_blocks = []
         message_id = stable_id("claude", session_id, uuid or f"index:{index}", length = 16)
-        parts, results = _parts(record, message_id, uuid in expanded)
+        parts, results, legacy = _parts(record, message_id, uuid in expanded)
         for call_id, result in results.items():
             if call_id in open_calls:
                 open_calls.pop(call_id)["result"] = result
@@ -176,6 +179,8 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
                 "metadata": {"importedFrom": "claude", "claudeSessionId": session_id},
             }
         )
+        if legacy:
+            legacy_ends.append(len(messages))
         if node is not None:
             imported[node] = message_id
             if reply:
@@ -189,6 +194,8 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         created_at_ms = messages[0]["createdAt"] if messages else file_created,
         updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
         messages = messages,
+        revision = _REVISION,
+        earlier = {"": legacy_ends},
     )
 
 
