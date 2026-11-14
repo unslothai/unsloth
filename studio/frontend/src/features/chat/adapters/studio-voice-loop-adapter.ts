@@ -51,6 +51,9 @@ const BARGE_PREROLL_MS = 600;
 const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
 const VAD_MIN_SPEECH_MS = 300;
+// The barge-in probe is asked after BARGE_CONFIRMED_MS of loudness, so its clip holds about that much
+// voice: the full bar failed the first probe every time and a short interruption never cut in.
+const BARGE_VAD_MIN_SPEECH_MS = 200;
 
 let vadDisabled = false;
 const SILENCE_PAD_MS = 200;
@@ -196,14 +199,17 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       resolveEnded?.();
     };
 
-    const clipHasSpeech = async (blob: Blob): Promise<boolean | null> => {
+    const clipHasSpeech = async (
+      blob: Blob,
+      minSpeechMs: number = VAD_MIN_SPEECH_MS,
+    ): Promise<boolean | null> => {
       if (!vadReady || vadDisabled) return null;
       try {
         const result = await detectSpeech(
           blob,
           useChatRuntimeStore.getState().selectedVadModelId,
         );
-        return result.speech_ms >= VAD_MIN_SPEECH_MS;
+        return result.speech_ms >= minSpeechMs;
       } catch (error) {
         if (error instanceof VadUnavailableError) vadDisabled = true;
         return null;
@@ -441,7 +447,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               probe.set(c, at);
               at += c.length;
             }
-            void clipHasSpeech(new Blob([encodeWav(probe, sampleRate)], { type: "audio/wav" })).then((voiced) => {
+            void clipHasSpeech(
+              new Blob([encodeWav(probe, sampleRate)], { type: "audio/wav" }),
+              BARGE_VAD_MIN_SPEECH_MS,
+            ).then((voiced) => {
               bargeConfirming = false;
               if (ended || bargedIn) return;
               if (voiced === false) {

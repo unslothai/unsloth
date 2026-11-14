@@ -53,3 +53,8 @@ test("a barge-in that ends before the detector answers keeps its voiced length",
   assert.match(loop, /if \(bargeConfirming\) bargePeakMs = Math\.max\(bargePeakMs, bargeGate\.loudMs\);/);
   assert.match(loop, /voicedMs = Math\.max\(bargeGate\.loudMs, bargePeakMs\);/);
 });
+
+test("the barge-in probe is judged on the shorter bar its clip can meet", () => {
+  assert.match(loop, /const BARGE_VAD_MIN_SPEECH_MS = 200;/);
+  assert.match(loop, /BARGE_VAD_MIN_SPEECH_MS,\s*\)\.then\(\(voiced\) => \{/);
+});
