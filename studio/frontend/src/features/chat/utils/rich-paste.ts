@@ -27,6 +27,11 @@ const BLOCK = new Set([
 const INDENT = "\u0001";
 const FENCE_OPEN = "\u0002";
 const FENCE_CLOSE = "\u0003";
+// Tag a fence as inline code or a code block, so it is told apart from preserved whitespace.
+const CODE = "\u0004";
+const CODE_BLOCK = "\u0005";
+const PRIVATE = new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}${CODE}${CODE_BLOCK}]`, "g");
+const text = (node: PasteNode) => (node.textContent ?? "").replace(PRIVATE, "");
 
 function attr(node: PasteNode, name: string): string {
   return node.getAttribute?.(name) ?? "";
@@ -85,11 +90,11 @@ function edges(inner: string): [string, string, string] {
 }
 
 const PARAGRAPH = new RegExp(`\\n[ \\t\\u00a0${FENCE_OPEN}${FENCE_CLOSE}]*\\n`, "g");
-const CODE = new RegExp(`${FENCE_OPEN}\`[^${FENCE_CLOSE}]*${FENCE_CLOSE}`, "g");
+const CODE_RANGE = new RegExp(`${FENCE_OPEN}[${CODE}${CODE_BLOCK}][^${FENCE_CLOSE}]*${FENCE_CLOSE}`, "g");
 
 // Paragraph breaks outside code, as [text, break, text, ...].
 function paragraphs(body: string): string[] {
-  const code = [...body.matchAll(CODE)].map((m) => [m.index, m.index + m[0].length]);
+  const code = [...body.matchAll(CODE_RANGE)].map((m) => [m.index, m.index + m[0].length]);
   const parts: string[] = [];
   let last = 0;
   let j = 0;
@@ -107,7 +112,7 @@ function paragraphs(body: string): string[] {
 function wrap(marker: string, inner: string): string {
   const [lead, body, trail] = edges(inner);
   const core = body.replaceAll(`${FENCE_OPEN}${FENCE_CLOSE}`, "");
-  const block = core.startsWith(`${FENCE_OPEN}\`\`\``) && core.indexOf(FENCE_CLOSE) === core.length - 1;
+  const block = core.startsWith(`${FENCE_OPEN}${CODE_BLOCK}`) && core.indexOf(FENCE_CLOSE) === core.length - 1;
   if (block || !body.replace(MARKS, "")) return inner;
   const parts = paragraphs(body);
   if (parts.length === 1) return `${lead}${marker}${body}${marker}${trail}`;
@@ -139,7 +144,7 @@ function codeSpan(text: string): string {
 
 // textContent drops <br>, which some editors use for the line breaks in code.
 function preText(node: PasteNode): string {
-  if (node.nodeType === 3) return node.textContent ?? "";
+  if (node.nodeType === 3) return text(node);
   if (node.nodeName.toUpperCase() === "BR") return "\n";
   return Array.from(node.childNodes).map(preText).join("");
 }
@@ -148,9 +153,9 @@ function preBlock(node: PasteNode): string {
   const code = elements(node).find((child) => child.nodeName.toUpperCase() === "CODE");
   const cls = `${attr(node, "class")} ${code ? attr(code, "class") : ""}`;
   const lang = /(?:language|lang)-([\w+#-]+)/.exec(cls)?.[1] ?? "";
-  const text = preText(node).replace(/\n$/, "");
-  const fence = "`".repeat(Math.max(3, ...(text.match(/`{3,}/g) ?? []).map((run) => run.length + 1)));
-  return `\n\n${FENCE_OPEN}${fence}${lang}\n${text}\n${fence}${FENCE_CLOSE}\n\n`;
+  const body = preText(node).replace(/\n$/, "");
+  const fence = "`".repeat(Math.max(3, ...(body.match(/`{3,}/g) ?? []).map((run) => run.length + 1)));
+  return `\n\n${FENCE_OPEN}${CODE_BLOCK}${fence}${lang}\n${body}\n${fence}${FENCE_CLOSE}\n\n`;
 }
 
 function list(node: PasteNode, ctx: Ctx, ordered: boolean): string {
@@ -233,10 +238,10 @@ function table(node: PasteNode, ctx: Ctx): string {
 
 function convert(node: PasteNode, parent: Ctx): string {
   if (node.nodeType === 3) {
-    const text = node.textContent ?? "";
-    if (parent.space === "pre") return `${FENCE_OPEN}${text.replaceAll("\u00a0", " ")}${FENCE_CLOSE}`;
-    if (parent.space === "collapse") return text.replace(/[^\S\u00a0]+/g, " ");
-    return text
+    const value = text(node);
+    if (parent.space === "pre") return `${FENCE_OPEN}${value.replaceAll("\u00a0", " ")}${FENCE_CLOSE}`;
+    if (parent.space === "collapse") return value.replace(/[^\S\u00a0]+/g, " ");
+    return value
       .replace(/[^\S\n\u00a0]+/g, " ")
       .replace(/ ?\n ?/g, "\n")
       .replace(/\n{3,}/g, (run) => `${FENCE_OPEN}${run}${FENCE_CLOSE}`);
@@ -277,7 +282,7 @@ function convert(node: PasteNode, parent: Ctx): string {
     case "STRIKE":
       return wrap("~~", children(node, ctx));
     case "CODE":
-      return `${FENCE_OPEN}${codeSpan(node.textContent ?? "")}${FENCE_CLOSE}`;
+      return `${FENCE_OPEN}${CODE}${codeSpan(text(node))}${FENCE_CLOSE}`;
     case "PRE":
       return preBlock(node);
     case "H1":
@@ -313,13 +318,13 @@ function convert(node: PasteNode, parent: Ctx): string {
 }
 
 // Non-breaking spaces outside fences are layout; inside code they may be data.
-const FINAL = new RegExp(`${FENCE_OPEN}([\\s\\S]*?)${FENCE_CLOSE}|[${INDENT}\u00a0]|[${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
+const FINAL = new RegExp(`${FENCE_OPEN}([\\s\\S]*?)${FENCE_CLOSE}|[${INDENT}\u00a0]|[${FENCE_OPEN}${FENCE_CLOSE}${CODE}${CODE_BLOCK}]`, "g");
 
 export function htmlNodeToMarkdown(root: PasteNode): string {
   return clean(convert(root, { space: "collapse", bold: false, italic: false })).replace(
     FINAL,
     (mark, fenced?: string) =>
-      fenced !== undefined ? fenced.replaceAll(INDENT, " ") : mark === INDENT || mark === "\u00a0" ? " " : "",
+      fenced !== undefined ? fenced.replaceAll(INDENT, " ").replaceAll(CODE, "").replaceAll(CODE_BLOCK, "") : mark === INDENT || mark === "\u00a0" ? " " : "",
   );
 }
 

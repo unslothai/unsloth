@@ -296,3 +296,13 @@ test("emphasis around a code block never enters the code", () => {
   const body = el("body", el("del", el("p", "before"), el("pre", el("code", "x = 1\n\ny = 2")), el("p", "after")));
   assert.equal(htmlNodeToMarkdown(body), "~~before~~\n\n```\nx = 1\n\ny = 2\n```\n\n~~after~~");
 });
+
+test("preserved text starting with a backtick still splits emphasis at paragraphs", () => {
+  const body = el("body", el("b", { style: "white-space:pre-wrap" }, "`x`\n\nsecond"));
+  assert.equal(htmlNodeToMarkdown(body), "**`x`**\n\n**second**");
+});
+
+test("internal marker characters in copied text are dropped", () => {
+  const body = el("body", el("p", el("b", "a\u0002b"), el("code", "c\u0003d")), el("pre", "e\u0004f\u0005"));
+  assert.equal(htmlNodeToMarkdown(body), "**ab**`cd`\n\n```\nef\n```");
+});
