@@ -6842,6 +6842,21 @@ exit 0
         }
     }
 
+    # uv's per-venv python.exe is its own unsigned trampoline, which Windows can refuse while the
+    # base interpreter runs (the desktop's "os error 4551" in #17735). Returns the signed runtime
+    # after removing the just-created venv, or $null to keep it.
+    function Repair-BlockedVenvLauncher {
+        param([string]$VenvDir, [string]$VenvPython, $Python, [string]$Patch)
+        if (-not (Invoke-PythonSelectionProbe -Executable $VenvPython -Arguments @('-I', '-S', '-c', 'pass')).Blocked) { return $null }
+        $script:PythonPolicyBlocked = $true
+        $signed = Resolve-SignedManagedPython -Minor $Python.Version -Patch $Patch -Arch $Python.Arch
+        if (-not $signed) { return $null }
+        substep "Windows blocked the environment's Python launcher; rebuilding it on signed Python $($signed.Full)." "Yellow"
+        # Only uv's output: the directory was absent or empty before uv venv ran.
+        Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
+        return $signed
+    }
+
     # --no-bin / --no-registry leave PATH and the py launcher alone; --system skips an active venv;
     # --managed-python never returns an interpreter uv did not install.
     function Resolve-UvManagedPython {
@@ -7711,18 +7726,9 @@ exit 0
             $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $DetectedPython.Path -I -m venv --without-pip $VenvDir }
         } else {
             $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
-            # The venv's own python.exe is a separate unsigned launcher Windows can refuse while the
-            # base interpreter runs, as the desktop's "os error 4551" in #17735.
-            if ($venvExit -eq 0 -and (Invoke-PythonSelectionProbe -Executable $VenvPython -Arguments @('-I', '-S', '-c', 'pass')).Blocked) {
-                $script:PythonPolicyBlocked = $true
-                $signedPython = Resolve-SignedManagedPython -Minor $DetectedPython.Version -Patch $PythonPatchRequest -Arch $DetectedPython.Arch
-                if ($signedPython) {
-                    substep "Windows blocked the environment's Python launcher; rebuilding it on signed Python $($signedPython.Full)." "Yellow"
-                    # Only uv's output: the directory was absent or empty before uv venv ran.
-                    Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
-                    $DetectedPython = $signedPython
-                    $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $DetectedPython.Path -I -m venv --without-pip $VenvDir }
-                }
+            if ($venvExit -eq 0 -and ($signedPython = Repair-BlockedVenvLauncher -VenvDir $VenvDir -VenvPython $VenvPython -Python $DetectedPython -Patch $PythonPatchRequest)) {
+                $DetectedPython = $signedPython
+                $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $DetectedPython.Path -I -m venv --without-pip $VenvDir }
             }
         }
         if ($venvExit -ne 0) {

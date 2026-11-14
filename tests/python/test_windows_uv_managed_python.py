@@ -1385,6 +1385,7 @@ function Resolve-SignedManagedPython {{
     $script:SignedCalls++
     if (${str(signed).lower()}) {{ return @{{ Version = '3.13'; Full = '3.13.17'; Path = 'C:\\signed\\python.exe'; Arch = $Arch; Source = 'signed-managed' }} }}
 }}
+{_function('Repair-BlockedVenvLauncher')}
 function Run {{
 {VENV_SITE}
     return $DetectedPython
