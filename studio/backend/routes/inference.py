@@ -6573,6 +6573,16 @@ def _audio_input_system_prompt(system_prompt: str, request: Any) -> str:
     return _apply_current_date_prompt(system_prompt or _AUDIO_INPUT_SYSTEM_PROMPT, request)
 
 
+# Not empty: the audio backends fall back to the transcription instruction on an empty prompt.
+_AUDIO_ANSWER_SYSTEM_PROMPT = "You are a helpful assistant."
+
+
+def _audio_turn_asks(chat_messages: list) -> bool:
+    """The last user turn has words beside its audio (a voice turn, a typed question): answer it."""
+    last = next((m for m in reversed(chat_messages) if m.get("role") == "user"), None)
+    return bool(last and str(last.get("content") or "").strip())
+
+
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
 # server/routes.go ChatHandler, which /v1/chat/completions also routes into), so only a turn at
 # index 0 displaces it. llama-server, vLLM and Lemonade drop the template's default the same way.
@@ -32569,12 +32579,16 @@ async def produce_openai_chat_completions(
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
-                # A spoken reply answers the question, so the transcription default does not apply.
-                system_prompt = (
-                    _apply_current_date_prompt(system_prompt, request)
-                    if _speak
-                    else _audio_input_system_prompt(system_prompt, request)
-                )
+                # A spoken reply or a turn with words answers the question: the transcription default
+                # is for a bare clip.
+                if _speak:
+                    system_prompt = _apply_current_date_prompt(system_prompt, request)
+                elif _audio_turn_asks(chat_messages):
+                    system_prompt = _apply_current_date_prompt(
+                        system_prompt or _AUDIO_ANSWER_SYSTEM_PROMPT, request
+                    )
+                else:
+                    system_prompt = _audio_input_system_prompt(system_prompt, request)
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))
