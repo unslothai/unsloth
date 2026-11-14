@@ -128,6 +128,43 @@ export interface TrainingStartRequestStatusResponse {
   error_code?: string | null;
 }
 
+/** A training start saved to run at a chosen wall-clock time. */
+export type TrainingScheduleStatus =
+  | "pending"
+  | "starting"
+  | "started"
+  | "cancelled"
+  | "failed"
+  | "missed";
+
+export interface TrainingSchedule {
+  id: string;
+  status: TrainingScheduleStatus;
+  /** Epoch ms the start is due. */
+  startAt: number;
+  /** The picked wall clock ("YYYY-MM-DDTHH:MM") in `timezone`. */
+  startAtLocal: string;
+  timezone: string;
+  modelName: string;
+  projectName: string | null;
+  createdAt: number;
+  updatedAt: number;
+  jobId: string | null;
+  error: string | null;
+}
+
+export interface TrainingScheduleList {
+  schedules: TrainingSchedule[];
+  /** Server clock, so clients time the next start from the same clock the scheduler uses. */
+  now: number;
+}
+
+export interface TrainingScheduleInput {
+  start_at: string;
+  timezone: string;
+  request: TrainingStartRequest;
+}
+
 export interface TrainingStopResponse {
   status: "stopped" | "idle";
   message: string;

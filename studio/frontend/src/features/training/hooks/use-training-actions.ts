@@ -11,7 +11,10 @@ import {
 } from "../api/train-api";
 import { emitTrainingRunsChanged } from "../events";
 import { resumeTrainingRun } from "../lib/resume-training-run";
-import { startFreshTrainingRun } from "../lib/start-fresh-training-run";
+import {
+  scheduleFreshTrainingRun,
+  startFreshTrainingRun,
+} from "../lib/start-fresh-training-run";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import {
   type TrainingStopScope,
@@ -30,6 +33,12 @@ export function useTrainingActions() {
 
   const startTrainingRun = useCallback(
     async (): Promise<boolean> => startFreshTrainingRun(),
+    [],
+  );
+
+  const scheduleTrainingRun = useCallback(
+    async (startAt: string, timezone: string): Promise<boolean> =>
+      scheduleFreshTrainingRun(startAt, timezone),
     [],
   );
 
@@ -156,6 +165,7 @@ export function useTrainingActions() {
     stopRequested,
     startError,
     startTrainingRun,
+    scheduleTrainingRun,
     resumeTrainingRunFromHistory,
     stopTrainingRun,
     dismissTrainingRun,
