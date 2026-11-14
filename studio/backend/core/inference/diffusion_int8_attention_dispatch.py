@@ -461,7 +461,8 @@ def _race_wins(
         return _LONG_VERDICTS[key]
     q = k = v = None
     try:
-        with torch.no_grad():
+        # The timing events record on the current device's stream, so a secondary card must be current here.
+        with torch.no_grad(), torch.cuda.device(device):
             q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
             ms = I8._median_ms(
                 {

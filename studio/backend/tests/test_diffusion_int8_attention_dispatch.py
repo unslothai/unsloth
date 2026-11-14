@@ -8,6 +8,7 @@ op's implementation is replaced by a recorder; the CUDA tests at the end run the
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import pickle
 import types
@@ -508,6 +509,7 @@ def test_long_verdict_thresholds(monkeypatch):
     monkeypatch.setattr(I, "_median_ms", median_ms)
     monkeypatch.setattr(I, "probe_inputs", probe)
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: contextlib.nullcontext())
     large, small = D.LONG_RACE_TOKENS
     cases = [
         ({large: (10.0, 9.0), small: (5.0, 4.0)}, (small + I.RACE_TOKENS[0]) // 2),
@@ -521,6 +523,32 @@ def test_long_verdict_thresholds(monkeypatch):
     # cached per key
     times.clear()
     assert D.long_verdict("cuda:0", torch.bfloat16, 2, 64, None, "case0") == cases[0][1]
+
+
+def test_extra_races_time_on_the_probed_card(monkeypatch):
+    """A secondary card's mid / long race must run with that card current: the timing events record on the current
+    device's stream."""
+    current = [None]
+    seen = []
+
+    @contextlib.contextmanager
+    def device_ctx(device):
+        prev, current[0] = current[0], device
+        try:
+            yield
+        finally:
+            current[0] = prev
+
+    def median_ms(fns, rounds = 5):
+        seen.append(current[0])
+        return {"incumbent": 10.0, "int8": 5.0}
+
+    monkeypatch.setattr(I, "_median_ms", median_ms)
+    monkeypatch.setattr(I, "probe_inputs", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "device", device_ctx)
+    assert D._race_wins("cuda:1", torch.bfloat16, 2, 64, None, "probe_device", 4096)
+    assert seen == ["cuda:1"]
 
 
 def test_masked_processors_keep_the_incumbent(card, monkeypatch):
