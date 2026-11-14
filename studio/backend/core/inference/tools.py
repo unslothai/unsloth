@@ -7368,7 +7368,7 @@ _GIT_GLOBAL_VALUE_FLAGS = frozenset(
 )
 # Recursively screened; the hard-block only recurses for its own smaller set.
 _SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
-# `script` short options taking a value (util-linux -TIOBEom, BSD -t), plus -c's command.
+# `script` short options that take a value (util-linux -TIOBEom, BSD -t, -c).
 _SCRIPT_VALUE_LETTERS = "cTIOBEomt"
 _SCRIPT_LONG_VALUE_OPTS = (
     "--command",
@@ -7879,10 +7879,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         current_command = ""  # the resolved command whose flags / git subcommand we judge
         git_subcommand = ""  # the first positional after `git`
         shell_c_pending = False  # a shell `-c` precedes its inline payload
-        command_arg_pending = False  # the next word is a command string run later (trap, script -c)
-        script_operand_seen = False  # `script` already has its log file operand
-        redir_target_pending = False  # a bare `2>` precedes its target
-        split_redirects_checked = False  # the `2>&1`-joined reading was screened
+        command_arg_pending = False
+        script_operand_seen = False
+        redir_target_pending = False
+        split_redirects_checked = False
         unquoted_redirs: "frozenset[int] | None | bool" = False  # False: not computed yet
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
@@ -7901,8 +7901,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         for _tok_idx, token in enumerate(tokens):
             after_coproc = coproc_kw
             coproc_kw = False
-            # shlex splits `2>&1` / `>|log`; this `&` / `|` may be the redirection or a real separator,
-            # so also judge the command with the split redirections removed.
+            # shlex splits `2>&1` / `>|log`: also judge the command with those redirections removed.
             if (
                 token in ("&", "|")
                 and not split_redirects_checked
@@ -7962,8 +7961,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if win_operand_pending:
                 win_operand_pending = False
                 continue
-            # Bash drops redirections from argv wherever they sit (`</dev/null rm`, `nohup 2> log rm`,
-            # `trap 2>log 'rm -rf x' EXIT`); a bare operator also takes the next word as its target.
+            # Bash drops redirections from argv anywhere (`nohup 2> log rm`); a bare `2>` takes the next word.
             if redir_target_pending:
                 redir_target_pending = False
                 # Behind a quoted operator this word may be the pending command string itself.
@@ -7979,7 +7977,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             elif command_arg_pending or shell_c_pending:
                 redir = _REDIRECTION_RE.match(token)
                 if redir:
-                    # Quoted (`bash -c '>out rm -rf x'`) it is the command string: screen it as one too.
+                    # Quoted (`bash -c '>out rm -rf x'`) it is the command string itself.
                     readings = [token, " ".join(tokens[_tok_idx:])] if shell_c_pending else [token]
                     if _depth >= 3 or any(_terminal_is_high_risk(r, _depth + 1) for r in readings):
                         return True
@@ -8388,7 +8386,6 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 and _REDIRECTION_RE.match(token)
                 and not script_operand_seen
             ):
-                # `script 2>err log -qc CMD`: a redirection is not the log file operand.
                 if unquoted_redirs is False:
                     unquoted_redirs = _unquoted_redirection_indexes(text, tokens)
                 if unquoted_redirs is not None and _tok_idx in unquoted_redirs:
@@ -8397,8 +8394,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     script_operand_seen = True
                     scan_forward = True
             elif current_command == "script" and not script_operand_seen:
-                # util-linux permutes argv, so options after the log file still count; on BSD/macOS
-                # (`script [opts] file command ...`) the next word is a command, judged like xargs'.
+                # util-linux permutes argv; BSD/macOS `script file command ...` runs the words after it.
                 script_operand_seen = True
                 scan_forward = True
             elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
