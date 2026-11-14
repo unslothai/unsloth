@@ -977,6 +977,11 @@ export const vi = {
     ggufDetectorsOnly:
       "Chế độ giọng nói chỉ phát hiện lời nói bằng các bộ phát hiện âm thanh GGUF.",
     cantListenWith: "Chế độ giọng nói chưa thể lắng nghe bằng mô hình đó.",
+    chatModelVoice: "Giọng của mô hình chat",
+    chatModelVoiceHint: "Nghe bạn và trả lời bằng giọng của chính nó",
+    chatModelCannotSpeak: "Mô hình chat không thể trả lời bằng giọng nói. Hãy tải LFM3-Audio-2B hoặc LFM3-Omni-2B, hoặc chọn giọng khác.",
+    speakerFemale: "Nữ",
+    speakerMale: "Nam",
   },
   welcome: {
     goodToSeeYou: "Rất vui được gặp bạn",
@@ -6270,12 +6275,5 @@ export const vi = {
       inVram: "{amount} trong VRAM",
       inRam: "{amount} trong RAM",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "Giọng của mô hình chat",
-    chatModelVoiceHint: "Nghe bạn và trả lời bằng giọng của chính nó",
-    chatModelCannotSpeak: "Mô hình chat không thể trả lời bằng giọng nói. Hãy tải LFM3-Audio-2B hoặc LFM3-Omni-2B, hoặc chọn giọng khác.",
-    speakerFemale: "Nữ",
-    speakerMale: "Nam",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

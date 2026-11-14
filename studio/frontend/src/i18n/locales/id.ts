@@ -973,6 +973,11 @@ export const id = {
     ggufDetectorsOnly:
       "Mode suara hanya mendeteksi ucapan dengan detektor audio GGUF.",
     cantListenWith: "Mode suara belum dapat mendengarkan dengan model itu.",
+    chatModelVoice: "Suara model chat",
+    chatModelVoiceHint: "Mendengarmu dan menjawab dengan suaranya sendiri",
+    chatModelCannotSpeak: "Model chat tidak bisa menjawab dengan suara. Muat LFM3-Audio-2B atau LFM3-Omni-2B, atau pilih suara lain.",
+    speakerFemale: "Perempuan",
+    speakerMale: "Laki-laki",
   },
   welcome: {
     goodToSeeYou: "Senang bertemu Anda",
@@ -6271,12 +6276,5 @@ export const id = {
       inVram: "{amount} di VRAM",
       inRam: "{amount} di RAM",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "Suara model chat",
-    chatModelVoiceHint: "Mendengarmu dan menjawab dengan suaranya sendiri",
-    chatModelCannotSpeak: "Model chat tidak bisa menjawab dengan suara. Muat LFM3-Audio-2B atau LFM3-Omni-2B, atau pilih suara lain.",
-    speakerFemale: "Perempuan",
-    speakerMale: "Laki-laki",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

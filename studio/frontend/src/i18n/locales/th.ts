@@ -927,6 +927,11 @@ export const th = {
     ggufDetectorsOnly:
       "โหมดเสียงตรวจจับเสียงพูดได้ด้วยตัวตรวจจับเสียง GGUF เท่านั้น",
     cantListenWith: "โหมดเสียงยังฟังด้วยโมเดลนั้นไม่ได้",
+    chatModelVoice: "เสียงของโมเดลแชท",
+    chatModelVoiceHint: "ฟังคุณและตอบด้วยเสียงของตัวเอง",
+    chatModelCannotSpeak: "โมเดลแชทตอบเป็นเสียงพูดไม่ได้ โหลด LFM3-Audio-2B หรือ LFM3-Omni-2B หรือเลือกเสียงอื่น",
+    speakerFemale: "หญิง",
+    speakerMale: "ชาย",
   },
   welcome: {
     goodToSeeYou: "ยินดีที่ได้พบคุณ",
@@ -5988,12 +5993,5 @@ export const th = {
       inVram: "{amount} ใน VRAM",
       inRam: "{amount} ใน RAM",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "เสียงของโมเดลแชท",
-    chatModelVoiceHint: "ฟังคุณและตอบด้วยเสียงของตัวเอง",
-    chatModelCannotSpeak: "โมเดลแชทตอบเป็นเสียงพูดไม่ได้ โหลด LFM3-Audio-2B หรือ LFM3-Omni-2B หรือเลือกเสียงอื่น",
-    speakerFemale: "หญิง",
-    speakerMale: "ชาย",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

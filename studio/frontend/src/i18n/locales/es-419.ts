@@ -980,6 +980,11 @@ export const es419 = {
     ggufDetectorsOnly:
       "El modo de voz solo detecta el habla con los detectores de audio GGUF.",
     cantListenWith: "El modo de voz todavía no puede escuchar con ese modelo.",
+    chatModelVoice: "Voz del modelo de chat",
+    chatModelVoiceHint: "Te escucha y responde con su propia voz",
+    chatModelCannotSpeak: "El modelo de chat no puede responder con voz. Carga LFM3-Audio-2B o LFM3-Omni-2B, o elige otra voz.",
+    speakerFemale: "Femenina",
+    speakerMale: "Masculina",
   },
   welcome: {
     goodToSeeYou: "Me alegra verte",
@@ -6357,12 +6362,5 @@ export const es419 = {
       inVram: "{amount} en VRAM",
       inRam: "{amount} en RAM",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "Voz del modelo de chat",
-    chatModelVoiceHint: "Te escucha y responde con su propia voz",
-    chatModelCannotSpeak: "El modelo de chat no puede responder con voz. Carga LFM3-Audio-2B o LFM3-Omni-2B, o elige otra voz.",
-    speakerFemale: "Femenina",
-    speakerMale: "Masculina",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

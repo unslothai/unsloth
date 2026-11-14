@@ -970,6 +970,11 @@ export const tr = {
     ggufDetectorsOnly:
       "Ses modu konuşmayı yalnızca GGUF ses algılayıcılarıyla algılar.",
     cantListenWith: "Ses modu henüz bu modelle dinleyemiyor.",
+    chatModelVoice: "Sohbet modelinin sesi",
+    chatModelVoiceHint: "Sizi duyar ve kendi sesiyle yanıt verir",
+    chatModelCannotSpeak: "Sohbet modeli sesli yanıt veremiyor. LFM3-Audio-2B veya LFM3-Omni-2B yükleyin ya da başka bir ses seçin.",
+    speakerFemale: "Kadın",
+    speakerMale: "Erkek",
   },
   welcome: {
     goodToSeeYou: "Sizi görmek güzel",
@@ -6266,12 +6271,5 @@ export const tr = {
       inVram: "{amount} VRAM'de",
       inRam: "{amount} RAM'de",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "Sohbet modelinin sesi",
-    chatModelVoiceHint: "Sizi duyar ve kendi sesiyle yanıt verir",
-    chatModelCannotSpeak: "Sohbet modeli sesli yanıt veremiyor. LFM3-Audio-2B veya LFM3-Omni-2B yükleyin ya da başka bir ses seçin.",
-    speakerFemale: "Kadın",
-    speakerMale: "Erkek",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -971,6 +971,11 @@ export const fa = {
     ggufDetectorsOnly:
       "حالت صوتی گفتار را فقط با آشکارسازهای صوتی GGUF تشخیص می‌دهد.",
     cantListenWith: "حالت صوتی هنوز نمی‌تواند با آن مدل گوش دهد.",
+    chatModelVoice: "صدای مدل گفتگو",
+    chatModelVoiceHint: "صدای شما را می‌شنود و با صدای خودش پاسخ می‌دهد",
+    chatModelCannotSpeak: "مدل گفتگو نمی‌تواند با گفتار پاسخ دهد. LFM3-Audio-2B یا LFM3-Omni-2B را بارگیری کنید یا صدای دیگری انتخاب کنید.",
+    speakerFemale: "زن",
+    speakerMale: "مرد",
   },
   welcome: {
     goodToSeeYou: "از دیدنتان خوشحالیم",
@@ -6234,12 +6239,5 @@ export const fa = {
       inVram: "{amount} در VRAM",
       inRam: "{amount} در RAM",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "صدای مدل گفتگو",
-    chatModelVoiceHint: "صدای شما را می‌شنود و با صدای خودش پاسخ می‌دهد",
-    chatModelCannotSpeak: "مدل گفتگو نمی‌تواند با گفتار پاسخ دهد. LFM3-Audio-2B یا LFM3-Omni-2B را بارگیری کنید یا صدای دیگری انتخاب کنید.",
-    speakerFemale: "زن",
-    speakerMale: "مرد",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

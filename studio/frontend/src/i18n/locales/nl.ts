@@ -984,6 +984,11 @@ export const nl = {
     ggufDetectorsOnly:
       "Spraakmodus detecteert spraak alleen met de GGUF-audiodetectoren.",
     cantListenWith: "Spraakmodus kan nog niet luisteren met dat model.",
+    chatModelVoice: "Stem van het chatmodel",
+    chatModelVoiceHint: "Hoort je en antwoordt met een eigen stem",
+    chatModelCannotSpeak: "Het chatmodel kan niet met spraak antwoorden. Laad LFM3-Audio-2B of LFM3-Omni-2B, of kies een andere stem.",
+    speakerFemale: "Vrouwelijk",
+    speakerMale: "Mannelijk",
   },
   welcome: {
     goodToSeeYou: "Fijn je te zien",
@@ -6327,12 +6332,5 @@ export const nl = {
       inVram: "{amount} in VRAM",
       inRam: "{amount} in RAM",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "Stem van het chatmodel",
-    chatModelVoiceHint: "Hoort je en antwoordt met een eigen stem",
-    chatModelCannotSpeak: "Het chatmodel kan niet met spraak antwoorden. Laad LFM3-Audio-2B of LFM3-Omni-2B, of kies een andere stem.",
-    speakerFemale: "Vrouwelijk",
-    speakerMale: "Mannelijk",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

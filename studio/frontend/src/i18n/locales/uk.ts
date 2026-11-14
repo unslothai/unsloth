@@ -981,6 +981,11 @@ export const uk = {
       "Голосовий режим розпізнає мовлення лише аудіодетекторами GGUF.",
     cantListenWith:
       "Голосовий режим поки що не може слухати за допомогою цієї моделі.",
+    chatModelVoice: "Голос чат-моделі",
+    chatModelVoiceHint: "Чує вас і відповідає власним голосом",
+    chatModelCannotSpeak: "Чат-модель не вміє відповідати голосом. Завантажте LFM3-Audio-2B або LFM3-Omni-2B чи виберіть інший голос.",
+    speakerFemale: "Жіночий",
+    speakerMale: "Чоловічий",
   },
   welcome: {
     goodToSeeYou: "Радий вас бачити",
@@ -6313,12 +6318,5 @@ export const uk = {
       inVram: "{amount} у VRAM",
       inRam: "{amount} у RAM",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "Голос чат-моделі",
-    chatModelVoiceHint: "Чує вас і відповідає власним голосом",
-    chatModelCannotSpeak: "Чат-модель не вміє відповідати голосом. Завантажте LFM3-Audio-2B або LFM3-Omni-2B чи виберіть інший голос.",
-    speakerFemale: "Жіночий",
-    speakerMale: "Чоловічий",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

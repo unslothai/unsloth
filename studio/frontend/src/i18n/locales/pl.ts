@@ -982,6 +982,11 @@ export const pl = {
       "Tryb głosowy wykrywa mowę wyłącznie detektorami audio GGUF.",
     cantListenWith:
       "Tryb głosowy nie potrafi jeszcze słuchać za pomocą tego modelu.",
+    chatModelVoice: "Głos modelu czatu",
+    chatModelVoiceHint: "Słyszy cię i odpowiada własnym głosem",
+    chatModelCannotSpeak: "Model czatu nie potrafi odpowiadać mową. Załaduj LFM3-Audio-2B lub LFM3-Omni-2B albo wybierz inny głos.",
+    speakerFemale: "Żeński",
+    speakerMale: "Męski",
   },
   welcome: {
     goodToSeeYou: "Miło Cię widzieć",
@@ -6321,12 +6326,5 @@ export const pl = {
       inVram: "{amount} w VRAM",
       inRam: "{amount} w RAM",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "Głos modelu czatu",
-    chatModelVoiceHint: "Słyszy cię i odpowiada własnym głosem",
-    chatModelCannotSpeak: "Model czatu nie potrafi odpowiadać mową. Załaduj LFM3-Audio-2B lub LFM3-Omni-2B albo wybierz inny głos.",
-    speakerFemale: "Żeński",
-    speakerMale: "Męski",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

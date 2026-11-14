@@ -975,6 +975,11 @@ export const cs = {
     ggufDetectorsOnly:
       "Hlasový režim rozpoznává řeč pouze zvukovými detektory GGUF.",
     cantListenWith: "Hlasový režim zatím s tímto modelem neumí poslouchat.",
+    chatModelVoice: "Hlas chatovacího modelu",
+    chatModelVoiceHint: "Slyší vás a odpovídá vlastním hlasem",
+    chatModelCannotSpeak: "Chatovací model neumí odpovídat řečí. Načtěte LFM3-Audio-2B nebo LFM3-Omni-2B, nebo vyberte jiný hlas.",
+    speakerFemale: "Ženský",
+    speakerMale: "Mužský",
   },
   welcome: {
     goodToSeeYou: "Je fajn vás vidět",
@@ -6283,12 +6288,5 @@ export const cs = {
       inVram: "{amount} ve VRAM",
       inRam: "{amount} v RAM",
     },
-  },
-  voicePanel: {
-    chatModelVoice: "Hlas chatovacího modelu",
-    chatModelVoiceHint: "Slyší vás a odpovídá vlastním hlasem",
-    chatModelCannotSpeak: "Chatovací model neumí odpovídat řečí. Načtěte LFM3-Audio-2B nebo LFM3-Omni-2B, nebo vyberte jiný hlas.",
-    speakerFemale: "Ženský",
-    speakerMale: "Mužský",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
