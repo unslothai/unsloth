@@ -522,6 +522,20 @@ def test_packed_fp4_expert_checkpoints_are_not_armed(monkeypatch):
     assert config.quantization_config["quant_method"] == "fp8"
 
 
+@needs_feature
+def test_a_packed_fp4_release_says_it_keeps_the_released_weights(monkeypatch, capsys):
+    # DeepSeek-V4.1's release: fp8 32x32 ue8m0 linears, fp4 experts. An explicit load_in_4bit keeps them.
+    from unsloth.models import fp8_to_nf4
+
+    monkeypatch.setattr(fp8_to_nf4, "explicit_4bit_requested", lambda: True)
+    config = _fp8_config()
+    config.quantization_config.update(expert_dtype = "fp4", scale_fmt = "ue8m0")
+    assert fp8_to_nf4.maybe_arm_fp8_to_nf4(config, True, False, verbose = True) is False
+    out = capsys.readouterr().out
+    assert "FP4 (4-bit)" in out and "keeps them as released" in out
+    assert config.quantization_config["quant_method"] == "fp8"
+
+
 @pytest.mark.parametrize("shape", [(256, 384), (320, 256), (192, 200), (3, 320, 192)])
 def test_block_dequant_matches_reference_formula(shape):
     torch.manual_seed(1)

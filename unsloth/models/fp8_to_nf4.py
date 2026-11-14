@@ -257,11 +257,15 @@ def maybe_arm_fp8_to_nf4(
             )
         return False
     if str(quant.get("expert_dtype") or "").lower() in _PACKED_EXPERT_DTYPES:
-        # DeepSeek-V4-Flash: fp8 attention, packed FP4 experts. Not handled here.
+        # DeepSeek-V4 / V4.1 releases: fp8 linears, experts already packed to 4 bits. The release stays the frozen
+        # base (published formats are kept: FP4 -> NF4 would round the experts twice).
         if verbose and explicit_4bit_requested():
+            expert_dtype = str(quant.get("expert_dtype")).upper()
             print(
-                "Unsloth: this fp8 checkpoint packs its experts in FP4, which the fp8 -> 4bit load does "
-                "not handle. Loading it as it is."
+                f"Unsloth: this checkpoint already stores its experts in {expert_dtype} (4-bit) and its other "
+                f"Linear layers in fp8. `load_in_4bit = True` keeps them as released: LoRA trains on top of the "
+                f"frozen fp8 / {expert_dtype} weights, about the memory of a 4-bit load, without rounding the "
+                f"experts a second time."
             )
         return False
     mode = os.environ.get(_ENV, "").strip().lower()

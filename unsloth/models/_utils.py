@@ -10305,8 +10305,9 @@ def _prepare_model_for_qat(
     unowned_require_grads = _unowned_require_grads_hooks(all_embeddings)
     embedding_subclasses = _embedding_subclasses(model)
     _check_offloaded_embeddings(embedding_subclasses, torchao_config.base_config_and_filter_fns)
+    skip_grouped = _qat_grouped_linear_guard(model, torchao_config)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
-        quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
+        quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = skip_grouped(filter_fn))
     _restore_fake_quantized_embedding_subclasses(model, embedding_subclasses)
     _reinstall_input_require_grads(require_grads_owners)
     _reregister_unowned_require_grads_hooks(model, all_embeddings, unowned_require_grads)
@@ -10314,6 +10315,43 @@ def _prepare_model_for_qat(
     _record_qat_engagement(model, torchao_config)
 
     return model
+
+
+def _qat_grouped_linear_guard(model, torchao_config):
+    """Block-diagonal grouped Linears (DeepSeek-V4 / V4.1 `o_a_proj`: `n_groups` + own forward) stay in full
+    precision: torchao swaps a matched Linear for a dense fake-quantized one, which drops `n_groups` and the
+    grouped matmul (GroupedLinearLoRA then fails on the first forward). Returns a filter wrapper; a None filter
+    keeps torchao's default Linear filter."""
+    try:
+        from .grouped_linear_lora import is_grouped_linear
+    except Exception:
+        return lambda filter_fn: filter_fn
+    grouped = {
+        id(module): name
+        for name, module in model.named_modules()
+        if not _is_lora_adapter_name(name) and is_grouped_linear(module)
+    }
+    if not grouped:
+        return lambda filter_fn: filter_fn
+    scheme = getattr(torchao_config, "qat_scheme", None)
+    names = sorted(grouped.values())
+    warnings.warn(
+        f"Unsloth: qat_scheme='{scheme if isinstance(scheme, str) else 'custom'}' keeps these grouped "
+        "(block-diagonal) Linear layers in full precision: "
+        + ", ".join(names[:8])
+        + (f", ... ({len(names) - 8} more)" if len(names) > 8 else ""),
+        stacklevel = 3,
+    )
+    try:
+        from torchao.quantization.quant_api import _is_linear as default_filter
+    except Exception:
+        default_filter = lambda module, fqn: isinstance(module, torch.nn.Linear)
+
+    def skip_grouped(filter_fn):
+        inner = default_filter if filter_fn is None else filter_fn
+        return lambda module, fqn: id(module) not in grouped and inner(module, fqn)
+
+    return skip_grouped
 
 
 def _record_qat_engagement(model, torchao_config):
