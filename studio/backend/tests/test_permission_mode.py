@@ -1132,6 +1132,9 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("script -q session.log", False),
         ("script -q /dev/null make test", False),
         ("script session.log > /dev/null", False),
+        ("trap 'echo done' EXIT; echo \"don't\"", False),
+        ("trap 'echo done' EXIT; python3 -c 'import json; print(1)'", False),
+        ("script -q session.log python3 -c 'import json; print(1)'", False),
     ],
 )
 def test_command_string_run_by_trap_or_script_is_screened(command, high_risk):

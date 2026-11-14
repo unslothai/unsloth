@@ -7824,6 +7824,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         current_command = ""  # the resolved command whose flags / git subcommand we judge
         git_subcommand = ""  # the first positional after `git`
         shell_c_pending = False  # a shell `-c` precedes its inline payload
+        trap_handler_pending = False  # `trap` precedes its handler string
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
         git_checkout_positionals = 0  # positionals seen after `git checkout`
@@ -7864,6 +7865,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_submodule_action = ""
                 awk_program_pending = False
                 shell_c_pending = False
+                trap_handler_pending = False
                 git_glob_pending = False
                 chdir_pending = False
                 continue
@@ -8084,6 +8086,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if current_command in _CMD_SHELLS and raw.lower() in ("/c", "/k"):
                 shell_c_pending = True
                 continue
+            # `trap ARG SIGNAL...` later runs ARG alone, not the signals or the commands after it.
+            if trap_handler_pending:
+                trap_handler_pending = False
+                if _depth >= 3 or _terminal_is_high_risk(token, _depth + 1):
+                    return True
+                continue
             # The payload of a shell `-c`, screened recursively (bounded depth).
             if shell_c_pending:
                 shell_c_pending = False
@@ -8170,8 +8178,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     scan_forward = False
                 # Remember the resolved command so its own flags (python -c), git subcommand or chdir target are judged.
                 current_command = base
-                if base == "trap":
-                    shell_c_pending = True
+                trap_handler_pending = base == "trap"
                 if base in _CHDIR_COMMANDS:
                     chdir_pending = True
                 if base in _AWK_COMMANDS:
@@ -8271,7 +8278,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         continue
                     script_argv.append(rest)
                 if script_argv and (
-                    _depth >= 3 or _terminal_is_high_risk(" ".join(script_argv), _depth + 1)
+                    _depth >= 3 or _terminal_is_high_risk(shlex.join(script_argv), _depth + 1)
                 ):
                     return True
             elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
