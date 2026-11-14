@@ -26,6 +26,8 @@ class _FakeExternalClient:
         self.provider_type = kwargs.get("provider_type")
 
     def stream_chat_completion(self, **kwargs):
+        _FakeExternalClient.last["request"] = kwargs
+
         async def gen():
             yield "data: [DONE]\n\n"
 
@@ -234,3 +236,37 @@ def test_custom_mixed_tools_keep_local_search_and_scope_hosted_tools(
     )
     assert "web_search" in transport._selected_local_tool_names
     assert transport._request_kwargs["enabled_tools"] == expected_hosted_tools
+
+
+@pytest.fixture
+def _memory_on(monkeypatch):
+    from core import chat_memory
+    monkeypatch.setattr(chat_memory, "thread_context", lambda thread_id: {"projectId": None})
+    monkeypatch.setattr(chat_memory, "offer", lambda thread_id: [chat_memory.TOOL])
+
+
+def _proxy(monkeypatch, **overrides):
+    inf = _install(monkeypatch, "openai")
+
+    async def go():
+        resp = await inf._proxy_to_external_provider(
+            _payload(thread_id = "saved-chat", **overrides), _request(), current_subject = "t"
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    _drive(go())
+    return _FakeExternalClient.last["request"]
+
+
+@pytest.mark.parametrize("enable_tools", [False, None])
+def test_memory_keeps_the_client_tool_catalog(monkeypatch, _memory_on, enable_tools):
+    catalog = [{"type": "function", "function": {"name": "client_weather", "parameters": {}}}]
+    choice = {"type": "function", "function": {"name": "client_weather"}}
+    sent = _proxy(monkeypatch, enable_tools = enable_tools, tools = catalog, tool_choice = choice)
+    assert sent["tools"] == catalog
+    assert sent["tool_choice"] == choice
+
+
+def test_memory_keeps_hosted_search_with_the_provider(monkeypatch, _memory_on):
+    sent = _proxy(monkeypatch, enabled_tools = ["web_search"])
+    assert sent["enabled_tools"] == ["web_search"]

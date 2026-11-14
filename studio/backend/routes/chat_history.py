@@ -2315,3 +2315,13 @@ def export_history(current_subject: str = Depends(get_current_subject)):
         threads = [thread_from_row(thread) for thread in threads],
         messages = [ChatMessage(**message) for message in messages],
     )
+
+
+@router.get("/memory-context")
+def get_memory_context(
+    thread_id: str,
+    context_length: int = Query(4096, ge = 1, le = 10000000),
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.chat_memory import context
+    return context(thread_id, context_length)

@@ -2950,6 +2950,62 @@ class TestResponsesStreamAdapter:
         assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
         assert "we said 3407" in json.dumps(captured["body"]["messages"])
 
+    def test_saved_memory_reaches_the_direct_stream(self, monkeypatch):
+        import routes.inference as inf_mod
+        from core import chat_memory
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            content = 'data: {"choices": [{"delta": {"content": "ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(
+                200, content = content.encode(), headers = {"content-type": "text/event-stream"}
+            )
+
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            inf_mod.httpx,
+            "AsyncClient",
+            lambda *a, **kw: real_async_client(transport = httpx.MockTransport(handler)),
+        )
+        monkeypatch.setattr(
+            inf_mod,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                context_length = 4096,
+                base_url = "http://llama.test",
+                supports_tools = False,
+                supports_tool_passthrough = False,
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            chat_memory,
+            "context",
+            lambda thread_id, limit: {
+                "text": "remembered: tabs" if thread_id else "",
+                "omitted": 0,
+            },
+        )
+        payload = ResponsesRequest.model_validate(
+            {"input": "hi", "stream": True, "model": "org/M-GGUF", "thread_id": "saved"}
+        )
+
+        async def run():
+            response = await _responses_stream(
+                payload, [ChatMessage(role = "user", content = "hi")], self._Request()
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        assert "remembered: tabs" in json.dumps(captured["body"]["messages"])
+
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
         import routes.inference as inf_mod
 

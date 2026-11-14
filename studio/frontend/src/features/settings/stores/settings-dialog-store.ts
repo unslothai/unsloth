@@ -38,6 +38,7 @@ export type SettingsScrollTarget =
   | "api-keys-mcp"
   | "appearance-sidebar-nav"
   | "chat-composer"
+  | "chat-memory"
   | "browser-html-network"
   | "general-hub"
   | "general-rag-embedding"
@@ -182,6 +183,7 @@ function loadInitialTab(): SettingsTab {
 /** A navigation elsewhere abandons the scroll target. */
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "chat-composer": "chat",
+  "chat-memory": "chat",
   "about-updates": "about",
   "agents-mcp": "agents",
   "api-keys-audio-api": "api-keys",

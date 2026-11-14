@@ -4590,6 +4590,24 @@ def _sf_parse_think_markers(
     return _resolved_kwargs_think(None, resolved)
 
 
+def _memory_tool_requested(payload) -> bool:
+    """Saved memory may add a tool only when the caller has no client-owned contract."""
+    if (
+        getattr(payload, "tools", None)
+        or getattr(payload, "tool_choice", None) == "none"
+        or (getattr(payload, "n", None) or 1) > 1
+        or _response_format_constrains_decoding(payload)
+        or (
+            _has_openai_tool_history(getattr(payload, "messages", None) or [])
+            and not _only_studio_tool_history(payload)
+        )
+    ):
+        return False
+    from core.chat_memory import thread_context
+
+    return thread_context(getattr(payload, "thread_id", None)) is not None
+
+
 def _effective_enable_tools(payload) -> Optional[bool]:
     """An explicit enable_tools false beats the launcher default; a CLI policy override outranks it."""
     from state.tool_policy import get_tool_policy, get_tool_policy_default
@@ -4597,6 +4615,8 @@ def _effective_enable_tools(payload) -> Optional[bool]:
     policy = get_tool_policy()
     if policy is not None:
         return policy
+    if _memory_tool_requested(payload):
+        return True
     if payload.enable_tools is None:
         return get_tool_policy_default()
     return payload.enable_tools
@@ -4653,7 +4673,9 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     from state.tool_policy import get_tool_policy
 
     policy = get_tool_policy()
-    return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
+    return policy is not False and (
+        payload.enable_tools is True or bool(payload.mcp_enabled) or _memory_tool_requested(payload)
+    )
 
 
 def _selects_only_provider_hosted_tools(
@@ -6252,6 +6274,29 @@ async def _select_request_tools(
         if not tools_on:
             # After a reset, offer search_conversation ALONE: models guess tool names in big catalogs.
             tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
+    from core.chat_memory import offer
+
+    memory_tools = (
+        offer(getattr(payload, "thread_id", None))
+        if tools_on and _memory_tool_requested(payload)
+        else []
+    )
+    if memory_tools:
+        from state.tool_policy import get_tool_policy, get_tool_policy_default
+
+        policy = get_tool_policy()
+        base_tools = (
+            policy
+            if policy is not None
+            else (
+                payload.enable_tools
+                if payload.enable_tools is not None
+                else get_tool_policy_default()
+            )
+        )
+        if not base_tools:
+            tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
+    tools += memory_tools
     tools = _tools_for_search_images(tools)
     # Before the MCP append: Full access says nothing about how an MCP server runs.
     if payload.bypass_permissions:
@@ -32221,6 +32266,9 @@ async def produce_openai_chat_completions(
     cancel_on_disconnect: bool,
 ):
     """GGUF models route to llama-server, others to the transformers backend; stream defaults to false."""
+    from core.chat_memory import apply_to_request
+
+    apply_to_request(payload, _monitor_context_length())
     request = _DisconnectPolicyRequest(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
@@ -42146,6 +42194,12 @@ async def _responses_stream(
         if _folds_studio_tool_history(chat_req, llama_backend):
             chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
 
+        # Facts only: this passthrough has no tool loop to offer update_memory.
+        from core.chat_memory import apply_to_request
+
+        chat_req.thread_id = getattr(payload, "thread_id", None)
+        apply_to_request(chat_req, llama_backend.context_length)
+
         # Streaming /v1/responses builds the passthrough body directly (bypassing
         # openai_chat_completions), so apply recommended sampling here too.
         _fill_recommended_sampling_openai(
@@ -43766,6 +43820,11 @@ async def chat_count_tokens(
     ):
         raise HTTPException(status_code = 404, detail = "Model not found")
     # Admitted only while idle, not atomic by design; also blocks second-tab and /api runs the UI misses.
+    if all(message.role in ("system", "developer") for message in payload.messages):
+        payload.messages = [*payload.messages, ChatMessage(role = "user", content = "")]
+    from core.chat_memory import apply_to_request
+
+    apply_to_request(payload, _monitor_context_length())
     await _route_to_extra_slot(payload.model)
     if model_slots.routed_generation_count() > 0:
         raise HTTPException(
