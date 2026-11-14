@@ -891,7 +891,7 @@ export function Q4nxConvertCard({
   );
 
   const settingsPage = (
-    <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
+    <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter, 0),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
       <div className="flex flex-col" data-testid="q4nx-convert-settings">
         <div className="flex items-center gap-2.5 pb-5">
           <button
