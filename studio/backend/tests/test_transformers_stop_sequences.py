@@ -336,39 +336,67 @@ def test_a_cleanup_rewrite_split_across_tokens_still_matches_a_stop(pieces, rule
     assert stop not in "".join(wrapped)
 
 
+class _ByteFallbackTokenizer(_Tokenizer):
+    pieces = {2: "Hi ", 3: b"\xf0", 4: b"\x9f", 5: b"\x99", 6: b"\x82"}
+    pieces.update({7: b"\xf0", 8: b"\x9f", 9: b"\x99", 10: b"\x83", 11: " done"})
+
+    def decode(self, ids, **kwargs):
+        # Like SentencePiece byte fallback: an unfinished byte run is all replacements.
+        out, run = [], b""
+        for token in ids:
+            piece = self.pieces[int(token)]
+            if isinstance(piece, bytes):
+                run += piece
+                continue
+            out += [self._flush(run), piece]
+            run = b""
+        return "".join(out + [self._flush(run)])
+
+    @staticmethod
+    def _flush(run):
+        try:
+            return run.decode("utf-8")
+        except UnicodeDecodeError:
+            return "\ufffd" * len(run)
+
+
 def test_an_unfinished_byte_run_is_not_settled_before_it_completes():
     inf = pytest.importorskip("core.inference.inference")
     torch = pytest.importorskip("torch")
-
-    class Tokenizer(_Tokenizer):
-        pieces = {2: "Hi ", 3: b"\xf0", 4: b"\x9f", 5: b"\x99", 6: b"\x82"}
-        pieces.update({7: b"\xf0", 8: b"\x9f", 9: b"\x99", 10: b"\x83", 11: " done"})
-
-        def decode(self, ids, **kwargs):
-            # Like SentencePiece byte fallback: an unfinished byte run is all replacements.
-            out, run = [], b""
-            for token in ids:
-                piece = self.pieces[int(token)]
-                if isinstance(piece, bytes):
-                    run += piece
-                    continue
-                out += [self._flush(run), piece]
-                run = b""
-            return "".join(out + [self._flush(run)])
-
-        @staticmethod
-        def _flush(run):
-            try:
-                return run.decode("utf-8")
-            except UnicodeDecodeError:
-                return "\ufffd" * len(run)
-
-    streamer = inf.TextIteratorStreamer(Tokenizer(), skip_prompt = False)
+    streamer = inf.TextIteratorStreamer(_ByteFallbackTokenizer(), skip_prompt = False)
     wrapped = inf._StopSequenceStreamer(streamer, ["never"])
     for token in range(2, 12):
         wrapped.put(torch.tensor([token]))
     wrapped.end()
     assert "".join(wrapped) == "Hi \U0001f642\U0001f643 done"
+
+
+def test_hidden_stop_after_an_unfinished_byte_run_keeps_the_full_decode():
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+
+    class Tokenizer(_ByteFallbackTokenizer):
+        def convert_tokens_to_ids(self, token):
+            return 12 if token == "[EOS]" else None
+
+        def decode(
+            self,
+            ids,
+            skip_special_tokens = True,
+            **kwargs,
+        ):
+            if not skip_special_tokens and list(ids) == [12]:
+                return "[EOS]"
+            return super().decode([i for i in ids if int(i) != 12])
+
+    tokenizer = Tokenizer()
+    streamer = inf.TextIteratorStreamer(tokenizer, skip_prompt = False, skip_special_tokens = True)
+    wrapped = inf._StopSequenceStreamer(streamer, ["[EOS]"])
+    for token in (2, 3, 4, 5, 6, 7, 12, 11):
+        wrapped.put(torch.tensor([token]))
+    wrapped.end()
+    assert wrapped.matched.is_set()
+    assert "".join(wrapped) == tokenizer.decode([2, 3, 4, 5, 6, 7])
 
 
 def test_stop_matching_decodes_a_bounded_window_per_token():

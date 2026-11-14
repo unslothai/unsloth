@@ -639,6 +639,9 @@ class _StopSequenceStreamer:
         start = self.scan_from
         cut, matched = _mlx_stop_cut(self.text[start:], self.sequences)
         if token_matched and not matched:
+            if self.read_offset < len(self.token_ids):
+                # As end() does on a natural EOS: unresolved bytes still belong to the reply.
+                self.text = self._decode(self.token_ids)
             cut = len(self.text) - start
         matched = matched or token_matched
         self.cut = start + cut
