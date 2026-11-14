@@ -8,8 +8,10 @@ import {
   type NpuModel,
   NpuSetupNotice,
   npuCapabilities,
+  npuDisplayName,
   npuDownloadLabel,
   npuMemoryWarning,
+  npuRepoLabel,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -89,7 +91,10 @@ function NpuCatalogRow({
   onSelect: () => void;
   onRun: () => void;
 }) {
+  const name = npuDisplayName(model);
+  const repo = npuRepoLabel(model);
   const details = [
+    repo.includes("/") ? repo.slice(0, repo.indexOf("/")) : null,
     model.checkpoint,
     npuSizeLabel(model.size_gb),
     ...npuCapabilities(model).map((capability) => capability.label),
@@ -116,7 +121,7 @@ function NpuCatalogRow({
       />
       <div className="pointer-events-none relative min-w-0 flex-1">
         <div className="truncate text-ui-13 font-medium text-foreground">
-          {model.id}
+          {name}
         </div>
         <div className="truncate text-ui-12 text-muted-foreground">
           {details.join(" · ")}
@@ -153,7 +158,7 @@ export function NpuModelActions({
     setDeleting(true);
     try {
       await catalog.remove(model);
-      toast.success(`Deleted ${model.id}`);
+      toast.success(`Deleted ${npuDisplayName(model)}`);
       setConfirming(false);
     } catch (error) {
       toast.error(
@@ -220,7 +225,7 @@ export function NpuModelActions({
       <DeleteConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}
-        title={`Delete ${model.id}?`}
+        title={`Delete ${npuDisplayName(model)}?`}
         description="This removes the model's NPU files from this device."
         deleting={deleting}
         onConfirm={() => void remove()}

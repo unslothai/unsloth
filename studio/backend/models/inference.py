@@ -266,6 +266,28 @@ class LoadRequest(BaseModel):
     _mlx_offload_amounts = field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")(
         _mlx_offload_amount
     )
+    # Untyped so pydantic can't coerce JSON true to 1; npu_flm_args.py validates (400).
+    npu_power_mode: Optional[str] = Field(
+        None,
+        description = (
+            "AMD NPU only: FastFlowLM power mode, one of default, powersaver, balanced, "
+            "performance or turbo. Null or default leaves FastFlowLM's own. Changing it reloads."
+        ),
+    )
+    npu_prefill_chunk_len: Optional[Any] = Field(
+        None,
+        description = (
+            "AMD NPU only: tokens FastFlowLM reads per prefill step, capped at the context length. "
+            "Null leaves FastFlowLM's default. Changing it reloads."
+        ),
+    )
+    npu_img_pre_resize: Optional[Any] = Field(
+        None,
+        description = (
+            "AMD NPU vision models only: FastFlowLM image pre-resize level, 0 (original size) to 4. "
+            "Null leaves FastFlowLM's default. Changing it reloads."
+        ),
+    )
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -1889,6 +1911,16 @@ class _InferenceRuntimeFields(BaseModel):
     is_npu: bool = Field(
         False,
         description = "Whether the active model runs on the AMD Ryzen AI NPU (FastFlowLM through Lemonade)",
+    )
+    npu_power_mode: Optional[str] = Field(
+        None,
+        description = "FastFlowLM power mode the NPU load asked for; null is FastFlowLM's default",
+    )
+    npu_prefill_chunk_len: Optional[int] = Field(
+        None, description = "FastFlowLM prefill chunk length the NPU load used"
+    )
+    npu_img_pre_resize: Optional[int] = Field(
+        None, description = "FastFlowLM image pre-resize level the NPU load asked for"
     )
     mlx_kv_quant: Optional[str] = Field(
         None, description = "MLX KV cache quantization actually applied, in mlx_kv_quant's vocabulary"

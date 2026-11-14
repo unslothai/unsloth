@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
+import { npuSearchText } from "./display-name";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
 
@@ -82,7 +83,7 @@ export function npuRowsFor(
       (model) =>
         (!onDevice || model.downloaded) &&
         (!needle ||
-          `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
+          npuSearchText(model).toLowerCase().includes(needle)),
     )
     .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
 }
@@ -268,6 +269,21 @@ export async function cancelNpuModelDownload(id: string): Promise<void> {
       await readFastApiError(response, "Could not cancel the download"),
     );
   }
+}
+
+export async function deleteNpuModelByCheckpoint(
+  checkpoint: string,
+): Promise<string> {
+  const response = await authFetch(
+    `/api/npu/checkpoints/${encodeURIComponent(checkpoint)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Could not delete the model"),
+    );
+  }
+  return ((await response.json()) as { model: string }).model;
 }
 
 export async function downloadNpuModel(
