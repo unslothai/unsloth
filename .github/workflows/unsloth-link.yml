@@ -12,6 +12,12 @@ on:
   push:
     tags:
       - 'unsloth-link-v*'
+    paths:
+      - 'studio/cluster_link/tailcat_helper/**'
+      - 'studio/cluster_link/tailnet.py'
+      - 'studio/install_unsloth_link.py'
+      - 'studio/unsloth_link_pins.json'
+      - '.github/workflows/unsloth-link.yml'
   workflow_dispatch:
     inputs:
       publish:
@@ -24,7 +30,7 @@ permissions:
 
 concurrency:
   group: unsloth-link-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

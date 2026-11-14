@@ -85,7 +85,9 @@ def package(dist: Path, out: Path) -> dict:
         name = asset_name(target)
         (out / name).write_bytes(data)
         sums[name] = hashlib.sha256(data).hexdigest()
-    (out / "SHA256SUMS").write_text("".join(f"{d}  {n}\n" for n, d in sorted(sums.items())))
+    (out / "SHA256SUMS").write_bytes(
+        "".join(f"{d}  {n}\n" for n, d in sorted(sums.items())).encode()
+    )
     (out / LICENSE).write_bytes((dist / TARGETS[0] / LICENSE).read_bytes())
     return sums
 

@@ -23,7 +23,7 @@ REPO = "unslothai/unsloth"
 
 def _sums(folder: Path) -> dict:
     sums = {}
-    for line in (folder / "SHA256SUMS").read_text().splitlines():
+    for line in (folder / "SHA256SUMS").read_text(encoding = "utf-8").splitlines():
         digest, _, name = line.strip().partition("  ")
         if digest:
             sums[name.lstrip("./")] = digest.lower()
@@ -58,7 +58,7 @@ def main() -> int:
     args = ap.parse_args()
     assets = collect(args.folder)
     if args.check:
-        pinned = json.loads(PINS.read_text())["assets"]
+        pinned = json.loads(PINS.read_text(encoding = "utf-8"))["assets"]
         bad = [t for t in TARGETS if pinned.get(t) != assets[t]]
         for target in bad:
             print(f"{target}: built {assets[target]}, pinned {pinned.get(target)}")
@@ -75,7 +75,7 @@ def main() -> int:
         "tag": args.tag,
         "assets": assets,
     }
-    PINS.write_text(json.dumps(pins, indent = 2) + "\n")
+    PINS.write_text(json.dumps(pins, indent = 2) + "\n", encoding = "utf-8")
     print(f"wrote {PINS}")
     return 0
 

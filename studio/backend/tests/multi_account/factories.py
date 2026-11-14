@@ -211,7 +211,18 @@ DOMAINS = (
 
 FACTORIES = merge(CORE_FACTORIES, *(domain.FACTORIES for domain in DOMAINS))
 
-SKIPPED = merge(*(domain.SKIPPED for domain in DOMAINS))
+_CLUSTER = "owner-only cluster route (policy.require_owner, UI session only): it manages this machine's paired workers, which no account owns"
+CLUSTER_SKIPPED = {
+    f"routes.cluster:{key}": _CLUSTER
+    for key in (
+        "DELETE:/machines/{node_id}",
+        "GET:/pair/{pairing_id}",
+        "POST:/pair/{pairing_id}/approve",
+        "POST:/pair/{pairing_id}/cancel",
+        "POST:/pair/{pairing_id}/refuse",
+    )
+}
+SKIPPED = merge(CLUSTER_SKIPPED, *(domain.SKIPPED for domain in DOMAINS))
 
 
 def initialize_workspaces(accounts: dict) -> None:
