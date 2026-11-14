@@ -264,8 +264,6 @@ function readAloudError(
   return new Error(detail);
 }
 
-/** Generate speech via the loaded TTS audio model; returns a WAV data URL. Voice mode
- *  names its own model and voice, read aloud uses whatever is loaded and the setting. */
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,

@@ -72,7 +72,6 @@ export interface LoadModelRequest {
 
   force_reload?: boolean;
   alongside?: boolean;
-  /** Voice mode's speaking model: kept next to the chat model even with multi-model off. */
   voice?: boolean;
   /** Set only after the user confirms: the load replaces the shared llama-server. */
   force_cancel_active?: boolean;

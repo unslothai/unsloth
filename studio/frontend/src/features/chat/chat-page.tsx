@@ -864,15 +864,7 @@ const SingleContent = memo(function SingleContent({
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
   }, [researchMatchesThread, closeBrowser]);
 
-  // Thread-switch voice reset. Lives here (not in VoiceEngine) because SingleContent
-  // is stable across the ThreadWelcome → ThreadComposerDock remount that fires on
-  // first-send; VoiceEngine remounts there and never observes null → __LOCALID_xxx,
-  // leaving its prev-thread ref stale so the later New Chat (→ null) reset is missed.
-  // We drive the module-level bridge, gated on getVoiceMode() so a plain thread
-  // switch while voice is OFF can't wake the loop up.
-  //
-  // The reset carries voice mode over rather than ending it: starting a new chat
-  // keeps the conversation mode the same way it keeps the loaded model.
+  // Lives here, not in VoiceEngine: SingleContent survives the first-send remount that VoiceEngine does not.
   const prevVoiceThreadIdRef = useRef(activeThreadId);
   useEffect(() => {
     const current = activeThreadId;
@@ -881,11 +873,7 @@ const SingleContent = memo(function SingleContent({
       prevVoiceThreadIdRef.current = current;
       return;
     }
-    // Thread birth (null → __LOCALID_xxx on first send) is the initial thread being
-    // created, not a real switch, so it must NOT kill voice mid-conversation. Skip
-    // the reset but still advance the ref, so the later New Chat (__LOCALID_xxx → null)
-    // is still detected as a genuine switch. Real switches — non-null → null (New Chat)
-    // and non-null → different non-null (sidebar) — fall through below.
+    // Thread birth (null -> __LOCALID_xxx) is not a switch: skip the reset but advance the ref.
     if (prev === null && current !== null) {
       prevVoiceThreadIdRef.current = current;
       return;
@@ -3256,7 +3244,6 @@ export function ChatPage({
     return run;
   }, []);
 
-  // The TTS player calls this to reload a voice that was evicted under it.
   useEffect(() => {
     const register = useChatRuntimeStore.getState().setEnsureVoiceSlotLoaded;
     register(ensureVoiceSlotLoaded);
@@ -3275,9 +3262,6 @@ export function ChatPage({
     }
   }, []);
 
-  // Loaded once voice mode starts (not while it is only being configured), and
-  // again on a new pick or a chat model arriving. Behind any load in flight, so the
-  // pick made last is the one that loads.
   const hasChatCheckpoint = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
   useEffect(() => {
     if (voiceMode !== "active" || !hasChatCheckpoint) return;

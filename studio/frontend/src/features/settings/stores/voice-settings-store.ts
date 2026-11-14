@@ -44,8 +44,7 @@ const QUOTA_TRIM_KEEP = 200;
 const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
-// Raw-string key the chat header's mic picker wrote (chat-runtime-store), read
-// once by merge() below so an existing pin survives that picker's removal.
+// Legacy key the removed chat-header mic picker wrote; adopted once by merge().
 const LEGACY_LOOP_MIC_KEY = "unsloth_chat_mic_device_id";
 
 const HF_REPO_ID =

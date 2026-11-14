@@ -1,11 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Voice activity detection on audio.cpp, for voice mode.
-
-The browser's loudness gate decides when an utterance ended; this answers whether the clip it
-cut actually holds a voice (a cough, a hum and a chair do not), through one offline VAD session
-on its own audio.cpp server. One model resident at a time, same as the dictation sidecar.
-"""
 
 from __future__ import annotations
 
@@ -40,7 +34,6 @@ logger = get_logger(__name__)
 DEFAULT_VAD_MODEL = f"{AUDIO_CPP_REPO}/PulseVAD-GGUF"
 _RUN_PATH = "/v1/tasks/run"
 _DETECT_TIMEOUT_SECONDS = 30.0
-# Voice mode sends clips of a few seconds; anything longer is not a turn.
 MAX_CLIP_BYTES = 16 * 1024 * 1024
 
 
@@ -96,7 +89,6 @@ def _wav_rate(path: Path) -> int:
 
 
 def segments_from_result(payload: dict, fallback_rate: int) -> dict:
-    """Shape the server's ``segments`` (sample offsets) into seconds, plus the voiced total."""
     rate = int(payload.get("sample_rate") or fallback_rate or 16000)
     segments = []
     speech_ms = 0.0
@@ -117,7 +109,6 @@ def segments_from_result(payload: dict, fallback_rate: int) -> dict:
 
 
 def _debug_dump(wav_bytes: bytes, payload: dict, result: dict) -> None:
-    """With UNSLOTH_VAD_DEBUG_DIR set, keep every checked clip and its verdict for offline tuning."""
     import os
     import time
 
@@ -249,7 +240,6 @@ class AudioCppVadSidecar:
     ) -> dict:
         if len(wav_bytes) > MAX_CLIP_BYTES:
             raise VadError("Audio clip is too long for a speech check.")
-        # Browsers capture at the device rate (48 kHz on a Mac); the detectors take 16 kHz mono only.
         from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
         from core.inference.stt_sidecar import _decode_audio_bounded
 

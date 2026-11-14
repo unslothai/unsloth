@@ -8,12 +8,6 @@
 const SPEECH_STRIP_RE =
   /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{20E3}\u{FE00}-\u{FE0F}\u{200D}]/gu;
 
-// Normalize text for TTS: some characters derail Orpheus (like the colon it reads
-// as a speaker tag) or get voiced literally by any TTS model. Em/en dashes and the
-// single-char ellipsis are the main offenders (an em dash breaks the voice), and
-// markdown/markup symbols get read out ("asterisk asterisk"). All of these are just
-// dropped (replaced with a space, not a comma, so no phantom pauses are inserted);
-// smart quotes are normalized. Speech ONLY -- the on-screen chat text keeps everything.
 export function stripForSpeech(text: string): string {
   const out = text
     .replace(/\[([^\]\n]*)\]\([^)\s]*\)/g, "$1") //               [text](url) -> text
@@ -26,17 +20,14 @@ export function stripForSpeech(text: string): string {
     .replace(/\$(?!\d)/g, " ") //                                    math $, not "$5"
     .replace(/(?<!\d)\/|\/(?!\d)/g, " ") //                          "and/or", "/s"; not 1/2
     .replace(SPEECH_STRIP_RE, "")
-    .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ") // — – ― ‒ −  -> drop
-    .replace(/[^\S\n]*…[^\S\n]*/g, " ") //                 …  -> drop
-    .replace(/\.{2,}/g, " ") //                                 ... -> drop
-    .replace(/[‐‑]/g, "-") //                          unicode hyphens -> ASCII
-    .replace(/[*_`~^|#<>\\{}[\]]/g, " ") //                      markdown / markup -> space
-    .replace(/[‘’‚‛]/g, "'") //             smart single quotes
-    .replace(/[“”„‟]/g, '"') //             smart double quotes
-    // Collapse horizontal whitespace only. Newlines are sentence boundaries to
-    // splitIntoSentences, and flattening them here (as this used to) made a
-    // multi-paragraph reply one enormous sentence: the loop then waited on a
-    // single long synth instead of speaking the first line straight away.
+    .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ")
+    .replace(/[^\S\n]*…[^\S\n]*/g, " ")
+    .replace(/\.{2,}/g, " ")
+    .replace(/[‐‑]/g, "-")
+    .replace(/[*_`~^|#<>\\{}[\]]/g, " ")
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[“”„‟]/g, '"')
+    // Horizontal only: newlines are sentence boundaries for splitIntoSentences.
     .replace(/[^\S\n]+/g, " ")
     .replace(/ ([.,!?;:])/g, "$1")
     .replace(/\n{2,}/g, "\n")

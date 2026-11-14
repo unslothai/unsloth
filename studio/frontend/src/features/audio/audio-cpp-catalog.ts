@@ -251,7 +251,6 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
     task: "asr",
     languages: VOXTRAL_LANGUAGES,
   },
-  // Voice mode's speech check: whether a clip the loudness gate cut holds a voice.
   { id: folder("PulseVAD-GGUF"), task: "vad" },
 ];
 

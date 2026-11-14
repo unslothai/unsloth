@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Voice mode's speaking model, kept loaded beside the chat model in one of the
-// backend's extra model slots (LoadRequest.voice keeps it there with multi-model off).
 
 import {
   getInferenceStatus,
@@ -34,8 +32,7 @@ export async function loadVoice(id: string): Promise<void> {
         voice: true,
         audio_device,
       },
-      // Not "tts": chat reads a tts load as the Audio page taking its slot and drops its own
-      // model. This one is kept beside it, so it is a chat-side load like any other kept model.
+      // Not "tts": chat treats a tts load as the Audio page taking its slot and drops its model.
       { runtime: "chat" },
     );
   try {
@@ -47,7 +44,6 @@ export async function loadVoice(id: string): Promise<void> {
 }
 
 export async function unloadVoice(id: string): Promise<void> {
-  // Voice mode is the only thing speaking with it, so a sentence still synthesizing
-  // is its own and is cancelled rather than turning the unload into a 409.
+  // Only voice mode speaks with it, so an in-flight sentence is cancelled rather than a 409.
   if (await voiceServing(id)) await unloadModel({ model_path: id, force_cancel_active: true });
 }

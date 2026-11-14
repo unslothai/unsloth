@@ -20,7 +20,6 @@ import { toast } from "@/lib/toast";
 import { type FC, useMemo } from "react";
 
 interface SttModelSelectorProps {
-  /** The transcription model the loop listens with (a dictation key or an audio.cpp folder id). */
   value: string;
   onValueChange: (id: string) => void;
   /** The listener is loaded, so the row shows as resident. */

@@ -18350,7 +18350,6 @@ async def load_model_gated(
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
                             if request.voice:
-                                # Voice mode speaks for the chat model, so it never replaces it.
                                 raise HTTPException(
                                     status_code = 409,
                                     detail = "Not enough memory to keep the voice loaded next to the chat model.",
@@ -18577,7 +18576,6 @@ def _primary_model_label() -> Optional[str]:
 def _voice_task(request: LoadRequest) -> Optional[str]:
     """``tts`` or ``asr`` for an audio.cpp model voice mode can load, else None."""
     from core.inference.audio_cpp_models import resolve
-
     try:
         model = resolve(request.model_path, request.gguf_variant, request.hf_token)
     except Exception:  # noqa: BLE001 - unresolvable is not a voice
@@ -26850,7 +26848,6 @@ async def stt_model_capabilities(
     return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
 
 
-# Voice mode's speech check: did the clip the browser's loudness gate cut hold a voice?
 class VadLoadRequest(BaseModel):
     model: Optional[str] = None
 

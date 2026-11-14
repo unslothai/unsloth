@@ -694,11 +694,7 @@ function resetPromptQueues() {
   syncPromptQueueUI();
 }
 
-// Drop the queued prompts of ONE thread and nothing else. The voice loop calls
-// this when a spoken utterance supersedes that thread's queue; a global reset
-// there would silently discard prompts queued in background chats too. Delete
-// only, no target cancel, matching resetPromptQueues -- the caller has already
-// cancelled the run it means to cancel.
+// Only this thread's queue: a global reset would drop prompts queued in background chats.
 export function resetPromptQueuesForThread(threadId: string) {
   for (const run of getPromptQueueRunsForThreadIds([threadId])) {
     deletePromptQueueRun(run);
@@ -2132,12 +2128,6 @@ export const Thread: FC<{
     context: autoScrollContext,
   } = useIntentAwareAutoScroll();
 
-  // Force the docked composer (and suppress the centered welcome) only once the
-  // full orb is ACTIVE -- including its warmup -- so the empty-thread orb view
-  // always has a bottom input bar above it (z-40) instead of the orb-covered
-  // welcome composer. Deliberately NOT keyed on merely "configuring": pressing the
-  // Voice toggle should leave you in the normal chat/welcome with a grey mini orb;
-  // opening the full orb is exclusively the mini-orb button's job.
   const voiceActive = useChatRuntimeStore((s) => s.voiceMode === "active");
   const effectiveHideWelcome = hideWelcome || voiceActive;
   const voiceRequested = useVoiceRequested();
@@ -3037,11 +3027,6 @@ const Composer: FC<{
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
-  // In voice mode the orb is the entire mic interface. The loop keeps a dictation
-  // session open continuously, so the composer's recording bar would sit there
-  // counting from the moment voice starts -- reading as "recording you" during
-  // every pause and every reply. The session is real and must stay open; only its
-  // UI is wrong here, so hide the presentation and leave the state alone.
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   const showDictationUi = isDictating && !voiceEngaged;
   const pageDragging = useContext(PageDragContext);
@@ -7634,10 +7619,6 @@ const ComposerRightControls: FC<{
         !controlsRef.current.closest('[aria-hidden="true"], [inert]'),
     },
   );
-  // While voice mode is engaged, the mini orb is the mic control; hide the raw
-  // Dictate / Stop-dictation buttons (the loop drives dictation internally via
-  // the composer runtime's startDictation()/stopDictation(), not by clicking
-  // these). Kept mounted (display:none) only so composer state stays consistent.
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   const voiceRequested = useVoiceRequested();
   return (
@@ -7653,11 +7634,6 @@ const ComposerRightControls: FC<{
           <VoiceControlButton />
         </Suspense>
       )}
-      {/* Starts dictation; the recording bar then covers the input row and owns
-          the stop and send actions. Hidden while voice mode is engaged: the mini
-          orb is the mic control there, and the loop drives dictation through the
-          composer runtime rather than by clicking this. Kept mounted so composer
-          state stays consistent across entering and leaving voice mode. */}
       <div className={cn(voiceEngaged ? "hidden" : "contents")}>
         <ComposerPrimitive.If dictation={false}>
           {audioUpload.busy ? (

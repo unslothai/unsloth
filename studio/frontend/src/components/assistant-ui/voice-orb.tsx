@@ -58,8 +58,6 @@ const orbMeta: Record<OrbStateName, { label: TranslationKey; icon: IconKind }> =
 
 type IconKind = "mic" | "mic-off" | "wave" | "dots" | "brain" | "spinner" | "pencil" | "waveform" | "synth" | "pause";
 
-// Deboss: near-black fill with a faint highlight below and a dark cut above, so
-// the glyph looks carved into the sphere rather than sitting on top of it.
 const HOLE = "#08080b";
 const DEBOSS = "drop-shadow(0 1px 0.5px rgba(255,255,255,0.22)) drop-shadow(0 -1px 1.5px rgba(0,0,0,0.6))";
 // The same deboss as a box-shadow, for glyphs that move every frame. WebKit keeps a
@@ -840,8 +838,6 @@ const StackItem: FC<{ y: number; children: React.ReactNode }> = ({ y, children }
 
 export const VoiceOrb: FC = () => {
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
-  // Minimized: the loop keeps running (orbState stays set) but the full-screen
-  // overlay is hidden so the chat is visible underneath.
   const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
   const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
   const voiceOff = useChatRuntimeStore((s) => s.voiceMode === "off");
@@ -884,10 +880,6 @@ export const VoiceOrb: FC = () => {
           ? { label: t(orbMeta[orbState].label), icon: orbMeta[orbState].icon }
           : null;
 
-  // Esc only minimizes the orb back to chat -- it does NOT stop voice mode. The
-  // single place to turn voice off is the + menu's Voice toggle, so exiting the
-  // orb view is never confused with ending the session. Listener attached only
-  // while the overlay is showing.
   useEffect(() => {
     if (!showOverlay) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -909,16 +901,7 @@ export const VoiceOrb: FC = () => {
 
       <div
         className={cn(
-          // When active, the backdrop must intercept pointer events so hovers
-          // don't fall through to hidden chat history underneath (tooltips,
-          // hover menus, side panels). The composer dock sits at z-40 above this
-          // and keeps its own pointer-events-auto, so it stays interactive. When
-          // inactive the backdrop is still mounted (opacity-0), so it must let
-          // clicks pass through.
           "absolute inset-0 z-30 flex flex-col items-center justify-center gap-8 bg-background",
-          // Fast, and on its own compositor layer: this is a full-viewport
-          // cross-fade over a chat that keeps rendering underneath, and at 500ms
-          // the swap read as lag rather than a transition.
           "transition-opacity duration-200 ease-out will-change-[opacity]",
           showOverlay ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
         )}

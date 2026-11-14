@@ -147,16 +147,6 @@ export class StudioDictationAdapter implements DictationAdapter {
       return session;
     }
     const { dictationEngine } = useVoiceSettingsStore.getState();
-    // The conversation loop needs an adapter that owns its own turn: capture,
-    // end-of-utterance, transcribe, submit, re-arm. The dictation adapters here
-    // deliberately do none of that -- they record until told to stop, which is
-    // right for a Dictate button and leaves a continuous loop with nothing to
-    // end a turn on.
-    //
-    // Not conditioned on dictationEngine: that setting belongs to the Dictate
-    // button and may well be "browser" while the loop runs. Voice mode has no
-    // browser engine of its own -- it picks a transcription model in its own
-    // header picker -- so it always lands here.
     if (getVoiceMode() === "active") {
       const session = startVoiceListen();
       if (session) return session;

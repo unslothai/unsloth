@@ -17,12 +17,9 @@ import { asideBlocked, createClipLedger, type ClipLedger } from "../voice/tts-cl
 
 export { splitStreaming };
 
-// Loudness of what is playing (RMS, ~0..0.3), read by the speaking orb each frame.
 export const voiceOutputLevel = { current: 0 };
 
-// audio.cpp serializes requests per model, so synthesizing further ahead only
-// queues work a barge-in throws away. One clip queued behind the playing one hides
-// the gap between sentences.
+// audio.cpp serializes per model, so synthesizing further ahead only queues work a barge-in discards.
 const MAX_QUEUED_CLIPS = 2;
 // Paused: nothing plays and no barge-in can land, so run ahead so the reply is
 // ready on resume. Bounded: a decoded sentence is a few MB.
@@ -77,7 +74,6 @@ const ASIDE_MAX_LATE_MS = 4000;
 
 export function useTtsPlayer(onPlaybackEnd?: () => void): {
   isSpeaking: boolean;
-  /** True only while a clip is audible (not while the first one synthesizes). */
   isPlaying: boolean;
   speak(text: string): void;
   beginStream(): void;
@@ -91,7 +87,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   sayAside(text: string, opts?: AsideOptions): void;
   warmAsides(texts: readonly string[]): Promise<void>;
   stop(): void;
-  /** Hold the reply while a possible barge-in is checked; resumePlayback picks it back up. */
   pausePlayback(): void;
   resumePlayback(): void;
   /** The user's pause: freezes the clock whether or not a reply is open, and survives
@@ -206,8 +201,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         url = await request();
       } catch (error) {
         if (reqRef.current !== reqId) return null;
-        // The voice may have been evicted (a bigger load, the backend restarting):
-        // load it again once rather than going quiet for the rest of the session.
         const ensure = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
         if (!ensure || !(await ensure())) throw error;
         if (reqRef.current !== reqId) return null;
@@ -324,8 +317,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           await sleep(40);
         }
       }
-      // Bounded by the timeline itself, so a source that never fires onended
-      // cannot keep the mic shut.
       const ctx = getPlayCtx();
       while (live() && clipsRef.current.size > 0) {
         if (ctx && ctx.currentTime > playHeadRef.current + 0.5) break;

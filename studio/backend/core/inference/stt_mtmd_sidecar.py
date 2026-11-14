@@ -1112,7 +1112,6 @@ class MtmdSttSidecar:
                 stdin = subprocess.DEVNULL,
                 # Like chat: bundled and pip CUDA libs on the loader path; secrets scrubbed.
                 env = {**_llama_server_child_env(binary), **key_env},
-                # no console window under the desktop shell, as the chat llama-server is spawned
                 **windows_hidden_subprocess_kwargs(),
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
