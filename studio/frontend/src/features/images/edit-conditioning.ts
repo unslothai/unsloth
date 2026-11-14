@@ -8,7 +8,13 @@ import type {
   DiffusionGenerateRequest,
   LocalizedEditMode,
 } from "./api";
-import { type SizeLimits, fitSize, matchSourceSize } from "./image-size.ts";
+import {
+  MIN_DIM,
+  type SizeLimits,
+  fitSize,
+  matchSourceSize,
+  snapDim,
+} from "./image-size.ts";
 
 export const ANNOTATION_COLORS: ReadonlyArray<{ name: string; value: string }> =
   [
@@ -234,10 +240,15 @@ export function boundedSize(
   );
   if (scale >= 1) return fitSize(width, height, limits);
   const m = limits.multiple;
-  return {
-    width: Math.max(m, Math.floor((width * scale) / m) * m),
-    height: Math.max(m, Math.floor((height * scale) / m) * m),
-  };
+  // the short side never drops below the backend minimum; for extreme ratios the long side gives way instead
+  const shortMin = snapDim(MIN_DIM, limits);
+  let w = Math.max(shortMin, Math.floor((width * scale) / m) * m);
+  let h = Math.max(shortMin, Math.floor((height * scale) / m) * m);
+  while (w * h > limits.maxPixels && Math.max(w, h) > shortMin) {
+    if (w >= h) w -= m;
+    else h -= m;
+  }
+  return { width: w, height: h };
 }
 
 export function resolveEditSize(

@@ -88,3 +88,16 @@ test("a panoramic H3-Image source past the side limit keeps its aspect ratio", (
   assert.ok(Math.abs(size.height - size.width / 8) <= 32, `${size.width}x${size.height}`);
   assert.ok(size.width / size.height > 7.5, `${size.width}x${size.height}`);
 });
+
+test("a very thin H3-Image source keeps the minimum output side", () => {
+  const size = resolveEditSize(
+    "source",
+    { width: 8000, height: 250 },
+    1024,
+    { width: 1024, height: 1024 },
+    H3_LIMITS,
+    "minimax-h3-image",
+  );
+  assert.ok(Math.min(size.width, size.height) >= 256, `${size.width}x${size.height}`);
+  assert.ok(size.width <= H3_LIMITS.maxSide && size.width * size.height <= H3_LIMITS.maxPixels);
+});
