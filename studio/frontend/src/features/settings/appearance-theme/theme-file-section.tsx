@@ -37,6 +37,7 @@ import {
   MAX_THEME_NAME,
   planThemeApply,
   type ThemeWarning,
+  undoTarget,
 } from "./theme-file";
 
 type T = ReturnType<typeof useT>;
@@ -250,7 +251,9 @@ function ImportForm({
             label: t(`${K}.undo`),
             // Undo puts back the whole look from before the import.
             onClick: () => {
-              applyAppearanceSnapshot(before);
+              applyAppearanceSnapshot(
+                undoTarget(before, readAppearanceSnapshot()),
+              );
               const restoring =
                 next.background === "keep"
                   ? Promise.resolve(true)

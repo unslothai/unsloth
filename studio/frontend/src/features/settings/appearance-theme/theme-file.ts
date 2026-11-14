@@ -494,3 +494,17 @@ export function planThemeApply(
       .map((font) => font.name),
   };
 }
+
+/** Undo: the look from before the import, keeping personal settings as they are now. */
+export function undoTarget(
+  before: AppearanceSnapshot,
+  now: AppearanceSnapshot,
+): AppearanceSnapshot {
+  return {
+    ...before,
+    customization: {
+      ...before.customization,
+      ...pick(now.customization, fieldsIn("personal")),
+    },
+  };
+}

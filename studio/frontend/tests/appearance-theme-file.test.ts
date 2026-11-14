@@ -20,8 +20,13 @@ import type {
 const { DEFAULT_CUSTOMIZATION, sanitizeCustomization } = await import(
   "../src/features/settings/stores/appearance-custom-store.ts"
 );
-const { captureTheme, parseThemeFile, planThemeApply, THEME_FILE_KIND } =
-  await import("../src/features/settings/appearance-theme/theme-file.ts");
+const {
+  captureTheme,
+  parseThemeFile,
+  planThemeApply,
+  THEME_FILE_KIND,
+  undoTarget,
+} = await import("../src/features/settings/appearance-theme/theme-file.ts");
 
 const font = (name: string, data = "QUJD") => ({
   name,
@@ -273,5 +278,19 @@ test("embedded fonts the browser cannot load are dropped with their selections",
   assert.deepEqual(
     [kept.customization.uiFont, kept.customization.codeFont],
     [null, "Good"],
+  );
+});
+
+test("undo restores the previous look but keeps personal settings changed since", () => {
+  const before = withLook({ contrast: 30, reduceMotion: "off" });
+  const now = withLook({
+    contrast: 70,
+    reduceMotion: "on",
+    pointerCursors: true,
+  });
+  const target = undoTarget(before, now).customization;
+  assert.deepEqual(
+    [target.contrast, target.reduceMotion, target.pointerCursors],
+    [30, "on", true],
   );
 });
