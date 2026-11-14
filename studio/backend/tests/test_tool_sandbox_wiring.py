@@ -814,6 +814,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
 def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp_path, case):
     """Studio's interpreter installs into the chat folder; another venv's pip still installs into that venv."""
+    if case == "isolated_global_config" and sys.platform != "linux":
+        pytest.skip("XDG_CONFIG_DIRS names pip's global config on Linux only")
     name = f"unsloth_chat_only_{case}"
     workdir = tmp_path / "chat"
     workdir.mkdir()
@@ -1636,6 +1638,9 @@ def test_a_module_launch_without_orig_argv_is_not_taken_for_pip():
     assert out.stdout.strip() == "False", out.stderr
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "quote characters are not valid in Windows file names"
+)
 def test_record_paths_are_read_as_csv(tmp_path):
     """A CSV-quoted RECORD name (the file "victim", quotes included) never retires a neighbour named victim."""
     site_dir = tmp_path / "prefix" / "lib" / "site-packages"
@@ -2039,6 +2044,7 @@ def test_a_run_killed_between_wheels_keeps_its_file_lists(tmp_path):
     assert out.stdout.strip() == repr([gone]), out.stderr
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "flock liveness is POSIX only")
 def test_a_live_pip_mid_wheel_is_not_pruned_around(tmp_path):
     """Another interpreter starting while pip is mid-wheel leaves that pip's half-written version alone."""
     prefix = tmp_path / "prefix"
@@ -2188,6 +2194,7 @@ def test_a_note_named_with_this_processes_pid_is_still_read(tmp_path):
     assert not list(prefix.glob(".unsloth-installing-*"))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "flock liveness is POSIX only")
 def test_each_prune_pass_rereads_live_notes(tmp_path):
     """An interpreter started before another pip: its exit-time pass still sees that pip's live note."""
     prefix = tmp_path / "prefix"
