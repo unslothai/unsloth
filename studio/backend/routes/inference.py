@@ -26892,7 +26892,11 @@ def _vad_http_error(exc: Exception) -> HTTPException:
 @studio_router.get("/audio/vad/status")
 async def vad_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
-    return JSONResponse(content = await asyncio.to_thread(get_audio_cpp_vad_sidecar().status))
+
+    status = await asyncio.to_thread(get_audio_cpp_vad_sidecar().status)
+    if account_access.resident_hidden("vad", status.get("loaded_model")):
+        status = {**status, "loaded_model": None}
+    return JSONResponse(content = status)
 
 
 async def _require_vad_model_access(model: Optional[str]) -> None:
@@ -26924,17 +26928,24 @@ async def vad_load(
         try:
             loaded = await asyncio.to_thread(sidecar.load, payload.model)
         except VadModelNotDownloadedError:
-            await asyncio.to_thread(sidecar.download, payload.model, hf_token)
+            token = account_access.account_hf_token(hf_token)
+            await asyncio.to_thread(sidecar.download, payload.model, token)
             loaded = await asyncio.to_thread(sidecar.load, payload.model)
     except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
         raise _vad_http_error(exc)
+    account_access.note_resident_account("vad", loaded)
     return JSONResponse(content = {"loaded_model": loaded})
 
 
 @studio_router.post("/audio/vad/unload")
 async def vad_unload(current_subject: str = Depends(get_current_subject)):
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
-    released = await asyncio.to_thread(get_audio_cpp_vad_sidecar().unload)
+
+    sidecar = get_audio_cpp_vad_sidecar()
+    # Another account's detector is not this caller's to stop.
+    if account_access.resident_hidden("vad", sidecar.loaded_model):
+        return JSONResponse(content = {"released": False})
+    released = await asyncio.to_thread(sidecar.unload)
     return JSONResponse(content = {"released": released})
 
 
