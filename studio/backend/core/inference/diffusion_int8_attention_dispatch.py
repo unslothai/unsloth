@@ -1,33 +1,29 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""INT8 attention (``unsloth_int8``) for the families whose attention goes through diffusers' attention dispatch.
+"""INT8 attention (``unsloth_int8``) for DiTs whose processors call diffusers' ``dispatch_attention_fn``.
 
-The strided processors (FLUX.3, MiniMax-H3, MiniMax-H3-Image) call the kernel themselves. Every other DiT processor
-calls ``dispatch_attention_fn(q, k, v, ..., backend=self._attention_backend)`` with ``[B, S, H, D]`` views, which is
-the kernel's own layout. So no family needs a processor of its own: ``install`` gives each processor that calls the
-dispatch an ``Int8Route`` as its backend, and the dispatch wrapper installed here sends the calls it can take to
-``torch.ops.unsloth_studio.int8_attention_nhd``. Everything else goes to the backend the processor had before:
+The strided processors (FLUX.3, MiniMax-H3, MiniMax-H3-Image) call the kernel themselves. The rest pass ``[B, S, H, D]`` views to the
+dispatch, the kernel's own layout, so ``install`` gives each such processor an ``Int8Route`` backend and the wrapped
+dispatch sends the calls it can take to ``torch.ops.unsloth_studio.int8_attention_nhd``. These stay on the
+incumbent backend:
 
-* masked or causal calls, dropout, a non-default scale, GQA, LSE requests, extra attention kwargs, context parallel;
-* gradient calls, a dtype or head dim the card check did not pass, another device;
-* calls with fewer query or key tokens than the race found the kernel to win at.
+* masked or causal calls, dropout, a non-default scale, GQA, LSE requests, extra kwargs, context parallel;
+* gradient calls, a dtype / head dim the card check did not pass, another device;
+* calls below the token floor the race found.
 
-``Int8Route`` is a ``str`` equal to the incumbent backend's name, so code that reads ``_attention_backend`` without
-knowing it (``AttentionBackendName(...)``, ``.value``, comparisons) sees the incumbent. The wrapper is a plain Python
-function and the kernel an opaque custom op with a fake, so a compiled block traces with no graph break; the route's
-fields are guarded constants.
+``Int8Route`` is a ``str`` equal to the incumbent's name, so code reading ``_attention_backend`` sees the incumbent.
+The wrapper is plain Python and the kernel an opaque custom op, so compiled blocks trace with no graph break.
 
-Which loads route (``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL`` is read by ``diffusion_int8_attention.mode``):
+Switch (``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``, read by ``diffusion_int8_attention.mode``):
 
 * ``0``: never; ``UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH=0`` turns off only this route.
-* ``1``, or the load asked for ``unsloth_int8`` by name: every DiT whose processors call the dispatch, wherever the
-  kernel passes its accuracy check on this card (no race, except the Triton stand-in), from ``MIN_TOKENS`` tokens.
-* unset: the DiT classes in ``AUTO_DITS`` on NVIDIA, where the kernel passes the check and wins the timed race
-  against the processor's own backend by more than ``RACE_MARGIN``. The token floor: ``MIN_TOKENS`` where it wins at
-  both race sizes; where it wins at 4096 only, a race at ``MID_RACE_TOKENS`` puts it below or above 2048. Where it
-  loses at the race's sizes, a race at ``LONG_RACE_TOKENS`` (video and large-image lengths) can still route the calls
-  from that length on: the int8 products win more the longer the sequence (A100: 0.96x at 4096 tokens, 1.37x at 27k).
+* ``1`` or ``unsloth_int8`` by name: every dispatch DiT where the kernel passes its accuracy check (no race, except
+  the Triton stand-in), from ``MIN_TOKENS``.
+* unset: ``AUTO_DITS`` on NVIDIA where the kernel passes the check and beats the incumbent by ``RACE_MARGIN``. Won at
+  both race sizes: floor ``MIN_TOKENS``; at 4096 only: a ``MID_RACE_TOKENS`` race sets it. Lost at both: a second race
+  at ``LONG_RACE_TOKENS`` can still route video lengths, since int8 gains grow with length (A100: 0.96x at 4096
+  tokens, 1.37x at 27k).
 """
 
 from __future__ import annotations
@@ -40,10 +36,8 @@ from typing import Any, Optional
 DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
-# DiT classes the unset switch races on: those whose teacher-forced per-step denoiser error with the kernel stays
-# within the error of the INT8 weights Studio ships for them, on every output. Left out, so they route only by name
-# or with the env switch: Z-Image-Turbo (rel L2 0.035 against 0.024 for its INT8 weights, G4) and LTX-2 (video 0.044
-# against 0.046, but its audio output 0.010 against 0.008).
+# DiTs the unset switch races on: per-step error with the kernel within that of their shipped INT8 weights. Left out
+# (name or env switch only): Z-Image-Turbo (rel L2 0.035 vs 0.024) and LTX-2 (audio 0.010 vs 0.008).
 AUTO_DITS = frozenset(
     {
         "QwenImage21Transformer2DModel",
@@ -57,10 +51,10 @@ _STRIDED_FLAG = "_unsloth_int8"
 LONG_RACE_TOKENS = (16384, 8192)
 # the card race wins at 4096 tokens but not 1024: one more point decides the floor between them
 MID_RACE_TOKENS = 2048
-# no route below this many query or key tokens, forced or not: short calls (text refiners, audio streams, text
-# cross-attention) are dominated by the quantisers' launches and lose to every incumbent measured (126 tokens: 6x)
+# no route below this many query or key tokens, forced or not: short calls are dominated by quantiser launches
+# and lose to every incumbent measured (126 tokens: 6x slower)
 MIN_TOKENS = 1024
-# eager calls: the decision per (route, call signature) is cached, so a call repeated every step costs a key lookup
+# eager decisions cached per (route, call signature)
 _DECISION_CACHE_MAX = 512
 
 _LOCK = threading.Lock()
@@ -83,10 +77,9 @@ def _backend_name(backend: Any) -> str:
 
 
 class Int8Route(str):
-    """A processor's attention backend while it routes to the INT8 kernel: equal to the incumbent's name, with the
-    incumbent itself and what the card check and race decided. ``cards`` maps each CUDA device index the kernel
-    passed on to its token floor (a layer split or CFG replica runs the same processor on a second card);
-    ``min_tokens`` is the lowest of them, ``index`` the load's card. Built by ``install`` only."""
+    """Routing backend equal to the incumbent's name. ``cards`` maps each passing CUDA index to its token floor (a
+    layer split or CFG replica runs the processor on a second card); ``min_tokens`` is the lowest, ``index`` the
+    load's card."""
 
     def __new__(
         cls,
