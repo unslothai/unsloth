@@ -2249,7 +2249,11 @@ class ExportBackend:
                         if source is None:
                             raise RuntimeError("no Q4_0, Q4_1 or Q4_K_M GGUF was written")
                         with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
-                            q4nx.convert_gguf_to_q4nx(source, staging)
+                            q4nx.convert_gguf_to_q4nx(
+                                source,
+                                staging,
+                                json.loads(exported_config) if exported_config else None,
+                            )
                             self._write_q4nx_companions(staging, exported_config)
                             # The NPU folder is deployed on its own, so it carries its own report.
                             self._sync_reap_report(staging)

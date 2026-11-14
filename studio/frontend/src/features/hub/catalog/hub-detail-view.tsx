@@ -4,7 +4,13 @@
 import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
-import { type ComponentProps, useEffect, useRef, useState } from "react";
+import {
+  type ComponentProps,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { ModelInspector } from "./model-inspector";
 
 type InspectorProps = ComponentProps<typeof ModelInspector>;
@@ -14,6 +20,22 @@ export function HubDetailView({
   compact = false,
   ...inspectorProps
 }: InspectorProps & { onBack: () => void; compact?: boolean }) {
+  return (
+    <HubDetailShell onBack={onBack} compact={compact}>
+      <ModelInspector {...inspectorProps} />
+    </HubDetailShell>
+  );
+}
+
+export function HubDetailShell({
+  onBack,
+  compact = false,
+  children,
+}: {
+  onBack: () => void;
+  compact?: boolean;
+  children: ReactNode;
+}) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
   const measure = compact
@@ -73,7 +95,7 @@ export function HubDetailView({
           </div>
         </div>
         <div className={cn(measure, "pb-20", compact && "lg:pt-4")}>
-          <ModelInspector {...inspectorProps} />
+          {children}
         </div>
       </div>
     </div>

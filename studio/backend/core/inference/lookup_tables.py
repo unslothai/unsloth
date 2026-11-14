@@ -34,11 +34,11 @@ def lazy_read_bytes(
     mode: str = "auto",
 ) -> int:
     """Bytes of ``tensor_bytes`` llama.cpp reads lazily under ``mode``."""
-    if mode not in ("auto", "on"):
+    if mode not in ("auto", "on", "on-direct"):
         return 0
     names = LAZY_READ_TENSORS.get(architecture or "", ())
     return sum(
         int(size)
         for name, size in tensor_bytes.items()
-        if name in names and (mode == "on" or int(size) > LAZY_READ_AUTO_MIN_BYTES)
+        if name in names and (mode in ("on", "on-direct") or int(size) > LAZY_READ_AUTO_MIN_BYTES)
     )

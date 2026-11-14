@@ -237,6 +237,7 @@ async function resetAllPrefs() {
     chat: true,
     timeFormat: true,
     spellcheck: true,
+    material: true,
   });
   window.location.reload();
 }

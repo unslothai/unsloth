@@ -288,6 +288,22 @@ def test_the_output_cap_follows_the_length_of_the_audio():
     assert budget(120) > budget(60)
 
 
+def test_a_prompt_becomes_qwen3_asr_context_in_the_system_turn():
+    payload, prefix = mtmd_mod._transcription_payload(
+        b"wav", 1.0, "en", " Speaker accent: Chinese-accented English. "
+    )
+    messages = payload["messages"]
+    assert messages[0] == {
+        "role": "system",
+        "content": "Speaker accent: Chinese-accented English.",
+    }
+    # The language prefill still ends the turn list, so the transcript stays in English.
+    assert [m["role"] for m in messages] == ["system", "user", "assistant"]
+    assert prefix == messages[-1]["content"] == "language English<asr_text>"
+    plain, _ = mtmd_mod._transcription_payload(b"wav", 1.0, None, "  ")
+    assert [m["role"] for m in plain["messages"]] == ["user"]
+
+
 def test_the_engine_is_unavailable_without_pyav(monkeypatch):
     """whisper.cpp already refuses here; every transcription 501s on decode."""
     import builtins
