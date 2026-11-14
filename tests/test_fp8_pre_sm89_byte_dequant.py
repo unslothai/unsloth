@@ -236,8 +236,7 @@ ROCM_ROUTES = [
 
 
 def test_hip_bytes_dequant_takes_fp16_once_its_rounding_is_exact(monkeypatch):
-    """The gfx11 byte decoder was kept off fp16 while its fp16 cast rounded unlike the torch loop;
-    #14992's integer rounding (on by default on ROCm) closed that, so fp16 routes with bf16 / fp32."""
+    """fp16 joins bf16 / fp32 on the gfx11 byte decoder only under the integer fp16 rounding."""
     monkeypatch.setattr(fp8, "_HIP_FP8_BYTES_DEQUANT", True)
     monkeypatch.setattr(fp8, "_rocm_bytes_dequant_arch", lambda device: True)
     monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
@@ -260,8 +259,7 @@ def test_rocm_routes(monkeypatch, arch, triton_version, expected, old):
     assert (
         route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float32, **hip) == ragged
     )
-    # fp16 output takes the byte decoder with the integer fp16 rounding (#14992, the ROCm default);
-    # without it the torch loop keeps the route (gfx1151 fuses the fp16 cast into v_fma_mixlo_f16).
+    # fp16: byte decoder with the integer rounding (ROCm default), torch loop without it.
     fp16 = dict(weight = _weight(130, 200, "cuda"), out_dtype = torch.float16, **hip)
     monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
     assert route((11, 5), **fp16) == ragged
@@ -343,7 +341,6 @@ def test_real_rocm_device_takes_bytes_kernel_bit_exact(pre_sm89, monkeypatch, sh
     )
     out = fp8.weight_dequant(w, s, out_dtype)
     loop_case = m % 128 or n % 128 or fp8._fp8_kernel_unsupported(w)
-    # fp16 takes the byte decoder only with the integer fp16 rounding (the ROCm default).
     exact = out_dtype != torch.float16 or fp8._fp8_exact_f16_round(out_dtype)
     if not (fp8._rocm_bytes_dequant_arch(w.device) and loop_case and exact):
         assert not calls
