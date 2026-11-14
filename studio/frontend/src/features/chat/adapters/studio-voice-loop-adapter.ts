@@ -881,7 +881,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             if (!bargeConfirming) while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
             startedAt = now;
             lastVoiceAt = now;
-            const cut =stepBargeGate(bargeGate, rms, frameMs);
+            const cut = stepBargeGate(bargeGate, rms, frameMs);
             if (bargeConfirming) bargePeakMs = Math.max(bargePeakMs, bargeGate.loudMs);
             const rt = useChatRuntimeStore.getState();
             const hint = hearingHint.step(
