@@ -2824,6 +2824,7 @@ export function ImagesPage({
         const paged = pageEpoch.current;
         const { images: collected, hasMore: more } = await collectGalleryWindow(
           (offset, limit) => getGallery(offset, limit),
+          galleryCache.images,
           Math.max(count, galleryCache.images.length, PAGE_SIZE),
           PAGE_SIZE,
           () => galleryCache.selectedId,
