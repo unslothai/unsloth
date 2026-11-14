@@ -189,6 +189,8 @@ test("Run scripts set to Never drops browser_evaluate from the turn", async () =
   setBrowserPanelAvailable(true);
   useBrowserAgentStore.setState({ enabled: true, historyAccess: "ask", scriptAccess: "ask" });
   assert.ok(browserAgentToolsForTurn().includes("browser_evaluate"));
+  useBrowserAgentStore.setState({ scriptAccess: "allow" });
+  assert.ok(browserAgentToolsForTurn().includes("browser_evaluate"));
   useBrowserAgentStore.setState({ scriptAccess: "never" });
   const tools = browserAgentToolsForTurn();
   assert.ok(!tools.includes("browser_evaluate"));
@@ -203,11 +205,17 @@ test("a form posting to a blocked site is refused", () => {
 });
 
 const permissions = (sites: AgentPermissions["sites"], defaults = NONE.defaults): AgentPermissions => ({ defaults, sites });
-const rule = (browsing: "allow" | "ask" | "block", actions: "ask" | "allow" = "ask", unlabelled: "ask" | "allow" = "ask") => ({
+const rule = (
+  browsing: "allow" | "ask" | "block",
+  actions: "ask" | "allow" = "ask",
+  unlabelled: "ask" | "allow" = "ask",
+  scripts: "ask" | "allow" = "ask",
+) => ({
   browsing,
   actions,
   downloads: "ask" as const,
   unlabelled,
+  scripts,
 });
 
 test("site patterns are normalized hosts, and the most specific rule wins", () => {
@@ -238,10 +246,10 @@ test("site rules decide navigation before the new-site check", () => {
   assert.equal(gateNavigation("https://careful.example/b", navigation({ permissions: rules, currentUrl: "https://careful.example/a" })).kind, "allow");
   assert.equal(gateNavigation("https://never.example/", navigation({ permissions: rules, userText: "never.example" })).kind, "block");
   // Default Blocked: only the sites with their own rule open.
-  const allowlist = permissions({ "allowed.example": rule("allow") }, { browsing: "block", actions: "ask", downloads: "ask", unlabelled: "ask" });
+  const allowlist = permissions({ "allowed.example": rule("allow") }, { browsing: "block", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" });
   assert.equal(gateNavigation("https://other.example/", navigation({ permissions: allowlist, userText: "other.example" })).kind, "block");
   assert.equal(gateNavigation("https://allowed.example/", navigation({ permissions: allowlist })).kind, "allow");
-  const open = permissions({}, { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask" });
+  const open = permissions({}, { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" });
   assert.equal(gateNavigation("https://made-up.example/?data=1", navigation({ permissions: open })).kind, "allow");
 });
 
@@ -263,11 +271,38 @@ test("stored permissions are checked, so a bad value never reads as allow", () =
       "canvas.example": { browsing: "allow", unlabelled: "allow" },
     },
   });
-  assert.deepEqual(checked.defaults, { browsing: "ask", actions: "allow", downloads: "ask", unlabelled: "ask" });
+  assert.deepEqual(checked.defaults, { browsing: "ask", actions: "allow", downloads: "ask", unlabelled: "ask", scripts: "ask" });
   assert.deepEqual(Object.keys(checked.sites).sort(), ["canvas.example", "example.com"]);
   // A rule saved before Unlabelled clicks existed reads as ask.
-  assert.deepEqual(checked.sites["example.com"], { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask" });
+  assert.deepEqual(checked.sites["example.com"], { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" });
   assert.equal(checked.sites["canvas.example"]?.unlabelled, "allow");
   assert.equal(ruleFor("https://app.canvas.example/", checked).rule.unlabelled, "allow");
   assert.equal(ruleFor("https://other.example/", checked).rule.unlabelled, "ask");
+});
+
+test("stored Scripts rules are checked, and a rule saved before Scripts existed asks", () => {
+  const checked = checkedPermissions({
+    defaults: { scripts: "always" },
+    sites: { "dash.example": { browsing: "allow", scripts: "allow" }, "old.example": { browsing: "allow" }, "odd.example": { scripts: 1 } },
+  });
+  assert.equal(checked.defaults.scripts, "ask");
+  assert.equal(checked.sites["dash.example"]?.scripts, "allow");
+  assert.equal(checked.sites["old.example"]?.scripts, "ask");
+  assert.equal(checked.sites["odd.example"]?.scripts, "ask");
+});
+
+test("a script runs without asking only under Always allow or its site's Scripts rule", async () => {
+  const { scriptRunsWithoutAsking } = await import("../src/features/browser/agent/permissions.ts");
+  const rules = permissions({ "dash.example": rule("allow", "ask", "ask", "allow"), "admin.dash.example": rule("allow") });
+  assert.equal(scriptRunsWithoutAsking("ask", "https://dash.example/board", rules), true);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://eu.dash.example/", rules), true);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://admin.dash.example/", rules), false);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://other.example/", rules), false);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://dash.example.evil.test/", rules), false);
+  const everywhere = permissions({}, { ...NONE.defaults, scripts: "allow" });
+  assert.equal(scriptRunsWithoutAsking("ask", "https://any.example/", everywhere), true);
+  assert.equal(scriptRunsWithoutAsking("ask", "about:blank", everywhere), false);
+  assert.equal(scriptRunsWithoutAsking("allow", "https://other.example/", rules), true);
+  assert.equal(scriptRunsWithoutAsking("never", "https://dash.example/", rules), false);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://other.example/", NONE), false);
 });

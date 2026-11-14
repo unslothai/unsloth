@@ -189,6 +189,7 @@ import {
   beginSavedHistoryReconciliation,
   isSavedHistoryReconciliationSuperseded,
   reconcileOrdinarySavedMessagesInView,
+  subscribeThreadSwitchRecovery,
 } from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
@@ -2524,6 +2525,12 @@ function useStudioRuntimeAdapters(
       const remoteId = aui.threadListItem().getState().remoteId;
       if (!remoteId) return;
       const generation = beginSavedHistoryReconciliation(remoteId);
+      let idsAtRead: Set<string> | undefined;
+      try {
+        idsAtRead = new Set(aui.thread().export().messages.map((item) => item.message.id));
+      } catch {
+        idsAtRead = undefined;
+      }
       void readStoredChatMessages(remoteId)
         .then(({ messages, fromBackend }) => {
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
@@ -2537,6 +2544,8 @@ function useStudioRuntimeAdapters(
             reconcileOrdinarySavedMessagesInView(aui, remoteId, messages, {
               editingMessageId:
                 useChatRuntimeStore.getState().editingMessageId ?? null,
+              toThreadMessage,
+              idsAtRead,
             });
           }
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
@@ -2554,12 +2563,24 @@ function useStudioRuntimeAdapters(
         })
         .catch(() => {});
     };
-    return subscribeGenerationRecoveryTriggers(
+    const unsubscribeWake = subscribeGenerationRecoveryTriggers(
       globalThis,
       document,
       recoverCurrentThread,
       { wakeKey: () => aui.threadListItem().getState().remoteId },
     );
+    const unsubscribeSwitch = subscribeThreadSwitchRecovery(
+      useChatRuntimeStore,
+      (threadId) => {
+        const item = aui.threadListItem().getState();
+        return item.remoteId === threadId || item.id === threadId;
+      },
+      recoverCurrentThread,
+    );
+    return () => {
+      unsubscribeSwitch();
+      unsubscribeWake();
+    };
   }, [aui]);
 
   // Mirror Data-tab deletions, or a later sync writes the attachment back.

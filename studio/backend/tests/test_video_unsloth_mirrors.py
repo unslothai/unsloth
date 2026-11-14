@@ -11,6 +11,7 @@ or a model with no unsloth repo at all, may stay outside unsloth/*.
 
 from __future__ import annotations
 
+import hashlib
 import types
 
 import pytest
@@ -739,6 +740,43 @@ def test_progress_reads_planned_files_by_blob_key_in_the_plan_repo(empty_cache, 
     assert progress["downloaded_bytes"] == 2 + 7
 
 
+def test_progress_counts_a_process_unique_partial_past_the_load_baseline(empty_cache, monkeypatch):
+    """The planned shard's live ``<key>.<8 hex>.incomplete`` counts as it grows; a dead attempt's never does."""
+    mirror, key = "unsloth/LTX-2-FP8", "c3" * 32
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    _blob(
+        empty_cache, mirror, f"{key}.0badf00d", b"d" * 60, incomplete = True
+    )  # a cancelled attempt's
+    plan = {"base": _plan(mirror, [("transformer/model.safetensors", key, 100)])}
+    backend = video_mod.VideoBackend()
+    backend._loading = video_mod._VideoLoadingState(
+        repo_id = "x/ckpt", base_repo = "x/base", expected_bytes = 100
+    )
+    backend._loading.fetch_plan = plan
+    backend._loading.incomplete_baseline = video_mod.VideoBackend._plan_partials(plan)
+    assert backend.load_progress()["downloaded_bytes"] == 0
+    _blob(empty_cache, mirror, f"{key}.1a2b3c4d", b"t" * 25, incomplete = True)
+    assert backend.load_progress()["downloaded_bytes"] == 25
+
+
+def test_a_poll_lists_each_planned_blobs_dir_once(empty_cache, monkeypatch):
+    """Partials are found from one listing per repo per poll, not one per planned file (polled every 0.5 s)."""
+    mirror = "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    keys = [f"{i:02x}" * 32 for i in range(30)]
+    _blob(empty_cache, mirror, f"{keys[0]}.1a2b3c4d", b"t" * 7, incomplete = True)
+    plan = {"base": _plan(mirror, [(f"f{i}.safetensors", k, 10) for i, k in enumerate(keys)])}
+    listed = []
+    real = video_mod.VideoBackend._unique_partials
+    monkeypatch.setattr(
+        video_mod.VideoBackend,
+        "_unique_partials",
+        staticmethod(lambda folder: listed.append(folder) or real(folder)),
+    )
+    assert video_mod.VideoBackend._planned_bytes(plan, {}) == 7
+    assert len(listed) == len(set(listed)) == len(video_mod.VideoBackend._plan_cache_roots())
+
+
 def test_progress_reads_the_fallback_cache_root(empty_cache, monkeypatch):
     """Fetches pass reuse_other_cache_root; an upstream complete only in the import-time root counts."""
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
@@ -948,6 +986,8 @@ class _HubRecorder:
     config_reads: list = []
     # Repos whose main advances after their first listing (a later unpinned listing sees a new commit).
     moving: tuple = (_GGUF_REPO,)
+    # Real sha256 blob keys, the shape huggingface_hub's process-unique partial names are parsed with.
+    hex_keys: bool = False
 
     def __init__(self, token = None):
         pass
@@ -981,11 +1021,17 @@ class _HubRecorder:
                     rfilename = n,
                     size = sz,
                     blob_id = "git-" + n,
-                    lfs = types.SimpleNamespace(sha256 = "lfs-" + n),
+                    lfs = types.SimpleNamespace(
+                        sha256 = _lfs_key(n) if type(self).hex_keys else "lfs-" + n
+                    ),
                 )
                 for n, sz in files.items()
             ],
         )
+
+
+def _lfs_key(name):
+    return hashlib.sha256(name.encode()).hexdigest()
 
 
 def _assembly_config_reads(base, empty_cache, monkeypatch):
@@ -1079,6 +1125,7 @@ def _walk_a_load(
     predownload_leaves_early = False,
     carrier_checkpoint = False,
     top_up = False,
+    on_assemble = None,
 ):
     import huggingface_hub
 
@@ -1122,6 +1169,8 @@ def _walk_a_load(
 
     def _assemble(**kwargs):
         captured.update(kwargs)
+        if on_assemble is not None:
+            on_assemble(backend)
         # What assembly does with the plan: re-open the checkpoint where the prefetch pinned it.
         import inspect
 
@@ -1302,6 +1351,63 @@ def test_roles_sharing_a_repo_share_one_commit(empty_cache, monkeypatch, te_fetc
     pinned = {(p.repo, p.revision) for p in plan.values()}
     assert {(repo, rev) for repo, rev, _ in _HubRecorder.downloads} <= pinned
     assert captured["_expected_bytes"] == video_mod._plan_total(plan)
+
+
+def test_a_dead_partial_of_a_file_the_encoder_fallback_adds_is_not_progress(
+    empty_cache, monkeypatch
+):
+    """A dead partial of the dense encoder an encoder-fallback re-plan adds is not this load's progress."""
+    monkeypatch.setattr(_HubRecorder, "hex_keys", True)
+    key = _lfs_key("text_encoder/model.safetensors")
+    for repo in (_WAN_UP, _WAN_MIRROR):
+        _blob(empty_cache, repo, f"{key}.0badf00d", b"d" * 5, incomplete = True)
+    seen = {}
+
+    def _at_assembly(backend):
+        loading = backend._loading
+        seen["planned"] = {
+            etag for entry in loading.fetch_plan.values() for _n, etag, _s in entry.files
+        }
+        seen["with"] = backend._planned_bytes(loading.fetch_plan, loading.incomplete_baseline)
+        for partial in empty_cache.glob(f"models--*/blobs/{key}.0badf00d.incomplete"):
+            partial.unlink()
+        seen["without"] = backend._planned_bytes(loading.fetch_plan, loading.incomplete_baseline)
+
+    _walk_a_load(empty_cache, monkeypatch, te_fetch_falls_back = True, on_assemble = _at_assembly)
+    assert key in seen["planned"]
+    assert seen["with"] == seen["without"]
+
+
+def test_a_poll_never_sees_a_replan_before_its_partial_baseline(empty_cache, monkeypatch):
+    """A dead partial of the re-planned dense encoder is in the baseline before a lock-free poll can see the plan."""
+    monkeypatch.setattr(_HubRecorder, "hex_keys", True)
+    key = _lfs_key("text_encoder/model.safetensors")
+    for repo in (_WAN_UP, _WAN_MIRROR):
+        _blob(empty_cache, repo, f"{key}.0badf00d", b"d" * 5, incomplete = True)
+    dead = {str(p): 5 for p in empty_cache.glob(f"models--*/blobs/{key}.0badf00d.incomplete")}
+    polls = []
+
+    def publish(self, name, value):
+        object.__setattr__(self, name, value)
+        if name == "fetch_plan" and value:
+            baseline = self.incomplete_baseline
+            polls.append(
+                (
+                    video_mod.VideoBackend._planned_bytes(value, baseline),
+                    video_mod.VideoBackend._planned_bytes(value, {**baseline, **dead}),
+                )
+            )
+
+    monkeypatch.setattr(video_mod._VideoLoadingState, "__setattr__", publish)
+    seen = {}
+    _walk_a_load(
+        empty_cache,
+        monkeypatch,
+        te_fetch_falls_back = True,
+        on_assemble = lambda backend: seen.update(plan = backend._loading.fetch_plan),
+    )
+    assert dead and key in {etag for entry in seen["plan"].values() for _n, etag, _s in entry.files}
+    assert len(polls) >= 2 and all(counted == clean for counted, clean in polls), polls
 
 
 def test_load_pipeline_tops_up_through_the_plan():

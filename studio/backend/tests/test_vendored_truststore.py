@@ -105,6 +105,37 @@ def test_vendor_is_not_a_package():
     )
 
 
+def _vendor_path_imports(tree):
+    """Lines importing Studio's vendor directory by a dotted path. A `vendor` path component, not a
+    substring: another package's own vendored modules (`pip._vendor...`) are not Studio's vendor dir."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if "vendor" in (node.module or "").split(".") or (
+                not node.module and any(alias.name == "vendor" for alias in node.names)
+            ):
+                yield node.lineno
+        elif isinstance(node, ast.Import):
+            if any("vendor" in alias.name.split(".") for alias in node.names):
+                yield node.lineno
+
+
+@pytest.mark.parametrize(
+    "source, flagged",
+    [
+        ("from vendor.truststore import inject_into_ssl", True),
+        ("from backend.vendor import laya", True),
+        ("from .vendor import truststore", True),
+        ("from . import vendor", True),
+        ("import vendor.laya", True),
+        ("from pip._vendor.platformdirs.windows import get_win_folder", False),
+        ("import pip._vendor.packaging", False),
+        ("import truststore", False),
+    ],
+)
+def test_the_vendor_path_check_reads_path_components(source, flagged):
+    assert bool(list(_vendor_path_imports(ast.parse(source)))) is flagged
+
+
 def test_nothing_imports_the_vendor_path_directly():
     studio = _BACKEND.parent
     offenders = []
@@ -115,12 +146,9 @@ def test_nothing_imports_the_vendor_path_directly():
             tree = ast.parse(path.read_text(encoding = "utf-8", errors = "ignore"))
         except SyntaxError:
             continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and "vendor" in (node.module or ""):
-                offenders.append(f"{path.relative_to(studio)}:{node.lineno}")
-            elif isinstance(node, ast.Import):
-                if any("vendor" in alias.name.split(".") for alias in node.names):
-                    offenders.append(f"{path.relative_to(studio)}:{node.lineno}")
+        offenders.extend(
+            f"{path.relative_to(studio)}:{line}" for line in _vendor_path_imports(tree)
+        )
     assert not offenders, (
         "import truststore as top-level `truststore` after appending the vendor directory to "
         "sys.path, and laya through core.systemone.laya_runtime._laya(), never by a dotted "
