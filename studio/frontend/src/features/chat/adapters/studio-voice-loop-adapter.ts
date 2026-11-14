@@ -147,6 +147,18 @@ export function voiceWroteBox(text: string): boolean {
   return text.trim() !== "" && text.trim() === voiceBoxText.trim();
 }
 
+// The box minus this loop's last transcript, or null when that transcript is not its tail:
+// dictation prepends a typed draft, so a held fragment sits after it and must go before re-arming.
+export function withoutVoiceText(text: string): string | null {
+  const said = voiceBoxText.trim();
+  const box = text.trimEnd();
+  if (!said || !box.endsWith(said)) return null;
+  const before = box.slice(0, box.length - said.length);
+  // Only a whole tail: a typed word that merely ends in the same letters stays.
+  if (before && !/\s$/.test(before)) return null;
+  return before.trimEnd();
+}
+
 /** Take a draft typed ahead of the loop's own text: it starts the spoken turn, so the box is the turn's now. */
 export function takeTypedDraft(box: string): string {
   const own = voiceBoxText.trim();

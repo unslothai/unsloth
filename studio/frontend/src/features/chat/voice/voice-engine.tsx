@@ -22,6 +22,7 @@ import {
   voiceRevealText,
   takeTypedDraft,
   voiceWroteBox,
+  withoutVoiceText,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
 import { splitStreaming, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
@@ -171,7 +172,9 @@ export const VoiceEngine: FC = () => {
       // Already listening: startDictation() on a live session tears the mic down.
       if (fresh.getState().dictation) return;
       // assistant-ui appends transcripts onto the box text and the adapter emits the whole turn, so leftovers double up.
-      if (voiceWroteBox(fresh.getState().text) && !isComposerHeldForEdit()) fresh.setText("");
+      // A typed draft ahead of a held fragment stays: only the fragment goes.
+      const typed = isComposerHeldForEdit() ? null : withoutVoiceText(fresh.getState().text);
+      if (typed !== null) fresh.setText(typed);
       // Start dictation via the composer runtime, NOT by clicking the Dictate
       // button: in voice mode that button is hidden/replaced by the orb, so a
       // DOM query returns null and the mic never opens (silent green orb).

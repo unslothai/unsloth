@@ -71,7 +71,7 @@ test("a barge-in pause latches even before the first clip is queued", () => {
 });
 
 test("the re-arm clears only the transcript the loop wrote, never a typed draft", () => {
-  assert.match(engine, /if \(voiceWroteBox\(fresh\.getState\(\)\.text\) && !isComposerHeldForEdit\(\)\) fresh\.setText\(""\);/);
+  assert.match(engine, /const typed = isComposerHeldForEdit\(\) \? null : withoutVoiceText\(fresh\.getState\(\)\.text\);/);
   assert.equal((loop.match(/for \(const cb of speechCallbacks\)/g) ?? []).length, 1);
   assert.match(loop, /voiceBoxText = shown\(transcript\);/);
 });
@@ -235,4 +235,10 @@ test("speech heard after the chat model went away is never sent", () => {
   const submit = engine.slice(engine.indexOf("const submitTranscript = useCallback("));
   assert.match(submit.slice(0, 900), /if \(!hasChatModelRef\.current\) \{\s*if \(text && !typed\) composer\.setText\(text\);\s*return;/);
   assert.match(engine, /if \(!hasChatModel\) \{\s*const composer = auiRef\.current\.composer\(\);\s*if \(composer\.getState\(\)\.dictation\) composer\.stopDictation\(\);/);
+});
+
+test("a re-arm strips only the voice fragment after a typed draft", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /withoutVoiceText\(fresh\.getState\(\)\.text\);\s*if \(typed !== null\) fresh\.setText\(typed\);/);
+  assert.match(loop, /if \(!said \|\| !box\.endsWith\(said\)\) return null;[\s\S]{0,200}if \(before && !\/\\s\$\/\.test\(before\)\) return null;/);
 });
