@@ -29364,6 +29364,14 @@ class LlamaCppBackend:
                         f"present. Available Vulkan devices: {_vulkan_available_ordinals}."
                     )
 
+                # A pass-through --rpc split names local devices unmasked: a fit-chosen mask would renumber them.
+                if (
+                    not gpu_ids
+                    and gpu_indices is not None
+                    and (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+                ):
+                    gpu_indices = None
+
                 # Pin the whole picked set so the model can't spill onto an unpicked GPU.
                 if gpu_ids:
                     gpu_indices, tp_tensor_split = self._picker_ordered_gpu_indices(

@@ -1,0 +1,404 @@
+{
+ "disabled_status_and_helpers": {
+  "disabled_status": {
+   "enabled": false,
+   "reason": "not a paired DGX Spark",
+   "topology": null
+  },
+  "env_names": [
+   "UNSLOTH_SPARK_SERVING",
+   "UNSLOTH_SPARK_TOPOLOGY",
+   "UNSLOTH_SPARK_PEER",
+   "UNSLOTH_SPARK_PIPELINE_GROUPS",
+   "UNSLOTH_SPARK_MTP",
+   "UNSLOTH_SPARK_RPC_BIND"
+  ],
+  "rpc_server_argv": [
+   "/b/ggml-rpc-server",
+   "-H",
+   "10.0.0.2",
+   "-p",
+   "50052",
+   "-c"
+  ],
+  "split_args": [
+   "--rpc",
+   "192.168.200.13:50052",
+   "--device",
+   "RPC0,CUDA0",
+   "-sm",
+   "layer",
+   "--tensor-split",
+   "0.5,0.5",
+   "--cache-ram",
+   "0"
+  ],
+  "split_args_groups": [
+   "--rpc",
+   "192.168.200.13:50052",
+   "--device",
+   "RPC0,CUDA0",
+   "-sm",
+   "layer",
+   "--tensor-split",
+   "0.5,0.5",
+   "--cache-ram",
+   "0",
+   "--pipeline-groups",
+   "2"
+  ],
+  "strip": [
+   "--seed",
+   "1"
+  ],
+  "strip_user_rpc": [
+   "--rpc",
+   "10.0.0.9:1",
+   "--seed",
+   "1"
+  ],
+  "topologies": [
+   "single",
+   "replicas",
+   "layer_split"
+  ]
+ },
+ "layer_split_groups": {
+  "extra_args": [
+   "--seed",
+   "1",
+   "--rpc",
+   "192.168.200.13:50052",
+   "--device",
+   "RPC0,CUDA0",
+   "-sm",
+   "layer",
+   "--tensor-split",
+   "0.5,0.5",
+   "--cache-ram",
+   "0",
+   "--pipeline-groups",
+   "2"
+  ],
+  "n_parallel": 32,
+  "planner": {
+   "kv_bytes_per_user": 0.0,
+   "model_bytes": 1024.0,
+   "per_node_free_bytes": 122073707970.56,
+   "prefill_heavy": false,
+   "prompt_tokens": 512,
+   "users": 32
+  },
+  "remote_calls": [
+   "if [ -x \"$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server\" ]; then echo \"$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/build/bin/ggml-rpc-server\" ]; then echo \"<TMP>/bundle/build/bin/ggml-rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/bin/ggml-rpc-server\" ]; then echo \"<TMP>/bundle/bin/ggml-rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/ggml-rpc-server\" ]; then echo \"<TMP>/bundle/ggml-rpc-server\"; exit 0; fi; if [ -x \"$HOME/llamacpp-rpc/bin/ggml-rpc-server\" ]; then echo \"$HOME/llamacpp-rpc/bin/ggml-rpc-server\"; exit 0; fi; if command -v ggml-rpc-server >/dev/null 2>&1; then command -v ggml-rpc-server; exit 0; fi; if [ -x \"$HOME/.unsloth/llama.cpp/build/bin/rpc-server\" ]; then echo \"$HOME/.unsloth/llama.cpp/build/bin/rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/build/bin/rpc-server\" ]; then echo \"<TMP>/bundle/build/bin/rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/bin/rpc-server\" ]; then echo \"<TMP>/bundle/bin/rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/rpc-server\" ]; then echo \"<TMP>/bundle/rpc-server\"; exit 0; fi; if [ -x \"$HOME/llamacpp-rpc/bin/rpc-server\" ]; then echo \"$HOME/llamacpp-rpc/bin/rpc-server\"; exit 0; fi; if command -v rpc-server >/dev/null 2>&1; then command -v rpc-server; exit 0; fi; echo MISSING; exit 1",
+   "test -f <TMP>/big.gguf && echo YES || echo NO",
+   "kill -0 4242 2>/dev/null && echo PIDLIVE || echo PIDGONE",
+   "ss -ltnpH 'sport = :50052' 2>/dev/null"
+  ],
+  "speculative_type": "off",
+  "started": [
+   [
+    "ggml-rpc-server",
+    "192.168.200.13",
+    [
+     "$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server",
+     "-H",
+     "192.168.200.13",
+     "-p",
+     "50052",
+     "-c"
+    ]
+   ]
+  ],
+  "status": {
+   "enabled": true,
+   "last_error": "",
+   "mtp": "no head",
+   "mtp_reason": "no <arch>.nextn_predict_layers in the GGUF header; speculation off for --pipeline-groups 2, which this GGUF has no head for and which a sidecar drafter loses on from 4 users on this pair",
+   "peer": "192.168.200.13",
+   "peer_model_present": true,
+   "peer_process": {
+    "alive": true,
+    "command": "$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server -H 192.168.200.13 -p 50052 -c",
+    "exited_at": null,
+    "log": "<HOME>/logs/spark/rpc-server.log",
+    "name": "ggml-rpc-server",
+    "peer": "192.168.200.13",
+    "remote_pid": 4242,
+    "returncode": null,
+    "started_at": null,
+    "tail": []
+   },
+   "pipeline_groups": 2,
+   "pipeline_groups_reason": null,
+   "plan": {
+    "fits_any_topology": true,
+    "reason": "stub says layer_split",
+    "speedup": 1.3,
+    "topology": "layer_split"
+   },
+   "preflight": {
+    "notes": [
+     "bundles match"
+    ],
+    "ok": true,
+    "peer": "192.168.200.13",
+    "port": 50052,
+    "problems": []
+   },
+   "reason": "stub says layer_split",
+   "relaunch_attempts": 0,
+   "relaunch_gave_up": false,
+   "router": null,
+   "split_config": "groups, no speculation",
+   "split_config_reason": "--pipeline-groups 2 and no speculation to keep: no <arch>.nextn_predict_layers in the GGUF header",
+   "split_reload_pending": false,
+   "topology": "layer_split"
+  }
+ },
+ "layer_split_inherited": {
+  "extra_args": [
+   "--seed",
+   "1",
+   "--rpc",
+   "192.168.200.13:50052",
+   "--device",
+   "RPC0,CUDA0",
+   "-sm",
+   "layer",
+   "--tensor-split",
+   "0.5,0.5",
+   "--cache-ram",
+   "0",
+   "--pipeline-groups",
+   "2"
+  ]
+ },
+ "layer_split_plain": {
+  "extra_args": [
+   "--rpc",
+   "192.168.200.13:50052",
+   "--device",
+   "RPC0,CUDA0",
+   "-sm",
+   "layer",
+   "--tensor-split",
+   "0.5,0.5",
+   "--cache-ram",
+   "0"
+  ],
+  "n_parallel": null,
+  "planner": {
+   "kv_bytes_per_user": 0.0,
+   "model_bytes": 1024.0,
+   "per_node_free_bytes": 122073707970.56,
+   "prefill_heavy": false,
+   "prompt_tokens": 512,
+   "users": 32
+  },
+  "remote_calls": [
+   "if [ -x \"$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server\" ]; then echo \"$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/build/bin/ggml-rpc-server\" ]; then echo \"<TMP>/bundle/build/bin/ggml-rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/bin/ggml-rpc-server\" ]; then echo \"<TMP>/bundle/bin/ggml-rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/ggml-rpc-server\" ]; then echo \"<TMP>/bundle/ggml-rpc-server\"; exit 0; fi; if [ -x \"$HOME/llamacpp-rpc/bin/ggml-rpc-server\" ]; then echo \"$HOME/llamacpp-rpc/bin/ggml-rpc-server\"; exit 0; fi; if command -v ggml-rpc-server >/dev/null 2>&1; then command -v ggml-rpc-server; exit 0; fi; if [ -x \"$HOME/.unsloth/llama.cpp/build/bin/rpc-server\" ]; then echo \"$HOME/.unsloth/llama.cpp/build/bin/rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/build/bin/rpc-server\" ]; then echo \"<TMP>/bundle/build/bin/rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/bin/rpc-server\" ]; then echo \"<TMP>/bundle/bin/rpc-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/rpc-server\" ]; then echo \"<TMP>/bundle/rpc-server\"; exit 0; fi; if [ -x \"$HOME/llamacpp-rpc/bin/rpc-server\" ]; then echo \"$HOME/llamacpp-rpc/bin/rpc-server\"; exit 0; fi; if command -v rpc-server >/dev/null 2>&1; then command -v rpc-server; exit 0; fi; echo MISSING; exit 1",
+   "test -f <TMP>/big.gguf && echo YES || echo NO",
+   "kill -0 4242 2>/dev/null && echo PIDLIVE || echo PIDGONE",
+   "ss -ltnpH 'sport = :50052' 2>/dev/null"
+  ],
+  "speculative_type": null,
+  "started": [
+   [
+    "ggml-rpc-server",
+    "192.168.200.13",
+    [
+     "$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server",
+     "-H",
+     "192.168.200.13",
+     "-p",
+     "50052",
+     "-c"
+    ]
+   ]
+  ],
+  "status": {
+   "enabled": true,
+   "last_error": "",
+   "mtp": "no head",
+   "mtp_reason": "no <arch>.nextn_predict_layers in the GGUF header",
+   "peer": "192.168.200.13",
+   "peer_model_present": true,
+   "peer_process": {
+    "alive": true,
+    "command": "$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server -H 192.168.200.13 -p 50052 -c",
+    "exited_at": null,
+    "log": "<HOME>/logs/spark/rpc-server.log",
+    "name": "ggml-rpc-server",
+    "peer": "192.168.200.13",
+    "remote_pid": 4242,
+    "returncode": null,
+    "started_at": null,
+    "tail": []
+   },
+   "pipeline_groups": 0,
+   "pipeline_groups_reason": "bundle llama-server lacks --pipeline-groups",
+   "plan": {
+    "fits_any_topology": true,
+    "reason": "stub says layer_split",
+    "speedup": 1.3,
+    "topology": "layer_split"
+   },
+   "preflight": {
+    "notes": [
+     "bundles match"
+    ],
+    "ok": true,
+    "peer": "192.168.200.13",
+    "port": 50052,
+    "problems": []
+   },
+   "reason": "stub says layer_split",
+   "relaunch_attempts": 0,
+   "relaunch_gave_up": false,
+   "router": null,
+   "split_config": "one context, no speculation",
+   "split_config_reason": "bundle llama-server lacks --pipeline-groups",
+   "split_reload_pending": false,
+   "topology": "layer_split"
+  }
+ },
+ "replicas_after_load": {
+  "remote_calls": [
+   "if [ -x \"/home/x/.unsloth/llama.cpp/build/bin/llama-server\" ]; then echo \"/home/x/.unsloth/llama.cpp/build/bin/llama-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/build/bin/llama-server\" ]; then echo \"<TMP>/bundle/build/bin/llama-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/bin/llama-server\" ]; then echo \"<TMP>/bundle/bin/llama-server\"; exit 0; fi; if [ -x \"<TMP>/bundle/llama-server\" ]; then echo \"<TMP>/bundle/llama-server\"; exit 0; fi; if [ -x \"$HOME/.unsloth/llama.cpp/build/bin/llama-server\" ]; then echo \"$HOME/.unsloth/llama.cpp/build/bin/llama-server\"; exit 0; fi; if [ -x \"$HOME/llamacpp-rpc/bin/llama-server\" ]; then echo \"$HOME/llamacpp-rpc/bin/llama-server\"; exit 0; fi; if command -v llama-server >/dev/null 2>&1; then command -v llama-server; exit 0; fi; echo MISSING; exit 1",
+   "stat -L -c '%s %Y' <TMP>/m.gguf 2>/dev/null || echo NOSTAT",
+   "kill -0 4242 2>/dev/null && echo PIDLIVE || echo PIDGONE",
+   "ss -ltnpH 'sport = :<PORT>' 2>/dev/null"
+  ],
+  "router_backends": [
+   [
+    "main",
+    true,
+    16
+   ],
+   [
+    "peer",
+    false,
+    16
+   ]
+  ],
+  "routes_through_router": true,
+  "started": [
+   [
+    "llama-server",
+    "127.0.0.1",
+    [
+     "$HOME/.unsloth/llama.cpp/build/bin/llama-server",
+     "-m",
+     "<TMP>/m.gguf",
+     "--parallel",
+     "16",
+     "--host",
+     "127.0.0.1",
+     "--port",
+     "<PORT>"
+    ]
+   ]
+  ],
+  "status": {
+   "enabled": true,
+   "last_error": "",
+   "mtp": "unknown",
+   "mtp_reason": "no load yet",
+   "peer": "127.0.0.1",
+   "peer_model_present": true,
+   "peer_process": {
+    "alive": true,
+    "command": "$HOME/.unsloth/llama.cpp/build/bin/llama-server -m <TMP>/m.gguf --parallel 16 --host 127.0.0.1 --port <PORT>",
+    "exited_at": null,
+    "log": "<HOME>/logs/spark/peer-llama-server.log",
+    "name": "llama-server",
+    "peer": "127.0.0.1",
+    "remote_pid": 4242,
+    "returncode": null,
+    "started_at": null,
+    "tail": []
+   },
+   "pipeline_groups": 0,
+   "pipeline_groups_reason": "not a layer split (topology replicas)",
+   "plan": {
+    "fits_any_topology": true,
+    "reason": "stub says replicas",
+    "speedup": 1.3,
+    "topology": "replicas"
+   },
+   "preflight": null,
+   "reason": "stub says replicas",
+   "relaunch_attempts": 0,
+   "relaunch_gave_up": false,
+   "split_config": null,
+   "split_config_reason": "not a layer split (topology replicas)",
+   "split_reload_pending": false,
+   "topology": "replicas"
+  }
+ },
+ "single_and_replicas_before_load": {
+  "remote_calls": [],
+  "replicas": {
+   "extra_args": null,
+   "same_request": true,
+   "status": {
+    "enabled": true,
+    "last_error": "",
+    "mtp": "no head",
+    "mtp_reason": "no <arch>.nextn_predict_layers in the GGUF header",
+    "peer": null,
+    "peer_model_present": null,
+    "peer_process": null,
+    "pipeline_groups": 0,
+    "pipeline_groups_reason": "not a layer split (topology single)",
+    "plan": {
+     "fits_any_topology": true,
+     "reason": "stub says replicas",
+     "speedup": 1.3,
+     "topology": "replicas"
+    },
+    "preflight": null,
+    "reason": "",
+    "relaunch_attempts": 0,
+    "relaunch_gave_up": false,
+    "router": null,
+    "split_config": null,
+    "split_config_reason": "not a layer split (topology single)",
+    "split_reload_pending": false,
+    "topology": "single"
+   }
+  },
+  "single": {
+   "extra_args": null,
+   "same_request": true,
+   "status": {
+    "enabled": true,
+    "last_error": "",
+    "mtp": "no head",
+    "mtp_reason": "no <arch>.nextn_predict_layers in the GGUF header",
+    "peer": null,
+    "peer_model_present": null,
+    "peer_process": null,
+    "pipeline_groups": 0,
+    "pipeline_groups_reason": "not a layer split (topology single)",
+    "plan": {
+     "fits_any_topology": true,
+     "reason": "stub says single",
+     "speedup": 1.3,
+     "topology": "single"
+    },
+    "preflight": null,
+    "reason": "",
+    "relaunch_attempts": 0,
+    "relaunch_gave_up": false,
+    "router": null,
+    "split_config": null,
+    "split_config_reason": "not a layer split (topology single)",
+    "split_reload_pending": false,
+    "topology": "single"
+   }
+  },
+  "started": []
+ }
+}
