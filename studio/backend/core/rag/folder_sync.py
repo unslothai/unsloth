@@ -1731,7 +1731,15 @@ def _reconcile_folder(job_id: str) -> None:
     ingest_failed: dict[str, dict] = {}
     cached_grace = False
     total = len(work) + len(missing)
-    _set_job(job_id, stage = "ingesting", discovered = len(current), renamed = renamed)
+    # Files outside work are indexed and unchanged: the folder's own progress counts them as done.
+    _set_job(
+        job_id,
+        stage = "ingesting",
+        discovered = len(current),
+        up_to_date = len(current) - len(work),
+        checked = 0,
+        renamed = renamed,
+    )
     added = changed_count = 0
     failures: list[str] = []
     failure_errors: dict[str, str] = {}
@@ -1755,6 +1763,7 @@ def _reconcile_folder(job_id: str) -> None:
             changed = changed_count,
             failed = len(failures),
             renamed = renamed,
+            checked = processed,
             progress = processed / max(total, 1),
         )
 

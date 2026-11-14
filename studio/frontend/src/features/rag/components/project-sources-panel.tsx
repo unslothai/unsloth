@@ -36,6 +36,7 @@ import {
   useRagDocuments,
 } from "./use-rag-documents";
 import { useUploadQueue } from "./use-upload-queue";
+import { linkedFolderDocumentsSummary } from "./source-folder-copy";
 
 export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -230,7 +231,10 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           )}
         >
           <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground">
+            <p
+              className="text-sm text-muted-foreground"
+              title="Files added to this project, counting each file from a source folder. A folder that is still syncing adds its files as it reaches them."
+            >
               {documents.length === 1
                 ? "1 source"
                 : `${documents.length} sources`}
@@ -260,6 +264,11 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 <DocumentStatusChip
                   key={`folder:${folderId}`}
                   filename={`${name} · ${docs.length} file${docs.length === 1 ? "" : "s"}`}
+                  title={
+                    indexing > 0
+                      ? linkedFolderDocumentsSummary(name, docs.length, indexing).title
+                      : undefined
+                  }
                   status={indexing > 0 ? "running" : "completed"}
                   progress={
                     indexing > 0 ? (docs.length - indexing) / docs.length : null
