@@ -160,7 +160,7 @@ export function ConnectionGallery({
             : "No provider matches. Custom works with any OpenAI-compatible endpoint."}
         </p>
       ) : (
-        <div className="-mx-1.5 flex flex-col gap-2 pt-1">
+        <div className="-mx-3 flex flex-col gap-4 pt-3">
           {groups.map((group) => {
             // A search shows its matches wherever they live.
             const collapsed =
@@ -172,7 +172,7 @@ export function ConnectionGallery({
                     type="button"
                     aria-expanded={!collapsed}
                     onClick={() => setShowEvenMore((open) => !open)}
-                    className="flex items-center gap-1 self-start rounded-md px-1.5 pt-1 text-ui-11 font-medium text-muted-foreground/80 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex items-center gap-1 self-start rounded-md px-3 pb-1 text-ui-11 font-medium text-muted-foreground/80 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     {group.label}
                     <HugeiconsIcon
@@ -184,12 +184,12 @@ export function ConnectionGallery({
                     />
                   </button>
                 ) : (
-                  <span className="px-1.5 pt-1 text-ui-11 font-medium text-muted-foreground/80">
+                  <span className="px-3 pb-1 text-ui-11 font-medium text-muted-foreground/80">
                     {group.label}
                   </span>
                 )}
                 {collapsed ? null : (
-                  <div className="grid grid-cols-2 gap-0.5 max-sm:grid-cols-1">
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-1 max-sm:grid-cols-1">
                     {group.items.map((item) => {
                       const connected = connectedTypes.has(
                         connectionPickerValue(item.providerType),
@@ -200,7 +200,7 @@ export function ConnectionGallery({
                           type="button"
                           onClick={() => onPick(item.providerType)}
                           data-provider-type={item.providerType}
-                          className="group/tile flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-2 text-left transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          className="group/tile flex min-w-0 items-center gap-3 rounded-full px-3 py-2.5 text-left transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         >
                           <span className="flex size-5 shrink-0 items-center justify-center">
                             <ApiProviderLogo

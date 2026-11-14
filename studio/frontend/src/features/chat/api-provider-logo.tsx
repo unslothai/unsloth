@@ -43,7 +43,7 @@ function letterTileColor(name: string): string {
   return LETTER_TILE_COLORS[Math.abs(hash) % LETTER_TILE_COLORS.length];
 }
 
-const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "liquid", "typesafe", "vercel"]);
+const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "liquid", "typesafe", "vercel", "xai", "zai", "kimi", "opencode", "opencode_go"]);
 // Pale brand marks get a hairline edge on light surfaces instead of inverting.
 const LIGHT_OUTLINE_LOGOS = new Set(["openrouter"]);
 
