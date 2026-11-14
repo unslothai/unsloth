@@ -90,7 +90,11 @@ export {
   reconcilePersistedGpuSelection,
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
-export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
+export {
+  gpuLayersPatch,
+  moeCpuOffloadApplies,
+  resolveStagedDiffusionClassification,
+} from "./lib/gpu-placement";
 export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 export type { PlacementPool } from "./lib/partial-offload";
 export {
