@@ -3586,6 +3586,113 @@ def fix_transformers_fp8_unscaled_checkpoint_linears():
     quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
 
 
+def fix_transformers_quantizer_unquantized_converters():
+    """Keep a model converter over a tensor the pre-quantized checkpoint stores unquantized.
+
+    A quantizer rewrites the model's converters to collect its serialized names: transformers 5.21+
+    ``HfQuantizer.update_weight_conversions`` every converter ending in ``.weight``, and the compressed-tensors
+    override of earlier 5.x builds every expert converter. For a packed format (NVFP4 / MXFP4) the rewritten copy
+    only matches ``weight_packed`` / ``weight_scale`` keys, so a tensor the checkpoint keeps in 16 bit (Qwen4Exp's
+    n-gram table shards, or bf16 experts beside quantized attention) matches nothing and is randomly initialized.
+    The replaced converter goes back after the rewritten ones, unless a rewritten copy still loads its sources (FP8,
+    or transformers 5.23, which also collects the bare name). Converters match first-wins in list order, so the
+    rewritten copy keeps every quantized key."""
+    try:
+        from transformers.quantizers.base import HfQuantizer
+        from transformers.core_model_loading import WeightConverter
+    except Exception:
+        return
+    classes = [HfQuantizer]
+    try:
+        from transformers.quantizers.quantizer_compressed_tensors import (
+            CompressedTensorsHfQuantizer,
+        )
+        classes.append(CompressedTensorsHfQuantizer)
+    except Exception:
+        pass
+
+    def sources_of(converter):
+        patterns = getattr(converter, "_original_source_patterns", None) or getattr(
+            converter, "source_patterns", ()
+        )
+        return [pattern.rstrip("$") for pattern in patterns if isinstance(pattern, str)]
+
+    for cls in classes:
+        method = cls.__dict__.get("update_weight_conversions")
+        if method is None or getattr(method, "_unsloth_keeps_unquantized", False):
+            continue
+
+        def make(method):
+            @functools.wraps(method)
+            def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+                # transformers 5.21+ passes the model; earlier builds did not.
+                updated = method(self, weight_conversions, *args, **kwargs)
+                try:
+                    updated = list(updated)
+                    kept = {id(converter) for converter in updated}
+                    loaded = {
+                        source
+                        for converter in updated
+                        if isinstance(converter, WeightConverter)
+                        for source in sources_of(converter)
+                    }
+                    restored = [
+                        converter
+                        for converter in weight_conversions
+                        if isinstance(converter, WeightConverter)
+                        and id(converter) not in kept
+                        and not any(source in loaded for source in sources_of(converter))
+                    ]
+                except Exception:
+                    return updated
+                return updated + restored if restored else updated
+
+            update_weight_conversions._unsloth_keeps_unquantized = True
+            return update_weight_conversions
+
+        cls.update_weight_conversions = make(method)
+    _pass_unquantized_through_compressed_tensors_dequantize()
+
+
+def _pass_unquantized_through_compressed_tensors_dequantize():
+    # transformers 5.23 also feeds the plain `.weight` sources to the dequantize op, whose packed branch keeps only
+    # `*weight_packed` keys: the shards vanish and the Concatenate after it fails. Plain sources without a packed or
+    # scale companion pass through untouched, as its FP8 branch already does for weights that ship no scale.
+    try:
+        from transformers.integrations import compressed_tensors as ct_integration
+    except Exception:
+        return
+    op_cls = getattr(ct_integration, "CompressedTensorsDequantize", None)
+    convert = getattr(op_cls, "convert", None)
+    if convert is None or getattr(convert, "_unsloth_passes_unquantized", False):
+        return
+
+    @functools.wraps(convert)
+    def convert_keeping_unquantized(self, input_dict, *args, **kwargs):
+        if (
+            not isinstance(input_dict, dict)
+            or "weight" in input_dict
+            or "weight_scale" in input_dict
+        ):
+            return convert(self, input_dict, *args, **kwargs)
+        plain = {}
+        for key in input_dict:
+            if not isinstance(key, str) or not key.endswith(".weight"):
+                continue
+            stem = key[: -len("weight")]
+            if f"{stem}weight_packed" not in input_dict and f"{stem}weight_scale" not in input_dict:
+                plain[key] = input_dict[key]
+        if not plain:
+            return convert(self, input_dict, *args, **kwargs)
+        rest = {key: value for key, value in input_dict.items() if key not in plain}
+        out = dict(convert(self, rest, *args, **kwargs) or {}) if rest else {}
+        out.update(plain)
+        return out
+
+    convert_keeping_unquantized._unsloth_passes_unquantized = True
+    op_cls.convert = convert_keeping_unquantized
+
+
 def _cast_fp8_dequantize_to_model_dtype(op_cls):
     # transformers 5.4 dequantizes to the scale's fp32; cast to the replaced parameter's dtype.
     convert = getattr(op_cls, "convert", None)
