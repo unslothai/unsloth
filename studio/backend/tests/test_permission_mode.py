@@ -1169,6 +1169,7 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("printf $'\\x02'; bash -c '>out git clean -fd'", True),
         ("echo '|' '>' & git clean -fd --exclude=keep#2>&1", True),
         ("a 2>&1; b 2>&1; c 2>&1; d 2>&1", False),
+        ("2> {\\``git clean -fdq` echo ok", True),
         ("echo >&python` python3 -c \"import shutil; shutil.rmtree('build')\"`", True),
         (
             "script -q session.log python3 >&python -c "

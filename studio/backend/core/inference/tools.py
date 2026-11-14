@@ -1061,14 +1061,9 @@ def _is_bare_redirection(token: str) -> bool:
     return bool(redir) and redir.end() == len(token)
 
 
-def _redirect_word_is_high_risk(word: str, depth: int) -> bool:
-    """A redirection target leaves argv, but bash still runs its substitutions (`> "`rm -rf x`"`)."""
-    if not any(mark in word for mark in ("$(", "`", "<(", ">(")):
-        return False
-    if word.count("`") % 2 or word.count("(") != word.count(")"):
-        # The substitution runs on past this token (`>&x` python3 -c ...``): not screenable here.
-        return True
-    return depth >= 3 or _terminal_is_high_risk(word, depth + 1)
+def _redirect_word_is_high_risk(word: str) -> bool:
+    """A dropped redirection target still runs its substitutions, and shlex hides their extent: ask."""
+    return any(mark in word for mark in ("$(", "`", "<(", ">("))
 
 
 def _without_split_redirections(tokens: "list[str]") -> "tuple[str, list[str]] | None":
@@ -7919,7 +7914,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 if split is not None and (
                     _depth >= 3
                     or _terminal_is_high_risk(split[0], _depth + 1)
-                    or any(_redirect_word_is_high_risk(t, _depth) for t in split[1])
+                    or any(_redirect_word_is_high_risk(t) for t in split[1])
                 ):
                     return True
             if (
@@ -7975,7 +7970,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 if command_arg_pending or shell_c_pending:
                     if _depth >= 3 or _terminal_is_high_risk(token, _depth + 1):
                         return True
-                elif _redirect_word_is_high_risk(token, _depth):
+                elif _redirect_word_is_high_risk(token):
                     return True
                 continue
             redir = None
@@ -7997,7 +7992,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     if unquoted_redirs is None or _tok_idx not in unquoted_redirs:
                         redir = None
             if redir:
-                if _redirect_word_is_high_risk(token[redir.end() :], _depth):
+                if _redirect_word_is_high_risk(token[redir.end() :]):
                     return True
                 redir_target_pending = redir.end() == len(token)
                 continue
