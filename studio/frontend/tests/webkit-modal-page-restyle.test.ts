@@ -168,7 +168,6 @@ test("pointer-events-auto restorations go inert in a lower modal layer, not in t
     ["features/hub/download-manager/download-manager-panel.tsx", /"hub-download-panel pointer-events-auto modal-pe-live /],
   ];
   for (const [file, re] of live) assert.match(readSrc(file), re, file);
-  // Both corner rails (web and Tauri) carry the marker dialogs and sheets stay open for.
   assert.equal(readSrc("app/provider.tsx").match(/data-testid="overlay-rail"\s+data-overlay-rail=""/g)?.length, 2);
   assert.equal(readSrc("components/tauri/window-titlebar.tsx").match(/"pointer-events-auto fixed /g), null);
 });

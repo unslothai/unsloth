@@ -29,7 +29,6 @@ function findByType(node: unknown, type: string): StubElement | null {
   return findByType((element.props ?? {}).children, type);
 }
 
-// `closest` matches any member of a selector list, as the DOM does.
 function outsideEvent(ancestor: string | null): OutsideEvent {
   return {
     target: {
