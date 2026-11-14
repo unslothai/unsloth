@@ -149,7 +149,7 @@ def test_pairing_and_a_split_go_through_tailcat_when_the_lan_cannot(
     if not (e2e.LLAMA_SERVER.is_file() and e2e.RPC_SERVER.is_file() and e2e.MODEL.is_file()):
         relays.stop()
         pytest.skip(
-            "pairing checked; the split needs UNSLOTH_TEST_LLAMA_BIN_DIR and UNSLOTH_TEST_TINY_GGUF"
+            reason = "pairing checked; the split needs UNSLOTH_TEST_LLAMA_BIN_DIR and UNSLOTH_TEST_TINY_GGUF"
         )
 
     for state, ap in zip(states, agent_ports):
@@ -168,9 +168,9 @@ def test_pairing_and_a_split_go_through_tailcat_when_the_lan_cannot(
     assert listed.returncode == 0, listed.stdout + listed.stderr
     for name in ("w1", "w2"):
         line = next(l for l in listed.stdout.splitlines() if l.startswith(name))
-        assert (
-            "through tailcat" in line and "ready (direct internet connection)" in line
-        ), listed.stdout
+        assert "through tailcat" in line and "ready (direct internet connection)" in line, (
+            listed.stdout + listed.stderr
+        )
 
     from studio.cluster_link import remote
 
@@ -210,7 +210,7 @@ def test_a_worker_reachable_only_through_a_relay_is_not_served_unless_allowed(
     tmp_path, procs, monkeypatch, derp_map
 ):
     if not e2e.RPC_SERVER.is_file():
-        pytest.skip("needs ggml-rpc-server (UNSLOTH_TEST_LLAMA_BIN_DIR)")
+        pytest.skip(reason = "needs ggml-rpc-server (UNSLOTH_TEST_LLAMA_BIN_DIR)")
     master, state, ap = tmp_path / "master", tmp_path / "w1", e2e.free_port()
     pair_through_tailcat(procs, master, state, "w1", derp_map, ap)
     argv = [sys.executable, "-c", WORKER_AGENT, str(ap), str(e2e.RPC_SERVER), str(e2e.free_port())]
@@ -219,13 +219,13 @@ def test_a_worker_reachable_only_through_a_relay_is_not_served_unless_allowed(
     # magicsock's own knob: every packet goes through DERP, as behind a NAT that defeats traversal.
     relayed = {"TS_DEBUG_ALWAYS_USE_DERP": "1"}
     listed = cli(master, derp_map, "cluster", "list", timeout = 180, **relayed)
-    assert (
-        "w1" in listed.stdout and "relayed only: too slow to serve models" in listed.stdout
-    ), listed.stdout
+    assert "w1" in listed.stdout and "relayed only: too slow to serve models" in listed.stdout, (
+        listed.stdout + listed.stderr
+    )
     allowed = cli(
         master, derp_map, "cluster", "list", timeout = 180, UNSLOTH_CLUSTER_ALLOW_RELAY = "1", **relayed
     )
-    assert "ready (through a relay: slow)" in allowed.stdout, allowed.stdout
+    assert "ready (through a relay: slow)" in allowed.stdout, allowed.stdout + allowed.stderr
 
     _, registry, relays = master_registry(monkeypatch, master, derp_map)
     monkeypatch.setenv("TS_DEBUG_ALWAYS_USE_DERP", "1")

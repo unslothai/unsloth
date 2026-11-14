@@ -241,7 +241,7 @@ def test_fake_tailnet_forwards_refuses_strangers_and_revokes():
 def _real_helper() -> Path:
     path = os.environ.get(tailnet.ENV_BIN) or ""
     if not path or not Path(path).is_file():
-        pytest.skip("set UNSLOTH_LINK_BIN to a built unsloth-link for the real tunnel test")
+        pytest.skip(reason = "set UNSLOTH_LINK_BIN to a built unsloth-link for the real tunnel test")
     return Path(path)
 
 
