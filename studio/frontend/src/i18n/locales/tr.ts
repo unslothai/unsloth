@@ -146,6 +146,10 @@ export const tr = {
       scripts: "Betik çalıştır",
       scriptsDescription:
         "Modellerin sayfalarda betik çalıştırıp çalıştıramayacağını seçin. Her betiği çalışmadan önce görürsünüz",
+      scriptsAllowDescription: "Modeller betikleri sormadan her sayfada çalıştırır. Bir betik sayfadaki her şeyi okuyabilir ve değiştirebilir",
+      scriptsConfirmTitle: "Tüm betiklere izin verilsin mi?",
+      scriptsConfirmDescription: "Modeller betikleri size önce göstermeden her sayfada çalıştırır. Bir betik, oturum açtığınız sayfalar dahil sayfadaki her şeyi okuyabilir ve değiştirebilir. Bunu yalnızca kullandığınız modellere güveniyorsanız açın.",
+      scriptsConfirmAction: "Tüm betiklere izin ver",
       cursor: "İmleci göster",
       cursorDescription:
         "Modellerin sayfada tıkladığı, yazdığı ve sürüklediği yerde bir işaretçi göster",
@@ -160,6 +164,7 @@ export const tr = {
       actions: "Eylemler",
       downloads: "İndirmeler",
       unlabelled: "Etiketsiz tıklamalar",
+      scriptsColumn: "Betikler",
       askNewSites: "Yeni siteler için sor",
       requiresApproval: "Onay gerektirir",
       blocked: "Engellendi",
