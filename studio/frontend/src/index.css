@@ -6725,7 +6725,8 @@ html:not(.dark)[data-glass][data-chat-welcome] :is([data-wallpaper-workspace], [
 html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready]:not([data-wallpaper-route="page"]) > .chat-wallpaper,
 html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready]:not([data-wallpaper-route="page"]) > .chat-wallpaper,
 .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper { opacity: calc(.4 + .6 * var(--wallpaper-conversation, 0)); }
-:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] :is(.aui-thread-viewport, [data-wallpaper-reading-surface]) {
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] :is(.aui-thread-viewport, [data-wallpaper-reading-surface]),
+.wallpaper-preview[data-wallpaper-ready][data-wallpaper-ready] > .wallpaper-preview-wash {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
 }
 /* No second wash on the welcome view: it crushes mid-tones into a dark horizon. */
@@ -6775,7 +6776,6 @@ html[data-composer-outline="off"] :is([data-wallpaper-workspace], [data-chat-con
 html[data-composer-outline="off"] .wallpaper-preview-composer {
   --composer-shadow: none !important;
 }
-.wallpaper-preview-prose { background: var(--background); }
 
 /* Plain glass already uses the page colour; only image wallpapers need the header contrast fade. */
 .chat-wallpaper:not([data-glass-backdrop])::after {

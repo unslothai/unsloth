@@ -94,7 +94,6 @@ import {
   type NpuCatalog,
   type NpuModel,
   type NpuPickerSource,
-  NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
   npuMemoryTag,
@@ -572,7 +571,7 @@ function npuFooterHint(
   return count ? `${count} available` : "";
 }
 
-function ListLabel({
+export function ListLabel({
   children,
   icon,
   action,
@@ -1218,7 +1217,7 @@ function ConnectedGroupHeading({
   );
 }
 
-function ModelRow({
+export function ModelRow({
   label,
   meta,
   selected,
@@ -8558,10 +8557,6 @@ export function HubModelPicker({
                       <NpuSetupNotice catalog={npuCatalog} />
                     )}
                     {npuBrowseRows.map((model) => renderNpuRow(model, false))}
-                    <NpuRuntimeVersions
-                      catalog={npuCatalog}
-                      className="px-2.5 pb-1 pt-1.5"
-                    />
                   </>
                 ) : null}
 
