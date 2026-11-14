@@ -3567,13 +3567,15 @@ def apply_attention_backend(
     logger: Any = None,
     target: Any = None,
     requested: Optional[str] = None,
+    speed_active: bool = True,
 ) -> Optional[str]:
     """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
 
     ``requested`` is the load's own attention request: ``unsloth_int8`` (or its env switch) then routes the strided
     processors of a native pick to the INT8 kernel, and that name is returned. The DiTs whose processors call
     diffusers' attention dispatch route there too (``diffusion_int8_attention_dispatch``): by name or the env switch
-    wherever the kernel is accurate, and with the switch unset for the families that race it on this card."""
+    wherever the kernel is accurate, and with the switch unset for the families that race it on this card, unless
+    ``speed_active`` is False (speed off stays bit-identical)."""
     engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
     if target is not None and (engaged is None or str(engaged).startswith("_native")):
         try:
@@ -3586,7 +3588,9 @@ def apply_attention_backend(
         try:
             from .diffusion_int8_attention import BACKEND
             from .diffusion_int8_attention_dispatch import install as install_int8_dispatch
-            if install_int8_dispatch(pipe, target, requested = requested, logger = logger):
+            if install_int8_dispatch(
+                pipe, target, requested = requested, logger = logger, speed_active = speed_active
+            ):
                 return BACKEND
         except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
             _warn(logger, "unsloth_int8 dispatch", exc)

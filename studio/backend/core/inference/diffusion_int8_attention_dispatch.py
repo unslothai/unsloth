@@ -434,11 +434,14 @@ def install(
     *,
     requested: Any = None,
     logger: Any = None,
+    speed_active: bool = True,
 ) -> int:
     """Route the pipeline's DiT attention dispatch calls to the INT8 kernel where this card and the switch allow it
-    (module docstring). Returns the number of attention modules routed; never raises."""
+    (module docstring). ``speed_active=False`` (speed off) keeps the automatic route off so output stays
+    bit-identical; a request by name or the env switch still routes. Returns the number of modules routed; never
+    raises."""
     try:
-        return _install(pipe, target, requested, logger)
+        return _install(pipe, target, requested, logger, speed_active)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors keep their backend
         remove(pipe)
         if logger is not None:
@@ -560,7 +563,13 @@ def _target_device(target: Any) -> str:
     return str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
 
 
-def _install(pipe: Any, target: Any, requested: Any, logger: Any) -> int:
+def _install(
+    pipe: Any,
+    target: Any,
+    requested: Any,
+    logger: Any,
+    speed_active: bool = True,
+) -> int:
     import torch
 
     from . import diffusion_int8_attention as I8
@@ -570,6 +579,8 @@ def _install(pipe: Any, target: Any, requested: Any, logger: Any) -> int:
     if setting == "off" or not enabled():
         return 0
     forced = setting == "force" or I8.requested(requested)
+    if not forced and not speed_active:
+        return 0
     device = _target_device(target)
     if not device.startswith("cuda") or not torch.cuda.is_available():
         return 0

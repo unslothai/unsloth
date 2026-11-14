@@ -315,6 +315,19 @@ def test_wan_routes_self_and_cross_attention_unmasked(card, monkeypatch):
     )
 
 
+def test_speed_off_keeps_the_automatic_route_off(card, monkeypatch):
+    """Speed off stays bit-identical: with the switch unset nothing routes (no race runs), while a request by name or
+    the env switch still routes."""
+    dit = _wan_dit()
+    dit.set_attention_backend("native")
+    pipe = _Pipe(dit)
+    seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
+    assert D.install(pipe, _TARGET, speed_active = False) == 0 and not seen
+    assert D.install(pipe, _TARGET, requested = I.BACKEND, speed_active = False) == 4
+    monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
+    assert D.install(pipe, _TARGET, speed_active = False) == 4
+
+
 def test_wan_auto_race_floor_keeps_short_cross_attention(card, monkeypatch):
     seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
     monkeypatch.setattr(I, "RACE_TOKENS", (64, 16))
@@ -734,7 +747,10 @@ def test_apply_attention_backend_installs_the_route(monkeypatch):
     monkeypatch.setattr(I, "install_requested", lambda *a, **k: 0)
     got = []
     monkeypatch.setattr(
-        D, "install", lambda pipe, target, requested = None, logger = None: got.append(requested) or 3
+        D,
+        "install",
+        lambda pipe, target, requested = None, logger = None, speed_active = True: got.append(requested)
+        or 3,
     )
     assert (
         A.apply_attention_backend(object(), "_native_cudnn", target = _TARGET, requested = "auto")

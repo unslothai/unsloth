@@ -11290,6 +11290,7 @@ class VideoBackend:
                 target = types.SimpleNamespace(device = target.device, dtype = dtype),
                 # unsloth_int8 by name routes the DiT's attention dispatch to the INT8 kernel
                 requested = attention_backend,
+                speed_active = effective_speed != SPEED_OFF,
             )
             # The optimizer's speed layer (diffusion_autoopt), shared with the image backend. Its family hooks are
             # what used to be inline here: LTX static compile (token counts depend only on (w, h, frames): one
