@@ -8,10 +8,21 @@
       "archive_size": 41472
     },
     "q4k": {
-      "commit": "93b83988519377935a648ec80740068920ba4076",
-      "archive_sha256": "6f6d99af871b1869003c6844878ad27f0c9e2cf69b04768d6df0827154454003",
-      "archive_size": 66711
+      "commit": "ea1df7ec736fdf2d45dcbc99a79b6300c4301e07",
+      "archive_sha256": "b79053f413f9cb9e619033bee41dabcb7583f6272cf4212718482f1d3969567f",
+      "archive_size": 67352,
+      "config_overrides": {
+        "configs/qwen3.5_0.8b.json": {
+          "name_map.linear_out_proj.default_tensor_type": "Q4_K"
+        },
+        "configs/qwen3.5_2b.json": {
+          "name_map.linear_out_proj.default_tensor_type": "Q4_K"
+        }
+      }
     }
   },
-  "q4k_architectures": ["qwen35", "qwen35moe"]
+  "q4k_architectures": [
+    "qwen35",
+    "qwen35moe"
+  ]
 }
