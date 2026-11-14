@@ -1154,6 +1154,54 @@ def pipeline_safe_cut_points(config):
     return [i for i in range(config.num_hidden_layers) if _engram_cut_safe(config, i)]
 
 
+def sequence_segments(position_ids, attention_mask, bsz, seqlen):
+    """[(row, start, length)] of the sequences in a batch when a row holds several of them (position_ids restarting
+    at 0, padding-free packing) or starts with padding (left padding); None when every row is one sequence from
+    column 0 followed only by padding (the plain path). One host read of a flag, then (only when needed) of the
+    layout. Each sequence's positions must run 0, 1, 2, ...: offset positions (a continuation) are refused."""
+    pos = None
+    if position_ids is not None and seqlen > 1:
+        pos = position_ids if position_ids.dim() == 2 else position_ids.view(1, -1)
+        if pos.shape[0] == 1 and bsz > 1:
+            pos = pos.expand(bsz, -1)
+    mask = (
+        attention_mask.bool() if attention_mask is not None and attention_mask.dim() == 2 else None
+    )
+    if pos is None and mask is None:
+        return None
+    flags = []
+    if pos is not None:
+        flags.append((pos != torch.arange(seqlen, device = pos.device)).any())
+    if mask is not None:
+        # left padding, or a sequence resuming after padding
+        flags.append((~mask[:, 0]).any() | (mask[:, 1:] & ~mask[:, :-1]).any())
+    if not bool(torch.stack(flags).any()):
+        return None
+    pos_rows = pos.tolist() if pos is not None else None
+    mask_rows = mask.tolist() if mask is not None else None
+    segments = []
+    for row in range(bsz):
+        start = None
+        for col in range(seqlen + 1):
+            live = col < seqlen and (mask_rows is None or mask_rows[row][col])
+            begins = live and (
+                start is None
+                or (pos_rows is not None and pos_rows[row][col] != pos_rows[row][col - 1] + 1)
+            )
+            if start is not None and (not live or begins):
+                segments.append((row, start, col - start))
+                start = None
+            if begins:
+                if pos_rows is not None and pos_rows[row][col] != 0:
+                    raise NotImplementedError(
+                        "Unsloth: DeepSeek-V4.1 needs every sequence's position_ids to start at 0 (packed sequences "
+                        "and left padding are fine). Offset positions continue an earlier prefix, which needs the "
+                        "compressor / engram state of that prefix; pass the whole sequence instead."
+                    )
+                start = col
+    return segments
+
+
 _LORA_KV_TARGETS = (
     "self_attn.kv_proj",
     "compressor.kv_proj",
@@ -1431,20 +1479,14 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
                 )
             inputs_embeds = self.embed_tokens(input_ids)
         bsz, seqlen = inputs_embeds.shape[:2]
-        if position_ids is not None:
-            pos = position_ids if position_ids.dim() == 2 else position_ids.view(1, -1)
-            expected = torch.arange(seqlen, device = pos.device)
-            if (
-                seqlen > 1
-                and not torch.compiler.is_compiling()
-                and not bool((pos == expected).all())
-            ):
-                raise NotImplementedError(
-                    "Unsloth: DeepSeek-V4.1 trains on one sequence per row (positions 0..S-1); packed or offset "
-                    "position_ids are not supported (the compressor pools and the engram hashes run row-wide)."
+        if not torch.compiler.is_compiling():
+            segments = sequence_segments(position_ids, attention_mask, bsz, seqlen)
+            if segments is not None:
+                return self._forward_segments(
+                    segments, input_ids, inputs_embeds, output_hidden_states, **kwargs
                 )
         positions = torch.arange(seqlen, device = inputs_embeds.device)
-        # all-True masks are a no-op in the hash / gate, so no host check of attention_mask.all() is needed
+        # right padding only here (sequence_segments moved anything else): pads never reach a real token's hash / gate
         token_mask = (
             attention_mask.bool()
             if attention_mask is not None and attention_mask.dim() == 2
@@ -1478,6 +1520,53 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
             all_hidden = all_hidden + (h,)
         return BaseModelOutputWithPast(
             last_hidden_state = h, past_key_values = None, hidden_states = all_hidden
+        )
+
+    def _forward_segments(self, segments, input_ids, inputs_embeds, output_hidden_states, **kwargs):
+        """Packed rows (several sequences, position_ids restarting at 0) or left padding: every sequence is moved to
+        its own row starting at column 0 (right padded), run exactly as the reference runs one sequence, and its
+        hidden states are put back where it came from (padding columns get zeros). The compressor groups, the sliding
+        window, the top-k blocks and the engram n-grams therefore never cross a sequence boundary."""
+        if kwargs.get("engram_left_context") is not None:
+            raise ValueError(
+                "Unsloth: DeepSeek-V4.1 engram_left_context continues one sequence across shards; it cannot be "
+                "combined with packed or left-padded rows."
+            )
+        bsz, seqlen, hidden = inputs_embeds.shape
+        device = inputs_embeds.device
+        longest = max(length for _, _, length in segments)
+        idx = torch.full((len(segments), longest), -1, dtype = torch.long)
+        for k, (row, start, length) in enumerate(segments):
+            idx[k, :length] = torch.arange(row * seqlen + start, row * seqlen + start + length)
+        idx = idx.to(device)
+        valid = idx >= 0
+        safe = idx.clamp(min = 0)
+        embeds = inputs_embeds.reshape(bsz * seqlen, hidden)[safe]
+        ids = None
+        if input_ids is not None:
+            ids = input_ids.reshape(-1)[safe].masked_fill(~valid, 0)
+        out = self.forward(
+            input_ids = ids,
+            attention_mask = valid.long(),
+            position_ids = None,
+            inputs_embeds = embeds,
+            output_hidden_states = output_hidden_states,
+            **kwargs,
+        )
+        dst = idx[valid]
+
+        def back(h):
+            full = h.new_zeros(bsz * seqlen, h.shape[-1])
+            full = full.index_put((dst,), h[valid])
+            return full.view(bsz, seqlen, h.shape[-1])
+
+        hidden_states = None
+        if out.hidden_states is not None:
+            hidden_states = tuple(back(h) for h in out.hidden_states)
+        return BaseModelOutputWithPast(
+            last_hidden_state = back(out.last_hidden_state),
+            past_key_values = None,
+            hidden_states = hidden_states,
         )
 
 

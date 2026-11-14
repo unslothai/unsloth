@@ -342,11 +342,72 @@ def test_released_fp4_and_fp8_blocks_dequantize_like_the_reference_converter():
         assert torch.equal(convert._dequant_fp8(w, s).float(), want.to(torch.bfloat16).float())
 
 
-def test_packed_position_ids_are_refused():
+def test_offset_position_ids_are_refused():
     model = _tiny_model()
     ids = torch.randint(0, 512, (1, 8))
-    with pytest.raises(NotImplementedError, match = "packed"):
-        model(input_ids = ids, position_ids = torch.tensor([[0, 1, 2, 3, 0, 1, 2, 3]]))
+    with pytest.raises(NotImplementedError, match = "start at 0"):
+        model(input_ids = ids, position_ids = torch.arange(5, 13).unsqueeze(0))
+
+
+def _alone(model, ids, width):
+    """One sequence in its own row, right padded to `width` (the row length the relayout gives it): the indexer's
+    top-k breaks ties among equal (relu-zero) scores by position over the whole row, so the row width must match
+    for an exact comparison. Right padding never changes a real token's inputs otherwise."""
+    pad = width - len(ids)
+    row = torch.cat([ids, torch.zeros(pad, dtype = torch.long)]).unsqueeze(0)
+    mask = torch.cat([torch.ones(len(ids)), torch.zeros(pad)]).long().unsqueeze(0)
+    with torch.no_grad():
+        return model(input_ids = row, attention_mask = mask).logits[0, : len(ids)]
+
+
+def test_packed_sequences_match_each_sequence_run_alone():
+    """Padding-free packing (position_ids restarting at 0): compressor groups, window, top-k blocks and engram
+    n-grams stay inside each sequence, so every sequence's logits equal a run of it alone."""
+    model = _tiny_model().eval()
+    torch.manual_seed(1)
+    a, b, c = torch.randint(0, 512, (7,)), torch.randint(0, 512, (13,)), torch.randint(0, 512, (4,))
+    ids = torch.cat([a, b, c]).unsqueeze(0)
+    pos = torch.cat([torch.arange(7), torch.arange(13), torch.arange(4)]).unsqueeze(0)
+    with torch.no_grad():
+        packed = model(input_ids = ids, position_ids = pos).logits[0]
+    for seq, lo in ((a, 0), (b, 7), (c, 20)):
+        assert torch.allclose(
+            packed[lo : lo + len(seq)], _alone(model, seq, 13), atol = 1e-5, rtol = 1e-5
+        )
+    # the packed row trains: gradients reach the embeddings of every sequence
+    model.train()
+    out = model(input_ids = ids, position_ids = pos, labels = ids)
+    out.loss.backward()
+    # every token but the row's last one predicts a label, so its embedding row gets a gradient
+    assert torch.isfinite(out.loss)
+    assert model.model.embed_tokens.weight.grad[ids[0, :-1]].abs().sum(-1).gt(0).all()
+
+
+def test_left_padding_matches_the_unpadded_sequence():
+    model = _tiny_model().eval()
+    torch.manual_seed(2)
+    a, b = torch.randint(0, 512, (11,)), torch.randint(0, 512, (16,))
+    ids = torch.stack([torch.cat([torch.zeros(5, dtype = torch.long), a]), b])
+    mask = torch.stack([torch.cat([torch.zeros(5), torch.ones(11)]), torch.ones(16)]).long()
+    with torch.no_grad():
+        logits = model(input_ids = ids, attention_mask = mask).logits
+    assert torch.allclose(logits[0, 5:], _alone(model, a, 16), atol = 1e-5, rtol = 1e-5)
+    assert torch.allclose(logits[1], _alone(model, b, 16), atol = 1e-5, rtol = 1e-5)
+    assert torch.equal(
+        logits[0, :5], torch.zeros_like(logits[0, :5])
+    )  # padding columns: zero hidden states
+
+
+def test_plain_and_right_padded_batches_take_no_relayout(monkeypatch):
+    model = _tiny_model().eval()
+    calls = []
+    monkeypatch.setattr(type(model.model), "_forward_segments", lambda *a, **k: calls.append(1))
+    ids = torch.randint(0, 512, (2, 12))
+    mask = torch.ones(2, 12, dtype = torch.long)
+    mask[1, 9:] = 0
+    with torch.no_grad():
+        model(input_ids = ids, attention_mask = mask, position_ids = torch.arange(12).expand(2, -1))
+    assert calls == []
 
 
 def test_experts_fallback_matches_a_per_token_fp64_oracle():
