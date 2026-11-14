@@ -40,24 +40,18 @@ INT8_ATTENTION_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL"
 BACKEND = "unsloth_int8"
 _OP = "unsloth_studio::int8_attention_nhd"
 HEAD_DIMS = (64, 128)
-# engaged only when it beats the incumbent by more than this margin on the timed probe (a tie keeps the incumbent)
 RACE_MARGIN = 0.98
 RACE_TOKENS = (4096, 1024)
 # the accuracy every card must reach against fp32 attention on the probe before the kernel may run at all
 MIN_COSINE = 0.999
 MAX_REL_L1 = 0.05
-# the same probe with q and k scaled up, as the sharp attention of late DiT blocks is: every output finite and close
 SHARP_GAIN = 5.0
 MIN_SHARP_COSINE = 0.99
 LOG2E = 1.4426950408889634
 
-# Per CUDA capability and head dim: keys per tile (bn), warps per block (wpc), 16-row query tiles per warp (nq),
-# shared-memory tile buffers (stages), whether the Q operand fragments stay in registers (qreg; 2 = read from global
-# memory, no Q rows in shared memory: sm75 has 64 KB of it per SM, one 128-key stage is 36 KB), where the rounding
-# constant comes off the output accumulators (flush_tail) and, where the assembler's own register choice costs a
-# block per SM, a register cap. Measured per card on the full call (quantisers included); a card missing here keeps
-# native attention. Every config of a head dim has the same bn and both flush placements round alike, so the
-# output does not depend on the card.
+# Per CUDA capability and head dim: keys per tile (bn), warps (wpc), 16-row query tiles per warp (nq), smem stages,
+# qreg (2 = Q from global memory: sm75 has 64 KB smem per SM), flush_tail placement and an optional register cap.
+# Measured per card; a card missing here keeps native. One bn per head dim, so the output does not depend on the card.
 KERNEL_CONFIGS: dict = {
     (7, 5): {
         128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 1, "qreg": 2},
@@ -80,9 +74,7 @@ KERNEL_CONFIGS: dict = {
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
 }
-# ROCm runs the Triton form of the kernel (``diffusion_int8_attention_triton``): per gfx arch and head dim, its block
-# shape and how P.V is computed. Measured per arch on the real card (see the PR); an arch missing here keeps native
-# attention.
+# ROCm runs the Triton kernel: block shape and P.V mode per gfx arch and head dim; a missing arch keeps native.
 ROCM_KERNEL_CONFIGS: dict = {
     "gfx1151": {
         128: {

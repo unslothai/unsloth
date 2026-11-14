@@ -88,8 +88,6 @@ def h3_attention_backend(
         return selected
     try:
         from .diffusion_attention import ATTN_AUTO, normalize_attention_backend
-
-        # unsloth_int8 is an overlay on the automatic native pick
         if normalize_attention_backend(requested) not in (ATTN_AUTO, "unsloth_int8"):
             return selected
     except Exception:  # noqa: BLE001 -- unparseable request: leave it alone
@@ -160,8 +158,7 @@ def _strided_processor_for(base: Any) -> Any:
         _unsloth_shared_qkv = False
         # set from UNSLOTH_H3_STRIDED_SAGE at install: a sage backend runs here, not in the stock processor
         _unsloth_sage = False
-        # set by diffusion_int8_attention.install_int8_attention: unmasked calls of at least this many tokens run the
-        # INT8 kernel instead of the native one
+        # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
 
@@ -224,14 +221,12 @@ def _strided_processor_for(base: Any) -> Any:
             if (
                 self._unsloth_int8
                 and query.shape[1] >= self._unsloth_int8_min_tokens
-                # the kernel has no backward: a call that needs gradients runs native attention, here and not
-                # inside the op (autograd never sees inside it)
+                # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
                 and not (
                     torch.is_grad_enabled()
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                # NHD in and out; the op itself runs native attention for a call the kernel cannot take
                 hidden_states = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             elif sage:

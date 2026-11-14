@@ -49,9 +49,6 @@ def _clean(monkeypatch):
     I.STATS.update(stats)
 
 
-# ---------------------------------------------------------------- a plain-torch model of the quantisers and kernel
-
-
 def rotate_ref(x):
     """The quantisers' rotation on the last dim: fixed signs, then a Hadamard transform over every ROT_GROUP
     channels (the head dim where that is smaller)."""
@@ -161,9 +158,6 @@ def emulate(p):
     return out.view(B, H, Sq, D).permute(0, 2, 1, 3).float()
 
 
-# ---------------------------------------------------------------- switches, configs, aliases (CPU)
-
-
 @pytest.mark.parametrize(
     "raw,expected",
     [
@@ -196,7 +190,6 @@ def test_alias_is_a_native_pick_with_the_overlay(monkeypatch):
     monkeypatch.setattr(DA, "_is_cuda_nvidia", lambda target: True)
     monkeypatch.setattr(DA, "_cudnn_attention_supported", lambda: True)
     target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
-    # the same native pick an active speed profile makes, whatever the speed setting
     assert (
         DA.select_attention_backend(target, "unsloth_int8", speed_active = False) == "_native_cudnn"
     )
@@ -214,7 +207,6 @@ def test_every_config_fits_its_card():
             assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT[capability]
             cap = config.get("max_registers")
             if cap is not None:
-                # a capped config is there to fit this many blocks: the cap must allow at least one
                 assert 32 * config["wpc"] * cap <= SM_REGISTERS
             assert (
                 32 * config["wpc"] <= 1024
@@ -266,18 +258,15 @@ def test_kernel_compiles_for_every_config():
                 f"sm_{capability[0]}{capability[1]}",
                 I.kernel_defines(head_dim, config),
             ).decode(errors = "replace")
-            # Q.K^T: (head_dim / 32) k steps per 8-key block; P.V: (bn / 32) k steps per 8-channel block
             products = config["nq"] * (
                 (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
             )
             if capability < (8, 0):
-                # sm75: the 8x8 product (four per m16n8k32) and no instruction it lacks
                 assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
                 assert "m16n8k32" not in ptx and "cp.async" not in ptx
             else:
                 assert ptx.count("mma.sync.aligned.m16n8k32") == products
                 assert "m8n8k16" not in ptx
-            # the accumulators are read as floats through their bit pattern: no signed int -> float conversion
             assert "cvt.rn.f32.s32" not in ptx
             quant = K.compile_ptx(
                 K.QUANT_SOURCE,
@@ -409,7 +398,6 @@ def test_install_off_cuda_and_kill_switch(monkeypatch):
 
 
 def test_install_follows_the_race(monkeypatch):
-    # head dim 128 wins from 2560 tokens, head dim 64 loses the race, head dim 96 has no kernel
     seen = _fake_cuda(
         monkeypatch,
         found = lambda head_dim: {"ok": True, "min_tokens": 2560 if head_dim == 128 else None},
@@ -428,7 +416,6 @@ def test_install_needs_the_accuracy_check_even_when_forced(monkeypatch):
     dit = _fake_dit()
     assert I.install_int8_attention(dit, device = "cuda", dtype = torch.bfloat16, force = True) == 1
     assert [m.processor._unsloth_int8 for m in dit.blocks] == [False, False, True, False]
-    # the env switch forces the same way
     dit = _fake_dit()
     monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
     assert I.install_int8_attention(dit, device = "cuda", dtype = torch.bfloat16) == 1
@@ -448,7 +435,6 @@ def test_install_scope_incumbent_and_refusals(monkeypatch):
     )
     assert n == 1 and [m.processor._unsloth_int8 for m in dit.blocks] == [True, False, False, False]
     assert seen == [(2, 128, "sage_hub", True)]
-    # a card without a config, a dtype the kernel does not write
     _fake_cuda(monkeypatch, capability = (9, 0), found = {"ok": True, "min_tokens": 0})
     assert I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16) == 0
     _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
@@ -499,12 +485,10 @@ def test_request_hook_checks_fp16_on_sm75_when_the_target_names_no_dtype(
     "shape,bn", [((1, 300, 2, 64), 64), ((1, 200, 2, 128), 64), ((1, 260, 1, 128), 128)]
 )
 def test_the_method_stays_close_to_fp32_attention(shape, bn):
-    # no GPU involved: the quantisers' and the kernel's math in plain torch against fp32 attention
     q, k, v = I.probe_inputs("cpu", torch.float32, *shape[1:])
     p = reference_quantise(q, k, v, {"bn": bn, "wpc": 1, "nq": 1, "stages": 1})
     for name in ("qi", "ki", "vt"):
         assert p[name].abs().max() <= 127 and torch.equal(p[name], p[name].round())
-    # the rotation is orthogonal up to its factor 4, so Q.K^T is unchanged
     eye = torch.eye(shape[-1], dtype = torch.float64)
     rot = rotate_ref(eye)
     assert torch.equal(rot @ rot.T, float(min(I.ROT_GROUP, shape[-1])) * eye)
@@ -512,16 +496,11 @@ def test_the_method_stays_close_to_fp32_attention(shape, bn):
     assert acc["cos"] > 0.9995 and acc["rel_l1"] < 0.03, acc
 
 
-# ---------------------------------------------------------------- statistics, dtypes, gradients (CPU)
-
-
 def test_statistics_cover_every_key():
     for n in (1, 15, 16, 80, 1039, 4112, 10011, 75600, 300000):
         kstep, vstep, chunks, rows = I.stats_plan(n)
-        # the V range: every key, in row chunks that tile the sequence
         assert vstep == 1 and rows % vstep == 0 and chunks <= I.V_RANGE_CHUNKS
         assert (chunks - 1) * rows < n <= chunks * rows
-        # the K mean: sub-sampled only where that still leaves K_MEAN_KEYS keys
         assert 1 <= kstep <= I.K_MEAN_STEP and -(-n // kstep) >= min(n, I.K_MEAN_KEYS)
 
 
@@ -560,7 +539,6 @@ def test_the_card_check_counts_for_its_dtype_only(monkeypatch):
     assert I._verified(bf16, bf16, bf16)
     assert not I._verified(fp16, fp16, fp16) and not I._verified(bf16, bf16, fp16)
     assert not I._verified(operand(torch.bfloat16), bf16, operand(torch.float32))
-    # the check records the dtype it ran in
     monkeypatch.setattr(
         I, "int8_attention", lambda q, k, v, scale = None, config = None: I.reference_attention(q, k, v)
     )
@@ -600,7 +578,6 @@ def test_flux3_strided_processor_keeps_native_attention_for_calls_that_need_grad
         with torch.no_grad():
             want = proc(attn, x, None, rope)
         assert len(calls) == 1
-        # the same call with gradients wanted: native attention, and a backward that reaches the input
         x = x.clone().requires_grad_(True)
         got = proc(attn, x, None, rope)
         assert len(calls) == 1 and torch.allclose(got, want, atol = 1e-5, rtol = 1e-5)
@@ -610,15 +587,11 @@ def test_flux3_strided_processor_keeps_native_attention_for_calls_that_need_grad
             and bool(torch.isfinite(x.grad).all())
             and float(x.grad.abs().sum()) > 0
         )
-        # gradients switched off again: back on the op
         with torch.no_grad():
             proc(attn, x, None, rope)
         assert len(calls) == 2
     finally:
         fa.strided_processor_class.cache_clear()
-
-
-# ---------------------------------------------------------------- the H3 strided processor route (tiny real model)
 
 
 def _h3():
@@ -702,23 +675,19 @@ def test_strided_processor_routes_flagged_calls_to_the_op(monkeypatch, _active_b
         for proc in procs:
             proc._unsloth_int8 = True
         got = model(**_h3_inputs())
-        # every unmasked call of a flagged processor went through the op, NHD in and out
         assert calls and all(
             len(shape) == 4 and shape[2] == 2 and shape[3] == 32 for shape in calls
         )
         assert all(torch.allclose(a, b, atol = 1e-5, rtol = 1e-5) for a, b in zip(want, got))
-        # below the raced sequence length the native kernel stays
         calls.clear()
         for proc in procs:
             proc._unsloth_int8_min_tokens = 10**6
         assert all(torch.equal(a, b) for a, b in zip(want, model(**_h3_inputs()))) and not calls
-        # over a default SDPA pick (sm75, gfx1151: no native kernel to pin) a flagged processor still takes the route
         for proc in procs:
             proc._unsloth_int8_min_tokens = 0
             proc._attention_backend = None
         got = model(**_h3_inputs())
         assert calls and all(torch.allclose(a, b, atol = 1e-5, rtol = 1e-5) for a, b in zip(want, got))
-        # and an unflagged one there runs the stock processor
         calls.clear()
         for proc in procs:
             proc._unsloth_int8 = False
@@ -741,12 +710,10 @@ def test_h3_strided_processor_keeps_native_attention_for_calls_that_need_gradien
     I.int8_attention_op()
     for m in I.int8_processors(model):
         m.processor._unsloth_int8 = True
-        # the fused norm + RoPE op is inference-only too; this test is about the attention route
         m.processor._unsloth_qk_rope = False
     with torch.no_grad():
         want = model(**_h3_inputs())
     assert calls
-    # a training step: the kernel has no backward, so every call stays on native attention and autograd works
     calls.clear()
     inputs = _h3_inputs()
     inputs["hidden_states"].requires_grad_(True)
@@ -830,7 +797,6 @@ def test_checkpoint_race_times_the_kernel_on_a_block(monkeypatch, _active_backen
     def routed():
         return [(m.processor._unsloth_int8, m.processor._unsloth_int8_min_tokens) for m in blocks]
 
-    # [native, engaged, kernel] ms per image row count. Faster than native on both canvases: every length
     race["found"] = {
         "native": "_native_math",
         "kernel": {4096: [10.0, 10.0, 9.0], 1024: [3.0, 3.0, 2.5]},
@@ -840,19 +806,15 @@ def test_checkpoint_race_times_the_kernel_on_a_block(monkeypatch, _active_backen
     record = getattr(model, H.ATTENTION_RACE_ATTR)
     assert record["timed"] == "block" and record["blocks"] == 2 and record["min_tokens"] == 0
     assert record["ms"]["4096"] == [10.0, 10.0, 9.0] and record["seconds"] >= 0
-    # only the large canvas: short sequences keep the native backend
     race["found"]["kernel"][1024] = [3.0, 3.0, 2.99]
     assert run() == 2 and routed() == [(True, H._KERNEL_LARGE_ROWS)] * 2
-    # inside the 2% margin: the incumbent stays
     race["found"]["kernel"][4096] = [10.0, 10.0, 9.9]
     assert run() == 0 and routed() == [(False, 0)] * 2
-    # SageAttention kept by its own race is the one to beat
     race["found"]["kernel"] = {4096: [10.0, 8.0, 9.0], 1024: [3.0, 2.0, 2.5]}
     assert run(sage = True) == 0 and routed() == [(False, 0)] * 2
     assert run(sage = False) == 2
     race["found"]["kernel"] = {4096: [10.0, 8.0, 7.0], 1024: [3.0, 2.0, 2.5]}
     assert run(sage = True) == 2 and routed() == [(True, H._KERNEL_LARGE_ROWS)] * 2
-    # no block on the card: the attention-only race decides, against the call the blocks make
     race["found"] = None
     assert run() == 2 and len(installs) == 2
     assert installs[1]["incumbent"][0] == "native" and "force" not in installs[1]
@@ -871,16 +833,13 @@ def test_checkpoint_race_times_the_kernel_on_a_block(monkeypatch, _active_backen
     assert name == "sage" and fn(1, 2, 3) == 1
     assert calls[0]["backend"] == "sage" and calls[0]["attn_mask"] is None
     mods[0].processor._attention_backend = saved[mods[0]]
-    # a broken race leaves the blocks as they were
     race["found"] = {"native": "_native_math", "kernel": {4096: [1.0]}}
     assert run() == 0 and routed() == [(False, 0)] * 2
     assert "error" in getattr(model, H.ATTENTION_RACE_ATTR)
-    # SageAttention pinned by its switch, nothing to race, the kill switch
     assert run(forced = True) == 0 and not installs
     assert run(mods = []) == 0 and not installs
     monkeypatch.setenv(I.INT8_ATTENTION_ENV, "0")
     assert run() == 0 and not installs
-    # the kernel's own switch forces it past the race, SageAttention pinned or not
     monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
     assert run(forced = True) == 2 and len(installs) == 1 and routed() == [(True, 0)] * 2
 
@@ -958,21 +917,17 @@ def test_checkpoint_attention_races_each_backend_once(monkeypatch, _active_backe
         ]
         return engaged, list(races), blocks
 
-    # the kernel's switch forces it: nothing is timed at all
     engaged, timed, blocks = load("1")
     assert engaged == I.BACKEND and timed == []
     assert all(p._unsloth_int8 for p in blocks)
-    # the race default: one block race, which the kernel wins
     engaged, timed, blocks = load()
     assert engaged == I.BACKEND and timed == [True]
-    # the kernel loses: SageAttention is kept or dropped on the same block race, no second race
     engaged, timed, blocks = load(kernel_ms = 9.9)
     assert engaged == "sage_hub" and timed == [True]
     assert all(p._attention_backend == "sage_hub" and not p._unsloth_int8 for p in blocks)
     engaged, timed, blocks = load(kernel_ms = 9.9, sage_keep = False)
     assert engaged is None and timed == [True]
     assert all(p._attention_backend != "sage_hub" for p in blocks)
-    # no kernel on this card, or its kill switch: SageAttention's own race
     assert load(ready = False)[:2] == ("sage_hub", [False])
     assert load("1", ready = False)[:2] == ("sage_hub", [False])
     assert load("0")[:2] == ("sage_hub", [False])
@@ -1045,9 +1000,6 @@ def test_checkpoint_race_decision_does_not_follow_a_clock_step(monkeypatch, afte
             assert large[2] < I.RACE_MARGIN, (step, found)
 
 
-# ---------------------------------------------------------------- the kernel itself (CUDA)
-
-
 def _case(
     shape,
     dtype,
@@ -1065,7 +1017,6 @@ def _case(
     )
     q, k, v = (x.to(dtype) for x in (q, k, v))
     if strided:
-        # the layout the strided processors pass: a [B, S, H * D] projection unflattened, here sliced out of QKV
         qkv = torch.cat([x.flatten(2) for x in (q, k, v)], dim = -1)
         q, k, v = (x.unflatten(-1, (H, D)) for x in qkv.chunk(3, dim = -1))
     return q, k, v
@@ -1102,7 +1053,6 @@ def test_kernel_matches_its_torch_model(shape, dtype, config, strided):
         assert (
             (got - ref[name].double()).abs() / ref[name].double().abs().clamp_min(1e-30)
         ).max() < 1e-5, name
-    # the sub-sampled statistics themselves
     own = reference_quantise(q, k, v, config)
     for name in ("kc", "vc", "vg"):
         assert torch.allclose(p[name], own[name].to(p[name].device), rtol = 1e-4, atol = 1e-4), name
@@ -1110,7 +1060,6 @@ def test_kernel_matches_its_torch_model(shape, dtype, config, strided):
     assert out.dtype == dtype and out.shape == q.shape and torch.isfinite(out.float()).all()
     want = emulate(p)
     rel = ((out.float() - want).abs().mean() / want.abs().mean()).item()
-    # the gap is the output dtype's rounding step plus fp32 accumulation order
     assert rel < (2e-3 if dtype == torch.float32 else 4e-3), rel
     assert torch.equal(I.int8_attention(q, k, v, config = config), out)
 
@@ -1121,7 +1070,6 @@ def test_shipped_config_fits(head_dim):
     capability = torch.cuda.get_device_capability()
     config = _cuda_config(head_dim)
     fn = I.kernel_function("cuda", head_dim, config)
-    # the configs are picked on measured time: the fastest ones keep a few words on the stack
     assert fn.local_bytes <= 64, "the kernel spilled more than a few registers to the stack"
     cap = config.get("max_registers")
     assert cap is None or fn.registers <= cap
@@ -1138,7 +1086,6 @@ def test_accuracy_against_fp32_attention(shape, dtype):
     ref = I.reference_attention(q, k, v)
     acc = I.accuracy(I.int8_attention(q, k, v), ref)
     assert acc["cos"] > 0.9995 and acc["rel_l1"] < 0.03, acc
-    # a different softmax scale than 1 / sqrt(head dim)
     got = I.int8_attention(q, k, v, scale = 0.05)
     want = F.scaled_dot_product_attention(
         *(x.float().permute(0, 2, 1, 3) for x in (q, k, v)), scale = 0.05
@@ -1193,7 +1140,6 @@ def test_padded_keys_get_no_weight_when_the_score_scale_underflows(tokens):
     want = emulate(p)
     rel = float((out - want).abs().mean() / want.abs().mean())
     assert rel < 4e-3, rel
-    # every key has the same weight: the output is the mean of V (lognormal here: this needs its range over every key)
     acc = I.accuracy(out, v.float().mean(1, keepdim = True).expand_as(out))
     assert acc["cos"] > 0.999 and acc["rel_l1"] < 0.06, acc
 
@@ -1230,7 +1176,6 @@ def test_the_sm75_instructions_give_the_same_bits(head_dim, dtype):
         {"sm75": 0, "stages": 1, "qreg": 2},
     ):
         candidate = {**config, "wpc": 4, "nq": 1, **variant}
-        # the variant really is what ran: the 8x8 product is in its code only when asked for
         capability = torch.cuda.get_device_capability()
         ptx = K.compile_ptx(
             K.KERNEL_SOURCE,
@@ -1299,7 +1244,6 @@ def test_op_runs_the_kernel_only_where_it_was_verified(monkeypatch):
     got = torch.ops.unsloth_studio.int8_attention_nhd(q, k, v)
     assert I.STATS["int8"] == before["int8"] + 1
     assert I.accuracy(got, I.reference_attention(q, k, v))["cos"] > 0.999
-    # the check passed in bf16: an fp16 call is native attention until the check has run in fp16 too
     half = tuple(x.half() for x in (q, k, v))
     native = I.STATS["native"]
     assert torch.equal(
@@ -1309,7 +1253,6 @@ def test_op_runs_the_kernel_only_where_it_was_verified(monkeypatch):
     assert I.verdict("cuda", torch.float16, 2, 128, timed = False)["ok"]
     torch.ops.unsloth_studio.int8_attention_nhd(*half)
     assert I.STATS["int8"] == before["int8"] + 2
-    # a failing launch falls back to native attention and stays there
     monkeypatch.setattr(I, "_BROKEN", set())
     monkeypatch.setattr(I, "attend", lambda p: (_ for _ in ()).throw(RuntimeError("launch failed")))
     assert torch.equal(
@@ -1428,7 +1371,6 @@ def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     I.remove_int8_attention(model)
     before = I.STATS["int8"]
     found = H.race_checkpoint_attention(model, saved, torch.bfloat16, kernel = True)
-    # 2 warm-ups + one timed call per round of the kernel per canvas, and the processor is left as it was
     calls = 2 * (2 + H._RACE_ROUNDS)
     assert I.STATS["int8"] == before + calls
     assert sorted(found["kernel"]) == [1024, 4096]
@@ -1437,7 +1379,6 @@ def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     assert all(len(v) == 3 and min(v) > 0 for v in found["paired"].values())
     proc = blocks[0].processor
     assert not proc._unsloth_int8 and proc._attention_backend == saved[blocks[0]]
-    # without the kernel the race is the two-way one
     plain = H.race_checkpoint_attention(model, saved, torch.bfloat16)
     assert "kernel" not in plain and len(plain["ms"]) == 2 and I.STATS["int8"] == before + calls
     import logging

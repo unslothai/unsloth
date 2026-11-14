@@ -621,7 +621,6 @@ def select_attention_backend(
     ``apply_attention_backend``) unless speed is explicitly ``off``; elsewhere returns None (native)."""
     alias = normalize_attention_backend(requested)
     if alias == "unsloth_int8":
-        # an overlay on native attention (apply_attention_backend engages it): pick native as a speed profile would
         alias = ATTN_AUTO
         speed_active = True
     if alias != ATTN_AUTO:

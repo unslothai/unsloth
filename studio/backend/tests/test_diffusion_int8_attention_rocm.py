@@ -109,19 +109,14 @@ def _fake_dit(head_dims = (128, 128, 64, 96)):
     return dit
 
 
-# ---------------------------------------------------------------- routing (CPU)
-
-
 def test_rocm_config_is_keyed_by_measured_gfx_arch(monkeypatch):
     _fake_rocm(monkeypatch)
     assert I.device_config(0, 128) == I.ROCM_KERNEL_CONFIGS["gfx1151"][128]
     assert I.device_config(0, 64) == I.ROCM_KERNEL_CONFIGS["gfx1151"][64]
     assert I.device_config(0, 96) is None
-    # unmeasured AMD cards keep native attention, whatever capability torch reports for them
     for arch in ("gfx1100", "gfx1150", "gfx1201", "gfx942:sramecc+:xnack-", "gfx950", ""):
         _fake_rocm(monkeypatch, arch = arch)
         assert I.device_config(0, 128) is None, arch
-    # the CUDA table is never consulted on ROCm and the ROCm table never on CUDA
     assert (11, 5) not in I.KERNEL_CONFIGS
     for config in I.ROCM_KERNEL_CONFIGS.values():
         assert set(config) <= set(I.HEAD_DIMS)
@@ -151,7 +146,6 @@ def test_install_on_rocm_engages_only_the_measured_arch(monkeypatch):
     assert (
         I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16, force = True) == 0
     )
-    # a failed on-card check and the kill switch both keep native attention
     _fake_rocm(monkeypatch, found = {"ok": False, "min_tokens": None})
     assert (
         I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16, force = True) == 0
@@ -199,7 +193,6 @@ def test_rocm_call_runs_the_triton_kernel(monkeypatch):
     assert out.shape == q.shape
     cfg = I.ROCM_KERNEL_CONFIGS["gfx1151"][128]
     assert calls == [((1, 8, 2, 128), cfg, None, None)]  # P.V mode and key scale ride in the config
-    # NVIDIA never reaches the Triton module
     from core.inference import rocm_bf16
 
     monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: False)
@@ -230,8 +223,6 @@ def test_triton_module_imports_without_triton():
     )
     assert r.returncode == 0 and "OK" in r.stdout, r.stderr[-2000:]
 
-
-# ---------------------------------------------------------------- numerics under the Triton interpreter (CPU)
 
 _INTERPRET = textwrap.dedent(
     """
@@ -266,8 +257,7 @@ def _interpreter_ok() -> bool:
         return False
 
 
-# Triton 3.6's interpreter fails on this kernel (InterpreterError on a 0-d array); 3.7 runs it. The card tests below
-# cover the compiled kernel wherever a ROCm card is present.
+# Triton 3.6's interpreter fails on this kernel (InterpreterError on a 0-d array); 3.7 runs it.
 @pytest.mark.skipif(not _interpreter_ok(), reason = "needs the Triton >= 3.7 interpreter")
 def test_triton_kernel_numerics_interpreted():
     """The kernel's algorithm (quantisers, online softmax, INT8 and 16-bit P.V, ragged key tiles) vs fp64 attention,
@@ -291,9 +281,6 @@ def test_triton_kernel_numerics_interpreted():
         assert m["cos"] >= (I.MIN_COSINE if gain == 1.0 else I.MIN_SHARP_COSINE), (key, m)
         if gain == 1.0:
             assert m["rel_l1"] <= I.MAX_REL_L1 / 2, (key, m)
-
-
-# ---------------------------------------------------------------- the real card (ROCm GPU)
 
 
 def _rotate_ref(x):
@@ -357,7 +344,6 @@ def test_quantisers_round_to_nearest_on_the_card():
     q, k, v = I.probe_inputs("cuda", torch.bfloat16, 1000, 2, 128, seed = 3)
     cfg = _rocm_config(128)
     p = T.quantise(q, k, v, cfg, pv = "int8")
-    # rebuild the Q quantiser in torch: rotation, per-row amax, round half even
     x = _rotate_ref(q[0].float().permute(1, 0, 2))  # [H, S, D]
     amax = x.abs().amax(-1, keepdim = True).clamp_min(1e-20)
     ref = torch.round(x * (127.0 / amax)).to(torch.int8)

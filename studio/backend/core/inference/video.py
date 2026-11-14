@@ -12734,8 +12734,7 @@ class VideoBackend:
             )
             from . import diffusion_int8_attention as int8_attention
 
-            # by name or by its env switch: the strided processors run Studio's INT8 attention kernel, also over a
-            # default SDPA pick (sm75, gfx1151), where the strided processor is otherwise not installed
+            # INT8 route also over a default SDPA pick (sm75, gfx1151), where the strided processor is otherwise not installed
             int8_mode = int8_attention.mode()
             int8_wanted = int8_mode == "force" or (
                 int8_mode != "off" and int8_attention.requested(attention_backend)
@@ -12748,7 +12747,6 @@ class VideoBackend:
                     if install_strided_attention(
                         getattr(pipe, denoiser_component, None),
                         logger = logger,
-                        # installed only for the INT8 route: the stock q/k norm + RoPE
                         qk_rope = None if strided_install_backend(attention_engaged) else False,
                     ):
                         h3_attn_levers += ("h3_strided_attn",)

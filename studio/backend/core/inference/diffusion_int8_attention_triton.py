@@ -29,7 +29,6 @@ LOG2E = 1.4426950408889634
 QUANT_ROWS = 64
 STATS_STEP = 8
 HEAD_DIMS = (64, 128)
-# (BM, BN, warps, stages) per head dim; measured on gfx1151 (see the PR)
 DEFAULT_CONFIGS: dict = {
     128: {"bm": 64, "bn": 32, "warps": 4, "stages": 1, "pv": "half_strided", "kscale": "tile"},
     64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "half_strided", "kscale": "tile"},
@@ -280,7 +279,6 @@ if triton is not None:
         ACC_IN_DOT: tl.constexpr,
         MASK: tl.constexpr,
     ):
-        # one key tile of the online softmax; MASK only for the ragged last tile
         keys = t * BN + offs_n
         if QK_INT8:
             k = tl.load(k_ptr + (kbase + keys[:, None]) * D + cols[None, :])

@@ -188,8 +188,7 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
     from . import diffusion_int8_attention as int8_attention
 
     fused = engaged in ("_native_cudnn", "_native_flash")
-    # the env switch also engages over a default SDPA pick (sm75, gfx1151): the strided processors go in for it alone,
-    # with the stock q/k norm + RoPE
+    # the env switch also engages over a default SDPA pick (sm75, gfx1151), with the stock q/k norm + RoPE
     int8_forced = int8_attention.mode() == "force"
     if (fused or int8_forced) and install_strided_attention(
         transformer, logger = logger, qk_rope = image_qk_rope_enabled(resident) if fused else False
@@ -206,8 +205,6 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
             levers.append("h3_qk_rope")
         if shared_qkv_count(transformer):
             levers.append("h3_shared_qkv_quant")
-        # the env switch engages the INT8 kernel on every strided processor; an INT8 checkpoint races it on its DiT
-        # blocks later (install_checkpoint_attention)
         if int8_forced and int8_attention.install_int8_attention(
             transformer, device = dev, dtype = dtype, force = True, logger = logger
         ):

@@ -2733,10 +2733,8 @@ def install_checkpoint_attention(
         "true",
         "yes",
     )
-    # Studio's own INT8 kernel takes the DiT blocks from whichever backend wins (SageAttention where it is kept, the
-    # native backend otherwise) only when it is more than 2% faster on the same block; a tie keeps that one. Its block
-    # race also times SageAttention against the native backend, so SageAttention's own race runs only when the kernel
-    # did not take the blocks without one (forced) and did not time them
+    # The INT8 kernel takes the DiT blocks only when >2% faster than the race winner; its block race also times
+    # SageAttention vs native, so SageAttention's own race runs only when the kernel neither won nor timed the blocks
     kernel_blocks, race = _race_int8_kernel(
         transformer,
         block_modules,
@@ -2788,11 +2786,8 @@ def install_checkpoint_attention(
 
 # Rows of the race's packed sequence: a 2048x2048 canvas (64 x 64 latent patches) plus a prompt.
 _RACE_ROWS = (4096, 300)
-# Studio's INT8 kernel is also timed on a 1024x1024 canvas: it can win the large one only
 _KERNEL_RACE_IMAGES = (4096, 1024)
-# sequences shorter than this keep the native backend when the kernel wins only the large canvas
 _KERNEL_LARGE_ROWS = 2560
-# timed rounds per race, every variant once per round, the order reversed every other round
 _RACE_ROUNDS = 7
 ATTENTION_RACE_ATTR = "_unsloth_h3_attention_race"
 
@@ -2874,9 +2869,7 @@ def race_checkpoint_attention(
             select(variant)
             for _ in range(2):
                 attn(x, rotary, None)
-        # interleaved rounds, every other one in reverse: a card that changes speed while it is being timed (an
-        # A100 does, about a second into a load; an L4 settles its clock) slows or speeds every variant alike
-        # instead of the one timed first or last
+        # interleaved, alternate rounds reversed: a card changing clock mid-timing (A100, L4) skews every variant alike
         order = list(range(len(variants)))
         for r in range(_RACE_ROUNDS):
             for i in order if r % 2 == 0 else order[::-1]:
@@ -2942,7 +2935,6 @@ def _race_int8_kernel(
     setattr(transformer, ATTENTION_RACE_ATTR, record)
     race = None
     try:
-        # the accuracy check on this card (compiles the kernel), no timing yet
         ready = int8_attention.install_int8_attention(
             transformer, device = dev, dtype = dtype, modules = block_modules, force = True, logger = log
         )
@@ -2977,7 +2969,6 @@ def _race_int8_kernel(
         }
         large, small = (rows[n] for n in _KERNEL_RACE_IMAGES)
         margin = int8_attention.RACE_MARGIN
-        # kernel / incumbent per round (median), and kernel / native on the short canvas
         wins = paired[_KERNEL_RACE_IMAGES[0]][2 if sage else 1] < margin
         short = paired[_KERNEL_RACE_IMAGES[1]]
         # short sequences fall back to the native backend, so the kernel must beat it and SageAttention there

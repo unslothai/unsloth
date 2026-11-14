@@ -1544,7 +1544,6 @@ def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, releas
 
     def fake_kernel(transformer, block_modules, saved, dev, dtype, sage, forced, log):
         seen.append({"sage": sage, "forced": forced, "blocks": {id(m) for m in block_modules}})
-        # SageAttention engaged but not yet raced (None): the block race decides it too
         race = (
             {"keep": world["keep"], "ms": [1.0, 1.2], "native": "_native_flash"}
             if sage is None
@@ -1580,12 +1579,10 @@ def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, releas
         assert seen == [
             {"sage": incumbent_is_sage, "forced": False, "blocks": blocks & set(before)}
         ]
-        # the kernel is an overlay on the native backends: no processor is left on SageAttention
         assert backends() == before
         assert install() is None and not seen
         assert h3i.remove_checkpoint_attention(p) == len(mods) and removed.pop() is p.transformer
         assert backends() == before
-    # the kernel loses: SageAttention where it was kept, native attention elsewhere
     world.update(sage = True, keep = True, kernel = 0)
     assert install() == "sage" and seen[0]["sage"] is None
     assert all((m.processor._attention_backend == "sage") == (id(m) in blocks) for m in mods)
@@ -1594,7 +1591,6 @@ def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, releas
         world.update(sage = sage, keep = keep)
         assert install() is None and not seen[0]["sage"]
         assert backends() == before and not getattr(p, h3i.ATTENTION_SAVED_ATTR, None)
-    # SageAttention pinned by its switch: the kernel is told so
     world.update(sage = True, keep = False)
     monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "1")
     assert install() == "sage" and seen == [

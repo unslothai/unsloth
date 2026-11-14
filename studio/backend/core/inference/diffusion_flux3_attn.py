@@ -47,8 +47,7 @@ def strided_processor_class() -> Any:
     from .diffusion_flux3_qk_rope import qk_norm_rope
 
     class UnslothFlux3StridedAttnProcessor(tf3.Flux3AttnProcessor):
-        # set by diffusion_int8_attention.install_int8_attention: unmasked calls of at least this many tokens run the
-        # INT8 kernel instead of the native one
+        # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
 
@@ -79,15 +78,12 @@ def strided_processor_class() -> Any:
             if (
                 self._unsloth_int8
                 and query.shape[1] >= self._unsloth_int8_min_tokens
-                # the kernel has no backward: a call that needs gradients runs native attention, here and not
-                # inside the op (autograd never sees inside it)
+                # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
                 and not (
                     torch.is_grad_enabled()
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                # NHD in and out, q / k in value's dtype (the quantisers read any float dtype), the output in value's dtype;
-                # the op itself runs native attention for a call the kernel cannot take
                 out = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
                 hidden_states = out.flatten(2, 3)
             else:
