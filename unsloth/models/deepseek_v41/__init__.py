@@ -40,7 +40,8 @@ def transformers_has_deepseek_v41():
 
 def _conversion_rules():
     """The released checkpoint's names -> this module tree (relative to the text model). Same table as
-    transformers' deepseek_v4 entry plus the V4.1 parts (compressor / indexer / engram)."""
+    transformers' deepseek_v4 entry plus the V4.1 parts (compressor / indexer / engram). No ``$`` anchors: the
+    table also runs in reverse on save, and a reversed ``$`` would be written into the key."""
     from transformers.core_model_loading import (
         Concatenate,
         MergeModulelist,
@@ -53,17 +54,17 @@ def _conversion_rules():
         R(source_patterns = r"^layers\.(\d+)\.engram\.embed\.", target_patterns = r"engram_tables.\1."),
         R(source_patterns = r"\.attn\.", target_patterns = r".self_attn."),
         R(source_patterns = r"\.ffn\.", target_patterns = r".mlp."),
-        R(source_patterns = r"^embed\.weight$", target_patterns = "embed_tokens.weight"),
-        R(source_patterns = r"^head\.weight$", target_patterns = "lm_head.weight"),
+        R(source_patterns = r"^embed\.weight", target_patterns = "embed_tokens.weight"),
+        R(source_patterns = r"^head\.weight", target_patterns = "lm_head.weight"),
         R(source_patterns = r"\.attn_norm\.", target_patterns = r".input_layernorm."),
         R(source_patterns = r"\.ffn_norm\.", target_patterns = r".post_attention_layernorm."),
-        R(source_patterns = r"\.hc_attn_fn$", target_patterns = r".attn_hc.fn"),
-        R(source_patterns = r"\.hc_attn_base$", target_patterns = r".attn_hc.base"),
-        R(source_patterns = r"\.hc_attn_scale$", target_patterns = r".attn_hc.scale"),
-        R(source_patterns = r"\.hc_ffn_fn$", target_patterns = r".ffn_hc.fn"),
-        R(source_patterns = r"\.hc_ffn_base$", target_patterns = r".ffn_hc.base"),
-        R(source_patterns = r"\.hc_ffn_scale$", target_patterns = r".ffn_hc.scale"),
-        R(source_patterns = r"\.attn_sink$", target_patterns = r".sinks"),
+        R(source_patterns = r"\.hc_attn_fn", target_patterns = r".attn_hc.fn"),
+        R(source_patterns = r"\.hc_attn_base", target_patterns = r".attn_hc.base"),
+        R(source_patterns = r"\.hc_attn_scale", target_patterns = r".attn_hc.scale"),
+        R(source_patterns = r"\.hc_ffn_fn", target_patterns = r".ffn_hc.fn"),
+        R(source_patterns = r"\.hc_ffn_base", target_patterns = r".ffn_hc.base"),
+        R(source_patterns = r"\.hc_ffn_scale", target_patterns = r".ffn_hc.scale"),
+        R(source_patterns = r"\.attn_sink", target_patterns = r".sinks"),
         R(source_patterns = r"\.wq_a\.", target_patterns = r".q_a_proj."),
         R(source_patterns = r"\.q_norm\.", target_patterns = r".q_a_norm."),
         R(source_patterns = r"\.wq_b\.", target_patterns = r".q_b_proj."),
@@ -74,8 +75,8 @@ def _conversion_rules():
         R(source_patterns = r"\.indexer\.wk\.", target_patterns = r".indexer.k_proj."),
         R(source_patterns = r"\.wo_a\.", target_patterns = r".o_a_proj."),
         R(source_patterns = r"\.wo_b\.", target_patterns = r".o_b_proj."),
-        R(source_patterns = r"\.gate\.bias$", target_patterns = r".gate.e_score_correction_bias"),
-        R(source_patterns = r"\.gate\.bias_vl$", target_patterns = r".gate.e_score_correction_bias_vl"),
+        R(source_patterns = r"\.gate\.bias_vl", target_patterns = r".gate.e_score_correction_bias_vl"),
+        R(source_patterns = r"\.gate\.bias", target_patterns = r".gate.e_score_correction_bias"),
         R(source_patterns = r"\.shared_experts\.w1\.", target_patterns = r".shared_experts.gate_proj."),
         R(source_patterns = r"\.shared_experts\.w2\.", target_patterns = r".shared_experts.down_proj."),
         R(source_patterns = r"\.shared_experts\.w3\.", target_patterns = r".shared_experts.up_proj."),
