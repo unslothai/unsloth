@@ -40,6 +40,9 @@ export function isReplyEcho(transcript: string, reply: string): boolean {
   const t = wordsOf(transcript);
   if (t.length === 0 || !reply) return false;
   if (t.length === 1 && ONE_WORD_COMMANDS.has(t[0])) return false;
+  // A word or two taken from a closing question ("..., Python or JavaScript?") is the user's answer.
+  const asked = reply.trim().endsWith("?") ? (reply.split(/(?<=[.!?\n])\s+/).pop() ?? "") : "";
+  if (t.length <= 2 && asked && t.every((w) => wordsOf(asked).includes(w))) return false;
   // Whole words only: "hey" is not inside "they", nor "skip" inside "skipping".
   const r = ` ${wordsOf(reply).join(" ")} `;
   return r.includes(` ${t.join(" ")} `);
