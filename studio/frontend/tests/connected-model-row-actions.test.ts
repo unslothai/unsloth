@@ -171,7 +171,7 @@ test("the deep link waits for the provider and fires once", () => {
     providersDialog,
     /toast\.error\(`Failed to load connections: \$\{message\}`\);\s*\}\s*(\/\/[^\n]*\n\s*)*if \(isMounted\) setProvidersReady\(true\);/,
   );
-  assert.match(providersDialog, /\[openProviderId, providers, providersReady, onOpenProviderConsumed\]/);
+  assert.match(providersDialog, /\[\s*openProviderId,\s*providers,\s*providersReady,\s*onOpenProviderConsumed,\s*registry,?\s*\]/);
   assert.match(providersDialog, /if \(!provider\) return;/);
   assert.match(
     providersDialog,
@@ -239,7 +239,7 @@ test("the connection's own settings hang off the group heading", () => {
   );
   assert.match(
     pickers,
-    /label="Pinned"\s*collapsed=\{pinnedConnectedCollapsed\}\s*onToggle=\{\(\) =>\s*setPinnedConnectedCollapsed/,
+    /label="Favorites"\s*collapsed=\{pinnedConnectedCollapsed\}\s*onToggle=\{\(\) =>\s*setPinnedConnectedCollapsed/,
   );
 });
 

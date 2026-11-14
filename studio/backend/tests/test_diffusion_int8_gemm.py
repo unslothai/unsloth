@@ -69,9 +69,15 @@ def test_force_enables_unmeasured_sm80_plus_only(monkeypatch):
     assert g8.arch_config((7, 5)) is None
 
 
+@pytest.mark.parametrize("fixed", [False, True])
 @pytest.mark.parametrize("newer", [False, True])
-def test_triton38_keeps_every_sm8x_stock(monkeypatch, newer):
+def test_triton38_keeps_every_sm8x_stock(monkeypatch, newer, fixed):
+    """Without the prefetch fix every sm8x stays stock on Triton >= 3.8; with it, as on 3.7."""
+    from core.inference import diffusion_triton_prefetch
+
     monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: newer)
+    monkeypatch.setattr(diffusion_triton_prefetch, "fix_triton_sm8x_8bit_prefetch", lambda: fixed)
+    newer = newer and not fixed
     for cap, cfg in g8._ARCH_CONFIG.items():
         stock = newer and cap[0] == 8
         assert g8.arch_config(cap, "auto") == (None if stock else cfg)
@@ -100,16 +106,20 @@ def test_triton_at_least_parses_the_installed_version(monkeypatch, version, newe
         g8._triton_at_least.cache_clear()
 
 
-def test_triton38_runtime_turns_sm80_sm89_stock(monkeypatch):
+@pytest.mark.parametrize("fixed", [False, True])
+def test_triton38_runtime_turns_sm80_sm89_stock(monkeypatch, fixed):
     import sys
 
+    from core.inference import diffusion_triton_prefetch
+
     monkeypatch.setitem(sys.modules, "triton", types.SimpleNamespace(__version__ = "3.8.0"))
+    monkeypatch.setattr(diffusion_triton_prefetch, "fix_triton_sm8x_8bit_prefetch", lambda: fixed)
     clear = getattr(getattr(g8, "_triton_at_least", None), "cache_clear", lambda: None)
     clear()
     try:
-        assert g8.arch_config((8, 0), "auto") is None
-        assert g8.arch_config((8, 9), "auto") is None
-        assert not g8.unlisted_wanted((8, 6), "auto")
+        assert g8.arch_config((8, 0), "auto") == (g8._ARCH_CONFIG[(8, 0)] if fixed else None)
+        assert g8.arch_config((8, 9), "auto") == (g8._ARCH_CONFIG[(8, 9)] if fixed else None)
+        assert g8.unlisted_wanted((8, 6), "auto") is fixed
         assert g8.arch_config((12, 0), "auto") == g8._ARCH_CONFIG[(12, 0)]
     finally:
         clear()
@@ -1355,7 +1365,9 @@ def test_swap_passes_streamed_only_for_the_onload_device_install(monkeypatch):
     seen = []
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
-        g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0
+        g8,
+        "_swap_on",
+        lambda t, lg, i, streamed = False, exact = False: seen.append((i, streamed)) or 0,
     )
     import core.inference.diffusion_int8_fused as fused
 
@@ -1371,7 +1383,9 @@ def test_rocm_torch_swaps_nothing_for_an_onload_device(monkeypatch):
     seen = []
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
-        g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0
+        g8,
+        "_swap_on",
+        lambda t, lg, i, streamed = False, exact = False: seen.append((i, streamed)) or 0,
     )
     import core.inference.diffusion_int8_fused as fused
 
@@ -1582,3 +1596,325 @@ def test_h16_probe_covers_the_one_pass_branch_and_rejects_nan_scales(forced):
         mp.setattr(cq, "_h16_launch", nan_row)
         assert cq._h16_probe(index) is False
         assert cq._swiglu_probe(index) is False
+
+
+def test_the_sm8x_prefetch_fix_is_part_of_the_kernel_cache_key(monkeypatch):
+    import ast
+    import inspect
+
+    import core.inference.diffusion_triton_prefetch as tp
+
+    src = inspect.getsource(g8)
+    tree = ast.parse(src)
+    kernel = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "i8mm_dq"
+    )
+    assert "PREFETCH_FIX" in [a.arg for a in kernel.args.args]
+    launch = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_launch"
+    )
+    assert any(isinstance(k, ast.keyword) and k.arg == "PREFETCH_FIX" for k in ast.walk(launch))
+    for installed in (False, True):
+        calls = []
+        monkeypatch.setattr(g8, "_PREFETCH_FIX_ON", None)
+        monkeypatch.setattr(
+            tp,
+            "fix_triton_sm8x_8bit_prefetch",
+            lambda installed = installed: calls.append(1) or installed,
+        )
+        # asked once, not on every launch (Triton 3.7 or the kill switch would pay it per Linear)
+        assert [g8._prefetch_fix_key() for _ in range(3)] == [installed] * 3
+        assert len(calls) == 1
+
+
+def test_install_eager_kill_switch_keeps_torchao(monkeypatch):
+    called = []
+    monkeypatch.setattr(g8, "install", lambda *a, **k: called.append(k) or 7)
+    monkeypatch.setenv(g8.INT8_GEMM_EAGER_ENV, "0")
+    assert g8.install_eager(torch.nn.Linear(2, 2)) == 0 and called == []
+    monkeypatch.delenv(g8.INT8_GEMM_EAGER_ENV)
+    assert g8.install_eager(torch.nn.Linear(2, 2), offload_active = True) == 7
+    assert called == [{"offload_active": True, "exact": True}]
+
+
+def test_install_passes_exact_to_the_swap(monkeypatch):
+    seen = []
+    import core.inference.diffusion_int8_fused as fused
+
+    monkeypatch.setattr(fused, "resident_cuda_device", lambda t: torch.device("cuda", 0))
+    monkeypatch.setattr(
+        g8, "_swap", lambda t, lg, device = None, exact = False: seen.append(exact) or 3
+    )
+    assert g8.install(torch.nn.Linear(2, 2), exact = True) == 3
+    assert g8.install(torch.nn.Linear(2, 2)) == 3
+    assert seen == [True, False]
+
+
+class _FakeAct:
+    """A bf16 CUDA activation as far as ``convrot_act_quant`` looks (CPU-only hosts)."""
+
+    def __init__(self, m, k):
+        self.shape = (m, k)
+        self.dtype = torch.bfloat16
+        self.is_cuda = True
+        self.device = types.SimpleNamespace(index = 0)
+
+    def dim(self):
+        return 2
+
+    def is_contiguous(self):
+        return True
+
+
+def test_exact_act_quant_never_takes_rotq_h16(monkeypatch):
+    launched = []
+    monkeypatch.setattr(cq, "_ROTQ_HANDLE", lambda x, g, v2: ("op", v2))
+    monkeypatch.setitem(cq._ROTQ_DEVICE, 0, (128, 32, 8, 4))
+    monkeypatch.setitem(cq._H16_DEVICE, 0, "ieee")
+    monkeypatch.setattr(
+        cq, "_rotq_launch", lambda x, g, kind, cfg: launched.append((kind, cfg)) or ("dense", kind)
+    )
+    monkeypatch.setattr(
+        cq, "_h16_launch", lambda *a, **k: pytest.fail("rotq_h16 is not bit-identical")
+    )
+    x = _FakeAct(64, 1024)
+    assert cq.convrot_act_quant(x, 256, True, True) == ("dense", "v2")
+    assert cq.convrot_act_quant(x, 256, False, True) == ("dense", "v1")
+    assert launched == [("v2", (128, 32, 8, 4)), ("v1", (128, 32, 8, 4))]
+    # the default (compiled) route still goes through the op, which picks rotq_h16 where it passed its probe
+    assert cq.convrot_act_quant(x, 256, True) == ("op", True)
+    # a shape the dense tile cannot hold: the caller keeps the stock rotation + quant
+    assert cq.convrot_act_quant(_FakeAct(64, 256 * 256), 256, True, True) is None
+
+
+def test_exact_act_quant_launch_failure_falls_back(monkeypatch):
+    monkeypatch.setattr(cq, "_ROTQ_HANDLE", lambda x, g, v2: ("op", v2))
+    monkeypatch.setitem(cq._ROTQ_DEVICE, 0, (128, 32, 8, 4))
+
+    def boom(*a, **k):
+        raise RuntimeError("launch failed")
+
+    monkeypatch.setattr(cq, "_rotq_launch", boom)
+    assert cq.convrot_act_quant(_FakeAct(64, 1024), 256, True, True) is None
+
+
+def test_uninstall_clears_the_exact_mark():
+    lin = torch.nn.Linear(4, 4)
+    lin.__dict__[g8._MARK] = g8._NO_PREV
+    lin.__dict__[g8._REC] = ("v2", None, False, lin.weight, True)
+    lin.__dict__[g8._EXACT] = True
+    lin.forward = types.MethodType(g8._linear_forward, lin)
+    g8.uninstall(torch.nn.Sequential(lin))
+    assert (
+        g8._EXACT not in lin.__dict__
+        and g8._MARK not in lin.__dict__
+        and "forward" not in lin.__dict__
+    )
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_eager_install_is_bit_identical_to_torchao_convrot_linear(forced, monkeypatch, version):
+    """``install_eager`` keeps the eager Linear bit for bit, with rotq_h16 armed on the card (it is never taken)."""
+    from core.inference.diffusion_convrot import _install_rotation
+
+    lin = _int8_linear(5376, 1024, True, version)
+    _install_rotation(lin, 256)
+    holder = torch.nn.Sequential(lin)
+    x = _act(1037, 5376, 3).reshape(1, 1037, 5376)
+    with torch.inference_mode():
+        want = lin(x)
+        assert g8.install_eager(holder) == 1
+        assert g8._EXACT in lin.__dict__ and g8._FF_MARK not in lin.__dict__
+        h16 = cq.h16_call_count()
+        calls = g8.call_count()
+        got = lin(x)
+    assert g8.call_count() == calls + 1 and cq.h16_call_count() == h16
+    assert torch.equal(got, want)
+    g8.uninstall(holder)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED_EAGER": "0"},
+        {"UNSLOTH_DIFFUSION_INT8_GEMM_EAGER": "0"},
+    ],
+)
+def test_install_streamed_eager_kill_switches_keep_torchao(monkeypatch, env):
+    called = []
+    monkeypatch.setattr(g8, "install", lambda *a, **k: called.append(k) or 7)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert g8.install_streamed_eager(torch.nn.Linear(2, 2), "cuda:0") == 0 and called == []
+
+
+def test_install_streamed_eager_is_the_exact_call_time_install(monkeypatch):
+    called = []
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_EAGER_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_GEMM_EAGER_ENV, raising = False)
+    monkeypatch.setattr(g8, "install", lambda *a, **k: called.append(k) or 7)
+    assert g8.install_streamed_eager(torch.nn.Linear(2, 2), None) == 0
+    assert g8.install_streamed_eager(torch.nn.Linear(2, 2), "cuda:0") == 7
+    assert called == [{"device": "cuda:0", "exact": True}]
+
+
+def test_streamed_eager_honours_the_streamed_and_global_switches(monkeypatch):
+    seen = []
+    monkeypatch.setattr(g8, "_finalize", lambda t, lg = None, **k: seen.append(k) or 4)
+    lin = torch.nn.Linear(2, 2)
+    monkeypatch.setenv(g8.INT8_GEMM_STREAMED_ENV, "0")
+    assert g8.install_streamed_eager(lin, "cuda:0") == 0
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV)
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "0")
+    assert g8.install_streamed_eager(lin, "cuda:0") == 0
+    monkeypatch.delenv(g8.INT8_GEMM_ENV)
+    assert g8.install_streamed_eager(lin, "cuda:0") == 4
+    assert seen == [{"device": "cuda:0", "exact": True}]
+
+
+def test_shared_rotq_quant_is_exact_only_when_every_linear_is(monkeypatch):
+    """The shared Q / K / V quant takes the dense kernel when the Linears are on the eager routes."""
+    exacts = []
+    monkeypatch.setattr(
+        cq, "convrot_act_quant", lambda x, g, v2, exact = False: exacts.append(exact) or None
+    )
+
+    def rec_for(lin):
+        return ("v2", 256, True, lin.weight, True)
+
+    lins = []
+    for _ in range(3):
+        lin = torch.nn.Linear(4, 4)
+        lin.__dict__[g8._REC] = rec_for(lin)
+        lins.append(lin)
+    monkeypatch.setattr(g8, "_swapped_rec", lambda m: m.__dict__[g8._REC])
+    monkeypatch.setattr(
+        g8, "_payload", lambda kind, w: (types.SimpleNamespace(device = x.device), None)
+    )
+    x = types.SimpleNamespace(
+        dtype = torch.bfloat16,
+        is_cuda = True,
+        device = "cuda:0",
+        shape = (64, 256),
+        numel = lambda: 64 * 256,
+        reshape = lambda *a: x,
+    )
+    assert g8.shared_rotq_linears(x, tuple(lins)) is None
+    for lin in lins:
+        lin.__dict__[g8._EXACT] = True
+    assert g8.shared_rotq_linears(x, tuple(lins)) is None
+    lins[1].__dict__.pop(g8._EXACT)
+    assert g8.shared_rotq_linears(x, tuple(lins)) is None
+    assert exacts == [False, True, False]
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_streamed_eager_follows_the_onloaded_weight_bit_identically(forced, version):
+    """Installed while the weight is on the host; after a prefetcher-style onload (same Parameter, new payload) the
+    call takes the eager routes and matches torchao's Linear bit for bit; on the host it stays torchao's."""
+    from core.inference.diffusion_convrot import _install_rotation
+    from core.inference.diffusion_offload_prefetch import _go, _to_device
+
+    _swap = getattr(_go(), "_swap_torchao_tensor", None)
+    if _swap is None:
+        pytest.skip("diffusers without torchao group-offload swaps")
+    lin = _int8_linear(5376, 1024, True, version)
+    _install_rotation(lin, 256)
+    holder = torch.nn.Sequential(lin)
+    x = _act(1037, 5376, 3).reshape(1, 1037, 5376)
+    with torch.inference_mode():
+        want = lin(x)
+    weight = lin.weight
+    dev = x.device
+
+    def move(device):
+        with torch.no_grad():
+            _swap(lin.weight, _to_device(lin.weight, device))
+            lin.bias.data = lin.bias.data.to(device)
+        torch.cuda.synchronize()
+
+    move("cpu")
+    assert g8.install_streamed_eager(holder, dev) == 1
+    assert g8._EXACT in lin.__dict__ and g8._FF_MARK not in lin.__dict__
+    move(dev)
+    assert lin.weight is weight
+    with torch.inference_mode():
+        h16 = cq.h16_call_count()
+        calls = g8.call_count()
+        got = lin(x)
+    assert g8.call_count() == calls + 1 and cq.h16_call_count() == h16
+    assert torch.equal(got, want)
+    g8.uninstall(holder)
+
+
+@needs_cuda
+def test_streamed_eager_leaves_a_linear_with_its_own_offload_hook_alone(forced):
+    """A Linear directly inside a top-level Sequential / ModuleList carries its own diffusers offload hook; a swap after
+    placement would replace the hooked forward and skip its onload (torchao then sees a host weight)."""
+    from types import SimpleNamespace
+
+    from diffusers.hooks import apply_group_offloading
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference.diffusion_offload_prefetch import install_group_prefetch
+    from core.inference.diffusion_speed import install_streamed_eager_int8_gemm
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.ff = torch.nn.Linear(512, 512)
+
+        def forward(self, x):
+            return x + self.ff(x)
+
+    class DiT(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([Block() for _ in range(3)])
+            self.head = torch.nn.Sequential(torch.nn.Linear(512, 512), torch.nn.SiLU())
+            self.tail = torch.nn.ModuleList([torch.nn.Linear(512, 512)])
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = block(x)
+            return self.tail[0](self.head(x))
+
+    dev = torch.device("cuda", torch.cuda.current_device())
+    x = torch.randn(1, 300, 512, dtype = torch.bfloat16, device = dev)
+    outs = []
+    for install in (False, True):
+        torch.manual_seed(0)
+        model = DiT().to(torch.bfloat16)
+        quantize_(model, Int8DynamicActivationInt8WeightConfig(set_inductor_config = False))
+        apply_group_offloading(
+            model,
+            onload_device = dev,
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
+            use_stream = True,
+            record_stream = True,
+            non_blocking = True,
+        )
+        if not install_group_prefetch(model, dev):
+            pytest.skip("diffusers without stream groups the prefetcher drives")
+        hooked = [
+            m
+            for m in model.modules()
+            if isinstance(m, torch.nn.Linear) and "_diffusers_hook" in m.__dict__
+        ]
+        assert len(hooked) == 2
+        if install:
+            assert install_streamed_eager_int8_gemm(SimpleNamespace(transformer = model), dev)
+            assert all(g8._REC not in m.__dict__ for m in hooked)
+            assert all(g8._REC in b.ff.__dict__ for b in model.blocks)
+        with torch.inference_mode():
+            calls = g8.call_count()
+            outs.append(model(x))
+            torch.cuda.synchronize()
+        assert g8.call_count() - calls == (3 if install else 0)
+        if install:
+            g8.uninstall(model)
+    assert torch.equal(outs[0], outs[1])

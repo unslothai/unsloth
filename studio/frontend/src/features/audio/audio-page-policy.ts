@@ -657,7 +657,7 @@ export function audioEjectAvailable({
   showLastPageModel: boolean;
   sttReady: boolean;
 }): boolean {
-  if (!hasValue || busy !== null || showLastPageModel) return false;
+  if (!hasValue || busy === "loading" || busy === "unloading" || showLastPageModel) return false;
   return mode !== "transcribe" || sttReady;
 }
 

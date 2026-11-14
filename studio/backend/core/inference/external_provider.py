@@ -84,6 +84,7 @@ _GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?
 _served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
+_served_vision: dict[tuple[str, str, str, str], tuple[float, Optional[bool]]] = {}
 # outlives the TTL: Ollama unloads an idle model after keep_alive and reloads it at the same window.
 _ollama_last_windows: dict[tuple[str, str, str, str], int] = {}
 
@@ -1194,6 +1195,7 @@ def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
         slim["created"] = m.get("created") or 0
         models.append(slim)
     models.sort(key = lambda m: m["created"], reverse = True)
+    models.sort(key = lambda m: (not m["id"].startswith("openrouter/"), not m["id"].startswith("~")))
     return models
 
 
@@ -1672,7 +1674,11 @@ class ExternalProviderClient:
         if (
             base.scheme == "https"
             and base.hostname == "opencode.ai"
-            and (base.path == "/inference/go" or base.path.startswith("/inference/go/"))
+            # /zen/go is the older Go base URL; the gateway still serves and enforces it.
+            and any(
+                base.path == prefix or base.path.startswith(prefix + "/")
+                for prefix in ("/inference/go", "/zen/go")
+            )
         ):
             # Hashed so the raw conversation ID never leaves Studio; titles and probes have no thread.
             headers["x-opencode-session"] = (
@@ -7460,14 +7466,25 @@ class ExternalProviderClient:
         return response.json()
 
     async def list_decision_models(self) -> list[str]:
+        from core.inference.providers import get_provider_info
+
+        native = bool((get_provider_info(self.provider_type) or {}).get("decisions_only"))
         response = await _client().get(
             re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/models",
-            params = {"output_modalities": "decisions"},
+            params = None if native else {"output_modalities": "decisions"},
             headers = self._auth_headers(),
             timeout = self._timeout,
         )
         response.raise_for_status()
         data = response.json()
+        if native:
+            # System One's own list is {"models": [{"name": ...}]}: decision models only, no modality field.
+            models = data.get("models") if isinstance(data, dict) else None
+            return [
+                model["name"]
+                for model in (models if isinstance(models, list) else [])
+                if isinstance(model, dict) and isinstance(model.get("name"), str)
+            ]
         models = data.get("data") if isinstance(data, dict) else None
         return [
             model["id"]
@@ -7605,6 +7622,16 @@ class ExternalProviderClient:
                 return _positive_int(entry.get("context_length"))
         return None
 
+    async def load_ollama_window(self, model: str) -> Optional[int]:
+        response = await _client().post(
+            _native_server_path(self.base_url, "/api/generate"),
+            json = {"model": model},
+            headers = self._auth_headers(),
+            timeout = 120.0,
+        )
+        response.raise_for_status()
+        return await self._read_ollama_loaded_window(model)
+
     async def _read_served_window(self, model: str) -> Optional[int]:
         if self.provider_type == "ollama":
             return await self._read_ollama_loaded_window(model)
@@ -7733,6 +7760,51 @@ class ExternalProviderClient:
             del _served_templates[stale]
         _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)
         return template
+
+    async def _read_served_vision(self, model: str) -> Optional[bool]:
+        if self.provider_type == "ollama":
+            response = await _client().post(
+                _native_server_path(self.base_url, "/api/show"),
+                json = {"model": model},
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            body = response.json()
+            names = body.get("capabilities") if isinstance(body, dict) else None
+            return "vision" in names if isinstance(names, list) else None
+        response = await _client().get(
+            f"{self.base_url.removesuffix('/v1')}/props",
+            params = {"model": model},
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        body = response.json()
+        modalities = body.get("modalities") if isinstance(body, dict) else None
+        vision = modalities.get("vision") if isinstance(modalities, dict) else None
+        return vision if isinstance(vision, bool) else None
+
+    async def served_model_reads_images(self, model: str) -> Optional[bool]:
+        if self.provider_type not in ("ollama", "llama_cpp"):
+            return None
+        now = time.monotonic()
+        key = (self.provider_type, self.base_url, self._credential_digest(), model)
+        cached = _served_vision.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        vision = None
+        try:
+            vision = await self._read_served_vision(model)
+        except httpx.ConnectError as exc:
+            logger.info("No served vision flag from %s: %s", self.provider_type, type(exc).__name__)
+            return None
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("No served vision flag from %s: %s", self.provider_type, type(exc).__name__)
+        for stale in [k for k, (expiry, _) in _served_vision.items() if expiry <= now]:
+            del _served_vision[stale]
+        _served_vision[key] = (now + _SERVED_WINDOW_TTL_S, vision)
+        return vision
 
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:

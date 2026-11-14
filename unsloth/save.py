@@ -1528,7 +1528,10 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
         )
     except (TypeError, ValueError):
         save_method = kwargs.get("save_method")
-    if isinstance(save_method, str) and save_method.lower().strip() in _TP_IN_PLACE_MERGES:
+    if (
+        isinstance(save_method, str)
+        and save_method.lower().strip().replace("-", "_").replace(" ", "_") in _TP_IN_PLACE_MERGES
+    ):
         raise RuntimeError(
             f'Unsloth: `{method}(save_method = "{save_method}")` merges the LoRA weights into the 4-bit base in '
             "place (merge_and_unload). On a tensor parallel model only rank 0 would end up with that merged "
@@ -1642,6 +1645,8 @@ def unsloth_save_model(
     elif "Unsloth 2x faster" not in commit_description:
         commit_description += " (Trained with Unsloth 2x faster)"
 
+    if isinstance(save_method, str):
+        save_method = save_method.lower().strip().replace("-", "_").replace(" ", "_")
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
@@ -1678,7 +1683,6 @@ def unsloth_save_model(
 
     _collect_garbage(before = clean_gpu_cache)
 
-    save_method = save_method.lower().replace(" ", "_")
     raise_if_merging_mistral_format_view(model, save_method)
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
@@ -3608,6 +3612,23 @@ def fix_tokenizer_bos_token(tokenizer):
     return fix_bos_token, chat_template
 
 
+_OLLAMA_SYSTEM_RE = re.compile(r'^SYSTEM """.*?"""[ \t]*\n?', flags = re.DOTALL | re.MULTILINE)
+# Ollama ends a """ value at the first line break preceded by """, so such a message would be cut short.
+_OLLAMA_SYSTEM_CUT_RE = re.compile(r'"""\s*\n')
+
+
+def _set_ollama_system_message(modelfile, system_message):
+    if _OLLAMA_SYSTEM_CUT_RE.search(system_message):
+        raise ValueError(
+            'Unsloth: The system message has a line ending in """, which an Ollama Modelfile cannot hold.'
+        )
+    system_line = f'SYSTEM """{system_message}"""\n' if system_message != "" else ""
+    modelfile, n_found = _OLLAMA_SYSTEM_RE.subn(lambda _: system_line, modelfile, count = 1)
+    if n_found == 0 and system_line:
+        modelfile = modelfile.rstrip("\n") + "\n" + system_line
+    return modelfile
+
+
 def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     """
     Creates an Ollama Modelfile.
@@ -3651,9 +3672,14 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
             __FILE_LOCATION__ = model_location,
         )
 
-    modelfile = modelfile.replace("⚫@✅#🦥", "{").replace("⚡@🦥#⛵", "}").rstrip()
+    modelfile = modelfile.replace("⚫@✅#🦥", "{").replace("⚡@🦥#⛵", "}")
 
-    return modelfile
+    # Applied after formatting, so the message is written verbatim.
+    system_message = getattr(tokenizer, "_ollama_system_message", None)
+    if system_message is not None:
+        modelfile = _set_ollama_system_message(modelfile, system_message)
+
+    return modelfile.rstrip()
 
 
 def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path: str):
@@ -5899,13 +5925,18 @@ def unsloth_push_to_hub_gguf(
         datasets_yaml = "".join(f"- {json.dumps(d)}\n" for d in datasets or [])
         if datasets_yaml:
             datasets_yaml = "datasets:\n" + datasets_yaml
+        if isinstance(tags, str):
+            tags = [tags]
+        # HfApi has no add_tags: tags reach the Hub only through the card.
+        card_tags = ["gguf", "llama.cpp", "llama-cpp", "unsloth"]
+        if is_vlm:
+            card_tags.append("vision-language-model")
+        tags_yaml = "".join(
+            f"- {json.dumps(t)}\n" for t in dict.fromkeys(card_tags + list(tags or []))
+        )
         readme_content = f"""---
 tags:
-- gguf
-- llama.cpp
-- unsloth
-{"- vision-language-model" if is_vlm else ""}
-{datasets_yaml}---
+{tags_yaml}{datasets_yaml}---
 
 # {repo_id.split("/")[-1]} : GGUF
 
@@ -5975,21 +6006,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                     else f"/tree/{quote(revision, safe = '')}"
                 )
         print(f"Unsloth: Successfully uploaded GGUF to {destination}")
-
-        if tags is None:
-            tags = []
-        tags.extend(["gguf", "llama-cpp", "unsloth"])
-        if is_vlm:
-            tags.append("vision-language-model")
-
-        try:
-            api.add_tags(
-                repo_id = full_repo_id,
-                tags = tags,
-                repo_type = "model",
-            )
-        except:
-            pass
 
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e
@@ -6884,6 +6900,9 @@ def unsloth_generic_save(
     dtype = None,
 ):
     _refuse_mtp_variant(model, variant)
+    # merge_and_overwrite_lora compares save_method exactly, so respellings must be canonical here.
+    if isinstance(save_method, str):
+        save_method = save_method.lower().strip().replace("-", "_").replace(" ", "_")
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
@@ -7267,10 +7286,15 @@ def _fsdp2_rank():
 
 
 def _merged_save_method(args, kwargs):
-    if "save_method" in kwargs:
-        return kwargs["save_method"]
-    # (save_directory, tokenizer, save_method, ...)
-    return args[2] if len(args) > 2 else "merged_16bit"
+    # (save_directory, tokenizer, save_method, ...); canonical, as unsloth_generic_save sees it.
+    method = (
+        kwargs["save_method"]
+        if "save_method" in kwargs
+        else (args[2] if len(args) > 2 else "merged_16bit")
+    )
+    if isinstance(method, str):
+        method = method.lower().strip().replace("-", "_").replace(" ", "_")
+    return method
 
 
 def _fsdp2_merged_offload(model, args, kwargs):
@@ -9022,6 +9046,7 @@ def unsloth_save_pretrained_openvino(
     - is_main_process: Only the main process exports under multi-GPU / DDP.
     - **kwargs: Other `optimum-cli export openvino` options, with underscores for dashes, e.g. group_size = 64, ratio = 0.8, sym = False, awq = True, dataset = "wikitext2". They override the quantization_type preset.
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     return _unsloth_save_openvino(
         model = self,
         save_directory = save_directory,
@@ -9048,6 +9073,7 @@ def unsloth_push_to_hub_openvino(
     **kwargs,
 ):
     """Export the model to OpenVINO IR format and push it to the Hugging Face Hub. Takes the same options as save_pretrained_openvino."""
+    _assert_export_target_is_not_base_with_lora_layers(self)
     return _unsloth_save_openvino(
         model = self,
         save_directory = repo_id,
