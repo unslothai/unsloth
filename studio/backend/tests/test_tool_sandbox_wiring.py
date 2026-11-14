@@ -793,6 +793,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "no_user_abbrev",
         "option_operand",
         "config_no_user_key",
+        "upgrade_isolated",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -843,6 +844,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # pip assigns no-user's value to the same option as user: false here turns the user site off.
         "config_no_user_key": "printf '[global]\\nuser = true\\n[install]\\nno-user = false\\n' > pip.ini && "
         f"PIP_CONFIG_FILE=pip.ini {_PIP} {wheel} && {show}",
+        # --upgrade is a flag of its own, not an abbreviation of --upgrade-strategy eating --isolated.
+        "upgrade_isolated": f"python -m pip install -q --no-index --no-deps --upgrade --isolated {wheel} && {show}",
         # --prefix=... here is the build-backend setting -C carries, not pip's own --prefix.
         "option_operand": f"{_PIP} -C --prefix=buildtmp {wheel} && {show}",
         # [install] overrides [global], as pip resolves it: user ends up off.
@@ -902,6 +905,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "no_user_abbrev": packages,
         "option_operand": packages,
         "config_no_user_key": packages,
+        "upgrade_isolated": packages,
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1452,6 +1456,42 @@ def test_python_m_pip_without_orig_argv_is_routed_once_pip_starts(tmp_path):
         text = True,
     )
     assert list(packages.rglob("unsloth_late_pip.py")), pip.stderr
+
+
+def test_pip_config_is_read_in_the_locale_encoding(tmp_path):
+    """Outside UTF-8 mode pip reads pip.conf in the locale's encoding: a cp1252 comment still yields its target."""
+    conf = tmp_path / "pip.ini"
+    conf.write_bytes(b"# caf\xe9\n[install]\ntarget = vendor\n")
+    code = (
+        "import locale, sys; locale.getpreferredencoding = lambda do_setlocale = True: 'cp1252'; "
+        "sys.path.insert(0, %r); import sitecustomize as s; print(s._config_chooses_location())"
+    ) % tools._SANDBOX_SITE_DIR
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH", "PYTHON"))}
+    out = subprocess.run(
+        [sys.executable, "-X", "utf8=0", "-c", code],
+        env = {**env, "PIP_CONFIG_FILE": str(conf)},
+        capture_output = True,
+        text = True,
+    )
+    assert out.stdout.strip() == "True", out.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_path_line_editable_never_shadows_the_stdlib(monkeypatch, tmp_path):
+    """An editable source tree holding shutil.py goes after the stdlib, still ahead of Studio's site-packages."""
+    workdir = tmp_path / "chat"
+    source = tmp_path / "src"
+    source.mkdir()
+    marker = tmp_path / "payload_ran"
+    (source / "shutil.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+    site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
+    site_dir.mkdir(parents = True)
+    (site_dir / "__editable__.planted-1.0.pth").write_text(f"{source}\n")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = "python -m pip --version; python -c 'import shutil; print(shutil.__file__)'"
+    out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
+    assert "pip" in out and str(source) not in out, out
+    assert not marker.exists()
 
 
 def test_a_module_launch_without_orig_argv_is_not_taken_for_pip():

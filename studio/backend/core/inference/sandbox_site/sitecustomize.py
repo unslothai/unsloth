@@ -361,6 +361,10 @@ _PIP_VALUE_OPTIONS = (
 _PIP_VALUE_SHORTS = "Ccefirt"
 
 
+# Exact flags that are also prefixes of a value option: optparse takes the exact match.
+_PIP_PREFIX_FLAGS = ("--pre", "--upgrade")
+
+
 def _pip_options():
     # The option words of pip's command line, without the operands of options that take one (-C --prefix=x).
     found, args, i = [], sys.argv[1:], 0
@@ -372,7 +376,11 @@ def _pip_options():
         if arg.startswith("--"):
             found.append(arg)
             name = arg.split("=", 1)[0]
-            if "=" not in arg and any(o.startswith(name) for o in _PIP_VALUE_OPTIONS):
+            if (
+                "=" not in arg
+                and name not in _PIP_PREFIX_FLAGS
+                and any(o.startswith(name) for o in _PIP_VALUE_OPTIONS)
+            ):
                 i += 1
         elif arg.startswith("-") and len(arg) > 1:
             found.append(arg)
@@ -508,11 +516,14 @@ def _config_chooses_location(isolated = False, use_user = True):
     sys.path[:] = _stdlib_paths()
     try:
         import configparser
+        import locale
     finally:
         sys.path[:] = saved
     parser = configparser.RawConfigParser()
     try:
-        parser.read(files, encoding = "utf-8")
+        # pip's Configuration._construct_parser: UTF-8 only in UTF-8 mode, else the locale's encoding.
+        encoding = "utf-8" if sys.flags.utf8_mode else locale.getpreferredencoding(False)
+        parser.read(files, encoding = encoding)
     except (configparser.Error, UnicodeDecodeError):
         return False
 
@@ -754,7 +765,9 @@ def _read_pth_files(entries, on_sys_path = True):
         finally:
             sys.path[:] = saved + [e for e in sys.path if e not in saved]
     if added and on_sys_path:
-        at = max(i for i, e in enumerate(sys.path) if e in entries) + 1
+        # After the stdlib too (the session dirs ride PYTHONPATH ahead of it), still ahead of site-packages.
+        stdlib = set(_stdlib_paths())
+        at = max(i for i, e in enumerate(sys.path) if e in entries or e in stdlib) + 1
         sys.path[at:at] = added
     return added, [f for f in installed if f is not None]
 
