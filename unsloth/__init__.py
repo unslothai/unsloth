@@ -2168,6 +2168,15 @@ else:
         del _sys_mod
         from ._cpu_init import *  # __all__ carries __version__
 
+    # Both backends: AutoConfig learns deepseek_v41 / deepseek_v41_text (Unsloth's native implementation) when the
+    # installed transformers lacks them. The CPU path never runs _gpu_init, where this used to live.
+    try:
+        from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
+        _fix_dsv41()
+        del _fix_dsv41
+    except Exception:
+        pass
+
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
     try:

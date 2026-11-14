@@ -920,3 +920,41 @@ def test_pipeline_stages_with_the_group_state_handoff_match_the_whole_model(cut)
     assert got.keys() == want.keys()
     for name in want:
         torch.testing.assert_close(got[name], want[name], rtol = 1e-4, atol = 1e-6, msg = name)
+
+
+def test_cpu_backend_import_registers_deepseek_v41(tmp_path):
+    """The CPU fallback never runs _gpu_init, where the native registration hook lived: AutoConfig rejected
+    deepseek_v41 there. It is installed on both backends now."""
+    import json
+    import subprocess
+    import sys
+
+    _tiny_config().save_pretrained(tmp_path)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_DISABLE_CPU_FALLBACK", "UNSLOTH_FORCE_GPU_PATH")
+    }
+    env.pop("UNSLOTH_ALLOW_CPU", None)
+    env.update(CUDA_VISIBLE_DEVICES = "", UNSLOTH_FORCE_CPU = "1")
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [root, env.get("PYTHONPATH")]))
+    child = (
+        "import json, sys, unsloth\n"
+        "from transformers import AutoConfig\n"
+        "c = AutoConfig.from_pretrained(sys.argv[1])\n"
+        "print('PROBE ' + json.dumps({'cpu': bool(getattr(unsloth, '_IS_CPU_BACKEND', False)), 'type': type(c).__name__}))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", child, str(tmp_path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 900,
+    )
+    line = next((l for l in out.stdout.splitlines() if l.startswith("PROBE ")), None)
+    if line is None and "CPU" in out.stderr and "fallback" in out.stderr.lower():
+        pytest.skip("this unsloth_zoo has no CPU backend")
+    assert line is not None, out.stdout[-3000:] + out.stderr[-3000:]
+    probe = json.loads(line[6:])
+    assert probe["cpu"] and probe["type"] == "DeepseekV41Config", probe
