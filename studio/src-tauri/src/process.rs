@@ -170,6 +170,7 @@ pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Res
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        restore_host_accessibility(cmd.as_std_mut());
         cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
         match scrub_appimage_library_path() {
             Some(library_path) => {
@@ -218,25 +219,38 @@ mod appimage_environment_tests {
             .map(|key| (key, std::env::var_os(key)));
         std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
         std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
-        let scrubbers: [fn(&mut Command); 2] =
-            [scrub_appimage_launcher_env, scrub_appimage_python_env];
-        let launched_env = |scrub: fn(&mut Command)| {
-            let mut cmd = Command::new("/usr/bin/env");
-            scrub(&mut cmd);
+        let run = |cmd: &mut Command| {
             String::from_utf8(cmd.output().expect("run child").stdout).unwrap()
         };
+        let launches: [fn(&dyn Fn(&mut Command) -> String) -> String; 3] = [
+            |run| {
+                let mut cmd = Command::new("/usr/bin/env");
+                scrub_appimage_launcher_env(&mut cmd);
+                run(&mut cmd)
+            },
+            |run| {
+                let mut cmd = Command::new("/usr/bin/env");
+                scrub_appimage_python_env(&mut cmd);
+                run(&mut cmd)
+            },
+            |run| {
+                let mut cmd = tokio::process::Command::new("/usr/bin/env");
+                scrub_appimage_python_env_tokio(&mut cmd);
+                run(cmd.as_std_mut())
+            },
+        ];
 
         std::env::set_var("NO_AT_BRIDGE", "1");
         std::env::set_var(APPIMAGE_AT_BRIDGE_MARKER, "1");
-        for scrub in scrubbers {
-            let env = launched_env(scrub);
+        for launch in launches {
+            let env = launch(&run);
             assert!(!env_contains_name(&env, "NO_AT_BRIDGE"), "{env}");
             assert!(!env_contains_name(&env, APPIMAGE_AT_BRIDGE_MARKER), "{env}");
         }
 
         std::env::remove_var(APPIMAGE_AT_BRIDGE_MARKER);
-        for scrub in scrubbers {
-            let env = launched_env(scrub);
+        for launch in launches {
+            let env = launch(&run);
             assert!(env.lines().any(|line| line == "NO_AT_BRIDGE=1"), "{env}");
         }
 

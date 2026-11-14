@@ -661,6 +661,7 @@ def test_apprun_turns_the_bundled_atk_bridge_off_on_kde(tmp_path, desktop):
 
     run = _launch(_apprun_mount(tmp_path), tmp_path, XDG_CURRENT_DESKTOP = desktop)
     assert _bridge_env(run) == {"NO_AT_BRIDGE": "1", _BRIDGE_MARKER: "1"}
+    assert "set NO_AT_BRIDGE=0 to keep it" in run["stderr"]
 
 
 @pytest.mark.parametrize("desktop", [None, "", "GNOME", "ubuntu:GNOME", "XFCE", "KDEX"])
@@ -675,6 +676,7 @@ def test_apprun_keeps_an_operator_choice_of_atk_bridge(tmp_path, value):
 
     run = _launch(_apprun_mount(tmp_path), tmp_path, XDG_CURRENT_DESKTOP = "KDE", NO_AT_BRIDGE = value)
     assert _bridge_env(run) == {"NO_AT_BRIDGE": value}
+    assert "atk-bridge off" not in run["stderr"]
 
 
 def test_apprun_host_webkit_keeps_the_atk_bridge_and_drops_a_bundled_parents_default(tmp_path):
@@ -857,7 +859,7 @@ def test_managed_appimage_children_preserve_host_library_paths():
         source_root / "install.rs": ("scrub_appimage_python_env(&mut cmd)", 1),
         source_root / "preflight/managed.rs": ("scrub_appimage_python_env_tokio(&mut cmd)", 2),
         # One spawn path plus the unit tests that live in the same file.
-        source_root / "process.rs": ("scrub_appimage_python_env(&mut cmd)", 4),
+        source_root / "process.rs": ("scrub_appimage_python_env(&mut cmd)", 5),
         source_root / "update.rs": ("scrub_appimage_python_env(&mut cmd)", 1),
     }
     assert "scrub_appimage_library_path" in process_source

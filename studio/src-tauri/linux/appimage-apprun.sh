@@ -186,6 +186,7 @@ if [ "$unsloth_webkit_mode" = bundled ]; then
       NO_AT_BRIDGE=1
       UNSLOTH_APPIMAGE_NO_AT_BRIDGE=1
       export NO_AT_BRIDGE UNSLOTH_APPIMAGE_NO_AT_BRIDGE
+      printf 'unsloth-studio: atk-bridge off on KDE (#15260); set NO_AT_BRIDGE=0 to keep it\n' >&2
     fi
     ;;
   esac
