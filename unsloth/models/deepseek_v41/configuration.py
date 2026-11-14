@@ -265,7 +265,17 @@ class DeepseekV41Config(PretrainedConfig):
         **kwargs,
     ):
         if text_config is None:
-            text_config = DeepseekV41TextConfig()
+            # A flat text config (saved from a model built on DeepseekV41TextConfig): its fields are the text config.
+            import inspect
+
+            fields = set(inspect.signature(DeepseekV41TextConfig.__init__).parameters) - {
+                "self",
+                "kwargs",
+            }
+            flat = {
+                k: kwargs.pop(k) for k in list(kwargs) if k in fields and k != "tie_word_embeddings"
+            }
+            text_config = DeepseekV41TextConfig(**flat)
         elif isinstance(text_config, dict):
             text_config = DeepseekV41TextConfig(
                 **{k: v for k, v in text_config.items() if k != "model_type"}

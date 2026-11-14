@@ -755,3 +755,22 @@ def test_default_lora_targets_map_to_the_real_projections(targets):
     attention_only = dsv41.DeepseekV41ForCausalLM.unsloth_lora_target_modules(None, mlp = False)
     assert "down_proj" not in attention_only and "self_attn.kv_proj" in attention_only
     assert dsv41.DeepseekV41ForCausalLM.unsloth_lora_target_modules(r".*q_a_proj") == r".*q_a_proj"
+
+
+def test_a_flat_text_config_loads_into_the_composite(tmp_path):
+    """A model built on DeepseekV41TextConfig saves a flat config; DeepseekV41ForCausalLM.from_pretrained reads it
+    through the composite config, which must take those fields as its text config (not the released defaults)."""
+    text = _tiny_config().text_config
+    model = dsv41.DeepseekV41ForCausalLM(text).float().eval()
+    model.bind_token_map([i % 97 for i in range(512)])
+    for rows, layer_id in zip(text.engram_num_embeddings, text.engram_layer_ids):
+        model.model.set_engram_table(layer_id, torch.randn(rows, text.engram_head_dim) * 0.5)
+    ids = torch.randint(0, 512, (1, 12))
+    with torch.no_grad():
+        before = model(input_ids = ids).logits
+    model.save_pretrained(tmp_path)
+    loaded = dsv41.DeepseekV41ForCausalLM.from_pretrained(tmp_path, dtype = torch.float32).eval()
+    assert loaded.config.get_text_config().hidden_size == 64
+    loaded.bind_token_map([i % 97 for i in range(512)])
+    with torch.no_grad():
+        assert torch.equal(loaded(input_ids = ids).logits, before)
