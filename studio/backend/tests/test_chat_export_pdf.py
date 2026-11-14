@@ -45,9 +45,10 @@ def test_renders_text_in_several_scripts_with_title_metadata():
         assert document.metadata["title"] == "My chat"
 
 
-def test_user_messages_keep_line_breaks_and_indentation():
+@pytest.mark.parametrize("role", ["user", "system"])
+def test_typed_messages_keep_line_breaks_and_indentation(role):
     body = (
-        '<section class="message user"><h3 class="role">User</h3>'
+        f'<section class="message {role}"><h3 class="role">{role}</h3>'
         '<div class="content">def f():\n    return 1\na,b\n1,2</div></section>'
     )
     response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})

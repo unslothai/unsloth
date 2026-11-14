@@ -609,7 +609,9 @@ async function loadConversationForHtml(
     messages: messages.map((msg) => ({
       role: String(msg.role ?? ""),
       content: stripSearchImageTokens(
-        msg.role === "user" ? messageToText(msg) : messageToMarkdown(msg),
+        msg.role === "user" || msg.role === "system"
+          ? messageToText(msg)
+          : messageToMarkdown(msg),
       ),
     })),
   };
