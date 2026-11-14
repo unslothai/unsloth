@@ -84,6 +84,7 @@ import {
   hasModelSearchFilters,
   type ModelSearchFilters,
 } from "./lib/model-search-filters";
+import { npuLinkNeedsFormat } from "./lib/format-filters";
 import { ModelsToolbar } from "./catalog/models-toolbar";
 import { NpuCatalogList } from "./catalog/npu-catalog-list";
 import { NpuModelDetail } from "./catalog/npu-model-detail";
@@ -647,7 +648,9 @@ export function ModelsPage() {
   const npuCatalog = useNpuCatalog(npuCatalogSource);
   const urlNpu = hubSearch.npu ?? null;
   const npuModels = npuCatalog?.models ?? null;
-  const npuListing = showNpuCatalog && npuCatalog?.ready && npuModels === null;
+  // Setup pending counts too: enabling the runtime from the notice should still open the link.
+  const npuListing =
+    showNpuCatalog && (!npuCatalog?.ready || npuModels === null);
   const selectedNpu =
     showNpuCatalog && urlNpu
       ? (npuModels?.find(
@@ -655,15 +658,37 @@ export function ModelsPage() {
             model.id === urlNpu && (isDiscoverTab || model.downloaded),
         ) ?? null)
       : null;
+  // A shared ?npu link opens on whatever filter the tab had; switch once, then leaving NPU closes it.
+  const [npuLinkShown, setNpuLinkShown] = useState<string | null>(null);
+  const npuLinkPending =
+    urlNpu !== npuLinkShown &&
+    npuLinkNeedsFormat({
+      npu: urlNpu,
+      formatFilter,
+      modelsMode: !isDatasetMode,
+      npuSupported: npuSource !== undefined,
+    });
+  useEffect(() => {
+    // Reset on close so following the same link again switches again.
+    if (!urlNpu) setNpuLinkShown(null);
+    else if (showNpuCatalog) setNpuLinkShown(urlNpu);
+  }, [showNpuCatalog, urlNpu]);
   // Leaving the NPU list (format, tab, kind) or losing the row closes its pane.
   useEffect(() => {
-    if (!urlNpu || selectedNpu || npuStatus === null || npuListing) return;
+    if (
+      !urlNpu ||
+      npuLinkPending ||
+      selectedNpu ||
+      npuStatus === null ||
+      npuListing
+    )
+      return;
     void navigate({
       to: "/hub",
       search: (prev) => ({ ...prev, npu: undefined }),
       replace: true,
     });
-  }, [urlNpu, selectedNpu, npuStatus, npuListing, navigate]);
+  }, [urlNpu, npuLinkPending, selectedNpu, npuStatus, npuListing, navigate]);
   const handleSelectNpu = useCallback(
     (model: NpuModel) =>
       void navigate({
@@ -697,6 +722,10 @@ export function ModelsPage() {
     },
     [isDiscoverTab, urlSection, navigate],
   );
+  // Reruns once the section is gone: on mount the section preset resets the format after this.
+  useEffect(() => {
+    if (npuLinkPending) setFormatFilter("npu");
+  }, [npuLinkPending, setFormatFilter]);
   const hubSource = useHubSource();
   const [storedSearchFilters, setSearchFilters] = useState<ModelSearchFilters>(
     {},

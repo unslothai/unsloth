@@ -7,6 +7,7 @@ import {
   adoptCachedRepoConfig,
   loadedContextFields,
   normalizeMlxKvQuant,
+  normalizeNpuPowerMode,
   resolveResidentInitialConfig,
   savedContextPin,
 } from "@/features/model-picker/model-config/per-model-config";
@@ -464,7 +465,7 @@ export function applyActiveModelStatusToStore(
       preserveThinking: preserveThinkingOnLoad,
     }),
     supportsTools,
-    ...resolveToolsEnabledOnLoad(supportsTools),
+    ...resolveToolsEnabledOnLoad(supportsTools, checkpointId),
     reasoningEnabled: supportsReasoning
       ? reasoningStyle === "reasoning_effort"
         ? true
@@ -609,6 +610,14 @@ export function applyActiveModelStatusToStore(
             loadedMlxFastVerifyRequested: false,
             ...incomingMlxOffload,
           })),
+    ...(seedLoadParams && {
+      npuPowerMode:
+        status.is_npu === true ? normalizeNpuPowerMode(status.npu_power_mode) : null,
+      npuPrefillChunkLen:
+        status.is_npu === true ? (status.npu_prefill_chunk_len ?? null) : null,
+      npuImgPreResize:
+        status.is_npu === true ? (status.npu_img_pre_resize ?? null) : null,
+    }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {

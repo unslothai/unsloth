@@ -94,10 +94,10 @@ import {
   type NpuCatalog,
   type NpuModel,
   type NpuPickerSource,
-  NpuRuntimeVersions,
   NpuSetupNotice,
   npuDisplayName,
   npuDownloadLabel,
+  npuMemoryTag,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -572,7 +572,7 @@ function npuFooterHint(
   return count ? `${count} available` : "";
 }
 
-function ListLabel({
+export function ListLabel({
   children,
   icon,
   action,
@@ -1218,7 +1218,7 @@ function ConnectedGroupHeading({
   );
 }
 
-function ModelRow({
+export function ModelRow({
   label,
   meta,
   selected,
@@ -7690,9 +7690,11 @@ export function HubModelPicker({
     const progress = npuCatalog.downloads[model.id];
     const reconnecting = model.id in npuCatalog.reconnecting;
     const name = npuDisplayName(model);
+    const phase = npuCatalog.phases[model.id];
     const details = [
       "NPU",
       npuSizeLabel(model.size_gb),
+      npuMemoryTag(model),
       npuResumeLabel(model),
     ].filter(Boolean);
     const meta = {
@@ -7706,7 +7708,7 @@ export function HubModelPicker({
         label={name}
         meta={
           downloading
-            ? `NPU · ${npuDownloadLabel(progress, reconnecting)}`
+            ? `NPU · ${npuDownloadLabel(progress, reconnecting, phase)}`
             : details.join(" · ")
         }
         selected={isSelected}
@@ -7724,6 +7726,7 @@ export function HubModelPicker({
         onClick={() => {
           if (downloading) return;
           if (model.downloaded) {
+            npuCatalog.warnMemory(model);
             pick();
             return;
           }
@@ -7741,7 +7744,11 @@ export function HubModelPicker({
         className={onDevice ? downloadedRowButtonClassName : undefined}
       />
     );
-    const configMeta = { ...meta, contextLength: model.max_context_length };
+    const configMeta = {
+      ...meta,
+      contextLength: model.max_context_length,
+      isVision: model.supports_vision,
+    };
     const settings =
       onConfigure && model.downloaded && !downloading ? (
         <ModelLoadSettingsAction
@@ -8557,10 +8564,6 @@ export function HubModelPicker({
                       <NpuSetupNotice catalog={npuCatalog} />
                     )}
                     {npuBrowseRows.map((model) => renderNpuRow(model, false))}
-                    <NpuRuntimeVersions
-                      catalog={npuCatalog}
-                      className="px-2.5 pb-1 pt-1.5"
-                    />
                   </>
                 ) : null}
 

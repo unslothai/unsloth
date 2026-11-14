@@ -162,6 +162,9 @@ export function currentRuntimePerModelConfig(
     mlxFastVerify: s.mlxFastVerify ?? false,
     mlxPleOffload: s.mlxPleOffload ?? null,
     mlxExpertOffload: s.mlxExpertOffload ?? null,
+    npuPowerMode: s.npuPowerMode ?? null,
+    npuPrefillChunkLen: s.npuPrefillChunkLen ?? null,
+    npuImgPreResize: s.npuImgPreResize ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -223,6 +226,9 @@ export function perModelConfigsEqual(
     Boolean(a.mlxFastVerify) === Boolean(b.mlxFastVerify) &&
     (a.mlxPleOffload ?? null) === (b.mlxPleOffload ?? null) &&
     (a.mlxExpertOffload ?? null) === (b.mlxExpertOffload ?? null) &&
+    (a.npuPowerMode ?? null) === (b.npuPowerMode ?? null) &&
+    (a.npuPrefillChunkLen ?? null) === (b.npuPrefillChunkLen ?? null) &&
+    (a.npuImgPreResize ?? null) === (b.npuImgPreResize ?? null) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&

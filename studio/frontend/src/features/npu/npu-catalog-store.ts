@@ -5,8 +5,11 @@ import { reportDownloadsActive } from "@/lib/downloads-activity";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import {
+  NpuDownloadCancelled,
   NpuDownloadError,
+  type NpuDownloadPhase,
   type NpuModel,
+  cancelNpuModelDownload,
   downloadNpuModel,
   followNpuModelDownload,
   listNpuDownloads,
@@ -19,6 +22,7 @@ interface NpuCatalogState {
   listError: string | null;
   progress: Record<string, number | null>;
   reconnecting: Record<string, true>;
+  phases: Record<string, NpuDownloadPhase>;
 }
 
 // Outside the picker, which unmounts on close, so a pull's progress outlives it.
@@ -27,6 +31,7 @@ export const useNpuCatalogStore = create<NpuCatalogState>(() => ({
   listError: null,
   progress: {},
   reconnecting: {},
+  phases: {},
 }));
 
 useNpuCatalogStore.subscribe((state) =>
@@ -74,6 +79,29 @@ function setProgress(id: string, percent: number | null): void {
       ? state
       : { progress: { ...state.progress, [id]: percent } },
   );
+}
+
+function setPhase(id: string, phase: NpuDownloadPhase | undefined): void {
+  useNpuCatalogStore.setState((state) => {
+    if (state.phases[id] === phase) return state;
+    const phases = { ...state.phases };
+    if (phase) {
+      phases[id] = phase;
+    } else {
+      delete phases[id];
+    }
+    return { phases };
+  });
+}
+
+export async function cancelNpuDownload(id: string): Promise<void> {
+  try {
+    await cancelNpuModelDownload(id);
+  } catch (error) {
+    toast.error(`Could not cancel ${id}`, {
+      description: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 const following = new Map<string, Promise<boolean>>();
@@ -125,6 +153,13 @@ export function followNpuDownload(
     let streamed = false;
     const onProgress = (event: { event: string; percent?: number }) => {
       setReconnecting(id, false);
+      // A followed stream replays in order, so the last event read names the phase.
+      setPhase(
+        id,
+        event.event === "verifying" || event.event === "finishing"
+          ? event.event
+          : undefined,
+      );
       completed ||= event.event === "complete";
       if (advance(event.percent)) streamed = true;
     };
@@ -171,6 +206,9 @@ export function followNpuDownload(
           }
         }
         await refreshNpuModels();
+        // A cancel that lands while finishing can still leave the model registered: the list
+        // shows it, but the caller asked for nothing to happen (no model switch).
+        if (error instanceof NpuDownloadCancelled) return false;
         if (listedDownloaded(id)) return true;
         return fail(error instanceof Error ? error.message : String(error));
       }
@@ -182,9 +220,11 @@ export function followNpuDownload(
     useNpuCatalogStore.setState((state) => {
       const progress = { ...state.progress };
       const reconnecting = { ...state.reconnecting };
+      const phases = { ...state.phases };
       delete progress[id];
       delete reconnecting[id];
-      return { progress, reconnecting };
+      delete phases[id];
+      return { progress, reconnecting, phases };
     });
   });
   following.set(id, job);
