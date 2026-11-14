@@ -49,6 +49,7 @@ test("a repo with no license tag says so rather than dropping the row", () => {
 
 test("only Hub repos are looked up: snapshot paths map back, other local paths do not", () => {
   assert.equal(hubRepoIdFor("unsloth/Qwen3-0.6B"), "unsloth/Qwen3-0.6B");
+  assert.equal(hubRepoIdFor("lex-au/Orpheus-3b-FT-Q8_0.gguf"), "lex-au/Orpheus-3b-FT-Q8_0.gguf");
   assert.equal(
     hubRepoIdFor(
       "/home/u/.cache/huggingface/hub/models--unsloth--Qwen3-0.6B/snapshots/abc123",

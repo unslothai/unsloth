@@ -18,7 +18,8 @@ const PARAMS = new Intl.NumberFormat("en", {
 
 /** The Hub repo behind a model id or HF cache snapshot path; null for other local paths. */
 export function hubRepoIdFor(modelId: string): string | null {
-  const repoId = publicModelId(modelId);
+  // A bare repo id is kept as is: Hub repos may end in .gguf, which publicModelId reads as a file.
+  const repoId = HUB_REPO_RE.test(modelId) ? modelId : publicModelId(modelId);
   return HUB_REPO_RE.test(repoId) ? repoId : null;
 }
 
