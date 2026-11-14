@@ -81,6 +81,7 @@ __all__ = [
     "DeepseekV41EngramEmbedding",
     "DeepseekV41NgramHashState",
     "DeepseekV41GroupState",
+    "pipeline_handoff_keys",
     "sparse_attn",
     "sparse_attn_reference",
     "DSV41_STATS",
@@ -1234,6 +1235,30 @@ def pipeline_safe_cut_points(config):
     return [i for i in range(config.num_hidden_layers) if _engram_cut_safe(config, i)]
 
 
+def pipeline_handoff_keys(config, cut):
+    """The DeepseekV41GroupState keys a pipeline stage starting at layer ``cut`` needs from the stages before it
+    (empty at the safe cut points). ``compress_kv`` / ``index_k`` come from the last KV source before ``cut``,
+    ``topk_idxs`` from the last index source, ``candidates`` from the candidate source."""
+    config = config.get_text_config() if hasattr(config, "get_text_config") else config
+    kv_src, ix_src = list(config.kv_source_layer_ids), list(config.index_source_layer_ids)
+    cand = config.candidate_source_layer_id
+    keys = set()
+    for j in range(cut, config.num_hidden_layers):
+        if not config.compress_ratios[j]:
+            continue
+        prior_kv = [s for s in kv_src if s <= j]
+        if j not in kv_src and prior_kv and prior_kv[-1] < cut:
+            keys.add("compress_kv")
+            if j in ix_src:
+                keys.add("index_k")
+        prior_ix = [s for s in ix_src if s <= j]
+        if j not in ix_src and prior_ix and prior_ix[-1] < cut:
+            keys.add("topk_idxs")
+        if j in ix_src and cand is not None and 0 <= cand < cut and cand < j:
+            keys.add("candidates")
+    return sorted(keys)
+
+
 def sequence_segments(position_ids, attention_mask, bsz, seqlen):
     """[(row, start, length)] of the sequences in a batch when a row holds several of them (position_ids restarting
     at 0, padding-free packing) or starts with padding (left padding); None when every row is one sequence from
@@ -1572,16 +1597,8 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
             if attention_mask is not None and attention_mask.dim() == 2
             else None
         )
-        engram_rows = {}
-        if self.ngram_hash is not None and input_ids is not None:
-            self._maybe_autobind()
-            hash_ids = self.ngram_hash(input_ids, token_mask, kwargs.get("engram_left_context"))
-            for k, layer_id in enumerate(self.ngram_hash.layer_ids):
-                with torch.no_grad():
-                    engram_rows[layer_id] = self.engram_tables[str(layer_id)](hash_ids[:, :, k, :])
-        h = inputs_embeds.unsqueeze(2).repeat(1, 1, self.hc_mult, 1)
-        pre_mix = h.new_zeros(bsz, seqlen, self.hc_mult, dtype = torch.float32)
-        pre_mix[:, :, 0] = 1.0  # model.py:1162-1166
+        engram_rows = self.engram_rows(input_ids, token_mask, kwargs.get("engram_left_context"))
+        h, pre_mix = self.stream_from_embeddings(inputs_embeds)
         shared = DeepseekV41GroupState()
         all_hidden = () if output_hidden_states else None
         for layer in self.layers:
@@ -1601,6 +1618,91 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         return BaseModelOutputWithPast(
             last_hidden_state = h, past_key_values = None, hidden_states = all_hidden
         )
+
+    def engram_rows(
+        self,
+        input_ids,
+        token_mask = None,
+        left_context = None,
+        layer_ids = None,
+    ):
+        """{layer_id: rows} gathered from the model-level engram tables for the n-gram hashes of ``input_ids``
+        (frozen, no gradient). ``layer_ids`` limits it to the engram layers a pipeline stage owns."""
+        rows = {}
+        if self.ngram_hash is None or input_ids is None:
+            return rows
+        self._maybe_autobind()
+        hash_ids = self.ngram_hash(input_ids, token_mask, left_context)
+        for k, layer_id in enumerate(self.ngram_hash.layer_ids):
+            if layer_ids is not None and layer_id not in layer_ids:
+                continue
+            with torch.no_grad():
+                rows[layer_id] = self.engram_tables[str(layer_id)](hash_ids[:, :, k, :])
+        return rows
+
+    def stream_from_embeddings(self, inputs_embeds):
+        """The hc_mult-copy residual stream and the first lagged pre_mix (model.py:1162-1166)."""
+        bsz, seqlen = inputs_embeds.shape[:2]
+        h = inputs_embeds.unsqueeze(2).repeat(1, 1, self.hc_mult, 1)
+        pre_mix = h.new_zeros(bsz, seqlen, self.hc_mult, dtype = torch.float32)
+        pre_mix[:, :, 0] = 1.0
+        return h, pre_mix
+
+    def pipeline_stage_forward(
+        self,
+        start,
+        end,
+        hidden_states = None,
+        pre_mix = None,
+        group_state = None,
+        input_ids = None,
+        inputs_embeds = None,
+        attention_mask = None,
+    ):
+        """Layers ``[start, end)`` of one pipeline stage. What crosses a stage boundary:
+
+        * ``hidden_states`` [b, s, hc_mult, hidden] (the residual streams) and ``pre_mix`` [b, s, hc_mult] fp32
+          (the lagged mHC collapse weights) -- both differentiable;
+        * ``group_state``: the per-forward group state written by earlier source layers, a DeepseekV41GroupState
+          (send ``group_state.to_tensors(pipeline_handoff_keys(config, end))``, rebuild with ``from_tensors``):
+          compressed KV [b, s // ratio, head_dim] (differentiable: the later layers' loss reaches the source layer's
+          compressor), indexer keys, top-k int32 and candidate bool masks (selection, no gradient);
+        * ``input_ids`` (and ``attention_mask``): every stage that owns an engram layer hashes them itself and
+          reads its own tables (frozen, model level), so engram rows never cross a boundary.
+
+        The first stage (``start == 0``) embeds ``input_ids`` / takes ``inputs_embeds``; the last stage
+        (``end == num_hidden_layers``) returns the final normed hidden states [b, s, hidden]. Returns
+        (hidden_states, pre_mix, group_state). One sequence per row (pack before splitting into stages)."""
+        if start == 0 and hidden_states is None:
+            if inputs_embeds is None:
+                inputs_embeds = self.embed_tokens(input_ids)
+            hidden_states, pre_mix = self.stream_from_embeddings(inputs_embeds)
+        seqlen = hidden_states.shape[1]
+        positions = torch.arange(seqlen, device = hidden_states.device)
+        token_mask = (
+            attention_mask.bool()
+            if attention_mask is not None and attention_mask.dim() == 2
+            else None
+        )
+        if group_state is None:
+            group_state = DeepseekV41GroupState()
+        elif not isinstance(group_state, DeepseekV41GroupState):
+            group_state = DeepseekV41GroupState.from_tensors(group_state)
+        owned = [layer.layer_idx for layer in self.layers[start:end]]
+        rows = self.engram_rows(input_ids, token_mask, layer_ids = set(owned))
+        h = hidden_states
+        for layer in self.layers[start:end]:
+            h, pre_mix = layer(
+                h,
+                pre_mix,
+                positions = positions,
+                shared = group_state,
+                engram_rows = rows.get(layer.layer_idx),
+                engram_mask = token_mask,
+            )
+        if end >= len(self.layers):
+            h = self.norm(hc_pre(h, pre_mix))
+        return h, pre_mix, group_state
 
     def _forward_segments(self, segments, input_ids, inputs_embeds, output_hidden_states, **kwargs):
         """Packed rows (several sequences, position_ids restarting at 0) or left padding: every sequence is moved to

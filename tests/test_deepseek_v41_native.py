@@ -878,3 +878,34 @@ def test_auto_classes_reload_a_flat_text_config_checkpoint(tmp_path):
     loaded.bind_token_map([i % 97 for i in range(512)])
     with torch.no_grad():
         assert torch.equal(loaded(input_ids = ids).logits, before)
+
+
+@pytest.mark.parametrize("cut", [1, 2, 3, 4, 5])
+def test_pipeline_stages_with_the_group_state_handoff_match_the_whole_model(cut):
+    """Two stages split at any layer: hidden streams + pre_mix + only the handoff keys cross; each stage hashes
+    input_ids for the engram layers it owns. Logits and gradients equal the unsplit model."""
+    model = _tiny_model().train()
+    ids = torch.randint(0, 512, (2, 16))
+    full = model.model(input_ids = ids).last_hidden_state
+    full.float().square().mean().backward()
+    want = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad(set_to_none = True)
+    text = model.config.text_config
+    keys = dsv41.pipeline_handoff_keys(text, cut)
+    assert (keys == []) == (cut in dsv41.pipeline_safe_cut_points(text))
+    h, pre_mix, state = model.model.pipeline_stage_forward(0, cut, input_ids = ids)
+    sent = state.to_tensors(keys)
+    h2, _, _ = model.model.pipeline_stage_forward(
+        cut,
+        text.num_hidden_layers,
+        hidden_states = h,
+        pre_mix = pre_mix,
+        group_state = sent,
+        input_ids = ids,
+    )
+    torch.testing.assert_close(h2, full.detach(), rtol = 1e-5, atol = 1e-5)
+    h2.float().square().mean().backward()
+    got = {n: p.grad for n, p in model.named_parameters() if p.grad is not None}
+    assert got.keys() == want.keys()
+    for name in want:
+        torch.testing.assert_close(got[name], want[name], rtol = 1e-4, atol = 1e-6, msg = name)
