@@ -6,6 +6,7 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
 export type ToolDecisionResult = "ok" | "retry" | "gone" | "missing";
 
+// The pending entry clears only once the backend took the decision, so a failed post stays answerable.
 export async function decideToolCall(
   toolCallId: string,
   decision: "allow" | "deny",

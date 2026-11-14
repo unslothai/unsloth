@@ -39,6 +39,7 @@ import { voiceTrace } from "./voice-trace";
 
 function approval(): OrbWidgetApproval | null {
   const s = useChatRuntimeStore.getState();
+  // Only the voiced chat's calls: the store also holds Compare panes' and background chats'.
   const pending = pendingApproval(s.toolConfirmations, s.activeThreadId, (id) => describeToolCall(id) !== null);
   if (!pending) return null;
   return {
@@ -133,6 +134,7 @@ function streamSpectrum(
       () => undefined,
     );
   };
+  // Fallback only: the audio clock drives frames, since the hidden main window's timers are slowed.
   let timer: ReturnType<typeof setInterval> | null = null;
   const stopTimer = () => {
     if (timer !== null) clearInterval(timer);
@@ -184,6 +186,7 @@ function showMain(t: Tauri): void {
   void t
     .invoke("reveal_main_window")
     .catch(() => t.win.getCurrentWindow().show())
+    // WebKit can leave the capture track open but silent across the swap: start the mic over.
     .finally(() => reacquireMic("back"));
 }
 
@@ -207,11 +210,13 @@ export function prewarmOrbWidget(): Promise<boolean> {
         minimizable: false,
         decorations: false,
         transparent: true,
+        // The native shadow outlines the whole transparent square on macOS.
         shadow: false,
         alwaysOnTop: true,
         skipTaskbar: true,
         visibleOnAllWorkspaces: true,
         focus: false,
+        // macOS: the first click on the unfocused widget presses the button instead of only focusing.
         acceptFirstMouse: true,
       });
       const created = await new Promise<boolean>((resolve) => {
@@ -240,6 +245,7 @@ export function prewarmOrbWidget(): Promise<boolean> {
           s.voiceMuted !== prev.voiceMuted ||
           s.voiceMode !== prev.voiceMode ||
           s.activeThreadId !== prev.activeThreadId ||
+          // Asked, or answered from anywhere: the chat card, the popup, or voice cancelling the run.
           s.toolConfirmations !== prev.toolConfirmations
         ) {
           push();
@@ -248,6 +254,7 @@ export function prewarmOrbWidget(): Promise<boolean> {
     );
     offs.push(watchLook(push));
     offs.push(await t.listen(ORB_WIDGET_READY_EVENT, push));
+    // A Dock click, the tray or the app menu restore the main window natively; its focus is how this side hears.
     offs.push(streamSpectrum(t.emitTo, () => mode.floating));
     offs.push(
       await t.win.getCurrentWindow().onFocusChanged(({ payload: focused }) => {
@@ -316,6 +323,7 @@ export async function openOrbWidget(cursor: Point | null = null): Promise<void> 
       placeOrbWidget(saved, screens, current ? toArea(current.workArea, current.scaleFactor) : null);
     mode.floating = true;
     useChatRuntimeStore.getState().setVoiceOrbCollapsed(true);
+    // One native call places and shows the widget and fades the main window in the same turn.
     await t.invoke("enter_orb_widget_mode", {
       x: at?.x ?? null,
       y: at?.y ?? null,

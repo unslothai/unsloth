@@ -3170,6 +3170,7 @@ export function ChatPage({
   const setSelectedSttModelId = useChatRuntimeStore(
     (s) => s.setSelectedSttModelId,
   );
+  // Only a voice this page loaded is ever unloaded; whichever is picked when a load settles ends up loaded.
   const loadedVoiceRef = useRef<VoiceHold | null>(null);
   const voiceLoadRef = useRef<Promise<boolean> | null>(null);
   // Bumped whenever voice mode lets go, so a load still in flight knows it is no longer wanted.
@@ -3194,6 +3195,7 @@ export function ChatPage({
           store.setVoiceSlotLoaded(true);
           return true;
         }
+        // A voice already serving becomes the pick instead of a second voice loading beside it.
         const served = loadedVoiceRef.current === null ? await servedVoice() : null;
         if (served) {
           if (epoch !== voiceEpochRef.current) return false;
@@ -3202,6 +3204,7 @@ export function ChatPage({
           store.setVoiceSlotLoaded(true);
           return true;
         }
+        // With no chat model the voice would take the empty seat and the next chat load would replace it.
         if (!store.params.checkpoint) return false;
         store.setVoiceSlotLoaded(false);
         store.setVoiceSlotLoading(true);

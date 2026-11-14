@@ -14,6 +14,7 @@ import {
 import { voiceTrace } from "./voice-trace";
 
 const TIMEOUT_MS = 400;
+// Asked while the chat model generates on the same GPU, where a cold call took 500 ms.
 const INTERJECT_TIMEOUT_MS = 1500;
 export const JUDGE_SEND_THRESHOLD = 0.65;
 

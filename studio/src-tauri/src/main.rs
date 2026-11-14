@@ -2720,6 +2720,7 @@ fn main() {
                     _ => {}
                 }
             }
+            // Only the main window has close-to-tray; the floating orb just closes.
             if window.label() == orb_widget::LABEL {
                 return;
             }

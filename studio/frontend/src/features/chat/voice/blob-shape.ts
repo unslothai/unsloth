@@ -5,6 +5,7 @@ export const BLOB_AMP_PX = 22.4;
 
 export const BLOB_PINCH = 0.4;
 
+// Fewer and the blobs lose shape; more only lengthens the clip path re-parsed every frame.
 export const BLOB_CONTROLS = 32;
 const STEP = (2 * Math.PI) / BLOB_CONTROLS;
 
@@ -25,6 +26,7 @@ export function foldControls(bands: Float32Array, phase: number, ctl: BlobContro
   let peak = 0;
   for (let i = 0; i < n; i++) if (bands[i] > peak) peak = bands[i];
   for (let i = 0; i < BLOB_CONTROLS; i++) {
+    // The points turn with the edge, so each keeps its band and nothing shimmers.
     const a = i * STEP - phase;
     const x = ((1 - Math.cos(i * STEP)) / 2) * (n - 1);
     const lo = Math.floor(x);

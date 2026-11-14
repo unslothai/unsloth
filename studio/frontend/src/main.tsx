@@ -163,6 +163,7 @@ function renderApp(): void {
   }
 }
 
+// No locale or zoom for the widget: its strings come translated, and a zoom would break CSS px = logical px.
 const localeInitialization = isOrbWidget ? "en" : initializeLocale();
 const interfaceScaleInitialization = isOrbWidget
   ? Promise.resolve()

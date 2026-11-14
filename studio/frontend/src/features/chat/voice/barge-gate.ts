@@ -3,7 +3,9 @@
 
 
 const BARGE_IN_RMS = 0.045;
+// 3x needed a raised voice on speakers; the detector rejects bleed anyway.
 const BARGE_OVER_BLEED = 2;
+// A cough or dropped object decays inside ~300 ms and must not cut the reply.
 const BARGE_IN_MS = 450;
 
 export interface BargeGate {

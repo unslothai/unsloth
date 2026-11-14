@@ -9,6 +9,7 @@ let probe: Promise<boolean> | null = null;
 
 async function check(): Promise<boolean> {
   if (enabled !== null) return enabled;
+  // A failed probe stays unknown so the next event asks again; not /voice/models/status, which loads every model.
   probe ??= authFetch("/api/inference/voice/trace")
     .then(async (r) => {
       if (!r.ok) return null;

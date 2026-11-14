@@ -12,6 +12,7 @@ export function isBackchannel(text: string): boolean {
   return words.length > 0 && words.every((w) => BACKCHANNEL.has(w) || /^(m+|h+m+|u+h+|a+h+|o+h+)$/.test(w));
 }
 
+// Only ever dropped as the whole transcript.
 const STT_NOISE = new Set(["you", "thank you", "thank you very much", "thanks", "thanks for watching", "bye", "the end"]);
 
 export function isSttNoise(text: string): boolean {
@@ -30,6 +31,7 @@ export function joinTurn(held: string, next: string): string {
 const wordsOf = (t: string) =>
   t.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
 
+// A lone command word is the user's even when the reply says it; any other single reply word is echo leak.
 const ONE_WORD_COMMANDS = new Set([
   "stop", "wait", "pause", "cancel", "hold", "enough", "quiet", "no", "nope", "yes", "yeah", "yep",
 ]);
@@ -38,6 +40,7 @@ export function isReplyEcho(transcript: string, reply: string): boolean {
   const t = wordsOf(transcript);
   if (t.length === 0 || !reply) return false;
   if (t.length === 1 && ONE_WORD_COMMANDS.has(t[0])) return false;
+  // Whole words only: "hey" is not inside "they", nor "skip" inside "skipping".
   const r = ` ${wordsOf(reply).join(" ")} `;
   return r.includes(` ${t.join(" ")} `);
 }

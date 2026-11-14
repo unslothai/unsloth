@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// The loop only delivers what it heard, so typed text was dropped when the session ended empty.
 export function isTypedVoiceSubmit(opts: {
   box: string;
   shown: string;

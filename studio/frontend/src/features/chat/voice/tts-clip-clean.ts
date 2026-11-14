@@ -4,6 +4,7 @@
 
 const BASELINE_MS = 50;
 const FRAME_MS = 20;
+// Neighbours down to EXTEND_DB stay with the onset frame, so soft onsets and releases are kept.
 const ONSET_DB = 24;
 const EXTEND_DB = 30;
 const SILENT_DBFS = -45;

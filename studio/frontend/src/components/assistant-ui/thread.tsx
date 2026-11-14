@@ -5729,6 +5729,7 @@ const Composer: FC<{
     }
     wasDictatingRef.current = false;
     if (!sendAfterDictationRef.current) return;
+    // The loop appends the utterance itself; submitting the box too would queue a copy behind the reply.
     if (voiceEngaged) {
       sendAfterDictationRef.current = false;
       heldTextRef.current = null;
@@ -5786,6 +5787,7 @@ const Composer: FC<{
         event.preventDefault();
         return;
       }
+      // The loop delivers the spoken words (sending the box too doubled them); typed words it sends itself.
       if (voiceEngaged && isDictating) {
         event.preventDefault();
         if (requestVoiceTypedSubmit(composerText)) return;

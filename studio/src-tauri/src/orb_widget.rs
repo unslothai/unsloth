@@ -26,6 +26,7 @@ pub(crate) fn enter_orb_widget_mode(
     set_main_floating(&app, true)
 }
 
+/// WebKit mutes capture in a hidden view, so on macOS the main window stays ordered in, transparent and click-through.
 pub(crate) fn leave(app: &tauri::AppHandle) {
     if !FLOATING.swap(false, Ordering::SeqCst) {
         return;
@@ -53,6 +54,7 @@ fn show_widget(widget: &tauri::WebviewWindow, at: Option<(f64, f64)>) -> Result<
                 };
                 window.setLevel(STATUS_WINDOW_LEVEL);
                 if let Some((x, y)) = at {
+                    // Cocoa counts up from the primary screen's bottom edge.
                     let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
                     let primary: *mut AnyObject = msg_send![screens, firstObject];
                     if let Some(primary) = primary.as_ref() {

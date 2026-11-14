@@ -4691,6 +4691,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return { loadingModelPick: null };
     }),
+  // Clears the orb's last state too: a stale "listening" came back over the welcome composer on reopen.
   setVoiceMode: (voiceMode) =>
     set(
       voiceMode === "off"

@@ -5,6 +5,7 @@
 export const ORB_WIDGET_LABEL = "orb-widget";
 export const ORB_WIDGET_QUERY = "orb-widget";
 export const ORB_WIDGET_BALL = 72;
+// Reaches from voice-orb.tsx at 140 px: edge 70 + 3 + BLOB_AMP_PX; glow tail visible to 1.5x its 32 px blur.
 const K = ORB_WIDGET_BALL / 140;
 export const ORB_WIDGET_PEAK_SCALE = 1.1;
 export const ORB_WIDGET_EDGE_REACH = (70 + 3 + 22.4) * K * ORB_WIDGET_PEAK_SCALE;
@@ -99,6 +100,7 @@ export function isOrbWidgetDecision(value: unknown): value is OrbWidgetDecision 
   );
 }
 
+// The store holds every chat's calls, so one counts only when its scope names voiceThreadId or the loop finds it.
 export function pendingApproval(
   confirmations: Readonly<Record<string, { autoAllowKey?: string }>>,
   voiceThreadId: string | null,
@@ -154,6 +156,7 @@ export function restoreAfterPopup(current: Point, shift: Point): Point {
   return { x: current.x - shift.x, y: current.y - shift.y };
 }
 
+// Units are the position's (physical px in the app); `scale` converts logical px to them.
 export function placeApprovalPopup(pos: Point, screens: readonly Area[], scale = 1): PopupPlacement {
   const s = scale || 1;
   const width = ORB_WIDGET_WIDTH * s;
@@ -259,6 +262,7 @@ function centreOn(p: Point, m: Area, size: { width: number; height: number }): b
 
 const WIDGET_SIZE = { width: ORB_WIDGET_WIDTH, height: ORB_WIDGET_HEIGHT };
 
+// The saved spot only while its centre is on a connected screen: a display can be unplugged between uses.
 export function placeOrbWidget(
   saved: Point | null,
   screens: readonly Area[],
@@ -281,6 +285,7 @@ export function clampToScreens(p: Point, screens: readonly Area[], center: Point
   let bestDist = Number.POSITIVE_INFINITY;
   for (const m of screens) {
     const x = Math.min(Math.max(cx, m.x), m.x + m.width - 1);
+    // Any side may take the ball to the edge, except the bottom: the bar hangs below it.
     const y = Math.min(Math.max(cy, m.y), lowestCenter(m));
     const d = (x - cx) ** 2 + (y - cy) ** 2;
     if (d < bestDist) {
@@ -300,6 +305,7 @@ export interface SpectrumFrame {
 
 export function packSpectrum(side: "input" | "output", level: number, bands: ArrayLike<number>): SpectrumFrame {
   const out: number[] = new Array(bands.length);
+  // Three places: two made the widget's edge step where the in-app one glides.
   for (let i = 0; i < bands.length; i++) out[i] = Math.round(bands[i] * 1000) / 1000;
   return { side, level: Math.round(level * 1000) / 1000, bands: out };
 }

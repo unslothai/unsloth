@@ -8,6 +8,7 @@ const F_LO = 90;
 const F_HI = 4000;
 const DB_FLOOR = -85;
 const DB_CEIL = -25;
+// Speech pre-emphasis: a voice loses ~12 dB an octave, so untilted the upper half of the ring stayed dark.
 const TILT_DB_PER_OCTAVE = 6;
 const TILT_FROM_HZ = 300;
 const ATTACK = 0.5;
@@ -119,6 +120,7 @@ export function shapeBands(
 const taps: Record<Side, Tap | null> = { input: null, output: null };
 const frameListeners = new Set<(side: Side) => void>();
 
+// Audio clock, not a timer: with the floating orb up the main window is hidden and macOS throttles its timers.
 export function onSpectrumFrame(cb: (side: Side) => void): () => void {
   frameListeners.add(cb);
   return () => frameListeners.delete(cb);
@@ -215,6 +217,7 @@ export function readSpectrum(side: Side, out: Float32Array): number {
     out.fill(0);
     return 0;
   }
+  // A second read in the same frame gets the first one's bands, or the smoothing would step twice.
   const now = performance.now();
   if (now - tap.readAt < READ_REUSE_MS) {
     out.set(tap.out);

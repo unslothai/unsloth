@@ -49,6 +49,7 @@ export function servedVoiceTtsModel(serving: readonly string[]): string | null {
   return VOICE_TTS_MODELS.find((id) => serving.some((s) => voiceIdServes(s, id))) ?? null;
 }
 
+// The GPU fit estimate counts the loaded chat model, so a small card refuses the voice; audio.cpp TTS runs on CPU.
 export function voiceLoadNeedsCpu(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
   return /enough (free )?memory|out of memory/i.test(message);

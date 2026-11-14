@@ -57,8 +57,10 @@ type IconKind = "mic" | "mic-off" | "wave" | "dots" | "brain" | "spinner" | "pen
 
 const HOLE = "#08080b";
 const DEBOSS = "drop-shadow(0 1px 0.5px rgba(255,255,255,0.22)) drop-shadow(0 -1px 1.5px rgba(0,0,0,0.6))";
+// For glyphs moving every frame: WebKit keeps a filtered raster under a per-frame transform (ghost bands on macOS).
 const DEBOSS_BOX = "0 1px 0.5px rgba(255,255,255,0.22), 0 -1px 1.5px rgba(0,0,0,0.6)";
 
+// A CSS keyframe, not a scripted tween: scripted dots over the pulsing body dropped frames in the desktop webview.
 const Dots: FC = () => (
   <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
     {[0, 1, 2].map((i) => (
@@ -78,6 +80,7 @@ const Dots: FC = () => (
   </div>
 );
 
+// Wide enough for the edge's full reach (70 + 3 + BLOB_AMP_PX), or the peaks are cut flat.
 const ORB_BOX = 196;
 const ORB_R = 70;
 const BLOB_AMP = BLOB_AMP_PX;
@@ -88,6 +91,7 @@ const BLOB_RELEASE = 0.2;
 const BLOB_EASE_FRAME_MS = 1000 / 30;
 const BLOB_KERNEL = Float32Array.from({ length: 7 }, (_, k) => Math.exp(-((k - 3) ** 2) / 4));
 const BLOB_KERNEL_SUM = BLOB_KERNEL.reduce((a, b) => a + b, 0);
+// One orb on screen at a time, so the per-frame buffers live for the module.
 const blobRaw = new Float32Array(SPECTRUM_BANDS);
 const blobEased = new Float32Array(SPECTRUM_BANDS);
 const blobControls = createBlobControls();
@@ -168,6 +172,7 @@ function scaleOf(el: Element): number {
   }
 }
 
+// A class for getSnapshotBeforeUpdate: the only hook that still sees the old pulse before the DOM changes.
 class ScaleHandoff extends Component<{
   animationKey: string;
   className?: string;
@@ -186,6 +191,7 @@ class ScaleHandoff extends Component<{
 
   componentDidUpdate(_: unknown, __: unknown, from: number | null): void {
     if (from === null) return;
+    // A new duration on the same keyframe keeps the old start time and jumps the cycle: restart at rest.
     const pulse = this.wrap.current?.querySelector("[data-orb-pulse]");
     for (const a of pulse?.getAnimations?.() ?? []) {
       if ("animationName" in a) a.currentTime = 0;
@@ -699,6 +705,7 @@ function useComposerClearance(
       const card = column.querySelector("[data-orb-approval]");
       const composer = composerOf();
       if (!card || !composer) return setLift(0);
+      // From the layout, not the screen: offset* ignore the lift and the glide, so this is the resting position.
       const orbCentre = root.getBoundingClientRect().top + ring.offsetTop + ring.offsetHeight / 2;
       const cardBottom = orbCentre + cardTop + (card as HTMLElement).offsetHeight;
       const need = composer.getBoundingClientRect().top - COMPOSER_CLEARANCE - cardBottom;
@@ -749,6 +756,7 @@ export const VoiceOrb: FC = () => {
   const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
   const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
   const hasDecision = latestDecision(useVoiceDecisions()) !== undefined;
+  // Filtered below to the voiced chat: the store also holds Compare panes' and background chats' calls.
   const confirmations = useChatRuntimeStore((s) => s.toolConfirmations);
   const voiceThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const approval = pendingApproval(confirmations, voiceThreadId, (id) => describeToolCall(id) !== null);
@@ -859,6 +867,7 @@ export const VoiceOrb: FC = () => {
             >
               <div
                 data-orb-pulse
+                // Not `all`: animating transform fights the breathe keyframe on every state swap.
                 className="relative grid place-items-center transition-[box-shadow] duration-300 ease-out"
                 aria-hidden
                 style={{
@@ -866,6 +875,7 @@ export const VoiceOrb: FC = () => {
                   height: 140,
                   borderRadius: "50%",
                   boxShadow: cfg?.shadow ?? "none",
+                  // Only while shown: minimized, the sphere kept repainting under an invisible layer and the swap back stuttered.
                   animation: cfg && showOverlay ? `${cfg.animation} ${cfg.duration} ease-in-out infinite` : undefined,
                 }}
               >

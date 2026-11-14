@@ -7,6 +7,7 @@ import { toolBrief } from "@/features/chat/voice/approval-brief";
 import { useT } from "@/i18n";
 import { type FC, useState } from "react";
 
+// No Always allow: this line can be a cut-down view of the call, so a lasting grant is made on the chat card.
 export const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) => {
   const t = useT();
   const [pending, setPending] = useState(false);

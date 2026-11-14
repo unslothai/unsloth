@@ -40,6 +40,7 @@ export function deriveOrbState(inputs: VoiceOrbInputs): VoiceOrbDecision {
   if (inputs.voiceMode !== "active") return set(null);
   if (!inputs.hasChatModel) return set("waiting");
   if (inputs.voicePaused) return set("paused");
+  // Grey-blue, not the lilac of TTS synthesis, so warming up never reads as ready or as speech.
   if (inputs.voiceSlotLoading) return set("loading");
   if (inputs.voiceHearing) return set("hearing");
   if (inputs.isPlaying) return set("speaking");

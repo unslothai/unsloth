@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+# Neither env var is set by default, so nothing is fetched; a local dir wins when it holds the files.
 ENV_DIR = "UNSLOTH_VOICE_MODELS_DIR"
 ENV_HUB = "UNSLOTH_VOICE_MODELS_HUB"
 BUNDLED_PHRASES = Path(__file__).with_name("voice_phrases.json")
@@ -433,6 +434,7 @@ class _OnnxClassifier:
         return self.classes[i], float(p[i])
 
 
+# The pickles can come from the Hub, so unpickling resolves only these packages' classes, never a function.
 _PICKLE_PACKAGES = ("sklearn", "scipy", "numpy")
 _PICKLE_CALLABLES = {
     ("numpy.core.multiarray", "_reconstruct"),
@@ -470,6 +472,7 @@ class _SklearnUnpickler(pickle.Unpickler):
             return super().find_class(module, name)
         if module == "collections" and name in ("OrderedDict", "defaultdict"):
             return super().find_class(module, name)
+        # Dotted names walk attributes ("subprocess.Popen") and re-exports are not the package's own: both refused.
         if "." not in name and module.split(".")[0] in _PICKLE_PACKAGES:
             found = super().find_class(module, name)
             home = str(getattr(found, "__module__", "") or "").split(".")[0]
@@ -860,6 +863,7 @@ class VoiceModels:
         root: Optional[Path] = None,
         hub: Optional[str] = None,
     ):
+        # An explicit root is local-only (tests, a pinned checkout); otherwise the env vars decide.
         self.root = Path(root) if root else models_dir()
         self.hub = hub if root else (hub or models_hub())
         self._lock = threading.Lock()

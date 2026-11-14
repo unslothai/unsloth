@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Once the user clicks into a held fragment nothing is auto-sent until they send or clear the box.
 export type HeldEditDeps = {
   /** The composer's text, read only when a decision is due, never per keystroke. */
   readBox: () => string;

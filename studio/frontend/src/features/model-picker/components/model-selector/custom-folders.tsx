@@ -32,6 +32,7 @@ export function useScanFolders(onChanged?: () => void) {
 
   const handleAddFolder = useCallback(
     async (overridePath?: string) => {
+      // An explicit path avoids racing the `setFolderInput` update.
       const raw = overridePath !== undefined ? overridePath : folderInput;
       const trimmed = raw.trim();
       if (!trimmed || folderLoading) return;

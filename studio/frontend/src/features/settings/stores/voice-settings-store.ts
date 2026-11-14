@@ -435,6 +435,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         )
           ? savedSttModel
           : DEFAULT_STT_MODEL;
+        // Carry over the old header picker's mic pin once (else a webcam mic box drops to another input), then drop the key.
         let micDeviceId = asString(saved?.micDeviceId, "default");
         try {
           const legacyMic = localStorage.getItem(LEGACY_LOOP_MIC_KEY);

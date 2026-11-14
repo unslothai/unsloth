@@ -14,6 +14,7 @@ export interface OrbDwellTimers {
   clearTimer: (handle: unknown) => void;
 }
 
+// States hold ORB_DWELL_MS so sub-100 ms phases do not flash; "hearing", "speaking" and null land at once.
 export interface OrbDwell {
   push: (state: VoiceOrbState | null) => void;
   shown: () => VoiceOrbState | null;
@@ -44,6 +45,7 @@ export function createOrbDwell(
   const show = (state: VoiceOrbState | null) => {
     cancel();
     displayed = state;
+    // A blank orb has nothing to protect, so whatever comes next lands at once.
     shownAt = state === null ? -Infinity : timers.now();
     emit(state);
   };

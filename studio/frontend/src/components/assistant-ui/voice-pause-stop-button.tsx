@@ -67,6 +67,7 @@ export const VoicePauseStopButton: FC = () => {
   };
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (e.key !== " " && e.key !== "Enter") return;
+    // The button's own click would fire on keyup and tap a second time.
     e.preventDefault();
     if (e.repeat) return;
     press();

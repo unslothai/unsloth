@@ -101,10 +101,12 @@ export function registerVoiceThreadReset(fn: ((prevThreadId: string | null) => v
   voiceThreadReset = fn;
 }
 
+// Must not call the plain toggle: that turned voice OFF on every new chat.
 export function requestVoiceThreadReset(prevThreadId: string | null): void {
   voiceThreadReset?.(prevThreadId);
 }
 
+// Left going, the old run kept generating beside the new chat's run under the same voice.
 export function voiceRunToStop(
   prevThreadId: string | null,
   voicedThreadId: string | null,
@@ -165,6 +167,7 @@ export function registerVoiceSubmit(fn: ((text?: string) => void) | null): void 
   voiceSubmit = fn;
 }
 
+// A no-op outside voice mode: that is what leaves the plain Dictate button filling the composer without sending.
 export function requestVoiceSubmit(text?: string): void {
   voiceSubmit?.(text);
 }
@@ -175,6 +178,7 @@ export function registerVoiceTypedSubmit(fn: ((box: string) => boolean) | null):
   voiceTypedSubmit = fn;
 }
 
+// False means the box is only what voice put there, so the caller ends the spoken turn instead.
 export function requestVoiceTypedSubmit(box: string): boolean {
   return voiceTypedSubmit?.(box) ?? false;
 }

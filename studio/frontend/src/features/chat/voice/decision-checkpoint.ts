@@ -67,6 +67,7 @@ export function useVoiceDecision(refreshKey: unknown): {
 } {
   const [status, setStatus] = useState<VoiceDecisionStatus | null>(null);
   const [failed, setFailed] = useState(false);
+  // A switch answers before its load has started, so "not loaded" right after one is still pending.
   const [pending, setPending] = useState(false);
   const [reads, setReads] = useState(0);
   const settled = status?.state === "loaded" || status?.state === "error";

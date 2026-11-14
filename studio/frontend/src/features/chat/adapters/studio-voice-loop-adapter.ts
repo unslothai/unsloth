@@ -69,11 +69,14 @@ import { isMissingDeviceError } from "./studio-web-speech-dictation-adapter";
 const wavBlob = (samples: Float32Array, rate: number) =>
   new Blob([encodeWav(samples, rate)], { type: "audio/wav" });
 
+// Thresholds follow the room's ambient RMS; only frames over the speech bar count toward MIN_SPEECH_MS,
+// so room noise between the two bars keeps an utterance alive but cannot accumulate into a fake one.
 const SILENCE_RMS_MIN = 0.006;
 const SPEECH_RMS_MIN = 0.011;
 const SILENCE_OVER_FLOOR = 1.6;
 const SPEECH_OVER_FLOOR = 2.6;
 const SILENCE_HANG_MS = 1000; // silence after speech ends the utterance
+// A transcript that reads cut off is held, and the next window gets this longer hang for the rest.
 const CONTINUATION_HANG_MS = 1800;
 const CONTINUATION_FLUSH_MS = 4000;
 const CONTINUATION_MAX_MS = 20000;
@@ -81,18 +84,22 @@ const MAX_UTTERANCE_MS = 30000;
 const NO_SPEECH_TIMEOUT_MS = 8000;
 const MIN_SPEECH_MS = 350;
 const ZERO_RUN_TRACE_MS = 200;
+// Audio kept from before a barge-in fires, so the first word of what cut in still reaches STT.
 const BARGE_PREROLL_MS = 600;
 const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
 const VAD_MIN_SPEECH_MS = 300;
+// The probe clip holds only ~BARGE_CONFIRMED_MS of voice: the full bar failed the first check every time.
 const BARGE_VAD_MIN_SPEECH_MS = 200;
 
+// Scoped to the detector pick that failed: choosing another one asks again.
 let vadDisabled = false;
 let vadDisabledFor: string | null = null;
 function disableVad(failedPick: string): void {
   vadDisabled = true;
   vadDisabledFor = failedPick;
 }
+// STT hallucinates on long leading/trailing silence, so the clip is trimmed to the voiced span plus this.
 const SILENCE_PAD_MS = 200;
 const REVEAL_CHAR_MS = 12;
 const REVEAL_MAX_MS = 250;
@@ -137,6 +144,7 @@ let heldEpoch = 0;
 
 let micMuted = false;
 
+// A second listen() used to leave an orphan holding the mic and the loop went deaf: the older one is cancelled.
 let liveSession: { cancel: () => void; reacquire: (reason: string) => void } | null = null;
 export function setMicMuted(muted: boolean): void {
   micMuted = muted;
@@ -145,6 +153,7 @@ export function setMicMuted(muted: boolean): void {
 const openMicOnce = createSingleFlight();
 const reacquireBackoff = createReacquireBackoff();
 
+// WebKit may leave the track open but silent after the floating orb, so a fresh one is opened.
 export function reacquireMic(reason: string): void {
   liveSession?.reacquire(reason);
 }
@@ -167,6 +176,7 @@ function watchFinished(id: string): void {
   finishedJudge = entry;
 }
 
+// A cough clears the gate too, so the continuation report waits for the transcript.
 function noteSpeechStart(): void {
   const f = finishedJudge;
   if (!f || f.quick || !f.timer) return;
@@ -233,6 +243,7 @@ export function endHeldEdit(): void {
   heldEdit.sent();
 }
 
+// True until the session emits its transcript, so a mic cycle elsewhere can wait instead of losing the turn.
 let utteranceInFlight = false;
 export function isUtteranceInFlight(): boolean {
   return utteranceInFlight;
@@ -263,8 +274,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     let source: MediaStreamAudioSourceNode | null = null;
     const chunks: Float32Array[] = [];
     const chunkVoiced: boolean[] = [];
+    // The STT clip starts at the first of these before the first loud frame, so a soft opening word is kept.
     const chunkNotSilent: boolean[] = [];
     let voicedMs = 0;
+    // Taken as the session opens: a clear while it still records drops what it hears.
     const epoch = heldEpoch;
     if (vadDisabled && useChatRuntimeStore.getState().selectedVadModelId !== vadDisabledFor) {
       vadDisabled = false;
@@ -276,6 +289,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     );
     let vadReady = false;
     let bargeConfirming = false;
+    // The gate resets on the first quiet frame, so a word ending before the answer would otherwise count as none.
     let bargePeakMs = 0;
     const preroll: Float32Array[] = [];
     let bargedIn = heldTurn !== null && heldFromBarge;
@@ -331,6 +345,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       },
       onSpeech: (cb) => {
         speechCallbacks.add(cb);
+        // Each emitted transcript is the whole turn, so parked turns and the held fragment go through it (pre-filling doubled it).
         const lead = shown(heldTurn?.text ?? "");
         if (lead) cb({ transcript: lead, isFinal: false });
         return () => speechCallbacks.delete(cb);
@@ -363,6 +378,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         if (state.micDeviceId !== prev.micDeviceId) reopen("micSwitch", { to: state.micDeviceId });
       },
     );
+    // Output routes change too (macOS fires this when a reply plays): only a changed set of inputs reopens.
     let inputIds: string | null = null;
     const audioInputIds = async () => {
       const devices = await navigator.mediaDevices.enumerateDevices?.();
@@ -383,6 +399,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       });
     };
     navigator.mediaDevices.addEventListener?.("devicechange", onDevicesChanged);
+    // WebKit mutes a capture track while the window is away and may never unmute it: reopen it on focus.
     const onFocus = () => {
       const t = stream?.getAudioTracks()[0];
       if (t?.muted) reopen("mutedOnFocus", { mutedMs: Math.round(performance.now() - trackMutedAt) });
@@ -648,6 +665,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             setTimeout(() => requestVoiceResume(), 0);
             return;
           }
+          // Speech then finish land before the deferred submit; requestVoiceSubmit no-ops outside voice mode.
           emitSpeech(transcript, true);
           finish("stopped", transcript);
           if (editing) {
@@ -682,6 +700,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           echoCancellation: true,
           noiseSuppression: true,
         };
+        // One open at a time; a session cancelled while it waited stops its own tracks before the next opens.
         stream = await openMicOnce(async () => {
           if (ended) return null;
           let opened: MediaStream;
@@ -715,6 +734,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         audioCtx = new AudioCtx();
         // Created outside the user gesture: a suspended context never fires audioprocess.
         await audioCtx.resume();
+        // A cancel during that await tore the context down.
         if (ended || !audioCtx) {
           teardown();
           return;
@@ -804,6 +824,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           } else if (zeroRunMs > 0) {
             endZeroRun();
           }
+          // While the reply plays only a barge-in is listened for: nothing is recorded and the no-speech clock waits.
           if (!bargedIn && isVoicePlaybackActive()) {
             preroll.push(new Float32Array(input));
             while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
@@ -887,6 +908,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const notSilent = rms >= Math.max(SILENCE_RMS_MIN, noiseFloor * SILENCE_OVER_FLOOR);
           const speech = rms >= speechBar;
           if (!heardSpeech && !speech) {
+            // After the first quiet frames the floor drifts slowly, so a soft word does not lift it under itself.
             noiseFrames++;
             const w = noiseFrames <= 4 ? 1 / noiseFrames : 0.05;
             noiseFloor += (rms - noiseFloor) * w;
@@ -935,6 +957,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         const name = error instanceof Error ? error.name : "";
         const message = error instanceof Error ? error.message : String(error);
         voiceTrace("session.error", { name, message, ended });
+        // A session cancelled while the mic was still opening is not a mic fault.
         if (!ended) {
           toast.error("Could not access the microphone for dictation.", {
             description: name ? `${name}: ${message}` : message,

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 MODELS = ("judge", "filler", "interject")
+# Must match JUDGE_SEND_THRESHOLD in the frontend client.
 JUDGE_SEND_THRESHOLD = 0.65
 
 # A verdict is wrong when the outcome contradicts it. "restart" has no derivable error signal yet
@@ -122,6 +123,7 @@ def set_outcome(
 ) -> bool:
     """Record what happened after ``row_id``; False when the row is gone (its chat was deleted)."""
     row = {"id": row_id, "outcome": outcome, "detail": detail or None, "at": time.time()}
+    # Under the lock delete_thread_rows takes, so an outcome racing a chat delete cannot leave its words behind.
     with _LOCK:
         if not any(r.get("id") == row_id for r in _read_lines(log_path())):
             return False
@@ -268,6 +270,7 @@ def export_rows(
     else:
         picked = [r for r in rows if disagrees(r)]
         if mix:
+            # One agreeing row per disagreement keeps a fine-tune from only ever seeing corrections.
             agreeing = [r for r in rows if r.get("outcome") and not disagrees(r)]
             draw = rng or random
             extra = draw.sample(agreeing, min(len(agreeing), len(picked))) if agreeing else []

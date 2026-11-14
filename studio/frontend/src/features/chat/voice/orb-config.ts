@@ -71,6 +71,7 @@ export const orbConfig = {
 
 export type OrbStateName = keyof typeof orbConfig;
 
+// Theme tokens, not fixed greys: a flat mid-grey reads as disabled chrome on light and a hole on dark.
 export const ORB_IDLE_GRADIENT =
   "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
 export const ORB_IDLE_SHADOW = "0 0 26px 6px var(--voice-orb-idle-glow)";

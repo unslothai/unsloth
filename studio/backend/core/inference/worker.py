@@ -2055,6 +2055,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                     },
                 )
         finally:
+            # Before gen_done: a spoken reply holds the generation lock until its generator closes.
             close = getattr(generator, "close", None)
             if callable(close):
                 close()

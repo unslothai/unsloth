@@ -776,6 +776,7 @@ class ChatGenerationSupervisor:
                 # Wake to renew the lease across a first-token wait the backend is still inside its own deadline for.
                 renew_interval = _renew_interval_seconds()
                 timeout = renew_interval if timeout is None else min(timeout, renew_interval)
+                # The cancel is a threading.Event, so the wait polls it; this tick bounds the drain.
                 timeout = min(timeout, 0.5)
                 waiting = {next_raw_task} if len(pending) < _MAX_PENDING_EVENTS else set()
                 if write_task is not None:

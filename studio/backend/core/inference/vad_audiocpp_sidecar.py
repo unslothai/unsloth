@@ -187,6 +187,7 @@ class AudioCppVadSidecar:
         from core.inference.stt_sidecar import _training_active
 
         with self._lock:
+            # Under the lock training admission's release takes, so a load cannot start on a GPU admission just freed.
             on_cpu = _training_active()
             if (
                 self._model is not None
@@ -226,6 +227,7 @@ class AudioCppVadSidecar:
 
         entry = resolve_vad_model(model, network = True)
         audio_cpp_backend.AudioCppBackend._download_missing(entry, hf_token)
+        # The load right after reads the cache-only resolution, which still remembers the miss.
         forget(entry.id)
         return entry.id
 

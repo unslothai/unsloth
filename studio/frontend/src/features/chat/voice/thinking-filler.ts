@@ -42,12 +42,14 @@ const STAGE2: Record<ToolKind | "elapsed", Weighted> = {
 // Every spoken line before the answer is a thinking sound, never a yes, no or "okay": the
 // model decides the answer, so a filler that sounds like agreement can contradict it.
 
+// No bare "Hmm.": OmniVoice voices it ~8 dB under speech, a murmur that reads as room noise.
 const QUIET_FALLBACK: Weighted = [
   ["Let me see.", 3],
   ["One sec.", 3],
   ["Let me think.", 2],
 ];
 
+// The answer may be a refusal, so nothing here promises it.
 const WRITING: Weighted = [
   ["One moment.", 4],
   ["Just a second.", 2],
@@ -133,9 +135,11 @@ export function replaceSystemNote(): string {
   );
 }
 
+// Set by the voice loop at submit, read once by the chat adapter as the run builds its request.
 let pendingFiller: FillerDecision | null = null;
 let pendingReplace = false;
 
+// Every async step of a voice turn captures this first and drops its result once it has moved on.
 let notesEpoch = 0;
 
 export function voiceNotesEpoch(): number {

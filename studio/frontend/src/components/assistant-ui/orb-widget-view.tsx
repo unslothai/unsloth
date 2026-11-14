@@ -76,6 +76,7 @@ async function screenAreas(): Promise<Area[]> {
   });
 }
 
+// By hand, not startDragging: the system drag keeps a window below the menu bar.
 function useWindowDrag(pad: { current: number }) {
   const screens = useRef<Area[]>([]);
   const drag = useRef<{
@@ -112,6 +113,7 @@ function useWindowDrag(pad: { current: number }) {
   };
   return {
     onPointerDown: (e: PointerEvent<HTMLDivElement>) => {
+      // The second press of a double-click is the double-click, not a new drag.
       if (e.button !== 0 || e.detail > 1) return;
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -158,6 +160,7 @@ async function visibleFrames(): Promise<Area[]> {
   }));
 }
 
+// Placed in physical pixels, so monitors at different scales keep the card inside the widget's frame.
 function useApprovalRoom(
   showing: boolean,
   pad: { current: number },

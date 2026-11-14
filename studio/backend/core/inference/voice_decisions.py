@@ -133,6 +133,7 @@ class DecisionVoice:
         from core.systemone import catalog, laya_runtime
         from utils.account_context import OWNER, run_as
 
+        # The pick is installation-wide: resolved as a non-owner it could fail and VoiceModels would cache that for all.
         checkpoint = run_as(OWNER, catalog.resolve, name)
         if checkpoint is None or not hasattr(checkpoint, "layout"):
             raise RuntimeError(f"{ENV_CHECKPOINT}={name!r} is not a Decision checkpoint")

@@ -46,6 +46,7 @@ export interface ClipLedger {
   clips(): Iterable<LedgerClip>;
   add(clip: LedgerClip): void;
   audible(): boolean;
+  /** onended alone left a clip on a parked clock "playing" forever, blocking every later aside. */
   reapStale(): number;
   clear(): void;
 }
@@ -148,6 +149,7 @@ export function createClipLedger(deps: ClipLedgerDeps): ClipLedger {
   };
 }
 
+// A patient aside is dropped only for something actually audible; a stuck clip is reaped instead.
 export function asideBlocked(ledger: ClipLedger, opts: { patient: boolean; replySynth: boolean }): boolean {
   if (!opts.patient) return ledger.size > 0 || opts.replySynth;
   if (ledger.audible()) return true;

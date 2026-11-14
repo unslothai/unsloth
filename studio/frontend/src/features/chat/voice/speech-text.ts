@@ -9,6 +9,7 @@ export function stripForSpeech(text: string): string {
   const out = text
     .replace(/\[([^\]\n]*)\]\([^)\s]*\)/g, "$1") //               [text](url) -> text
     .replace(/\b(?:https?:\/\/|www\.)\S+/gi, " ") //                 bare URLs -> drop
+    // LaTeX: OmniVoice reads ")$." as a burst of noise, and "\frac" letter by letter.
     .replace(/\\(?:times|cdot)(?![A-Za-z])/g, " times ")
     .replace(/\\(?:frac|left|right|mathrm|mathbf|text|displaystyle|begin|end|quad)(?![A-Za-z])/g, " ")
     .replace(/\\[()[\]]/g, " ")
@@ -29,6 +30,7 @@ export function stripForSpeech(text: string): string {
     .replace(/ ([.,!?;:])/g, "$1")
     .replace(/\n{2,}/g, "\n")
     .trim();
+  // A TTS model handed bare punctuation voices it as noise.
   return /[\p{L}\p{N}]/u.test(out) ? out : "";
 }
 
@@ -72,6 +74,7 @@ function dropJsonLines(): (line: string, i: number, lines: string[]) => string {
   };
 }
 
+// Every rule only looks backwards or drops to the end, so a streamed prefix splits as the finished reply does.
 export function speakableReply(text: string): string {
   return text
     .replace(/<(think|thinking|reasoning|tool_call)>[\s\S]*?(<\/\1>|$)/gi, " ")
@@ -161,6 +164,7 @@ export function splitStreaming(raw: string): {
   const text = speakableReply(raw);
   const parts = splitIntoSentences(text);
   if (parts.length === 0) return { complete: [], partial: "" };
+  // "about 2." may be "2.5" mid-stream: speaking it as a sentence shifts every later index.
   const last = parts[parts.length - 1] ?? "";
   if (/[.!?]["')\]]?\s*$/.test(text) && !sentenceMayContinue(last, /\s$/.test(text))) {
     return { complete: parts, partial: "" };

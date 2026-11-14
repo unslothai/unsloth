@@ -553,6 +553,7 @@ def select(
         reason = request_gap(questions or {})
         if reason is None:
             # Auto keeps a resident PyTorch Clef for text rather than reloading the model.
+            # A resident PyTorch Laya was a fallback (training, a busy GPU): once that ends, its GGUF serves.
             resident = _loaded == checkpoint and _agent is not None
             if preference == "auto" and not images:
                 if resident and checkpoint.layout != "laya":
@@ -1908,6 +1909,7 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
         and _gpu_taken()
         and not (_loaded == checkpoint and _agent is not None)
     ):
+        # Outside _state_lock: pricing it probes the GPU.
         placement = _placement(checkpoint)
     with _state_lock:
         if _loaded == checkpoint and _agent is not None and not misplaced:
