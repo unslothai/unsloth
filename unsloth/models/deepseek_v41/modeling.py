@@ -424,7 +424,7 @@ class DeepseekV41Indexer(nn.Module):
             self.k_norm = DeepseekV41RMSNorm(self.head_dim, config.rms_norm_eps)
 
     @torch.no_grad()
-    def forward(self, x, qr, latent, shared, cos, sin, ccos, csin, offset):
+    def forward(self, x, qr, latent, cos, sin, ccos, csin, offset, shared):
         bsz, seqlen, _ = x.shape
         ratio = self.compress_ratio
         if self.owns_k and latent is not None:
@@ -540,7 +540,7 @@ class DeepseekV41Attention(nn.Module):
                 if n_comp == 0:
                     idxs = torch.empty(bsz, seqlen, 0, dtype = torch.int32, device = x.device)
                 else:
-                    idxs = self.indexer(x, qr, latent, shared, cos, sin, ccos, csin, seqlen)
+                    idxs = self.indexer(x, qr, latent, cos, sin, ccos, csin, seqlen, shared = shared)
                 shared["topk_idxs"] = idxs
             idxs = shared["topk_idxs"].to(x.device)
             if latent is not None:
@@ -1036,12 +1036,15 @@ class DeepseekV41Engram(nn.Module):
 # ----------------------------------------------------------------------------------------------------------------
 # Decoder layer and models
 # ----------------------------------------------------------------------------------------------------------------
-class DeepseekV41GroupState:
-    """The per-forward group state that KV / index source layers publish and the later layers of their group read:
-    compressed KV, indexer keys, top-k positions, candidate blocks (model.py:1169-1183). Deliberately not a dict:
-    FSDP2's input casting (torch.distributed.utils._apply_to_tensors) and accelerate's device hooks rebuild dict
-    arguments, subclasses included, so a layer's writes would land in a copy the next layer never sees. Also the
-    pipeline-parallel handoff: ``to_tensors`` / ``from_tensors`` (see ``pipeline_handoff_keys``)."""
+class _SharedState:
+    """Per-forward group state that layers publish to and later layers read (compressed KV, indexer keys, top-k,
+    candidates; model.py:1169-1183). Deliberately not a dict / Mapping / dataclass: accelerate's send_to_device
+    (device_map, CPU / disk offload hooks) and FSDP2's forward-input cast (torch.distributed.utils._apply_to_tensors)
+    rebuild those containers per module, so a write made in one layer would never reach the next. An opaque object
+    passes through. Inside a decoder layer the attention and the indexer get the plain dict by keyword ``shared``,
+    which accelerate's ``_skip_keys_device_placement`` exempts on their offload hooks (and which torch.compile traces
+    as a dict). ``copy`` / ``clear`` / ``update`` / ``items`` serve unsloth_zoo's checkpoint replay; ``to_tensors`` /
+    ``from_tensors`` the pipeline-parallel handoff (``pipeline_handoff_keys``)."""
 
     __slots__ = ("_d",)
 
@@ -1077,10 +1080,10 @@ class DeepseekV41GroupState:
         self._d.clear()
 
     def update(self, other):
-        self._d.update(other.items() if isinstance(other, DeepseekV41GroupState) else other)
+        self._d.update(other.items() if isinstance(other, _SharedState) else other)
 
     def copy(self):
-        return DeepseekV41GroupState(self._d)
+        return _SharedState(self._d)
 
     def to_tensors(self, keys = None):
         """{name: tensor} to send to the next pipeline stage (all keys, or ``keys``)."""
@@ -1089,6 +1092,10 @@ class DeepseekV41GroupState:
     @classmethod
     def from_tensors(cls, tensors):
         return cls(tensors)
+
+
+# Public name for pipeline-parallel callers (pipeline_stage_forward's group_state).
+DeepseekV41GroupState = _SharedState
 
 
 class DeepseekV41DecoderLayer(GradientCheckpointingLayer):
@@ -1119,18 +1126,15 @@ class DeepseekV41DecoderLayer(GradientCheckpointingLayer):
         **kwargs,
     ):
         if shared is None:
-            shared = DeepseekV41GroupState()
+            shared = _SharedState()
         x = hidden_states
         if self.engram is not None and engram_rows is not None:
             x = self.engram(x, engram_rows, engram_mask)
         residual = x
         attn_pre, attn_post, attn_comb = self.attn_hc(x)
         h = self.input_layernorm(hc_pre(x, pre_mix))
-        # The attention reads / writes the plain dict inside: the group state object only has to survive the decoder
-        # layer boundary (FSDP2 / accelerate rebuild dict arguments there), and torch.compile traces a dict input of
-        # the compiled attention exactly as before.
-        state = shared._d if hasattr(shared, "_d") else shared
-        h = self.self_attn(h, positions, state)
+        # keyword: accelerate's offload hooks on self_attn / the indexer exempt `shared` (_skip_keys_device_placement)
+        h = self.self_attn(h, positions, shared = shared._d if hasattr(shared, "_d") else shared)
         x = hc_post(h, residual, attn_post, attn_comb)
         residual = x
         ffn_pre, ffn_post, ffn_comb = self.ffn_hc(x)
@@ -1603,7 +1607,7 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         )
         engram_rows = self.engram_rows(input_ids, token_mask, kwargs.get("engram_left_context"))
         h, pre_mix = self.stream_from_embeddings(inputs_embeds)
-        shared = DeepseekV41GroupState()
+        shared = _SharedState()
         all_hidden = () if output_hidden_states else None
         for layer in self.layers:
             if output_hidden_states:
@@ -1689,9 +1693,9 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
             else None
         )
         if group_state is None:
-            group_state = DeepseekV41GroupState()
-        elif not isinstance(group_state, DeepseekV41GroupState):
-            group_state = DeepseekV41GroupState.from_tensors(group_state)
+            group_state = _SharedState()
+        elif not isinstance(group_state, _SharedState):
+            group_state = _SharedState.from_tensors(group_state)
         owned = [layer.layer_idx for layer in self.layers[start:end]]
         rows = self.engram_rows(input_ids, token_mask, layer_ids = set(owned))
         h = hidden_states

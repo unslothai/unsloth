@@ -441,32 +441,43 @@ def test_sparse_attention_engages_the_torch_reference_without_unsloth_zoo_kernel
     assert dsv41.DSV41_STATS["sparse_attn_torch"] == before + 6  # one call per layer
 
 
-@pytest.mark.parametrize("skip_shared", [True, False])
-def test_shared_group_state_survives_accelerate_device_hooks(monkeypatch, skip_shared):
-    """device_map splits attach accelerate hooks that rebuild dict kwargs; KV / index sources write into `shared`
-    and later layers read it, so `shared` must be skipped by device placement. Flip: without the skip, readers
-    see an empty copy."""
+@pytest.mark.parametrize("hooks", ["layers_skip_shared", "layers_no_skip", "every_submodule"])
+def test_shared_group_state_survives_accelerate_device_hooks(hooks):
+    """device_map splits attach accelerate hooks that rebuild dict / Mapping arguments (keyword or positional), and
+    CPU / disk offload also hooks submodules (self_attn, the indexer) that receive ``shared`` positionally, out of reach
+    of ``_skip_keys_device_placement``. KV / index sources write into ``shared`` and later layers read it, so the
+    state is an opaque object that send_to_device passes through. Flip: as a plain dict the submodule case raises
+    KeyError('index_k')."""
     accelerate_hooks = pytest.importorskip("accelerate.hooks")
     model = _tiny_model().eval()
     ids = torch.randint(0, 512, (1, 16))
     with torch.no_grad():
         want = model(input_ids = ids).logits
     skip = list(dsv41.DeepseekV41PreTrainedModel._skip_keys_device_placement)
-    if not skip_shared:
+    if hooks == "layers_no_skip":
         skip = [k for k in skip if k != "shared"]
-        # the group state is not a dict, so the hooks pass it through regardless; the flip needs the old dict
-        monkeypatch.setattr(dsv41, "DeepseekV41GroupState", dict)
-    for layer in model.model.layers:
+    targets = list(model.model.layers)
+    if hooks == "every_submodule":
+        targets = [m for layer in model.model.layers for m in layer.modules()]
+    for module in targets:
         accelerate_hooks.add_hook_to_module(
-            layer, accelerate_hooks.AlignDevicesHook(execution_device = "cpu", skip_keys = skip)
+            module, accelerate_hooks.AlignDevicesHook(execution_device = "cpu", skip_keys = skip)
         )
-    if skip_shared:
-        with torch.no_grad():
-            assert torch.equal(model(input_ids = ids).logits, want)
-    else:
-        with pytest.raises(KeyError):
-            with torch.no_grad():
-                model(input_ids = ids)
+    with torch.no_grad():
+        assert torch.equal(model(input_ids = ids).logits, want)
+
+
+def test_shared_group_state_is_not_a_container_that_device_moves_rebuild():
+    """accelerate's send_to_device and FSDP2's forward-input cast (torch.distributed.utils._apply_to_tensors) both
+    rebuild Mappings, sequences and dataclasses; the state object must come back as the same object."""
+    operations = pytest.importorskip("accelerate.utils.operations")
+    from torch.distributed.utils import _apply_to_tensors
+
+    state = dsv41._SharedState()
+    state["index_k"] = torch.zeros(1)
+    assert operations.send_to_device((state,), "cpu")[0] is state
+    assert _apply_to_tensors(lambda t: t.clone(), (state,))[0] is state
+    assert "index_k" in state and state.get("missing") is None
 
 
 needs_frozen_tables = pytest.mark.skipif(
@@ -799,7 +810,7 @@ def test_group_state_survives_fsdp2_input_casting(monkeypatch):
     with torch.no_grad():
         assert torch.equal(model(input_ids = ids).logits, want)
     # Flip: the dict the model used to pass is rebuilt per layer, so the readers miss the sources' writes.
-    monkeypatch.setattr(dsv41, "DeepseekV41GroupState", dict)
+    monkeypatch.setattr(dsv41, "_SharedState", dict)
     with pytest.raises(KeyError):
         with torch.no_grad():
             model(input_ids = ids)
