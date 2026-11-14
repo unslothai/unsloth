@@ -335,6 +335,14 @@ test("cloud presets keep their identity across a save and a sync", async () => {
     uiType("gemini", "https://generativelanguage.googleapis.com/v1beta"),
     "gemini",
   );
+  // Vertex's OpenAI-compatible endpoint stays a Gemini row on chat completions.
+  assert.equal(
+    uiType(
+      "gemini",
+      "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi",
+    ),
+    "gemini",
+  );
   assert.equal(
     uiType("azure", "https://res.openai.azure.com/openai/v1"),
     "azure",

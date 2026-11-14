@@ -530,9 +530,12 @@ export function connectionCheckNeedsModel(providerType: string | null | undefine
   return providerType != null && CHAT_PROBED_PROVIDER_TYPES.has(providerType);
 }
 
+/** Native Vertex only: its /endpoints/openapi path is OpenAI-compatible Chat Completions. */
 export function isVertexBaseUrl(baseUrl: string | null | undefined): boolean {
   try {
-    const host = new URL(baseUrl ?? "").hostname.toLowerCase();
+    const url = new URL(baseUrl ?? "");
+    const host = url.hostname.toLowerCase();
+    if (url.pathname.toLowerCase().includes("/endpoints/openapi")) return false;
     return host === "aiplatform.googleapis.com" || host.endsWith("-aiplatform.googleapis.com");
   } catch {
     return false;

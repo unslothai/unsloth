@@ -1633,7 +1633,7 @@ class ExternalProviderClient:
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
-        from core.inference.providers import get_provider_info, is_google_gemini_host
+        from core.inference.providers import get_provider_info, speaks_native_gemini
 
         provider_info = get_provider_info(self.provider_type) or {}
         auth_header = provider_info.get("auth_header", "Authorization")
@@ -1641,7 +1641,7 @@ class ExternalProviderClient:
 
         # Non-Google Gemini bases (LiteLLM, custom gateways) use OAI-compat Bearer auth, not x-goog-api-key.
         if self.provider_type == "gemini":
-            if not is_google_gemini_host(urlparse(self.base_url).hostname):
+            if not speaks_native_gemini(self.base_url):
                 auth_header = "Authorization"
                 auth_prefix = "Bearer "
 
@@ -1701,12 +1701,12 @@ class ExternalProviderClient:
 
     def _is_openai_compatible(self) -> bool:
         """Return False for providers needing request/response translation (e.g. Anthropic)."""
-        from core.inference.providers import get_provider_info, is_google_gemini_host
+        from core.inference.providers import get_provider_info, speaks_native_gemini
 
         info = get_provider_info(self.provider_type) or {}
         # Google-hosted Gemini uses native translator; non-Google bases stay OAI-compat for LiteLLM/proxies.
         if self.provider_type == "gemini":
-            if not is_google_gemini_host(urlparse(self.base_url).hostname):
+            if not speaks_native_gemini(self.base_url):
                 return True
         return info.get("openai_compatible", True)
 

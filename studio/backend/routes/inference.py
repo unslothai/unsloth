@@ -28594,9 +28594,8 @@ def _build_external_messages(
     _native_gemini = False
     if provider_type == "gemini" and base_url:
         try:
-            from urllib.parse import urlparse as _urlparse
-            from core.inference.providers import is_google_gemini_host
-            _native_gemini = is_google_gemini_host(_urlparse(base_url).hostname)
+            from core.inference.providers import speaks_native_gemini
+            _native_gemini = speaks_native_gemini(base_url)
         except Exception:
             _native_gemini = False
     emit_extra_content = _native_gemini or provider_type == "openai_codex"

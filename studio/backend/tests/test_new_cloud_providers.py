@@ -278,6 +278,16 @@ def test_the_azure_connection_check_sends_no_sampling_fields(sent):
     assert not {"temperature", "top_p", "presence_penalty"} & json.loads(sent[-1].content).keys()
 
 
+def test_a_vertex_openapi_endpoint_stays_openai_compatible(sent):
+    base = "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi"
+    client = ExternalProviderClient("gemini", base, "key-123")
+    assert client._is_openai_compatible()
+    assert client._auth_headers()["Authorization"] == "Bearer key-123"
+    request, body = _chat_body(sent, "gemini", base)
+    assert str(request.url) == base + "/chat/completions"
+    assert body["model"] == "m"
+
+
 def test_vertex_is_the_native_gemini_api_on_another_host(sent):
     assert is_google_gemini_host("aiplatform.googleapis.com")
     assert is_google_gemini_host("us-central1-aiplatform.googleapis.com")

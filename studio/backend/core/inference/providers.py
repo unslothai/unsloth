@@ -593,6 +593,12 @@ def is_google_gemini_host(host: str | None) -> bool:
     return (host or "").lower() == "generativelanguage.googleapis.com" or is_vertex_host(host)
 
 
+def speaks_native_gemini(base_url: str | None) -> bool:
+    """Vertex's /endpoints/openapi path is its OpenAI-compatible Chat Completions, not generateContent."""
+    parts = urlsplit(base_url or "")
+    return is_google_gemini_host(parts.hostname) and "/endpoints/openapi" not in parts.path.lower()
+
+
 def provider_probes_with_chat(provider_type: str, base_url: str | None = None) -> bool:
     """No usable model list, so a connection check has to send a one-token chat."""
     info = PROVIDER_REGISTRY.get(provider_type) or {}
