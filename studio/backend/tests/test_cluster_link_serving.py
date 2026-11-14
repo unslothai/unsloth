@@ -130,6 +130,10 @@ def clean(monkeypatch, tmp_path, relays):
     monkeypatch.setattr(cs, "_link_identity", lambda: fake_identity)
     monkeypatch.setattr(cs, "_relays", lambda: relays)
     monkeypatch.setattr(cs, "_sightings", lambda: {})
+    # A CPU-only master with too little RAM to keep any test model local: these tests plan splits.
+    monkeypatch.setattr(
+        cs, "_host_ram", lambda held = 0.0: cs.Device("CPU", "host RAM", 2 << 30, 1 << 30)
+    )
     yield
     cs.reset_for_tests()
 
@@ -700,5 +704,6 @@ def test_a_paired_worker_whose_probe_finds_no_device_is_reported_dropped(monkeyp
     st._host_projector = 0
     request = SimpleNamespace()
     asyncio.run(st._place(request, 1, ss, [], [], 1 << 30, 0.0, 0.0, None))
+    assert st.topology == "layer_split", st.reason
     assert set(cs.LINK_DROPPED) == {a.name}
     assert "did not answer" in cs.LINK_DROPPED[a.name]
