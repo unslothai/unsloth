@@ -131,9 +131,8 @@ export function audioWorkflowForPick(pick: {
     return "music";
   }
   if (catalog?.workflows) {
-    return catalog.workflows.includes("speak")
-      ? workflow
-      : (catalog.workflows[0] ?? workflow);
+    const pages = catalog.workflows.filter((w): w is AudioWorkflowId => w !== "detect");
+    return pages.includes("speak") ? workflow : (pages[0] ?? workflow);
   }
   return workflow === "speak" && isCloneOnlyFamilyId(pick.id) ? "clone" : workflow;
 }

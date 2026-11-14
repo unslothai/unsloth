@@ -2035,24 +2035,30 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
 
-        for text_chunk in generator:
-            if cancel_event.is_set():
-                logger.info("Audio input generation cancelled for request %s", request_id)
-                break
+        try:
+            for text_chunk in generator:
+                if cancel_event.is_set():
+                    logger.info("Audio input generation cancelled for request %s", request_id)
+                    break
 
-            if isinstance(text_chunk, dict):
+                if isinstance(text_chunk, dict):
+                    _send_response(
+                        resp_queue, {"type": "speech", "request_id": request_id, **text_chunk}
+                    )
+                    continue
                 _send_response(
-                    resp_queue, {"type": "speech", "request_id": request_id, **text_chunk}
+                    resp_queue,
+                    {
+                        "type": "token",
+                        "request_id": request_id,
+                        "text": text_chunk,
+                    },
                 )
-                continue
-            _send_response(
-                resp_queue,
-                {
-                    "type": "token",
-                    "request_id": request_id,
-                    "text": text_chunk,
-                },
-            )
+        finally:
+            # Before gen_done: a spoken reply holds the generation lock until its generator closes.
+            close = getattr(generator, "close", None)
+            if callable(close):
+                close()
 
         _send_response(
             resp_queue,

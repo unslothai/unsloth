@@ -5,6 +5,15 @@ import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { readGenerationProgress } from "../lib/generation-progress";
+import { joinWavBase64 } from "../utils/wav-chunks";
+import { getVoiceMode, publishVoiceSpokenAudio } from "../voice/voice-loop-bridge";
+import { wantsSpokenReply } from "../voice/voice-models";
+import {
+  consumePendingFiller,
+  consumePendingReplace,
+  replaceSystemNote,
+  fillerSystemNote,
+} from "@/features/chat/voice/thinking-filler";
 import { externalModelLabel } from "../lib/external-model-label";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { minPSamplingPayload } from "../lib/min-p-policy";
@@ -5534,6 +5543,12 @@ export function createOpenAIStreamAdapter(
       const videoBase64 = findLatestUserVideoBase64(survivingMessages);
 
       addSystemInstruction(outboundMessages, disabledToolGuard);
+      const spokenFiller = consumePendingFiller();
+      addSystemInstruction(
+        outboundMessages,
+        spokenFiller ? fillerSystemNote(spokenFiller.phrase) : null,
+      );
+      addSystemInstruction(outboundMessages, consumePendingReplace() ? replaceSystemNote() : null);
 
       const blockAttachmentRun = (reason: string): never => {
         toast.error(reason);
@@ -6251,6 +6266,17 @@ export function createOpenAIStreamAdapter(
             })) ?? []);
       // A spoken reply's audio, kept apart from the text so the player renders on its own.
       let spokenReplyPart: { type: "text"; text: string } | null = null;
+      const spokenAudioChunks: string[] = [];
+      let spokenJoinedCount = 0;
+      const joinSpokenPart = () => {
+        if (spokenAudioChunks.length === spokenJoinedCount) return false;
+        spokenJoinedCount = spokenAudioChunks.length;
+        spokenReplyPart = {
+          type: "text",
+          text: `<audio-player src="data:audio/wav;base64,${joinWavBase64(spokenAudioChunks)}" />`,
+        };
+        return true;
+      };
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -7015,7 +7041,13 @@ export function createOpenAIStreamAdapter(
             // Turn-scoped: a stale screenshot here made the backend refuse every later text turn's durable run.
             image_base64: findLatestUserImageBase64(currentTurnMessages),
             audio_base64: turnAudioBase64,
-            ...(activeModel?.speaks && turnAudioBase64
+            ...(wantsSpokenReply({
+              speaks: Boolean(activeModel?.speaks),
+              turnHasAudio: Boolean(turnAudioBase64),
+              voiceModeOn: getVoiceMode() === "active",
+              selectedVoiceModelId:
+                useChatRuntimeStore.getState().selectedVoiceModelId,
+            })
               ? { modalities: ["text", "audio"] }
               : {}),
             extra_audio_base64:
@@ -8050,10 +8082,16 @@ export function createOpenAIStreamAdapter(
                   | undefined
               )?.audio?.data;
               if (typeof spokenAudio === "string" && spokenAudio) {
-                spokenReplyPart = {
-                  type: "text",
-                  text: `<audio-player src="data:audio/wav;base64,${spokenAudio}" />`,
-                };
+                spokenAudioChunks.push(spokenAudio);
+                publishVoiceSpokenAudio(resolvedThreadId ?? null, spokenAudio);
+              }
+              // Rejoined at doubling counts and after the stream: joining on every chunk is quadratic.
+              const spokenCount = spokenAudioChunks.length;
+              if (
+                ((spokenCount & (spokenCount - 1)) === 0 ||
+                  Boolean(chunk.choices?.[0]?.finish_reason)) &&
+                joinSpokenPart()
+              ) {
                 replayStateChanged = true;
               }
               let geminiReplayStateChanged = false;
@@ -8725,6 +8763,7 @@ export function createOpenAIStreamAdapter(
             throw streamError;
           }
         }
+        joinSpokenPart();
         // Deep Research card replaces this reply, unless the user already pressed Stop.
         if (deepResearchHandoff.question !== null && !runSignal.aborted) {
           try {
@@ -9126,6 +9165,7 @@ export function createOpenAIStreamAdapter(
         // An explicit Stop is an abort too, but must persist its latched "cancelled" reason via the replacement yield below.
         if (!abortSignal.aborted || generationStopRequested) {
           closeReasoningContent();
+          joinSpokenPart();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
           const partialTiming = withPriorTiming(

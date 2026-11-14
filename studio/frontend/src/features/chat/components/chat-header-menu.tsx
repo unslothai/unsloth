@@ -3,6 +3,7 @@
 
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -25,6 +26,9 @@ import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
 import { StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
+import { useIsAccountOwner } from "@/features/auth";
+import { exportLayaLog } from "@/features/chat/voice/laya-log-api";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -216,6 +220,22 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const generating = useChatRuntimeStore((s) =>
     getSidebarItemThreadIds(menu.item).some((id) => Boolean(s.runningByThreadId[id])),
   );
+  const voiceLogOptOut = useVoiceSettingsStore((s) =>
+    getSidebarItemThreadIds(menu.item).every((id) => s.voiceLogOptOutThreadIds.includes(id)),
+  );
+  const setVoiceLogOptOut = useVoiceSettingsStore((s) => s.setVoiceLogOptOut);
+  const isOwner = useIsAccountOwner();
+  const exportVoiceLog = async () => {
+    try {
+      let rows = 0;
+      for (const id of getSidebarItemThreadIds(menu.item)) {
+        rows += await exportLayaLog({ threadId: id, only: "all" });
+      }
+      toast.success(t("chatMenu.voiceLogExported", { n: String(rows) }));
+    } catch (error) {
+      if (!isDownloadCancelled(error)) toast.error(t("settings.voice.voiceMode.exportFailed"));
+    }
+  };
   // As the Library exports one: each thread behind the chat, a comparison's two included.
   const exportAs = async (format: ConversationExportFormat) => {
     try {
@@ -410,6 +430,19 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       {chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null}
       <OpenChatFolderItem item={menu.item} />
       <UploadToChatFolderItem item={menu.item} />
+      <DropdownMenuCheckboxItem
+        checked={voiceLogOptOut}
+        onCheckedChange={(checked) => {
+          for (const id of getSidebarItemThreadIds(menu.item)) setVoiceLogOptOut(id, checked === true);
+        }}
+      >
+        {t("chatMenu.voiceLogOptOut")}
+      </DropdownMenuCheckboxItem>
+      {isOwner ? (
+        <Item icon={Download01Icon} onSelect={() => void exportVoiceLog()}>
+          {t("chatMenu.voiceLogExport")}
+        </Item>
+      ) : null}
       <DropdownMenuSeparator className="mx-3" />
       <Item icon={ArchiveIcon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}
