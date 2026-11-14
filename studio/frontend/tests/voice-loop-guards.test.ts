@@ -64,3 +64,7 @@ test("the delayed composer cleanup clears only the refilled transcript", () => {
   const clear = engine.slice(engine.indexOf("const deferredClear = (n: number) => {"));
   assert.match(clear.slice(0, 400), /if \(!voiceWroteBox\(fresh\.getState\(\)\.text\)\) return;/);
 });
+
+test("frames stay in order when the reply ends while the barge-in probe is out", () => {
+  assert.match(loop, /if \(!bargedIn && \(isVoicePlaybackActive\(\) \|\| bargeConfirming\)\) \{/);
+});

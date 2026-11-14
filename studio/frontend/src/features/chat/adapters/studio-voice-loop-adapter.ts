@@ -410,7 +410,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const now = performance.now();
 
           const frameMs = (input.length / sampleRate) * 1000;
-          if (!bargedIn && isVoicePlaybackActive()) {
+          // A probe still pending keeps collecting here, so its frames stay ahead of the ones after them.
+          if (!bargedIn && (isVoicePlaybackActive() || bargeConfirming)) {
             preroll.push(new Float32Array(input));
             // While the detector is asked, keep every frame: the probe's audio opens the utterance.
             if (!bargeConfirming) while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
