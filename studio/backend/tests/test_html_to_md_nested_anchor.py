@@ -142,3 +142,13 @@ def test_role_heading_anchor_closing_the_outer_link_keeps_its_title():
     nav = "".join(f'<a href="/n{i}">Nav item {i}</a> ' for i in range(20))
     html = f'<header>{nav}<a href="/o"><a role="heading" href="/i">Page Title</header><p>tail</p>'
     assert "Page Title" in html_to_markdown(html, main_content = True)
+
+
+def test_hidden_role_heading_anchor_does_not_mark_the_next_link_as_heading():
+    first = "First article body sentence here. " * 18
+    second = "Second article text. " * 12
+    html = (
+        f'<article><a href="/o"><a hidden role="heading">Hidden</a><a href="/body">{first}</a></article>'
+        f"<article><p>{second}</p></article>"
+    )
+    assert "First article body" in html_to_markdown(html, main_content = True)

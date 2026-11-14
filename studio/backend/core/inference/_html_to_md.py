@@ -1743,7 +1743,11 @@ class _MarkdownRenderer(HTMLParser):
             # the closing anchor still records its own heading as one inside a link, as before
             self._closed_link_for = True
         entered = self._enter_tag(tag, attr_dict, hidden, aria_heading)
-        self._closed_link_for = False
+        if self._closed_link_for:
+            self._closed_link_for = False
+            # a suppressed anchor never becomes the link, so its heading must not carry to the next one
+            if not entered:
+                self._link_had_heading = False
         if not entered:
             return
 
