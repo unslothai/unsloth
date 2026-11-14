@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""INT8 attention in Triton, for cards the CUDA kernel cannot reach (ROCm: RDNA3 / RDNA4 WMMA, CDNA MFMA).
+"""INT8 attention in Triton, for cards the CUDA kernel cannot reach (ROCm; only gfx1151 has a config).
 
 Same quantisation as ``diffusion_int8_attention`` (written from scratch, ideas from QuaRot arXiv 2404.00456,
 SageAttention arXiv 2410.02367 / 2411.10958, INT-FlashAttention arXiv 2409.16997):
