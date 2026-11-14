@@ -571,11 +571,93 @@ def test_experts_fallback_matches_a_per_token_fp64_oracle():
 
 def test_sparse_attention_engages_the_torch_reference_without_unsloth_zoo_kernel(monkeypatch):
     monkeypatch.setattr(dsv41, "_SPARSE_ATTN", None)
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN_WINDOW", None)
     monkeypatch.setenv("UNSLOTH_DSV41_SPARSE_ATTN", "0")
     model = _tiny_model()
     before = dsv41.DSV41_STATS["sparse_attn_torch"]
     model(input_ids = torch.randint(0, 512, (1, 12)))
     assert dsv41.DSV41_STATS["sparse_attn_torch"] == before + 6  # one call per layer
+
+
+def test_an_unsloth_zoo_without_the_window_entry_keeps_the_concatenated_path(monkeypatch):
+    import sys
+    import types
+
+    old = types.ModuleType("unsloth_zoo.sparse_attention")
+    old.sparse_attn = lambda q, kv, sink, idxs, scale: dsv41.sparse_attn_reference(
+        q, kv, sink, idxs, scale
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.sparse_attention", old)
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN", None)
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN_WINDOW", None)
+    monkeypatch.delenv("UNSLOTH_DSV41_SPARSE_ATTN", raising = False)
+    model = _tiny_model()
+    assert dsv41._SPARSE_ATTN is old.sparse_attn and dsv41._SPARSE_ATTN_WINDOW is None
+    before = dict(dsv41.DSV41_STATS)
+    model(input_ids = torch.randint(0, 512, (1, 12)))
+    assert dsv41.DSV41_STATS["sparse_attn_zoo"] == before["sparse_attn_zoo"] + 6
+    assert dsv41.DSV41_STATS["sparse_attn_window"] == before["sparse_attn_window"]
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda", marks = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA")
+        ),
+    ],
+)
+def test_window_attention_entry_matches_the_concatenated_index_path(monkeypatch, device):
+    """unsloth_zoo's sparse_attn_window (window KV contiguous + the compressed rows, the banded window kernel's entry)
+    gives the logits and gradients of the concatenated window + compressed index lists through sparse_attn, on
+    window-only layers (empty compressed set) and compressed ones; the kill switch keeps the concatenation."""
+    zoo = pytest.importorskip("unsloth_zoo.sparse_attention")
+    if not hasattr(zoo, "sparse_attn_window"):
+        pytest.skip("this unsloth_zoo has no sparse_attn_window")
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN", None)
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN_WINDOW", None)
+    monkeypatch.delenv("UNSLOTH_DSV41_SPARSE_ATTN", raising = False)
+    dsv41.ensure_sparse_attn()
+    assert dsv41._SPARSE_ATTN_WINDOW is zoo.sparse_attn_window
+    window_entry = dsv41._SPARSE_ATTN_WINDOW
+    model = _tiny_model().to(device)
+    ids = torch.randint(
+        0, 512, (2, 24), device = device
+    )  # longer than the window (8), several compressed groups
+
+    def run():
+        model.zero_grad(set_to_none = True)
+        out = model(input_ids = ids, labels = ids)
+        out.loss.backward()
+        grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+        return out.logits.detach(), grads
+
+    before = dsv41.DSV41_STATS["sparse_attn_window"]
+    logits, grads = run()
+    assert (
+        dsv41.DSV41_STATS["sparse_attn_window"] == before + 6
+    )  # every layer, window-only ones included
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN_WINDOW", None)
+    concat_before = dsv41.DSV41_STATS["sparse_attn_zoo"]
+    want_logits, want_grads = run()
+    assert dsv41.DSV41_STATS["sparse_attn_zoo"] == concat_before + 6
+    assert dsv41.DSV41_STATS["sparse_attn_window"] == before + 6
+    torch.testing.assert_close(logits, want_logits, rtol = 1e-5, atol = 1e-5)
+    assert grads.keys() == want_grads.keys() and len(grads) > 0
+    for name in grads:
+        torch.testing.assert_close(grads[name], want_grads[name], rtol = 1e-4, atol = 1e-5, msg = name)
+    # window-only switch: the concatenation through zoo's sparse_attn
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN", None)
+    monkeypatch.setenv("UNSLOTH_DSV41_SPARSE_ATTN_WINDOW", "0")
+    dsv41.ensure_sparse_attn()
+    assert dsv41._SPARSE_ATTN_WINDOW is None and dsv41._SPARSE_ATTN is zoo.sparse_attn
+    # kill switch: neither zoo entry
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN", None)
+    monkeypatch.setenv("UNSLOTH_DSV41_SPARSE_ATTN", "0")
+    dsv41.ensure_sparse_attn()
+    assert dsv41._SPARSE_ATTN_WINDOW is None and dsv41._SPARSE_ATTN is dsv41.sparse_attn_reference
+    assert window_entry is zoo.sparse_attn_window
 
 
 @pytest.mark.parametrize("hooks", ["layers_skip_shared", "layers_no_skip", "every_submodule"])
@@ -831,13 +913,19 @@ def test_each_layer_reads_only_its_own_source_compressed_kv(monkeypatch):
     source layer (model.py:740-760), never a concatenation over several source layers."""
     model = _tiny_model().eval()
     calls = []
-    real = dsv41.sparse_attn
+    real, real_window = dsv41.sparse_attn, dsv41.sparse_attn_window
 
     def spy(q, kv, sink, idxs, scale):
         calls.append(kv)
         return real(q, kv, sink, idxs, scale)
 
+    def spy_window(q, window_kv, compress_kv, compress_idxs, sink, scale, window):
+        # the same rows as the concatenation the index path builds
+        calls.append(torch.cat([window_kv, compress_kv], dim = 1))
+        return real_window(q, window_kv, compress_kv, compress_idxs, sink, scale, window)
+
     monkeypatch.setattr(dsv41, "sparse_attn", spy)
+    monkeypatch.setattr(dsv41, "sparse_attn_window", spy_window)
     seqlen = 12
     with torch.no_grad():
         model(input_ids = torch.randint(0, 512, (1, seqlen)), use_cache = False)

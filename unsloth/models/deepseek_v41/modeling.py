@@ -105,6 +105,7 @@ DSV41_STATS = {
     "sparse_attn_torch": 0,
     "experts_sorted_loop": 0,
     "o_a_ungrouped": 0,
+    "sparse_attn_window": 0,
     "experts_mxfp4_packed": 0,
 }
 
@@ -144,15 +145,32 @@ def _resolve_sparse_attn():
     return zoo_sparse_attn
 
 
+def _resolve_sparse_attn_window():
+    # unsloth_zoo's window-specialised entry (banded Triton window kernel merged with the compressed index kernel);
+    # None (an older unsloth_zoo, or a kill switch) keeps the window + compressed concatenation through sparse_attn.
+    # UNSLOTH_DSV41_SPARSE_ATTN_WINDOW=0 turns off only this entry, UNSLOTH_DSV41_SPARSE_ATTN=0 every zoo kernel.
+    if os.environ.get("UNSLOTH_DSV41_SPARSE_ATTN", "1") == "0":
+        return None
+    if os.environ.get("UNSLOTH_DSV41_SPARSE_ATTN_WINDOW", "1") == "0":
+        return None
+    try:
+        from unsloth_zoo.sparse_attention import sparse_attn_window as zoo_sparse_attn_window
+    except Exception:
+        return None
+    return zoo_sparse_attn_window
+
+
 _SPARSE_ATTN = None
+_SPARSE_ATTN_WINDOW = None
 
 
 def ensure_sparse_attn():
-    """Resolve the sparse attention implementation once, eagerly (model construction): an import or env read
+    """Resolve the sparse attention implementations once, eagerly (model construction): an import or env read
     inside a traced forward is a graph break."""
-    global _SPARSE_ATTN
+    global _SPARSE_ATTN, _SPARSE_ATTN_WINDOW
     if _SPARSE_ATTN is None:
         _SPARSE_ATTN = _resolve_sparse_attn()
+        _SPARSE_ATTN_WINDOW = _resolve_sparse_attn_window()
     return _SPARSE_ATTN
 
 
@@ -164,6 +182,16 @@ def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale):
         _SPARSE_ATTN = _resolve_sparse_attn()
     _count("sparse_attn_torch" if _SPARSE_ATTN is sparse_attn_reference else "sparse_attn_zoo")
     return _SPARSE_ATTN(q, kv, attn_sink, topk_idxs, softmax_scale)
+
+
+def sparse_attn_window(q, window_kv, compress_kv, compress_idxs, attn_sink, softmax_scale, window):
+    """unsloth_zoo.sparse_attention.sparse_attn_window: this chunk's window KV [b, s, d] plus the selected rows of
+    compress_kv [b, nc, d] (compress_idxs [b, s, k] into compress_kv, -1 unused); equal to sparse_attn over
+    their concatenation with the window index lists (kernel.py:311-403 over model.py:409-427 + the indexer)."""
+    _count("sparse_attn_window")
+    return _SPARSE_ATTN_WINDOW(
+        q, window_kv, compress_kv, compress_idxs, attn_sink, softmax_scale, window
+    )
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -554,7 +582,13 @@ class DeepseekV41Attention(nn.Module):
         )  # local heads under tensor parallelism
         q = apply_rotary(q, cos, sin)
         kv = apply_rotary(self.kv_norm(self.kv_proj(x)), cos, sin)
-        window_idxs = _window_idxs(self.window, seqlen, x.device).unsqueeze(0).expand(bsz, -1, -1)
+        if _SPARSE_ATTN_WINDOW is not None:
+            window_idxs = None
+        else:
+            window_idxs = (
+                _window_idxs(self.window, seqlen, x.device).unsqueeze(0).expand(bsz, -1, -1)
+            )
+        compress_kv = idxs = None
         if self.compress_ratio:
             ratio = self.compress_ratio
             n_comp = seqlen // ratio
@@ -573,12 +607,25 @@ class DeepseekV41Attention(nn.Module):
             idxs = shared["topk_idxs"].to(x.device)
             if latent is not None:
                 shared["compress_kv"] = apply_rotary(latent, ccos, csin)
-            compress_kv = shared["compress_kv"][:, :n_comp].to(x.device)
-            kv = torch.cat([kv, compress_kv.to(kv.dtype)], dim = 1)
-            topk_idxs = torch.cat([window_idxs, idxs], dim = -1)
+            compress_kv = shared["compress_kv"][:, :n_comp].to(device = x.device, dtype = kv.dtype)
+        if _SPARSE_ATTN_WINDOW is not None:
+            # Window KV stays contiguous (the window kernel's banded tiles); the indexer's rows carry offset = seqlen
+            # into the concatenation, so they are shifted back into compress_kv.
+            if compress_kv is None:
+                compress_kv = kv.new_zeros(bsz, 0, kv.shape[-1])
+                comp_idxs = torch.empty(bsz, seqlen, 0, dtype = torch.int32, device = kv.device)
+            else:
+                comp_idxs = torch.where(idxs >= 0, idxs - seqlen, -1).to(torch.int32)
+            o = sparse_attn_window(
+                q, kv, compress_kv, comp_idxs, self.sinks, self.softmax_scale, self.window
+            )
         else:
-            topk_idxs = window_idxs
-        o = sparse_attn(q, kv, self.sinks, topk_idxs, self.softmax_scale)
+            if compress_kv is not None:
+                kv = torch.cat([kv, compress_kv], dim = 1)
+                topk_idxs = torch.cat([window_idxs, idxs], dim = -1)
+            else:
+                topk_idxs = window_idxs
+            o = sparse_attn(q, kv, self.sinks, topk_idxs, self.softmax_scale)
         o = apply_rotary(o, cos, sin, inverse = True)
         o = grouped_projection(
             self.o_a_proj, o.reshape(bsz, seqlen, -1, self.o_a_proj.in_features), self.o_lora_rank
