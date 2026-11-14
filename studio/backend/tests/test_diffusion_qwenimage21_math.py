@@ -46,9 +46,45 @@ def test_bounded_attention_matches_full_math_with_masks(mask_kind):
     assert [c[:2] for c in calls] == [(512, 833), (257, 833)]
 
 
+@pytest.mark.parametrize("prefill", [False, True])
+def test_prefill_eligible_calls_run_unsplit(monkeypatch, prefill):
+    # torch 2.13+'s MPS prefill kernel never builds the scores; anything it does not take keeps the MPS split.
+    torch.manual_seed(5)
+    q, k, v = torch.randn(1, 4096, 2, 8), torch.randn(1, 4352, 2, 8), torch.randn(1, 4352, 2, 8)
+    mask = torch.ones(1, 1, 1, 4352, dtype = torch.bool)
+    seen = []
+
+    def eligible(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        seq_dim = -2,
+    ):
+        seen.append((query.shape[seq_dim], attn_mask is mask))
+        return prefill
+
+    monkeypatch.setattr(attention, "mps_prefill_attention", eligible)
+    calls = []
+
+    def dispatch(q, k, v, **kw):
+        calls.append(q.shape[1])
+        return qmod.dispatch_attention_fn(q, k, v, backend = "native", **kw)
+
+    expected = dispatch(q, k, v, attn_mask = mask, dropout_p = 0.0)
+    calls.clear()
+    actual = bounded._bounded_attention(q, k, v, dispatch, mask = mask, budget = 2 * 4352 * 4 * 1000)
+    torch.testing.assert_close(actual, expected)
+    assert seen == [(4096, True)]
+    assert calls == ([4096] if prefill else [1000] * 4 + [96])
+
+
+@pytest.mark.parametrize("prefill", [False, True])
 @pytest.mark.parametrize("padded", [False, True])
-def test_segmented_prefill_and_cached_decode_match_stock(monkeypatch, padded):
+def test_segmented_prefill_and_cached_decode_match_stock(monkeypatch, padded, prefill):
     torch.manual_seed(7)
+    # Unsplit (prefill-eligible) calls are the stock calls exactly: causal text segment, padded keys, cached decode.
+    monkeypatch.setattr(attention, "mps_prefill_attention", lambda *a, **k: prefill)
     attn = qmod.QwenImage21Attention(dim = 16, heads = 2, dim_head = 8)
     stock, patched = qmod.QwenImage21AttnProcessor(), bounded._processor_class()()
     states = torch.randn(2, 1800, 16)
@@ -80,7 +116,10 @@ def test_segmented_prefill_and_cached_decode_match_stock(monkeypatch, padded):
         torch.testing.assert_close(actual, expected)
         torch.testing.assert_close(caches[0].k, caches[1].k, atol = 0, rtol = 0)
         torch.testing.assert_close(caches[0].v, caches[1].v, atol = 0, rtol = 0)
-        assert max(calls) == 512 and len(calls) >= 6
+        if prefill:
+            assert torch.equal(actual, expected) and calls == [600, 530, 670]
+        else:
+            assert max(calls) == 512 and len(calls) >= 6
         target = states[:, 1130:]
         key_mask = mask[:, None, None, :] if padded else None
         expected = stock(
@@ -91,6 +130,8 @@ def test_segmented_prefill_and_cached_decode_match_stock(monkeypatch, padded):
         )
         torch.testing.assert_close(actual, expected)
         assert caches[1].k.shape[1] == 1130
+        if prefill:
+            assert torch.equal(actual, expected) and calls[3:] == [670]
 
 
 def make_pipe():
@@ -106,8 +147,8 @@ def test_native_load_installs_fallback_and_guard_tracks_actual_processors(monkey
 
     pipe, modules = make_pipe()
     target = SimpleNamespace(backend = "rocm", device = "cuda:0", dtype = torch.bfloat16)
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: True)
-    monkeypatch.setattr("core.inference.diffusion.sdpa_math_only", lambda t: True)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: True)
+    monkeypatch.setattr("core.inference.diffusion.sdpa_math_only", lambda t, *_: True)
     monkeypatch.setattr(attention, "_is_cuda_rocm", lambda t: True)
     monkeypatch.setattr(attention, "guard_rocm_fused_sdpa", lambda *a: ())
     assert _quadratic_attention(target, None, pipe)
@@ -124,7 +165,7 @@ def test_native_load_installs_fallback_and_guard_tracks_actual_processors(monkey
 @pytest.mark.parametrize("change", ["parallel", "custom", "non_native"])
 def test_guard_never_credits_uncovered_processors(monkeypatch, change):
     pipe, modules = make_pipe()
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: True)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: True)
     assert bounded.install(pipe, SimpleNamespace(backend = "rocm"))
     if change == "parallel":
         modules[0].processor._parallel_config = object()
@@ -137,9 +178,9 @@ def test_guard_never_credits_uncovered_processors(monkeypatch, change):
 
 def test_healthy_fused_install_and_non_rocm_keep_stock(monkeypatch):
     pipe, modules = make_pipe()
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: False)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: False)
     assert not bounded.install(pipe, SimpleNamespace(backend = "rocm"))
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: True)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: True)
     assert not bounded.install(pipe, SimpleNamespace(backend = "cuda"))
     assert all(type(m.processor) is qmod.QwenImage21AttnProcessor for m in modules)
 
@@ -159,7 +200,7 @@ def test_causal_chunk_offsets_include_preceding_segments():
 def test_failed_bounded_processor_inspection_keeps_quadratic_guard(monkeypatch):
     from core.inference import diffusion
 
-    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda t: True)
+    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda t, *_: True)
 
     def failed(pipe):
         raise RuntimeError("processor unavailable")
@@ -184,7 +225,7 @@ def test_mps_installs_bounded_attention_without_trusting_the_probe(monkeypatch):
     pipe, modules = make_pipe()
     target = SimpleNamespace(backend = "mps", device = "mps", dtype = torch.bfloat16)
     # MPS SDPA ignores sdpa_kernel, so the probe reports fused kernels it does not run.
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: False)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: False)
     warned = []
     monkeypatch.setattr(attention, "warn_if_sdpa_math_only", lambda *a, **k: warned.append(a))
     attention.apply_attention_backend(pipe, None, target = target)
@@ -205,7 +246,7 @@ def test_mps_installs_bounded_attention_without_trusting_the_probe(monkeypatch):
     ],
 )
 def test_bounded_attention_targets(monkeypatch, target, math_only, expected):
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: math_only)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: math_only)
     assert bounded.needs_bounded_attention(target) is expected
 
 

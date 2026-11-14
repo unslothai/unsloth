@@ -9,7 +9,6 @@ import type {
   MediaGenerationPresetState,
 } from "./types";
 
-/** A refusal the server explained in words, so the caller can show it instead of a generic toast. */
 export class PresetWriteRefused extends Error {}
 
 async function parseResponse<Result>(response: Response) {

@@ -11,6 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { LineBox } from "@/components/ui/line-box";
 import { PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useLlmCompressorConsentStore } from "../stores/llm-compressor-consent-store";
@@ -53,9 +54,9 @@ export function LlmCompressorConsentDialog() {
                       <>
                         <p className="[overflow-wrap:anywhere]">{summary}</p>
                         {probe?.consent_kind === "workspace" ? (
-                          <p className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground break-all">
+                          <LineBox as="p" className="border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground break-all">
                             {probe.workspace_install_command}
-                          </p>
+                          </LineBox>
                         ) : probe?.consent_kind === "shadow" ? (
                           <p className="text-xs">
                             Target:{" "}
@@ -81,7 +82,7 @@ export function LlmCompressorConsentDialog() {
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           {!blocked ? (
-            <AlertDialogAction onClick={() => resolve(true)}>
+            <AlertDialogAction variant="dark" onClick={() => resolve(true)}>
               Install and continue
             </AlertDialogAction>
           ) : null}

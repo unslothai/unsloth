@@ -128,6 +128,12 @@ def test_status_carries_the_clone_fields():
     clone = {"audio_workflows": ["clone"], "audio_reference_text": "required"}
     status = InferenceStatusResponse(is_audio = True, audio_type = "audiocpp_tts", **clone)
     assert status.model_dump().items() >= clone.items()
+    # The Clone page shows the voice description from these rules.
+    rules = {"reference_text": "required", "description": True}
+    fields = dict(is_audio = True, audio_type = "audiocpp_tts", audio_clone = rules)
+    assert InferenceStatusResponse(**fields).model_dump()["audio_clone"] == rules
+    load = LoadResponse(status = "loaded", model = "m", display_name = "m", inference = {}, **fields)
+    assert load.audio_clone == rules
 
 
 def test_status_and_load_carry_the_convert_fields():
@@ -189,7 +195,6 @@ def test_inventory_rows_of_clone_families_list_clone(tmp_path, folder, family, w
     found = cc._gguf_path_audio_workflows(path.parent, (f"someone/{folder}",))
     row = CachedGgufRepo(repo_id = "r", task = "text-to-speech", audio_workflows = found)
     assert found == row.audio_workflows == workflows
-    # A local folder row (models dir, LM Studio, custom folder) gets the same answer.
     local = LocalModelInfo(
         id = str(path.parent), display_name = folder, path = str(path.parent), source = "models_dir"
     )
@@ -198,7 +203,6 @@ def test_inventory_rows_of_clone_families_list_clone(tmp_path, folder, family, w
 
 
 def test_an_umbrella_snapshot_lists_every_downloaded_familys_workflows(tmp_path):
-    # audio-cpp/audio.cpp-gguf is one cached row: its workflows were the first GGUF's alone.
     from hub.services.models import catalog_classification as cc
 
     from .test_audio_cpp_models import _gguf_bytes
@@ -227,7 +231,6 @@ def test_a_local_separation_gguf_is_classified_for_separate(monkeypatch):
         "audio-to-audio",
         "audiocpp_sep",
     )
-    # Other audio-to-audio kinds keep no audio type, so they stay off every page.
     monkeypatch.setattr(cc, "_local_model_audio_type", lambda _m: "audiocpp_tts")
     assert cc._local_model_classification_for_task(model, "audio-to-audio") == (
         "audio-to-audio",

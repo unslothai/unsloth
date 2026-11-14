@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF export can also write a FastFlowLM Q4NX folder for the AMD Ryzen AI NPU.
-
-Reuses the harness in test_export_gguf_discovery.py; the converter itself is stubbed.
-"""
+"""FastFlowLM Q4NX export for the AMD NPU, with the converter stubbed."""
 
 from __future__ import annotations
+
+import weakref
 
 import json
 import sys
@@ -36,7 +35,7 @@ class _Tokenizer:
 
 
 class _Model:
-    # Like Phi-4-mini: the chat-turn stop id is only in generation_config.
+    # like Phi-4-mini: the chat-turn stop id is only in generation_config
     generation_config = type("G", (), {"eos_token_id": [7, 9]})()
 
     def __init__(self):
@@ -58,11 +57,19 @@ def _fake_converter(
     monkeypatch,
     calls,
     fail = False,
+    configs = None,
 ):
-    def convert(gguf_path, out_dir):
+    configs = [] if configs is None else configs
+
+    def convert(
+        gguf_path,
+        out_dir,
+        config = None,
+    ):
         if fail:
             raise RuntimeError("unsupported architecture")
         calls.append(Path(gguf_path).name)
+        configs.append(config)
         out_dir.mkdir(parents = True, exist_ok = True)
         (out_dir / "model.q4nx").write_bytes(b"q4nx")
         (out_dir / "tokenizer.json").write_text('{"added_tokens": []}')
@@ -74,8 +81,8 @@ def test_q4nx_folder_matches_the_flm_layout(monkeypatch, tmp_path):
     model = _Model()
     export_mod, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, model)
     backend.current_tokenizer = _Tokenizer()
-    calls = []
-    _fake_converter(export_mod, monkeypatch, calls)
+    calls, configs = [], []
+    _fake_converter(export_mod, monkeypatch, calls, configs = configs)
 
     success, message, output_path = backend.export_gguf(
         str(save_dir), ["q8_0", "q4_1", "q4_k_m"], npu_q4nx = True
@@ -83,8 +90,9 @@ def test_q4nx_folder_matches_the_flm_layout(monkeypatch, tmp_path):
 
     assert success is True, message
     assert calls == ["Model.Q4_1.gguf"]
+    assert configs == [{"model_type": "qwen3"}]
     q4nx = save_dir / "npu-q4nx"
-    # No config.json: copied over a catalog model it would drop FLM's flm_version.
+    # no config.json: copied over a catalog model it would drop FLM's flm_version
     assert sorted(p.name for p in q4nx.iterdir()) == [
         "chat_template.jinja",
         "model.q4nx",
@@ -134,11 +142,61 @@ def test_without_the_flag_nothing_is_converted(monkeypatch, tmp_path):
     assert not (save_dir / "npu-q4nx").exists()
 
 
-def test_source_follows_the_selection_order(monkeypatch, tmp_path):
+def _real_gguf(
+    path: Path,
+    architecture: str,
+    vocab: int = 0,
+    template = None,
+) -> str:
+    import gguf
+
+    path.parent.mkdir(parents = True, exist_ok = True)
+    writer = gguf.GGUFWriter(str(path), architecture)
+    if vocab:
+        writer.add_token_list([f"t{i}" for i in range(vocab)])
+        writer.add_token_scores([0.0] * vocab)
+    if template is not None:
+        writer.add_chat_template(template)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "architecture, expected",
+    [("llama", "Q4_0"), ("qwen3", "Q4_0"), ("qwen35", "Q4_K_M"), ("qwen35moe", "Q4_K_M")],
+)
+def test_source_prefers_a_quant_the_converter_packs_directly(
+    monkeypatch, tmp_path, architecture, expected
+):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
-    ggufs = ["/x/M.Q4_0.gguf", "/x/M.Q4_K_M.gguf", "/x/M.Q8_0.gguf"]
-    assert export_mod.q4nx.source_gguf(ggufs, ["q8_0", "q4_k_m", "q4_0"]) == "/x/M.Q4_K_M.gguf"
+    ggufs = [_real_gguf(tmp_path / f"M.{q}.gguf", architecture) for q in ("Q4_0", "Q4_K_M", "Q8_0")]
+    chosen = export_mod.q4nx.source_gguf(ggufs, ["q8_0", "q4_k_m", "q4_0"])
+    assert chosen == str(tmp_path / f"M.{expected}.gguf")
     assert export_mod.q4nx.source_gguf(ggufs, ["q8_0"]) is None
+
+
+def test_source_falls_back_to_a_requantized_q4_k_m(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    ggufs = [_real_gguf(tmp_path / f"M.{q}.gguf", "llama") for q in ("Q4_K_M", "Q8_0")]
+    assert export_mod.q4nx.source_gguf(ggufs, ["q8_0", "q4_k_m"]) == ggufs[0]
+
+
+def test_header_reads_skip_the_vocab_without_gguf_reader(monkeypatch, tmp_path):
+    import gguf
+
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    path = _real_gguf(tmp_path / "M.Q4_0.gguf", "qwen35", vocab = 5000, template = "{{ chat }}")
+
+    def _no_full_parse(*_a, **_k):
+        raise AssertionError("GGUFReader parses every vocab array")
+
+    monkeypatch.setattr(gguf, "GGUFReader", _no_full_parse)
+    assert export_mod.q4nx._gguf_architecture(path) == "qwen35"
+    assert export_mod.q4nx._gguf_chat_template(Path(path)) == "{{ chat }}"
+    assert export_mod.q4nx._gguf_architecture(str(tmp_path / "missing.gguf")) == ""
 
 
 def _stub_installer(
@@ -163,6 +221,7 @@ def _stub_installer(
 
     monkeypatch.setattr(export_mod.q4nx, "_installer", lambda: _Installer)
     monkeypatch.setattr(export_mod.q4nx, "_gguf_architecture", lambda _p: architecture)
+    monkeypatch.setattr(export_mod.q4nx, "_has_merged_linear_attention", lambda _p: False)
     monkeypatch.setattr(export_mod.q4nx, "require_converter_deps", lambda: None)
     return installed
 
@@ -180,7 +239,7 @@ def _fake_popen(
             ran.update(cmd = cmd, cwd = cwd, preexec_fn = kwargs.get("preexec_fn"), env = kwargs.get("env"))
             self.returncode = returncode
             if returncode == 0:
-                (Path(cmd[-1]) / "model.q4nx").write_bytes(b"q4nx")
+                (Path(cmd[4]) / "model.q4nx").write_bytes(b"q4nx")
 
         def communicate(self):
             return None, stderr
@@ -205,8 +264,93 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path, architecture,
     assert ran["cwd"] == str(tmp_path / converter)
     assert ran["env"]["PYTHONIOENCODING"] == "utf-8"
     if sys.platform.startswith("linux"):
-        # Dies with its parent: cancelling an export must not orphan a converter.
         assert callable(ran["preexec_fn"])
+
+
+@pytest.mark.parametrize(
+    "architecture, config, family",
+    [
+        ("qwen35", {"model_type": "qwen3_5"}, ["Qwen3.5"]),
+        ("qwen35", {"model_type": "qwen3_5_text"}, ["Qwen3.5"]),
+        ("qwen35", {"model_type": "minicpmv4_6"}, []),
+        ("qwen35", None, []),
+        ("qwen35moe", {"model_type": "qwen3_5_moe"}, []),
+        ("qwen3", {"model_type": "qwen3_5"}, []),
+    ],
+)
+def test_qwen35_fine_tunes_name_their_family(monkeypatch, tmp_path, architecture, config, family):
+    # A fine-tune's GGUF is named "Model", which the q4k converter cannot size by itself.
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    _stub_installer(export_mod, monkeypatch, tmp_path, architecture)
+    ran = _fake_popen(export_mod, monkeypatch)
+    out = tmp_path / "out"
+    export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_K_M.gguf", out, config)
+    assert ran["cmd"][3:] == ["/x/M.Q4_K_M.gguf", str(out), *family]
+
+
+def test_merged_linear_attention_is_refused_before_converting(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    _stub_installer(export_mod, monkeypatch, tmp_path, "qwen35")
+    monkeypatch.setattr(export_mod.q4nx, "_has_merged_linear_attention", lambda _p: True)
+    ran = _fake_popen(export_mod, monkeypatch)
+    with pytest.raises(RuntimeError, match = "merged"):
+        export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_K_M.gguf", tmp_path / "out")
+    assert ran == {}
+
+
+@pytest.mark.parametrize(
+    "names, merged",
+    [
+        (["blk.0.attn_qkv.weight", "blk.0.attn_gate.weight"], False),
+        (["blk.0.attn_qkv_gate.weight"], True),
+        (["blk.3.ssm_beta_alpha.weight"], True),
+    ],
+)
+def test_merged_linear_attention_is_read_from_tensor_names(monkeypatch, names, merged):
+    import types
+
+    from core.export import q4nx
+
+    reader = types.SimpleNamespace(tensors = [types.SimpleNamespace(name = n) for n in names])
+    monkeypatch.setitem(sys.modules, "gguf", types.SimpleNamespace(GGUFReader = lambda _p: reader))
+    assert q4nx._has_merged_linear_attention("m.gguf") is merged
+
+
+def _fake_q4nx_package(root):
+    pkg = root / "q4nx"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "import json, sys\n"
+        "class _C:\n"
+        "    def __init__(self, family): self.family = family\n"
+        "    def convert(self, q4nx_path, weights_type):\n"
+        "        open(q4nx_path + '/ran.json', 'w').write(json.dumps([self.family, weights_type]))\n"
+        "def create_converter(path, family): return _C(family)\n"
+    )
+    (pkg / "constants.py").write_text("ModelArchNames = {'Q08': ['qwen35-0.8B', 'qwen3.5-0.8B']}\n")
+    (pkg / "model_converter.py").write_text(
+        "def _resolve_qwen35(reader, basename, name):\n"
+        "    assert (reader, basename, name) == ('R', 'Qwen3.5', None)\n"
+        "    return 'Q08'\n"
+    )
+    (root / "gguf.py").write_text("GGUFReader = lambda path: 'R'\n")
+
+
+@pytest.mark.parametrize("extra, family", [([], ""), (["Qwen3.5"], "qwen35-0.8B")])
+def test_the_converter_script_maps_the_family_hint(tmp_path, extra, family):
+    import subprocess
+
+    from core.export import q4nx
+
+    _fake_q4nx_package(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    subprocess.run(
+        [sys.executable, "-c", q4nx._RUN_CONVERTER, "m.gguf", str(out), *extra],
+        cwd = tmp_path,
+        check = True,
+    )
+    assert json.loads((out / "ran.json").read_text()) == [family, "language"]
 
 
 def test_a_symlinked_output_folder_is_refused(monkeypatch, tmp_path):
@@ -309,7 +453,7 @@ def _base_folder(tmp_path, files):
 
 def test_existing_gguf_takes_companions_from_the_base_model(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
-    _fake_converter(export_mod, monkeypatch, calls := [])
+    _fake_converter(export_mod, monkeypatch, calls := [], configs = (configs := []))
     monkeypatch.setattr(export_mod.q4nx, "_gguf_chat_template", lambda _p: "{{ gguf }}")
     tokenizer = json.dumps({"added_tokens": [{"id": 3, "content": "x"}]})
     base = _base_folder(
@@ -327,11 +471,10 @@ def test_existing_gguf_takes_companions_from_the_base_model(monkeypatch, tmp_pat
 
     assert out == tmp_path / "exports" / "Qwen3-0.6B-Q4_1-q4nx"
     assert calls == ["Qwen3-0.6B-Q4_1.gguf"]
+    assert configs == [{"eos_token_id": 5}]
     assert (out / "tokenizer.json").read_text() == tokenizer
     assert not (out / "config.json").exists()
-    # FLM exits without an eos_token_id array; the tokenizer's eos comes first, then the configs'.
     assert json.loads((out / "tokenizer_config.json").read_text())["eos_token_id"] == [3, 5, 6]
-    # Neither the base folder nor its tokenizer_config carries a template, so the GGUF's is used.
     assert (out / "chat_template.jinja").read_text() == "{{ gguf }}"
 
 
@@ -378,7 +521,11 @@ def test_standalone_conversions_do_not_overlap(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
     active, overlaps = [0], []
 
-    def convert(gguf_path, out_dir):
+    def convert(
+        gguf_path,
+        out_dir,
+        config = None,
+    ):
         active[0] += 1
         overlaps.append(active[0])
         time.sleep(0.2)
@@ -419,3 +566,36 @@ def test_existing_gguf_without_tokenizer_config_fails_before_converting(monkeypa
     else:
         raise AssertionError("expected a RuntimeError")
     assert calls == []
+
+
+@pytest.mark.parametrize("pruned", [True, False])
+def test_q4nx_folder_carries_the_current_reap_report(monkeypatch, tmp_path, pruned):
+    # The NPU folder is deployed on its own, so its pruning provenance travels with it; a stale
+    # report from an earlier pruned conversion never survives an unpruned one.
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "core.export.reap", Path(__file__).resolve().parents[1] / "core/export/reap.py"
+    )
+    reap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reap)
+    monkeypatch.setitem(sys.modules, "core.export.reap", reap)
+    model = _Model()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    export_mod, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, model)
+    backend.current_tokenizer = _Tokenizer()
+    backend._reap_key = (0.5, 512, None) if pruned else None
+    backend._reap_model = weakref.ref(model)
+    _fake_converter(export_mod, monkeypatch, [])
+    q4nx = save_dir / "npu-q4nx"
+    q4nx.mkdir(parents = True)
+    (q4nx / "reap_report.json").write_text('{"kept_experts": {"old": [1]}}')
+
+    success, message, _ = backend.export_gguf(str(save_dir), ["q4_1"], npu_q4nx = True)
+
+    assert success is True, message
+    report = q4nx / "reap_report.json"
+    assert report.is_file() is pruned
+    if pruned:
+        assert json.loads(report.read_text())["kept_experts"] == {"model.layers.0.mlp": [0, 2]}

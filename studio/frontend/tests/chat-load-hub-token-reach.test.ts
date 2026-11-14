@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A load served entirely from disk must not prepare a Hub credential: preparing one
-// validates over the network and can open a blocking dialog that cancels the load, so a
-// stale Settings token would break loads that never needed it. isLocalModelPath covers
-// real paths; an Ollama row's id is an opaque `ollama-manifest:` reference, which is
-// neither a path nor a repo id.
+// A load served from disk must not prepare a Hub credential: validation can open a blocking dialog.
+// Ollama ids are `ollama-manifest:` references, neither a path nor a repo id.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -13,14 +10,12 @@ import test from "node:test";
 import { isLocalModelPath } from "../src/features/chat/utils/model-download-staging.ts";
 import { isOllamaModelId } from "../src/features/hub/lib/model-identity.ts";
 
-// The predicate as the load path composes it; nativePathToken is the file-lease case.
 function mayReachHub(modelId: string, nativePathToken: string | null): boolean {
   const servedFromDisk = isLocalModelPath(modelId) || isOllamaModelId(modelId);
   return !servedFromDisk && nativePathToken == null;
 }
 
 test("an opaque Ollama manifest reference prepares no Hub token", () => {
-  // The gap: it is local, but it does not look like a path.
   assert.equal(isLocalModelPath("ollama-manifest:llama3:8b"), false);
   assert.equal(mayReachHub("ollama-manifest:llama3:8b", null), false);
 });

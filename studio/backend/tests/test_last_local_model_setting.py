@@ -152,7 +152,6 @@ def test_put_normalizes_slow_client_clocks(client):
         ).status_code
         == 200
     )
-    # a clock hours behind: a genuinely later load still lands after the stored one
     slow_now = now - 7_200_000
     r = c.put(
         "/last-local-model",
@@ -192,9 +191,6 @@ def test_get_tolerates_corrupt_stored_value(client):
     assert body == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
 
 
-# ── per-subject scoping ─────────────────────────────────────────────
-
-
 @pytest.fixture
 def multi_subject_client(monkeypatch):
     """One backend and one store, with a swappable authenticated subject."""
@@ -229,8 +225,7 @@ def test_one_subject_does_not_inherit_anothers_model(multi_subject_client):
 
 
 def test_an_upgraded_install_still_sees_the_shared_row(multi_subject_client):
-    """Pre-scoping installs stored one shared record; a subject with no row of
-    its own inherits it rather than booting with nothing remembered."""
+    """Pre-scoping installs kept one shared record, which a subject with no row of its own inherits."""
     c, store, subject = multi_subject_client
     store[settings.LAST_LOCAL_MODEL_SETTING_KEY] = {
         "id": "unsloth/gemma-4-E2B-it-GGUF",
@@ -241,7 +236,6 @@ def test_an_upgraded_install_still_sees_the_shared_row(multi_subject_client):
     subject["value"] = "alice"
     assert c.get("/last-local-model").json()["id"] == "unsloth/gemma-4-E2B-it-GGUF"
 
-    # Once the subject writes it owns its row and stops following the shared one.
     c.put("/last-local-model", json = {"id": "alice/model", "kind": "model", "loaded_at": 2000})
     assert c.get("/last-local-model").json()["id"] == "alice/model"
     assert store[settings.LAST_LOCAL_MODEL_SETTING_KEY]["id"] == "unsloth/gemma-4-E2B-it-GGUF"
@@ -250,26 +244,21 @@ def test_an_upgraded_install_still_sees_the_shared_row(multi_subject_client):
 def test_subject_keys_do_not_collide(multi_subject_client):
     _, _, _ = multi_subject_client
     keys = {settings._last_local_model_key(s) for s in ("a", "b", "a:b", "", "  ")}
-    # "" and "  " degrade to the shared key; the rest are distinct.
     assert len(keys) == 4
     assert settings._last_local_model_key("") == settings.LAST_LOCAL_MODEL_SETTING_KEY
 
 
 def test_a_delayed_put_is_dated_from_arrival_not_from_the_load(client):
-    """Known limitation, pinned so any change is deliberate. client_now is
-    stamped at send, so flight time is indistinguishable from clock skew: a
-    retry-delayed PUT lands near arrival and can outrank a newer load."""
+    """client_now is stamped at send, so a delayed PUT is dated at arrival and can outrank a newer load."""
     c, store = client
     now = int(time.time() * 1000)
 
-    # The newer load reaches the server first.
     c.put(
         "/last-local-model",
         json = {"id": "newer", "kind": "model", "loaded_at": now, "client_now": now},
     )
     assert c.get("/last-local-model").json()["id"] == "newer"
 
-    # An older load whose PUT sat in a retry for 30s: the shift re-dates it to now.
     old = now - 30_000
     c.put(
         "/last-local-model",
@@ -279,15 +268,13 @@ def test_a_delayed_put_is_dated_from_arrival_not_from_the_load(client):
 
 
 def test_a_re_issued_old_shadow_stays_old(client):
-    """The other half of the same shift: a shadow re-sent long after its load
-    keeps its age, so it cannot displace a newer record."""
+    """A shadow re-sent long after its load keeps its age, so it cannot displace a newer record."""
     c, _ = client
     now = int(time.time() * 1000)
     c.put(
         "/last-local-model",
         json = {"id": "newer", "kind": "model", "loaded_at": now, "client_now": now},
     )
-    # Loaded 30s ago, re-issued now: age is preserved, so it loses.
     c.put(
         "/last-local-model",
         json = {"id": "stale", "kind": "model", "loaded_at": now - 30_000, "client_now": now},

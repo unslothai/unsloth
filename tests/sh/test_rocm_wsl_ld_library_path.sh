@@ -69,6 +69,57 @@ printf 'export LD_LIBRARY_PATH=/custom\n' > "$_dropin"
 _run_writer
 assert_eq "current drop-in not overwritten" "export LD_LIBRARY_PATH=/custom" "$(cat "$_dropin")"
 
+echo "=== non-root re-run: passwordless sudo, an explained prompt only on a terminal ==="
+# Fake sudo: logs its args; without -n it stands in for a password prompt (accepted when
+# FAKE_SUDO_PW=1), with -n it refuses (no cached credentials) unless FAKE_SUDO_OK=1 (a NOPASSWD rule).
+mkdir -p "$_tmp/fakebin"
+cat > "$_tmp/fakebin/sudo" <<'FAKE'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FAKE_SUDO_LOG"
+if [ "$1" != "-n" ]; then
+    echo "PROMPTED" >> "$FAKE_SUDO_LOG"
+    [ "${FAKE_SUDO_PW:-0}" = "1" ] && exec "$@"
+    exit 1
+fi
+shift
+[ "${FAKE_SUDO_OK:-0}" = "1" ] || exit 1
+exec "$@"
+FAKE
+chmod +x "$_tmp/fakebin/sudo"
+_stale_dropin() {
+    printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "$_tmp/rocm" > "$_dropin"
+}
+# $1 = NOPASSWD rule, $2 = a terminal to ask on, $3 = the password is typed.
+_run_writer_nonroot() {
+    env -i PATH="$_tmp/fakebin:$PATH" FAKE_SUDO_LOG="$_tmp/sudo.log" FAKE_SUDO_OK="$1" FAKE_TTY="${2:-0}" FAKE_SUDO_PW="${3:-0}" TAURI_MODE="${4:-false}" \
+        bash -c 'id() { echo 1000; }; substep() { printf "%s\n" "$1"; }; _can_read_tty() { [ "$FAKE_TTY" = "1" ]; }; eval "$1"; _persist_rocm_wsl_dropin' _ "$_fns"
+}
+_stale_dropin; : > "$_tmp/sudo.log"
+_out="$(_run_writer_nonroot 0)"
+assert_not_contains "no terminal: no interactive sudo attempted" "$(cat "$_tmp/sudo.log")" "PROMPTED"
+assert_contains "repair used sudo -n" "$(cat "$_tmp/sudo.log")" "-n sed"
+assert_contains "hint printed when sudo -n is refused" "$_out" "re-run the installer"
+_stale_dropin; : > "$_tmp/sudo.log"
+_out="$(_run_writer_nonroot 1 1)"
+assert_not_contains "passwordless sudo repairs the stale drop-in" "$(cat "$_dropin")" 'lib:${LD_LIBRARY_PATH:-}'
+assert_not_contains "passwordless sudo: no prompt even on a terminal" "$(cat "$_tmp/sudo.log")" "PROMPTED"
+assert_eq "no hint when the repair ran" "" "$_out"
+_stale_dropin; : > "$_tmp/sudo.log"
+_out="$(_run_writer_nonroot 0 1 1)"
+assert_not_contains "terminal: the explained prompt repairs the drop-in" "$(cat "$_dropin")" 'lib:${LD_LIBRARY_PATH:-}'
+assert_contains "terminal: says why before sudo asks" "$_out" "sudo may ask for your password"
+assert_not_contains "terminal: no hint after the repair" "$_out" "re-run the installer"
+_out="$(_run_writer_nonroot 0 1 1)"
+assert_eq "repaired drop-in: a re-run asks nothing" "" "$_out"
+_stale_dropin; : > "$_tmp/sudo.log"
+_out="$(_run_writer_nonroot 0 1 0)"
+assert_contains "terminal, password refused: hint printed" "$_out" "re-run the installer"
+# Desktop (--tauri) runs the installer in a background process group: an inherited terminal cannot answer.
+_stale_dropin; : > "$_tmp/sudo.log"
+_out="$(_run_writer_nonroot 0 1 1 true)"
+assert_not_contains "--tauri with a terminal: no interactive sudo" "$(cat "$_tmp/sudo.log")" "PROMPTED"
+assert_contains "--tauri with a terminal: hint printed" "$_out" "re-run the installer"
+
 echo "=== install.sh repairs an old helper's ~/.bashrc block ==="
 mkdir -p "$_tmp/dotfiles" "$_tmp/home2"
 printf '# user line\n# >>> Unsloth ROCm-on-WSL >>>\nexport LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n# <<< Unsloth ROCm-on-WSL <<<\n' "$_tmp/rocm" > "$_tmp/dotfiles/bashrc"

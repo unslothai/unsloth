@@ -1,14 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""DiffusionGemma block-diffusion SFT objective, matching the reference fine-tune of the released checkpoint
-(the recipe in TRL's examples/sft_diffusion_gemma/sft_diffusion_gemma.py)."""
+"""DiffusionGemma block-diffusion SFT objective matching TRL's examples/sft_diffusion_gemma recipe."""
 
 import contextlib
 
 import torch
 import torch.nn.functional as F
-from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import Cache, DynamicCache
 
 from .diffusion_loss import chunked_cross_entropy, compile_loss
 from .diffusion_profiles import DiffusionProfile, register_diffusion_profile, unwrap_diffusion_model
@@ -81,6 +80,44 @@ class _DiffusionGemmaPrefixCache(DynamicCache):
         layer.keys = keys.gather(2, indices.expand(-1, keys.shape[1], -1, keys.shape[-1]))
         layer.values = values.gather(2, indices.expand(-1, values.shape[1], -1, values.shape[-1]))
         return keys, values
+
+
+_PREFIX_INDICES_KWARG = "_unsloth_diffusion_prefix_indices"
+
+
+def _forward_with_prefix_cache(model, model_kwargs, text_config, prefix_indices):
+    if not isinstance(model, torch.nn.DataParallel):
+        return model(
+            **model_kwargs,
+            past_key_values = _DiffusionGemmaPrefixCache(
+                config = text_config, prefix_indices = prefix_indices
+            ),
+        )
+
+    # DataParallel scatters tensors but shares Python objects: pass the indices as a tensor, build a cache per replica.
+    def build_cache(module, args, kwargs):
+        indices = kwargs.pop(_PREFIX_INDICES_KWARG, None)
+        if indices is not None:
+            kwargs["past_key_values"] = _DiffusionGemmaPrefixCache(
+                config = text_config, prefix_indices = indices
+            )
+        return args, kwargs
+
+    # DataParallel cannot gather DynamicCache outputs, and the loss never reads them.
+    def drop_cache(module, args, output):
+        if isinstance(output, dict) and any(isinstance(v, Cache) for v in output.values()):
+            output = type(output)(**{k: v for k, v in output.items() if not isinstance(v, Cache)})
+        return output
+
+    handles = (
+        model.module.register_forward_pre_hook(build_cache, with_kwargs = True),
+        model.module.register_forward_hook(drop_cache),
+    )
+    try:
+        return model(**model_kwargs, **{_PREFIX_INDICES_KWARG: prefix_indices})
+    finally:
+        for handle in handles:
+            handle.remove()
 
 
 class DiffusionGemmaProfile(DiffusionProfile):
@@ -171,19 +208,11 @@ class DiffusionGemmaProfile(DiffusionProfile):
         # Two-pass self-conditioning: a no-grad first pass supplies the logits, kept per example with prob p.
         if sc_p > 0:
             with torch.no_grad():
-                model_kwargs["self_conditioning_logits"] = model(
-                    **model_kwargs,
-                    past_key_values = _DiffusionGemmaPrefixCache(
-                        config = text_config, prefix_indices = prefix_indices
-                    ),
+                model_kwargs["self_conditioning_logits"] = _forward_with_prefix_cache(
+                    model, model_kwargs, text_config, prefix_indices
                 ).logits
             model_kwargs["self_conditioning_mask"] = torch.rand(batch_size, device = device) < sc_p
-        outputs = model(
-            **model_kwargs,
-            past_key_values = _DiffusionGemmaPrefixCache(
-                config = text_config, prefix_indices = prefix_indices
-            ),
-        )
+        outputs = _forward_with_prefix_cache(model, model_kwargs, text_config, prefix_indices)
 
         # Flat CE over the whole canvas, corrupted and clean alike: the uniform kernel's ELBO has no 1/t weight.
         diffusion_target = canvas_target.masked_fill(truncated[:, None] & ~in_response, -100)

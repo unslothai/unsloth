@@ -102,7 +102,6 @@ def test_a_huge_file_is_read_in_a_bounded_window(tmp_path, monkeypatch):
     monkeypatch.undo()
 
     assert len(result.lines) == 1000
-    # One block of slack for the block-aligned backward scan.
     assert read_bytes["total"] <= MAX_TAIL_BYTES + 65_536
 
 
@@ -128,8 +127,7 @@ def test_an_idle_poll_is_empty_and_not_an_error(tmp_path):
 
 
 def test_repeated_polls_never_resend(tmp_path):
-    """A poll loop that resends the tail every tick would look fine in a single
-    assertion and be unusable in the UI, so this walks 200 rounds."""
+    """A tail resent on every poll passes a single assertion, so this walks 200 polls."""
     path = tmp_path / "a.log"
     path.write_text("0\n")
     cursor = read_tail(path).cursor
@@ -210,9 +208,8 @@ def test_the_reader_redacts_so_a_caller_cannot_forget(tmp_path):
 
 
 def test_a_burst_larger_than_one_response_is_delivered_not_dropped(tmp_path):
-    """The response used to keep the NEWEST 2000 lines while advancing the
-    cursor past all of them, so a model load that logged more than that between
-    two polls lost the head of its own failure, and said dropped_bytes = 0."""
+    """Bursts over one response must not lose their head: the old code kept the newest 2000 lines
+    and advanced the cursor past them, reporting dropped_bytes = 0."""
     path = tmp_path / "a.log"
     path.write_text("x\n")
     cursor = read_tail(path).cursor
@@ -232,10 +229,7 @@ def test_a_burst_larger_than_one_response_is_delivered_not_dropped(tmp_path):
 
 
 def test_a_record_larger_than_the_window_shows_its_tail_not_an_empty_pane(tmp_path):
-    """A single record bigger than the bounded read (a native dump, a \\r-only
-    progress run, a giant JSON line) filled the whole window, so dropping the
-    partial head left nothing: the viewer rendered an EMPTY pane on a log that
-    was megabytes long, and the cursor advanced past the record anyway."""
+    """A record larger than the read window must still show its tail, not an empty pane."""
     path = tmp_path / "a.log"
     body = "Z" * (MAX_TAIL_BYTES + 100_000)
     path.write_text("older line\n" + body + " END\n", encoding = "utf-8")
@@ -244,7 +238,6 @@ def test_a_record_larger_than_the_window_shows_its_tail_not_an_empty_pane(tmp_pa
     assert result.lines, "a non-empty log must never read as no lines at all"
     assert result.lines[-1].endswith(" END")
     assert result.truncated_head is True
-    # Still bounded: the tail of the record, not the whole record.
     assert sum(len(line) for line in result.lines) <= MAX_TAIL_BYTES
 
 
@@ -270,8 +263,7 @@ def test_an_oversized_append_with_no_newline_is_not_swallowed(tmp_path):
 
 
 def test_a_colorized_credential_is_masked_before_it_reaches_the_viewer(tmp_path):
-    """The pane strips ANSI before rendering, so an escape between the key and
-    its value used to defeat the redaction anchors and show a clean token."""
+    """Strip ANSI before matching, or an escape between key and value hides the secret."""
     path = tmp_path / "a.log"
     path.write_text(
         "\x1b[36mhf_token\x1b[0m=\x1b[35mhf_AbCdEfGhIjKlMnOpQrStUvWxYz012345\x1b[0m\n",

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Top release-note bullets, shown in the collapsed update popup.
 import { codeSpans, parkCodeSpans } from "@/lib/markdown-code-spans";
 import { commentClosesBelow } from "@/lib/markdown-inline-comments";
 import {
@@ -18,54 +17,45 @@ import {
 
 export const RELEASE_NOTES_PREVIEW_ITEMS = 4;
 const PREVIEW_ITEM_MAX_CHARS = 120;
-// Bullets indented past the shallowest one are nested detail, not headlines.
 const NESTED_INDENT_TOLERANCE = 1;
 const TAB_WIDTH = 4;
-// Four spaces starts an indented code block in Markdown.
 const INDENTED_CODE_INDENT = 4;
 
-// At most three leading spaces: deeper is indented code, not a fence.
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-// An ATX heading needs a space, tab or line end after the marker, as in _HEADING_PATTERN. A whitespace class would
-// match a non-breaking space and eat prose, and a bare `##` is an empty heading that still ends a bullet.
+// Matches _HEADING_PATTERN; a whitespace class would match NBSP, and a bare `##` still ends a bullet.
 const HEADING = /^#{1,6}(?:[ \t]|$)/;
 const BULLET = /^(?:[-*+]|(\d{1,9})[.)])[ \t]+(.*)$/;
-// At most three leading spaces, as everywhere else: deeper is indented code,
-// so a quoted line inside a code sample cannot reach the collector.
 const BLOCKQUOTE = /^ {0,3}>[ \t]?/;
-// A GFM delimiter cell is hyphens with an optional alignment colon each side.
 const TABLE_DELIMITER_CELL = /^:?-+:?$/;
-// "- - -" and "***" are horizontal rules, not bullets and not notes.
 const THEMATIC_BREAK =
   /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
-// Destinations may escape or balance parentheses, and labels may nest one
-// level so `[![alt](img)](link)` still resolves.
 const DESTINATION = "\\((?:\\\\.|[^()\\\\]|\\([^()]*\\))*\\)";
 const LABEL = "((?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*)";
 const IMAGE = new RegExp(`!\\[${LABEL}\\]${DESTINATION}`, "g");
 const LINK = new RegExp(`\\[${LABEL}\\]${DESTINATION}`, "g");
-// Reference forms: `[text][label]`, `[text][]` and the shortcut `[text]`.
 const IMAGE_REFERENCE = new RegExp(`!\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
 const LINK_REFERENCE = new RegExp(`\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
-// A definition line renders as nothing at all.
+// A parked escape or code span in the destination keeps the link plain.
+const WEB_DESTINATION = /^\((https?:\/\/[^\s()<>\uE000-\uE003]+)\)$/i;
 const DEFINITION = /^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:/;
-// CommonMark: a backslash escapes ASCII punctuation.
 const ESCAPE = /\\([!-/:-@[-`{-~])/g;
-// Private-use sentinels park code spans, so document text cannot contain them.
-const SENTINELS = /[\uE000\uE001]/g;
+// Private-use sentinels park code spans and mark links, so document text cannot contain them.
+const SENTINELS = /[\uE000-\uE003]/g;
+// Browsers read `\` as `/` where the expanded view sends `%5C`, so those links stay plain.
+const UNSAFE_HREF = /[\s<>\\]/;
+const LINK_OPEN = "\uE002";
+const LINK_CLOSE = "\uE003";
+// Each mark carries its href index, so a pair removed by tag stripping cannot shift the rest.
+const MARKS = /(\uE002\d+\uE002|\uE003\d+\uE003)/;
+const EDGE_SPACE = /^(\s*)([\s\S]*?)(\s*)$/;
 const LINE_ENDINGS = /\r\n?/g;
 const TABS = /\t/g;
-// Real tags only: a name character must follow "<", so a version constraint
-// like "Support Python <3.15 and >3.9" keeps its operators.
+// A name character must follow "<", so "Python <3.15 and >3.9" keeps its operators.
 const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
-// <https://x> and <a@b.c> are Markdown autolinks: keep the text they render.
 const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>/g;
-// CommonMark type 1 HTML blocks render literally until a closing tag, which
-// the spec says need not be the one that opened the block.
+// Type 1 HTML blocks end at any of the closing tags, not only the opener's.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
-// Types 3 to 5 (processing instructions, declarations, CDATA) are literal too,
-// each ending on its own delimiter. Comments open mid-line, handled separately.
 const RAW_BLOCKS: [RegExp, RegExp][] = [
   [RAW_HTML_OPEN, RAW_HTML_CLOSE],
   [/^ {0,3}<\?/, /\?>/],
@@ -73,8 +63,7 @@ const RAW_BLOCKS: [RegExp, RegExp][] = [
   // A declaration needs an uppercase letter, so `<!note` stays ordinary text.
   [/^ {0,3}<![A-Z]/, />/],
 ];
-// Type 6 and 7 blocks run to the next blank line, so `<details>` holds Markdown
-// only after one. Type 7 (any complete tag alone) cannot interrupt a paragraph.
+// Type 6 and 7 blocks run to the next blank line; type 7 cannot interrupt a paragraph.
 const HTML_BLOCK_OPEN = /^ {0,3}<\/?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)/;
 const HTML_ATTRIBUTE =
   "(?:\\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\\s*=\\s*(?:[^\\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)";
@@ -88,21 +77,18 @@ const HTML_BLOCK_TAGS = new Set(
    menuitem nav noframes ol optgroup option p param search section summary table
    tbody td tfoot th thead title tr track ul`.split(/\s+/),
 );
-// Only spaces and tabs may follow a closing fence.
 const NON_SPACE = /[^ \t]/;
 const HEADING_LINE = /^ {0,3}#{1,6}(?:[ \t]|$)/;
 const COMMENT_BLOCK_OPEN = /^ {0,3}<!--/;
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
-// Paired emphasis only. Underscores inside identifiers are literal, so
-// UNSLOTH_DISABLE_UPDATE_CHECK keeps its name.
+// Underscores inside identifiers are literal, so UNSLOTH_DISABLE_UPDATE_CHECK keeps its name.
 const BOLD_STAR = /\*\*(?=\S)([\s\S]*?\S)\*\*/g;
 const BOLD_UNDERSCORE = /(^|[^\w])__(?=\S)([\s\S]*?\S)__(?=[^\w]|$)/g;
 const ITALIC_STAR = /\*(?=\S)([^*\n]*?\S)\*/g;
 const ITALIC_UNDERSCORE = /(^|[^\w])_(?=\S)([^_\n]*?\S)_(?=[^\w]|$)/g;
 const BACKTICK = /`/g;
-// A closer is a run of the same length, so `` `x` `` keeps its backticks.
-// Streamdown renders `AT&amp;T` as "AT&T", so the preview decodes entities too.
+// Streamdown decodes entities like `AT&amp;T`, so the preview does too.
 const NAMED_ENTITIES: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -114,10 +100,8 @@ const NAMED_ENTITIES: Record<string, string> = {
 const ENTITY = /&(#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z][a-zA-Z0-9]{1,31});/g;
 const PARKED = /\uE000(\d+)\uE001/g;
 const WHITESPACE = /\s+/g;
-// Sentence end followed by something that actually starts a sentence.
 const SENTENCE_BREAK = /[.!?]\s+(?=["'“‘]?[A-Z0-9])/g;
 const TRAILING_WORD = /(\S+)$/;
-// A period here ends an abbreviation, not the sentence.
 const ABBREVIATIONS = new Set([
   "e.g.",
   "i.e.",
@@ -142,7 +126,7 @@ const ABBREVIATIONS = new Set([
 const INITIAL = /^[A-Za-z]\.$/;
 const MIN_LEAD_CHARS = 12;
 
-/** Strip tags until stable, so a removal cannot re-form a tag. */
+/** Strip until stable, so a removal cannot re-form a tag. */
 function stripHtmlTags(text: string): string {
   let out = text;
   let previous: string;
@@ -153,25 +137,37 @@ function stripHtmlTags(text: string): string {
   return out;
 }
 
+/** `start`/`end` index into the item's `lead` or `rest`. */
+export interface ReleaseNotesLink {
+  part: "lead" | "rest";
+  start: number;
+  end: number;
+  href: string;
+}
+
+interface Span {
+  start: number;
+  end: number;
+  href: string;
+}
+
 export interface ReleaseNotesPreviewItem {
-  // Leading sentence, highlighted in the preview.
   lead: string;
-  // Rest of the bullet, de-emphasised. Empty for single-sentence bullets.
   rest: string;
+  links: ReleaseNotesLink[];
 }
 
 export interface ReleaseNotesPreview {
   items: ReleaseNotesPreviewItem[];
-  // Bullets past the preview limit, for a "+N more" affordance.
   remaining: number;
 }
 
 interface Bullet {
   text: string;
   indent: number;
+  links: Span[];
 }
 
-/** Whether a reference points at a definition the document actually has. */
 function definedLabel(
   labels: Set<string> | undefined,
   reference: string | undefined,
@@ -187,7 +183,6 @@ function definedLabel(
   return labels.has(label);
 }
 
-/** One entity as the character it renders as, or unchanged if unknown. */
 function decodeEntity(match: string, body: string): string {
   if (body.startsWith("#")) {
     const hex = body[1] === "x" || body[1] === "X";
@@ -202,15 +197,16 @@ function decodeEntity(match: string, body: string): string {
   return NAMED_ENTITIES[body.toLowerCase()] ?? match;
 }
 
-/** Inline markdown stripped to plain text. */
-function toPlainText(markdown: string, labels?: Set<string>): string {
-  // Park code spans first: their contents are literal and must survive below.
+function toPlainText(
+  markdown: string,
+  labels?: Set<string>,
+  hrefs?: string[],
+): string {
   const codes: string[] = [];
   const park = (text: string): string => {
     codes.push(text);
     return `\uE000${codes.length - 1}\uE001`;
   };
-  // Escaped punctuation is literal too, so `\*not italic\*` keeps its stars.
   const parked = parkCodeSpans(markdown, park).replace(ESCAPE, (_match, char) =>
     park(char),
   );
@@ -219,7 +215,19 @@ function toPlainText(markdown: string, labels?: Set<string>): string {
     parked
       .replace(AUTOLINK, "$1")
       .replace(IMAGE, "")
-      .replace(LINK, "$1")
+      .replace(LINK, (match, label: string) => {
+        const href = hrefs
+          ? WEB_DESTINATION.exec(match.slice(label.length + 2))?.[1]
+          : undefined;
+        const decoded = href?.replace(ENTITY, decodeEntity);
+        if (!decoded || UNSAFE_HREF.test(decoded)) {
+          return label;
+        }
+        const id = hrefs?.push(decoded) ?? 0;
+        // Edge spaces stay outside the marks, so emphasis around the link strips as before.
+        const [, before, inner, after] = EDGE_SPACE.exec(label) ?? [];
+        return `${before}${LINK_OPEN}${id}${LINK_OPEN}${inner}${LINK_CLOSE}${id}${LINK_CLOSE}${after}`;
+      })
       .replace(IMAGE_REFERENCE, (match, text, ref) =>
         definedLabel(labels, ref, text) ? "" : match,
       )
@@ -238,6 +246,44 @@ function toPlainText(markdown: string, labels?: Set<string>): string {
     .trim();
 }
 
+/** Spans index the returned text; any doubt drops them rather than link the wrong words. */
+function plainWithLinks(
+  markdown: string,
+  labels: Set<string>,
+): { text: string; links: Span[] } {
+  const hrefs: string[] = [];
+  const marked = toPlainText(markdown, labels, hrefs);
+  if (hrefs.length === 0) {
+    return { text: marked, links: [] };
+  }
+  const links: Span[] = [];
+  let text = "";
+  let label = "";
+  let open = 0;
+  for (const [index, piece] of marked.split(MARKS).entries()) {
+    if (index % 2 === 0) {
+      text = `${text}${piece}`.replace(WHITESPACE, " ").trimStart();
+      label += piece;
+      continue;
+    }
+    const id = Number(piece.slice(1, -1));
+    if (piece.startsWith(LINK_OPEN)) {
+      open = id;
+      label = "";
+      continue;
+    }
+    const shown = label.replace(WHITESPACE, " ").trim();
+    const end = text.trimEnd().length;
+    const href = hrefs[id - 1];
+    if (open === id && shown && href) {
+      links.push({ start: end - shown.length, end, href });
+    }
+    open = 0;
+  }
+  const plain = toPlainText(markdown, labels);
+  return { text: plain, links: text.trimEnd() === plain ? links : [] };
+}
+
 function truncate(text: string): string {
   if (text.length <= PREVIEW_ITEM_MAX_CHARS) {
     return text;
@@ -250,22 +296,14 @@ function truncate(text: string): string {
 interface ContentLine {
   text: string;
   indent: number;
-  // Blockquoted lines are quoted examples, not the release's own bullets.
   quoted: boolean;
-  // Content column of the innermost open list item. CommonMark measures
-  // indentation from here, so `indent - column` is the real depth.
+  // CommonMark measures indentation from here, so `indent - column` is the real depth.
   column: number;
 }
 
 /**
- * `line` with its comments removed, whether a comment block stays open, and whether an inline comment runs on into
- * the line below.
- *
- * Only a comment starting a line opens a block, which hides whole lines to the one holding `-->`. One written
- * mid-sentence is inline HTML belonging to its paragraph, so its `-->` may arrive on a later line and only the
- * text up to it is hidden. `closesBelow` says one does; without it the opener is ordinary text and hides nothing
- * below. "Starting a line" is read inside the container, so `blockOpen` comes from the item's content rather than
- * the raw line.
+ * Only a line-start comment hides whole lines; a mid-line one is inline HTML whose `-->` may
+ * arrive later in the paragraph (`closesBelow`).
  */
 function stripCommentSpans(
   line: string,
@@ -275,7 +313,6 @@ function stripCommentSpans(
   blockOpen: boolean,
 ): [string, boolean, boolean] {
   if (startInComment) {
-    // The closing line belongs to the block, tail included.
     return ["", !line.includes(COMMENT_CLOSE), false];
   }
 
@@ -286,11 +323,9 @@ function stripCommentSpans(
     if (closed === -1) {
       return ["", false, true];
     }
-    // Only up to the closer: the tail is the paragraph's own text again.
     index = closed + COMMENT_CLOSE.length;
   } else if (blockOpen) {
-    // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
-    // opener; searching past it would hide every later release.
+    // `<!-->` and `<!--->` are complete comments; searching past the opener would hide later releases.
     return ["", !line.includes(COMMENT_CLOSE), false];
   }
 
@@ -301,7 +336,6 @@ function stripCommentSpans(
       visible += line.slice(index);
       break;
     }
-    // A delimiter inside inline code is literal, not a comment opener.
     const span = spans.find(
       (candidate) => candidate.start <= open && candidate.end > open,
     );
@@ -313,10 +347,8 @@ function stripCommentSpans(
     const close = line.indexOf(COMMENT_CLOSE, open + COMMENT_OPEN.length);
     if (close === -1) {
       if (closesBelow) {
-        // The paragraph carries the comment on, so this line and the next are in it.
         return [visible + line.slice(index, open), false, true];
       }
-      // Nothing closes it at all, so the renderer shows it as text.
       visible += line.slice(index);
       break;
     }
@@ -326,7 +358,6 @@ function stripCommentSpans(
   return [visible, false, false];
 }
 
-/** Strips raw block content. State is the open block's index, or null. */
 function stripRawHtml(
   line: string,
   openBlock: number | null,
@@ -334,7 +365,6 @@ function stripRawHtml(
   if (openBlock !== null) {
     return RAW_BLOCKS[openBlock]?.[1].test(line) ? ["", null] : ["", openBlock];
   }
-  // A block only opens at the start of a line; mid-line tags are inline HTML.
   for (const [index, [opener, closer]] of RAW_BLOCKS.entries()) {
     const open = opener.exec(line);
     if (!open) {
@@ -346,7 +376,6 @@ function stripRawHtml(
   return [line, null];
 }
 
-/** True if `line` starts a CommonMark type 6 or type 7 HTML block. */
 function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
   const named = HTML_BLOCK_OPEN.exec(line);
   if (named && HTML_BLOCK_TAGS.has((named[1] ?? "").toLowerCase())) {
@@ -355,12 +384,7 @@ function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
   return !afterParagraph && HTML_TAG_ONLY_LINE.test(line);
 }
 
-/**
- * The line as list tracking sees it. A comment or raw block renders nothing, but the line opening one is still a
- * block at its own column, so it closes a list item it sits left of. Only the column survives, since the text it
- * hides is not Markdown. A line inside a block already open is that block's content, so it keeps neither. A marker
- * the hidden block is the content of survives with the column, so the item it opens is still tracked.
- */
+/** A hidden block still keeps its column (and marker), since its indent can close a list item. */
 function structuralLine(
   line: string,
   visible: string,
@@ -375,13 +399,8 @@ function structuralLine(
 
 interface ScanState {
   openFence: string | null;
-  // Content column of the list item the open block belongs to, 0 at document
-  // level. A fence and an HTML block are scoped to their container, so the item's
-  // end closes them. Only one of the three is ever open.
   blockColumn: number;
   inComment: boolean;
-  // True while an inline comment opened above runs on into this line, carried by
-  // the paragraph holding it.
   runOn: boolean;
   inRawHtml: number | null;
   inHtmlBlock: boolean;
@@ -389,11 +408,8 @@ interface ScanState {
 }
 
 interface ScannedLine {
-  // What a reader would see: "" for structure and hidden blocks, null for
-  // fenced content, which is skipped so it cannot split a bullet.
+  // "" for structure and hidden blocks; null for fenced content so it cannot split a bullet.
   text: string | null;
-  // The same line as list tracking sees it: blank wherever nothing renders,
-  // but kept whole where an indent still closes an open item.
   structural: string;
 }
 
@@ -409,13 +425,9 @@ function visibleText(
     return { text: after, structural: "" };
   }
   if (state.inHtmlBlock) {
-    // A blank line is the only thing that ends a type 6 or 7 block.
     state.inHtmlBlock = line.trim() !== "";
     return { text: "", structural: "" };
   }
-  // An opener is read past a marker on the same line, since a fence written as a
-  // list item's first content opens inside it. Only an opener: fenced content is
-  // literal and a closer carries no marker.
   const commented = state.inComment || state.runOn;
   const fence = commented
     ? null
@@ -424,7 +436,6 @@ function visibleText(
           ? itemContent(line, state.afterParagraph)
           : line,
       );
-  // A backtick fence whose info string holds a backtick is prose, not a fence.
   if (
     fence &&
     (state.openFence !== null || opensFence(fence[1] ?? "", fence[2] ?? ""))
@@ -434,7 +445,6 @@ function visibleText(
       fence[1] ?? "",
       fence[2] ?? "",
     );
-    // Hidden from the collector, but its indent still closes an item.
     return { text: "", structural: line };
   }
   if (state.openFence !== null) {
@@ -443,22 +453,16 @@ function visibleText(
   return visibleContent(line, state, closesBelow);
 }
 
-/** `visibleText` for a line no fence or HTML block already owns. */
 function visibleContent(
   line: string,
   state: ScanState,
   closesBelow: boolean,
 ): ScannedLine {
-  // A block already open owns this line, so it is content rather than a block
-  // written at the column it happens to start in.
   const hidden = state.inComment || state.inRawHtml !== null;
   const carried = state.runOn;
-  // A comment is an HTML block too, so one written as a list item's first content opens inside that
-  // item exactly as a fence does: read past a marker on the same line rather than from the margin.
   const content = itemContent(line, state.afterParagraph);
   const opensComment =
     !(state.inComment || carried) && COMMENT_BLOCK_OPEN.test(content);
-  // Commented-out notes are not rendered, so they are not previewed either.
   const [uncommented, stillInComment, stillRunOn] = stripCommentSpans(
     line,
     state.inComment,
@@ -470,10 +474,7 @@ function visibleContent(
   state.runOn = stillRunOn;
   const [visible, stillInRaw] = stripRawHtml(uncommented, state.inRawHtml);
   state.inRawHtml = stillInRaw;
-  // Taken before the opener is hidden: it renders as nothing, but its indent still
-  // closes a list item it sits left of, and a marker on its line still opens one.
-  // A line an inline comment runs on into is still a line of the paragraph that
-  // carries it, so only its text is hidden, never its block structure.
+  // Taken before the opener is hidden: its indent still closes a list item, and its marker opens one.
   const marker = opensComment
     ? line.slice(0, line.length - content.length)
     : "";
@@ -492,8 +493,7 @@ function visibleContent(
   return { text: visible, structural };
 }
 
-/** Marker of a fence the line scanner skipped because it is indented. Only a line within three columns of its
- * item's content column is one: deeper than that it is an indented code block, which a dedented bullet ends. */
+/** Only within three columns of the item's content column; deeper is indented code. */
 function opensDeepFence(line: ContentLine): string | null {
   if (
     line.indent < INDENTED_CODE_INDENT ||
@@ -505,9 +505,7 @@ function opensDeepFence(line: ContentLine): string | null {
   return fence ? (fence[1] ?? null) : null;
 }
 
-/** True when `line` is the first one outside the deep fence opened with `marker` at `column`. A fence inside a
- * list item runs only to the end of that item, so a line left of the item's content column closes both, as
- * `fence_column` does on the backend. */
+/** A fence inside a list item ends with the item, as `fence_column` does on the backend. */
 function endsDeepFence(
   marker: string,
   column: number,
@@ -516,7 +514,6 @@ function endsDeepFence(
   return line.indent < column || closesDeepFence(marker, line);
 }
 
-/** True when `line` closes the deep fence opened with `marker`. */
 function closesDeepFence(marker: string, line: ContentLine): boolean {
   const fence = FENCE.exec(line.text);
   if (!fence) {
@@ -530,8 +527,7 @@ function closesDeepFence(marker: string, line: ContentLine): boolean {
   );
 }
 
-/** Cells of a GFM table row, or null when the line holds no pipe at all. The optional leading and trailing pipes
- * are delimiters, not empty cells, and an escaped pipe is literal text inside one. */
+/** Leading and trailing pipes are delimiters, and an escaped pipe is literal. */
 function tableCells(text: string): string[] | null {
   if (!text.includes("|")) {
     return null;
@@ -562,7 +558,6 @@ function tableCells(text: string): string[] | null {
   return cells;
 }
 
-/** Width of a GFM delimiter row such as `| --- |:-:|`, or null if not one. */
 function delimiterWidth(text: string): number | null {
   const cells = tableCells(text);
   if (cells === null || cells.length === 0) {
@@ -573,9 +568,7 @@ function delimiterWidth(text: string): number | null {
     : null;
 }
 
-/** Line indices that belong to a GFM table. A table needs a header row and a delimiter row of the same width, and
- * runs to a blank line or another block. Its cells render as a grid, not prose, so the preview drops them like a
- * code block. */
+/** Tables render as a grid, so the preview drops them like code blocks. */
 function opensTable(
   header: ContentLine | undefined,
   delimiter: ContentLine | undefined,
@@ -594,7 +587,6 @@ function opensTable(
   return width !== null && cells !== null && cells.length === width;
 }
 
-/** A blank line, a heading or a list marker: where GFM breaks a table. */
 function breaksTable(line: ContentLine | undefined): boolean {
   return (
     !line?.text ||
@@ -641,12 +633,10 @@ function nextFence(
   const closes =
     marker[0] === open[0] &&
     marker.length >= open.length &&
-    // Only spaces or tabs may follow a closer, per CommonMark.
     !NON_SPACE.test(rest);
   return closes ? null : open;
 }
 
-/** Whether a fence, a raw block, a comment or an HTML block is open. */
 function inBlock(state: ScanState): boolean {
   return (
     state.openFence !== null ||
@@ -656,8 +646,7 @@ function inBlock(state: ScanState): boolean {
   );
 }
 
-/** A fence, comment or HTML block inside a list item runs only to the end of that item, so a line dedented out of
- * the item closes both. Lazy continuation reaches into none of them, so any content left of the item ends it. */
+/** Lazy continuation reaches into no fence, comment or HTML block, so dedenting ends them. */
 function closeDedentedBlock(line: string, state: ScanState): void {
   if (state.blockColumn === 0 || !inBlock(state)) {
     return;
@@ -671,7 +660,6 @@ function closeDedentedBlock(line: string, state: ScanState): void {
   }
 }
 
-/** Ties a block just opened to the list item it is written inside. */
 function scopeBlock(
   state: ScanState,
   wasInBlock: boolean,
@@ -682,8 +670,6 @@ function scopeBlock(
     return;
   }
   if (!wasInBlock) {
-    // The opener closed the items it is dedented out of first, so this is the
-    // column of the item the block really sits in.
     state.blockColumn = lists.columns.at(-1) ?? 0;
   }
 }
@@ -715,23 +701,18 @@ function contentLines(markdown: string): ContentLine[] {
       state,
       closesBelow[index + 1] ?? false,
     );
-    // The quote state from the line above, which is what list tracking asks about.
-    // Only a line of text below rewrites it, so a fenced, blank or hidden line
-    // leaves no quoted paragraph open behind it.
     const above = quote;
     quote = NO_QUOTE;
-    // Taken with the paragraph state from the line above, as a renderer would.
     lists = openLists(structural, lists, state.afterParagraph, above.quoted);
     scopeBlock(state, wasInBlock, lists);
     if (visible === null) {
       continue;
     }
     if (carried && !visible.trim()) {
-      // Wholly inside a comment its paragraph carries: no text, and no break.
       continue;
     }
     if (!visible.trim() || THEMATIC_BREAK.test(visible)) {
-      // A rule separates notes, so it breaks a bullet just like a blank line.
+      // A rule separates notes, so it breaks a bullet like a blank line.
       state.afterParagraph = false;
       lines.push({ text: "", indent: 0, quoted: false, column: 0 });
       continue;
@@ -739,11 +720,7 @@ function contentLines(markdown: string): ContentLine[] {
     const quoted = BLOCKQUOTE.test(visible);
     const stripped = visible.replace(BLOCKQUOTE, "");
     const indent = stripped.length - stripped.trimStart().length;
-    // A quoted line is measured inside its quote, where the document's open
-    // list items do not reach.
     const column = quoted ? 0 : (lists.columns.at(-1) ?? 0);
-    // Only ordinary text continues a paragraph; a heading or indented code line
-    // (four columns past its container, outside a paragraph) ends one.
     const startsCode =
       !state.afterParagraph && indent - column >= INDENTED_CODE_INDENT;
     state.afterParagraph = !HEADING_LINE.test(stripped) && !startsCode;
@@ -753,9 +730,12 @@ function contentLines(markdown: string): ContentLine[] {
   return lines;
 }
 
-/** Split a bullet at its first sentence boundary. Conservative: the next sentence must start like one, so
- * "unsloth.ai in the docs" is not a break. */
-function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
+/** Conservative: the next sentence must start like one, so "unsloth.ai in the docs" is not split. */
+function splitLeadSentence(text: string): {
+  lead: string;
+  rest: string;
+  restStart: number;
+} {
   SENTENCE_BREAK.lastIndex = 0;
   let match = SENTENCE_BREAK.exec(text);
   while (match) {
@@ -764,36 +744,81 @@ function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
       TRAILING_WORD.exec(text.slice(0, cut))?.[1]?.toLowerCase() ?? "";
     const isAbbreviation = ABBREVIATIONS.has(word) || INITIAL.test(word);
     if (!isAbbreviation && cut >= MIN_LEAD_CHARS) {
-      return { lead: text.slice(0, cut).trim(), rest: text.slice(cut).trim() };
+      const tail = text.slice(cut);
+      return {
+        lead: text.slice(0, cut).trim(),
+        rest: tail.trim(),
+        restStart: cut + tail.length - tail.trimStart().length,
+      };
     }
     match = SENTENCE_BREAK.exec(text);
   }
-  return { lead: text, rest: "" };
+  return { lead: text, rest: "", restStart: text.length };
 }
 
-/** Bullets in document order, plus prose for notes written as paragraphs. */
+/** A link the lead split cuts through becomes one anchor on each side. */
+function previewItem({ text, links }: Bullet): ReleaseNotesPreviewItem {
+  const { lead, rest, restStart } = splitLeadSentence(text);
+  const parts: ReleaseNotesLink[] = [];
+  for (const { start, end, href } of links) {
+    if (start < lead.length) {
+      parts.push({
+        part: "lead",
+        start,
+        end: Math.min(end, lead.length),
+        href,
+      });
+    }
+    if (end > restStart) {
+      const from = Math.max(start, restStart) - restStart;
+      parts.push({ part: "rest", start: from, end: end - restStart, href });
+    }
+  }
+  return { lead, rest, links: parts };
+}
+
 interface Collector {
   bullets: Bullet[];
-  prose: string[];
-  // Wrapped bullets continue on following lines and belong to one item.
+  prose: Bullet[];
   current: Bullet | null;
-  paragraph: string;
-  // True while the open paragraph is a quote's, which owns its own text: a
-  // marker written outside the quote opens a list rather than continuing it.
+  paragraph: Bullet;
+  // A quote owns its paragraph: a marker outside the quote opens a list rather than continuing it.
   quotedParagraph: boolean;
+}
+
+const EMPTY: Bullet = { text: "", indent: 0, links: [] };
+
+/** Truncates, dropping links the cut reaches. */
+function clip({ text, indent, links }: Bullet): Bullet {
+  const shown = truncate(text);
+  const kept = shown === text ? shown.length : shown.length - "...".length;
+  return { text: shown, indent, links: links.filter((l) => l.end <= kept) };
+}
+
+function append(block: Bullet, text: string, links: Span[]): Bullet {
+  const offset = block.text.length + 1;
+  return {
+    text: `${block.text} ${text}`,
+    indent: block.indent,
+    links: [
+      ...block.links,
+      ...links.map((l) => ({
+        ...l,
+        start: l.start + offset,
+        end: l.end + offset,
+      })),
+    ],
+  };
 }
 
 function flush(collector: Collector): void {
   if (collector.current?.text) {
-    collector.bullets.push({
-      text: truncate(collector.current.text),
-      indent: collector.current.indent,
-    });
+    collector.bullets.push(clip(collector.current));
   }
   collector.current = null;
-  if (collector.paragraph) {
-    collector.prose.push(truncate(collector.paragraph));
-    collector.paragraph = "";
+  if (collector.paragraph.text) {
+    collector.prose.push(clip(collector.paragraph));
+    collector.paragraph = EMPTY;
   }
   collector.quotedParagraph = false;
 }
@@ -805,12 +830,12 @@ function takeBullet(
   labels: Set<string>,
 ): void {
   flush(collector);
-  const item = toPlainText(text, labels);
-  // A quoted list is example output: prose at best, never a headline bullet.
+  const { text: item, links } = plainWithLinks(text, labels);
+  // A quoted list is example output, never a headline bullet.
   if (!line.quoted) {
-    collector.current = { text: item, indent: line.indent };
+    collector.current = { text: item, indent: line.indent, links };
   } else if (item) {
-    collector.prose.push(truncate(item));
+    collector.prose.push(clip({ text: item, indent: 0, links }));
   }
 }
 
@@ -820,40 +845,35 @@ function takeText(
   labels: Set<string>,
   quoted: boolean,
 ): void {
-  const plain = toPlainText(text, labels);
+  const { text: plain, links } = plainWithLinks(text, labels);
   if (!plain) {
     return;
   }
   if (collector.current === null) {
-    // Wrapped paragraphs render as one block, so preview them as one item.
-    collector.paragraph = collector.paragraph
-      ? `${collector.paragraph} ${plain}`
-      : plain;
+    collector.paragraph = collector.paragraph.text
+      ? append(collector.paragraph, plain, links)
+      : { text: plain, indent: 0, links };
     collector.quotedParagraph = quoted;
     return;
   }
-  collector.current = {
-    text: `${collector.current.text} ${plain}`,
-    indent: collector.current.indent,
-  };
+  collector.current = append(collector.current, plain, links);
 }
 
 function collectBullets(markdown: string): {
   bullets: Bullet[];
-  prose: string[];
+  prose: Bullet[];
 } {
   const collector: Collector = {
     bullets: [],
     prose: [],
     current: null,
-    paragraph: "",
+    paragraph: EMPTY,
     quotedParagraph: false,
   };
 
   const lines = contentLines(markdown);
   const labels = new Set<string>();
-  // Skips the same code the pass below skips: a definition-shaped line inside
-  // code is literal, and a real definition never indents past three spaces.
+  // A definition-shaped line inside code is literal, and a real one never indents past three spaces.
   let labelFence: string | null = null;
   let labelColumn = 0;
   for (const line of lines) {
@@ -863,7 +883,6 @@ function collectBullets(markdown: string): {
     if (labelFence !== null) {
       const dedented = line.indent < labelColumn;
       labelFence = null;
-      // Its own closing line is code too; only a dedented one is a new block.
       if (!dedented) {
         continue;
       }
@@ -893,25 +912,20 @@ function collectBullets(markdown: string): {
       flush(collector);
       continue;
     }
-    // A table renders as a grid, no more previewable than a code block, and it
-    // ends whatever came before it.
     if (tables.has(index)) {
       flush(collector);
       continue;
     }
-    // A link reference definition renders as nothing.
     if (collector.current === null && DEFINITION.test(line.text)) {
       continue;
     }
-    // A fence indented past three spaces belongs to a list item, so the line
-    // scanner missed it. Its contents are code either way.
+    // A fence indented past three spaces belongs to a list item, so the line scanner missed it.
     if (deepFence !== null && !endsDeepFence(deepFence, deepColumn, line)) {
       continue;
     }
     if (deepFence !== null) {
       const dedented = line.indent < deepColumn;
       deepFence = null;
-      // Its own closing line is code too; only a dedented one is a new block.
       if (!dedented) {
         continue;
       }
@@ -922,19 +936,16 @@ function collectBullets(markdown: string): {
       deepColumn = line.column;
       continue;
     }
-    // An indented code block renders as code, so a "- cmd" line in one is not
-    // a bullet. Inside an open bullet or paragraph it is just a wrapped line.
     const insideBlock =
-      collector.current !== null || collector.paragraph !== "";
+      collector.current !== null || collector.paragraph.text !== "";
     if (!insideBlock && line.indent - line.column >= INDENTED_CODE_INDENT) {
       continue;
     }
     const bullet = BULLET.exec(line.text);
-    // Only an ordered list starting at 1 may interrupt a paragraph, so "2. Restart
-    // Unsloth" under prose is prose. A list item is not a paragraph.
+    // Only an ordered list starting at 1 may interrupt a paragraph.
     const interrupts =
       collector.current === null &&
-      collector.paragraph !== "" &&
+      collector.paragraph.text !== "" &&
       !collector.quotedParagraph;
     if (
       bullet &&
@@ -950,8 +961,6 @@ function collectBullets(markdown: string): {
   return { bullets: collector.bullets, prose: collector.prose };
 }
 
-/** Top-level bullets of a release section, in document order. Nested bullets are detail and are skipped; prose is
- * used when a release has no bullets. */
 export function releaseNotesPreview(
   markdown: string | null | undefined,
   limit: number = RELEASE_NOTES_PREVIEW_ITEMS,
@@ -960,21 +969,21 @@ export function releaseNotesPreview(
     return { items: [], remaining: 0 };
   }
 
-  // The updater body arrives with CRLF; sentinels would collide with parking.
+  // Updater bodies arrive with CRLF; sentinels would collide with parking.
   const text = markdown.replace(LINE_ENDINGS, "\n").replace(SENTINELS, "");
   const { bullets, prose } = collectBullets(text);
-  // Shallowest bullet defines top level, so a uniformly indented list previews.
+  // Shallowest bullet defines top level, so a uniformly indented list still previews.
   const baseIndent = bullets.reduce(
     (min, bullet) => Math.min(min, bullet.indent),
     Number.POSITIVE_INFINITY,
   );
-  const topLevel = bullets
-    .filter((bullet) => bullet.indent <= baseIndent + NESTED_INDENT_TOLERANCE)
-    .map((bullet) => bullet.text);
+  const topLevel = bullets.filter(
+    (bullet) => bullet.indent <= baseIndent + NESTED_INDENT_TOLERANCE,
+  );
 
   const source = topLevel.length > 0 ? topLevel : prose;
   return {
-    items: source.slice(0, limit).map(splitLeadSentence),
+    items: source.slice(0, limit).map(previewItem),
     remaining: Math.max(source.length - limit, 0),
   };
 }

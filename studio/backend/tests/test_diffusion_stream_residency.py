@@ -203,7 +203,7 @@ def test_stream_window_is_depth_plus_one_largest_blocks(monkeypatch):
     class DiT(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.proj = torch.nn.Linear(2048, 2048)  # top level: not a streamed block
+            self.proj = torch.nn.Linear(2048, 2048)
             self.blocks = torch.nn.ModuleList([torch.nn.Linear(1024, 1024, bias = False)] * 1)
             self.single = torch.nn.ModuleList([torch.nn.Linear(512, 1024, bias = False)])
 

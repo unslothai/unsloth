@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The Run preview Hardware row truncates, so a long GPU name used to cut off the
- * VRAM figure appended to it ("AMD Radeon AI PRO R9700 · 31.86 …"). VRAM gets its
- * own row; this pins that it is not folded back into the name.
- */
+/** The Hardware row truncates, so VRAM gets its own row rather than trailing the GPU name. */
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

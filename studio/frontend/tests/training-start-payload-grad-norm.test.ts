@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The mapper used to send max_grad_norm: 0.0 on every run. The backend now honors
-// an explicit threshold on MLX instead of discarding it, so that hardcoded 0 would
-// override the request for every UI run. Omitting the key is the fix, and nothing
-// else catches it if undone: the field is optional in the request type, so
-// restoring the literal would typecheck and pass every other suite.
+// Omitting max_grad_norm is the fix: MLX now honors an explicit value, so a hardcoded 0 would
+// override every UI run, and the optional field would still typecheck.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -100,8 +97,7 @@ test("the payload leaves max_grad_norm unset so the backend default governs", ()
     false,
     "max_grad_norm must be absent, not null and not 0",
   );
-  // An explicit null would serialize and pin the backend to "no global clipping"
-  // just as 0.0 did, so check the wire form too.
+  // An explicit null would also pin "no clipping", so check the wire form.
   assert.equal("max_grad_norm" in JSON.parse(JSON.stringify(payload)), false);
 });
 

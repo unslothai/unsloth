@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The API-only toggle rides the shared auto-switch PUT, so it must round-trip
-// without dragging the other switches along: an omitted field keeps its stored
-// value, and a backend that predates the field must read as off, not on.
+// An omitted field keeps its stored value; a backend without the field must read as off.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -11,8 +9,7 @@ import test from "node:test";
 
 import { installLocalStorageFake } from "./helpers/kit.ts";
 
-// The settings API modules reach authFetch through the auth barrel, which
-// re-exports login-page.tsx. See helpers/auth-stub.mjs.
+// Settings API modules reach authFetch via the auth barrel; see helpers/auth-stub.mjs.
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 installLocalStorageFake();
 

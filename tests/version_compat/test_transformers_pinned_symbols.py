@@ -66,7 +66,7 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
 
 
 # PyPI version -> tag where upstream disagrees.
-_TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release"}
+_TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release", "5.21.0": "v5.21"}
 
 # Outage fallback; must start at the declared floor.
 _TAGS_FALLBACK = (

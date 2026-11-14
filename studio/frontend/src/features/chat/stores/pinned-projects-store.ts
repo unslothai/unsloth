@@ -4,9 +4,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-// Client-side pin state for projects, keyed by project id, kept in localStorage. Pinned projects
-// drive the sidebar "Projects" section; new pins are prepended so the most recently pinned sorts
-// first.
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
+
+// Kept in localStorage; new pins are prepended so the newest pin sorts first.
 export interface PinnedProjectsState {
   pinnedIds: string[];
   togglePin: (id: string) => void;
@@ -40,3 +40,5 @@ export const usePinnedProjectsStore = create<PinnedProjectsState>()(
     },
   ),
 );
+
+syncAcrossWindows(usePinnedProjectsStore);

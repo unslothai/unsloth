@@ -29,7 +29,7 @@ export function openRagDocumentExternally(
   const tab = window.open("about:blank", "_blank");
   if (!tab) {
     toast.error(`Your browser blocked the new tab for ${filename}`, {
-      description: "Allow popups for Studio and try again.",
+      description: "Allow popups for Unsloth and try again.",
     });
     return;
   }
@@ -47,7 +47,7 @@ export function offerRagDocumentOutside(
   documentId: string,
   filename: string,
 ): void {
-  toast.message(`${filename} is too large to preview in Studio`, {
+  toast.message(`${filename} is too large to preview in Unsloth`, {
     action: {
       label: "Open",
       onClick: () => openRagDocumentExternally(documentId, filename),

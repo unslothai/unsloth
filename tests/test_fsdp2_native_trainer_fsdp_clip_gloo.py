@@ -116,6 +116,57 @@ def _case_clip(native):
     return res
 
 
+def _case_trainer_clip(native):
+    """Trainer._clip_grad_norm with sharded bfloat16 and replicated float32 grads."""
+    from accelerate import Accelerator
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+    from torch.distributed.tensor import DTensor
+    from transformers import Trainer
+
+    native.install_native_fsdp2_hooks()
+    model = _Net()
+    for name in ("a", "b", "dead"):
+        getattr(model, name).to(torch.bfloat16)
+    mesh = init_device_mesh("cpu", (2,))
+    for name in ("a", "b", "dead"):
+        fully_shard(getattr(model, name), mesh = mesh)
+    fully_shard(model, mesh = mesh, ignored_params = {model.rep})
+    setattr(model, native._NATIVE_FLAG, True)
+    x = torch.randn(64, 7, generator = torch.Generator().manual_seed(1)).to(torch.bfloat16)
+
+    class _T:
+        _has_mixed_mesh_grads = Trainer._has_mixed_mesh_grads
+        _clip_grad_norm = Trainer._clip_grad_norm
+        _mixed_mesh_grad_norm = getattr(Trainer, "_mixed_mesh_grad_norm", None)
+
+    t = _T()
+    t.args = types.SimpleNamespace(max_grad_norm = 1.0)
+    t._mixed_mesh_grads = None
+    t.model = model
+    t.accelerator = Accelerator(cpu = True)
+    t.accelerator._models.append(model)
+    model.zero_grad(set_to_none = True)
+    (model(x).float() * 50.0).backward()
+    grads = [
+        p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad for p in model.parameters()
+    ]
+    dtypes = sorted({str(g.dtype) for g in grads})
+    fp64 = math.sqrt(sum(float(g.double().square().sum()) for g in grads))
+    one_gpu = float(torch.nn.utils.get_total_norm([g.clone() for g in grads], 2.0))
+    want = float(native.native_clip_grad_norm_(list(model.parameters()), math.inf))
+    mixed = float(t._mixed_mesh_grad_norm(model, math.inf)) if t._mixed_mesh_grad_norm else None
+    got = float(t._clip_grad_norm(model))
+    return {
+        "got": got,
+        "want": want,
+        "mixed": mixed,
+        "one_gpu": one_gpu,
+        "fp64": fp64,
+        "dtypes": dtypes,
+    }
+
+
 def _mllama():
     from transformers import MllamaConfig, MllamaForConditionalGeneration
 
@@ -198,6 +249,8 @@ def _worker(rank, world, port, out, case, tmp):
             res = _case_trainer_fsdp(native, tmp)
         elif case == "clip":
             res = _case_clip(native)
+        elif case == "trainer_clip":
+            res = _case_trainer_clip(native)
         elif case == "mllama":
             res = _case_mllama(native, rank)
         out.put((rank, res))
@@ -273,6 +326,21 @@ def test_native_clip_matches_torch_for_every_norm_type(tmp_path):
                 v,
             )
             assert v["grad_diff"] < 1e-6, (rank, norm_type, v)
+
+
+def test_trainer_clip_with_replicated_and_sharded_grads_uses_native_clip(tmp_path):
+    # Trainer._mixed_mesh_grad_norm combined bf16 norms in bf16, off by up to 2e-3.
+    transformers = pytest.importorskip("transformers")
+    pytest.importorskip("accelerate")
+    if not hasattr(transformers.Trainer, "_has_mixed_mesh_grads"):
+        pytest.skip("this transformers has no mixed DTensor / plain gradient norm path")
+    for rank, r in _run("trainer_clip", tmp_path).items():
+        assert r["dtypes"] == ["torch.bfloat16", "torch.float32"], (rank, r)
+        assert r["got"] == r["want"], (rank, r)
+        if r["mixed"] is not None:  # this batch separates the two combines
+            assert not math.isclose(r["mixed"], r["want"], rel_tol = 1e-4), (rank, r)
+        # One extra 16-bit rounding over single-GPU clip_grad_norm_.
+        assert math.isclose(r["got"], r["one_gpu"], rel_tol = 2**-6), (rank, r)
 
 
 def test_mllama_mixed_image_batch_raises_instead_of_hanging(tmp_path):

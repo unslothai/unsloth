@@ -62,7 +62,7 @@ def nvfp4_disabled_message(control: str = "transformer_quant") -> str:
     """The refusal a request naming NVFP4 gets while the switch is off."""
     return (
         f"{control}='nvfp4' could not be used: NVFP4 is disabled in this build. Pick another "
-        f"precision, or set {NVFP4_DIFFUSION_ENV}=1 on the Studio backend to enable it."
+        f"precision, or set {NVFP4_DIFFUSION_ENV}=1 on the Unsloth backend to enable it."
     )
 
 
@@ -82,7 +82,7 @@ def nvfp4_checkpoint_disabled_message() -> str:
     """The refusal a load or plan of an NVFP4 checkpoint gets while the switch is off."""
     return (
         "model_path could not be used: it is an NVFP4 checkpoint and NVFP4 is disabled in this "
-        f"build. Pick another model, or set {NVFP4_DIFFUSION_ENV}=1 on the Studio backend to "
+        f"build. Pick another model, or set {NVFP4_DIFFUSION_ENV}=1 on the Unsloth backend to "
         "enable it."
     )
 

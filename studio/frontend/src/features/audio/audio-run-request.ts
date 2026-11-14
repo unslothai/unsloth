@@ -3,7 +3,8 @@
 
 // No app imports: the node test runner loads this directly. Clients send ids only, never paths or audio.
 
-/** Mirrors AUDIO_INPUT_MAX_BYTES in studio/backend/utils/upload_limits.py. */
+/** Mirrors AUDIO_INPUT_MAX_BYTES in studio/backend/utils/upload_limits.py: the floor of the
+ * server's audio cap, used until /api/settings/upload-limit answers. */
 export const AUDIO_INPUT_MAX_BYTES = 200 * 1024 * 1024;
 
 export const REFERENCE_MAX_SECONDS = 30;
@@ -28,7 +29,6 @@ export interface AudioSourceSelection {
   language?: string | null;
 }
 
-/** A gallery clip as a source: its text doubles as the transcript. */
 export function clipReference(clip: {
   id: string;
   prompt: string;
@@ -36,8 +36,7 @@ export function clipReference(clip: {
   workflow?: string | null;
   reference_name?: string | null;
 }): AudioSourceSelection {
-  // Only speech is a transcript: not a Music description, a Convert label, nor the file name an
-  // untranscribed edit is titled by.
+  // Only speech is a transcript, not a Music description, Convert label, or file name.
   const spoken =
     clip.workflow !== "music" &&
     clip.workflow !== "convert" &&
@@ -150,7 +149,6 @@ export type AudioRunRequest = AudioTextRunRequest | AudioConvertRunRequest;
 export interface AudioTextRunRequest {
   workflow: "clone" | "speak" | "edit" | "music" | "separate";
   music?: AudioMusicRunFields;
-  /** Required for clone, speak and music; separate takes none. */
   text?: string;
   language?: string | null;
   instructions?: string | null;

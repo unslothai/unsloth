@@ -30,6 +30,7 @@ def _env(monkeypatch):
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
     monkeypatch.setattr(mg, "_capability", lambda o: None)
     monkeypatch.setattr(lsp, "_is_rocm", lambda: False)
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: False)
     yield
 
 

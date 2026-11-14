@@ -4,8 +4,7 @@
 import { isTauri } from "@/lib/api-base";
 import { useSyncExternalStore } from "react";
 
-// Whether the desktop app shows the app rather than its install, startup or recovery screen.
-// Always true on the web. Read by the root, which sits above the wrapper that knows.
+// Always true on the web; read by the root, which sits above the wrapper that knows.
 let ready = !isTauri;
 const listeners = new Set<() => void>();
 

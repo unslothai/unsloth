@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Let the diffusers LTX-2 pipelines import on the transformers Studio pins.
-
-diffusers 0.40 imports ``Gemma4UnifiedForConditionalGeneration`` (transformers >= 5.10) at module level in every
-``diffusers.pipelines.ltx2.pipeline_ltx2*`` module, but only uses it in the ``text_encoder`` annotation (huggingface/
-diffusers#14773). When transformers lacks it, bind an inert placeholder only while those modules import, then remove
-it. Retire once diffusers guards the import or the transformers pin reaches 5.10.
-"""
+"""Binds an inert Gemma4UnifiedForConditionalGeneration placeholder only while LTX-2 diffusers
+modules import, then removes it; for transformers below 5.10."""
 
 from __future__ import annotations
 
@@ -108,8 +103,7 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
             _done = True
             return True
         try:
-            # First processing_utils import replaces sys.modules["transformers"] (direct_transformers_import), dropping
-            # names bound on the old object: settle the swap first.
+            # First processing_utils import replaces the transformers entry in sys.modules and drops names bound on the old object: settle the swap first.
             importlib.import_module("transformers.processing_utils")
         except Exception:  # noqa: BLE001 -- the pipeline import below reports whatever this was
             pass

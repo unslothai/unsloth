@@ -610,9 +610,8 @@ class TestPinnedIndexClearsUvEnvParity:
             assert var in text, f"install_python_stack.py must clear {var} for pinned installs"
 
     def test_all_installers_clear_uv_torch_backend(self):
-        """uv's torch backend redirects torch resolution to its own per-backend
-        index even against an explicit pin, so every installer's pinned-install
-        scrub must clear UV_TORCH_BACKEND too."""
+        """uv's torch backend redirects torch to its own per-backend index even against an explicit
+        pin, so every pinned-install scrub must clear UV_TORCH_BACKEND."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
         assert "-u UV_TORCH_BACKEND" in sh, "install.sh pinned scrub must clear UV_TORCH_BACKEND"
         for path in (INSTALL_PS1, SETUP_PS1):
@@ -1109,6 +1108,7 @@ class TestInstallUvCacheRootParity:
             "builds",
             "built-wheels",
             "environments",
+            "files",
             "flat-index",
             "git",
             "interpreter",
@@ -1118,7 +1118,7 @@ class TestInstallUvCacheRootParity:
             "simple",
             "wheels",
         }
-        assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
+        assert 'UV_PINNED_VERSION="0.13.5"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
         case_body = re.search(
             r'case "\$\{1%-v\*\}" in\n(.*?)\n\s*\*\) return 1', bucket_sh, re.S
         ).group(1)

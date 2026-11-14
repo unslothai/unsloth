@@ -1,36 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""TEMPLATE_TO_RESPONSES_MAPPER markers must match what the templates render.
-
-The manual instruction/response markers are the fallback for
-train_on_completions when auto-detection is unavailable, so a marker that
-never matches the rendered chat template masks every assistant token and the
-run dies on the all-labels-masked safety net. Six template families shipped
-such markers:
-
-  mistral           - "[INST] " / " [/INST]": the surrounding spaces fold into
-                      the neighbouring tokens ("[INST]" is a single special
-                      token in Mistral v0.3), so the padded strings never match.
-  llama             - same space folding, plus llama-2 tokenizes [INST] after
-                      <s> as bare "[" on transformers 5.x while the standalone
-                      encoding gives "▁[", so the marker must anchor on <s>.
-  starling          - trailing space after "GPT4 Correct Assistant:" folds
-                      into the next content token ("▁Hello").
-  glm               - "[gMASK]<sop>" renders once at text start, never before
-                      later user turns; "<think>" is generation scaffolding
-                      that non-final turns render as a lone "</think>".
-  qwen3-thinking    - "<think>" is stripped from non-final assistant turns
-                      (Qwen3-Thinking-2507) or never rendered (QwQ).
-  zephyr            - role tags are plain text, and SentencePiece tokenizes
-                      "<|assistant|>" differently at text start than after
-                      "</s>\\n" mid-conversation; the markers need the leading
-                      newline anchor to tokenize like a real turn boundary.
-
-Literal assertions run everywhere; the token-level masking checks need the
-representative tokenizers plus unsloth_zoo and skip when either is
-unavailable (offline CI).
-"""
+"""Fallback markers must match the rendered chat template, or every assistant token is masked."""
 
 from __future__ import annotations
 
@@ -44,8 +15,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# model_mappings is dependency-free: load it directly so these tests run
-# without the studio venv / package import side effects.
+# model_mappings is dependency-free; load it directly without the studio venv.
 _MM_PATH = Path(_BACKEND_DIR) / "utils" / "datasets" / "model_mappings.py"
 _mm_spec = importlib.util.spec_from_file_location("_marker_test_mm", _MM_PATH)
 model_mappings = importlib.util.module_from_spec(_mm_spec)
@@ -54,8 +24,6 @@ _mm_spec.loader.exec_module(model_mappings)
 T2R = model_mappings.TEMPLATE_TO_RESPONSES_MAPPER
 
 
-# ── Fixed entries: markers derived from what each representative tokenizer
-#    actually renders (see PR for the token-level derivation). ──
 EXPECTED_FIXED = {
     "mistral": {"instruction": "[INST]", "response": "[/INST]"},
     "llama": {"instruction": "<s>[INST]", "response": "[/INST]"},
@@ -65,7 +33,6 @@ EXPECTED_FIXED = {
     "zephyr": {"instruction": "\n<|user|>\n", "response": "\n<|assistant|>\n"},
 }
 
-# Spot-pin some known-good entries so a refactor cannot silently change them.
 EXPECTED_UNCHANGED = {
     "qwen3": {"instruction": "<|im_start|>user\n", "response": "<|im_start|>assistant\n"},
     "llama-3.1": {
@@ -100,9 +67,6 @@ def test_no_marker_is_empty_or_whitespace():
         assert parts["response"].strip(), template
 
 
-# ── Token-level checks: markers must select exactly the assistant turns on a
-#    rendered two-turn fixture, and the final EOS label must never be -100. ──
-
 REPRESENTATIVES = {
     "mistral": ["unsloth/mistral-7b-instruct-v0.3"],
     "llama": ["unsloth/llama-2-7b-chat"],
@@ -130,8 +94,7 @@ def _load_tokenizer(repo):
     except OSError as e:
         pytest.skip(f"tokenizer {repo} unavailable (offline?): {e}")
     except Exception:
-        # Tokenizer class newer than this transformers (e.g. GLM-4.7's
-        # TokenizersBackend): build directly from tokenizer.json.
+        # Tokenizer class newer than this transformers: build from tokenizer.json.
         try:
             import json as _json
             from huggingface_hub import hf_hub_download
@@ -197,15 +160,12 @@ def test_fixed_markers_token_level(template, repo):
     trained = tok.decode([ids[i] for i in range(n) if labels[i] != -100])
     masked = tok.decode([ids[i] for i in range(n) if labels[i] == -100])
 
-    # User and system content fully masked
     assert "question one" not in trained and "question one" in masked
     assert "question two" not in trained and "question two" in masked
     assert "terse assistant" not in trained
-    # EVERY assistant turn trained, not just the last
     assert "reply number one" in trained
     assert "reply number two" in trained
-    # The final EOS (last non-whitespace token) must never be -100, or the
-    # fine-tuned model never learns to stop generating.
+    # The final EOS must never be -100, or the model never learns to stop.
     i = n - 1
     while i > 0 and tok.decode([ids[i]]).strip() == "":
         i -= 1

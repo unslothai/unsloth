@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""macOS Finder metadata companions, against the predicates and the shared walks.
-
-A ``._<name>`` companion carries the described file's extension, so it answers every name-shaped
-question the way the real file does, and ``Path.glob`` matches it. Consumers are covered through
-what they share -- the predicates, the cache walk, the dataset walk -- rather than one case each.
-Every fixture also holds a real file a user named ``._something``, which must survive: nothing
-may be refused for its name alone.
-"""
+"""Real files named ._something must survive, since nothing may be refused for its name alone."""
 
 from __future__ import annotations
 
@@ -140,7 +133,6 @@ def test_a_drafter_budget_prices_the_largest_file_of_a_shared_basename(tmp_path,
     from routes.inference import _cached_repo_gguf_bytes
     from utils.models import drafters
 
-    # Largest in the middle, so keeping the first or the last entry for a name both miss it.
     repo = _cache_repo(
         tmp_path,
         (
@@ -212,23 +204,11 @@ def test_consolidated_weights_are_not_hidden_by_their_companion():
     assert repo_ships_transformers_weights(["model.safetensors"]) is True
 
 
-# ---------------------------------------------------------------------------
-# The GGUF selection sites in core/inference/llama_cpp.py.
-#
-# Every one of these was filtered by #8919 and every one was silently reverted by
-# #9074's whole-file merge resolution. Only one of the five had a test, so CI
-# reported a lost error message and said nothing at all about the four selection
-# sites, which is the half that actually loads the wrong file. These cover the
-# selection behaviour directly, so a revert cannot come back quiet again.
-# ---------------------------------------------------------------------------
-
-
 def test_a_sidecar_never_wins_the_mmproj_preference():
     """ "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter."""
     from core.inference.llama_cpp import _pick_mmproj
 
     assert _pick_mmproj(["._mmproj-F16.gguf", "mmproj-F16.gguf"]) == "mmproj-F16.gguf"
-    # A file a user genuinely named "._..." with no sibling to shadow still resolves.
     assert _pick_mmproj(["._mmproj-F16.gguf"]) == "._mmproj-F16.gguf"
 
 
@@ -241,10 +221,7 @@ def test_a_sidecar_never_wins_the_dspark_preference():
 
 
 def test_pick_dspark_stays_reachable_from_module_scope():
-    """It is handed a live repo listing as well as a snapshot, the same as _pick_mmproj.
-
-    Nesting it back inside the method is how #9074 reverted it, and nothing noticed.
-    """
+    """_pick_dspark must stay at module scope; nesting it inside the method once went unnoticed."""
     import core.inference.llama_cpp as llama_cpp
     assert callable(getattr(llama_cpp, "_pick_dspark", None))
 
@@ -260,7 +237,6 @@ def test_a_snapshot_walk_skips_the_companion_by_its_bytes(tmp_path):
 
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\x00" * 32)
     (tmp_path / "._model-Q4_K_M.gguf").write_bytes(_AD)
-    # A real GGUF a user named "._..." is decided on its bytes, so it survives.
     (tmp_path / "._mine.gguf").write_bytes(b"GGUF" + b"\x00" * 32)
 
     found = sorted(_gguf_snapshot_files(tmp_path))

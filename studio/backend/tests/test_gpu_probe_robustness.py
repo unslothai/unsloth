@@ -128,7 +128,6 @@ def test_an_xpu_class_intel_record_establishes_a_mismatch(monkeypatch):
     monkeypatch.setattr(hw, "_vendors_masked_off", lambda: set())
     arc = [{"vendor": "intel", "name": None, "index": 0, "xpu_class": True}]
     assert hw._devices_that_can_establish_a_mismatch(arc) == arc
-    # Controls: an iGPU or DG1 host's correct CPU install must not be flagged.
     for xpu_class in (False, None):
         igpu = [{"vendor": "intel", "name": None, "index": 0, "xpu_class": xpu_class}]
         assert hw._devices_that_can_establish_a_mismatch(igpu) == []
@@ -138,7 +137,7 @@ def test_an_xpu_class_intel_record_establishes_a_mismatch(monkeypatch):
     ("system", "vendors", "pinned"),
     [
         ("Linux", {"intel"}, True),
-        ("Windows", {"intel"}, False),  # install.ps1 autodetects Arc, so Repair works there
+        ("Windows", {"intel"}, False),  # install.ps1 autodetects Arc
         ("Linux", {"nvidia"}, False),
         ("Linux", {"intel", "nvidia"}, False),
     ],

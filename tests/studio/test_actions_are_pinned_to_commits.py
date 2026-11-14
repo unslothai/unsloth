@@ -3,6 +3,7 @@
 
 """Third-party actions must be pinned by commit SHA: a moved tag would run new code with our secrets."""
 
+import fnmatch
 import re
 from pathlib import Path
 
@@ -275,3 +276,67 @@ def test_a_sub_action_is_pinned_with_its_repository():
     # The rule must be parametrized over this grouping.
     groups = {_owner_repo(r) for _, _, _, r, _ in _references()}
     assert "actions/cache/save" not in groups
+
+
+def _version_group(name: str, groups: dict):
+    """The Dependabot version-update group `name` lands in: the first whose patterns match."""
+    for group_name, group in groups.items():
+        if group.get("applies-to", "version-updates") != "version-updates":
+            continue
+        if any(fnmatch.fnmatchcase(name, p) for p in group.get("exclude-patterns", [])):
+            continue
+        if any(fnmatch.fnmatchcase(name, p) for p in group.get("patterns", [])):
+            return group_name, group
+    return None, {}
+
+
+def _groups_that_split_an_action(names, groups: dict) -> list[str]:
+    """Actions whose sub-paths Dependabot would bump in separate PRs.
+
+    Dependabot names `owner/repo/init` and `owner/repo/analyze` as two dependencies, so a group
+    with `group-by: dependency-name`, or two groups, opens one PR per sub-path, and each PR fails
+    the one-SHA test above on its own."""
+    by_repo: dict[str, set[str]] = {}
+    for name in names:
+        by_repo.setdefault(_owner_repo(name), set()).add(name)
+    bad = []
+    for repo, subs in sorted(by_repo.items()):
+        if len(subs) < 2:
+            continue
+        placed = {n: _version_group(n, groups) for n in sorted(subs)}
+        landed = {group_name for group_name, _ in placed.values()}
+        per_name = any(g.get("group-by") == "dependency-name" for _, g in placed.values())
+        if len(landed) != 1 or None in landed or per_name:
+            bad.append(f"{repo}: {', '.join(f'{n} -> {g[0]}' for n, g in placed.items())}")
+    return bad
+
+
+def _actions_groups() -> dict:
+    config = yaml.safe_load((GITHUB / "dependabot.yml").read_text(encoding = "utf-8"))
+    for update in config["updates"]:
+        if update.get("package-ecosystem") == "github-actions":
+            return update.get("groups") or {}
+    raise AssertionError("no github-actions entry in .github/dependabot.yml")
+
+
+def test_the_split_check_reads_groups_in_order():
+    names = ["github/codeql-action/init", "github/codeql-action/analyze", "actions/checkout"]
+    per_name = {"actions": {"patterns": ["*"], "group-by": "dependency-name"}}
+    assert _groups_that_split_an_action(names, per_name) == [
+        "github/codeql-action: github/codeql-action/analyze -> actions, "
+        "github/codeql-action/init -> actions"
+    ]
+    grouped = {"codeql": {"patterns": ["github/codeql-action*"]}, **per_name}
+    assert _groups_that_split_an_action(names, grouped) == []
+    security_only = {
+        "codeql": {"patterns": ["github/codeql-action*"], "applies-to": "security-updates"},
+        **per_name,
+    }
+    assert _groups_that_split_an_action(names, security_only)
+
+
+def test_dependabot_bumps_every_sub_path_action_in_one_pr():
+    """Every sub-path of one action repository lands in one version-update group."""
+    names = {repo for _, _, _, repo, _ in _references()}
+    assert any(len(n.split("/")) > 2 for n in names), "no sub-path action found; the scan broke"
+    assert _groups_that_split_an_action(names, _actions_groups()) == []

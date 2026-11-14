@@ -13,7 +13,7 @@ USER_MESSAGE_ID = "runs-user-message"
 RUN_ID = "runs-research-run"
 PLAN = {"title": MARKER, "steps": [{"title": MARKER, "query": MARKER}]}
 UPDATE_PLAN_BODY = {"plan": PLAN, "expectedRevision": 0}
-# Filled by the seeder from the product's own canonical hash, so approve matches the stored plan.
+# Filled by the seeder from the product's canonical hash.
 APPROVE_BODY = {"planRevision": 1, "planHash": ""}
 
 PREVIEW_RUN = "runs-preview-run"

@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end MCP session behaviour against a real server over Streamable HTTP.
-
-Everything else in the MCP suite runs against a fake client that takes a url and
-discards the headers, so nothing there observes a real HTTP request. These start
-a real MCP server on 127.0.0.1 and ask it what it saw.
-
-Oracle: fastmcp negotiates sessionless Streamable HTTP here, so there is no
-Mcp-Session-Id to follow and Context.session_id is a fresh UUID per request
-(checked with a held-open client). The server therefore keys its state on the
-client's TCP connection, which is what a stateful server's per-connection state
-behaves like: a held-open client sees its own notes, separate clients do not.
-"""
+"""fastmcp here is sessionless, so the server keys its state on each held-open TCP connection."""
 
 from __future__ import annotations
 
@@ -37,7 +26,7 @@ pytest.importorskip("uvicorn")
 from core.inference import mcp_client
 from core.inference.mcp_client import call_tool_sync, close_mcp_sessions
 
-# Matches the scope tools.py builds: "s={session_id}:t={thread_id}".
+# Matches the scope tools.py builds: s={session_id}:t={thread_id}.
 SCOPE = "s=sess1:t=threadA"
 SCOPE_B = "s=sess1:t=threadB"
 
@@ -208,7 +197,6 @@ def _start(tmp_path: Path, host: str):
         stderr = subprocess.STDOUT,
         text = True,
     )
-    # The server binds its own port and reports it before serving; an early exit ends the pipe.
     first = proc.stdout.readline()
     if not first.startswith("PORT "):
         proc.wait(15)
@@ -278,9 +266,7 @@ def _conn(text: str) -> str:
 
 
 def test_the_server_comes_up_when_a_port_the_harness_could_pick_is_taken(tmp_path, monkeypatch):
-    # Under xdist another worker can bind a port between this process choosing it and the server
-    # binding it. Make every port this process is handed by the OS one that is already listening:
-    # the server must still start, because it binds and reports its own port.
+    # Under xdist another worker can steal a chosen port; the server must bind and report its own.
     held = socket.socket(socket.AF_INET)
     held.bind(("127.0.0.1", 0))
     held.listen()
@@ -309,8 +295,7 @@ def test_the_server_comes_up_when_a_port_the_harness_could_pick_is_taken(tmp_pat
 
 
 def test_a_note_survives_to_the_next_tool_call_in_one_chat(server):
-    """The behaviour the shared session exists for. Reconnecting per call loses
-    whatever the server kept."""
+    """A shared session keeps server state; reconnecting per call loses what the server kept."""
     saved = _call(server, "save_note", {"text": "buy milk"}, scope = SCOPE)
     listed = _call(server, "list_notes", scope = SCOPE)
     assert "buy milk" in listed, listed
@@ -343,12 +328,7 @@ def test_an_oauth_server_is_never_cached(server):
 
 
 def test_state_survives_a_long_run_of_calls_in_one_chat(server):
-    """The property the shared session actually buys, held over many calls.
-
-    Deliberately not asserted as a socket count: how many TCP connections a
-    fastmcp client keeps open is a pooling detail that differs by version (3.0.2
-    opens far more than 4.0.0 for the same work), and the MCP spec makes every
-    JSON-RPC message its own POST regardless. Server-side state is the invariant."""
+    """Asserts server-side state, not socket counts, since pooling differs by fastmcp version."""
     _call(server, "save_note", {"text": "note-0"}, scope = SCOPE)
     for i in range(1, 10):
         _call(server, "save_note", {"text": f"note-{i}"}, scope = SCOPE)
@@ -358,9 +338,8 @@ def test_state_survives_a_long_run_of_calls_in_one_chat(server):
 
 
 def test_parallel_calls_in_one_chat_are_not_serialized(server):
-    """Regression: sharing a session must not cost the parallelism the one-shot
-    path had. MCP Streamable HTTP posts each message separately, so there is
-    nothing to interleave."""
+    """Regression: sharing a session must not serialize calls; MCP Streamable HTTP posts each
+    message separately, so there is nothing to interleave."""
     _call(server, "reset_stats", scope = "s=admin:t=admin")
     results: list[str] = []
     lock = threading.Lock()
@@ -384,15 +363,12 @@ def test_parallel_calls_in_one_chat_are_not_serialized(server):
 
 
 def test_an_expired_session_is_replaced_before_the_users_call_fails(monkeypatch, server):
-    """A server may drop an HTTP session at any time and no HTTP transport
-    exposes a liveness probe, so without the idle recheck the user's next tool
-    call is the thing that discovers it."""
+    """No HTTP transport exposes a liveness probe and a server may drop a session at any time, so
+    the idle recheck, not the user's call, must find it."""
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     _call(server, "list_notes", scope = SCOPE)
     _call(server, "expire_me", scope = SCOPE)
-    # The next request on that session gets 404, which is what the spec requires
-    # of a server that terminated it. The recheck must absorb that and reconnect
-    # rather than letting the user's tool call be the thing that discovers it.
+    # A terminated session answers 404 per spec; the recheck must reconnect, not fail the call.
     second = _call(server, "list_notes", scope = SCOPE)
     assert not second.startswith("Error:"), second
 
@@ -418,8 +394,7 @@ def test_ipv6_loopback_works(tmp_path):
 
 
 def test_a_json_rpc_error_does_not_cost_the_chat_its_state(server):
-    """The server replied, so the connection is fine and the notes it is holding
-    for this chat must survive."""
+    """A JSON-RPC error still proves the connection is live, so chat notes must survive."""
     _call(server, "save_note", {"text": "before-the-error"}, scope = SCOPE)
     failed = _call(server, "protocol_error", scope = SCOPE)
     assert failed.startswith("Error:"), failed

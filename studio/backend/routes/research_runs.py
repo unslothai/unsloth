@@ -26,6 +26,7 @@ from core.inference.providers import answers_decisions_only, provider_runs_local
 from models.providers import MAX_JSON_SAFE_INTEGER
 from state import run_subscribers, unattended_runs
 from state.tool_policy import get_tool_policy
+from hub.services.models import account_access
 from storage import mcp_servers_db, providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
@@ -219,11 +220,7 @@ def _watch_if_unattended_stop(
     *,
     replace: bool = False,
 ) -> None:
-    """Cancel ``run`` the way the cancel route does once no tab is following it, if its owner asked.
-
-    ``replace`` for a new attempt under the run's id: a rebind or retry starts its own grace, and a
-    rebound attempt that keeps running drops the watch the previous attempt left behind.
-    """
+    """Cancel run like the cancel route once unattended; replace drops the watch a previous attempt left."""
     run_id = run["id"]
     if not (run.get("config") or {}).get("stopWhenUnattended"):
         if replace:
@@ -271,11 +268,7 @@ def _watch_if_unattended_stop(
 
 
 def rearm_unattended_research_runs(app: Any) -> None:
-    """Watch every unsettled run that asked to stop with its tab, after a restart emptied the watches.
-
-    The supervisor resumes these runs on its own, so waiting for a follower to reattach would let a
-    run whose tab never comes back finish despite the setting. Its grace starts now.
-    """
+    """Re-watch unsettled stop-when-unattended runs; waiting for a tab to reattach would let them finish."""
     from core.training.account_jobs import job_accounts
     for account in job_accounts():
         for run in run_as(account, db.list_all_active):
@@ -289,8 +282,7 @@ def _is_sensitive_key(key: object) -> bool:
 
 
 def _contains_sensitive_key(value: object) -> bool:
-    """Recursively test whether any (possibly nested) mapping key looks sensitive,
-    so credentials cannot be smuggled into a durable run via a nested dict."""
+    """Recursively checks nested keys for sensitive names, so credentials cannot be stored in a run."""
     if isinstance(value, dict):
         return any(
             _is_sensitive_key(key) or _contains_sensitive_key(item) for key, item in value.items()
@@ -342,8 +334,7 @@ def _sanitize_config(
         value is not None for value in (provider_type, provider_id, external_model)
     )
     if external_requested:
-        # A saved connection is still mandatory: the run is durable, so an inline key would have to be persisted, and
-        # _is_sensitive_key exists to stop exactly that. Only the provider-type allowlist is widened.
+        # Saved connection required: an inline key would be persisted with the durable run.
         if (
             not provider_runs_local_tools(provider_type)
             or not isinstance(provider_id, str)
@@ -358,6 +349,7 @@ def _sanitize_config(
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
+        account_access.require_connection_model_allowed(provider, external_model)
         # The saved row is the source of truth for routing, so validate against it rather than the type the client
         # sent: a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
         # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path serves.
@@ -373,9 +365,7 @@ def _sanitize_config(
             )
         request["providerType"] = saved_provider_type
 
-    # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is stringified, so
-    # {"auth": "sk-..."} would slip past the sensitive-key scan (inner key unlisted) into the durable config as the
-    # model id.
+    # "model" is stringified, so a nested dict would evade the sensitive-key scan.
     if any(isinstance(value, (dict, list, tuple)) for value in request.values()):
         raise HTTPException(status_code = 400, detail = "Invalid inferenceRequest value")
     model = str(request.get("model") or thread.get("modelId") or "").strip()
@@ -396,8 +386,7 @@ def _sanitize_config(
             if not 1 <= request["maxTokens"] <= 8192:
                 raise ValueError
         if "maxOutputTokens" in request:
-            # Strict like the saved-connection schema: bool is an int subclass, and int()
-            # would truncate a float or raise OverflowError, turning a 400 into a 500.
+            # Strict: bool is an int subclass and int() can truncate or raise OverflowError.
             budget = request["maxOutputTokens"]
             if isinstance(budget, bool) or not isinstance(budget, int):
                 raise ValueError
@@ -457,7 +446,7 @@ def _sanitize_config(
     budgets = {
         "maxSteps": 12,
         "maxSources": 40,
-        "modelTimeoutSeconds": 900,
+        "modelTimeoutSeconds": 0,
         "toolTimeoutSeconds": 120,
         "firstOutputTimeoutSeconds": 120,
     }
@@ -526,9 +515,7 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    # A handed-off question counts as the text. The worker researches config.question, so a multimodal turn that
-    # reads an image and calls deep_research passes the question it wrote, and refusing on the message's own empty
-    # text ends a complete handoff in a toast.
+    # A handed-off question counts as the text (multimodal turns may have empty text).
     if not message_text_with_pastes(user_message).strip() and not (payload.question or "").strip():
         raise HTTPException(
             status_code = 400,
@@ -537,8 +524,7 @@ def create_research_run(
     config = _sanitize_config(payload, thread, request)
     try:
         if db.has_thread_claim(payload.threadId):
-            # The thread's one run was stopped, so it is re-pointed at this question rather
-            # than refusing every later one in the chat.
+            # A stopped run is re-pointed at this question instead of refusing every later message in the chat.
             run = db.rebind_cancelled(
                 thread_id = payload.threadId,
                 user_message_id = payload.userMessageId,
@@ -562,8 +548,7 @@ def create_research_run(
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except sqlite3.IntegrityError as exc:
-        # The thread can be deleted between the check above and this insert, and the foreign key
-        # then fails. Report it gone rather than as a server fault.
+        # Thread may be deleted after the check, so the FK insert fails; report 404, not a server fault.
         raise HTTPException(status_code = 404, detail = "Thread not found") from exc
     if run is None:
         raise HTTPException(status_code = 404, detail = "Thread not found")
@@ -727,8 +712,7 @@ async def research_events(
                 cursor,
                 15,
             )
-            # Not the wait executor: this read is short, and queueing it behind parked waits
-            # would delay every follower once the pool is full.
+            # Not the wait executor: a short read must not queue behind parked waits.
             snapshot = await asyncio.to_thread(db.get_run, run_id)
             if snapshot is None:
                 return

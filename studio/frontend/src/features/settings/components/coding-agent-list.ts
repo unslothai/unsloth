@@ -72,7 +72,8 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
   {
     id: "pi",
     name: "Pi",
-    docsUrl: "https://pi.dev",
+    // Pi and Vibe have no page of their own: they share the unsloth start one.
+    docsUrl: UNSLOTH_START_DOCS_URL,
     // The monochrome mark from https://pi.dev/favicon.svg, in its light and dark fills.
     icon: "pi-light.svg",
     darkIcon: "pi-dark.svg",
@@ -81,7 +82,7 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
   {
     id: "vibe",
     name: "Mistral Vibe",
-    docsUrl: "https://github.com/mistralai/mistral-vibe",
+    docsUrl: UNSLOTH_START_DOCS_URL,
     logo: "mistral",
     compact: true,
   },

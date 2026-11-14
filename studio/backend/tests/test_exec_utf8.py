@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""_python_exec must round-trip non-ASCII output end to end.
-
-Model-written code routinely contains non-ASCII (arrows, CJK, emoji). The temp
-script and the child's stdout pipe both have to be UTF-8 or it crashes/garbles
-on Windows, whose default codec is cp1252. Mirrors the report in
-unslothai/unsloth#6489. The child is ``python`` with PYTHONIOENCODING=utf-8, so
-it emits UTF-8 on every OS; this proves the round-trip on a UTF-8 host and
-guards against a regression to the OS default codec.
-"""
+"""Non-ASCII must round-trip, since Windows defaults to cp1252 and would crash or garble it."""
 
 import sys
 from pathlib import Path
@@ -22,8 +14,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from core.inference.tools import _python_exec
 
-# Arrow, em-dash, accent, CJK, check mark, astral-plane emoji -- none encodable
-# in cp1252, so the OS default codec would raise on write or read.
+# none of these are encodable in cp1252
 _UNICODE = "café — 数字 → ✓ 😀"
 
 

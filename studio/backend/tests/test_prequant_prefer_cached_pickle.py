@@ -1,21 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A user who already holds a hosted ``.pt`` checkpoint must not download its ``.safetensors`` twin.
-
-The candidate chain prefers safetensors, so once a repo publishes the twin every path that walks
-the chain in order (the transformer resolver, the text-encoder resolver, the download planners and
-the video prefetch) would fetch it again next to the multi-GB pickle already in the cache. These
-tests drive a fake Hub cache through ``try_to_load_from_cache`` / ``hf_hub_download``."""
+"""Safetensors is preferred, but a cached .pt whose sha256 matches the Hub's record is reused rather than
+re-downloading its safetensors twin; an unverified one (mismatch, no record, offline) keeps safetensors first."""
 
 from __future__ import annotations
 
+import hashlib
 import types
 
 import huggingface_hub
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
+import core.inference.cached_weight_sha as cws
 import core.inference.diffusion_prequant as pq
 import core.inference.diffusion_te_prequant as tpq
 
@@ -39,6 +37,9 @@ class FakeHub:
         # names a 404 was recorded for, as huggingface_hub's .no_exist markers
         self.absent: set = set()
         self.downloads: list = []
+        # sha256 the Hub records per name; None = no LFS record. Default: the bytes cache() writes.
+        self.hub_sha: dict = {}
+        self.sha_calls: list = []
         for name in cached:
             self.cache(name)
 
@@ -95,6 +96,19 @@ def hub(tmp_path, monkeypatch):
     fake = FakeHub(tmp_path)
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake.try_to_load_from_cache)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake.hf_hub_download)
+
+    def hub_sha256s(repo_id, filenames, **_):
+        fake.sha_calls.append(tuple(filenames))
+        out = {}
+        for name in filenames:
+            sha = fake.hub_sha.get(name, hashlib.sha256(b"x").hexdigest())
+            if sha:
+                out[name] = sha
+        return out
+
+    monkeypatch.setattr(cws, "hub_sha256s", hub_sha256s)
+    monkeypatch.setattr(cws, "_store_path", lambda: tmp_path / "weight_sha256.json")
+    monkeypatch.setattr(cws, "_persisted", None)
     monkeypatch.setattr(
         pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
@@ -123,14 +137,10 @@ def _resolve(source, **kw):
     return pq._resolve_checkpoint_path(source, None, None, scheme = "int8", **kw)
 
 
-# ---- transformer resolver ----
-
-
 def test_cached_pickle_is_used_and_revalidated_online(hub, caplog):
     hub.cache("Model-INT8.pt")
     caplog.set_level("INFO")
     assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.pt")]
-    # Revalidated through hf_hub_download for the PICKLE name; the safetensors twin is never asked.
     assert hub.downloads == [("Model-INT8.pt", False)]
     assert "Model-INT8.safetensors" not in hub.fetched
     assert "using the cached Model-INT8.pt" in caplog.text
@@ -208,9 +218,6 @@ def test_cache_probe_agrees_with_the_resolver(hub):
     assert pq.cached_checkpoint_path(src) == _resolve(src)
 
 
-# ---- text encoder resolver ----
-
-
 def test_te_cached_pickle_is_used(hub):
     hub.cache("Model-text_encoder-FP8.pt")
     got = tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
@@ -248,9 +255,6 @@ def test_te_twin_removed_from_hub_falls_back(hub):
     got = tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
     assert got == hub.cached[(REPO, "Model-text_encoder-FP8.safetensors")]
     assert hub.fetched == ["Model-text_encoder-FP8.pt", "Model-text_encoder-FP8.safetensors"]
-
-
-# ---- planners: price / stage the same name the resolver uses ----
 
 
 class _Api:
@@ -360,9 +364,6 @@ def test_video_te_prefetch_fetches_the_cached_pickle(hub, monkeypatch):
     assert got == ("text_encoder",) and fetched == ["Model-text_encoder-FP8.pt"]
 
 
-# ---- policy: new users only ever get the safetensors container ----
-
-
 def test_new_user_never_requests_the_pickle_when_the_twin_is_hosted(hub, monkeypatch):
     """Both containers on the Hub, nothing cached: only the .safetensors is fetched, on every path."""
     import threading
@@ -425,8 +426,6 @@ def test_install_without_safetensors_support_downloads_the_pickle_and_says_why(
     assert "cannot read the .safetensors container" in caplog.text
 
 
-# ---- cache probes: "nothing to download" must mean the file the load will open ----
-
 CONVROT = ("Model-INT8-ConvRot.safetensors",)
 PLAIN = ("Model-INT8.safetensors", "Model-INT8.pt", "transformer_int8.pt")
 
@@ -443,14 +442,11 @@ def _convrot_dit(declared = True):
 
 
 def test_cached_int8_is_not_free_when_a_declared_convrot_is_ahead(hub):
-    """An existing user's INT8 .pt is cached and the family now declares an INT8-ConvRot build.
-    Online the load downloads the ConvRot file first, so the planner and the disk gate must not be
-    told this costs nothing."""
+    """A cached INT8 .pt is not free while a declared ConvRot build is ahead of it online."""
     hub.cache("Model-INT8.pt")
     src = _convrot_dit()
     assert pq.cached_checkpoint_path(src, online = True) is None
     assert pq.prequant_checkpoint_cached(src, online = True) is False
-    # and that is what the load really does
     _resolve(src)
     assert hub.fetched == ["Model-INT8-ConvRot.safetensors"]
 
@@ -463,12 +459,9 @@ def test_offline_the_cached_int8_is_what_loads(hub):
 
 
 def test_an_unpublished_convrot_stops_blocking_once_the_resolver_saw_its_404(hub):
-    """The code names a ConvRot build the repo does not host yet (merged before the upload). The
-    first load asks, gets a 404, and opens the cached INT8 .pt; from then on the probe agrees with
-    the resolver instead of planning a download that never happens on every load."""
+    """Once the resolver has seen a 404 for an unhosted ConvRot build, the probe must stop blocking."""
     hub.cache("Model-INT8.pt")
     src = _convrot_dit()
-    # never asked: online, it may be hosted, so a download is planned
     assert pq.cached_checkpoint_path(src, online = True) is None
     hub.hosted = set(PLAIN)
     got = _resolve(src)
@@ -586,14 +579,12 @@ def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tm
     )
     assert components == ("text_encoder",)
     assert exact is False
-    # Not hosted yet: once the resolver's 404 for it is recorded, the cached fp8 file is what loads.
     hub.absent.add((REPO, convrot[0]))
     mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
         fam, "base/Model", None, "int8"
     )
     assert exact is True and mib == 1
     hub.absent.clear()
-    # Once the ConvRot encoder is cached it is what loads, and the size is the file's own.
     (snap / "Model-text_encoder-INT8-ConvRot.safetensors").write_bytes(b"x" * (3 << 20))
     mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
         fam, "base/Model", None, "int8"
@@ -709,6 +700,24 @@ def test_cached_own_pickle_offline_never_asks_for_the_twin(hub):
     assert hub.downloads == [("Model-INT8.pt", True)]
 
 
+@pytest.mark.parametrize("why", ["sha_mismatch", "no_lfs_record", "reuse_off", "prefer_st"])
+def test_unverified_cached_pickle_does_not_demote_the_hosted_twin(hub, monkeypatch, why):
+    """Only the own safetensors 404s: the hosted twin loads, never the cached pickle the Hub does not vouch for."""
+    hub.cache("Model-INT8.pt")
+    hub.hosted = {COMFY, "Model-INT8.pt"}
+    if why == "sha_mismatch":
+        hub.hub_sha["Model-INT8.pt"] = hashlib.sha256(b"other").hexdigest()
+    elif why == "no_lfs_record":
+        hub.hub_sha["Model-INT8.pt"] = None
+    elif why == "reuse_off":
+        monkeypatch.setenv(cws.ENV_DISABLE, "0")
+    else:
+        monkeypatch.setenv(KILL_SWITCH, "1")
+    assert pq.prefer_cached_pickle_twins(REPO, _comfy_dit().candidate_filenames)[0] == COMFY
+    assert _resolve(_comfy_dit()) == hub.cached[(REPO, COMFY)]
+    assert hub.fetched == [COMFY]
+
+
 def test_cached_comfy_twin_stays_first(hub):
     hub.cache(COMFY)
     hub.cache("Model-INT8.pt")
@@ -790,3 +799,119 @@ def test_a_cached_trailing_fp8_twin_is_used_before_an_uncached_own_file(hub):
     hub.downloads.clear()
     assert _resolve(fp8) == hub.cached[(REPO, "Model-FP8.safetensors")]
     assert hub.fetched == ["Model-FP8.safetensors"]
+
+
+# nvfp4 is the exception: its hosted repos hold only the .safetensors, and a .pt is never resolved, cached or opened.
+NV_REPO = "unsloth/Z-Image-Turbo-NVFP4"
+NV_ST, NV_PT = "Z-Image-Turbo-NVFP4.safetensors", "Z-Image-Turbo-NVFP4.pt"
+# Captured before any fixture stubs it: the nvfp4 cases ask the install's real readability question.
+_REAL_LOAD_SUPPORTED = pq.restricted_prequant_load_supported
+
+
+@pytest.fixture
+def nv_hub(hub, monkeypatch):
+    from core.inference import diffusion_nvfp4_flag
+
+    monkeypatch.setenv(diffusion_nvfp4_flag.NVFP4_DIFFUSION_ENV, "1")
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", _REAL_LOAD_SUPPORTED)
+    hub.hosted = {NV_ST, NV_PT}
+    return hub
+
+
+def _nv_source():
+    """The chain Studio resolves for Z-Image's hosted NVFP4 repo, not a hand-written one."""
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    source = pq.resolve_prequant_source(fam, "nvfp4")
+    assert source.location == NV_REPO
+    chain = pq.candidate_filenames_of(source)
+    # the hosted safetensors leads; no .pt / .pth name anywhere (a ComfyUI-format twin may trail)
+    assert chain[0] == NV_ST and all(n.endswith(".safetensors") for n in chain), chain
+    assert source.declared_filenames == (NV_ST,)
+    return source
+
+
+def _nv_resolve(source, **kw):
+    return pq._resolve_checkpoint_path(source, None, None, scheme = "nvfp4", **kw)
+
+
+def _needs_nvfp4_safetensors():
+    if not _REAL_LOAD_SUPPORTED("nvfp4", NV_ST):
+        pytest.skip("this install cannot read nvfp4 safetensors checkpoints")
+
+
+def test_nvfp4_pickle_is_never_readable():
+    assert _REAL_LOAD_SUPPORTED("nvfp4", NV_PT) is False
+    assert _REAL_LOAD_SUPPORTED("nvfp4", "Model-NVFP4.pth") is False
+    assert _REAL_LOAD_SUPPORTED("nvfp4", "transformer_nvfp4.pt") is False
+
+
+def test_nvfp4_cached_pickle_is_ignored(nv_hub):
+    _needs_nvfp4_safetensors()
+    nv_hub.cache(NV_PT, NV_REPO)
+    assert _nv_resolve(_nv_source()) == nv_hub.cached[(NV_REPO, NV_ST)]
+    assert nv_hub.fetched == [NV_ST]
+
+
+def test_nvfp4_cached_pickle_offline_is_not_used(nv_hub):
+    _needs_nvfp4_safetensors()
+    nv_hub.cache(NV_PT, NV_REPO)
+    with pytest.raises(LocalEntryNotFoundError):
+        _nv_resolve(_nv_source(), local_files_only = True)
+    assert NV_PT not in nv_hub.fetched
+
+
+def test_nvfp4_cached_pickle_is_not_preferred_even_when_offered(nv_hub):
+    """A stale chain naming the .pt (an older caller) still never moves the cached pickle ahead."""
+    nv_hub.cache(NV_PT, NV_REPO)
+    names = [NV_ST, NV_PT]
+    assert pq.prefer_cached_pickle_twins(NV_REPO, names, readable = None)[0] == NV_PT
+    out = pq.prefer_cached_pickle_twins(
+        NV_REPO, names, readable = lambda n: _REAL_LOAD_SUPPORTED("nvfp4", n)
+    )
+    assert out.index(NV_ST) < out.index(NV_PT)
+    assert pq.without_nvfp4_pickles("nvfp4", out) == [NV_ST]
+
+
+def test_nvfp4_stale_pickle_chain_is_filtered_at_download(nv_hub):
+    """Even a source that still lists the .pt (built by older code) never downloads it."""
+    _needs_nvfp4_safetensors()
+    nv_hub.cache(NV_PT, NV_REPO)
+    stale = pq.PrequantSource(
+        kind = "repo", location = NV_REPO, filename = NV_ST, fallback_filenames = (NV_PT,)
+    )
+    assert _nv_resolve(stale) == nv_hub.cached[(NV_REPO, NV_ST)]
+    nv_hub.hosted = {NV_PT}
+    nv_hub.cached.clear()
+    nv_hub.downloads.clear()
+    with pytest.raises(EntryNotFoundError):
+        _nv_resolve(stale)
+    assert nv_hub.fetched == [NV_ST]
+
+
+def test_nvfp4_new_user_downloads_only_the_safetensors(nv_hub):
+    _needs_nvfp4_safetensors()
+    assert _nv_resolve(_nv_source()) == nv_hub.cached[(NV_REPO, NV_ST)]
+    assert nv_hub.fetched == [NV_ST]
+
+
+def test_nvfp4_pickle_only_repo_is_not_loaded(nv_hub):
+    _needs_nvfp4_safetensors()
+    nv_hub.hosted = {NV_PT}
+    with pytest.raises(EntryNotFoundError):
+        _nv_resolve(_nv_source())
+    assert nv_hub.fetched[0] == NV_ST and NV_PT not in nv_hub.fetched
+
+
+def test_nvfp4_torchao_without_nvfp4_unflatten_is_refused(nv_hub, monkeypatch):
+    """torchao 0.16 cannot rebuild the NVFP4 safetensors: a clear refusal, never the hosted .pt."""
+    utils = pytest.importorskip("torchao.prototype.safetensors.safetensors_utils")
+    monkeypatch.setattr(
+        utils,
+        "ALLOWED_TENSORS_SUBCLASSES",
+        [n for n in utils.ALLOWED_TENSORS_SUBCLASSES if n not in ("NVFP4Tensor", "MXTensor")],
+    )
+    with pytest.raises(ValueError, match = "torchao >= 0.17"):
+        _nv_resolve(_nv_source())
+    assert nv_hub.fetched == []

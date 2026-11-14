@@ -79,8 +79,7 @@ test("a read that throws synchronously rejects rather than escaping", async () =
 });
 
 test("an undefined record still counts as a cached value", async () => {
-  // Incognito and deleted threads resolve to undefined; that is an answer, not
-  // a miss, so it must not be re-read on every consumer.
+  // undefined is an answer, not a miss, so it must not be re-read.
   let calls = 0;
   const read = createRetryableSharedRead(
     async () => {

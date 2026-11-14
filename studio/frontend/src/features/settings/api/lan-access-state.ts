@@ -4,7 +4,17 @@
 export type LanAccessState = "off" | "online" | "error";
 export type LanAccessOwner = "launch" | "settings" | null;
 export type LanKeylessScope = "off" | "inference" | "full";
-export type LanAccessAddress = { address: string; public: boolean };
+export type LanAccessAddress = {
+  address: string;
+  public: boolean;
+  hostOnly?: boolean;
+};
+type ApiLanAccessAddress = {
+  address: string;
+  public: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  host_only?: boolean;
+};
 export type LanAccessAddressChoice = LanAccessAddress & { detected: boolean };
 
 export type LanAccessStatus = {
@@ -50,7 +60,7 @@ export type ApiLanAccessStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   configured_addresses?: string[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
-  available_addresses?: LanAccessAddress[] | null;
+  available_addresses?: ApiLanAccessAddress[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   configured_public_addresses?: string[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -81,7 +91,13 @@ function normalizeAddresses(value: unknown): LanAccessAddress[] {
   }
   return value.flatMap((entry) =>
     entry && typeof entry.address === "string"
-      ? [{ address: entry.address, public: entry.public === true }]
+      ? [
+          {
+            address: entry.address,
+            public: entry.public === true,
+            ...(entry.host_only === true ? { hostOnly: true } : {}),
+          },
+        ]
       : [],
   );
 }
@@ -142,6 +158,26 @@ export function lanApiUrls(status: LanAccessStatus): string[] {
   return status.managedBy === "settings" ? status.urls : [];
 }
 
+// A listener keeps the address it bound after Wi-Fi changes or DHCP renews, while detection is fresh.
+export function staleLanUrls(status: LanAccessStatus): string[] {
+  if (
+    status.managedBy !== "settings" ||
+    status.availableAddresses.length === 0
+  ) {
+    return [];
+  }
+  const present = new Set(
+    status.availableAddresses.map((entry) => entry.address),
+  );
+  return status.urls.filter((url) => {
+    try {
+      return !present.has(new URL(url).hostname.replace(/^\[|\]$/g, ""));
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function keylessLanAccessDescription(
   status: LanAccessStatus | null,
 ): string {
@@ -166,7 +202,6 @@ export function keylessLanAccessDescription(
   return `Inference is keyless on localhost; LAN callers require an active private listener.${tools}`;
 }
 
-// start and stop are synchronous socket work, so there is no transition to chase
 export const LAN_ACCESS_POLL_MS = 5000;
 
 export function lanAccessAutoStartReadOnly(
@@ -222,7 +257,7 @@ export function defaultLanAccessAddressSelection(
   status: LanAccessStatus | null,
 ): string[] {
   return (status?.availableAddresses ?? [])
-    .filter((entry) => !entry.public)
+    .filter((entry) => !(entry.public || entry.hostOnly))
     .map((entry) => entry.address);
 }
 
@@ -262,7 +297,6 @@ export function lanAccessStopDisconnectsOrigin(
   });
 }
 
-// the backend owns wildcard classification so the message follows its flag
 function launchManagedMessage(status: LanAccessStatus): string {
   if (status.wildcardBind) {
     const option = status.bindHost ? ` (--host ${status.bindHost})` : "";

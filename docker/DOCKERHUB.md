@@ -93,7 +93,7 @@ docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host -w /workspace/ho
 `latest` starts without a GPU on its own. Unsloth Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not. `core` refuses to start without a GPU unless you opt in:
 
 ```bash
-docker run -d -p 8000:8000 -p 8888:8888 -v unsloth-workspace:/workspace unsloth/unsloth
+docker run -d --name unsloth -p 8000:8000 -p 8888:8888 -v unsloth-studio:/opt/unsloth-studio -v unsloth-workspace:/workspace unsloth/unsloth
 docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import unsloth"
 ```
 
@@ -135,6 +135,8 @@ Turing has no bfloat16; Unsloth falls back to float16 there. These images are CU
 | `UNSLOTH_ALLOW_CPU=1` | Allow starting without a GPU (`latest` already does). Dropped when a GPU is visible, where it would turn off Unsloth's training patches. |
 | `UNSLOTH_STUDIO_SECURE=1` | Serve Unsloth Studio over a Cloudflare HTTPS link only, bound to loopback inside the container so no raw port is published. Fails closed if the tunnel does not come up. |
 | `UNSLOTH_STUDIO_CLOUDFLARE=1` | The same HTTPS link, with the local port still served. Not valid together with `UNSLOTH_STUDIO_SECURE=1`. |
+| `UNSLOTH_STUDIO_SSL_CERTFILE` | Serve Studio over HTTPS with this PEM certificate (full chain), a path inside the container (mount it). Needs `UNSLOTH_STUDIO_SSL_KEYFILE`; not valid with `UNSLOTH_STUDIO_SECURE=1` or `UNSLOTH_STUDIO_CLOUDFLARE=1`. |
+| `UNSLOTH_STUDIO_SSL_KEYFILE` | The PEM private key for `UNSLOTH_STUDIO_SSL_CERTFILE`. |
 | `UNSLOTH_JUPYTER_CLOUDFLARE=1` | Publish JupyterLab through a Cloudflare quick tunnel and print the URL. |
 | `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub on start; the copy baked into the image is still used. |
 | `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: nothing is created at `/workspace/unsloth-notebooks` or `/workspace/Unsloth Notebooks`. |
