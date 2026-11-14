@@ -831,3 +831,29 @@ def test_group_state_survives_fsdp2_input_casting_under_gradient_checkpointing()
     assert g0.keys() == g1.keys()
     for name in g0:
         torch.testing.assert_close(g0[name], g1[name], rtol = 1e-4, atol = 1e-6, msg = name)
+
+
+def test_o_a_proj_swapped_for_a_plain_linear_stays_grouped():
+    """bitsandbytes' Linear4bit swap (a load that did not skip o_a_proj) puts a plain Linear there; the diagonal
+    blocks of its product are the grouped result. Plain PEFT LoRA on top matches its merged weight."""
+    peft = pytest.importorskip("peft")
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 16))
+    with torch.no_grad():
+        want = model(input_ids = ids).logits
+    for layer in model.model.layers:
+        grouped = layer.self_attn.o_a_proj
+        plain = torch.nn.Linear(grouped.in_features, grouped.out_features, bias = False)
+        plain.weight.data.copy_(grouped.weight.data)
+        layer.self_attn.o_a_proj = plain
+    before = dsv41.DSV41_STATS["o_a_ungrouped"]
+    with torch.no_grad():
+        torch.testing.assert_close(model(input_ids = ids).logits, want, rtol = 1e-5, atol = 1e-5)
+    assert dsv41.DSV41_STATS["o_a_ungrouped"] - before == len(model.model.layers)
+    lora = peft.get_peft_model(
+        model, peft.LoraConfig(r = 4, target_modules = ["self_attn.o_a_proj"], init_lora_weights = False)
+    ).eval()
+    with torch.no_grad():
+        adapted = lora(input_ids = ids).logits
+        merged = lora.merge_and_unload()(input_ids = ids).logits
+    torch.testing.assert_close(adapted, merged, rtol = 1e-4, atol = 1e-4)

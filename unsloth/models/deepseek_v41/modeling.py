@@ -90,7 +90,12 @@ __all__ = [
 ENGRAM_DEAD = -1
 
 # Engagement counters for tests (which path ran). Never touched while compiling (Dynamo would bake / retrace them).
-DSV41_STATS = {"sparse_attn_zoo": 0, "sparse_attn_torch": 0, "experts_sorted_loop": 0}
+DSV41_STATS = {
+    "sparse_attn_zoo": 0,
+    "sparse_attn_torch": 0,
+    "experts_sorted_loop": 0,
+    "o_a_ungrouped": 0,
+}
 
 
 def _count(key):
@@ -250,6 +255,22 @@ class DeepseekV41GroupedLinear(nn.Linear):
         if self.bias is not None:
             out = out + self.bias.view(groups, -1).to(out.dtype)
         return out
+
+
+def grouped_projection(module, x, out_per_group):
+    """``wo_a`` on x [..., G, in_g] -> [..., G, out_per_group]. A DeepseekV41GroupedLinear (or a LoRA wrapper around
+    one) applies each group's block itself. A plain Linear in its place (bitsandbytes' Linear4bit swap when a load did
+    not skip o_a_proj, another quantizer, plain PEFT over those) multiplies every group by the whole stacked weight;
+    the diagonal blocks of that product are exactly the grouped result (G times the work, never wrong). Shapes alone
+    decide, so a tensor-parallel shard holding a subset of the groups works either way."""
+    out = module(x)
+    groups = x.shape[-2]
+    if groups > 1 and out.shape[-1] == groups * out_per_group:
+        _count("o_a_ungrouped")
+        out = torch.diagonal(out.unflatten(-1, (groups, out_per_group)), dim1 = -3, dim2 = -2).movedim(
+            -1, -2
+        )
+    return out
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -529,7 +550,9 @@ class DeepseekV41Attention(nn.Module):
             topk_idxs = window_idxs
         o = sparse_attn(q, kv, self.sinks, topk_idxs, self.softmax_scale)
         o = apply_rotary(o, cos, sin, inverse = True)
-        o = self.o_a_proj(o.reshape(bsz, seqlen, -1, self.o_a_proj.in_features))
+        o = grouped_projection(
+            self.o_a_proj, o.reshape(bsz, seqlen, -1, self.o_a_proj.in_features), self.o_lora_rank
+        )
         return self.o_b_proj(o.flatten(2))
 
 
