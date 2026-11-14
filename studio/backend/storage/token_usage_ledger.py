@@ -27,13 +27,16 @@ def _usage_columns(row: str) -> str:
     saved_count = _count(row, "$.timing.tokenCount")
     live_count = _count(row, "$.resumeTiming.tokenCount")
     timing_completion = (
-        f"MAX((CASE WHEN {saved_count} > 0 THEN {saved_count} ELSE {live_count} END)"
+        f"(MAX((CASE WHEN {saved_count} > 0 THEN {saved_count} ELSE {live_count} END)"
         f" - {_count(row, '$.tokenUsagePriorCount')}, 0)"
+        f" + {_count(row, '$.tokenUsageEstimatedToolOutput')})"
     )
     return f"""
         CASE WHEN {usage_prompt} > 0 THEN {usage_prompt}
              WHEN {server_prompt} > 0 THEN {server_prompt}
-             ELSE {_count(row, "$.tokenUsageEstimatedPrompt")} END AS prompt_tokens,
+             -- An estimated prompt only counts once output shows inference ran (not a refusal).
+             WHEN {timing_completion} > 0 THEN {_count(row, "$.tokenUsageEstimatedPrompt")}
+             ELSE 0 END AS prompt_tokens,
         CASE WHEN {usage_completion} > 0 THEN {usage_completion}
              WHEN {server_completion} > 0 THEN {server_completion}
              ELSE {timing_completion} END AS completion_tokens,

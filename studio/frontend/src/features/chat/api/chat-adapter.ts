@@ -5949,10 +5949,25 @@ export function createOpenAIStreamAdapter(
           );
         }, 0) / 4,
       );
+      // Generated tool arguments, which the text-based token count never sees.
+      const tokenUsageEstimatedToolOutput = () => {
+        let chars = 0;
+        const seen = new Set<string>();
+        for (const part of toolCallParts) {
+          const live = liveArgsTextById.get(part.toolCallId)?.length ?? 0;
+          chars += Math.max(part.argsText?.length ?? 0, live);
+          seen.add(part.toolCallId);
+        }
+        for (const [id, text] of liveArgsTextById) {
+          if (!seen.has(id)) chars += text.length;
+        }
+        return Math.ceil(chars / 4);
+      };
       const liveCustom = () => ({
         tokenUsageParentId: continuation?.sourceMessageId,
         tokenUsageProvider,
         tokenUsageEstimatedPrompt,
+        tokenUsageEstimatedToolOutput: tokenUsageEstimatedToolOutput(),
         tokenUsagePriorCount: priorTiming?.tokenCount,
         ...reasoningDurationTracker.metadata(),
         resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
@@ -8962,6 +8977,7 @@ export function createOpenAIStreamAdapter(
               tokenUsageParentId: continuation?.sourceMessageId,
               tokenUsageProvider,
               tokenUsageEstimatedPrompt,
+              tokenUsageEstimatedToolOutput: tokenUsageEstimatedToolOutput(),
               tokenUsagePriorCount: priorTiming?.tokenCount,
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
@@ -9149,6 +9165,7 @@ export function createOpenAIStreamAdapter(
                 tokenUsageParentId: continuation?.sourceMessageId,
                 tokenUsageProvider,
                 tokenUsageEstimatedPrompt,
+                tokenUsageEstimatedToolOutput: tokenUsageEstimatedToolOutput(),
                 // timing below adds the continued reply's count, which its own row already charged.
                 tokenUsagePriorCount: priorTiming?.tokenCount,
                 contextTruncation,

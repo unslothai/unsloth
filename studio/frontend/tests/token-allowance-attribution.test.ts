@@ -64,3 +64,10 @@ test("title requests are marked stateless so their receipt is charged", () => {
 test("live, final and failed replies carry a prompt estimate for interrupted saves", () => {
   assert.equal(ADAPTER.match(/\n\s+tokenUsageEstimatedPrompt,\n/g)?.length, 3);
 });
+
+test("live, final and failed replies estimate their generated tool arguments", () => {
+  assert.equal(
+    ADAPTER.match(/tokenUsageEstimatedToolOutput: tokenUsageEstimatedToolOutput\(\),/g)?.length,
+    3,
+  );
+});

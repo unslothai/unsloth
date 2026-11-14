@@ -236,6 +236,30 @@ def test_the_override_is_refunded_exactly_when_nothing_was_generated(status, gen
             token_limit.enforce(api = False)
 
 
+@pytest.mark.parametrize(
+    "metadata, used",
+    [
+        ({"tokenUsageEstimatedPrompt": 10_000, "incomplete": {"reason": "interrupted"}}, 0),
+        ({"tokenUsageEstimatedPrompt": 100, "tokenUsageEstimatedToolOutput": 2_500}, 2_600),
+    ],
+)
+def test_estimates_charge_a_prompt_only_once_output_shows_inference_ran(metadata, used):
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "a1",
+            "threadId": "t1",
+            "role": "assistant",
+            "createdAt": now + 1,
+            "content": [],
+            "metadata": metadata,
+        }
+    )
+    _enable(limit = 100_000)
+    assert _pools()["combined"]["used"] == used
+
+
 def test_an_interrupted_saved_reply_charges_its_estimated_prompt():
     now = _now_ms()
     _thread("t1", now)
