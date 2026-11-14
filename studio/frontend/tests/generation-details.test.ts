@@ -243,11 +243,12 @@ test("a tool result drops the last pass's figures, live or followed, so the next
 
 test("the status line comes back between tool rounds, after the finished call", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
-  const indicator = thread.slice(thread.indexOf("const NextRoundIndicator"), thread.indexOf("// Mounted only under a running reply"));
-  assert.match(indicator, /betweenToolRounds\(message\.status\?\.type === "running", message\.content\)/);
-  assert.match(indicator, /<GeneratingStatus \/>/);
+  const indicator = thread.slice(thread.indexOf("const PartsWithRoundTail"), thread.indexOf("// Mounted only under a running reply"));
+  assert.match(indicator, /runningReplyTail\(message\.status\?\.type === "running", message\.content\)/);
+  assert.match(indicator, /tail === 2 && \(\s*<div data-slot="next-round-indicator" className="mt-2">\s*<GeneratingStatus \/>/);
   // After the parts, so it sits under the call it follows rather than above the reply.
-  assert.match(thread, /<MessagePrimitive\.Parts components=\{ASSISTANT_PART_COMPONENTS\} \/>\s*<NextRoundIndicator \/>/);
+  assert.match(indicator, /\{children\}\s*\{tail !== 0 && \(/);
+  assert.match(thread, /<PartsWithRoundTail>\s*<MessagePrimitive\.Parts\s+components=\{ASSISTANT_PART_COMPONENTS\}/);
 });
 
 test("a finished call shows the next round's status, past the sources a recovered reply ends with", () => {
@@ -473,6 +474,15 @@ test("the placement readout names expert weights and gives both memory figures",
   );
   assert.equal(loadedPlacementFrom({ is_gguf: false, offload_total_layers: 31 }), null);
   assert.equal(loadedPlacementFrom({ is_gguf: true }), null);
+});
+
+test("the placement row needs no setting", () => {
+  // Source text: the row cannot be mounted here, since it pulls in the chat feature's React tree.
+  const row = readSrc("features/model-picker/components/loaded-placement-row.tsx");
+  assert.doesNotMatch(row, /showGenerationDetails|useChatPreferencesStore/);
+  assert.match(row, /if \(placement === null\) return null;/);
+  assert.equal(en.settings.chat.showGenerationDetails, "Detailed speed info");
+  assert.doesNotMatch(en.settings.chat.showGenerationDetailsDescription, /layers/);
 });
 
 test("a GPU build that fell back to the CPU is not reported as GPU layers", () => {

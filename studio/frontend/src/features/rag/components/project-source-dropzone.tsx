@@ -18,6 +18,7 @@ import {
   noteProjectWork,
   uploadProjectDocument,
 } from "../api/rag-api";
+import { watchIngestion } from "../api/save-markdown-source";
 import {
   RAG_SOURCE_UPLOAD_ACCEPT,
   SUPPORTED_SOURCES_HINT,
@@ -125,7 +126,10 @@ async function uploadStaged(
       const result = await uploadProjectDocument(projectId, source, ocr, caption);
       // The backend hashes content, so this is a document already uploaded under another name.
       if (documentIds.has(result.documentId)) merged.push(entry.name);
-      else documentIds.add(result.documentId);
+      else {
+        documentIds.add(result.documentId);
+        void watchIngestion(projectId, result.jobId, result.filename || entry.name);
+      }
     } catch (error) {
       toast.error(`Couldn't upload ${entry.name}`, {
         description: error instanceof Error ? error.message : String(error),

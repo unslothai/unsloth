@@ -9,7 +9,10 @@ import {
   diffusionRouteSearch,
   routedGgufFilename,
   routedGgufLabel,
+  routedImageFilename,
 } from "../src/lib/diffusion-route-search.ts";
+
+import { diffusionFileKind, diffusionRoutePick } from "../src/lib/diffusion-route-pick.ts";
 
 const REPO = "unsloth/Z-Image-Turbo-GGUF";
 
@@ -97,4 +100,16 @@ test("an arrival with neither leaves the old path alone", () => {
 test("case and whitespace do not change which slot a value belongs to", () => {
   assert.equal(routedGgufFilename({ quant: " A-Q8_0.GGUF " }), "A-Q8_0.GGUF");
   assert.equal(routedGgufLabel({ ggufQuant: " Q4_K_S " }), "Q4_K_S");
+});
+
+test("Download and Run use the same selected SDXL checkpoint", () => {
+  const repo = "cagliostrolab/animagine-xl-4.0";
+  for (const filename of ["animagine-xl-4.0.safetensors", "animagine-xl-4.0-opt.safetensors"]) {
+    const search = diffusionRouteSearch(repo, { checkpointFilename: filename });
+    assert.equal(diffusionFileKind(filename), "single_file");
+    assert.deepEqual(diffusionRoutePick(search.model, routedImageFilename(search)), {
+      repoId: repo,
+      opts: { kind: "single_file", filename },
+    });
+  }
 });

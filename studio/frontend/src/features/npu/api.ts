@@ -7,9 +7,6 @@ import { readSseJsonEvents } from "@/lib/sse-json-events";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
 
-/** Keep in sync with npu_backend.py's DEFAULT_CONTEXT_LENGTH. */
-export const NPU_DEFAULT_CONTEXT_LENGTH = 8192;
-
 export function isNpuModelId(
   value: string | null | undefined,
 ): value is string {

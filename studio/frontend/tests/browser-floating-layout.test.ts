@@ -70,3 +70,31 @@ test("floating is the chat's own: another chat opens its browser beside it, and 
   store().showChat("single:float-a");
   assert.deepEqual([store().open, store().floating], [true, true]);
 });
+
+test("a browser floated by a close mid-run is still that on return from another chat, and its close restores the layout", () => {
+  const store = () => useBrowserStore.getState();
+  store().showChat("single:agent-a");
+  store().openUrl("https://example.com/a");
+  store().floatForAgent();
+  store().showChat("single:agent-b");
+  assert.deepEqual([store().floating, store().floatedForAgent], [false, false]);
+  store().showChat("single:agent-a");
+  assert.deepEqual([store().open, store().floating, store().floatedForAgent], [true, true, true]);
+  store().closePanel();
+  assert.deepEqual([store().open, store().floating, store().floatedForAgent], [false, false, false]);
+});
+
+test("the agent working in the floated browser while another chat shows keeps it floated for the agent", () => {
+  const store = () => useBrowserStore.getState();
+  store().showChat("single:agent-c");
+  store().openUrl("https://example.com/c");
+  const tab = store().activeTabId ?? "";
+  store().floatForAgent();
+  store().showChat("single:agent-d");
+  store().revealIn("single:agent-c", tab);
+  store().openTabIn("single:agent-c", "https://example.com/c2", { background: true });
+  store().showChat("single:agent-c");
+  assert.deepEqual([store().floating, store().floatedForAgent], [true, true]);
+  store().closePanel();
+  assert.deepEqual([store().open, store().floating], [false, false]);
+});

@@ -90,12 +90,15 @@ function getServerModalBlock(): boolean {
 
 function TooltipProvider({
   delayDuration = 0,
+  // Off, so neighbouring icons switch labels at once; link tooltips pass `false` to stay hoverable.
+  disableHoverableContent = true,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
     <TooltipPrimitive.Provider
       data-slot="tooltip-provider"
       delayDuration={delayDuration}
+      disableHoverableContent={disableHoverableContent}
       {...props}
     />
   );

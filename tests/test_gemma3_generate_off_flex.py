@@ -3,7 +3,9 @@
 
 """Gemma 3 generate(): prefill stays on flex, one-token decode steps run the non-flex path."""
 
+import ast
 import inspect
+import textwrap
 import types
 
 import pytest
@@ -231,9 +233,45 @@ def test_opt_out(monkeypatch):
     assert model.seen == ["flex_attention"] * 3
 
 
+def _scope_entries(fn) -> list:
+    """`_NonFlexGenerate(...)` calls in `fn` whose first argument is `self`, by AST so extra keyword
+    arguments (flex_decode = ...) or a reflow do not hide the scope."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_NonFlexGenerate"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "self"
+    ]
+
+
 def test_generate_enters_the_scope():
-    source = inspect.getsource(vision.unsloth_base_fast_generate)
-    assert "_NonFlexGenerate(self)" in source
+    assert _scope_entries(vision.unsloth_base_fast_generate)
+
+
+def test_the_scope_check_reads_calls_not_text():
+    def with_kwargs(self):
+        with _NonFlexGenerate(self, flex_decode = True):
+            pass
+
+    def bare(self):
+        with _NonFlexGenerate(self):
+            pass
+
+    def mentions_only(self):
+        # _NonFlexGenerate(self)
+        return "_NonFlexGenerate(self)"
+
+    def other_model(self, model):
+        with _NonFlexGenerate(model):
+            pass
+
+    assert _scope_entries(with_kwargs) and _scope_entries(bare)
+    assert not _scope_entries(mentions_only) and not _scope_entries(other_model)
 
 
 def _tiny_gemma3():

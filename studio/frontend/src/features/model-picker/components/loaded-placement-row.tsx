@@ -4,18 +4,17 @@
 import {
   describePlacement,
   type PlacementPool,
-  useChatPreferencesStore,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
 
 /** Where the resident GGUF's weights landed. Under Auto, --fit decides, and the layer count alone hides a
- *  MoE spill, so the experts and the RAM side are shown too. `pool` is the panel's single memory pool, if any. */
+ *  MoE spill, so the experts and the RAM side are shown too. `pool` is the panel's single memory pool, if any.
+ *  Always shown: the estimate above it is a forecast, and this is the only lasting account of the load. */
 export function LoadedPlacementRow({ pool }: { pool: PlacementPool | null }) {
   const t = useT();
-  const enabled = useChatPreferencesStore((s) => s.showGenerationDetails);
   const placement = useChatRuntimeStore((s) => s.loadedPlacement);
-  if (!enabled || placement === null) return null;
+  if (placement === null) return null;
   const { layers, memory } = describePlacement(placement, t, pool);
   if (layers === null && memory === null) return null;
   return (
@@ -23,7 +22,10 @@ export function LoadedPlacementRow({ pool }: { pool: PlacementPool | null }) {
       data-slot="loaded-placement"
       className="flex flex-col gap-1 border-b border-border pb-5"
     >
-      <span className="flex min-h-8 items-center text-ui-13/tight font-medium tracking-nav text-foreground">
+      <span
+        data-placement-title=""
+        className="flex min-h-8 items-center text-ui-13/tight font-medium tracking-nav text-foreground"
+      >
         {t("generationStats.placement.title")}
       </span>
       {layers !== null && (

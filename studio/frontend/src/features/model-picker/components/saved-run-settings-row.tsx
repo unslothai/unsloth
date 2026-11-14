@@ -148,8 +148,9 @@ export function RunSettingsPicker({
               ? "Name for the new settings"
               : `New name for ${naming.target}`
           }
+          // The dropdown's type and edge, so renaming keeps the size; md: too, as the Input's md:text-sm wins.
           className={cn(
-            "h-9 min-w-0 rounded-full text-ui-13",
+            "h-9 min-w-0 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] text-ui-13 font-medium md:text-ui-13",
             compact ? "w-full" : "flex-1",
           )}
         />
@@ -242,11 +243,16 @@ export function RunSettingsPicker({
             >
               <Check on={entry.name === selected} />
               <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-              {entry.name === pinned && (
-                <span className="shrink-0 text-ui-11 font-normal text-muted-foreground">
-                  Always
-                </span>
-              )}
+              {/* Always rendered, hidden off the pinned set, so pinning never widens the menu. */}
+              <span
+                aria-hidden={entry.name !== pinned}
+                className={cn(
+                  "shrink-0 text-ui-11 font-normal text-muted-foreground",
+                  entry.name !== pinned && "invisible",
+                )}
+              >
+                Always
+              </span>
               <button
                 type="button"
                 aria-label={`Rename ${entry.name}`}
@@ -271,7 +277,7 @@ export function RunSettingsPicker({
                 aria-label={`Delete ${entry.name}`}
                 title="Delete (Del)"
                 tabIndex={-1}
-                className={ROW_ICON}
+                className={cn(ROW_ICON, "-ml-1")}
                 onPointerDown={keepRow}
                 onPointerUp={keepRow}
                 onClick={(event) => {

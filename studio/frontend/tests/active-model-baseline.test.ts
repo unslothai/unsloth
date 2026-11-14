@@ -66,6 +66,8 @@ function configsEqual(persistedMode: string) {
       "./per-model-config": {
         normalizeMaxSeqLength: (value: number | null | undefined) =>
           value ?? null,
+        sameEngramPrecision: (a: string | null | undefined, b: string | null | undefined) =>
+          (a?.toUpperCase() ?? null) === (b?.toUpperCase() ?? null),
       },
     },
   ).perModelConfigsEqual;

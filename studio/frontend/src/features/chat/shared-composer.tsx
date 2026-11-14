@@ -97,7 +97,7 @@ import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
   CONVERSATION_HTML_LABEL,
   CONVERSATION_PDF_LABEL,
-} from "./utils/conversation-html";
+} from "./utils/conversation-html-format";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
@@ -2773,9 +2773,9 @@ export function SharedComposer({
           void addFiles(e.dataTransfer.files);
         }}
       >
-        {/* Gemini-style drop affordance, mirrored from the single composer. */}
+        {/* Gemini-style drop affordance, mirrored from the single composer; blurred only while shown (see thread.tsx). */}
         <div
-          className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
+          className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100 backdrop-blur-sm" : "opacity-0"}`}
         >
           <HugeiconsIcon
             icon={Attachment01Icon}

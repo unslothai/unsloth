@@ -3,6 +3,7 @@
 
 import { useIsAccountOwner } from "@/features/auth";
 import { Button } from "@/components/ui/button";
+import { ArrowRightIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -815,6 +816,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           >
             <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
             {t("settings.data.manageFiles.action")}
+            <ArrowRightIcon data-icon="inline-end" strokeWidth={1.75} />
           </Button>
         </SettingsRow>
       </SettingsSection>

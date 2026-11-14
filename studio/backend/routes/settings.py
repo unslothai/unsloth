@@ -55,6 +55,7 @@ from hub.utils.hf_tokens import (
 from routes.provider_credentials import current_credential_write, require_ui_session
 
 from storage import credential_secrets
+from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
 from core.rag.config import (
     default_gguf_repo,
     effective_gguf_repo_for_embedding_model,
@@ -283,8 +284,8 @@ class ImageGenerationPresetParams(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     negativePrompt: str = ""
-    width: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
-    height: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
+    width: int = Field(default = 1024, ge = 256, le = MAX_REQUEST_SIDE, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = MAX_REQUEST_SIDE, multiple_of = 16)
     steps: int = Field(default = 9, ge = 1, le = 100)
     guidance: float = Field(default = 0, ge = 0, le = 20)
     batchSize: int = Field(default = 1, ge = 1, le = 32)
@@ -304,6 +305,8 @@ class VideoGenerationPresetParams(BaseModel):
     guidance: float = Field(default = 1, ge = 0, le = 20)
     flowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
     audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+    # None = the family's default rate; only families with a frame-rate picker store one.
+    fps: Optional[int] = Field(default = None, ge = 1, le = 120)
 
 
 class TrainingPresetParams(BaseModel):
@@ -1195,6 +1198,10 @@ class ModelOverridePayload(BaseModel):
     # Reasoning pair came after the four, so a build mirroring the four may predate it; own flag.
     mirrors_reasoning_budget: bool = False
     mirrors_spec_draft_model: bool = False
+    # A standalone Engram table by precision (LoadRequest.engram_precision); carried like the
+    # tuning group for a client that does not mirror it.
+    engram_precision: Optional[str] = Field(default = None, max_length = 32, pattern = r"^[A-Za-z0-9_]*$")
+    mirrors_engram_precision: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
@@ -2869,6 +2876,7 @@ def update_openai_auto_switch_override(
                 "mirrors_server_tuning",
                 "mirrors_reasoning_budget",
                 "mirrors_spec_draft_model",
+                "mirrors_engram_precision",
             },
             exclude_none = True,
         )
@@ -2952,15 +2960,17 @@ def update_openai_auto_switch_override(
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
         _reasoning_fields = ("reasoning_budget", "reasoning_budget_message")
         _drafter_fields = ("spec_draft_model",)
+        _engram_fields = ("engram_precision",)
         _kept_tuning = {
             name: getattr(payload, name)
-            for name in _tuning_fields + _reasoning_fields + _drafter_fields
+            for name in _tuning_fields + _reasoning_fields + _drafter_fields + _engram_fields
         }
         # Each group is carried only for a client that does not mirror it.
         _carried_fields = (
             (() if payload.mirrors_server_tuning else _tuning_fields)
             + (() if payload.mirrors_reasoning_budget else _reasoning_fields)
             + (() if payload.mirrors_spec_draft_model else _drafter_fields)
+            + (() if payload.mirrors_engram_precision else _engram_fields)
         )
         _alias_row: dict = {}
         if not is_removal:
@@ -3116,6 +3126,7 @@ def update_openai_auto_switch_override(
                 spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
                 ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
                 cache_ram = _kept_tuning["cache_ram"],
+                engram_precision = _kept_tuning["engram_precision"],
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
                 mlx_int8_prefill = payload.mlx_int8_prefill,
@@ -4443,6 +4454,7 @@ class LanAccessAddressesPayload(BaseModel):
 class LanAccessAddress(BaseModel):
     address: str
     public: bool = False
+    host_only: bool = False
 
 
 class LanAccessResponse(BaseModel):
@@ -5071,7 +5083,7 @@ class PersonalizationCustomization(BaseModel):
     composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
     elementOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
-    reduceMotion: Literal["system", "on", "off"] = "off"
+    reduceMotion: Literal["system", "on", "off"] = "on"
     fontSmoothing: bool = True
     codeLineNumbers: bool = False
     codeWordWrap: bool = False
@@ -5258,6 +5270,7 @@ class BrowserPrefsPayload(BaseModel):
     saveDownloadHistory: Optional[bool] = None
     askWhereToSave: Optional[bool] = None
     askBeforeDownloading: Optional[bool] = None
+    askBeforeProgramDownloads: Optional[bool] = None
     annotationScreenshots: Optional[Literal["always", "never"]] = None
 
 
@@ -5267,6 +5280,7 @@ _DisplayVisibility = Literal["collapsed", "auto", "expanded"]
 class ChatPrefsPayload(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
+    shareComposerDraft: Optional[bool] = None
     plainTextComposer: Optional[bool] = None
     showContextWindowUsage: Optional[bool] = None
     sendShortcut: Optional[Literal["enter", "mod-enter-multiline", "mod-enter"]] = None

@@ -6,24 +6,31 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import { Settings01Icon } from "@/lib/hugeicons-derived";
+import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useHasRememberedRunSettings } from "../../model-config/remembered-run-settings";
+import type { ModelPickTarget } from "./types";
 
 export function ModelLoadSettingsAction({
   ariaLabel,
   onConfigure,
   className,
+  iconClassName,
   tooltip = "Configure run settings before loading model",
+  savedFor,
 }: {
   ariaLabel: string;
   onConfigure: () => void;
   className?: string;
+  iconClassName?: string;
   /** Hover copy. The default describes a local load, so Connected rows override it. */
   tooltip?: string;
+  savedFor?: ModelPickTarget;
 }) {
+  const saved = useHasRememberedRunSettings(savedFor ?? null);
   return (
-    <Tooltip delayDuration={0}>
+    <Tooltip delayDuration={0} disableHoverableContent={true}>
       <TooltipTrigger asChild={true}>
         <button
           type="button"
@@ -32,6 +39,7 @@ export function ModelLoadSettingsAction({
             onConfigure();
           }}
           aria-label={ariaLabel}
+          data-run-settings-saved={saved || undefined}
           className={cn(
             // Fixed box so this and the dots menu hover at one size.
             "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]",
@@ -41,12 +49,12 @@ export function ModelLoadSettingsAction({
           <HugeiconsIcon
             icon={Settings01Icon}
             strokeWidth={1.75}
-            className="size-3"
+            className={cn("size-3", iconClassName)}
           />
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
-        {tooltip}
+        {saved ? "Edit saved run settings" : tooltip}
       </TooltipContent>
     </Tooltip>
   );

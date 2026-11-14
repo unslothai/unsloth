@@ -406,10 +406,6 @@ def _apply_section(value: float, plan) -> str | None:
     return prefix + text + percent + suffix
 
 
-def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
-    return _apply_section(value, _section_plan(tokens))
-
-
 def _number_plan(code: str):
     """Each section of a numeric format read once (with whether it has tokens), or None if unsupported."""
     tokens = _format_tokens(code) if code else None
@@ -433,11 +429,6 @@ def _apply_number(value: float, plan) -> str | None:
         return _apply_section(0.0, plan[2][1])
     text = _apply_section(abs(value), plan[0][1])
     return None if text is None else ("-" + text if value < 0 else text)
-
-
-def _format_number(value: float, code: str) -> str | None:
-    """``value`` as a numeric format displays it, or None for formats left as stored."""
-    return _apply_number(value, _number_plan(code))
 
 
 _NUMBER_ERRORS = (ArithmeticError, ValueError, decimal.InvalidOperation)
@@ -1303,8 +1294,13 @@ def doc(path: str) -> list[Section]:
                 chars.append(word[offset : offset + hi - lo].decode("cp1252", "replace"))
             else:
                 offset = fc + 2 * (lo - start)
-                chars.append(word[offset : offset + 2 * (hi - lo)].decode("utf-16-le", "replace"))
-        return _word_text("".join(chars))
+                raw = word[offset : offset + 2 * (hi - lo)]
+                if len(raw) & 1:
+                    # Corrupt piece ending mid-character: one U+FFFD.
+                    raw = raw[:-1] + b"\xfd\xff"
+                chars.append(raw.decode("utf-16-le", "surrogatepass"))
+        text = "".join(chars).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+        return _word_text(text)
 
     # Stories follow the main text in this order; headers and comments are left out, as for .docx.
     starts = [sum(ccps[:i]) for i in range(len(ccps))]

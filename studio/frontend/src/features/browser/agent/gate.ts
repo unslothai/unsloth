@@ -36,6 +36,17 @@ export function hostOfUrl(url: string): string {
   }
 }
 
+/** What an approval covers: the host plus a non-default port; http and https defaults are one site. */
+export function siteOfUrl(url: string): string {
+  const host = hostOfUrl(url);
+  try {
+    const { port } = new URL(url);
+    return host && port ? `${host}:${port}` : host;
+  } catch {
+    return "";
+  }
+}
+
 // As web_access_policy._matches_domain: whole hostnames, so www.example.com covers only itself.
 const matches = (host: string, domain: string) => {
   const bare = domain.toLowerCase().replace(/^\*?\./, "").replace(/\.+$/, "");
@@ -94,6 +105,22 @@ const SHARED_HOSTS = [
 
 const NAMED_TLDS = new Set(["com", "org", "net", "edu", "gov"]);
 
+// Words of a request, not a site's name: "summarize my notes" must not approve a made-up notes.com.
+const ORDINARY_WORDS = new Set(
+  (
+    "about account accounts address after again also answer answers article articles back before best blog book books " +
+    "browse browser business button calendar call cart chat check cheap click close code compare contact content copy " +
+    "data date deal deals delete details docs document documents does done down download draft email emails enter " +
+    "every file files fill find first flight flights form forms free from give have help here home hotel hotels image " +
+    "images info into item items jobs just know last latest link links list login look mail make maps menu message " +
+    "messages money more most movie movies music name need news next note notes online only open order orders over " +
+    "page pages paper people photo photos please post posts price prices product products read recipe recipes report " +
+    "results review reviews same save search send show shop sign site sites some sport sports start stock stocks stop " +
+    "store summarize summary table take tell text than that them then there these they this time today travel type " +
+    "update video videos view want watch weather website week what when where which with word work write your"
+  ).split(" "),
+);
+
 function mentioned(host: string, text: string): boolean {
   const lower = text.toLowerCase();
   // example.com in "look at example.com", as a whole name (not e.com inside it).
@@ -112,7 +139,8 @@ function mentioned(host: string, text: string): boolean {
   if (!NAMED_TLDS.has(tld ?? "")) return false;
   // A word of its own, not a label inside some other hostname.
   const word = name?.replace(/[^a-z0-9-]/g, "");
-  return Boolean(word && word.length >= 4 && new RegExp(`(^|[^a-z0-9.-])${word}($|[^a-z0-9.-]|\\.(?![a-z0-9-]))`).test(lower));
+  if (!word || word.length < 4 || ORDINARY_WORDS.has(word)) return false;
+  return new RegExp(`(^|[^a-z0-9.-])${word}($|[^a-z0-9.-]|\\.(?![a-z0-9-]))`).test(lower);
 }
 
 /** A new site needs the user's OK unless they named it or the page links to it: a made-up address
@@ -129,7 +157,7 @@ export function gateNavigation(url: string, context: NavigationContext): Gate {
   }
   const blocked = navigationBlocks(url, context.policy, context.permissions);
   if (blocked) return { kind: "block", reason: blocked };
-  const host = hostOfUrl(url);
+  const host = siteOfUrl(url);
   const ask: Gate = { kind: "ask", ask: "open", host, name: "", prompt: `Open ${host}?`, detail: parsed.href };
   const { rule, site } = ruleFor(url, context.permissions);
   if (rule.browsing === "allow") return ALLOW;
@@ -185,7 +213,7 @@ export function gateElement(
   policy: SitePolicy,
   permissions: AgentPermissions,
 ): Gate {
-  const host = hostOfUrl(pageUrl) || "this site";
+  const host = siteOfUrl(pageUrl) || "this site";
   if (info.role === "file-input" || info.type === "file") {
     return { kind: "block", reason: "uploading files is not something the browser agent can do; ask the user to do it" };
   }

@@ -9,6 +9,16 @@ const LEGACY_PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
 // Unsent New chat and Compare ids are minted per navigation; per-id slots would pile up unread.
 export const NEW_CHAT_DRAFT_ID = "__new__";
 export const NEW_COMPARE_DRAFT_ID = "__compare_new__";
+// A `?q=` link's new chat: one slot per link, in this tab's session storage so unsent ones never pile up.
+export const QUERY_DRAFT_ID_PREFIX = "query-";
+
+export function isQueryDraftId(threadId: string | null | undefined): threadId is string {
+  return threadId?.startsWith(QUERY_DRAFT_ID_PREFIX) ?? false;
+}
+
+function storageFor(key: string): Storage {
+  return isQueryDraftId(key.slice(key.indexOf(":") + 1)) ? window.sessionStorage : window.localStorage;
+}
 
 export function composerDraftKey(threadId: string, shared = false): string {
   return shared ? DRAFT_KEY : `${LEGACY_DRAFT_PREFIX}${threadId}`;
@@ -23,7 +33,7 @@ export function composerPasteDraftKey(threadId: string, shared = false): string 
 export function readPasteDraft(key: string): string[] {
   let raw: string | null = null;
   try {
-    raw = window.localStorage.getItem(key);
+    raw = storageFor(key).getItem(key);
   } catch {
     return [];
   }
@@ -59,13 +69,13 @@ export function writePasteDraft(key: string, pastes: readonly string[]): void {
   else {
     if (deletedDraftIds.has(key.slice(LEGACY_PASTE_DRAFT_PREFIX.length))) return;
     perChatPastes.set(key, [...pastes]);
-    if (pastes.length > 0) lastTypedDraftId = key.slice(LEGACY_PASTE_DRAFT_PREFIX.length);
+    if (pastes.length > 0) noteTyped(key.slice(LEGACY_PASTE_DRAFT_PREFIX.length));
   }
   try {
     if (pastes.length > 0) {
-      window.localStorage.setItem(key, JSON.stringify(pastes));
+      storageFor(key).setItem(key, JSON.stringify(pastes));
     } else {
-      window.localStorage.removeItem(key);
+      storageFor(key).removeItem(key);
     }
   } catch {
     // ignore write failures
@@ -75,7 +85,7 @@ export function writePasteDraft(key: string, pastes: readonly string[]): void {
 // localStorage throws when unavailable or full, so all access is best-effort.
 export function readComposerDraft(key: string): string | null {
   try {
-    return window.localStorage.getItem(key);
+    return storageFor(key).getItem(key);
   } catch {
     return null;
   }
@@ -85,7 +95,7 @@ export function readComposerDraft(key: string): string | null {
 export function stageComposerDraft(key: string, text: string): void {
   if (key === DRAFT_KEY || deletedDraftIds.has(key.slice(LEGACY_DRAFT_PREFIX.length))) return;
   perChatDrafts.set(key, text);
-  if (text) lastTypedDraftId = key.slice(LEGACY_DRAFT_PREFIX.length);
+  if (text) noteTyped(key.slice(LEGACY_DRAFT_PREFIX.length));
 }
 
 // A staged save whose slot was adopted (or deleted) since must not recreate it.
@@ -100,8 +110,8 @@ export function writeComposerDraft(key: string, text: string): void {
     perChatDrafts.set(key, text);
   }
   try {
-    if (text.length > 0) window.localStorage.setItem(key, text);
-    else window.localStorage.removeItem(key);
+    if (text.length > 0) storageFor(key).setItem(key, text);
+    else storageFor(key).removeItem(key);
   } catch {
     // ignore write failures
   }
@@ -120,11 +130,11 @@ export function adoptLegacyDraft(threadId: string | null, overwrite = false): bo
     const pasteKey = `${LEGACY_PASTE_DRAFT_PREFIX}${id}`;
     const cachedText = perChatDrafts.get(textKey);
     const cachedPastes = perChatPastes.get(pasteKey);
-    const text = cachedText !== undefined ? cachedText || null : storage.getItem(textKey);
+    const text = cachedText !== undefined ? cachedText || null : storageFor(textKey).getItem(textKey);
     const pastes =
       cachedPastes !== undefined
         ? cachedPastes.length > 0 ? JSON.stringify(cachedPastes) : null
-        : storage.getItem(pasteKey);
+        : storageFor(pasteKey).getItem(pasteKey);
     if (text === null && pastes === null) return false;
     let adopted = false;
     const prevText = storage.getItem(DRAFT_KEY);
@@ -167,6 +177,11 @@ let seeded: string | null = null;
 const perChatDrafts = new Map<string, string>();
 // This tab's last-typed per-chat slot: what sharing adopts, even unmounted (Settings hides chat).
 let lastTypedDraftId: string | null = null;
+
+// A query chat keeps its own slot while sharing is on, so sharing never adopts (and deletes) it.
+function noteTyped(threadId: string): void {
+  if (!isQueryDraftId(threadId)) lastTypedDraftId = threadId;
+}
 
 export function adoptCurrentDraft(): boolean {
   // What this tab just typed wins over an older shared draft, including another window's (#15782).
@@ -219,8 +234,10 @@ function dropPerChatDraft(threadId: string): void {
   perChatDrafts.delete(composerDraftKey(threadId));
   perChatPastes.delete(composerPasteDraftKey(threadId));
   try {
-    window.localStorage.removeItem(`${LEGACY_DRAFT_PREFIX}${threadId}`);
-    window.localStorage.removeItem(`${LEGACY_PASTE_DRAFT_PREFIX}${threadId}`);
+    const textKey = `${LEGACY_DRAFT_PREFIX}${threadId}`;
+    storageFor(textKey).removeItem(textKey);
+    const pasteKey = `${LEGACY_PASTE_DRAFT_PREFIX}${threadId}`;
+    storageFor(pasteKey).removeItem(pasteKey);
   } catch {
     // ignore
   }

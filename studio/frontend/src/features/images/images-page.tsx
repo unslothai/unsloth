@@ -78,6 +78,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
+import { readAfterUnload } from "@/lib/read-after-unload";
 import { Switch } from "@/components/ui/switch";
 import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
@@ -87,7 +88,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
-import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
+import { VramBudgetControl } from "@/features/settings/components/vram-budget-control";
+import { useDiffusionGpuChoices, useGpuDevices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -164,6 +167,7 @@ import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
 import {
+  CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
   recipeWorkflowLabel,
@@ -223,10 +227,11 @@ import {
 } from "@/lib/resolved-precision";
 import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
-  routedGgufFilename,
+  routedImageFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -240,6 +245,7 @@ import {
   DEFAULT_GEN,
   defaultsFor,
   defaultsKeyFor,
+  fixedStepsFor,
   loadedRecipeFor,
   residentDefaultsKey,
   residentRecipeFor,
@@ -263,8 +269,10 @@ import {
   TRANSPARENCY_CHECKER,
   additionalImageNumber,
   conditionedRequestFields,
+  familyPresetsCopy,
+  familyPresetsWithin,
+  inputImageWord,
   maxAdditionalImages,
-  presetsWithin,
   resolveEditSize,
   restoreInputsNote,
   seedReferenceResolution,
@@ -323,6 +331,8 @@ import {
   listDiffusionLoras,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
+  withSettledVramBudget,
+  VramBudgetSaveError,
   loadDiffusionModel,
   moveDiffusionQueueJob,
   type ImageQueueJob,
@@ -2054,6 +2064,7 @@ export function ImagesPage({
     "auto",
   );
   const gpuChoices = useDiffusionGpuChoices();
+  const imageGpuDevices = useGpuDevices(true);
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
@@ -2304,6 +2315,7 @@ export function ImagesPage({
   const loadSeq = useRef(0);
   // Settles only after handleLoad finishes, since begin_load refuses a second load while one is live.
   const pendingStart = useRef<Promise<unknown> | null>(null);
+  const pendingUnload = useRef<Promise<boolean> | null>(null);
 
   // Set when the compensating unload failed, so the cancelled load is STILL running.
   const loadTrackingRestored = useRef(false);
@@ -2410,6 +2422,10 @@ export function ImagesPage({
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
+  const fixedSteps = !external && status?.loaded === true ? fixedStepsFor(status.family) : null;
+  useEffect(() => {
+    if (fixedSteps !== null && steps !== fixedSteps) setSteps(fixedSteps);
+  }, [fixedSteps, steps]);
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
@@ -3379,6 +3395,8 @@ export function ImagesPage({
   );
 
   const refreshStatus = useCallback(async () => {
+    // A read during teardown can still see the resident and supersede the unload response.
+    if (pendingUnload.current) await pendingUnload.current;
     const ticket = ++statusTicket.current;
     try {
       setStatusIfNewest(ticket, ownDiffusionStatus(await getDiffusionStatus()));
@@ -3625,7 +3643,7 @@ export function ImagesPage({
             genVisibilityListener.current = null;
           }
           if (!isMounted.current) return;
-          setBusy(null);
+          setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
           void loadGallery();
           void refreshStatus();
@@ -3713,7 +3731,7 @@ export function ImagesPage({
       // A load runs on the backend as a daemon thread that survives navigation, so resume tracking one still in flight.
       let inFlight = false;
       try {
-        const p = await getDiffusionLoadProgress();
+        const p = await readAfterUnload(pendingUnload, () => getDiffusionLoadProgress());
         inFlight = isLoadInFlightPhase(p.phase);
         if (inFlight) {
           setBusy("loading");
@@ -3738,7 +3756,7 @@ export function ImagesPage({
       setInitialLoadProbe(inFlight ? "loading" : "idle");
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
-        const g = await getGenerateProgress();
+        const g = await readAfterUnload(pendingUnload, getGenerateProgress);
         if (g.active) {
           runTarget.current = g.target ?? undefined;
           setBusy("generating");
@@ -4410,9 +4428,11 @@ export function ImagesPage({
       let incompatible: string | null = null;
       let incompatibleCode: string | null = null;
       try {
-        const plan = retiredSnapshot
-          ? await requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
-          : await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
+        const plan = await withSettledVramBudget(() =>
+          retiredSnapshot
+            ? requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
+            : requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced),
+        );
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);
@@ -4465,6 +4485,16 @@ export function ImagesPage({
           return true;
         }
       } catch (error) {
+        // Not a plan failure: the fallback load below would run on the budget the user replaced.
+        if (error instanceof VramBudgetSaveError) {
+          pickToast.dismiss(pickToastId);
+          if (ownRevert && quantRevert.current === ownRevert) {
+            revertPick(ownRevert);
+            quantRevert.current = null;
+          }
+          toast.error(error.message);
+          return true;
+        }
         if (downloadOnly) {
           toast.error("Could not plan the download", {
             description: error instanceof Error ? error.message : "Try selecting the model again.",
@@ -4617,8 +4647,8 @@ export function ImagesPage({
     }
     // `routeSearch` is rebuilt every render, so depend on the two fields.
     const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
-    const routedFilename = routedGgufFilename(routed);
-    const routedLabel = routedGgufLabel(routed);
+    const routedFilename = routedImageFilename(routed);
+    const routedLabel = routedFilename ? null : routedGgufLabel(routed);
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
@@ -4655,7 +4685,7 @@ export function ImagesPage({
         wanted,
         "auto",
         false,
-        pick.opts.kind === "gguf" ? (pick.opts.filename ?? null) : null,
+        pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null),
       );
     }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
@@ -4980,35 +5010,47 @@ export function ImagesPage({
     if (trainingCompletions > 0) setLoraRefreshKey((k) => k + 1);
   }, [trainingCompletions]);
 
-  const handleUnload = useCallback(async (): Promise<boolean> => {
+  const handleUnload = useCallback((): Promise<boolean> => {
+    if (pendingUnload.current) return pendingUnload.current;
+
     pendingRecalledGeneration.current = null;
     dropResidentState();
     loadTrackingRestored.current = false;
     setBusy("unloading");
-    try {
-      setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
-      setQuant(null);
-      // Wait for any in-flight load start to finish, compensating unload included, or the older load
-      // keeps running with no toast or cancel control.
-      const pending = pendingStart.current;
-      if (pending) {
-        try {
-          await pending;
-        } catch {
-          // Its own handler reports the failure; this only waits for the window to close.
+
+    async function unload(): Promise<boolean> {
+      try {
+        setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
+        setQuant(null);
+        // Wait for any in-flight load start to finish, compensating unload included, or the older load
+        // keeps running with no toast or cancel control.
+        const pending = pendingStart.current;
+        if (pending) {
+          try {
+            await pending;
+          } catch {
+            // Its own handler reports the failure; this only waits for the window to close.
+          }
         }
+        // Tracking RESTORED means the compensating unload failed and the load is still running.
+        return !loadTrackingRestored.current;
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to unload model");
+        void refreshStatus();
+        return false;
       }
-      // Tracking RESTORED means the compensating unload failed and the load is still running.
-      return !loadTrackingRestored.current;
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to unload model");
-      void refreshStatus();
-      return false;
-    } finally {
+    }
+
+    pendingUnload.current = unload().finally(() => {
+      pendingUnload.current = null;
       // Not an unconditional clear: a restore may have set "loading" deliberately.
       setBusy((prev) => (prev === "unloading" ? null : prev));
-    }
-  }, [refreshStatus, dropResidentState]);
+    });
+    return pendingUnload.current;
+  }, [refreshStatus, dropResidentState, setStatusIfNewest]);
+
+  const ejecting = useRef(false);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
 
   // The unload cancels the load; it leaves only cache, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
@@ -5087,8 +5129,15 @@ export function ImagesPage({
       resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
     [editSizing, sourceDims, matchResolution, width, height, sizeLimits],
   );
-  const officialPresets = useMemo(() => presetsWithin(sizeLimits), [sizeLimits]);
+  const loadedFamily = status?.family ?? null;
+  const officialPresets = useMemo(
+    () => familyPresetsWithin(loadedFamily, sizeLimits),
+    [loadedFamily, sizeLimits],
+  );
+  const presetsCopy = familyPresetsCopy(loadedFamily);
   const showOfficialPresets = sizeLimits.maxSide > MAX_OUTPUT_DEFAULT && officialPresets.length > 0;
+  // "Picture" where the family's prompts name the inputs <Picture N> (MiniMax-H3-Image), else "Image".
+  const imageWord = inputImageWord(loadedFamily);
   const unifiedEditActive = workflow === "edit" && unifiedEdit;
   const onLocalizedLayer = useCallback((dataUrl: string | null) => setLocalizedLayer(dataUrl), []);
   const onLocalizedColors = useCallback((names: string[]) => setLocalizedColors(names), []);
@@ -5096,15 +5145,15 @@ export function ImagesPage({
   const renderAdditionalImages = (numberOf: (i: number) => number, hint: string) => (
     <>
       {referenceImages.map((img, i) => (
-        <Field key={i} label={`Image ${numberOf(i)}`} hint={hint}>
+        <Field key={i} label={`${imageWord} ${numberOf(i)}`} hint={hint}>
           <div className="space-y-1.5">
             <ImageDropzone
               value={img}
               onChange={(v) =>
                 setReferenceImages((prev) => prev.map((p, j) => (j === i ? (v ?? "") : p)))
               }
-              removeLabel={`Remove image ${numberOf(i)}`}
-              cropSubject={`Image ${numberOf(i)}`}
+              removeLabel={`Remove ${imageWord.toLowerCase()} ${numberOf(i)}`}
+              cropSubject={`${imageWord} ${numberOf(i)}`}
             />
             <Button
               type="button"
@@ -5114,7 +5163,7 @@ export function ImagesPage({
               onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
             >
               <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
-              Remove image {numberOf(i)}
+              Remove {imageWord.toLowerCase()} {numberOf(i)}
             </Button>
           </div>
         </Field>
@@ -5134,7 +5183,7 @@ export function ImagesPage({
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          Add image
+          Add {imageWord.toLowerCase()}
         </Button>
       )}
     </>
@@ -5224,10 +5273,7 @@ export function ImagesPage({
         </div>
       </Field>
       {showOfficialPresets && (
-        <Field
-          label="2K presets"
-          hint="The model's native 2K sizes. They take several times the memory and time of a 1 megapixel image."
-        >
+        <Field label={presetsCopy.label} hint={presetsCopy.hint}>
           <Select
             value=""
             onValueChange={(v) => {
@@ -5240,8 +5286,8 @@ export function ImagesPage({
               setPortrait(m.portrait);
             }}
           >
-            <SelectTrigger aria-label="2K presets">
-              <SelectValue placeholder="Choose a 2K size" />
+            <SelectTrigger aria-label={presetsCopy.label}>
+              <SelectValue placeholder="Choose a size" />
             </SelectTrigger>
             <SelectContent>
               {officialPresets.map((p) => (
@@ -5645,7 +5691,7 @@ export function ImagesPage({
       cancelRequested.current = false;
       // Await on EVERY exit: a run can change status (compile, cancelled native run), so Generate could 409.
       if (isMounted.current) await refreshStatus();
-      setBusy(null);
+      setBusy((prev) => (prev === "generating" ? null : prev));
       setGenDone(null);
       setGenStep(null);
       setStopping(false);
@@ -5896,7 +5942,7 @@ export function ImagesPage({
 
   useEffect(() => {
     if (external) {
-      setSupported(["create"]);
+      setSupported([...CONNECTION_WORKFLOWS]);
       return;
     }
     if (!status?.loaded) {
@@ -6046,6 +6092,9 @@ export function ImagesPage({
           ["sage", "SageAttention (INT8)"],
         ]}
       />
+      {!external && imageGpuDevices.length > 0 && (
+        <VramBudgetControl image modelLoading={busy === "loading"} />
+      )}
       <AdvancedSelect
         label="Memory"
         hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
@@ -6244,7 +6293,8 @@ export function ImagesPage({
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
-                onEject={status?.loaded ? handleUnload : undefined}
+                loaded={busy === "unloading" ? false : undefined}
+                onEject={status?.loaded && busy !== "unloading" ? handleEject : undefined}
                 variant="ghost"
                 className="ml-1.5 max-w-full overflow-hidden pl-2.5! pr-1.5! h-(--studio-chat-control-height,34px)!"
                 task={IMAGE_GEN_TASKS}
@@ -6602,10 +6652,10 @@ export function ImagesPage({
             {workflow === "reference" && (
               <>
                 <Field
-                  label={unifiedEdit ? "Image 1" : "Reference image"}
+                  label={unifiedEdit ? `${imageWord} 1` : "Reference image"}
                   hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? "Image 1" : "Reference image"} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? `${imageWord} 1` : "Reference image"} />
                 </Field>
                 {renderAdditionalImages(
                   (i) => i + 2,
@@ -6677,10 +6727,14 @@ export function ImagesPage({
                   </Field>
                 ) : (
                   <Field
-                    label="Image 1 (source)"
-                    hint="The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
+                    label={`${imageWord} 1 (source)`}
+                    hint={
+                      imageWord === "Picture"
+                        ? "The image to edit. Describe the change in the instruction below; add up to 15 more pictures and refer to them as <Picture 1>, <Picture 2> and so on, saying what to keep and what to change."
+                        : "The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
+                    }
                   >
-                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Image 1" />
+                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={`${imageWord} 1`} />
                   </Field>
                 )}
                 {conditioning?.localized_edit_modes?.length ? (
@@ -7064,7 +7118,8 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            {!unifiedEditActive && sizeControls}
+            {/* A connection edit sends no size. */}
+            {!unifiedEditActive && !(external && workflow === "edit") && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
             {!external && (
@@ -7072,12 +7127,17 @@ export function ImagesPage({
                 <div className="pt-2">
                   <SliderField
                     label="Steps"
-                    hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
-                    value={steps}
+                    hint={
+                      fixedSteps !== null
+                        ? `The loaded model is distilled to exactly ${fixedSteps} steps, one output head per step, so the count is fixed.`
+                        : "Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
+                    }
+                    value={fixedSteps ?? steps}
                     min={1}
                     max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
+                    disabled={fixedSteps !== null}
                   />
                 </div>
                 <SliderField

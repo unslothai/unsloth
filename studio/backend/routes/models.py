@@ -319,7 +319,7 @@ from models.responses import (
     VisionCheckResponse,
     EmbeddingCheckResponse,
 )
-from utils.paths.path_utils import is_appledouble_metadata
+from utils.paths.path_utils import is_appledouble_metadata, is_network_or_device_path
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -1825,6 +1825,16 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
             continue
         seen_roots.add(key)
         resolved_roots.append(resolved)
+
+    if not any(_browse_relative_parts(requested_path, root) is not None for root in resolved_roots):
+        # Spelled through a symlinked root (moved install, linked $HOME): matches only once resolved.
+        if not is_network_or_device_path(requested_path):
+            try:
+                real = os.path.realpath(requested_path)
+            except (OSError, ValueError):
+                real = requested_path
+            if not is_network_or_device_path(real):
+                requested_path = real
 
     for root in resolved_roots:
         parts = _browse_relative_parts(requested_path, root)
@@ -4673,6 +4683,8 @@ async def get_gguf_variants(
                         update_available = bool(getattr(v, "update_available", False)),
                         partial = bool(getattr(v, "partial", False)),
                         cleanable = bool(getattr(v, "cleanable", False)),
+                        engram_precision = getattr(v, "engram_precision", None),
+                        engram_ready = list(getattr(v, "engram_ready", None) or ()),
                     )
                     for v in response.variants
                 ],
@@ -4684,6 +4696,10 @@ async def get_gguf_variants(
                 loadable_variants = getattr(response, "loadable_variants", None),
                 loadable = getattr(response, "loadable", None),
                 variant_format = getattr(response, "variant_format", None),
+                engram_tables = [
+                    table.model_dump() for table in getattr(response, "engram_tables", None) or ()
+                ],
+                engram_supported = getattr(response, "engram_supported", None),
             ),
             via_api_key = via_api_key,
         )
@@ -4702,6 +4718,9 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    engram_precision: str = Query(
+        "", max_length = 32, description = "Standalone Engram table the load fetches, if any"
+    ),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -4714,6 +4733,7 @@ async def get_gguf_download_progress(
             variant = variant,
             expected_bytes = expected_bytes,
             hf_token = hf_token,
+            engram_precision = engram_precision.strip(),
         ),
         via_api_key = via_api_key,
     )
