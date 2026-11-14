@@ -11,6 +11,7 @@ import {
   isHoldOn,
   REPEAT_WINDOW_MS,
   replyEchoesFiller,
+  isSameAsk,
   sharesMostWords,
 } from "../src/features/chat/voice/laya-outcomes.ts";
 
@@ -52,4 +53,10 @@ test("a queued interrupt cuts through a run parked on Allow/Deny; other verdicts
   assert.equal(interjectUnderApproval("ignore", true), "ignore");
   assert.equal(interjectUnderApproval("restart", true), "restart");
   assert.equal(interjectUnderApproval(null, true), null);
+});
+
+test("a correction is not the same ask, an impatient re-ask is", () => {
+  assert.equal(isSameAsk("Write a poem about dogs", "Write a poem about cats instead"), false);
+  assert.equal(isSameAsk("Write a poem about dogs", "can you write a poem about dogs please"), true);
+  assert.equal(isSameAsk("what is the weather in Paris", "the weather in Paris?"), true);
 });

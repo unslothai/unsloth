@@ -41,3 +41,16 @@ test("Stop closes the open session before re-arming, as a thread reset does", ()
   const body = handler.slice(0, handler.indexOf("registerVoiceStopSpeaking(null)"));
   assert.match(body, /if \(composer\.getState\(\)\.dictation\) composer\.stopDictation\(\);\s*resumeListen\(\);/);
 });
+
+test("a voice turn with attachments goes through the composer, and the run waits for it to land", () => {
+  const commit = engine.slice(engine.indexOf("const commitUtterance = useCallback("));
+  assert.match(
+    commit,
+    /if \(composer\.getState\(\)\.attachments\.length > 0\) \{[\s\S]*?composer\.setText\(text\);\s*composer\.send\(\{ startRun: false \}\);/,
+  );
+  assert.match(commit, /if \(msgs\.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES\) \{/);
+});
+
+test("only the same request again counts as impatience", () => {
+  assert.match(engine, /const sameAsk = isSameAsk\(lastUserPrompt\(\), text\);/);
+});
