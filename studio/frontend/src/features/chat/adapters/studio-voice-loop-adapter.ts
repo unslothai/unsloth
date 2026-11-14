@@ -26,6 +26,7 @@ import {
   answersClosingQuestion,
   isReplyEcho,
   isSttNoise,
+  looksUnfinished,
   joinTurn,
 } from "@/features/chat/voice/turn-complete";
 import {
@@ -225,7 +226,7 @@ function settleFinished(realSpeech: boolean): void {
 
 async function turnUnfinished(text: string): Promise<boolean> {
   const r = await judgeTurnComplete(text);
-  const unfinished = r !== null && r.p < JUDGE_SEND_THRESHOLD;
+  const unfinished = r === null ? looksUnfinished(text) : r.p < JUDGE_SEND_THRESHOLD;
   heldJudgeId = unfinished ? (r?.id ?? null) : null;
   if (r?.id && !unfinished) watchFinished(r.id);
   return unfinished;

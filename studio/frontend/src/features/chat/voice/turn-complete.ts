@@ -2,6 +2,32 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 
+// Only when the turn judge cannot answer (none configured, loading, timed out): a fragment ending on
+// a dangling word or comma waits for the rest instead of starting a reply.
+const DANGLING = new Set([
+  "um", "uh", "uhm", "erm", "hmm", "like", "just", "so", "and", "but", "or", "nor",
+  "because", "cause", "cuz", "then", "than", "that", "which", "who", "whom", "whose",
+  "if", "when", "while", "where", "whether", "the", "a", "an", "to", "of", "with",
+  "about", "for", "from", "into", "onto", "at", "by", "in", "on", "as", "per", "versus",
+  "vs", "my", "your", "his", "her", "its", "our", "their", "this", "these", "those",
+  "some", "any", "every", "each", "very", "really", "basically", "actually", "kinda",
+  "sorta", "mean", "know", "gonna", "wanna", "is", "are", "was", "were", "be", "been",
+  "being", "do", "does", "did", "have", "has", "had", "can", "could", "would", "should",
+  "will", "shall", "may", "might", "must", "not", "also", "maybe", "especially",
+]);
+
+export function looksUnfinished(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/[,;:\-–—]$|\.\.\.$|…$/.test(t)) return true;
+  if (/[.!?]["')\]]?$/.test(t)) return false;
+  const words = t.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
+  const last = words[words.length - 1] ?? "";
+  if (DANGLING.has(last)) return true;
+  const tail = words.slice(-2).join(" ");
+  return tail === "you know" || tail === "i mean" || tail === "kind of" || tail === "sort of";
+}
+
 const BACKCHANNEL = new Set([
   "mm", "mmm", "hmm", "hm", "mhm", "mm-hmm", "mmhmm", "uh", "um", "uhm", "umm", "ah", "ahh",
   "oh", "ooh", "huh", "eh", "er", "erm", "hmmm", "uh-huh", "uh-uh",

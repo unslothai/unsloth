@@ -1337,10 +1337,9 @@ export const VoiceEngine: FC = () => {
   }, [holdPlayback]);
 
   const resumeOrFlush = useCallback(() => {
-    if (
-      pendingForVoiceRef.current.length &&
-      !useChatRuntimeStore.getState().voiceSlotLoading
-    ) {
+    // Only once the voice is up: after a failed load each silent session would re-park and reload in a loop.
+    const rt = useChatRuntimeStore.getState();
+    if (pendingForVoiceRef.current.length && !rt.voiceSlotLoading && rt.voiceSlotLoaded) {
       submitRef.current("");
       return;
     }

@@ -273,3 +273,8 @@ test("Compare's read-only threads never mount the voice orb", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /\{voiceRequested && !hideComposer && \(\s*<Suspense fallback=\{null\}>\s*<VoiceOrb \/>/);
 });
+
+test("the judge falls back to the local unfinished check, and parked speech waits for a loaded voice", () => {
+  assert.match(loop, /const unfinished = r === null \? looksUnfinished\(text\) : r\.p < JUDGE_SEND_THRESHOLD;/);
+  assert.match(engine, /if \(pendingForVoiceRef\.current\.length && !rt\.voiceSlotLoading && rt\.voiceSlotLoaded\) \{/);
+});
