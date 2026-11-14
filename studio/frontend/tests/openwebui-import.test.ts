@@ -758,9 +758,9 @@ test("builtin calls keep inline outputs and results arrays", () => {
   ]);
   // Client-run calls keep no status-based result and no hosted marker; hosted calls default to completed.
   assert.equal(calls[2].result, undefined);
-  assert.equal(calls[2].args._server_tool, undefined);
+  assert.equal((calls[2].args as Record<string, unknown>)._server_tool, undefined);
   assert.equal(calls[3].result, "completed");
-  assert.equal(calls[3].args._server_tool, true);
+  assert.equal((calls[3].args as Record<string, unknown>)._server_tool, true);
 });
 
 test("a multimodal turn keeps its text and image when detection routes it here", () => {
