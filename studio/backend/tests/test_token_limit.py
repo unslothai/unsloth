@@ -439,3 +439,26 @@ def test_routes_refuse_api_key_changes_and_report_status():
     assert client.post("/api/token-limit/override").status_code == 200
     assert not _refused()
     assert _refused()
+
+
+def test_a_refund_runs_in_the_account_that_spent_the_override(monkeypatch):
+    from utils.account_context import AccountContext, current_account_id
+
+    accounts = []
+    monkeypatch.setattr(
+        token_limit, "restore_override", lambda _start: accounts.append(current_account_id())
+    )
+    import routes.inference as inference_route
+    from core.inference.api_monitor import override_claim_scope
+    from utils.account_context import bind_account, reset_account
+
+    monkeypatch.setattr(token_limit, "enforce", lambda: 1)
+    claim = {"spent": None, "generated": False}
+    token = bind_account(AccountContext("acct-preview", "u"))
+    with override_claim_scope(claim):
+        asyncio.run(inference_route._enforce_token_limit(SimpleNamespace(state = SimpleNamespace())))
+    # A preview link's dependency has already unbound its account when the middleware refunds.
+    reset_account(token)
+    asyncio.run(token_limit.refund_if_unused(claim, failed = True))
+    asyncio.run(token_limit.refund_if_unused({"spent": 1, "generated": False}, failed = True))
+    assert accounts == ["acct-preview", current_account_id()]

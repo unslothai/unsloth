@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from storage.studio_db import get_app_setting, get_connection, upsert_app_settings
 from storage.token_usage_ledger import window_usage
+from utils.account_context import run_as
 
 SETTINGS_KEY = "token_limit"
 OVERRIDE_KEY = "token_limit_override"
@@ -196,7 +197,12 @@ async def refund_if_unused(claim: dict, *, failed: bool) -> None:
     # A 503 no-model refusal generated nothing, but a 502 can follow output, and a success through
     # a path the monitor does not see must never refund. A monitored cancel / fail counts.
     if (failed or claim.get("failed")) and claim.get("spent") and not claim.get("generated"):
-        await asyncio.to_thread(restore_override, claim["spent"])
+        # Route dependencies (preview links) unbind their account before this runs.
+        account = claim.get("account")
+        if account is None:
+            await asyncio.to_thread(restore_override, claim["spent"])
+        else:
+            await asyncio.to_thread(run_as, account, restore_override, claim["spent"])
 
 
 class OverrideRefundMiddleware:

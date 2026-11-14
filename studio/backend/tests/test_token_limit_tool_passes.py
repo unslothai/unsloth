@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
+import json
+from types import SimpleNamespace
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
-from core.inference.api_monitor import ApiMonitor
+from core.inference.api_monitor import ApiMonitor, override_claim_scope
 import routes.inference as inference_route
 from .llama_backend_double import FakeLlamaCppBackend
 
@@ -99,6 +103,9 @@ def _usage(
         (False, 0, [("message_reasoning", 400)], "completed", (0, 100, 100)),
         # Calls past the preview's call cap are still generated output.
         (False, 0, [("tool_call", (i, 40)) for i in range(70)], "cancelled", (0, 700, 700)),
+        # Whole-response calls: the preview trims arguments to 500 characters, the estimate does not.
+        (False, 0, [("message_tool_call", 3986)], "completed", (0, 1000, 1000)),
+        (False, 0, [("anthropic_tool_use", 3986)], "completed", (0, 1000, 1000)),
         # A tool loop's earlier passes reported after a later one was interrupted mid-stream.
         (
             True,
@@ -174,6 +181,16 @@ def test_a_receipt_settles_reported_and_estimated_usage(
             inference_route._monitor_openai_chunk(
                 entry, {"choices": [{"index": 0, "message": message}]}
             )
+        elif kind == "message_tool_call":
+            call = {"id": "c", "function": {"name": "f", "arguments": "a" * value}}
+            message = {"role": "assistant", "content": None, "tool_calls": [call]}
+            inference_route._monitor_openai_chunk(
+                entry, {"choices": [{"index": 0, "message": message}]}
+            )
+        elif kind == "anthropic_tool_use":
+            block = {"type": "tool_use", "id": "t", "name": "f", "input": "a" * value}
+            response = SimpleNamespace(body = json.dumps({"content": [block]}).encode())
+            inference_route._monitor_anthropic_json_response(response, entry)
         elif kind == "tool_call":
             index, chars = value
             monitor.accumulate_openai_tool_call(
@@ -436,3 +453,34 @@ def test_a_chatgpt_subscription_stream_settles_a_receipt(monkeypatch, silent_can
         return
     assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (30, 7, 37)
     assert receipt.via_api_key is False
+
+
+def test_a_stopped_in_process_message_settles_its_partial_output(monkeypatch):
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    backend = SimpleNamespace(models = {}, active_model_name = None)
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_orchestrator_public_model_id", lambda _backend: None)
+    monkeypatch.setattr(inference_route, "_monitor_context_length", lambda: None)
+
+    async def stopped_completion(_chat_req, request, _subject):
+        # The user stops the run; the in-process backend still returns what it generated.
+        request.state.generation_cancel_event.set()
+        message = {"role": "assistant", "content": "r" * 400}
+        return SimpleNamespace(body = json.dumps({"choices": [{"index": 0, "message": message}]}))
+
+    monkeypatch.setattr(inference_route, "openai_chat_completions", stopped_completion)
+    payload = inference_route.AnthropicMessagesRequest(
+        model = "m", max_tokens = 16, messages = [{"role": "user", "content": "hi"}]
+    )
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/v1/messages"), method = "POST"
+    )
+    claim = {"spent": 1, "generated": False}
+    with override_claim_scope(claim), pytest.raises(asyncio.CancelledError):
+        asyncio.run(inference_route._anthropic_in_process_messages(payload, request, "owner"))
+    [receipt] = receipts
+    assert receipt.completion_tokens == 100
+    assert claim["generated"]

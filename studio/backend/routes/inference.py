@@ -3711,6 +3711,7 @@ async def _enforce_token_limit(request: Any) -> None:
     spent = await asyncio.to_thread(token_limit.enforce)
     if spent and (claim := override_claim()) is not None:
         claim["spent"] = spent
+        claim["account"] = current_account()
     if state is not None:
         state.token_limit_admitted = True
         if spent:
@@ -7490,7 +7491,11 @@ async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_ti
         timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
 
 
-def _monitor_call_text(name: Any, arguments: Any = None) -> str:
+def _monitor_call_text(
+    name: Any,
+    arguments: Any = None,
+    cap: Optional[int] = 500,
+) -> str:
     call_name = str(name or "tool")
     if arguments is None or arguments == "":
         return f"Tool call: {call_name}"
@@ -7498,12 +7503,21 @@ def _monitor_call_text(name: Any, arguments: Any = None) -> str:
         args_text = json.dumps(arguments, default = str)
     else:
         args_text = arguments
-    if len(args_text) > 500:
-        args_text = args_text[:497] + "..."
+    if cap is not None and len(args_text) > cap:
+        args_text = args_text[: cap - 3] + "..."
     return f"Tool call: {call_name}({args_text})"
 
 
-def _monitor_tool_calls_text(tool_calls: Any) -> str:
+def _monitor_tool_calls_text(tool_calls: Any, monitor_id: Optional[str] = None) -> str:
+    """Capped preview; with ``monitor_id`` the trimmed remainder still counts as output."""
+    preview = _monitor_tool_calls_text_capped(tool_calls)
+    if monitor_id and preview:
+        full = _monitor_tool_calls_text_capped(tool_calls, cap = None)
+        api_monitor.count_output(monitor_id, len(full) - len(preview))
+    return preview
+
+
+def _monitor_tool_calls_text_capped(tool_calls: Any, cap: Optional[int] = 500) -> str:
     if not isinstance(tool_calls, list):
         return ""
     parts: list[str] = []
@@ -7517,7 +7531,7 @@ def _monitor_tool_calls_text(tool_calls: Any) -> str:
         args = fn.get("arguments")
         if args is None:
             args = tool_call.get("arguments")
-        parts.append(_monitor_call_text(name, args))
+        parts.append(_monitor_call_text(name, args, cap))
     return "\n".join(parts)
 
 
@@ -7703,7 +7717,7 @@ def _monitor_openai_chunk(
                 _flush_monitor_stream_tool_calls(monitor_id, choice_index)
             continue
         if not streaming and isinstance(delta, dict):
-            tool_text = _monitor_tool_calls_text(delta.get("tool_calls"))
+            tool_text = _monitor_tool_calls_text(delta.get("tool_calls"), monitor_id)
             if tool_text:
                 api_monitor.append_reply(monitor_id, tool_text)
                 continue
@@ -7714,7 +7728,7 @@ def _monitor_openai_chunk(
             if isinstance(text, str):
                 reply_parts.append((idx, text))
             else:
-                tool_text = _monitor_tool_calls_text(message.get("tool_calls"))
+                tool_text = _monitor_tool_calls_text(message.get("tool_calls"), monitor_id)
                 if tool_text:
                     reply_parts.append((idx, tool_text))
         if streaming and choice.get("finish_reason"):
@@ -7938,10 +7952,12 @@ def _monitor_anthropic_sse_line(
     return _monitor_anthropic_payload(monitor_id, data, context_length)
 
 
-def _monitor_anthropic_content_blocks(content: Any) -> str:
+def _monitor_anthropic_content_blocks(content: Any) -> tuple[str, int]:
+    """Capped preview text, plus the generated characters the preview trimmed."""
     if not isinstance(content, list):
-        return ""
+        return "", 0
     parts: list[str] = []
+    trimmed = 0
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -7949,7 +7965,9 @@ def _monitor_anthropic_content_blocks(content: Any) -> str:
             parts.append(block["text"])
         elif block.get("type") in ("tool_use", "server_tool_use"):
             parts.append(_monitor_call_text(block.get("name"), block.get("input")))
-    return "".join(parts)
+            full = _monitor_call_text(block.get("name"), block.get("input"), cap = None)
+            trimmed += len(full) - len(parts[-1])
+    return "".join(parts), trimmed
 
 
 def _monitor_anthropic_json_response(
@@ -7971,9 +7989,10 @@ def _monitor_anthropic_json_response(
     if not isinstance(data, dict):
         api_monitor.finish(monitor_id, status)
         return
-    text = _monitor_anthropic_content_blocks(data.get("content"))
+    text, trimmed = _monitor_anthropic_content_blocks(data.get("content"))
     if text:
         api_monitor.set_reply(monitor_id, text)
+    api_monitor.count_output(monitor_id, trimmed)
     if data.get("stop_reason"):
         api_monitor.set_perf(monitor_id, stop_reason = str(data["stop_reason"]))
     _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
@@ -40471,6 +40490,9 @@ async def _responses_non_streaming(
             instructions = payload.instructions,
         )
         api_monitor.set_reply(monitor_id, text or _monitor_tool_calls_text(tool_calls))
+        if not text:
+            # set_reply replaces the count, so the preview's trimmed arguments are added after it.
+            _monitor_tool_calls_text(tool_calls, monitor_id)
         _monitor_usage(
             monitor_id,
             usage_data,
@@ -44628,6 +44650,10 @@ async def _anthropic_in_process_messages(
                 _monitor_perf_sink.reset(sink_token)
             # A stopped run returns what it had; the llama-server path never answers one.
             if cancel_event.is_set():
+                try:
+                    _monitor_openai_chunk(monitor_id, json.loads(result.body), context_length)
+                except (AttributeError, TypeError, ValueError):
+                    pass
                 raise asyncio.CancelledError()
             response = _anthropic_message_from_openai_completion(
                 json.loads(result.body),
