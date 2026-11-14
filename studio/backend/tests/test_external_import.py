@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import dataclasses
 import gc
 import json
 import weakref
@@ -1019,3 +1020,43 @@ def test_an_empty_tool_output_still_completes_the_call(claude_home):
     )
     call = claude.read_transcript(path, "t", "s1").messages[1]["content"][0]
     assert call["result"] == ""
+
+
+def test_a_session_that_crashes_costs_only_its_own_chat(claude_home):
+    # Sorted ahead of the good file, a record the parser chokes on used to abort the run
+    # with every later session silently skipped behind a 500.
+    _session(claude_home, sid = "bad", records = [{"type": "user", "uuid": "b1", "message": None}])
+    _session(claude_home, sid = "good")
+
+    summary = run_import(claude.SOURCE)
+
+    assert summary.new_chats == 1
+    assert [m["content"][0]["text"] for m in _messages(claude.SOURCE, "good")] == [
+        "Fix the header",
+        "Fixed it.",
+    ]
+    assert any("bad.jsonl" in warning for warning in summary.warnings)
+    assert run_import(claude.SOURCE).new_chats == 0
+
+
+def test_a_cyclic_parent_chain_reimports_instead_of_looping(claude_home):
+    path = _session(claude_home)
+    run_import(claude.SOURCE)
+    transcript = claude.read_transcript(path, thread_id_for(claude.SOURCE, "s1"), "s1")
+    cyclic = dataclasses.replace(
+        transcript,
+        messages = transcript.messages
+        + [
+            {**transcript.messages[0], "id": "cycle-x", "parentId": "cycle-y"},
+            {**transcript.messages[1], "id": "cycle-y", "parentId": "cycle-x"},
+        ],
+    )
+    source = dataclasses.replace(claude.SOURCE, read_transcript = lambda *args: cyclic)
+
+    summary = run_import(source)
+
+    rows = {m["id"]: m for m in _messages(source, "s1")}
+    assert summary.messages == 2
+    assert {"cycle-x", "cycle-y"} <= set(rows)
+    # One of the pair lands as a root, which lets the other keep it as a parent.
+    assert all(m["parentId"] is None or m["parentId"] in rows for m in rows.values())
