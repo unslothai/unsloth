@@ -17349,15 +17349,72 @@ def _ddgs_wait_recording(
     return done, not_done
 
 
+class _SearchProviderBlocked(Exception):
+    """At least one approved search provider blocked or rate-limited this search."""
+
+
 def _ddgs_text(client, query, max_results, backend) -> list:
     """``client.text`` plus answers ddgs dropped: its batch wait returns at the first failure and
     never reads engines still running after the last batch, so an engine failing its connect cap
     discarded a slower engine's results (#15143). Its executor has joined them by return."""
+    # DDGS turns unsuccessful HTTP responses into an empty sweep. Observe only this
+    # client's engine responses, since its searches run in separate worker threads.
+    blocked = threading.Event()
+    get_engines = getattr(client, "_get_engines", None)
+    observed = []
+    original_selector = client.__dict__.get("_get_engines")
+    if callable(get_engines):
+
+        def select_engines(*args, **kwargs):
+            engines = get_engines(*args, **kwargs)
+            for engine in engines:
+                http = getattr(engine, "http_client", None)
+                request = getattr(http, "request", None)
+                if not callable(request) or any(old is http for old, _, _ in observed):
+                    continue
+
+                @functools.wraps(request)
+                def observe(
+                    *request_args,
+                    _request = request,
+                    _name = engine.name,
+                    **request_kwargs,
+                ):
+                    response = _request(*request_args, **request_kwargs)
+                    status = getattr(response, "status_code", None)
+                    challenge = (
+                        _name == "duckduckgo"
+                        and status == 202
+                        and "anomaly.js" in (getattr(response, "text", "") or "").lower()
+                    )
+                    if status in (403, 429) or challenge:
+                        blocked.set()
+                    return response
+
+                # Restore the original instance attribute, or remove ours when the
+                # request method originally came from the class.
+                observed.append((http, "request" in http.__dict__, request))
+                http.request = observe
+            return engines
+
+        client._get_engines = select_engines
     _DDGS_PENDING.futures = []
     try:
-        results, error = client.text(query, max_results = max_results, backend = backend), None
-    except Exception as exc:  # noqa: BLE001 - re-raised below unless a dropped engine answered
-        results, error = [], exc
+        try:
+            results, error = client.text(query, max_results = max_results, backend = backend), None
+        except Exception as exc:  # noqa: BLE001 - re-raised below unless a dropped engine answered
+            results, error = [], exc
+    finally:
+        for http, had_request, request in observed:
+            if had_request:
+                http.request = request
+            else:
+                del http.request
+        if callable(get_engines):
+            if original_selector is None:
+                del client._get_engines
+            else:
+                client._get_engines = original_selector
     pending, _DDGS_PENDING.futures = getattr(_DDGS_PENDING, "futures", []), []
     late = []
     if len(results) < max_results:
@@ -17373,8 +17430,17 @@ def _ddgs_text(client, query, max_results, backend) -> list:
         results = list(results) + [
             r for r in aggregator.extract_dicts() if r.get("href") not in seen
         ]
-    if not results and error is not None:
-        raise error
+    if not results:
+        if blocked.is_set() and (
+            error is None
+            or (type(error).__name__ == "DDGSException" and _DDGS_EMPTY_SWEEP in str(error))
+        ):
+            raise _SearchProviderBlocked(
+                "one or more search providers blocked or rate-limited the request. "
+                'Try again later or read a known page directly with {"url": "<URL>"}.'
+            ) from error
+        if error is not None:
+            raise error
     return results[:max_results]
 
 
@@ -17848,6 +17914,7 @@ def _web_search(
         # bound fallback even if importing or resolving ddgs fails before its normal budget starts.
         deadline = time.monotonic() + timeout if timeout else None
         client, results, last_error = None, [], None
+        blocked_error = None
         rejected_results = False
         wikipedia_fallback = False
         try:
@@ -17886,6 +17953,8 @@ def _web_search(
                     rejected_results = rejected_results or bool(candidates and not found)
                 except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
                     last_error = exc
+                    if isinstance(exc, _SearchProviderBlocked):
+                        blocked_error = exc
                     continue
                 seen = {r.get("href") for r in results}
                 results += [r for r in found if r.get("href") not in seen]
@@ -17893,7 +17962,9 @@ def _web_search(
                     break
         except Exception as exc:
             last_error = exc
-        _note_text_search_outcome(bool(results) or rejected_results, last_error, timeout)
+        _note_text_search_outcome(
+            bool(results) or rejected_results, blocked_error or last_error, timeout
+        )
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
@@ -17922,8 +17993,11 @@ def _web_search(
             if cancel_event is not None and cancel_event.is_set():
                 return "Search cancelled."
         # blocked results take precedence over earlier tier exceptions.
-        if not results and last_error is not None and not rejected_results:
-            raise last_error
+        if not results and not rejected_results:
+            if blocked_error is not None:
+                raise blocked_error
+            if last_error is not None:
+                raise last_error
         if not results:
             return _empty_result_with_requested_images(
                 EMPTY_SEARCH_RESULTS[1]
