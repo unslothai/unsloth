@@ -475,3 +475,52 @@ def test_the_trainer_leaves_the_ordinary_case_to_the_policy():
             f"policy can see it: {requested}"
         )
         assert requested.rstrip().endswith("None"), requested
+
+
+def _config_num_proc_call():
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(source)
+    calls = [
+        value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant)
+        and key.value == "dataset_num_proc"
+        and isinstance(value, ast.Call)
+        and ast.unparse(value.func) == "dataset_map_num_proc"
+    ]
+    assert len(calls) == 1, "the SFTConfig dataset_num_proc entry moved; re-check this guard"
+    return tree, calls[0]
+
+
+def test_a_trainer_too_big_to_fork_tokenizes_in_process():
+    """The tokenize pool forks the loaded trainer: a 133 GiB Block Swap run went 138 -> 165 GiB host and was killed."""
+    import ast
+
+    tree, call = _config_num_proc_call()
+    serial_test = ast.unparse(call.args[0].test)
+    assert "fork_veto" in serial_test, serial_test
+    assigned = [
+        ast.unparse(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and any(ast.unparse(t) == "fork_veto" for t in node.targets)
+    ]
+    assert assigned and all(
+        "host_memory_fork_veto(" in a and "_offload_layers" in a for a in assigned
+    )
+
+
+def test_the_escape_hatch_still_beats_a_host_memory_serial_request(monkeypatch):
+    """The veto only asks for 1, so UNSLOTH_DATASET_NUM_PROC keeps the last word."""
+    _policy_or_skip()
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "3")
+    assert hw.dataset_map_num_proc(1, serial_as_none = False) == 3
+    monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC")
+    assert hw.dataset_map_num_proc(1, serial_as_none = False) == 1

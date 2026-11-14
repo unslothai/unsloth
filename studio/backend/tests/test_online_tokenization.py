@@ -34,6 +34,8 @@ datasets = pytest.importorskip("datasets")
 
 ROWS = MIN_ROWS_FOR_ONLINE + 5
 
+GIB = 1024**3
+
 
 def _text_dataset(n = ROWS, extra_columns = None):
     data = {
@@ -93,6 +95,12 @@ def _no_env_override(monkeypatch):
     monkeypatch.setattr(
         "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
         lambda: True,
+    )
+    # Pin host memory: the gate reads this process's RSS against the runner's free RAM.
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.host_memory_snapshot",
+        lambda: (GIB, 64 * GIB),
+        raising = False,
     )
 
 
@@ -368,6 +376,56 @@ def test_env_flag_one_overrides_the_cost_gates_only(monkeypatch):
     )
     assert forced.enabled, forced.reason
     assert not decide_online_tokenization(**_base_kwargs(is_vlm = True)).enabled
+
+
+@pytest.mark.parametrize("offload_layers", [28, "auto"])
+def test_block_swap_keeps_the_eager_path(offload_layers):
+    """Forked workers share the trainer's host pages copy-on-write; with offloaded layers in host RAM the copies
+    OOM-killed a 122 GiB trainer before step 1."""
+    decision = decide_online_tokenization(**_base_kwargs(offload_layers = offload_layers))
+    assert not decision.enabled
+    assert decision.as_log_line().startswith("Online tokenization: off (Block Swap")
+
+
+def test_a_trainer_holding_more_host_ram_than_is_left_keeps_the_eager_path():
+    decision = decide_online_tokenization(**_base_kwargs(host_memory = (122 * GIB, 49 * GIB)))
+    assert not decision.enabled
+    assert "122.0 GiB of host RAM with 49.0 GiB available" in decision.as_log_line()
+
+
+def test_host_memory_is_read_when_the_caller_does_not_pass_it(monkeypatch):
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.host_memory_snapshot",
+        lambda: (40 * GIB, 8 * GIB),
+    )
+    assert "host RAM" in decide_online_tokenization(**_base_kwargs()).reason
+
+
+def test_a_trainer_with_headroom_still_goes_online():
+    decision = decide_online_tokenization(**_base_kwargs(host_memory = (8 * GIB, 64 * GIB)))
+    assert decision.enabled, decision.reason
+
+
+def test_unreadable_host_memory_does_not_veto(monkeypatch):
+    monkeypatch.setattr("utils.datasets.online_tokenization.host_memory_snapshot", lambda: None)
+    assert decide_online_tokenization(**_base_kwargs()).enabled
+
+
+def test_the_shared_fork_veto_names_its_reason():
+    from utils.datasets.online_tokenization import host_memory_fork_veto
+
+    assert host_memory_fork_veto(0, (8 * GIB, 64 * GIB)) is None
+    assert host_memory_fork_veto(0, None) is None
+    assert "Block Swap" in host_memory_fork_veto(32, (8 * GIB, 64 * GIB))
+    assert "133.0 GiB of host RAM" in host_memory_fork_veto(0, (133 * GIB, 39 * GIB))
+
+
+def test_env_flag_one_overrides_the_host_memory_gates(monkeypatch):
+    monkeypatch.setenv(ENV_FLAG, "1")
+    decision = decide_online_tokenization(
+        **_base_kwargs(offload_layers = 28, host_memory = (122 * GIB, 49 * GIB))
+    )
+    assert decision.enabled, decision.reason
 
 
 def test_an_unrecognised_env_value_is_not_an_override(monkeypatch):

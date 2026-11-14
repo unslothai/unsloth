@@ -57,7 +57,7 @@ class OnlineTokenizationDecision:
 
 
 def env_override() -> Optional[bool]:
-    """``UNSLOTH_STUDIO_ONLINE_TOKENIZATION``: 0/false forces off, 1/true forces on. Unset returns None and the gates decide. Forcing on only drops the heuristic gates (row count, epoch count); correctness gates always stand, since the lazy path on a VLM or pre-tokenized split does not train differently, it fails."""
+    """``UNSLOTH_STUDIO_ONLINE_TOKENIZATION``: 0/false forces off, 1/true forces on. Unset returns None and the gates decide. Forcing on only drops the heuristic gates (host memory, row count, epoch count); correctness gates always stand, since the lazy path on a VLM or pre-tokenized split does not train differently, it fails."""
     raw = os.environ.get(ENV_FLAG)
     if raw is None:
         return None
@@ -213,6 +213,34 @@ def resolve_worker_count(desired: Optional[int] = None) -> int:
     return int(min(available, MAX_ONLINE_WORKERS))
 
 
+def host_memory_snapshot() -> Optional[tuple]:
+    """(this process's RSS, host RAM still available) in bytes, or None when unreadable."""
+    try:
+        import psutil
+        return int(psutil.Process().memory_info().rss), int(psutil.virtual_memory().available)
+    except Exception:  # noqa: BLE001 - unreadable reads as "no pressure"
+        return None
+
+
+def host_memory_fork_veto(
+    offload_layers: Any = 0, host_memory: Optional[tuple] = None
+) -> Optional[str]:
+    """Why forking this trainer could run the host out of RAM, or None. A forked child shares the parent's pages copy-on-write, and every page the parent rewrites while the child lives is then held twice: on a 180B MoE with Block Swap a 122 GiB trainer took the host from 128 to 174 GiB within 7s of the fork and was OOM-killed. Covers DataLoader workers and ``Dataset.map`` pools alike."""
+    if offload_layers:
+        return "Block Swap keeps offloaded layers in host RAM, which a fork would duplicate"
+    snapshot = host_memory_snapshot() if host_memory is None else host_memory
+    if snapshot is None:
+        return None
+    rss, available = snapshot
+    if rss <= available:
+        return None
+    gib = 1024**3
+    return (
+        f"trainer holds {rss / gib:.1f} GiB of host RAM with {available / gib:.1f} GiB "
+        f"available, more than a fork can safely duplicate"
+    )
+
+
 def prewarm_batch_count(grad_accum: int, workers: int, prefetch_factor: int) -> int:
     """Microbatches to pull before ``train()``: ``grad_accum`` because step 1 needs that many, and ``workers * prefetch_factor`` because that is the in-flight depth to fill."""
     return max(1, int(grad_accum or 1), int(workers or 0) * int(prefetch_factor or 0))
@@ -252,6 +280,8 @@ def decide_online_tokenization(
     workers: Optional[int] = None,
     prefetch_factor: int = DEFAULT_PREFETCH_FACTOR,
     resolved_max_steps_epochs: Optional[float] = None,
+    offload_layers: Any = 0,
+    host_memory: Optional[tuple] = None,
 ) -> OnlineTokenizationDecision:
     """Decide whether this run may tokenize online. Pure, GPU-free, testable. Every gate is a veto, correctness before cost, so the log reads "off (VLM)" rather than "off (dataset too small)" when both are true."""
     checks: list = []
@@ -326,6 +356,10 @@ def decide_online_tokenization(
     checks.append(("correctness gates", True))
 
     forced = override is True
+
+    memory_veto = None if forced else host_memory_fork_veto(offload_layers, host_memory)
+    if memory_veto is not None:
+        return veto(memory_veto)
 
     if row_count is None:
         try:
