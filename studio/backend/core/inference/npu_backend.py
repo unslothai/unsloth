@@ -16,6 +16,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterator, Optional
+from urllib.parse import quote
 
 import structlog
 
@@ -32,6 +33,7 @@ from core.inference.flm_files import (
 )
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable, OutputWindow
 from core.inference.npu_context import DEFAULT_CONTEXT_LENGTH, plan_context
+from core.inference.npu_flm_args import clamp_prefill_chunk, merge_flm_args
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -212,6 +214,7 @@ class _Loaded:
     model: NpuModel
     context_length: Optional[int]
     requested_context_length: Optional[int]
+    flm_args: Optional[str] = None
     fitted_context_length: Optional[int] = None
 
 
@@ -224,6 +227,7 @@ class NpuResident:
     requested_context_length: Optional[int]
     base_url: str
     api_key: str
+    flm_args: Optional[str] = None
     fitted_context_length: Optional[int] = None
 
     @property
@@ -434,6 +438,7 @@ class LemonadeNpuBackend:
             requested_context_length = loaded.requested_context_length,
             base_url = f"http://127.0.0.1:{port}",
             api_key = api_key or "",
+            flm_args = loaded.flm_args,
             fitted_context_length = loaded.fitted_context_length,
         )
 
@@ -952,6 +957,7 @@ class LemonadeNpuBackend:
         self,
         model_id: str,
         context_length: Optional[int] = None,
+        flm_args: Optional[str] = None,
     ) -> NpuModel:
         """Load a downloaded model onto the NPU and return it once lemond reports it resident."""
         with self._lock:
@@ -977,17 +983,20 @@ class LemonadeNpuBackend:
                 ctx = plan.context_length
                 replaced = True
                 self._raise_if_load_cancelled(model_id)
+                json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False}
+                if flm_args:
+                    # lemond gets the chunk held to the context this load resolved (only the load
+                    # knows it under Auto); the resident keeps the one asked for, as settings saved it.
+                    json_body["flm_args"] = clamp_prefill_chunk(
+                        merge_flm_args(self._saved_flm_args(server, model.id), flm_args), ctx
+                    )
                 server.note(f"Loading {model.id} with a {ctx}-token context")
                 window = server.open_window()
                 with server.backend_output(window):
                     response = server.request(
                         "POST",
                         "/v1/load",
-                        json_body = {
-                            "model_name": model.id,
-                            "ctx_size": ctx,
-                            "save_options": False,
-                        },
+                        json_body = json_body,
                         timeout = 900.0,
                     )
                     self._raise_if_load_cancelled(model_id)
@@ -1005,6 +1014,7 @@ class LemonadeNpuBackend:
                         requested_context_length = (
                             context_length if context_length and context_length > 0 else None
                         ),
+                        flm_args = flm_args or None,
                         fitted_context_length = plan.fits,
                     )
                     self._loading = None
@@ -1037,6 +1047,21 @@ class LemonadeNpuBackend:
         if server is not None:
             server.stop()
         return True
+
+    @staticmethod
+    def _saved_flm_args(server: LemonadeServer, model_id: str) -> str:
+        """The model's ``flm_args`` from its saved, architecture and server-wide layers."""
+        response = server.request(
+            "GET", f"/v1/models/{quote(model_id, safe = '')}/options", timeout = 30.0
+        )
+        if response.status_code != 200:
+            return ""
+        try:
+            effective = response.json().get("effective") or {}
+        except ValueError:
+            return ""
+        value = effective.get("flm_args") if isinstance(effective, dict) else None
+        return value if isinstance(value, str) else ""
 
     @staticmethod
     def _resident_context(server: LemonadeServer, model_id: str) -> Optional[int]:
