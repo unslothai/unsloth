@@ -19,5 +19,4 @@ export {
   resetChatBackground,
   useBackgroundStore,
 } from "./storage";
-export { redrawImage } from "./image";
 export { uploadBackgroundImage } from "./upload";

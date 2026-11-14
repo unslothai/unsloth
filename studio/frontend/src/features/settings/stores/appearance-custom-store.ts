@@ -10,51 +10,6 @@ import {
 import { COLOR_THEMES, type ColorThemeId } from "../lib/color-themes.ts";
 import { remeasureSkippedContent } from "../lib/interface-scale-runtime.ts";
 import type { ResolvedTheme } from "./theme-store";
-import {
-  type AppearanceCustomization,
-  type CustomModeColors,
-  DEFAULT_CUSTOMIZATION,
-  type ImportedFont,
-  migrateAppearanceMenuDefault,
-  migrateShippedSidebarNavDefault,
-  sanitizeColor,
-  sanitizeCustomization,
-  UI_FONT_SIZE_RANGE,
-} from "../lib/appearance-customization.ts";
-
-export {
-  CODE_FONT_SIZE_RANGE,
-  DEFAULT_CUSTOMIZATION,
-  isDefaultCustomization,
-  isHexColor,
-  MAX_IMPORTED_FONT_DATA_URL_LENGTH,
-  MAX_IMPORTED_FONT_NAME_LENGTH,
-  MAX_IMPORTED_FONTS,
-  MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH,
-  migrateAppearanceMenuDefault,
-  migrateShippedSidebarNavDefault,
-  sanitizeCustomization,
-  SIDEBAR_MENU_DEFAULT_VISIBLE,
-  SIDEBAR_MENU_ITEM_IDS,
-  SIDEBAR_NAV_AUTO_ITEM_IDS,
-  SIDEBAR_NAV_DEFAULT_PINNED,
-  SIDEBAR_NAV_ITEM_IDS,
-  sidebarNavAutoAfterChoice,
-  sidebarNavRowPinned,
-  UI_FONT_SIZE_RANGE,
-} from "../lib/appearance-customization.ts";
-export type {
-  AppearanceCustomization,
-  ChatWidthSetting,
-  CustomModeColors,
-  ImportedFont,
-  ReduceMotionSetting,
-  SentAttachmentsSetting,
-  SidebarMenuItemId,
-  SidebarMenuItemPref,
-  SidebarNavItemId,
-  SidebarNavItemPref,
-} from "../lib/appearance-customization.ts";
 
 // localStorage can throw (private browsing) and zustand's persist write is unguarded, so swallow.
 const guardedLocalStorage: StateStorage = {
@@ -81,6 +36,256 @@ const guardedLocalStorage: StateStorage = {
   },
 };
 
+export type ReduceMotionSetting = "system" | "on" | "off";
+export type ChatWidthSetting = "standard" | "wide" | "full";
+export type SentAttachmentsSetting = "auto" | "list" | "chips";
+
+export type CustomModeColors = {
+  accent: string | null;
+  background: string | null;
+  foreground: string | null;
+};
+
+export type ImportedFont = {
+  name: string;
+  dataUrl: string;
+};
+
+/** Settings, Help, Log out and Shutdown are pinned and never appear here. */
+export const SIDEBAR_MENU_ITEM_IDS = [
+  "api",
+  "darkMode",
+  "guidedTour",
+  "profile",
+  "appearance",
+  "resources",
+  "chat",
+  "connections",
+] as const;
+
+export type SidebarMenuItemId = (typeof SIDEBAR_MENU_ITEM_IDS)[number];
+
+export type SidebarMenuItemPref = {
+  id: SidebarMenuItemId;
+  visible: boolean;
+};
+
+export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
+  {
+    api: true,
+    darkMode: true,
+    guidedTour: true,
+    profile: false,
+    appearance: true,
+    resources: false,
+    chat: false,
+    connections: false,
+  };
+
+/** Array order is render order; unpinned rows go to "More" except a lone one, which is hidden. */
+export const SIDEBAR_NAV_ITEM_IDS = [
+  "hub",
+  "projects",
+  "library",
+  "images",
+  "video",
+  "audio",
+  "train",
+  "recipes",
+  "export",
+  "api",
+  // Last and under "More", so it joins every saved layout without moving anything.
+  "tasks",
+] as const;
+
+export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number];
+
+export type SidebarNavItemPref = {
+  id: SidebarNavItemId;
+  pinned: boolean;
+};
+
+export const SIDEBAR_NAV_AUTO_ITEM_IDS = ["projects"] as const satisfies
+  readonly SidebarNavItemId[];
+
+/** Projects steps into "More" while the Projects section lists folders, until a toggle in
+ * Customize sidebar drops it from `auto`. */
+export function sidebarNavRowPinned(
+  item: SidebarNavItemPref,
+  auto: readonly SidebarNavItemId[],
+  context: { projectsSectionShowing: boolean },
+): boolean {
+  if (item.id === "projects" && auto.includes("projects")) {
+    return !context.projectsSectionShowing;
+  }
+  return item.pinned;
+}
+
+export function sidebarNavAutoAfterChoice(
+  auto: readonly SidebarNavItemId[],
+  id: SidebarNavItemId,
+): SidebarNavItemId[] {
+  return auto.filter((entry) => entry !== id);
+}
+
+// Matches the shipped layout, so an untouched install looks unchanged.
+export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
+  hub: true,
+  projects: true,
+  library: true,
+  images: true,
+  video: false,
+  audio: false,
+  train: true,
+  recipes: false,
+  export: false,
+  api: false,
+  tasks: false,
+};
+
+/** Every previously shipped layout, so a migration can tell an untouched install from an
+ * arranged one. */
+const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "train", pinned: true },
+    { id: "video", pinned: false },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
+    { id: "audio", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "audio", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+];
+
+export const MAX_IMPORTED_FONTS = 3;
+/** Must match the backend name max_length (100). */
+export const MAX_IMPORTED_FONT_NAME_LENGTH = 100;
+/** ~1.5 MB file → ~2 MB base64; must stay in sync with the backend cap. */
+export const MAX_IMPORTED_FONT_DATA_URL_LENGTH = 2_200_000;
+/** Keeps the persisted store under typical ~5M-unit localStorage quotas. */
+export const MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH = 4_400_000;
+
+export type AppearanceCustomization = {
+  colors: { light: CustomModeColors; dark: CustomModeColors };
+  uiFont: string | null;
+  headingFont: string | null;
+  chatFont: string | null;
+  chatWidth: ChatWidthSetting;
+  sentAttachments: SentAttachmentsSetting;
+  codeFont: string | null;
+  importedFonts: ImportedFont[];
+  /** null = app default (15). */
+  uiFontSize: number | null;
+  /** null = inherit each element's own size. */
+  codeFontSize: number | null;
+  /** 0–100; 50 is neutral. */
+  contrast: number;
+  /** 0–100; null = the background image's own outline, or none without one. */
+  composerOutline: number | null;
+  /** 0–100; null = each theme's own borders. */
+  elementOutline: number | null;
+  pointerCursors: boolean;
+  reduceMotion: ReduceMotionSetting;
+  /** true = the app default (antialiased). */
+  fontSmoothing: boolean;
+  codeLineNumbers: boolean;
+  codeWordWrap: boolean;
+  codeLigatures: boolean;
+  sidebarMenu: SidebarMenuItemPref[];
+  sidebarNav: SidebarNavItemPref[];
+  /** Rows still following their automatic rule; only Projects has one. */
+  sidebarNavAuto: SidebarNavItemId[];
+};
+
+const EMPTY_MODE_COLORS: CustomModeColors = {
+  accent: null,
+  background: null,
+  foreground: null,
+};
+
+export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
+  colors: { light: { ...EMPTY_MODE_COLORS }, dark: { ...EMPTY_MODE_COLORS } },
+  uiFont: null,
+  headingFont: null,
+  chatFont: null,
+  chatWidth: "standard",
+  sentAttachments: "auto",
+  codeFont: null,
+  importedFonts: [],
+  uiFontSize: null,
+  codeFontSize: null,
+  contrast: 50,
+  composerOutline: null,
+  elementOutline: null,
+  pointerCursors: false,
+  reduceMotion: "on",
+  fontSmoothing: true,
+  codeLineNumbers: false,
+  codeWordWrap: false,
+  codeLigatures: true,
+  sidebarMenu: SIDEBAR_MENU_ITEM_IDS.map((id) => ({
+    id,
+    visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
+  })),
+  sidebarNav: SIDEBAR_NAV_ITEM_IDS.map((id) => ({
+    id,
+    pinned: SIDEBAR_NAV_DEFAULT_PINNED[id],
+  })),
+  sidebarNavAuto: [...SIDEBAR_NAV_AUTO_ITEM_IDS],
+};
+
+export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
+export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 12 } as const;
 const UI_FONT_SIZE_CSS_BASE = 16;
 
 /** Read by `html[data-contrast-adjust]` in index.css; exported so tests name the same vars. */
@@ -98,6 +303,236 @@ export const CONTRAST_PANEL_TARGET_VAR = "--contrast-panel-target";
 export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
 export const CONTRAST_EDGE_GAIN_VAR = "--contrast-edge-gain";
 export const CONTRAST_SEAM_GAIN_VAR = "--contrast-seam-gain";
+
+const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+export function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && HEX_COLOR_PATTERN.test(value);
+}
+
+function sanitizeColor(value: unknown): string | null {
+  return isHexColor(value) ? value.toLowerCase() : null;
+}
+
+function sanitizeFont(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  // Strip what the backend rejects (_FONT_NAME_FORBIDDEN plus control chars) so the PUT never fails;
+  // also stops CSS smuggling through setProperty.
+  const cleaned = value
+    .replace(/[;{}()<>"'\\/,`]/g, "")
+    .replace(/\p{Cc}/gu, "")
+    .trim()
+    .slice(0, 200);
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+function sanitizeSize(
+  value: unknown,
+  range: { min: number; max: number },
+): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const rounded = Math.round(value);
+  if (rounded < range.min || rounded > range.max) {
+    return Math.min(range.max, Math.max(range.min, rounded));
+  }
+  return rounded;
+}
+
+const sanitizePercent = (value: unknown) =>
+  sanitizeSize(value, { min: 0, max: 100 });
+
+function sanitizeModeColors(value: unknown): CustomModeColors {
+  const source = (value ?? {}) as Partial<CustomModeColors>;
+  return {
+    accent: sanitizeColor(source.accent),
+    background: sanitizeColor(source.background),
+    foreground: sanitizeColor(source.foreground),
+  };
+}
+
+const FONT_DATA_URL_PATTERN =
+  /^data:(?:font\/(?:woff2?|ttf|otf|sfnt)|application\/(?:octet-stream|x-font-\w+|font-\w+));base64,[A-Za-z0-9+/=]+$/;
+
+function sanitizeImportedFonts(value: unknown): ImportedFont[] {
+  if (!Array.isArray(value)) return [];
+  const fonts: ImportedFont[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  for (const entry of value) {
+    if (fonts.length >= MAX_IMPORTED_FONTS) break;
+    const source = (entry ?? {}) as Partial<ImportedFont>;
+    const rawName = sanitizeFont(source.name);
+    const name = rawName
+      ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH)
+      : null;
+    if (!name || seen.has(name)) continue;
+    const dataUrl = source.dataUrl;
+    if (
+      typeof dataUrl !== "string" ||
+      dataUrl.length > MAX_IMPORTED_FONT_DATA_URL_LENGTH ||
+      total + dataUrl.length > MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH ||
+      !FONT_DATA_URL_PATTERN.test(dataUrl)
+    ) {
+      continue;
+    }
+    seen.add(name);
+    total += dataUrl.length;
+    fonts.push({ name, dataUrl });
+  }
+  return fonts;
+}
+
+function isSidebarMenuItemId(value: unknown): value is SidebarMenuItemId {
+  return SIDEBAR_MENU_ITEM_IDS.includes(value as SidebarMenuItemId);
+}
+
+function isSidebarNavItemId(value: unknown): value is SidebarNavItemId {
+  return SIDEBAR_NAV_ITEM_IDS.includes(value as SidebarNavItemId);
+}
+
+function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
+  const items: SidebarNavItemPref[] = [];
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    const source = (entry ?? {}) as Partial<SidebarNavItemPref>;
+    if (!isSidebarNavItemId(source.id) || seen.has(source.id)) continue;
+    seen.add(source.id);
+    items.push({ id: source.id, pinned: source.pinned !== false });
+  }
+  // Ids added after the payload was written land at the end with their default.
+  for (const id of SIDEBAR_NAV_ITEM_IDS) {
+    if (!seen.has(id)) items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
+  }
+  return items;
+}
+
+/** `undefined` predates this field; only an untouched layout gets the Projects rule. */
+function sanitizeSidebarNavAuto(
+  value: unknown,
+  nav: SidebarNavItemPref[],
+): SidebarNavItemId[] {
+  if (value === undefined || value === null) {
+    return isUntouchedSidebarNav(nav) ? [...SIDEBAR_NAV_AUTO_ITEM_IDS] : [];
+  }
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    // Only rows that have a rule: anything else would silently pin itself.
+    if (
+      isSidebarNavItemId(entry) &&
+      (SIDEBAR_NAV_AUTO_ITEM_IDS as readonly string[]).includes(entry)
+    ) {
+      seen.add(entry);
+    }
+  }
+  return [...seen];
+}
+
+function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
+  const items: SidebarMenuItemPref[] = [];
+  const seen = new Set<SidebarMenuItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    const source = (entry ?? {}) as Partial<SidebarMenuItemPref>;
+    if (!isSidebarMenuItemId(source.id) || seen.has(source.id)) continue;
+    seen.add(source.id);
+    items.push({ id: source.id, visible: source.visible !== false });
+  }
+  for (const id of SIDEBAR_MENU_ITEM_IDS) {
+    if (!seen.has(id))
+      items.push({ id, visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id] });
+  }
+  return items;
+}
+
+/** Malformed fields fall back to defaults so a bad payload can never wedge the UI. */
+export function sanitizeCustomization(value: unknown): AppearanceCustomization {
+  const source = (value ?? {}) as Partial<AppearanceCustomization> & {
+    colors?: { light?: unknown; dark?: unknown };
+  };
+  const contrast =
+    typeof source.contrast === "number" && Number.isFinite(source.contrast)
+      ? Math.min(100, Math.max(0, Math.round(source.contrast)))
+      : DEFAULT_CUSTOMIZATION.contrast;
+  const sidebarNav = sanitizeSidebarNav(source.sidebarNav);
+  return {
+    colors: {
+      light: sanitizeModeColors(source.colors?.light),
+      dark: sanitizeModeColors(source.colors?.dark),
+    },
+    uiFont: sanitizeFont(source.uiFont),
+    headingFont: sanitizeFont(source.headingFont),
+    chatFont: sanitizeFont(source.chatFont),
+    chatWidth:
+      source.chatWidth === "wide" || source.chatWidth === "full"
+        ? source.chatWidth
+        : "standard",
+    sentAttachments:
+      source.sentAttachments === "list" || source.sentAttachments === "chips"
+        ? source.sentAttachments
+        : "auto",
+    codeFont: sanitizeFont(source.codeFont),
+    importedFonts: sanitizeImportedFonts(source.importedFonts),
+    uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
+    codeFontSize: sanitizeSize(source.codeFontSize, CODE_FONT_SIZE_RANGE),
+    contrast,
+    composerOutline: sanitizePercent(source.composerOutline),
+    elementOutline: sanitizePercent(source.elementOutline),
+    pointerCursors: source.pointerCursors === true,
+    reduceMotion:
+      source.reduceMotion === "off" || source.reduceMotion === "system"
+        ? source.reduceMotion
+        : "on",
+    fontSmoothing: source.fontSmoothing !== false,
+    codeLineNumbers: source.codeLineNumbers === true,
+    codeWordWrap: source.codeWordWrap === true,
+    codeLigatures: source.codeLigatures !== false,
+    sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
+    sidebarNav,
+    sidebarNavAuto: sanitizeSidebarNavAuto(source.sidebarNavAuto, sidebarNav),
+  };
+}
+
+function isUntouchedSidebarNav(nav: SidebarNavItemPref[]): boolean {
+  const stored = JSON.stringify(nav);
+  if (stored === JSON.stringify(DEFAULT_CUSTOMIZATION.sidebarNav)) return true;
+  // Sanitize each layout too, since the stored one has gained later ids.
+  return SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
+  );
+}
+
+export function migrateShippedSidebarNavDefault(
+  customization: AppearanceCustomization,
+  storedVersion: number,
+  migrationVersion: number,
+): AppearanceCustomization {
+  // Once persisted at this version, never adopt the same layout again; it may be a deliberate choice.
+  if (storedVersion >= migrationVersion) return customization;
+  return isUntouchedSidebarNav(customization.sidebarNav)
+    ? {
+        ...customization,
+        sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav],
+      }
+    : customization;
+}
+
+/** Older records adopt the Appearance menu item once; after that a hidden one stays hidden. */
+export function migrateAppearanceMenuDefault(
+  customization: AppearanceCustomization,
+  storedVersion: number,
+  migrationVersion: number,
+): AppearanceCustomization {
+  if (storedVersion >= migrationVersion) return customization;
+  return {
+    ...customization,
+    sidebarMenu: customization.sidebarMenu.map((item) =>
+      item.id === "appearance" ? { ...item, visible: true } : item,
+    ),
+  };
+}
+
+export function isDefaultCustomization(c: AppearanceCustomization): boolean {
+  return JSON.stringify(c) === JSON.stringify(DEFAULT_CUSTOMIZATION);
+}
 
 interface AppearanceCustomState {
   customization: AppearanceCustomization;

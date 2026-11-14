@@ -378,7 +378,7 @@ SPOT = SCOPE == "spot"
 
 # At 20px font below 384px the action row wraps; the 320x480 rail cap clipped Copy command.
 FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
-# Mirrors lib/appearance-customization.ts and appearance-custom-store.ts; kept in step by test_update_release_notes.py.
+# Mirrors appearance-custom-store.ts; kept in step by test_update_release_notes.py.
 UI_FONT_SIZE_MAX = 20
 UI_FONT_SIZE_DEFAULT = 15
 UI_FONT_SIZE_CSS_BASE = 16

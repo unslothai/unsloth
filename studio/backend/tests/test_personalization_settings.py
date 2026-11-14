@@ -191,7 +191,7 @@ def _sidebar_nav(items):
     return {"appearance": {"customization": {"sidebarNav": items}}}
 
 
-# Mirrors SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in lib/appearance-customization.ts.
+# Mirrors SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in appearance-custom-store.ts.
 FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("hub", True),
     ("projects", True),
