@@ -136,3 +136,9 @@ test("an image-share Allow from the floating orb brings the chat card up", () =>
   const host = readSrc("features/chat/voice/orb-widget-host.ts");
   assert.match(host, /if \(outcome === "needs_card"\) reveal\(t\);/);
 });
+
+test("speech begun just before the reply ended keeps its opening frames", () => {
+  assert.match(loop, /for \(const frame of preroll\.splice\(0\)\) \{[\s\S]{0,300}chunks\.push\(frame\);\s*chunkVoiced\.push\(loud\);\s*chunkNotSilent\.push\(/);
+  // Every pushed frame gets a notSilent entry, or utteranceSpan reads a later frame's flag.
+  assert.match(loop, /chunkVoiced\.push\(true\);\s*chunkNotSilent\.push\(true\);/);
+});
