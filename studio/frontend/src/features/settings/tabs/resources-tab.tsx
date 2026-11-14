@@ -86,6 +86,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
+import { gpuPowerLimitAdvisory } from "../lib/gpu-power-advisory";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -1110,6 +1111,10 @@ export function ResourcesTab() {
                 ? formatPower(telemetry.powerDrawW, telemetry.powerLimitW)
                 : null,
             ].filter((part): part is string => Boolean(part));
+            const powerAdvisory = gpuPowerLimitAdvisory(
+              telemetry?.powerDrawW,
+              telemetry?.powerLimitW,
+            );
             return (
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
@@ -1197,6 +1202,14 @@ export function ResourcesTab() {
                     <span className="text-ui-11 tabular-nums text-muted-foreground">
                       {telemetryParts.join(" · ")}
                     </span>
+                  ) : null}
+                  {powerAdvisory ? (
+                    <p
+                      role="note"
+                      className="text-ui-11 leading-relaxed text-amber-600 dark:text-amber-400"
+                    >
+                      {t("settings.resources.gpu.powerAdvisory")}
+                    </p>
                   ) : null}
                 </div>
               </div>
