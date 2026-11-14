@@ -263,9 +263,9 @@ def maybe_arm_fp8_to_nf4(
             expert_dtype = str(quant.get("expert_dtype")).upper()
             print(
                 f"Unsloth: this checkpoint already stores its experts in {expert_dtype} (4-bit) and its other "
-                f"Linear layers in fp8. `load_in_4bit = True` keeps them as released: LoRA trains on top of the "
-                f"frozen fp8 / {expert_dtype} weights, about the memory of a 4-bit load, without rounding the "
-                f"experts a second time."
+                "Linear layers in fp8. `load_in_4bit = True` keeps the release's own fp8 / "
+                f"{expert_dtype} formats and does not re-quantize the experts to NF4; LoRA trains on top of the "
+                "frozen base."
             )
         return False
     mode = os.environ.get(_ENV, "").strip().lower()

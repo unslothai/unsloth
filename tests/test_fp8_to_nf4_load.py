@@ -532,7 +532,9 @@ def test_a_packed_fp4_release_says_it_keeps_the_released_weights(monkeypatch, ca
     config.quantization_config.update(expert_dtype = "fp4", scale_fmt = "ue8m0")
     assert fp8_to_nf4.maybe_arm_fp8_to_nf4(config, True, False, verbose = True) is False
     out = capsys.readouterr().out
-    assert "FP4 (4-bit)" in out and "keeps them as released" in out
+    assert "FP4 (4-bit)" in out and "does not re-quantize the experts to NF4" in out
+    # No residency or memory promise: hardware fallback or `dequantize = True` can still expand the weights.
+    assert "memory" not in out
     assert config.quantization_config["quant_method"] == "fp8"
 
 
