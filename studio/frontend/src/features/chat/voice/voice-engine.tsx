@@ -665,7 +665,10 @@ export const VoiceEngine: FC = () => {
         if (voiceModeRef.current !== "active") return;
         if (voiceNotesEpoch() !== turn) return;
         if (useChatRuntimeStore.getState().activeThreadId !== fromThread) return;
-        if (action === "ignore" || action === "queue") {
+        // The reply ended while the model decided: no playback end is left to send a queued turn.
+        const replyGone =
+          !auiRef.current.thread().getState().isRunning && !isSpeakingRef.current && !isPlayingRef.current;
+        if (action === "ignore" || (action === "queue" && !replyGone)) {
           if (action === "queue" && !queuedUtteranceRef.current.includes(text)) {
             queuedUtteranceRef.current.push(text);
           }
