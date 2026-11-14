@@ -3,6 +3,7 @@
 
 """sk-unsloth callers must not write or run as the operator; None would trigger a token lookup."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -452,6 +453,7 @@ def test_a_local_gguf_lora_conversion_carries_the_sentinel(
             token = None,
         ):
             seen["token"] = token
+            (Path(save_directory) / "adapter.gguf").write_bytes(b"")
 
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_IS_MLX", False)

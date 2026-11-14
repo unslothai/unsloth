@@ -2746,6 +2746,11 @@ class ExportBackend:
                 f"LoRA -> GGUF conversion failed (exit {result.returncode}): "
                 + (result.stderr or result.stdout or "").strip()[-2000:]
             )
+        if not os.path.isfile(out_gguf):
+            raise RuntimeError(
+                f"LoRA GGUF conversion reported success but wrote no .gguf file to {out_gguf}. "
+                "Check the export log for the path the converter actually used."
+            )
 
     def export_lora_adapter(
         self,
@@ -2828,19 +2833,47 @@ class ExportBackend:
                         None,
                     )
 
+        gguf_staging = contextlib.ExitStack()
+        staged_gguf_dir = None
+
         def save_lora_gguf(directory):
+            nonlocal staged_gguf_dir
             # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
+            reused_writes = _ReusedFolderWrites(directory) if not _dir_is_fresh(directory) else None
             if _IS_MLX:
                 self._save_mlx_adapter(directory, "peft", gguf_outtype = outtype, hf_token = hf_token)
-                return
-            self.current_model.save_pretrained_gguf(
-                directory,
-                self.current_tokenizer,
-                save_method = "lora",
-                quantization_method = outtype,
-                # False keeps a denied caller off get_token().
-                token = normalize_token(hf_token),
+            else:
+                self.current_model.save_pretrained_gguf(
+                    directory,
+                    self.current_tokenizer,
+                    save_method = "lora",
+                    quantization_method = outtype,
+                    # False keeps a denied caller off get_token().
+                    token = normalize_token(hf_token),
+                )
+            written = reused_writes.written() if reused_writes else None
+            if reused_writes and written is None:
+                tmp_dir = gguf_staging.enter_context(_staging_dir(Path(directory).parent))
+                staged = os.path.join(tmp_dir, Path(directory).name)
+                ensure_dir(Path(staged))
+                ggufs = save_lora_gguf(staged)
+                shutil.copytree(staged, directory, dirs_exist_ok = True)
+                staged_gguf_dir = staged
+                return [os.path.join(directory, os.path.basename(f)) for f in ggufs]
+            final_ggufs = sorted(
+                str(p)
+                for p in drop_appledouble_metadata(list(Path(directory).iterdir()))
+                if p.is_file()
+                and p.name.lower().endswith(".gguf")
+                and (written is None or p.name in written)
             )
+            if not final_ggufs:
+                raise RuntimeError(
+                    f"LoRA GGUF conversion reported success but wrote no .gguf file to "
+                    f"{directory}. Check the export log for the path the converter actually "
+                    "used, then upgrade with `pip install --upgrade unsloth unsloth_zoo` and retry."
+                )
+            return final_ggufs
 
         output_path: Optional[str] = None
         save_dir_was_empty = False
@@ -2866,13 +2899,7 @@ class ExportBackend:
 
                 if gguf:
                     _apply_wsl_sudo_patch()
-                    save_lora_gguf(save_directory)
-                    # iterdir, not glob.glob: glob hides dot-leading names.
-                    final_ggufs = sorted(
-                        str(p)
-                        for p in drop_appledouble_metadata(list(Path(save_directory).iterdir()))
-                        if p.is_file() and p.name.lower().endswith(".gguf")
-                    )
+                    final_ggufs = save_lora_gguf(save_directory)
                     logger.info(
                         "LoRA GGUF export complete. Files in %s:\n  %s",
                         save_directory,
@@ -2911,8 +2938,8 @@ class ExportBackend:
 
                 if gguf:
                     with contextlib.ExitStack() as stack:
-                        upload_dir = output_path
-                        if not save_dir_was_empty:
+                        upload_dir = staged_gguf_dir or output_path
+                        if not save_dir_was_empty and staged_gguf_dir is None:
                             # A reused folder can hold leftovers, so upload a clean second save; the converter names the GGUF model after its folder
                             upload_dir = os.path.join(
                                 stack.enter_context(_staging_dir(Path(output_path).parent)),
@@ -2953,6 +2980,8 @@ class ExportBackend:
 
             logger.error(traceback.format_exc())
             return False, f"Adapter export failed: {str(e)}", None
+        finally:
+            gguf_staging.close()
 
 
 _export_backend = None
