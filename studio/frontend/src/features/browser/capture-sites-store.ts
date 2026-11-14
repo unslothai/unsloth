@@ -13,11 +13,10 @@ export type CaptureKind = "camera" | "microphone";
 export type CaptureSiteRule = Record<CaptureKind, CaptureRule>;
 export type CaptureRules = CaptureSiteRule & { sites: Record<string, CaptureSiteRule> };
 
-// Both mirror browser_webview.rs, which refuses the whole set past either.
+// Mirror browser_webview.rs, which refuses the whole set past either.
 export const MAX_CAPTURE_SITES = 500;
 const MAX_ORIGIN_LENGTH = 300;
 
-/** An origin, not a host pattern: the rule is for one scheme, host and port. */
 export function normalizeCaptureOrigin(input: string): string | null {
   const value = input.trim();
   if (!value || /\s/.test(value)) return null;
@@ -82,7 +81,6 @@ export function watchCaptureRules(send: (rules: CaptureRules) => Promise<unknown
     const key = JSON.stringify(rules);
     if (key === sent) return;
     sent = key;
-    // Forgotten on failure, so the next change sends again.
     void send(rules).catch(() => {
       sent = "";
     });

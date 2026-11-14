@@ -1071,7 +1071,6 @@ pub struct CaptureRules {
     sites: HashMap<String, CaptureSiteRule>,
 }
 
-/// In memory only: the app's webview sends them at startup and on change.
 #[derive(Default)]
 pub struct BrowserCaptureRules(Mutex<CaptureRules>);
 
@@ -1662,9 +1661,7 @@ async fn create_view<R: Runtime>(
     Ok(webview)
 }
 
-/// WebView2 saves a state set on a permission request and stops asking, so a Block answered through
-/// wry's handler would outlast the rule: changing it back to Ask would leave the site blocked. A
-/// blocked request is marked not to be saved; the answers to WebView2's own prompt still are.
+/// WebView2 saves a denial and stops asking, so a Block would outlast its rule: mark it unsaved.
 #[cfg(windows)]
 fn keep_blocks_unsaved<R: Runtime>(page: &Webview<R>) {
     use webview2_com::{
@@ -1698,7 +1695,6 @@ fn keep_blocks_unsaved<R: Runtime>(page: &Webview<R>) {
                             matches!(page_permission_for(&page, kind), PermissionResponse::Deny)
                         });
                         if blocked {
-                            // An older runtime without the property keeps saving, as before.
                             if let Ok(request) =
                                 args.cast::<ICoreWebView2PermissionRequestedEventArgs3>()
                             {
@@ -2915,7 +2911,6 @@ mod tests {
                 capture_answer(&blocked_site, "https://other.example/", kind),
                 "default"
             );
-            // Another scheme or port is another origin.
             assert_eq!(
                 capture_answer(&blocked_site, "http://ruled.example/", kind),
                 "default"

@@ -103,7 +103,6 @@ interface BrowserHistoryState {
   downloads: DownloadItem[];
   icons: Record<string, string>;
   recordVisit: (url: string, title: string, temporary?: boolean) => void;
-  /** Merges another browser's visits; `leftOut` counts new ones past the kept period or the history limit. */
   importVisits: (items: { url: string; title: string; visitedAt: number }[]) => { added: number; leftOut: number };
   recordIcon: (host: string, icon: string, temporary?: boolean) => void;
   /** The new row's id; undefined when download history is off or a temporary chat is shown. */
@@ -151,7 +150,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           return { history, icons };
         });
       },
-      // Not gated on the history setting: an import is asked for, not a page the browser happened to load.
+      // Not gated on the history setting: an import is asked for.
       importVisits: (items) => {
         const state = get();
         const cutoff = retentionCutoff();

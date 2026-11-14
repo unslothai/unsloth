@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// History exports, both JSON with times in microseconds since 1970: Safari's History.json ({ history })
-// and Chrome's from Google Takeout ({ "Browser History" }).
+// Safari's History.json and Chrome's Takeout export: JSON, times in microseconds since 1970.
 
 import { isWebUrl } from "./address";
 import { MAX_TITLE_CHARS, MAX_URL_CHARS, useBrowserHistoryStore } from "./history-store";
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
-// Earlier is a zero or a time in another unit.
 const EARLIEST_VISIT_MS = Date.UTC(1995, 0, 1);
 
 export class HistoryFileError extends Error {}

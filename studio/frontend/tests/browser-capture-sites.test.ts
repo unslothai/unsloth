@@ -98,7 +98,6 @@ test("the rules reach the desktop app at startup and on every change, and a fail
   assert.deepEqual(sent, [{ camera: "block", microphone: "ask", sites: {} }]);
   useCaptureSitesStore.getState().setSite("https://a.example", BLOCK_CAMERA);
   assert.deepEqual(sent[1], { camera: "block", microphone: "ask", sites: { "https://a.example": BLOCK_CAMERA } });
-  // Setting what is already set sends nothing.
   useCaptureSitesStore.getState().setDefault("camera", "block");
   assert.equal(sent.length, 2);
   fail = true;

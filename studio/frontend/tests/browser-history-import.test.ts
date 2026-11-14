@@ -85,7 +85,6 @@ test("visits in the future, before 1995, or without a numeric time are dropped",
         visit("https://example.com/future", now + DAY_MS),
         visit("https://example.com/old", Date.UTC(1994, 11, 31)),
         { url: "https://example.com/zero", time_usec: 0 },
-        // Seconds, not microseconds: lands in 1970.
         { url: "https://example.com/seconds", time_usec: Math.floor(now / 1000) },
         { url: "https://example.com/string", time_usec: String(usec(now - 1)) },
         { url: "https://example.com/none" },
@@ -115,7 +114,6 @@ test("an import merges newest first under the account, and importing the file ag
     "https://example.com/c",
   ]);
   assert.deepEqual(await importHistoryFile(fileOf(safari)), { added: 0, leftOut: 0 });
-  // The same visit twice in one file counts once; the same page at another time is another visit.
   const repeated = { history: [visit("https://example.com/a", now - 1000), visit("https://example.com/b", now - 50), visit("https://example.com/b", now - 50), visit("https://example.com/a", now - 60)] };
   assert.deepEqual(await importHistoryFile(fileOf(repeated)), { added: 2, leftOut: 0 });
   assert.equal(new Set(useBrowserHistoryStore.getState().history.map((item) => item.id)).size, 6);
@@ -132,7 +130,6 @@ test("the history limit keeps the newest visits, and counts the imported ones th
   assert.equal(history.length, 1000);
   assert.equal(history[0]?.url, "https://example.com/here");
   assert.equal(history[999]?.url, "https://example.com/998");
-  // Older than everything kept: nothing changes.
   assert.deepEqual(await importHistoryFile(fileOf({ history: [visit("https://example.com/older", now - DAY_MS)] })), { added: 0, leftOut: 1 });
   assert.equal(useBrowserHistoryStore.getState().history.length, 1000);
 });
