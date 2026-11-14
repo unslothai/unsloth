@@ -148,3 +148,9 @@ test("a temporary chat never asks for its voice decisions to be logged", () => {
   assert.match(client, /const temporary = useChatRuntimeStore\.getState\(\)\.incognito \|\| \(threadId !== null && isThreadIncognito\(threadId\)\);/);
   assert.match(client, /voice\.voiceLogEnabled && !temporary &&/);
 });
+
+test("turning voice off forgets the open reply stream", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const off = engine.slice(engine.indexOf("const turnOff = useCallback("));
+  assert.match(off.slice(0, off.indexOf("}, [stop")), /streamBegunRef\.current = false;\s*stop\(\);/);
+});

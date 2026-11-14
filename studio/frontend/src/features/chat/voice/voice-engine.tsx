@@ -1153,6 +1153,12 @@ export const VoiceEngine: FC = () => {
     pendingForVoiceRef.current = [];
     clearVoiceDecisions();
     holdPlayback(false);
+    if (streamPollRef.current) {
+      clearInterval(streamPollRef.current);
+      streamPollRef.current = null;
+    }
+    // stop() drops the player's stream; a run ending after re-activation must speak, not close a dead stream.
+    streamBegunRef.current = false;
     stop();
     pauseOutputSpectrum();
     const thread = auiRef.current.thread();
