@@ -255,6 +255,10 @@ export const VoiceEngine: FC = () => {
     resumePlayback,
     holdPlayback,
   } = useTtsPlayer(onPlaybackEnd);
+  // A pause outlives this engine (New Chat remounts it): the new player starts held too.
+  useEffect(() => {
+    if (useChatRuntimeStore.getState().voicePaused) holdPlayback(true);
+  }, [holdPlayback]);
   isSpeakingRef.current = isSpeaking;
   isPlayingRef.current = isPlaying;
   useEffect(() => {
