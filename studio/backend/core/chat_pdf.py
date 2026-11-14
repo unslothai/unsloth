@@ -6,6 +6,7 @@ PyMuPDF is not thread safe, so the server renders each export in a child process
 
 import html
 import io
+import itertools
 import json
 import sys
 from datetime import datetime, timezone
@@ -93,8 +94,10 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
     pdf = pymupdf.open("pdf", buffer.getvalue())
     try:
         pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth"})
-        for page, uri, rect in links:
-            pdf[page].insert_link({"kind": pymupdf.LINK_URI, "from": rect, "uri": uri})
+        for number, group in itertools.groupby(links, key = lambda link: link[0]):
+            page = pdf[number]
+            for _, uri, rect in group:
+                page.insert_link({"kind": pymupdf.LINK_URI, "from": rect, "uri": uri})
         # The CJK fallback font alone is ~2 MB; keep only the glyphs used.
         pdf.subset_fonts()
         return pdf.tobytes(garbage = 3, deflate = True)
