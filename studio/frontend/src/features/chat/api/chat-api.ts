@@ -447,14 +447,33 @@ export async function countChatInputTokens(payload: {
   auto_heal_tool_calls?: boolean;
   studio_tool_history?: boolean;
   run_tools_locally?: boolean;
+  /** /context: also split the total and return the rendered prompt, at two more renders. */
+  breakdown?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<ChatCountTokensResponse> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: serializedPayload,
   });
-  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
+  return parseJsonOrThrow<ChatCountTokensResponse>(response);
+}
+
+export interface ChatCountTokensResponse {
+  input_tokens: number;
+  model?: string;
+  // Present only when the request asked for `breakdown`.
+  breakdown?: {
+    system: number;
+    tools: number;
+    messages: number;
+    tool_names: string[];
+  };
+  context_length?: number | null;
+  /** Prompt size at which the server compacts; null when this chat would not compact. */
+  compaction_budget?: number | null;
+  // Null where the backend cannot return the rendered text (MLX).
+  prompt?: string | null;
 }
 
 export async function validateModel(

@@ -5025,7 +5025,7 @@ export function ChatPage({
                 // Keyed like the adapter's run (resolvedThreadId || "__default"), local ids included.
                 liveThreadKey={activeThreadId ?? "__default"}
                 compactUnknownAsIcon={view.mode === "single"}
-                used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
+                used={contextUsage?.recountedTokens ?? contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={loadedContextLength}
                 cached={usageRows.cached}

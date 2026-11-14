@@ -2371,6 +2371,8 @@ type ContextUsageSnapshot = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  // A local recount updates the ring independently of the last response measurements.
+  recountedTokens?: number;
   // Studio tool loops only: what the context holds (totalTokens re-counts earlier passes' output).
   contextTokens?: number;
   cachedTokens: number;

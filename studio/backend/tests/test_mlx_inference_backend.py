@@ -8337,6 +8337,77 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
     ), "the count omitted the compaction nudge the completion appends"
 
 
+class _LengthCountingBackend(_RenderRecordingBackend):
+    """Counts system and content characters plus five per tool, so each part is predictable."""
+
+    def __init__(self):
+        super().__init__()
+        self.systems = []
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        super().count_chat_tokens(messages, system_prompt, **kwargs)
+        self.systems.append(system_prompt)
+        tokens = sum(len(str(m.get("content") or "")) for m in messages) + len(system_prompt)
+        return tokens + 5 * len(kwargs.get("tools") or []), "mlx/model"
+
+
+def test_an_mlx_breakdown_sums_to_the_total_and_has_no_prompt(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    backend = _LengthCountingBackend()
+    served = _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        enabled_tools = ["web_search"],
+        breakdown = True,
+    )
+    body = json.loads(served.body)
+    parts = body["breakdown"]
+    full, bare, no_instructions = backend.systems
+    assert no_instructions == "" and full.startswith(bare) and len(full) > len(bare)
+    # The tool nudge is in the prompt only for the tools, so it counts under them.
+    assert parts["system"] == len(bare)
+    assert parts["tools"] == 5 + len(full) - len(bare)
+    assert parts["messages"] == 2
+    assert parts["system"] + parts["tools"] + parts["messages"] == body["input_tokens"]
+    assert parts["tool_names"] == ["web_search"]
+    # The MLX count tokenizes in the worker and returns no rendered text.
+    assert body["prompt"] is None
+
+
+def test_an_mlx_count_keeps_the_nudge_when_a_forced_tool_narrows_to_none(monkeypatch):
+    """Only /context's tool-free render drops the nudge: the completion still sends it here."""
+    from core.inference import chat_template_helpers
+    from routes import inference as route
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(chat_template_helpers, "renderable_tool_catalog", lambda *a, **k: [])
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        enabled_tools = ["web_search"],
+        tool_choice = {"type": "function", "function": {"name": "web_search"}},
+    )
+    assert not backend.tools
+    nudge = route._build_tool_action_nudge(
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        model_name = "mlx/model",
+        full_access = False,
+        user_folder = None,
+    )
+    assert backend.system == nudge
+
+
 def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):
     """`_wants_current_date` is false for an API-key request, but the tool-loop completion
     reapplies it with include_api_key, so a count that did not would be short that line."""
