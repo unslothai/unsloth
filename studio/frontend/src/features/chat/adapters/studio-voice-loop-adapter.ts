@@ -23,6 +23,7 @@ import {
 } from "@/features/chat/voice/mic-health";
 import {
   isBackchannel,
+  answersClosingQuestion,
   isReplyEcho,
   isSttNoise,
   joinTurn,
@@ -643,7 +644,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           setTimeout(() => requestVoiceResume(), 0);
           return;
         }
-        if (transcript && (isBackchannel(transcript) || isSttNoise(transcript))) {
+        // A noise word that continues a held turn ("Translate the phrase" + "thank you") or answers the
+        // reply's question ("you or me?" + "you") is speech, not a hallucination.
+        const noise =
+          isSttNoise(transcript) && !heldTurn && !answersClosingQuestion(transcript, getVoiceReplyText());
+        if (transcript && (isBackchannel(transcript) || noise)) {
           voiceTrace("stt.drop", { transcript, why: "noise" });
           settleFinished(false);
           publishSttDecision(false, isBackchannel(transcript) ? "breath" : "cough");
@@ -656,7 +661,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           return;
         }
         settleFinished(Boolean(transcript));
-        const editing = !heldEdit.autoSend();
+        let editing = !heldEdit.autoSend();
         if (transcript && heldTurn) {
           transcript = joinTurn(heldTurn.text, transcript);
           reportLayaOutcome(heldJudgeId, "continued", { text: transcript });
@@ -666,6 +671,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           Boolean(transcript) &&
           !editing &&
           (await turnUnfinished(transcript));
+        // The user may claim the held fragment while the judge decides: their edit is never auto-sent.
+        editing = editing || !heldEdit.autoSend();
         if (epoch !== heldEpoch) {
           voiceTrace("stt.drop", { transcript, why: "cleared" });
           finish("stopped");
@@ -674,6 +681,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         if (
           unfinished &&
+          !editing &&
           performance.now() - (heldTurn?.at ?? performance.now()) <
             CONTINUATION_MAX_MS
         ) {
@@ -718,7 +726,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // Speech then finish land before the deferred submit; requestVoiceSubmit no-ops outside voice mode.
           emitSpeech(transcript, true);
           finish("stopped", transcript);
-          if (editing) {
+          if (editing || !heldEdit.autoSend()) {
             voiceTrace("hold.userEditAppend", { transcript });
             setTimeout(() => requestVoiceResume(), 0);
           } else {

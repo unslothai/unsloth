@@ -36,13 +36,18 @@ const ONE_WORD_COMMANDS = new Set([
   "stop", "wait", "pause", "cancel", "hold", "enough", "quiet", "no", "nope", "yes", "yeah", "yep",
 ]);
 
+/** A word or two taken from the reply's closing question ("..., Python or JavaScript?"): the user's answer. */
+export function answersClosingQuestion(transcript: string, reply: string): boolean {
+  const t = wordsOf(transcript);
+  const asked = reply.trim().endsWith("?") ? (reply.split(/(?<=[.!?\n])\s+/).pop() ?? "") : "";
+  return t.length > 0 && t.length <= 2 && Boolean(asked) && t.every((w) => wordsOf(asked).includes(w));
+}
+
 export function isReplyEcho(transcript: string, reply: string): boolean {
   const t = wordsOf(transcript);
   if (t.length === 0 || !reply) return false;
   if (t.length === 1 && ONE_WORD_COMMANDS.has(t[0])) return false;
-  // A word or two taken from a closing question ("..., Python or JavaScript?") is the user's answer.
-  const asked = reply.trim().endsWith("?") ? (reply.split(/(?<=[.!?\n])\s+/).pop() ?? "") : "";
-  if (t.length <= 2 && asked && t.every((w) => wordsOf(asked).includes(w))) return false;
+  if (answersClosingQuestion(transcript, reply)) return false;
   // Whole words only: "hey" is not inside "they", nor "skip" inside "skipping".
   const r = ` ${wordsOf(reply).join(" ")} `;
   return r.includes(` ${t.join(" ")} `);

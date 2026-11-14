@@ -255,3 +255,10 @@ test("a research run keeps its own Stop while voice mode is on", () => {
   assert.match(thread, /\{isResearchActive \? \(\s*<Button[\s\S]{0,200}aria-label=\{researchStopping \? "Stopping research" : "Stop research"\}/);
   assert.match(thread, /\) : voiceEngaged \? null : \(\s*<AuiIf condition=\{\(\{ thread \}\) => thread\.isRunning\}>/);
 });
+
+test("a noise word continuing a held turn is kept, and an edit claimed mid-judgment is never auto-sent", () => {
+  assert.match(loop, /const noise =\s*isSttNoise\(transcript\) && !heldTurn && !answersClosingQuestion\(transcript, getVoiceReplyText\(\)\);/);
+  assert.match(loop, /\(await turnUnfinished\(transcript\)\);\s*\/\/[^\n]*\n\s*editing = editing \|\| !heldEdit\.autoSend\(\);/);
+  assert.match(loop, /unfinished &&\s*!editing &&\s*performance\.now\(\)/);
+  assert.match(loop, /if \(editing \|\| !heldEdit\.autoSend\(\)\) \{\s*voiceTrace\("hold\.userEditAppend"/);
+});
