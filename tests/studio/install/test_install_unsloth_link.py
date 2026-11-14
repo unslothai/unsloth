@@ -211,7 +211,7 @@ def test_a_404_is_not_retried(env, monkeypatch):
         raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
 
     monkeypatch.setattr(M, "_fetch", missing)
-    with pytest.raises(M.InstallError):
+    with pytest.raises(M.InstallError, match = "not published yet"):
         M.ensure(pins)
     assert len(calls) == 1
 

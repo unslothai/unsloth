@@ -149,6 +149,10 @@ def _download(url: str, dest: Path, asset: dict) -> None:
         except (urllib.error.URLError, OSError) as exc:
             last = exc
         time.sleep(0.5 * (2**attempt))
+    if isinstance(last, urllib.error.HTTPError) and last.code == 404:
+        raise InstallError(
+            f"{asset['name']} is not published yet; point UNSLOTH_LINK_BIN at a copy of the helper"
+        )
     raise InstallError(
         f"could not download unsloth-link ({last}); connect this machine to the internet once, "
         "or point UNSLOTH_LINK_BIN at a copy of the helper"
