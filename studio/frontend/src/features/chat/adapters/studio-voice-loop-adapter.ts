@@ -889,8 +889,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           } else if (zeroRunMs > 0) {
             endZeroRun();
           }
-          // While the reply plays only a barge-in is listened for: nothing is recorded and the no-speech clock waits.
-          if (!bargedIn && isVoicePlaybackActive()) {
+          // While the reply plays (or a barge-in probe is out, keeping frames in order) only a barge-in is listened for.
+          if (!bargedIn && (isVoicePlaybackActive() || bargeConfirming)) {
             preroll.push(new Float32Array(input));
             // While the detector is asked, keep every frame: the probe's audio opens the utterance.
             if (!bargeConfirming) while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();

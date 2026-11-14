@@ -641,7 +641,8 @@ export const VoiceEngine: FC = () => {
   const submitTranscript = useCallback((spoken?: string, typed?: boolean) => {
     if (voiceModeRef.current !== "active") return;
     const composer = auiRef.current.composer();
-    const draft = spoken ? takeTypedDraft(composer.getState().text) : "";
+    // A typed send is the whole box already, draft included.
+    const draft = spoken && !typed ? takeTypedDraft(composer.getState().text) : "";
     if (composer.getState().dictation) composer.stopDictation();
     let text = (spoken ?? composer.getState().text).trim();
     if (draft) text = `${draft} ${text}`;

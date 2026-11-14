@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { decideToolCall } from "@/features/chat/tool-decision";
 import { toolBrief } from "@/features/chat/voice/approval-brief";
 import { useT } from "@/i18n";
@@ -16,6 +17,9 @@ export const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) 
     void decideToolCall(id, decision).finally(() => setPending(false));
   };
   const brief = toolBrief(id);
+  // An image share is decided on the chat card, which carries its disclosure.
+  const disclosed = useChatRuntimeStore((s) => Boolean(s.toolConfirmations[id]?.imageDisclosure));
+  const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
   return (
     <div
       data-orb-approval
@@ -30,9 +34,15 @@ export const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) 
         ) : null}
       </span>
       <span className="flex shrink-0 items-center gap-2">
-        <Button size="xs" disabled={pending} onClick={() => decide("allow")}>
-          {t("browser.agent.allow")}
-        </Button>
+        {disclosed ? (
+          <Button size="xs" onClick={() => setVoiceOrbCollapsed(true)}>
+            {t("voiceControls.backToChat")}
+          </Button>
+        ) : (
+          <Button size="xs" disabled={pending} onClick={() => decide("allow")}>
+            {t("browser.agent.allow")}
+          </Button>
+        )}
         <Button size="xs" variant="destructive" disabled={pending} onClick={() => decide("deny")}>
           {t("browser.agent.deny")}
         </Button>

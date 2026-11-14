@@ -10,7 +10,7 @@ import * as orbWidgetReturn from "../src/features/chat/voice/orb-widget-return.t
 import { type StubElement, loadWithStubs, stubJsxRuntime } from "./helpers/module-stubs.ts";
 
 type Entry = { approvalId: string; sessionId: string; autoAllowKey: string; imageDisclosure?: unknown };
-type Result = "ok" | "retry" | "gone" | "missing";
+type Result = "ok" | "retry" | "gone" | "missing" | "needs_card";
 type Decide = (id: string, decision: "allow" | "deny", always?: string) => Promise<Result>;
 
 class GoneError extends Error {}
@@ -70,6 +70,14 @@ test("a plain Allow or a Deny never grants Always allow", async () => {
     assert.equal(await decide("c1", decision, always), "ok");
     assert.deepEqual(log, [`post sess ap1 ${decision}`, "clear c1"]);
   }
+});
+
+test("an image share is never allowed from the orb: it needs the chat card's disclosure", async () => {
+  const shared = { ...call, imageDisclosure: { server: "mcp" } } as unknown as Entry;
+  const { decide, log } = loadDecide({ c1: shared }, async () => true);
+  assert.equal(await decide("c1", "allow"), "needs_card");
+  assert.deepEqual(log, []);
+  assert.equal(await decide("c1", "deny"), "ok");
 });
 
 test("a post that fails leaves the call answerable and grants nothing", async () => {
