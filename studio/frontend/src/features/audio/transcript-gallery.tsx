@@ -14,8 +14,16 @@ import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArchiveIcon,
   Download01Icon,
+  ClosedCaptionIcon,
   MoreVerticalIcon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import {
+  CLIPS_HEADER_LINK,
+  CLIPS_LIST,
+  ClipsCard,
+  ClipsCardEmpty,
+} from "./components/clips-card";
 import { Copy01Icon } from "@/lib/copy-icon";
 import {
   AlertDialog,
@@ -122,6 +130,11 @@ export type TranscriptSendHandlers = (transcript: {
   duration: number | null;
 }) => ClipSendHandlers;
 
+const ROW_MENU_TRIGGER =
+  "size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100";
+const TOP_MENU_TRIGGER =
+  "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground";
+
 export function TranscriptGallery({
   active,
   currentId,
@@ -131,7 +144,11 @@ export function TranscriptGallery({
   canSelect,
   autoSelect,
   sendHandlersFor,
+  top,
+  emptyText,
 }: {
+  top: (currentMenu: ReactNode) => ReactNode;
+  emptyText: string;
   active: boolean;
   autoSelect: boolean;
   currentId: string | null;
@@ -242,146 +259,178 @@ export function TranscriptGallery({
       );
     }
   };
-  return (
-    <div className="flex shrink-0 flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="px-0 text-ui-11p5 text-muted-foreground"
-            >
-              {archived ? "Archived transcripts" : "History"}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            <DropdownMenuItem onClick={() => setArchived(false)}>
-              History
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setArchived(true)}>
-              Archived transcripts
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {!archived && records.length > 0 && (
+  const recordMenu = (record: TranscriptRecord, triggerClassName: string) => (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
-            size="sm"
-            onClick={() => setConfirmingClear(true)}
+            size="icon"
+            className={triggerClassName}
+            title="More"
+            aria-label="Transcript actions"
           >
-            Clear all
+            <HugeiconsIcon icon={MoreVerticalIcon} className="size-3.5" />
           </Button>
-        )}
-      </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <ClipSendToMenu handlers={sendHandlersFor(record)} />
+          <TranscriptExportItems
+            timed={(record.segment_count ?? 0) > 0}
+            label={(format) => (
+              <>
+                <HugeiconsIcon icon={Download01Icon} />
+                Download .{format}
+              </>
+            )}
+            onExport={(format) => void downloadRecord(record, format)}
+          />
+          <DropdownMenuItem
+            onClick={() =>
+              void copyToClipboard(record.text).then((ok) =>
+                ok
+                  ? toast.success("Transcript copied")
+                  : toast.error("Could not copy transcript."),
+              )
+            }
+          >
+            <HugeiconsIcon icon={Copy01Icon} />
+            Copy
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onClick={() =>
+              void mutate(
+                () => archiveTranscript(record.id, !record.archived),
+                [record.id],
+              )
+            }
+          >
+            <HugeiconsIcon icon={ArchiveIcon} />
+            {record.archived ? "Unarchive" : "Archive"}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() =>
+              void mutate(() => deleteTranscript(record.id), [record.id])
+            }
+          >
+            <HugeiconsIcon icon={TrashIcon} />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+  );
+  // The open transcript leaves the list, so its row menu moves onto the top row.
+  const current =
+    records.find((record) => record.id === currentId) ??
+    (latest && latest.id === currentId ? latest : null);
+  const topRow = top(current ? recordMenu(current, TOP_MENU_TRIGGER) : null);
+  return (
+    // `contents`: the card is the layout box; this wrapper only holds it and the confirm dialog.
+    <div className="contents">
+      <ClipsCard
+        label="Transcripts"
+        title={
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="-mx-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 transition-colors hover:bg-wash-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {archived ? "Archived transcripts" : "Transcripts"}
+                <HugeiconsIcon
+                  icon={ChevronDownStandardIcon}
+                  className="size-3.5 text-muted-foreground"
+                />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuItem onClick={() => setArchived(false)}>
+                Transcripts
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setArchived(true)}>
+                Archived transcripts
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        }
+        count={records.length}
+        countMore={Boolean(cursor)}
+        action={
+          !archived && records.length > 0 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setConfirmingClear(true)}
+              className={cn(
+                CLIPS_HEADER_LINK,
+                "h-auto p-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
+              )}
+            >
+              Clear all
+            </Button>
+          ) : null
+        }
+      >
+        {topRow}
+        {!topRow && !archived && !loading && records.length === 0 ? (
+          <ClipsCardEmpty text={emptyText} />
+        ) : null}
+        {/* The open transcript is the top row, so the list leaves it out. */}
+        {records.some((record) => !topRow || record.id !== currentId) ||
+        (archived && !loading) ||
+        cursor ? (
       <div
-        className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto"
+        className={cn(CLIPS_LIST, !topRow && "mt-0 border-t-0 pt-0")}
         onScroll={(event) => {
           const el = event.currentTarget;
           if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40)
             void loadMore();
         }}
       >
-        {records.map((record) => (
+        {records
+          .filter((record) => !topRow || record.id !== currentId)
+          .map((record) => (
           <div
             key={record.id}
-            className={cn(
-              "group flex items-center rounded-md pr-1 transition-colors hover:bg-muted",
-              currentId === record.id && "bg-muted",
-            )}
+            className="group flex items-center gap-1 rounded-md ps-3 pe-1 transition-colors hover:bg-wash-3"
           >
+            <span
+              aria-hidden="true"
+              className="grid w-[calc(40px*var(--ui-space-scale,1))] shrink-0 place-items-center text-muted-foreground"
+            >
+              <HugeiconsIcon icon={ClosedCaptionIcon} className="size-3.5" />
+            </span>
             <button
               type="button"
-              aria-current={currentId === record.id ? "true" : undefined}
-              className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
+              className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 ps-2 text-left"
               onClick={() => {
                 if (canSelect()) onSelect(record);
               }}
             >
-              <span className="min-w-0 flex-1 truncate">{record.title}</span>
-              {recordBadge(record) ? (
-                <span className="shrink-0 rounded-full bg-muted px-1.5 text-ui-11 text-muted-foreground">
-                  {recordBadge(record)}
+              <span className="grid min-w-0 flex-1 gap-0.5">
+                <span className="truncate text-ui-13" title={record.title}>
+                  {record.title}
                 </span>
-              ) : null}
+                <span className="truncate text-ui-11p5 text-muted-foreground">
+                  {new Date(record.created_at).toLocaleDateString()}
+                  {recordBadge(record) ? ` · ${recordBadge(record)}` : ""}
+                </span>
+              </span>
               {record.duration ? (
                 <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
                   {formatTimestamp(record.duration)}
                 </span>
               ) : null}
-              <span className="shrink-0 text-ui-11p5 text-muted-foreground">
-                {new Date(record.created_at).toLocaleDateString()}
-              </span>
             </button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100"
-                  aria-label="Transcript actions"
-                >
-                  <HugeiconsIcon icon={MoreVerticalIcon} className="size-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <ClipSendToMenu handlers={sendHandlersFor(record)} />
-                <TranscriptExportItems
-                  timed={(record.segment_count ?? 0) > 0}
-                  label={(format) => (
-                    <>
-                      <HugeiconsIcon icon={Download01Icon} />
-                      Download .{format}
-                    </>
-                  )}
-                  onExport={(format) => void downloadRecord(record, format)}
-                />
-                <DropdownMenuItem
-                  onClick={() =>
-                    void copyToClipboard(record.text).then((ok) =>
-                      ok
-                        ? toast.success("Transcript copied")
-                        : toast.error("Could not copy transcript."),
-                    )
-                  }
-                >
-                  <HugeiconsIcon icon={Copy01Icon} />
-                  Copy
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() =>
-                    void mutate(
-                      () => archiveTranscript(record.id, !record.archived),
-                      [record.id],
-                    )
-                  }
-                >
-                  <HugeiconsIcon icon={ArchiveIcon} />
-                  {record.archived ? "Unarchive" : "Archive"}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() =>
-                    void mutate(() => deleteTranscript(record.id), [record.id])
-                  }
-                >
-                  <HugeiconsIcon icon={TrashIcon} />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {recordMenu(record, ROW_MENU_TRIGGER)}
           </div>
         ))}
-        {!records.length && (
-          <p className="px-2 py-1.5 text-ui-13 text-muted-foreground">
-            {loading
-              ? "Loading transcripts…"
-              : archived
-                ? "No archived transcripts."
-                : "Completed transcripts are saved here."}
+        {archived && !loading && !records.length ? (
+          <p className="px-3 py-1.5 text-ui-13 text-muted-foreground">
+            No archived transcripts.
           </p>
-        )}
+        ) : null}
         {cursor && (
           <Button
             variant="ghost"
@@ -393,6 +442,8 @@ export function TranscriptGallery({
           </Button>
         )}
       </div>
+        ) : null}
+      </ClipsCard>
       <AlertDialog open={confirmingClear} onOpenChange={setConfirmingClear}>
         <AlertDialogContent>
           <AlertDialogHeader>

@@ -2440,6 +2440,18 @@ export const uk = {
         deviceGpu: "GPU",
         deviceLocked: "Задано змінною {name}.",
         deviceSaveError: "Не вдалося змінити пристрій для ембедингів",
+        offlineDocs: {
+          folderLabel: "Офлайн-документація Unsloth",
+          folderDescription: "Збережіть повну документацію Unsloth у теці, щоб користуватися нею без інтернету.",
+          folderHint: "Unsloth завантажує unsloth.ai/docs/llms-full.txt у цю теку як \"Unsloth Docs LLMs Full Text [Documentation] (date).md\", замінюючи попередню копію. Під'єднайте теку до бази знань, щоб шукати в документації в чаті офлайн. Тека зберігається під час оновлень.",
+          choose: "Вибрати",
+          autoUpdateLabel: "Оновлювати документацію з кожним випуском",
+          autoUpdateDescription: "Завантажує свіжу копію під час першого запуску нової версії Unsloth.",
+          downloadNow: "Завантажити зараз",
+          downloading: "Завантаження документації…",
+          notDownloaded: "Ще не завантажено",
+          lastUpdated: "Оновлено {date} для {release}",
+        },
       },
       storage: {
         sectionTitle: "Сховище",
@@ -4024,6 +4036,8 @@ export const uk = {
       llamaCppVersion: "Версія llama.cpp",
       audioCppVersion: "Версія audio.cpp",
       mlxVersion: "Версія MLX",
+      fastflowlmVersion: "Версія FastFlowLM",
+      lemonadeVersion: "Версія Lemonade",
       whisperCppVersion: "Версія whisper.cpp",
       engines: {
         title: "Рушії",

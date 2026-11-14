@@ -2198,6 +2198,18 @@ export const ko = {
         deviceGpu: "GPU",
         deviceLocked: "{name}(으)로 설정됨.",
         deviceSaveError: "임베딩 장치를 변경할 수 없습니다",
+        offlineDocs: {
+          folderLabel: "오프라인 Unsloth 문서",
+          folderDescription: "인터넷 없이도 사용할 수 있도록 Unsloth 전체 문서를 폴더에 저장합니다.",
+          folderHint: "Unsloth가 unsloth.ai/docs/llms-full.txt를 이 폴더에 \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" 이름으로 내려받고 이전 사본을 대체합니다. 폴더를 지식 베이스에 연결하면 오프라인에서도 채팅에서 문서를 검색할 수 있습니다. 폴더는 업데이트 후에도 유지됩니다.",
+          choose: "선택",
+          autoUpdateLabel: "릴리스마다 문서 업데이트",
+          autoUpdateDescription: "새 Unsloth 버전이 처음 시작될 때 새 사본을 내려받습니다.",
+          downloadNow: "지금 다운로드",
+          downloading: "문서를 다운로드하는 중…",
+          notDownloaded: "아직 다운로드하지 않음",
+          lastUpdated: "{date}에 {release}용으로 업데이트됨",
+        },
       },
       storage: {
         sectionTitle: "저장소",
@@ -3684,6 +3696,8 @@ export const ko = {
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
       mlxVersion: "MLX 버전",
+      fastflowlmVersion: "FastFlowLM 버전",
+      lemonadeVersion: "Lemonade 버전",
       whisperCppVersion: "whisper.cpp 버전",
       engines: {
         title: "엔진",

@@ -25,7 +25,7 @@ export const EDIT_TOOL_PANELS: readonly AudioToolPanel<null>[] =
           <h3 className="text-ui-13 font-medium text-foreground">
             {EDIT_COPY.howItEditsTitle}
           </h3>
-          <p className="text-ui-11p5/snug text-muted-foreground">
+          <p className="text-ui-12/normal text-muted-foreground">
             {logic.adapter.howItEdits(changes)}
           </p>
         </section>

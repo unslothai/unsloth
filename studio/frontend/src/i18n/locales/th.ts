@@ -2311,6 +2311,18 @@ export const th = {
         deviceGpu: "GPU",
         deviceLocked: "กำหนดโดย {name}",
         deviceSaveError: "ไม่สามารถเปลี่ยนอุปกรณ์สำหรับเอ็มเบดดิงได้",
+        offlineDocs: {
+          folderLabel: "เอกสาร Unsloth แบบออฟไลน์",
+          folderDescription: "บันทึกเอกสาร Unsloth ฉบับเต็มลงในโฟลเดอร์ เพื่อใช้งานได้โดยไม่ต้องมีอินเทอร์เน็ต",
+          folderHint: "Unsloth จะดาวน์โหลด unsloth.ai/docs/llms-full.txt ลงในโฟลเดอร์นี้เป็น \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" และแทนที่สำเนาก่อนหน้า เชื่อมโฟลเดอร์กับฐานความรู้เพื่อค้นหาเอกสารในแชทขณะออฟไลน์ โฟลเดอร์จะยังคงอยู่หลังการอัปเดต",
+          choose: "เลือก",
+          autoUpdateLabel: "อัปเดตเอกสารทุกครั้งที่มีรุ่นใหม่",
+          autoUpdateDescription: "ดาวน์โหลดสำเนาใหม่เมื่อ Unsloth เวอร์ชันใหม่เริ่มทำงานครั้งแรก",
+          downloadNow: "ดาวน์โหลดเลย",
+          downloading: "กำลังดาวน์โหลดเอกสาร…",
+          notDownloaded: "ยังไม่ได้ดาวน์โหลด",
+          lastUpdated: "อัปเดตเมื่อ {date} สำหรับ {release}",
+        },
       },
       storage: {
         sectionTitle: "พื้นที่จัดเก็บ",
@@ -3827,6 +3839,8 @@ export const th = {
       llamaCppVersion: "เวอร์ชัน llama.cpp",
       audioCppVersion: "เวอร์ชัน audio.cpp",
       mlxVersion: "เวอร์ชัน MLX",
+      fastflowlmVersion: "เวอร์ชัน FastFlowLM",
+      lemonadeVersion: "เวอร์ชัน Lemonade",
       whisperCppVersion: "เวอร์ชัน whisper.cpp",
       engines: {
         title: "เอนจิน",
