@@ -13,6 +13,6 @@ test("Q4NX export shows only with a supported NPU whose FastFlowLM runtime is re
   );
   // Every Q4NX surface and the export flag hang off that one gate.
   assert.match(src, /hasNpu && npuQ4nx && q4nxSourceSelected/);
-  assert.equal((src.match(/\{hasNpu && <Q4nxConvertCard \/>\}/g) ?? []).length, 2);
+  assert.equal((src.match(/\{hasNpu && <Q4nxConvertCard[ />]/g) ?? []).length, 2);
   assert.doesNotMatch(src, /q4nxSettings|useQ4nxExportStore/);
 });
