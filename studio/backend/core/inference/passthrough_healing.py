@@ -3,9 +3,13 @@
 
 """Turns text tool calls into structured ones for declared tools only, response side; never deletes
 unmatched output; response_format requests untouched; auto_heal_tool_calls false and
-UNSLOTH_DISABLE_TOOL_CALL_HEALING=1 opt out"""
+UNSLOTH_DISABLE_TOOL_CALL_HEALING=1 opt out. Where the loaded model's chat template writes
+<function=NAME><parameter=KEY> calls, a garbled parameter opener is repaired for tools with one
+required string parameter; UNSLOTH_DISABLE_SINGLE_PARAM_HEAL=1 turns that alone off"""
 
 import bisect
+import functools
+import itertools
 import json
 import os
 import re
@@ -53,6 +57,8 @@ def _has_heal_signal(text: str) -> bool:
 
 # Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
+# The garbled-opener repair for <function=><parameter=> calls alone; the rest of healing stays on.
+_SINGLE_PARAM_HEAL_DISABLED = os.environ.get("UNSLOTH_DISABLE_SINGLE_PARAM_HEAL", "0") == "1"
 # Nudging is opt-in: per-request nudge_tool_calls=true or UNSLOTH_TOOL_CALL_NUDGE=1 by default.
 _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
@@ -74,14 +80,53 @@ _MAX_HOLD_CHARS = 64 * 1024
 _MAX_NATIVE_CLOSERS = 16
 
 
+class HealTools(set):
+    """heal_gate's declared names, plus what the loaded model's chat template allows on top."""
+
+    # The template writes <function=NAME><parameter=KEY> calls, so a garbled opener may be repaired.
+    single_string_param = False
+    # Per request: tool name -> (its schema, the one required string parameter or None).
+    single_keys: Optional[dict] = None
+
+
+@functools.lru_cache(maxsize = 64)
+def _template_writes_xml_parameters(template: str) -> bool:
+    return "<function=" in template and "<parameter=" in template and "</parameter>" in template
+
+
+def single_param_heal_enabled(*templates: Any) -> bool:
+    """Whether a chat template teaches the <function=><parameter=> call format. Read from the
+    template text alone and cached per template, so no request pays for it and nothing is probed."""
+    if _SINGLE_PARAM_HEAL_DISABLED:
+        return False
+    return any(
+        _template_writes_xml_parameters(body)
+        for template in templates
+        for body in _template_strings(template)
+    )
+
+
+def backend_chat_templates(backend: Any) -> tuple:
+    """The chat templates a llama-server backend knows for its loaded model: the GGUF's own and
+    the override it may be served with. Either one teaching the format is enough."""
+    return (
+        getattr(backend, "chat_template", None),
+        getattr(backend, "chat_template_override", None),
+    )
+
+
 def heal_gate(
     auto_heal: Optional[bool],
     tools: Optional[list],
     tool_choice: Any = None,
     *,
     response_format: Any = None,
+    chat_template: Any = None,
 ) -> Optional[set]:
-    """Declared tool names, the promotion allowlist so healing never invents a tool; none under tool_choice none or a constraining response_format."""
+    """Declared tool names, the promotion allowlist so healing never invents a tool; none under tool_choice none or a constraining response_format.
+
+    ``chat_template`` is the loaded model's template (any shape, or several in a tuple); the names
+    then also say whether its call format admits the single string parameter repair."""
     if _HEALING_DISABLED or auto_heal is False:
         return None
     if tool_choice == "none":
@@ -100,6 +145,10 @@ def heal_gate(
         forced = function.get("name") if isinstance(function, dict) else None
         if isinstance(forced, str):
             names &= {forced}
+    if names and chat_template is not None and single_param_heal_enabled(chat_template):
+        names = HealTools(names)
+        names.single_string_param = True
+        names.single_keys = {}
     return names or None
 
 
@@ -470,6 +519,467 @@ def _heal_native_text(
     return events, sources
 
 
+def _single_param_wanted(allowed_tools: Any) -> bool:
+    return getattr(allowed_tools, "single_string_param", False) and not _SINGLE_PARAM_HEAL_DISABLED
+
+
+_WRAP_OPEN = "<tool_call>"
+_WRAP_CLOSE_TAG = "</tool_call>"
+_XML_FUNC_CLOSE = "</function>"
+_XML_PARAM_CLOSE = "</parameter>"
+# A call header that kept the tool name: <function=NAME>, the cut forms <function=NAME= / <function=NAME:
+# / <function=NAME at a line end, <function=NAME=KEY> / <function=NAME:KEY>, then <functionNAME> /
+# <=NAME> / <NAME>, and <parameter=NAME> standing in for the header when a <parameter= line follows.
+_SP_HEAD_RE = re.compile(
+    r"(<tool_call>\s*)?(?:"
+    r"<function=([\w-]+)(?:[=:]([\w-]+)>|(>)|[=:]?(?=[^\S\n]*\n))"
+    r"|<(?:function|=)?([\w-]+)>"
+    r"|<parameter=([\w-]+)>(?=[^\S\n]*\n[^\S\n]*<parameter=)"
+    r")[^\S\n]*\n?"
+)
+# One garbled opener line: <parameter=T> <function=T> <parameter>T> <parameterT>, <=T> <T>, =T> T>,
+# T: or T, where T is the parameter's name or the tool's.
+_SP_OPENER_RE = re.compile(
+    r"[^\S\n]*(?:"
+    r"<(?:parameter|function)[=>]?([\w-]+)>"
+    r"|<=?([\w-]+)>"
+    r"|=?([\w-]+)>"
+    r"|([\w-]+):?"
+    r")[^\S\n]*\n"
+)
+_SP_PARAM_RE = re.compile(r"[^\S\n]*<parameter=([\w-]+)>[^\S\n]*\n?")
+_SP_BLANK_LINES_RE = re.compile(r"(?:[^\S\n]*\n)*")
+# Words a cut-up opener is made of: a value opening with a piece of one is not trusted.
+_SP_OPENER_WORDS = ("function", "parameter", "tool_call")
+_SP_WRAP_CLOSE_RE = re.compile(r"\s*</tool_call>")
+# A value holding any of these is not one clean argument: the block is left as it was.
+_SP_VALUE_MARKUP = tuple(
+    sorted(
+        {
+            *_FOREIGN_SIGNALS,
+            _WRAP_CLOSE_TAG,
+            "<function",
+            "</function",
+            "<parameter",
+            "</parameter",
+            "<think>",
+            "</think>",
+            "[THINK]",
+            "[/THINK]",
+            "<tool_response>",
+            "</tool_response>",
+            "<|im_start|>",
+            "<|im_end|>",
+        }
+    )
+)
+
+
+def _single_string_param_key(
+    name: Any,
+    tool_schemas: dict,
+    memo: Optional[dict] = None,
+) -> Optional[str]:
+    """The one required parameter of a declared tool when it is a plain string and its name and
+    the tool's name cannot be read as anything else in this request. ``memo`` remembers the
+    answer per tool for as long as the request keeps handing in the same schema object."""
+    schema = tool_schemas.get(name)
+    if memo is None:
+        return _single_string_param_key_of(name, schema, tool_schemas)
+    known = memo.get(name)
+    if known is None or known[0] is not schema:
+        known = memo[name] = (schema, _single_string_param_key_of(name, schema, tool_schemas))
+    return known[1]
+
+
+def _single_string_param_key_of(name: Any, schema: Any, tool_schemas: dict) -> Optional[str]:
+    key = _string_arg_key_from_schema(schema)
+    if key is None:
+        return None
+    properties = schema["properties"]
+    prop = properties[key]
+    if not isinstance(prop, dict) or "enum" in prop or "const" in prop:
+        return None
+    prop_type = prop.get("type")
+    if prop_type != "string" and not (isinstance(prop_type, list) and "string" in prop_type):
+        return None
+    # <function=KEY> must not name another tool, nor <parameter=NAME> another parameter.
+    if key != name and (key in tool_schemas or name in properties):
+        return None
+    return key
+
+
+def _lacks_single_string_value(arguments: Any, name: str, key: str) -> bool:
+    """Whether a parsed call is missing its one required value. A healthy call answers from the
+    front of the parser's own JSON without being decoded."""
+    if not isinstance(arguments, str):
+        return False
+    at = arguments.find(f'"{key}": "')
+    if at >= 0 and not arguments.startswith('"', at + len(key) + 5):
+        # The tool's name as an empty leading parameter is the duplicated-opener shape.
+        return name != key and arguments.startswith(f'{{"{name}": ""')
+    try:
+        loaded = json.loads(arguments)
+    except ValueError:
+        return False
+    if not isinstance(loaded, dict):
+        return False
+    value = loaded.get(key)
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _opens_with_residue(value: str, key: str, name: str) -> bool:
+    """Whether a value starts with what is left of a garbled opener rather than with itself: tag
+    punctuation, a lone piece of a tag word, or the argument spelled KEY=... / KEY: ... / {"KEY": ...."""
+    text = value.lstrip()
+    if text[:1] in "<>=" or (text[:1] == "/" and text.startswith((key, name), 1)):
+        return True
+    line = text.split("\n", 1)[0].strip()
+    lead = line.lstrip("{\"' ")
+    for token in (key, name):
+        if lead.startswith(token) and lead[len(token) :].lstrip("\"' ")[:1] in ("=", ":"):
+            return True
+    if any(ch.isspace() for ch in line):
+        return False
+    # One word alone on the line: a tag's tail (``ommand>``) or a piece of a tag word (``ash``).
+    word = line.rstrip(":>")
+    return line.endswith(">") or any(word in piece for piece in (*_SP_OPENER_WORDS, key, name))
+
+
+def _find_all(text: str, token: str) -> list:
+    found = []
+    at = text.find(token)
+    while at >= 0:
+        found.append(at)
+        at = text.find(token, at + len(token))
+    return found
+
+
+class _SingleParamBlock(NamedTuple):
+    start: int
+    end: int
+    inner_start: int
+    inner_end: int
+    name: str
+    key: str
+    canonical: str
+    # Where <function= starts in ``canonical``.
+    canonical_inner: int
+
+
+def _scan_single_param_block(
+    content: str,
+    pos: int,
+    limit: int,
+    func_close: Callable[[int], int],
+    allowed_tools: set,
+    tool_schemas: dict,
+    memo: Optional[dict] = None,
+) -> tuple:
+    """The garbled call block starting at ``pos`` rewritten in the format's own shape, or None,
+    and where the next block may start. ``limit`` is the next <tool_call>: a block never runs past
+    it. A header whose body is refused still owns the text up to its </function>, so nothing in
+    between is read as a call of its own."""
+    block = _single_param_block(content, pos, limit, func_close, allowed_tools, tool_schemas, memo)
+    if isinstance(block, int):
+        return None, block
+    return block, block.end
+
+
+def _single_param_block(
+    content: str,
+    pos: int,
+    limit: int,
+    func_close: Callable[[int], int],
+    allowed_tools: set,
+    tool_schemas: dict,
+    memo: Optional[dict] = None,
+) -> Any:
+    head = _SP_HEAD_RE.match(content, pos)
+    if head is None:
+        return pos
+    wrapper, plain_name, glued, plain_close, bare_name, param_name = head.groups()
+    name = plain_name or bare_name or param_name
+    if name not in allowed_tools:
+        return pos
+    key = _single_string_param_key(name, tool_schemas, memo)
+    tokens = (key, name)
+    if key is None or (glued is not None and glued not in tokens):
+        return pos
+    garbled_head = plain_close is None
+    # Without <function=NAME> spelled out, only the <tool_call> wrapper says this is a call.
+    if garbled_head and wrapper is None:
+        return pos
+    body_start = head.end()
+    close = func_close(body_start)
+    if close < 0:
+        return pos
+    claimed = close + len(_XML_FUNC_CLOSE)
+    if close > limit:
+        return claimed
+    body = content[body_start:close]
+    param_close = body.rfind(_XML_PARAM_CLOSE)
+    if (
+        param_close < 0
+        or body.count(_XML_PARAM_CLOSE, 0, param_close) != 0
+        or body[param_close + len(_XML_PARAM_CLOSE) :].strip()
+    ):
+        return claimed
+    inner = body[:param_close]
+    value_start = None
+    standard_opener = False
+    # Blank lines between the header and the opener are not the value's.
+    lead = _SP_BLANK_LINES_RE.match(inner).end()
+    opener = _SP_OPENER_RE.match(inner, lead)
+    if opener is not None:
+        tagged, short, cut, bare = opener.groups()
+        if (tagged or short or cut or bare) in tokens:
+            value_start = opener.end()
+            standard_opener = opener.group().strip() == f"<parameter={key}>"
+            # A doubled opener: the garbled line, then the real <parameter=KEY>.
+            if not standard_opener:
+                second = _SP_PARAM_RE.match(inner, value_start)
+                if second is not None and second.group(1) == key:
+                    value_start = second.end()
+    if value_start is None:
+        standard = _SP_PARAM_RE.match(inner, lead)
+        if standard is not None and standard.group(1) == key:
+            value_start = standard.end()
+            standard_opener = True
+        else:
+            value_start = 0
+    if standard_opener and not garbled_head and glued is None:
+        # Nothing is garbled: the block is the normal parser's, whatever it made of it.
+        return claimed
+    value = inner[value_start:]
+    if (
+        not value.strip()
+        or any(marker in value for marker in _SP_VALUE_MARKUP)
+        or _opens_with_residue(value, key, name)
+    ):
+        return claimed
+    inner_start = pos + len(wrapper or "")
+    inner_end = close + len(_XML_FUNC_CLOSE)
+    end = inner_end
+    if wrapper is not None:
+        wrap_close = _SP_WRAP_CLOSE_RE.match(content, inner_end)
+        if wrap_close is not None:
+            end = wrap_close.end()
+    canonical = (
+        f"{wrapper or ''}<function={name}>\n<parameter={key}>\n{value}"
+        f"{content[body_start + param_close : end]}"
+    )
+    return _SingleParamBlock(
+        pos, end, inner_start, inner_end, name, key, canonical, len(wrapper or "")
+    )
+
+
+def _repair_single_string_params(
+    content: str,
+    parsed: list,
+    spans: list,
+    allowed_tools: set,
+    tool_schemas: Optional[dict],
+    parses: tuple = (True,),
+    memo: Optional[dict] = None,
+) -> Optional[tuple]:
+    """Repairs <function=NAME> blocks whose parameter opener (or header) came out garbled, for a
+    declared tool with exactly one required string parameter: the value has one place to go.
+
+    Returns ``(parsed, spans, repaired spans)`` or None when nothing is repaired. A block is taken
+    only if, rewritten in the format's own shape, the normal parser reads it as that one call in
+    every mode of ``parses`` (its ``allow_incomplete`` values), so a repaired block is promoted
+    exactly where a well-formed one would be. Calls that already parsed with their value are
+    never touched, and a healthy message costs one pass over the parsed calls plus a count."""
+    if not tool_schemas:
+        return None
+    if memo is None:
+        memo = getattr(allowed_tools, "single_keys", None)
+    lacking = None
+    wrapped = 0
+    for index, (call, span) in enumerate(zip(parsed, spans)):
+        # A wrapper belongs to a parsed call that starts with it or, while the wrapper is still
+        # open, right behind it.
+        start = span[0]
+        if not content.startswith(_WRAP_OPEN, start):
+            while start > 0 and content[start - 1].isspace():
+                start -= 1
+            start -= len(_WRAP_OPEN)
+        if start >= 0 and content.startswith(_WRAP_OPEN, start):
+            wrapped += 1
+        function = call["function"]
+        name = function.get("name")
+        if name in allowed_tools:
+            key = _single_string_param_key(name, tool_schemas, memo)
+            if key is not None and _lacks_single_string_value(function.get("arguments"), name, key):
+                if lacking is None:
+                    lacking = set()
+                lacking.add(index)
+    if lacking is None and content.count(_WRAP_OPEN) <= wrapped:
+        return None
+
+    wraps = _find_all(content, _WRAP_OPEN)
+    closes = _find_all(content, _XML_FUNC_CLOSE)
+    if not closes:
+        return None
+    headers = _find_all(content, "<function")
+    wrap_closes = _find_all(content, _WRAP_CLOSE_TAG)
+    # Where a call can end: its own closer, or the wrapper's.
+    ends = sorted(closes + wrap_closes) if wrap_closes else closes
+    starts = [span[0] for span in spans]
+    sorted_spans = all(a <= b for a, b in zip(starts, starts[1:]))
+
+    def owner(pos: int) -> Optional[int]:
+        """Index of the parsed call whose span holds ``pos``."""
+        if sorted_spans:
+            index = bisect.bisect_right(starts, pos) - 1
+            return index if index >= 0 and pos < spans[index][1] else None
+        return next((i for i, (s, e) in enumerate(spans) if s <= pos < e), None)
+
+    candidates = {spans[index][0] for index in lacking or ()}
+    for at in wraps:
+        index = owner(at)
+        if index is None or (lacking is not None and index in lacking):
+            candidates.add(at)
+
+    def func_close(begin: int) -> int:
+        index = bisect.bisect_left(closes, begin)
+        return closes[index] if index < len(closes) else -1
+
+    blocks = []
+    floor = 0
+    for pos in sorted(candidates):
+        if pos < floor:
+            continue
+        # A <function header before this one that never ended owns the text up to its closer, in
+        # every parse mode: what follows it cannot be told apart from its own body.
+        before = bisect.bisect_left(ends, pos)
+        earlier = bisect.bisect_right(headers, ends[before - 1] if before else -1)
+        if earlier < len(headers) and headers[earlier] < pos:
+            continue
+        nxt = bisect.bisect_right(wraps, pos)
+        limit = wraps[nxt] if nxt < len(wraps) else len(content)
+        if nxt and wraps[nxt - 1] != pos:
+            # A bare <function= inside a wrapper still open there belongs to that wrapper's call.
+            closed = bisect.bisect_left(wrap_closes, wraps[nxt - 1])
+            if closed == len(wrap_closes) or wrap_closes[closed] > pos:
+                continue
+        block, floor = _scan_single_param_block(
+            content, pos, limit, func_close, allowed_tools, tool_schemas, memo
+        )
+        if block is not None:
+            blocks.append(block)
+    if not blocks:
+        return None
+
+    pieces = []
+    expected = []
+    cursor = 0
+    length = 0
+    for block in blocks:
+        pieces.append(content[cursor : block.start])
+        length += block.start - cursor
+        outer = (length, length + len(block.canonical))
+        inner = (
+            length + block.canonical_inner,
+            outer[1] - (block.end - block.inner_end),
+        )
+        expected.append((outer, inner))
+        pieces.append(block.canonical)
+        length = outer[1]
+        cursor = block.end
+    pieces.append(content[cursor:])
+    rewritten = "".join(pieces)
+
+    confirmed: Optional[list] = None
+    for allow_incomplete in parses:
+        calls, call_spans = parse_tool_calls_from_text(
+            rewritten, allow_incomplete = allow_incomplete, with_spans = True
+        )
+        by_span = dict(zip(call_spans, calls))
+        call_starts = sorted(s for s, _e in call_spans)
+        seen = []
+        for block, (outer, inner) in zip(blocks, expected):
+            hit = None
+            for kind, span in (("outer", outer), ("inner", inner)):
+                call = by_span.get(span)
+                if call is None or call["function"].get("name") != block.name:
+                    continue
+                arguments = _loaded_arguments(call)
+                if (
+                    isinstance(arguments, dict)
+                    and list(arguments) == [block.key]
+                    and isinstance(arguments[block.key], str)
+                    and arguments[block.key].strip()
+                    # Nothing else may have parsed inside the block.
+                    and bisect.bisect_left(call_starts, outer[1])
+                    - bisect.bisect_left(call_starts, outer[0])
+                    == 1
+                ):
+                    hit = (kind, call)
+                    break
+            seen.append(hit)
+        if confirmed is None:
+            confirmed = seen
+        else:
+            # Every mode must read the same span, or the block is not one settled call.
+            confirmed = [a if a and b and a[0] == b[0] else None for a, b in zip(confirmed, seen)]
+    if not confirmed or not any(confirmed):
+        return None
+
+    drop = set()
+    added = []
+    # Running maximum of span ends, so the calls reaching into a block are found by bisect.
+    reach = list(itertools.accumulate((e for _s, e in spans), max)) if sorted_spans else None
+    for block, hit in zip(blocks, confirmed):
+        if hit is None:
+            continue
+        kind, call = hit
+        span = (block.start, block.end) if kind == "outer" else (block.inner_start, block.inner_end)
+        window = (
+            range(bisect.bisect_right(reach, block.start), bisect.bisect_left(starts, block.end))
+            if reach is not None
+            else range(len(spans))
+        )
+        inside = [
+            index
+            for index in window
+            if spans[index][0] < block.end and spans[index][1] > block.start
+        ]
+        # What the normal parse made of the block may only be its debris or the repair itself: the
+        # same call without its value, the garbled opener read as an undeclared function, or this
+        # very call read from a doubled header.
+        arguments = _loaded_arguments(call)
+        if any(
+            spans[index][0] < block.start
+            or spans[index][1] > block.end
+            or not (
+                (lacking is not None and index in lacking)
+                or parsed[index]["function"].get("name") not in tool_schemas
+                or (
+                    parsed[index]["function"].get("name") == block.name
+                    and _loaded_arguments(parsed[index]) == arguments
+                )
+            )
+            for index in inside
+        ):
+            continue
+        drop.update(inside)
+        added.append((span, call))
+    if not added:
+        return None
+    merged = [
+        (span, call) for index, (call, span) in enumerate(zip(parsed, spans)) if index not in drop
+    ]
+    merged.extend(added)
+    merged.sort(key = lambda item: item[0][0])
+    return (
+        [call for _span, call in merged],
+        [span for span, _call in merged],
+        {span for span, _call in added},
+    )
+
+
 def heal_openai_message_events(
     msg: dict,
     allowed_tools: set,
@@ -498,6 +1008,19 @@ def heal_openai_message_events(
         else set(parse_tool_calls_from_text(content, allow_incomplete = False, with_spans = True)[1])
     )
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
+    if _single_param_wanted(allowed_tools):
+        repaired = _repair_single_string_params(
+            content,
+            parsed,
+            spans,
+            allowed_tools,
+            tool_schemas,
+            (True,) if allow_incomplete else (True, False),
+        )
+        if repaired is not None:
+            parsed, spans, repaired_spans = repaired
+            if closed is not None:
+                closed |= repaired_spans
     events: list = []
     pos = 0
     call_count = 0
@@ -764,6 +1287,9 @@ class StreamToolCallHealer:
         native: Optional[NativeToolFormat] = None,
     ) -> None:
         self._allowed = set(allowed_tools)
+        # Read before the copy above drops it: the model's template admits the opener repair.
+        self._single_param = _single_param_wanted(allowed_tools)
+        self._single_keys: dict = {}
         # With a native format, text from its first opener is held to the end and healed whole.
         self._native = native
         self._relayed: Optional[str] = ""
@@ -854,6 +1380,19 @@ class StreamToolCallHealer:
                 if may_parse
                 else ([], [])
             )
+            if may_parse and self._single_param:
+                # Strict like the parse above: a block is repaired only once it has closed.
+                repaired = _repair_single_string_params(
+                    self._buffer,
+                    parsed,
+                    spans,
+                    self._allowed,
+                    self._tool_schemas,
+                    (False,),
+                    self._single_keys,
+                )
+                if repaired is not None:
+                    parsed, spans = repaired[:2]
             # A bracket call after a still-open tag block is that block's argument text.
             if (
                 parsed
@@ -945,6 +1484,12 @@ class StreamToolCallHealer:
             allow_incomplete = True,
             with_spans = True,
         )
+        if self._single_param:
+            repaired = _repair_single_string_params(
+                residue, parsed, spans, self._allowed, self._tool_schemas, memo = self._single_keys
+            )
+            if repaired is not None:
+                parsed, spans = repaired[:2]
         events: list = []
         pos = 0
         any_promoted = False
@@ -995,8 +1540,14 @@ def _heal_would_promote(
     tools: Optional[list] = None,
 ) -> bool:
     """Whether ``heal_openai_message`` would promote at least one call."""
-    parsed = parse_tool_calls_from_text(text, allow_incomplete = True)
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
+    if _single_param_wanted(allowed_tools):
+        parsed, spans = parse_tool_calls_from_text(text, allow_incomplete = True, with_spans = True)
+        repaired = _repair_single_string_params(text, parsed, spans, allowed_tools, tool_schemas)
+        if repaired is not None:
+            parsed = repaired[0]
+    else:
+        parsed = parse_tool_calls_from_text(text, allow_incomplete = True)
     return bool(_promote(parsed, allowed_tools, tool_schemas = tool_schemas))
 
 

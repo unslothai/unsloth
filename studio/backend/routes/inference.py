@@ -3739,6 +3739,7 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_call_parser import TOOL_XML_SIGNALS as _PARSER_TOOL_SIGNALS
 from core.inference.passthrough_healing import (
     StreamToolCallHealer,
+    backend_chat_templates,
     heal_gate,
     heal_openai_message,
     heal_openai_message_events,
@@ -35734,6 +35735,12 @@ async def produce_openai_chat_completions(
             _sf_healing_tools,
             payload.tool_choice,
             response_format = _sf_response_format,
+            # Load-time templates, as for the native formats below: they say what the model writes.
+            chat_template = (
+                _sf_image_tpl,
+                (_sf_model_info.get("chat_template_info") or {}).get("template"),
+                *(getattr(target, "chat_template", None) for target in _sf_chat_targets),
+            ),
         )
         if _sf_client_tools
         else None
@@ -41755,6 +41762,8 @@ async def _responses_stream(
             body.get("tools"),
             body.get("tool_choice"),
             response_format = body.get("response_format"),
+            # A Connection's template is not known here, so only the local model is described.
+            chat_template = backend_chat_templates(llama_backend) if upstream is None else None,
         )
         translator = _ResponsesStreamTranslator(
             payload = payload,
@@ -46657,6 +46666,7 @@ async def _anthropic_passthrough_stream(
             body.get("tools"),
             body.get("tool_choice"),
             response_format = body.get("response_format"),
+            chat_template = backend_chat_templates(llama_backend),
         )
         if _allowed_tools:
             emitter.enable_healing(
@@ -47071,6 +47081,7 @@ async def _anthropic_passthrough_non_streaming(
             body.get("tools"),
             body.get("tool_choice"),
             response_format = body.get("response_format"),
+            chat_template = backend_chat_templates(llama_backend),
         )
 
         # Opt-in single-retry nudge; keep the prompt prefix intact so the KV cache is reused.
@@ -47854,6 +47865,7 @@ async def _openai_passthrough_stream_admitted(
             body.get("tools"),
             body.get("tool_choice"),
             response_format = body.get("response_format"),
+            chat_template = backend_chat_templates(llama_backend),
         )
 
         # Keep the pre-header window short so accepted SSE clients receive
@@ -48694,6 +48706,7 @@ async def _openai_passthrough_non_streaming_upstream(
         body.get("tools"),
         body.get("tool_choice"),
         response_format = body.get("response_format"),
+        chat_template = backend_chat_templates(llama_backend),
     )
 
     try:
