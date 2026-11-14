@@ -1071,30 +1071,38 @@ def _redirect_word_is_high_risk(word: str, depth: int) -> bool:
     return depth >= 3 or _terminal_is_high_risk(word, depth + 1)
 
 
-def _split_redirect_punct_indexes(text: str, tokens: "list[str]") -> "frozenset[int] | None":
-    """Punctuation tokens shlex split off a contiguous unquoted `>&`, `<&` or `>|` (`2>&1`, `>|log`)."""
-    states = _shell_quote_states(text)
-    runs: "list[bool]" = []
-    i, n = 0, len(text)
-    while i < n:
-        if text[i] == "#" and not states[i] and (not i or text[i - 1].isspace()):
-            # shlex drops the comment, so its punctuation has no token.
-            break
-        if text[i] in ";&|()" and not states[i]:
-            j = i
-            while j < n and text[j] in ";&|()" and not states[j]:
-                j += 1
-            prev = text[i - 1] if i and not states[i - 1] else ""
-            runs.append(
-                (text[i:j] == "&" and prev in ("<", ">")) or (text[i:j] == "|" and prev == ">")
-            )
-            i = j
-        else:
-            i += 1
-    punct = [k for k, token in enumerate(tokens) if token and not set(token) - set(";&|()")]
-    if len(punct) != len(runs):
+def _without_split_redirections(tokens: "list[str]") -> "tuple[str, list[str]] | None":
+    """The command with every shlex-split `>&` / `<&` / `>|` removed, and the removed targets."""
+    out: "list[str]" = []
+    targets: "list[str]" = []
+    i, changed = 0, False
+    while i < len(tokens):
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if _is_bare_redirection(tokens[i]) and (
+            nxt == "&" or (nxt == "|" and tokens[i].endswith(">"))
+        ):
+            targets.extend(tokens[i + 2 : i + 3])
+            i += 3
+            changed = True
+            continue
+        token = tokens[i]
+        out.append(token if token and not set(token) - set(";&|()") else shlex.quote(token))
+        i += 1
+    return (" ".join(out), targets) if changed else None
+
+
+def _unquoted_redirection_indexes(text: str, tokens: "list[str]") -> "frozenset[int] | None":
+    """Tokens that are real redirections; None when quoting cannot be told apart."""
+    if not any(char in _REDIRECT_CHARS for char in text):
+        return frozenset()
+    marked = _masked_tokens(text, tokens, ";&|()", _REDIRECT_CHARS, _QUOTED_REDIRECT_MARK)
+    if marked is None:
         return None
-    return frozenset(k for k, dup in zip(punct, runs) if dup)
+    return frozenset(
+        index
+        for index, token in enumerate(tokens)
+        if _REDIRECTION_RE.match(token) and _REDIRECTION_RE.match(marked[index])
+    )
 
 
 def _unquoted_expansion_indexes(
@@ -7878,14 +7886,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         shell_c_pending = False  # a shell `-c` precedes its inline payload
         command_arg_pending = False  # the next word is a command string run later (trap, script -c)
         script_operand_seen = False  # `script` already has its log file operand
-        redir_target_pending = (
-            False  # a bare `2>` precedes its target, ahead of a pending command string
-        )
-        dup_target_pending = (
-            False  # the fd / file after a split `>&` / `>|` belongs to the redirection
-        )
-        split_redirect_puncts: "frozenset[int] | None" = None
-        pending_quoted_redirs: "frozenset[int] | None" = None
+        redir_target_pending = False  # a bare `2>` precedes its target
+        split_redirects_checked = False  # the `2>&1`-joined reading was screened
+        unquoted_redirs: "frozenset[int] | None | bool" = False  # False: not computed yet
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
         git_checkout_positionals = 0  # positionals seen after `git checkout`
@@ -7903,21 +7906,22 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         for _tok_idx, token in enumerate(tokens):
             after_coproc = coproc_kw
             coproc_kw = False
-            if dup_target_pending:
-                dup_target_pending = False
-                if _redirect_word_is_high_risk(token, _depth):
+            # shlex splits `2>&1` / `>|log`; this `&` / `|` may be the redirection or a real separator,
+            # so also judge the command with the split redirections removed.
+            if (
+                token in ("&", "|")
+                and not split_redirects_checked
+                and _tok_idx
+                and _is_bare_redirection(tokens[_tok_idx - 1])
+            ):
+                split_redirects_checked = True
+                split = _without_split_redirections(tokens)
+                if split is not None and (
+                    _depth >= 3
+                    or _terminal_is_high_risk(split[0], _depth + 1)
+                    or any(_redirect_word_is_high_risk(t, _depth) for t in split[1])
+                ):
                     return True
-                continue
-            if token in ("&", "|") and _tok_idx and _is_bare_redirection(tokens[_tok_idx - 1]):
-                if split_redirect_puncts is None:
-                    split_redirect_puncts = _split_redirect_punct_indexes(text, tokens)
-                if split_redirect_puncts is None:
-                    # Text and tokens do not line up, so this may be `>&` or a separator: ask.
-                    return True
-                if _tok_idx in split_redirect_puncts:
-                    dup_target_pending = True
-                    redir_target_pending = False
-                    continue
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
@@ -7967,23 +7971,30 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             # `trap 2>log 'rm -rf x' EXIT`); a bare operator also takes the next word as its target.
             if redir_target_pending:
                 redir_target_pending = False
-                if _redirect_word_is_high_risk(token, _depth):
+                # Behind a quoted operator this word may be the pending command string itself.
+                if command_arg_pending or shell_c_pending:
+                    if _depth >= 3 or _terminal_is_high_risk(token, _depth + 1):
+                        return True
+                elif _redirect_word_is_high_risk(token, _depth):
                     return True
                 continue
             redir = None
             if expect_command:
                 redir = _REDIR_PREFIX_RE.match(token)
-            elif (
-                ((prefix_pending or scan_forward) and not wrapper_value_pending)
-                or command_arg_pending
-                or shell_c_pending
-            ):
-                # A quoted `'>log'` is a word (`exec -a '>log' git ...`), not a redirection.
+            elif command_arg_pending or shell_c_pending:
                 redir = _REDIRECTION_RE.match(token)
                 if redir:
-                    if pending_quoted_redirs is None:
-                        pending_quoted_redirs = _quoted_redirection_indexes(text, tokens, ";&|()")
-                    if _tok_idx in pending_quoted_redirs:
+                    # Quoted (`bash -c '>out rm -rf x'`) it is the command string: screen it as one too.
+                    readings = [token, " ".join(tokens[_tok_idx:])] if shell_c_pending else [token]
+                    if _depth >= 3 or any(_terminal_is_high_risk(r, _depth + 1) for r in readings):
+                        return True
+            elif (prefix_pending or scan_forward) and not wrapper_value_pending:
+                redir = _REDIRECTION_RE.match(token)
+                if redir:
+                    if unquoted_redirs is False:
+                        unquoted_redirs = _unquoted_redirection_indexes(text, tokens)
+                    # A quoted `'>log'` is a word (`exec -a '>log' git ...`); unknown quoting keeps it one.
+                    if unquoted_redirs is None or _tok_idx not in unquoted_redirs:
                         redir = None
             if redir:
                 if _redirect_word_is_high_risk(token[redir.end() :], _depth):
@@ -8377,14 +8388,19 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 and not git_submodule_action
             ):
                 git_submodule_action = base
-            elif current_command == "script" and _REDIRECTION_RE.match(token):
+            elif (
+                current_command == "script"
+                and _REDIRECTION_RE.match(token)
+                and not script_operand_seen
+            ):
                 # `script 2>err log -qc CMD`: a redirection is not the log file operand.
-                if pending_quoted_redirs is None:
-                    pending_quoted_redirs = _quoted_redirection_indexes(text, tokens, ";&|()")
-                if _tok_idx in pending_quoted_redirs:
-                    script_operand_seen = True
-                else:
+                if unquoted_redirs is False:
+                    unquoted_redirs = _unquoted_redirection_indexes(text, tokens)
+                if unquoted_redirs is not None and _tok_idx in unquoted_redirs:
                     redir_target_pending = _REDIRECTION_RE.match(token).end() == len(token)
+                else:
+                    script_operand_seen = True
+                    scan_forward = True
             elif current_command == "script" and not script_operand_seen:
                 # util-linux permutes argv, so options after the log file still count; on BSD/macOS
                 # (`script [opts] file command ...`) the next word is a command, judged like xargs'.
