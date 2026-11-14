@@ -3063,7 +3063,12 @@ def _train_dit(
                 _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")
         if not stopped:
             # A completed run must not leave its own checkpoint for a later resume to roll back to.
-            retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
+            retire_own_checkpoints(
+                out_dir,
+                preexisting_checkpoints,
+                resumed_here = resumed_here,
+                keep_completed = cfg.save_total_limit == 0,
+            )
         elif not resumed_here:
             # A partial save on a fresh retrain is a LOWER step than leftovers, which would outrank it.
             discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)

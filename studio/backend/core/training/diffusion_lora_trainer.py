@@ -904,7 +904,12 @@ def run_diffusion_lora_training(
             catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
             if not stopped:
                 # Retire this run's own bundles so a later resume does not roll back to them.
-                retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
+                retire_own_checkpoints(
+                    out_dir,
+                    preexisting_checkpoints,
+                    resumed_here = resumed_here,
+                    keep_completed = cfg.save_total_limit == 0,
+                )
             elif not resumed_here:
                 # A lower-step partial would be outranked by the earlier run's leftovers.
                 discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)

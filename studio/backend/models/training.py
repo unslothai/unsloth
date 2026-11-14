@@ -1149,7 +1149,13 @@ class DiffusionTrainingStartRequest(BaseModel):
         ),
     )
     save_total_limit: int = Field(
-        2, ge = 0, le = 100, description = "How many checkpoints to keep; 0 keeps every one"
+        2,
+        ge = 0,
+        le = 100,
+        description = (
+            "How many checkpoints to keep during training. 0 keeps every checkpoint and "
+            "moves them into a completed-checkpoints folder when the run finishes."
+        ),
     )
     sample_every: int = Field(
         0,

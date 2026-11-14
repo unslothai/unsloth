@@ -1619,7 +1619,7 @@ export function DiffusionTrainPanel({
           numberField("Keep checkpoints", saveTotalLimit, setSaveTotalLimit, 2, {
             min: 0,
             markDirty: keepFamilyDefaults,
-            hint: "How many of those checkpoints stay on disk; older ones are deleted as new ones are saved. Raise it to compare earlier steps. 0 keeps every one.",
+            hint: "How many checkpoints to keep while training; older ones are deleted as new ones are saved. 0 keeps every checkpoint and moves them into a completed-checkpoints folder in the output directory when training finishes.",
           })}
       </div>
 

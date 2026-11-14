@@ -1065,12 +1065,41 @@ def retire_own_checkpoints(
     preexisting: "Iterable[Any]",
     *,
     resumed_here: bool = True,
+    keep_completed: bool = False,
 ) -> None:
-    """Drops a finished run's bundles so a later resume cannot roll back; a fresh run (resumed_here False) also drops pre-existing bundles."""
+    """Retire finished bundles, optionally keeping them outside automatic resume discovery."""
+    root = Path(output_dir).expanduser()
+    if keep_completed:
+        previous = _preexisting_checkpoint_identities(preexisting)
+        candidates = [
+            path
+            for path in list_checkpoints(root)
+            if not resumed_here or not _is_preexisting_checkpoint(path, previous)
+        ]
+        if candidates:
+            # A unique sibling folder keeps older runs intact and is outside the resume scan.
+            archive = root / f"completed-checkpoints-{uuid.uuid4().hex}"
+            archive.mkdir()
+            moved: list[Path] = []
+            try:
+                for path in candidates:
+                    # Same-filesystem renames avoid copying large optimizer states.
+                    os.replace(path, archive / path.name)
+                    moved.append(path)
+            except OSError:
+                # Restore the original resume candidates if a later move fails.
+                for path in reversed(moved):
+                    if not path.exists():
+                        with contextlib.suppress(OSError):
+                            os.replace(archive / path.name, path)
+                with contextlib.suppress(OSError):
+                    archive.rmdir()
+                raise
+        _retire_replaced_slots(root, restore = resumed_here)
+        return
     if resumed_here:
         clear_own_checkpoints(output_dir, preexisting)
         return
-    root = Path(output_dir).expanduser()
     for stale in list_checkpoints(root):
         shutil.rmtree(stale, ignore_errors = True)
     _retire_replaced_slots(root, restore = False)
@@ -1113,9 +1142,8 @@ def discard_named_checkpoints(paths: "Iterable[Any]") -> None:
         _retire_replaced_slots(root, restore = True)
 
 
-def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:
-    """Removes only bundles this run wrote, identified by the pre-run snapshot, never the resume source."""
-    # Keyed by path AND identity: a periodic save can REPLACE a pre-existing bundle.
+def _preexisting_checkpoint_identities(preexisting: "Iterable[Any]") -> dict[Path, Optional[tuple]]:
+    """Map pre-run bundle paths to identities so replaced slots are treated as new writes."""
     keep: dict[Path, Optional[tuple]] = {}
     for entry in preexisting:
         # A bare path (an older caller) keeps the pathname-only behaviour for that entry.
@@ -1124,8 +1152,19 @@ def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iter
             keep[Path(path)] = identity
         else:
             keep[Path(entry)] = _bundle_identity(Path(entry))
+    return keep
+
+
+def _is_preexisting_checkpoint(path: Path, keep: dict[Path, Optional[tuple]]) -> bool:
+    """Whether the path still holds the bundle captured before this run."""
+    return path in keep and keep[path] == _bundle_identity(path)
+
+
+def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:
+    """Removes only bundles this run wrote, identified by the pre-run snapshot, never the resume source."""
+    keep = _preexisting_checkpoint_identities(preexisting)
     for stale in list_checkpoints(output_dir):
-        if stale in keep and keep[stale] == _bundle_identity(stale):
+        if _is_preexisting_checkpoint(stale, keep):
             continue
         shutil.rmtree(stale, ignore_errors = True)
     # Restore the displaced original: identity matching cannot keep a replacement bundle it overwrote.

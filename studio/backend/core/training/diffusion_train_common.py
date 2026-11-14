@@ -1124,7 +1124,7 @@ class DiffusionLoraConfig:
     log_every: int = 1
     # 0 writes no periodic checkpoints; stop-and-save writes one, so Resume stays available.
     save_steps: int = 0
-    # How many checkpoint-<N> bundles to keep in the output dir; 0 keeps every one.
+    # How many bundles to keep during training; 0 also archives every bundle after completion.
     save_total_limit: int = 2
     # 0 disables. Not part of the resume identity: previews never touch the training math.
     sample_every: int = 0
