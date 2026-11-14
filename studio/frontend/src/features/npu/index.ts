@@ -9,6 +9,7 @@ export {
   npuCapabilities,
   npuContextLabel,
   npuDownloadLabel,
+  npuReadmeNote,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
