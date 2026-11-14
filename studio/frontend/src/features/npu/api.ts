@@ -4,7 +4,6 @@
 import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
-import { npuVersionTag } from "./runtime-versions";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
 
@@ -105,21 +104,6 @@ const NPU_RECOMMENDED = [
 function npuRank(checkpoint: string): number {
   const rank = NPU_RECOMMENDED.indexOf(checkpoint);
   return rank === -1 ? NPU_RECOMMENDED.length : rank;
-}
-
-/** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */
-export function npuRuntimeLabel(
-  versions: NpuStatus["versions"],
-): string | null {
-  const parts: string[] = [];
-  for (const [name, version] of [
-    ["FastFlowLM", versions?.fastflowlm],
-    ["Lemonade", versions?.lemonade],
-  ] as const) {
-    const tag = npuVersionTag(version);
-    if (tag) parts.push(`${name} ${tag}`);
-  }
-  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export interface NpuCapability {
