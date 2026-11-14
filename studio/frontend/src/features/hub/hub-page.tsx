@@ -133,6 +133,8 @@ import {
 } from "./lib/dataset-filters";
 import {
   detectCapabilities,
+  parseHubCapabilityQuery,
+  removeHubCapabilityFromQuery,
   type HubCapabilityFilter,
 } from "./lib/model-capabilities";
 import { studioPageForTask } from "./lib/unsloth-support";
@@ -904,6 +906,21 @@ export function ModelsPage() {
   );
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilters = useDeferredValue(capabilityFilters);
+  const parsedCapabilitySearch = useMemo(
+    () =>
+      isModelDiscover
+        ? parseHubCapabilityQuery(deferredDebouncedQuery)
+        : { query: deferredDebouncedQuery, capabilities: [] },
+    [isModelDiscover, deferredDebouncedQuery],
+  );
+  const capabilitySearchQuery = parsedCapabilitySearch.query;
+  const effectiveCapabilityFilters = useMemo(() => {
+    const filters = [...deferredCapabilityFilters];
+    for (const capability of parsedCapabilitySearch.capabilities) {
+      if (!filters.includes(capability)) filters.push(capability);
+    }
+    return filters;
+  }, [deferredCapabilityFilters, parsedCapabilitySearch.capabilities]);
 
   const hasQuery = deferredDebouncedQuery.trim() !== "";
   const mode: DiscoverMode = isModelDiscover
@@ -994,7 +1011,7 @@ export function ModelsPage() {
     searchFailure,
     handleRetrySearch,
   } = useDiscoverSearch({
-    debouncedQuery,
+    debouncedQuery: capabilitySearchQuery,
     accessToken: apiHfToken,
     isDiscoverTab: isDiscoverTab && !showNpuCatalog,
     isDatasetMode,
@@ -1006,7 +1023,8 @@ export function ModelsPage() {
     keepResult: keepSearchResult,
     task:
       // Asked of the Hub only when Audio is the one filter: with others it would drop their models.
-      capabilityFilters.length === 1 && capabilityFilters[0] === "audio"
+      effectiveCapabilityFilters.length === 1 &&
+      effectiveCapabilityFilters[0] === "audio"
         ? (linkedAudioTask ?? undefined)
         : undefined,
   });
@@ -1147,8 +1165,8 @@ export function ModelsPage() {
           isDiffusionRow(row),
           isDiffusionRow(row) ? diffusionQuantFormats : checkpointQuantFormats,
         ) &&
-        (deferredCapabilityFilters.length === 0 ||
-          deferredCapabilityFilters.some(
+        (effectiveCapabilityFilters.length === 0 ||
+          effectiveCapabilityFilters.some(
             (key) =>
               matchesHubCapability(row, key) &&
               (key !== "audio" ||
@@ -1169,7 +1187,7 @@ export function ModelsPage() {
     effectiveDiscoverFormat,
     checkpointQuantFormats,
     diffusionQuantFormats,
-    deferredCapabilityFilters,
+    effectiveCapabilityFilters,
     linkedAudioTask,
     activeChannel,
     fitOnDeviceOnly,
@@ -1338,7 +1356,7 @@ export function ModelsPage() {
         deferredDebouncedQuery,
         resourceType,
         deferredFormatFilter,
-        deferredCapabilityFilters,
+        effectiveCapabilityFilters,
         deferredDatasetModalities,
         searchFilters,
         // ModelScope drops searchFilters, but the dataset rows are filtered here either way.
@@ -1354,7 +1372,7 @@ export function ModelsPage() {
       deferredDebouncedQuery,
       resourceType,
       deferredFormatFilter,
-      deferredCapabilityFilters,
+      effectiveCapabilityFilters,
       deferredDatasetModalities,
       searchFilters,
       minRows,
@@ -1703,6 +1721,40 @@ export function ModelsPage() {
     },
     [navigate, setModelsTab],
   );
+  const handleSearchCapability = useCallback(
+    (capability: HubCapabilityFilter) => {
+      setModelsTab("discover");
+      setResourceType("models");
+      setQuery("");
+      setDiscoverFormat("all");
+      setCapabilityFilters([capability]);
+      setDatasetModalities([]);
+      setSearchFilters({});
+      setSortBrowseActive(true);
+      setUploaderPick(null);
+      setFirstPickArmed(false);
+      setLinkedAudioTask(null);
+      void navigate({
+        to: "/hub",
+        search: (prev) => ({
+          ...prev,
+          tab: "discover",
+          kind: undefined,
+          capability: undefined,
+          audioTask: undefined,
+          section: undefined,
+          model: undefined,
+        }),
+      });
+    },
+    [navigate, setModelsTab],
+  );
+  const handleRemoveRecognizedCapability = useCallback(
+    (capability: HubCapabilityFilter) => {
+      setQuery((current) => removeHubCapabilityFromQuery(current, capability));
+    },
+    [],
+  );
   const openRunSettingsInChat = useCallback(
     (request: ModelConfigHandoffRequest) => {
       const chatRuntime = useChatRuntimeStore.getState();
@@ -1860,12 +1912,14 @@ export function ModelsPage() {
     () => ({
       onInventoryChange: refreshInventory,
       onSearchHub: handleSearchHub,
+      onSearchCapability: handleSearchCapability,
       onRun: handleRun,
       runConfigPending: runConfigOpening?.modelId === selectedModel?.id,
     }),
     [
       handleRun,
       handleSearchHub,
+      handleSearchCapability,
       refreshInventory,
       runConfigOpening,
       selectedModel?.id,
@@ -1905,7 +1959,7 @@ export function ModelsPage() {
               ownerScope === "unsloth" &&
               debouncedQuery.trim() !== "") ||
             deferredFormatFilter !== "all" ||
-            deferredCapabilityFilters.length > 0 ||
+            effectiveCapabilityFilters.length > 0 ||
             (isDatasetMode &&
               (deferredDatasetModalities.length > 0 ||
                 minRows !== undefined ||
@@ -1941,7 +1995,7 @@ export function ModelsPage() {
       discoverFetchIntent,
       discoverManualFetchAvailable,
       deferredFormatFilter,
-      deferredCapabilityFilters,
+      effectiveCapabilityFilters,
       deferredDatasetModalities,
       minRows,
       maxRows,
@@ -2122,6 +2176,8 @@ export function ModelsPage() {
           onResourceTypeChange={handleResourceTypeChange}
           formatFilter={formatFilter}
           onFormatFilterChange={setFormatFilter}
+          recognizedCapabilities={parsedCapabilitySearch.capabilities}
+          onRemoveRecognizedCapability={handleRemoveRecognizedCapability}
           searchFilters={storedSearchFilters}
           onSearchFiltersChange={handlePopoverSearchFiltersChange}
           uploaders={uploaders}

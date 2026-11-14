@@ -36,7 +36,10 @@ import {
   useRecentSearches,
 } from "../lib/recent-searches";
 import type { DatasetModality } from "../lib/dataset-filters";
-import { FORMAT_FILTER_OPTIONS } from "../lib/view-models";
+import {
+  CAPABILITY_FILTER_OPTIONS,
+  FORMAT_FILTER_OPTIONS,
+} from "../lib/view-models";
 import type {
   ModelFormatFilter,
   ModelsTab,
@@ -84,6 +87,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onResourceTypeChange,
   formatFilter,
   onFormatFilterChange,
+  recognizedCapabilities,
+  onRemoveRecognizedCapability,
   capabilityFilters,
   onCapabilityFiltersChange,
   isolateFirstCapability,
@@ -132,6 +137,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onResourceTypeChange: (value: ResourceTypeFilter) => void;
   formatFilter: ModelFormatFilter;
   onFormatFilterChange: (value: ModelFormatFilter) => void;
+  recognizedCapabilities: HubCapabilityFilter[];
+  onRemoveRecognizedCapability: (value: HubCapabilityFilter) => void;
   /** None picked means every capability. */
   capabilityFilters: HubCapabilityFilter[];
   onCapabilityFiltersChange: (value: HubCapabilityFilter[]) => void;
@@ -409,6 +416,34 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         ) : isDiscover && isLoading ? (
           <Spinner className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         ) : null}
+        {isDiscover &&
+          !isDataset &&
+          recognizedCapabilities.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {recognizedCapabilities.map((capability) => {
+                const label =
+                  CAPABILITY_FILTER_OPTIONS.find(
+                    (option) => option.value === capability,
+                  )?.label ?? capability;
+                return (
+                  <button
+                    key={capability}
+                    type="button"
+                    aria-label={`Remove ${label} search filter`}
+                    onClick={() => onRemoveRecognizedCapability(capability)}
+                    className="inline-flex h-6 items-center gap-1 rounded-full border border-primary/30 bg-primary/8 px-2 text-ui-11 font-medium text-primary transition-colors hover:bg-primary/15"
+                  >
+                    {label}
+                    <HugeiconsIcon
+                      icon={Cancel01Icon}
+                      strokeWidth={1.75}
+                      className="size-3"
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          )}
         {showRecentSearches && (
           <RecentSearches
             top={recentPanelTop}
