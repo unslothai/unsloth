@@ -1143,7 +1143,8 @@ const LOCAL_SERVER_WIRE: ReasoningWire = {
   off: "unified",
 };
 
-/** `levels: null` forwards the whole scale; `[]` means on/off only. */
+/** `levels: null` forwards the whole scale; `[]` means on/off only. NVIDIA NIM is absent: its per-model
+ * schemas share no reasoning field and reject unknown ones, so the backend sends none. */
 const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   openrouter: { levels: null, off: "unified" },
   openai: { levels: null, off: "none-level" },
@@ -1157,7 +1158,6 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   qwencloud: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
   xai: { levels: ["low", "medium", "high", "xhigh"], off: "unified" },
-  nvidia: { levels: null, off: "unified" },
   cohere: { levels: [], off: "unified" },
   vercel: { levels: null, off: "unified" },
   azure: { levels: ["minimal", "low", "medium", "high", "xhigh"], off: "none-level" },
@@ -1331,7 +1331,6 @@ export function getExternalReasoningCapabilities(
     case "qwencloud":
     case "huggingface":
     case "xai":
-    case "nvidia":
     case "cohere":
     case "vercel":
     case "azure":

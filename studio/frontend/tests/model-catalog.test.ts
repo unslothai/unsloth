@@ -448,3 +448,24 @@ test("a model is older only when the served catalog dates it over a year back", 
   assert.equal(isOlderModel("gemini", "gemini-undated", now), false);
   assert.equal(isOlderModel("llama_cpp", "gemini-old", now), false);
 });
+
+test("NVIDIA NIM offers no reasoning control, since no request field reaches its models", () => {
+  setProviderModelCatalog(
+    "nvidia",
+    [
+      {
+        id: "nvidia/nemotron-3-super-120b-a12b",
+        input_modalities: ["text"],
+        reasoning: { supported_efforts: ["low", "medium"], mandatory: false },
+      },
+    ],
+    1,
+  );
+  try {
+    for (const id of ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-nano-30b-a3b"]) {
+      assert.equal(getExternalReasoningCapabilities("nvidia", id).supportsReasoning, false);
+    }
+  } finally {
+    clearProviderModelCatalog("nvidia");
+  }
+});
