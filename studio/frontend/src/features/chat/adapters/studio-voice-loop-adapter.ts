@@ -465,13 +465,22 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             });
             return;
           }
+          // Playback ended before the barge-in gate fired: the preroll is this utterance's opening.
+          for (const frame of preroll.splice(0)) {
+            let sq = 0;
+            for (let i = 0; i < frame.length; i++) sq += frame[i] * frame[i];
+            const loud = Math.sqrt(sq / frame.length) >= SPEECH_RMS;
+            chunks.push(frame);
+            chunkVoiced.push(loud);
+            if (loud) voicedMs += frameMs;
+          }
           chunks.push(new Float32Array(input));
           const notSilent = rms >= SILENCE_RMS;
           const speech = rms >= SPEECH_RMS;
           chunkVoiced.push(speech);
           if (notSilent) lastVoiceAt = now;
-          if (speech) {
-            voicedMs += frameMs;
+          if (speech || (voicedMs > 0 && !heardSpeech)) {
+            if (speech) voicedMs += frameMs;
             if (!heardSpeech) {
               heardSpeech = true;
               useChatRuntimeStore.getState().setVoiceHearing(true);

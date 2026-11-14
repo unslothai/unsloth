@@ -73,3 +73,7 @@ test("a short barge-in (\"stop\") that passed its probe is transcribed, not drop
   assert.match(loop, /const minMs = bargedIn \? BARGE_CONFIRMED_MS : MIN_SPEECH_MS;/);
   assert.match(loop, /clipHasSpeech\(wav, bargedIn \? BARGE_VAD_MIN_SPEECH_MS : VAD_MIN_SPEECH_MS\)/);
 });
+
+test("speech begun just before the reply ended keeps its opening frames", () => {
+  assert.match(loop, /for \(const frame of preroll\.splice\(0\)\) \{[\s\S]{0,300}chunks\.push\(frame\);\s*chunkVoiced\.push\(loud\);/);
+});
