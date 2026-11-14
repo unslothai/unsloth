@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -74,7 +74,11 @@ def temporary_usage_scope(value: Optional[TemporaryUsage]):
     try:
         yield
     finally:
-        _temporary_usage.reset(token)
+        # Held across stream yields: a generator closed from another task's context cannot reset.
+        try:
+            _temporary_usage.reset(token)
+        except ValueError:
+            _temporary_usage.set(token.old_value if token.old_value is not Token.MISSING else None)
 
 
 _MAX_ENTRIES = 50

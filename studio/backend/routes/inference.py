@@ -31508,7 +31508,10 @@ async def openai_chat_completions(
     await _enforce_token_limit(request, external = bool(payload.provider_id or payload.provider_type))
     temporary = None
     internal = _request_is_internal_workflow(request)
-    if (payload.temporary_chat or internal) and not _request_used_api_key(request):
+    # Server-side, not a client opt-in: with no thread no saved message will ever debit this call.
+    if (payload.temporary_chat or internal or not payload.thread_id) and not _request_used_api_key(
+        request
+    ):
         thread = (
             uuid.uuid4().hex
             if internal

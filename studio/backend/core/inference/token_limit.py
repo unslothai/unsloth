@@ -302,7 +302,14 @@ class OverrideRefundMiddleware:
             try:
                 await self.app(scope, receive, send_status)
             finally:
-                await refund_if_unused(claim, failed = status is None or status >= 400)
+                # A 200 stream can still fail in band (flagged for the keep-warm middleware).
+                from core.inference.llama_keepwarm import _RESPONSE_FAILED_SCOPE_KEY
+                await refund_if_unused(
+                    claim,
+                    failed = status is None
+                    or status >= 400
+                    or bool(scope.get(_RESPONSE_FAILED_SCOPE_KEY)),
+                )
 
 
 async def refund_if_unused(claim: dict, *, failed: bool) -> None:

@@ -926,7 +926,12 @@ def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, A
                 [("run.cancelled", {"status": "cancelled", "finishReason": "cancelled"})],
             )
             _sync_assistant_status_locked(conn, run_id, "cancelled")
+            # Terminal here, never through finish_run: settle (and refund) like any other end.
+            from storage.token_usage_ledger import settle_interrupted_run
+
+            refund = settle_interrupted_run(conn, run_id)
         else:
+            refund = None
             conn.execute(
                 """UPDATE chat_generation_runs
                    SET status='cancelling', cancel_requested=1, updated_at=? WHERE id=?""",
@@ -939,6 +944,7 @@ def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, A
             (run_id,),
         ).fetchone()
         _commit(conn, notify = True)
+        _refund_override(refund)
         return _run_from_row(updated_row)
     except Exception:
         conn.rollback()

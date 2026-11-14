@@ -277,6 +277,169 @@ def test_an_interrupted_saved_reply_charges_its_estimated_prompt():
     assert _pools()["combined"]["used"] == 10_010
 
 
+def _durable_run(request_payload):
+    from storage import chat_generation_runs_db as runs
+
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "user",
+            "threadId": "t1",
+            "role": "user",
+            "createdAt": now,
+            "content": [{"type": "text", "text": "hi"}],
+        }
+    )
+    runs.create_run(
+        run_id = "run",
+        owner_subject = "owner",
+        thread_id = "t1",
+        user_message_id = "user",
+        assistant_message_id = "assistant",
+        request_payload = request_payload,
+    )
+    token = runs.get_worker_token("run")
+    runs.mark_running("run", token)
+    return runs, token
+
+
+def test_a_durable_run_refused_before_inference_refunds_its_override():
+    now = _now_ms()
+    _thread("seed", now)
+    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override("combined")
+    spent = token_limit.enforce(api = False)
+    runs, token = _durable_run(
+        {"model": "local", "messages": [], "token_limit_override": list(spent)}
+    )
+    runs.finish_run("run", worker_token = token, status = "failed", error = "No model loaded")
+    # Nothing was generated, so the override is available again.
+    assert token_limit.enforce(api = False) is not None
+
+
+def test_a_finalized_tool_call_is_charged_and_keeps_the_override_spent():
+    now = _now_ms()
+    _thread("seed", now)
+    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override("combined")
+    spent = token_limit.enforce(api = False)
+    runs, token = _durable_run(
+        {"model": "local", "messages": [], "token_limit_override": list(spent)}
+    )
+    runs.append_events(
+        "run",
+        token,
+        [
+            ("chunk", {"type": "tool_args", "tool_call_id": "r1", "text": "h" * 100}),
+            ("chunk", {"type": "tool_start", "tool_call_id": "r1", "arguments_text": "h" * 100}),
+            (
+                "chunk",
+                {
+                    "type": "tool_start",
+                    "tool_call_id": "p1",
+                    "tool_name": "python",
+                    "arguments_text": "x" * 300,
+                    "awaiting_confirmation": True,
+                },
+            ),
+        ],
+    )
+    assert runs.reconcile_orphaned_runs() == 1
+    # 100 streamed + 300 finalized characters, the streamed call not counted twice.
+    assert _pools()["combined"]["used"] == 100 + 100
+    with pytest.raises(HTTPException):
+        token_limit.enforce(api = False)
+
+
+def test_native_tool_call_deltas_count_in_an_interrupted_run():
+    runs, token = _durable_run({"model": "local", "messages": []})
+    runs.append_events(
+        "run",
+        token,
+        [
+            (
+                "chunk",
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {"index": 0, "function": {"name": "", "arguments": "x" * 400}}
+                                ]
+                            }
+                        }
+                    ]
+                },
+            )
+        ],
+    )
+    runs.finish_run("run", worker_token = token, status = "cancelled")
+    _enable(limit = 10_000)
+    assert _pools()["combined"]["used"] == 100
+
+
+def test_cancelling_a_queued_run_refunds_its_override():
+    now = _now_ms()
+    _thread("seed", now)
+    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override("combined")
+    spent = token_limit.enforce(api = False)
+    from storage import chat_generation_runs_db as runs
+
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "user",
+            "threadId": "t1",
+            "role": "user",
+            "createdAt": now,
+            "content": [{"type": "text", "text": "hi"}],
+        }
+    )
+    runs.create_run(
+        run_id = "run",
+        owner_subject = "owner",
+        thread_id = "t1",
+        user_message_id = "user",
+        assistant_message_id = "assistant",
+        request_payload = {"model": "local", "messages": [], "token_limit_override": list(spent)},
+    )
+    runs.request_cancel("run")
+    assert token_limit.enforce(api = False) is not None
+
+
+def test_a_failed_200_stream_that_generated_nothing_refunds_the_override():
+    import asyncio
+
+    from core.inference.llama_keepwarm import mark_response_failed
+
+    now = _now_ms()
+    _thread("t1", now)
+    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override("combined")
+
+    async def app(scope, receive, send):
+        from types import SimpleNamespace
+
+        from routes.inference import _enforce_token_limit
+
+        await _enforce_token_limit(SimpleNamespace(state = SimpleNamespace()), external = False)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        mark_response_failed(scope)
+        await send({"type": "http.response.body", "body": b'data: {"error": "down"}'})
+
+    async def ignore(message):
+        pass
+
+    asyncio.run(token_limit.OverrideRefundMiddleware(app)({"type": "http"}, None, ignore))
+    assert token_limit.enforce(api = False) is not None
+
+
 def test_a_reconciled_run_settles_its_output():
     from storage import chat_generation_runs_db as runs
 

@@ -328,3 +328,37 @@ def test_stateless_requests_never_share_an_accounting_thread(admission, monkeypa
         )
         assert response.status_code == 200, response.text
     assert len(set(threads)) == 2
+
+
+def test_a_stateless_session_request_is_charged_without_opting_in(admission, monkeypatch):
+    from core.inference import token_limit
+    from core.inference.api_monitor import ApiMonitor
+    from storage.api_usage_db import record_api_usage
+
+    client, body, _ = admission
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(record_api_usage)
+    monkeypatch.setattr(inference, "api_monitor", monitor)
+
+    async def produce(payload, request, current_subject, *, cancel_on_disconnect):
+        entry = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = body["model"],
+            prompt = "hi",
+            subject = "owner",
+        )
+        inference._monitor_usage(
+            entry, {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}
+        )
+        monitor.finish(entry)
+        return JSONResponse({"choices": []})
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
+    token_limit.update_settings(
+        {"enabled": True, "limit": 10_000}, password = None, new_password = None
+    )
+    before = token_limit.status()["pools"][0]["used"]
+    stateless = {key: value for key, value in body.items() if key != "thread_id"}
+    assert client.post("/v1/chat/completions", json = stateless).status_code == 200
+    assert token_limit.status()["pools"][0]["used"] - before == 25
