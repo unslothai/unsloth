@@ -692,6 +692,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         // Clicked into: what was said joins the box and waits for the user's send.
         // Decided before keeping this speech, so an emptied draft's audio is dropped first.
         let editing = !heldEdit.autoSend();
+        const spokenNow = transcript;
         const rt = useChatRuntimeStore.getState();
         // A clear during STT already emptied the buffer; this turn's speech must not refill it.
         if (
@@ -710,8 +711,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           Boolean(transcript) &&
           !editing &&
           (await turnUnfinished(transcript));
-        // The user may claim the held fragment while the judge decides: their edit is never auto-sent.
-        editing = editing || !heldEdit.autoSend();
+        // The user may claim the held fragment while the judge decides: their edit is never auto-sent,
+        // and the box already holds the fragment, so only the new words join it.
+        if (!editing && !heldEdit.autoSend()) {
+          editing = true;
+          transcript = spokenNow;
+        }
         if (epoch !== heldEpoch) {
           voiceTrace("stt.drop", { transcript, why: "cleared" });
           finish("stopped");
