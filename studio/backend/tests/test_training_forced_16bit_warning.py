@@ -21,13 +21,13 @@ def test_worker_config_carries_the_forced_16bit_flag():
 
 
 def test_route_marks_the_flip_it_makes():
-    source = (BACKEND / "routes" / "training.py").read_text()
+    source = (BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
     flip = source.index('training_kwargs["load_in_4bit"] = False')
     assert 'training_kwargs["load_in_4bit_forced_16bit"] = True' in source[flip : flip + 400]
 
 
 def test_worker_emits_a_warning_event_for_the_flip():
-    source = (BACKEND / "core" / "training" / "worker.py").read_text()
+    source = (BACKEND / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     found = False
     for node in ast.walk(tree):
@@ -65,6 +65,6 @@ def test_text_run_with_mlp_off_is_told_the_selector_is_ignored():
 
 
 def test_worker_emits_the_selector_warning():
-    source = (BACKEND / "core" / "training" / "worker.py").read_text()
+    source = (BACKEND / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
     call = source.index("_ignored_selector_warning(trainer, config)")
     assert '"type": "warning"' in source[call : call + 300]
