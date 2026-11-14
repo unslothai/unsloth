@@ -484,6 +484,12 @@ import { ProjectIcon } from "@/lib/project-icon";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
+  NewChatNonceContext,
+  clearTemporaryQueryDraft,
+  temporaryQueryDraft,
+} from "@/features/chat/query-draft";
+import { isQueryDraftId } from "@/features/chat/utils/composer-draft";
+import {
   ArrowDownIcon,
   ArrowUpIcon,
   Loader2Icon,
@@ -4119,9 +4125,14 @@ const Composer: FC<{
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
   const incognito = useChatRuntimeStore((s) => s.incognito);
-  const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
+  // A `?q=` chat keeps its own slot until saved, so the link never overwrites another unsent draft.
+  const newChatNonce = useContext(NewChatNonceContext);
+  const draftQueryId =
+    !threadListItemRemoteId && isQueryDraftId(newChatNonce) ? newChatNonce : null;
+  const shareDraft =
+    useChatPreferencesStore((s) => s.shareComposerDraft) && !draftQueryId;
   // Route and active IDs can lead the runtime switch; drafts belong to the composer on screen.
-  const draftThreadId = threadListItemRemoteId ?? NEW_CHAT_DRAFT_ID;
+  const draftThreadId = threadListItemRemoteId ?? draftQueryId ?? NEW_CHAT_DRAFT_ID;
   const restoredDraftScopeRef = useRef<string | undefined>(undefined);
   const previousDraftIdentityRef = useRef({
     draftThreadId,
@@ -4158,15 +4169,17 @@ const Composer: FC<{
     if (!composer.getState().isEditing) return;
     if (
       restoredDraftScopeRef.current === draftScope &&
-      previous.threadListItemId === threadListItemId
+      previous.threadListItemId === threadListItemId &&
+      // A temporary chat's scope never changes, so a link opened onto its empty composer checks the id.
+      (previous.draftThreadId === draftThreadId || !isQueryDraftId(draftThreadId))
     ) return;
     restoredDraftScopeRef.current = draftScope;
     // First persistence names the same conversation; navigation must still restore its own draft.
     if (
       !incognito &&
       !previous.incognito &&
-      !shareDraft &&
-      previous.draftThreadId === NEW_CHAT_DRAFT_ID &&
+      (isQueryDraftId(previous.draftThreadId) ||
+        (!shareDraft && previous.draftThreadId === NEW_CHAT_DRAFT_ID)) &&
       aui.threadListItem().getState().remoteId === draftThreadId &&
       previous.threadListItemId === threadListItemId &&
       previous.draftThreadId !== draftThreadId
@@ -4177,15 +4190,20 @@ const Composer: FC<{
         justSentRef.current = { ...justSentRef.current, draftKey };
       }
       const text = latestDraft(previousKey);
-      writeComposerDraft(draftKey, text);
-      stageComposerDraft(draftKey, text);
-      writePasteDraft(pasteDraftKey, latestPasteDraft(previousPasteKey));
+      const pastes = latestPasteDraft(previousPasteKey);
+      // With sharing on, only a query chat's follow-up moves into the shared slot (read from memory here).
+      if (!shareDraft || text || pastes.length > 0) {
+        if (shareDraft) publishDraft(text, draftSource);
+        writeComposerDraft(draftKey, text);
+        stageComposerDraft(draftKey, text);
+        writePasteDraft(pasteDraftKey, pastes);
+        pasteKeyShownRef.current = draftKey;
+      }
       writeComposerDraft(previousKey, "");
       writePasteDraft(previousPasteKey, []);
-      pasteKeyShownRef.current = draftKey;
     }
     if (draftScope === INCOGNITO_DRAFT_SCOPE) {
-      composer.setText("");
+      composer.setText(temporaryQueryDraft(draftKey));
       return;
     }
     remoteDraftRef.current = null;
@@ -4211,6 +4229,7 @@ const Composer: FC<{
     draftKey,
     pasteDraftKey,
     shareDraft,
+    draftSource,
     draftThreadId,
     threadListItemId,
     incognito,
@@ -4384,7 +4403,10 @@ const Composer: FC<{
       draftSaveTimerRef.current = null;
     }
     // A temporary chat's send was never the stored draft.
-    if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) return;
+    if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) {
+      clearTemporaryQueryDraft(draftKeyRef.current);
+      return;
+    }
     if (shareDraftRef.current) publishDraft("", draftSource);
     if (draftKeyRef.current) writeComposerDraft(draftKeyRef.current, "");
     writePasteDraft(pasteDraftKeyRef.current, []);
