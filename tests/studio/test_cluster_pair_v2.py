@@ -243,6 +243,7 @@ async def test_an_old_worker_is_refused_by_an_approving_master_and_pairs_with_ye
 @_async
 async def test_without_tailcat_the_code_stays_v1_and_lan_only(master_dir, tmp_path, monkeypatch):
     monkeypatch.delenv("FAKE_TAILNET_DIR", raising = False)
+    monkeypatch.setenv("UNSLOTH_CLUSTER_TAILNET", "0")  # also when a real helper is installed
     _, window, token = await _open()
     assert token.startswith(tokens.PREFIX) and window.tc is None
     result = await _join(tmp_path / "w", token)

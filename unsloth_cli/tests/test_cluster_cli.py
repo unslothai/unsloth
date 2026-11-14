@@ -431,8 +431,10 @@ def test_list_names_how_each_worker_is_reached(fakes, monkeypatch):
     fakes.peers = [desk, laptop, phone]
     fakes.errors = {("10.9.9.1", 50070): "timed out", ("10.9.9.2", 50070): "timed out"}
     ports = {"node-bbbb2222": 47001, "node-cccc3333": 47002}
+    relays_allowed = [False]
     remote = SimpleNamespace(
         enabled = lambda: True,
+        relay_allowed = lambda: relays_allowed[0],
         forward = lambda node_id, address, port: ports[node_id],
         path = lambda node_id: SimpleNamespace(direct = node_id == "node-bbbb2222"),
         close = lambda: None,
@@ -445,6 +447,10 @@ def test_list_names_how_each_worker_is_reached(fakes, monkeypatch):
     assert "ready (direct internet connection)" in lines["laptop"], out
     assert "relayed only: too slow to serve models" in lines["phone"], out
     assert fakes.recorded == []  # a tunnel's local end is never saved as an address
+    relays_allowed[0] = True  # UNSLOTH_CLUSTER_ALLOW_RELAY=1: it serves, slowly
+    out = invoke("cluster", "list").output
+    lines = {line.split()[0]: line for line in out.splitlines() if line.split()}
+    assert "ready (through a relay: slow)" in lines["phone"] and "too slow" not in out, out
 
 
 def test_worker_join_pairs_with_the_code_then_serves(fakes, monkeypatch):

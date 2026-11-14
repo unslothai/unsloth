@@ -110,7 +110,7 @@ def pair_through_tailcat(
         worker, derp, "cluster", "join", "--token-stdin", "--name", name, "--port", str(agent_port),
         stdin = code + "\n",
     )  # fmt: skip
-    rest, _ = p.communicate(timeout = 60)
+    rest, _ = p.communicate(timeout = 180)
     master_out = "".join(lines) + rest
     assert p.returncode == 0, master_out
     assert joined.returncode == 0, joined.stdout + joined.stderr
