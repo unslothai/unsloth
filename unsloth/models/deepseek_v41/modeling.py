@@ -1335,6 +1335,33 @@ def _is_fp8_quant_config(qc):
     return str(getattr(method, "value", method)).lower() == "fp8"
 
 
+def _attach_release_quantization_config(cls, path, kwargs, hub):
+    try:
+        from transformers import PretrainedConfig
+        config_dict, _ = PretrainedConfig.get_config_dict(str(path), **hub)
+    except Exception:
+        return
+    release_qc = config_dict.get("quantization_config") or (
+        config_dict.get("text_config") or {}
+    ).get("quantization_config")
+    if not _is_fp8_quant_config(release_qc):
+        return
+    config = kwargs.get("config")
+    if config is None or isinstance(config, (str, os.PathLike)):
+        try:
+            config = cls.config_class.from_pretrained(str(config or path), **hub)
+        except Exception:
+            return
+    if getattr(config, "quantization_config", None) is None:
+        config.quantization_config = dict(release_qc)
+    # dtype="auto" reads config.dtype, else the first safetensors header, whose F8_E8M0 scales transformers cannot
+    # read: give a passed-in text config the checkpoint's dtype, as the checkpoint's own config has it.
+    release_dtype = config_dict.get("dtype") or config_dict.get("torch_dtype")
+    if release_dtype is not None and getattr(config, "dtype", None) is None:
+        config.dtype = release_dtype
+    kwargs["config"] = config
+
+
 def _released_layout(names):
     return bool(names) and ("embed.weight" in names or any(n.startswith("layers.") for n in names))
 
@@ -1540,43 +1567,66 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         # converted once into this layout (convert.py) and loaded from there.
         from .convert import convert_released_checkpoint, released_needs_conversion
 
-        if released_needs_conversion():
-            hub = {
-                k: kwargs[k]
-                for k in ("cache_dir", "token", "revision", "subfolder", "local_files_only")
-                if k in kwargs
-            }
-            try:
-                names = _checkpoint_key_names(pretrained_model_name_or_path, **hub)
-            except Exception:
-                names = None
-            if _released_layout(names):
-                hub.pop("subfolder", None)
-                pretrained_model_name_or_path = convert_released_checkpoint(
-                    pretrained_model_name_or_path, **hub
-                )
-                # The converted weights are dequantized: drop the release's FP8 config wherever a caller carried
-                # it over (a config object read from the original repo, or a quantization_config kwarg); a
-                # bitsandbytes config asked for by the caller stays.
-                if _is_fp8_quant_config(kwargs.get("quantization_config")):
-                    kwargs.pop("quantization_config")
-                config = kwargs.get("config")
-                experts_format = converted_experts_format(pretrained_model_name_or_path)
-                if config is not None and not isinstance(config, (str, os.PathLike)):
-                    for c in (config, getattr(config, "text_config", None)):
-                        if c is None:
-                            continue
-                        if _is_fp8_quant_config(getattr(c, "quantization_config", None)):
-                            try:
-                                del c.quantization_config
-                            except AttributeError:
-                                c.quantization_config = None
-                        # A config read from the original repo must build the experts the converted files hold.
-                        if experts_format is not None:
-                            c.unsloth_experts_format = experts_format
-                        elif getattr(c, "unsloth_experts_format", None) is not None:
-                            del c.unsloth_experts_format
+        hub = {
+            k: kwargs[k]
+            for k in ("cache_dir", "token", "revision", "subfolder", "local_files_only")
+            if k in kwargs
+        }
+        try:
+            names = _checkpoint_key_names(pretrained_model_name_or_path, **hub)
+        except Exception:
+            names = None
+        released = _released_layout(names)
+        if released and not released_needs_conversion():
+            # transformers 5 loads the release itself through the registered renames and the release's FP8
+            # quantization_config. A config passed in (a DeepseekV41TextConfig, or the text class's own config
+            # class) does not carry that quantization_config, and without it the fp8 / fp4 tensors cannot load:
+            # take it from the checkpoint, as a config read from the checkpoint would have it.
+            _attach_release_quantization_config(cls, pretrained_model_name_or_path, kwargs, hub)
+        if released and released_needs_conversion():
+            hub.pop("subfolder", None)
+            pretrained_model_name_or_path = convert_released_checkpoint(
+                pretrained_model_name_or_path, **hub
+            )
+            # The converted weights are dequantized: drop the release's FP8 config wherever a caller carried
+            # it over (a config object read from the original repo, or a quantization_config kwarg); a
+            # bitsandbytes config asked for by the caller stays.
+            if _is_fp8_quant_config(kwargs.get("quantization_config")):
+                kwargs.pop("quantization_config")
+            config = kwargs.get("config")
+            experts_format = converted_experts_format(pretrained_model_name_or_path)
+            if config is not None and not isinstance(config, (str, os.PathLike)):
+                for c in (config, getattr(config, "text_config", None)):
+                    if c is None:
+                        continue
+                    if _is_fp8_quant_config(getattr(c, "quantization_config", None)):
+                        try:
+                            del c.quantization_config
+                        except AttributeError:
+                            c.quantization_config = None
+                    # A config read from the original repo must build the experts the converted files hold.
+                    if experts_format is not None:
+                        c.unsloth_experts_format = experts_format
+                    elif getattr(c, "unsloth_experts_format", None) is not None:
+                        del c.unsloth_experts_format
+        caller_wants_info = bool(kwargs.get("output_loading_info", False))
+        if released:
+            kwargs["output_loading_info"] = True
         model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        if released:
+            model, info = model
+            # Never a silent random-weights load: every parameter must come from the release.
+            missing = sorted(info.get("missing_keys") or [])
+            if missing:
+                raise RuntimeError(
+                    f"Unsloth: {len(missing)} weights of {type(model).__name__} were not found in the DeepSeek-V4.1 "
+                    f"checkpoint at {pretrained_model_name_or_path} (e.g. {missing[:3]}); "
+                    f"{len(info.get('unexpected_keys') or [])} checkpoint tensors did not map onto the model. "
+                    "Load it with AutoModelForCausalLM / DeepseekV41ForCausalLM.from_pretrained(path) and the "
+                    "checkpoint's own config, or pass that config (DeepseekV41Config.from_pretrained(path))."
+                )
+            if caller_wants_info:
+                model = (model, info)
         target = model[0] if isinstance(model, tuple) else model
         for module in target.modules():
             # duck-typed: unsloth_zoo's compiler re-creates these classes in its compiled module

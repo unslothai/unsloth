@@ -460,6 +460,164 @@ def test_released_fp4_experts_stay_mxfp4_packed(tmp_path, monkeypatch, capsys):
         assert torch.equal(fresh(input_ids = ids).logits, want)
 
 
+_RELEASE_FP8_LEAVES = (
+    ".attn.wq_a.weight",
+    ".attn.wq_b.weight",
+    ".attn.wkv.weight",
+    ".attn.wo_a.weight",
+    ".attn.wo_b.weight",
+    ".indexer.wq_b.weight",
+    ".shared_experts.w1.weight",
+    ".shared_experts.w2.weight",
+    ".shared_experts.w3.weight",
+    ".engram.wkv.weight",
+)
+
+
+def _e8m0_pow2(amax, qmax):
+    return torch.exp2(torch.ceil(torch.log2((amax / qmax).clamp_min(2.0**-126))))
+
+
+def _quantized_release(tmp_path, model):
+    """The release's storage for the tiny model: fp8 e4m3 32x32-block linears (the release's fp8 set) and fp8 engram
+    rows with e8m0 scales, int8-packed fp4 experts, bf16 elsewhere, and the release's quantization_config."""
+    import json
+
+    from safetensors.torch import save_file
+
+    out = {}
+    for name, t in _released_state_dict(model).items():
+        t = t.float()
+        if name.endswith(_RELEASE_FP8_LEAVES):
+            o, i = t.shape
+            wb = t.view(o // 32, 32, i // 32, 32)
+            sc = _e8m0_pow2(wb.abs().amax(dim = (1, 3), keepdim = True), 448.0)
+            out[name] = (wb / sc).to(torch.float8_e4m3fn).view(o, i)
+            out[name[: -len("weight")] + "scale"] = sc.view(o // 32, i // 32).to(
+                torch.float8_e8m0fnu
+            )
+        elif ".engram.embed.weight" in name:
+            r, d = t.shape
+            wb = t.view(r, d // 32, 32)
+            sc = _e8m0_pow2(wb.abs().amax(-1, keepdim = True), 448.0)
+            out[name] = (wb / sc).to(torch.float8_e4m3fn).view(r, d)
+            out[name[: -len("weight")] + "scale"] = sc.view(r, d // 32).to(torch.float8_e8m0fnu)
+        elif ".ffn.experts." in name:
+            o, i = t.shape
+            wb = t.view(o, i // 32, 32)
+            sc = _e8m0_pow2(wb.abs().amax(-1, keepdim = True), 6.0)
+            table = torch.tensor(
+                [
+                    0.0,
+                    0.5,
+                    1.0,
+                    1.5,
+                    2.0,
+                    3.0,
+                    4.0,
+                    6.0,
+                    -0.0,
+                    -0.5,
+                    -1.0,
+                    -1.5,
+                    -2.0,
+                    -3.0,
+                    -4.0,
+                    -6.0,
+                ]
+            )
+            codes = ((wb / sc).view(o, i).unsqueeze(-1) - table).abs().argmin(-1).to(torch.uint8)
+            out[name] = (codes[:, 0::2] | (codes[:, 1::2] << 4)).view(torch.int8)
+            out[name[: -len("weight")] + "scale"] = sc.view(o, i // 32).to(torch.float8_e8m0fnu)
+        else:
+            out[name] = t.to(torch.bfloat16)
+    src = tmp_path / "release"
+    model.config.save_pretrained(src)
+    with open(src / "config.json") as f:
+        cfg = json.load(f)
+    cfg["dtype"] = "bfloat16"
+    cfg["quantization_config"] = {
+        "quant_method": "fp8",
+        "activation_scheme": "dynamic",
+        "weight_block_size": [32, 32],
+        "scale_fmt": "ue8m0",
+        "expert_dtype": "fp4",
+    }
+    with open(src / "config.json", "w") as f:
+        json.dump(cfg, f, indent = 1)
+    save_file({k: v.contiguous() for k, v in out.items()}, os.path.join(src, "model.safetensors"))
+    return src
+
+
+@pytest.mark.parametrize("convert", ["auto", "1"])
+def test_every_call_shape_loads_the_release_without_missing_or_unexpected_keys(
+    tmp_path, monkeypatch, convert
+):
+    """AutoModelForCausalLM, DeepseekV41ForCausalLM and DeepseekV41TextForCausalLM, with and without an explicit
+    (composite or text) config, load every released tensor: no MISSING / UNEXPECTED keys, the same logits. "auto"
+    takes transformers' own loader where it can (5.x: renames + the release's FP8 quantization_config, which a passed
+    text config lacks), "1" the converter."""
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    src = _quantized_release(tmp_path, _tiny_model())
+    if convert == "1":
+        monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    text_dict = DeepseekV41Config.from_pretrained(src).text_config.to_dict()
+    Text = dsv41.DeepseekV41TextConfig
+    shapes = {
+        "auto": lambda: AutoModelForCausalLM.from_pretrained(src, output_loading_info = True),
+        "auto+config": lambda: AutoModelForCausalLM.from_pretrained(
+            src, config = AutoConfig.from_pretrained(src), output_loading_info = True
+        ),
+        "causal": lambda: dsv41.DeepseekV41ForCausalLM.from_pretrained(
+            src, output_loading_info = True
+        ),
+        "causal+config": lambda: dsv41.DeepseekV41ForCausalLM.from_pretrained(
+            src, config = DeepseekV41Config.from_pretrained(src), output_loading_info = True
+        ),
+        "causal+text_config": lambda: dsv41.DeepseekV41ForCausalLM.from_pretrained(
+            src, config = Text(**text_dict), output_loading_info = True
+        ),
+        "text": lambda: dsv41.DeepseekV41TextForCausalLM.from_pretrained(
+            src, output_loading_info = True
+        ),
+        "text+text_config": lambda: dsv41.DeepseekV41TextForCausalLM.from_pretrained(
+            src, config = Text(**text_dict), output_loading_info = True
+        ),
+    }
+    ids = torch.randint(0, 512, (1, 16))
+    want = None
+    for name, load in shapes.items():
+        model, info = load()
+        assert not info["missing_keys"], (name, sorted(info["missing_keys"])[:5])
+        assert not info["unexpected_keys"], (name, sorted(info["unexpected_keys"])[:5])
+        model = model.float().eval()
+        model.bind_token_map([i % 97 for i in range(512)])
+        with torch.no_grad():
+            logits = model(input_ids = ids).logits
+        if want is None:
+            want = logits
+        torch.testing.assert_close(logits, want, rtol = 0, atol = 0, msg = name)
+
+
+def test_a_config_that_does_not_fit_the_release_raises_instead_of_random_init(
+    tmp_path, monkeypatch
+):
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    src = _quantized_release(tmp_path, _tiny_model())
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    text = DeepseekV41Config.from_pretrained(src).text_config.to_dict()
+    text["num_hidden_layers"] = 7  # one layer the release does not hold
+    with pytest.raises(RuntimeError, match = "were not found in the DeepSeek-V4.1 checkpoint"):
+        dsv41.DeepseekV41TextForCausalLM.from_pretrained(
+            src, config = dsv41.DeepseekV41TextConfig(**text)
+        )
+
+
 def test_released_fp4_and_fp8_blocks_dequantize_like_the_reference_converter():
     """inference/convert.py: fp4 e2m1 two per byte, low nibble first; fp8 e4m3 times one scale per 32x32 block."""
     from unsloth.models.deepseek_v41 import convert
