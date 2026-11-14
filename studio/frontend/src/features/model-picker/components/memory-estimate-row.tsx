@@ -181,7 +181,8 @@ function gpuPlacementRow(estimate: GpuMemoryEstimate, device?: SystemGpuDevice) 
   return {
     gpuId,
     name,
-    label: device?.name && device.name !== name ? `${name} · ${device.name}` : name,
+    label: total === null ? name : `${name} · ${Number((total / gib).toFixed(2))} GiB`,
+    deviceLabel: device?.name && device.name !== name ? `${name} · ${device.name}` : name,
     value: cacheBytes === null ? memoryFigureCandidates(subtotal, true)[0] : formatMemoryGb(subtotal),
     note: details.filter(Boolean).join(NOTE_SEPARATOR),
     exceedsTotal,
@@ -276,7 +277,7 @@ export function MemoryEstimateRow({
   const overCapacity = gpuRows.find((row) => row.exceedsTotal);
   const pressured = overCapacity ?? gpuRows.find((row) => row.exceedsFree);
   const placementWarning = pressured
-    ? `${pressured.name}’s estimated subtotal exceeds its ${overCapacity ? "total" : "currently free"} memory.`
+    ? `${pressured.name} needs more than its ${overCapacity ? "total" : "currently free"} VRAM.`
     : null;
   const kvNote = resolveKvNote(estimate);
   const weightsNote = [
@@ -402,20 +403,31 @@ export function MemoryEstimateRow({
         )}
         {gpuRows.length > 0 ? (
           <div className="space-y-2 border-t border-border pt-3">
-            <div className="text-ui-12 font-medium text-foreground">Per-GPU placement</div>
+            <div className="text-ui-12 font-medium text-foreground">Weights + cache per GPU</div>
             {gpuRows.map((row) => (
               <MemoryBreakdownLine
                 key={row.gpuId}
                 label={row.label}
                 value={row.value}
-                note={row.note}
                 exceeds={row.exceedsTotal || row.exceedsFree}
               />
             ))}
-            <p className="text-ui-11 leading-relaxed text-muted-foreground">
-              Subtotals cover weights and KV or recurrent cache. Compute buffers and other runtime allocations need additional memory.
-              {estimate.perGpuBasis === "free_memory" && " The default split uses currently free VRAM. Unloading a model can change the placement."}
-            </p>
+            <details className="text-ui-11 leading-relaxed text-muted-foreground">
+              <summary className="w-fit cursor-pointer rounded-sm focus-visible:outline-ring">
+                Layer and memory details
+              </summary>
+              {gpuRows.map((row) => (
+                <p key={row.gpuId} className="mt-2">
+                  <span className="font-medium">{row.deviceLabel}</span>
+                  <br />
+                  {glueNoteItems(row.note)}
+                </p>
+              ))}
+              <p className="mt-2">
+                Compute buffers and other runtime allocations need additional memory.
+                {estimate.perGpuBasis === "free_memory" && " The split uses currently free VRAM and can change when a model unloads."}
+              </p>
+            </details>
           </div>
         ) : placementMode && !stale && !cpuOnly ? (
           <p className="text-ui-12 text-muted-foreground">

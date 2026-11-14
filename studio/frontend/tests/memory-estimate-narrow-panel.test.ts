@@ -109,20 +109,24 @@ test("per-GPU subtotals follow load order and warn when one card overflows", () 
   const html = placement();
   assert.match(html, /6 repeating layers and the output layer on GPU/);
   assert.doesNotMatch(html, /12 of 28 layers on GPU/);
-  assert.match(html, /GPU 1 · Large[\s\S]*≥ 8\.00 GiB[\s\S]*5 repeating layers · 8\.00 GiB weights · cache unknown/);
-  assert.match(html, /GPU 0 · Small[\s\S]*text-red-500[\s\S]*3\.00 GiB[\s\S]*1 repeating layer · output layer · 2\.00 GiB weights · 1\.00 GiB cache/);
-  assert.ok(html.indexOf("GPU 1 · Large") < html.indexOf("GPU 0 · Small"));
-  assert.match(html, /GPU 0’s estimated subtotal exceeds its currently free memory/);
+  const [rows, details] = html.split("<details");
+  assert.match(rows, /Weights \+ cache per GPU[\s\S]*GPU 1 · 24 GiB[\s\S]*≥ 8\.00 GiB[\s\S]*GPU 0 · 16 GiB[\s\S]*text-red-500[\s\S]*3\.00 GiB/);
+  assert.doesNotMatch(rows, /cache unknown|0\.00 GiB free/);
+  assert.match(details, /^[^>]*>(?:<summary[^>]*>)Layer and memory details<\/summary>/);
+  assert.doesNotMatch(details.split(">")[0], /\bopen\b/);
+  assert.match(details, /GPU 1 · Large[\s\S]*5 repeating layers · 8\.00 GiB weights · cache unknown/);
+  assert.match(details, /GPU 0 · Small[\s\S]*1 repeating layer · output layer · 2\.00 GiB weights · 1\.00 GiB cache/);
+  assert.match(html, /GPU 0 needs more than its currently free VRAM/);
   assert.match(html, /Compute buffers and other runtime allocations need additional memory/);
-  assert.doesNotMatch(html, /Unloading a model/);
-  assert.match(placement({ estimate: { ...estimate, perGpuBasis: "free_memory" } }), /Unloading a model can change the placement/);
-  assert.doesNotMatch(placement({ stale: true }), /Per-GPU placement|GPU 0 · Small|estimated subtotal exceeds/);
-  assert.doesNotMatch(placement({ gpuDevices: [] }), /estimated subtotal exceeds|0.00 GiB free/);
+  assert.doesNotMatch(html, /can change when a model unloads/);
+  assert.match(placement({ estimate: { ...estimate, perGpuBasis: "free_memory" } }), /can change when a model unloads/);
+  assert.doesNotMatch(placement({ stale: true }), /Weights \+ cache per GPU|GPU 0 · Small|needs more than/);
+  assert.doesNotMatch(placement({ gpuDevices: [] }), /needs more than|0.00 GiB free/);
   const aggregatePressure = placement({ gpuDevices: [], freeGpuCapacityGb: 2 });
   assert.match(aggregatePressure, /Little VRAM is free across the selected GPUs/);
   assert.doesNotMatch(aggregatePressure, /Fits this GPU/);
-  assert.doesNotMatch(placement({ gpuDevices: devices.map((gpu) => ({ ...gpu, unifiedMemory: true })) }), /estimated subtotal exceeds/);
-  assert.match(placement({ gpuDevices: devices.map((gpu) => ({ ...gpu, memoryTotalGb: 1 })) }), /GPU 1’s estimated subtotal exceeds its total memory/);
+  assert.doesNotMatch(placement({ gpuDevices: devices.map((gpu) => ({ ...gpu, unifiedMemory: true })) }), /needs more than|GPU 0 · 16 GiB/);
+  assert.match(placement({ gpuDevices: devices.map((gpu) => ({ ...gpu, memoryTotalGb: 1 })) }), /GPU 1 needs more than its total VRAM/);
 });
 
 test("automatic multi-GPU placement explains when the split is decided", () => {
