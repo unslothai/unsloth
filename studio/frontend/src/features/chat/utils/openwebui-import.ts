@@ -225,7 +225,6 @@ export function reasoningText(source: unknown): string {
     .trim();
 }
 
-// Studio's hosted-tool names, which replay recognises (chat-adapter SERVER_SIDE_BUILTIN_TOOL_NAMES).
 const BUILTIN_TOOL_NAMES: Record<string, string> = {
   shell: "code_execution",
   code_interpreter: "code_execution",
