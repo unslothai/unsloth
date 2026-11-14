@@ -40,13 +40,14 @@ from typing import Any, Optional
 DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
-# DiT classes the unset switch races on (each measured per family and card: Studio's INT8 attention report).
+# DiT classes the unset switch races on: those whose teacher-forced per-step denoiser error with the kernel stays
+# within the error of the weight quantisation Studio ships for them. Z-Image-Turbo is left out: 1.4x its INT8 weight
+# error (rel L2 0.035 against 0.024 at bf16 weights, G4), so it routes only by name or with the env switch.
 AUTO_DITS = frozenset(
     {
         "QwenImage21Transformer2DModel",
         "LTX2VideoTransformer3DModel",
         "WanTransformer3DModel",
-        "ZImageTransformer2DModel",
     }
 )
 # processors that already run the kernel themselves

@@ -759,3 +759,13 @@ def test_cuda_compiled_and_graphed_dispatch_call(monkeypatch):
         torch.cuda.synchronize()
         assert I.accuracy(captured, I.reference_attention(k, q, v))["cos"] > 0.999
     torch._dynamo.reset()
+
+
+def test_auto_list_matches_the_measured_families():
+    """Qwen-Image-2.1, Wan 2.2 and LTX-2 race by default; Z-Image-Turbo's per-step error with the kernel is above its
+    shipped INT8 weight error, so it routes only on request."""
+    assert D.AUTO_DITS == {
+        "QwenImage21Transformer2DModel",
+        "WanTransformer3DModel",
+        "LTX2VideoTransformer3DModel",
+    }
