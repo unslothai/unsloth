@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { useIsAccountOwner } from "@/features/auth";
 import {
   FullAccessConfirmDialog,
@@ -43,6 +44,11 @@ import {
   updateSandboxSettings,
 } from "../api/sandbox-isolation";
 import { isSettingsRouteAbsent } from "../api/settings-route-absent";
+import {
+  loadTrustedToolFolders,
+  parseTrustedFolders,
+  updateTrustedToolFolders,
+} from "../api/trusted-tool-folders";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -384,6 +390,7 @@ export function SandboxTab() {
       </header>
       <PermissionsSection />
       <SandboxLevelSection />
+      {isOwner ? <TrustedFoldersSection /> : null}
       {/* Not mounted for managed accounts, so none of the owner-only sandbox routes are called. */}
       {isOwner ? (
         <OsSandboxSections />
@@ -973,5 +980,79 @@ function OsSandboxSections() {
         </>
       )}
     </>
+  );
+}
+
+/** Owner only, like the route: the folders widen what tool calls run without asking. */
+function TrustedFoldersSection() {
+  const t = useT();
+  const [saved, setSaved] = useState<string[] | null>(null);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    loadTrustedToolFolders(t("settings.sandbox.trustedFoldersLoadError"))
+      .then((folders) => {
+        if (!live) return;
+        setSaved(folders);
+        setDraft(folders.join("\n"));
+      })
+      .catch((loadError) => {
+        if (!live || isSettingsRouteAbsent(loadError)) return;
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      });
+    return () => {
+      live = false;
+    };
+  }, [t]);
+
+  if (saved === null && error === null) return null;
+  // Not loaded means not known: saving then would replace the stored list with the empty draft.
+  const unsaveable =
+    saved === null || parseTrustedFolders(draft).join("\n") === saved.join("\n");
+  const save = () => {
+    setSaving(true);
+    updateTrustedToolFolders(
+      parseTrustedFolders(draft),
+      t("settings.sandbox.trustedFoldersSaveError"),
+    )
+      .then((folders) => {
+        setSaved(folders);
+        setDraft(folders.join("\n"));
+        setError(null);
+      })
+      .catch((saveError) => {
+        setError(saveError instanceof Error ? saveError.message : String(saveError));
+      })
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <SettingsSection title={t("settings.sandbox.trustedFoldersTitle")}>
+      <SettingsRow
+        label={t("settings.sandbox.trustedFoldersLabel")}
+        description={t("settings.sandbox.trustedFoldersDescription")}
+        wideControl={true}
+        below={
+          error ? <span className={cn(NOTE_CLASS, "text-destructive")}>{error}</span> : null
+        }
+      >
+        <div className="flex w-full max-w-[calc(26rem*var(--ui-space-scale,1))] flex-col items-end gap-2">
+          <Textarea
+            value={draft}
+            spellCheck={false}
+            aria-label={t("settings.sandbox.trustedFoldersLabel")}
+            placeholder={t("settings.sandbox.trustedFoldersPlaceholder")}
+            onChange={(event) => setDraft(event.target.value)}
+            className="font-mono text-xs"
+          />
+          <Button variant="outline" size="sm" disabled={saving || unsaveable} onClick={save}>
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        </div>
+      </SettingsRow>
+    </SettingsSection>
   );
 }

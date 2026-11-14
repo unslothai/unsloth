@@ -710,7 +710,8 @@ def editable_source_roots() -> tuple[str, ...]:
 
 
 def model_library_roots() -> tuple[str, ...]:
-    """Registered model folders the approval gate reads silently; NOT the whole read-silent set, which has /etc."""
+    """Registered model folders and the owner's trusted tool folders, which the approval gate reads silently;
+    NOT the whole read-silent set, which has /etc."""
     try:
         from . import tool_path_approval
         from utils.paths.storage_roots import well_known_model_dirs
@@ -719,7 +720,84 @@ def model_library_roots() -> tuple[str, ...]:
             *well_known_model_dirs(),
         )
     except Exception:  # noqa: BLE001 - never fail a launch over the approval gate
+        candidates = ()
+    kept = list(_grantable_read_roots(candidates))
+    kept.extend(root for root in trusted_tool_folder_roots() if root not in kept)
+    return tuple(kept)
+
+
+def trusted_tool_folder_roots() -> tuple[str, ...]:
+    """Filtered as a model folder is, so the gate never silences a folder the jails would refuse to grant."""
+    try:
+        from utils.trusted_tool_folders_settings import trusted_tool_folders_for_caller
+        return grantable_trusted_roots(trusted_tool_folders_for_caller())
+    except Exception:  # noqa: BLE001 - never fail a launch over a stored setting
         return ()
+
+
+_TRUSTED_FOLDER_SCAN_LIMIT = 5000
+
+
+def grantable_trusted_roots(candidates) -> tuple[str, ...]:
+    """Granted whole, so any sandboxed call could read a credential anywhere inside, not only at the top."""
+    state = studio_state_roots()
+    return tuple(
+        root
+        for root in _grantable_read_roots(candidates)
+        if not overlaps_studio_state(root, state) and not _holds_a_nested_credential(root)
+    )
+
+
+def overlaps_studio_state(path: str, state = None) -> bool:
+    """Case-insensitive where the volume is: macOS realpath keeps the spelling it was given."""
+    return any(
+        _is_within(path, root) or _is_within(root, path)
+        for root in (studio_state_roots() if state is None else state)
+    )
+
+
+def _holds_a_nested_credential(folder: str) -> bool:
+    """A tree too large to check, a hard-linked file or a link out of it counts as holding one. scandir, not walk:
+    walk lists a whole directory before the cap could stop it."""
+    from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
+    from .tool_path_approval import _references_sensitive_path
+
+    # Casefolded: a case-insensitive volume opens TOKEN as token.
+    names = {name.casefold() for name in (*_CREDENTIAL_BASENAMES, *approval_names)}
+    seen = 0
+    pending = [folder]
+    while pending:
+        try:
+            entries = os.scandir(pending.pop())
+        except OSError:  # unreadable here is unreadable in the sandbox too
+            continue
+        with entries:
+            for entry in entries:
+                seen += 1
+                if seen > _TRUSTED_FOLDER_SCAN_LIMIT:
+                    return True
+                if entry.name.casefold() in names or _references_sensitive_path(entry.path):
+                    return True
+                try:
+                    # A link or Windows junction out of the folder reads its target unchecked: the scan
+                    # never follows it, and is_symlink() is False for a junction.
+                    linked = entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
+                    if linked and not _is_within(os.path.realpath(entry.path), folder):
+                        return True
+                    if entry.is_dir(follow_symlinks = False):
+                        pending.append(entry.path)
+                    # A second name can alias a credential anywhere on the volume, as in the workdir scan.
+                    # lstat, not entry.stat: DirEntry reports st_nlink 0 on Windows.
+                    elif entry.is_file(follow_symlinks = False) and os.lstat(entry.path).st_nlink > 1:
+                        return True
+                except OSError:
+                    continue
+    return False
+
+
+def _grantable_read_roots(candidates) -> tuple[str, ...]:
+    from . import tool_path_approval
+
     state = studio_state_roots()
     forbidden = _never_a_model_library()
     hf_homes = _hf_home_roots()

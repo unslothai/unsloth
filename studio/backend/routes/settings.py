@@ -214,6 +214,11 @@ from utils.current_date_prompt_settings import (
     get_current_date_prompt_enabled,
     set_current_date_prompt_enabled,
 )
+from utils.trusted_tool_folders_settings import (
+    MAX_TRUSTED_TOOL_FOLDERS,
+    get_trusted_tool_folders,
+    set_trusted_tool_folders,
+)
 from utils.lan_access_settings import (
     lan_access_status,
     normalize_lan_access_addresses,
@@ -4417,6 +4422,16 @@ class CurrentDatePromptResponse(BaseModel):
     default_enabled: bool = DEFAULT_CURRENT_DATE_PROMPT_ENABLED
 
 
+class TrustedToolFoldersPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    folders: list[StrictStr] = Field(max_length = MAX_TRUSTED_TOOL_FOLDERS)
+
+
+class TrustedToolFoldersResponse(BaseModel):
+    folders: list[str]
+
+
 class ChatMemoryPayload(BaseModel):
     enabled: Optional[StrictBool] = None
     text: Optional[StrictStr] = None
@@ -4767,6 +4782,49 @@ def update_current_date_prompt(
         "settings.current_date_prompt_updated subject=%s enabled=%s", current_subject, enabled
     )
     return CurrentDatePromptResponse(enabled = enabled)
+
+
+@_owner_settings_router.get("/trusted-tool-folders", response_model = TrustedToolFoldersResponse)
+def get_trusted_tool_folders_setting(
+    current_subject: str = Depends(get_current_subject),
+    # Host paths: the settings page reads them, an API-key integration has no need to.
+    _ui_session: None = Depends(_require_ui_session),
+) -> TrustedToolFoldersResponse:
+    try:
+        folders = get_trusted_tool_folders()
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not read the trusted folders.",
+            event = "settings.trusted_tool_folders_read_failed",
+            log = logger,
+        ) from exc
+    return TrustedToolFoldersResponse(folders = folders)
+
+
+@_owner_settings_router.put("/trusted-tool-folders", response_model = TrustedToolFoldersResponse)
+def update_trusted_tool_folders_setting(
+    payload: TrustedToolFoldersPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Widens what tool calls run without asking: set at the console, never by an API key.
+    _ui_session: None = Depends(_require_ui_session),
+) -> TrustedToolFoldersResponse:
+    """Folders whose files the owner's Python and Terminal calls may read and run without a prompt."""
+    try:
+        folders = set_trusted_tool_folders(payload.folders)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid trusted folders."),
+            event = "settings.update_trusted_tool_folders_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.trusted_tool_folders_updated subject=%s count=%s", current_subject, len(folders)
+    )
+    return TrustedToolFoldersResponse(folders = folders)
 
 
 def _chat_memory_response() -> ChatMemoryResponse:
