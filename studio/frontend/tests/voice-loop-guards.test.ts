@@ -161,7 +161,7 @@ test("opening a saved chat from an unsent draft drops the draft's held fragment"
 });
 
 test("a clip still being transcribed when voice turns off is dropped, not held", () => {
-  const off = loop.indexOf('if (getVoiceMode() === "off") {\n          finish("cancelled");');
+  const off = loop.indexOf('if (switchedOff()) {\n          finish("cancelled");');
   assert.ok(off > 0 && off < loop.indexOf("heldTurn = {\n            text: transcript,"));
 });
 
@@ -222,4 +222,17 @@ test("voice off waits for a detect in flight before unloading the detector", () 
 test("the delayed stream close yields to a run that started inside the beat", () => {
   assert.match(engine, /streamBegunRef\.current = true;\s*streamGenRef\.current\+\+;/);
   assert.match(engine, /const gen = streamGenRef\.current;\s*setTimeout\(\(\) => \{[\s\S]{0,200}if \(gen !== streamGenRef\.current \|\| voiceModeRef\.current !== "active"\) return;/);
+});
+
+test("a recording that crossed a voice off stays dropped after voice comes back", () => {
+  const bridge = readSrc("features/chat/voice/voice-loop-bridge.ts");
+  assert.match(bridge, /if \(next === "off" && voiceMode !== "off"\) offEpoch\+\+;/);
+  assert.match(loop, /const switchedOff = \(\) => getVoiceMode\(\) === "off" \|\| voiceOffEpoch\(\) !== offAtOpen;/);
+});
+
+test("speech heard after the chat model went away is never sent", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const submit = engine.slice(engine.indexOf("const submitTranscript = useCallback("));
+  assert.match(submit.slice(0, 900), /if \(!hasChatModelRef\.current\) \{\s*if \(text && !typed\) composer\.setText\(text\);\s*return;/);
+  assert.match(engine, /if \(!hasChatModel\) \{\s*const composer = auiRef\.current\.composer\(\);\s*if \(composer\.getState\(\)\.dictation\) composer\.stopDictation\(\);/);
 });

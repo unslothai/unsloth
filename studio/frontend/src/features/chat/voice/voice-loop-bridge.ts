@@ -71,7 +71,15 @@ export function getVoiceMode(): VoiceMode {
   return voiceMode;
 }
 
+// Bumped on every switch to off: a recording that crossed one belongs to a session the user ended.
+let offEpoch = 0;
+
+export function voiceOffEpoch(): number {
+  return offEpoch;
+}
+
 export function setVoiceMode(next: VoiceMode): void {
+  if (next === "off" && voiceMode !== "off") offEpoch++;
   voiceMode = next;
 }
 

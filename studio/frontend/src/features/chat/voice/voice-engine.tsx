@@ -561,6 +561,11 @@ export const VoiceEngine: FC = () => {
     if (composer.getState().dictation) composer.stopDictation();
     let text = (spoken ?? composer.getState().text).trim();
     if (draft) text = `${draft} ${text}`;
+    // The chat model went away while this was heard: keep it as a draft, never auto-load a model to send it.
+    if (!hasChatModelRef.current) {
+      if (text && !typed) composer.setText(text);
+      return;
+    }
     voiceTrace("engine.submit", { text });
     const pending = pendingForVoiceRef.current;
     // A reply sent now would land before the voice can speak it: park the turn until the slot loads.
@@ -924,7 +929,11 @@ export const VoiceEngine: FC = () => {
   useEffect(() => {
     if (armedForModelRef.current === hasChatModel) return;
     armedForModelRef.current = hasChatModel;
-    if (!hasChatModel) return;
+    if (!hasChatModel) {
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
+      return;
+    }
     if (voiceModeRef.current !== "active") return;
     resumeListen();
   }, [hasChatModel, resumeListen]);
