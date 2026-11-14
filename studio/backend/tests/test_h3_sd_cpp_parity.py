@@ -357,3 +357,24 @@ def test_export_survives_nan_float_audio(tmp_path):
     _write_avi(src, "rawvideo", "bgr24", _moving_frames(), audio)
     with av.open(io.BytesIO(transcode_video_to_mp4(src, fps = 24))) as c:
         assert c.streams.audio and c.streams.audio[0].codec_context.name == "aac"
+
+
+def test_audio_flow_shift_reaches_cli_and_server():
+    params = _params(audio_flow_shift = 4.5)
+    cmd = build_sd_cpp_video_command("/bin/sd-cli", _FILES, params, output_path = "/tmp/o.avi")
+    assert _flag(cmd, "--audio-flow-shift") == "4.5"
+    assert build_vid_gen_request(params)["sample_params"]["audio_flow_shift"] == 4.5
+    assert "--audio-flow-shift" not in build_sd_cpp_video_command(
+        "/bin/sd-cli", _FILES, _params(), output_path = "/tmp/o.avi"
+    )
+
+
+@pytest.mark.parametrize("supported,expected", [(True, None), (False, "sd_cpp")])
+def test_audio_shift_check_follows_the_installed_build(monkeypatch, supported, expected):
+    import routes.video as rv
+
+    monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_cpp_binary", lambda: "/bin/sd-cli")
+    monkeypatch.setattr(args, "sd_cpp_supports_flag", lambda binary, flag: supported)
+    assert rv._flow_shift_check_engine("sd_cpp", 4.5) == expected
+    assert rv._flow_shift_check_engine("sd_cpp", None) == "sd_cpp"
+    assert rv._flow_shift_check_engine(None, 4.5) is None

@@ -2189,6 +2189,17 @@ def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
     return True
 
 
+def _h3_shift_check_engine(state: Any) -> Optional[str]:
+    """Engine name for the flow-shift check: an sd.cpp build that takes --audio-flow-shift checks like Diffusers."""
+    if getattr(state, "engine", None) != "sd_cpp":
+        return getattr(state, "engine", None)
+    from .sd_cpp_args import sd_cpp_supports_flag
+
+    runtime = getattr(state, "pipe", None)
+    binary = getattr(getattr(runtime, "engine", None), "binary", None)
+    return None if sd_cpp_supports_flag(binary, "--audio-flow-shift") else "sd_cpp"
+
+
 def _refuse_h3_native_nan_render(path: Any) -> None:
     """Raise ``NonFiniteFramesError`` for an sd.cpp H3 clip that is a NaN render (``h3_native_clip_is_nan_render``):
     sd.cpp writes it and exits 0. Off with UNSLOTH_VIDEO_NONFINITE_CHECK=0; a clip the probe cannot read is kept."""
@@ -13768,7 +13779,7 @@ class VideoBackend:
                     if continuation is not None:
                         conditioning = VIDEO_CONTINUATION_CONDITIONING
                     shift, audio_shift = self._resolve_flow_shifts(
-                        fam, state.engine, flow_shift, audio_flow_shift
+                        fam, _h3_shift_check_engine(state), flow_shift, audio_flow_shift
                     )
                 else:
                     first_pil = _resolved_inputs.first_frame
@@ -13819,6 +13830,7 @@ class VideoBackend:
                         references = references,
                         conditioning = conditioning,
                         flow_shift = shift,
+                        audio_flow_shift = audio_shift,
                         cancel = cancel,
                     )
 
@@ -15120,6 +15132,7 @@ class VideoBackend:
         conditioning: str,
         flow_shift: Optional[float],
         cancel: threading.Event,
+        audio_flow_shift: Optional[float] = None,
     ) -> dict[str, Any]:
         import random
         import re
@@ -15312,6 +15325,13 @@ class VideoBackend:
                             ref_audios = staged.audios,
                             ref_video_audio_indices = staged.video_audio_indices,
                             flow_shift = flow_shift,
+                            # Only a non-default shift is sent: builds without --audio-flow-shift were refused earlier.
+                            audio_flow_shift = (
+                                audio_flow_shift
+                                if audio_flow_shift is not None
+                                and audio_flow_shift != state.family.default_audio_flow_shift
+                                else None
+                            ),
                             sample_method = sample_method,
                             scheduler = scheduler,
                             lossless_output = lossless_cli,
@@ -15390,8 +15410,12 @@ class VideoBackend:
                     # sd-cli vid_gen has no negative-prompt input.
                     "negative_prompt": None,
                     "flow_shift": flow_shift,
-                    # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
-                    "audio_flow_shift": state.family.default_audio_flow_shift,
+                    # What sd.cpp ran: the requested shift on builds that take it, else the pinned default.
+                    "audio_flow_shift": (
+                        audio_flow_shift
+                        if audio_flow_shift is not None
+                        else state.family.default_audio_flow_shift
+                    ),
                     # Built from the ENGAGED state, not the request; without these six, native GGUF recipes save blank.
                     "model_kind": state.kind,
                     "gguf_filename": state.gguf_filename,

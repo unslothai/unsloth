@@ -121,8 +121,9 @@ class SdCppVideoGenParams:
     ref_audios: tuple[str, ...] = ()
     # 0-based ref_videos index of each ref_video_audios entry; () pairs them by position.
     ref_video_audio_indices: tuple[int, ...] = ()
-    # sd.cpp exposes only the video schedule shift.
     flow_shift: Optional[float] = None
+    # --audio-flow-shift: builds with sd_cpp_supports_flag(binary, "--audio-flow-shift") only; None = model default.
+    audio_flow_shift: Optional[float] = None
     # --sampling-method / --scheduler (h3_sd_cpp_sampler); None leaves the build's default.
     sample_method: Optional[str] = None
     scheduler: Optional[str] = None
@@ -1058,6 +1059,8 @@ def build_sd_cpp_video_command(
         cmd += ["--scheduler", str(params.scheduler)]
     if params.flow_shift is not None:
         cmd += ["--flow-shift", _fmt_float(params.flow_shift)]
+    if params.audio_flow_shift is not None:
+        cmd += ["--audio-flow-shift", _fmt_float(params.audio_flow_shift)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     if params.lossless_output:
@@ -1304,15 +1307,20 @@ def h3_server_output_format(server_formats: Iterable[str]) -> str:
     return "avi"
 
 
-def sd_cpp_supports_ref_video_audio_index(binary: Optional[str]) -> bool:
-    """True when ``binary --help`` lists ``--ref-video-audio-index`` (explicit soundtrack pairing). Fails closed."""
+def sd_cpp_supports_flag(binary: Optional[str], flag: str) -> bool:
+    """True when ``binary --help`` lists ``flag``. Fails closed (older builds reject an unknown flag)."""
     if not binary:
         return False
     try:
         st = os.stat(binary)
     except OSError:
         return False
-    return _flag_in_help(str(binary), st.st_size, st.st_mtime_ns, "--ref-video-audio-index")
+    return _flag_in_help(str(binary), st.st_size, st.st_mtime_ns, flag)
+
+
+def sd_cpp_supports_ref_video_audio_index(binary: Optional[str]) -> bool:
+    """Explicit soundtrack pairing (``--ref-video-audio-index``)."""
+    return sd_cpp_supports_flag(binary, "--ref-video-audio-index")
 
 
 @functools.lru_cache(maxsize = 32)
@@ -1429,6 +1437,8 @@ def build_vid_gen_request(
         sample_params["sample_method"] = str(params.sample_method)
     if params.scheduler:
         sample_params["scheduler"] = str(params.scheduler)
+    if params.audio_flow_shift is not None:
+        sample_params["audio_flow_shift"] = float(params.audio_flow_shift)
     req: dict = {
         "prompt": params.prompt,
         "width": int(params.width),

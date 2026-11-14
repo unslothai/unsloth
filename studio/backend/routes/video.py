@@ -761,7 +761,10 @@ async def generate_video(
             engine = engine,
         )
         validate_video_flow_controls(
-            fam, request.flow_shift, request.audio_flow_shift, engine = engine
+            fam,
+            request.flow_shift,
+            request.audio_flow_shift,
+            engine = _flow_shift_check_engine(engine, request.audio_flow_shift),
         )
         validate_video_continuation(
             fam,
@@ -3018,3 +3021,13 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
     if not await asyncio.to_thread(_forget_openai_job, video_id):
         raise _openai_video_error(500, "Could not delete the video job; retry the request.")
     return VideoJobDeleteResponse(id = video_id)
+
+
+def _flow_shift_check_engine(engine, audio_flow_shift):
+    """An installed sd.cpp that takes --audio-flow-shift applies any audio shift, so it is checked like Diffusers."""
+    if engine != "sd_cpp" or audio_flow_shift is None:
+        return engine
+    from core.inference.sd_cpp_args import sd_cpp_supports_flag
+    from core.inference.sd_cpp_engine import find_sd_cpp_binary
+
+    return None if sd_cpp_supports_flag(find_sd_cpp_binary(), "--audio-flow-shift") else engine
