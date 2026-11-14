@@ -236,7 +236,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       finalizing = true;
       teardown();
 
-      if (!heardSpeech || chunks.length === 0 || voicedMs < MIN_SPEECH_MS) {
+      // A barge-in already passed its own bar: a quick "stop" is shorter than a turn.
+      const minMs = bargedIn ? BARGE_CONFIRMED_MS : MIN_SPEECH_MS;
+      if (!heardSpeech || chunks.length === 0 || voicedMs < minMs) {
         endWithoutSpeech();
         return;
       }
@@ -258,7 +260,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       }
       const wav = new Blob([encodeWav(merged, sampleRate)], { type: "audio/wav" });
 
-      if ((await clipHasSpeech(wav)) === false) {
+      if ((await clipHasSpeech(wav, bargedIn ? BARGE_VAD_MIN_SPEECH_MS : VAD_MIN_SPEECH_MS)) === false) {
         if (ended) return;
         endWithoutSpeech();
         return;

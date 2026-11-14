@@ -68,3 +68,8 @@ test("the delayed composer cleanup clears only the refilled transcript", () => {
 test("frames stay in order when the reply ends while the barge-in probe is out", () => {
   assert.match(loop, /if \(!bargedIn && \(isVoicePlaybackActive\(\) \|\| bargeConfirming\)\) \{/);
 });
+
+test("a short barge-in (\"stop\") that passed its probe is transcribed, not dropped as too short", () => {
+  assert.match(loop, /const minMs = bargedIn \? BARGE_CONFIRMED_MS : MIN_SPEECH_MS;/);
+  assert.match(loop, /clipHasSpeech\(wav, bargedIn \? BARGE_VAD_MIN_SPEECH_MS : VAD_MIN_SPEECH_MS\)/);
+});
