@@ -293,7 +293,6 @@ def _tiny_wheel(directory):
 
 
 def test_a_pipless_uv_venv_with_uv_off_path_gets_the_wheels(tmp_path):
-    # The real setup: a `uv venv` (no pip), PATH without uv, uv where the installers put it.
     import os
     import shutil
     import subprocess
