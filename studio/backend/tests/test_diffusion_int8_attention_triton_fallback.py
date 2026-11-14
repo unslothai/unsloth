@@ -301,6 +301,10 @@ def test_the_triton_race_times_the_triton_kernel(monkeypatch):
     found = I.verdict("cuda", torch.float32, 2, 128, timed = True)
     assert found["ok"] and found["impl"] == "triton" and found["min_tokens"] == 0
     assert timed == [3, 4] and set(found["ms"]) == {64, 32}
+    # the race record names the implementation it timed, apart from the untimed check of the same card
+    I.verdict("cuda", torch.float32, 2, 128, timed = False)
+    names = [k for k in I.status()["verdicts"] if "impl=triton" in k]
+    assert len(names) == 2 and sum(" timed " in k for k in names) == 1
 
 
 def test_triton_configs_cover_the_nvidia_cards():

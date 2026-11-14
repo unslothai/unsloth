@@ -1115,7 +1115,7 @@ def status(transformer: Any = None) -> dict:
         "calls": dict(STATS),
         "cuda_failed": {f"cuda:{k[0]} head_dim={k[1]}": v for k, v in _CUDA_FAILED.items()},
         "verdicts": {
-            f"cuda:{k[0]} {k[1]} heads={k[2]} head_dim={k[3]} vs {k[4]} impl={k[6]}": {
+            f"cuda:{k[0]} {k[1]} heads={k[2]} head_dim={k[3]} vs {k[4]}{' timed' if k[5] else ''} impl={k[6]}": {
                 x: v.get(x)
                 for x in ("impl", "ok", "cos", "rel_l1", "sharp_cos", "ms", "min_tokens", "error")
                 if x in v
