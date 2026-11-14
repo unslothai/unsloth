@@ -56,7 +56,7 @@ LOG2E = 1.4426950408889634
 # Measured per card; a card missing here keeps native. One bn per head dim, so the output does not depend on the card.
 KERNEL_CONFIGS: dict = {
     (7, 5): {
-        128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 1, "qreg": 2},
+        128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 1, "qreg": 2, "qkw": 1, "pvw": 8},
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 1, "qreg": 2},
     },
     (8, 0): {

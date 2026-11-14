@@ -421,8 +421,9 @@ ORDERINGS = ("qkw", "pvw", "spread")
 
 def test_the_orderings_reach_the_kernel_as_defines():
     """qkw / pvw / spread are per-card config keys that become compile-time defines; a config without them
-    compiles the kernel as it was. Head dim 128 on sm120 is the config that sets them."""
-    tuned = {((12, 0), 128): {"QKW": 1, "PVW": 8, "SPREAD": 5}}
+    compiles the kernel as it was. Head dim 128 on sm120 (all three) and on sm75 (the two product orders: its one
+    stage has no next tile to spread) are the configs that set them."""
+    tuned = {((12, 0), 128): {"QKW": 1, "PVW": 8, "SPREAD": 5}, ((7, 5), 128): {"QKW": 1, "PVW": 8}}
     for capability in sorted(SHARED_LIMIT):
         for head_dim in I.HEAD_DIMS:
             defines = I.kernel_defines(head_dim, I.kernel_config(capability, head_dim))
