@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which OS user opened a loopback TCP connection, read from /proc/net/tcp{,6} on Linux.
-
-A loopback port is not an identity: on a shared host any OS user can connect to it. Used only to
-keep the first-run password off pages fetched by a different local account. Unknown (not Linux,
-no /proc, entry not found) returns None and callers keep today's behaviour."""
+"""Which OS user owns a loopback TCP client, from /proc/net/tcp{,6} (Linux; None when unknown).
+Keeps the first-run password off pages fetched by another local account."""
 
 from __future__ import annotations
 
@@ -15,8 +12,7 @@ import sys
 from typing import Optional
 
 _PROC_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
-# TIME_WAIT, CLOSE, LISTEN: orphaned (UID 0) or not a connection; no other state can hide a socket
-# that can still read the response, so a half-closed client is still found under its own UID.
+# TIME_WAIT, CLOSE, LISTEN: orphaned (UID 0) or not a connection; a half-closed client keeps its UID.
 _TCP_NOT_A_LIVE_CLIENT = frozenset(("06", "07", "0A"))
 
 
@@ -44,10 +40,7 @@ def _endpoint(field: str):
 
 
 def loopback_peer_uid(client, server) -> Optional[int]:
-    """UID owning the client end (local=client, remote=server) of a socket that can still read, else None.
-
-    `client` and `server` are (host, port); the whole tuple must match so a stale entry that only
-    shares the ports (another loopback address) cannot stand in for this connection."""
+    """UID of the live socket whose full (host, port) tuple is local=client, remote=server, else None."""
     if not sys.platform.startswith("linux") or not client or not server:
         return None
     want = ((_ip(client[0]), client[1]), (_ip(server[0]), server[1]))
@@ -56,7 +49,7 @@ def loopback_peer_uid(client, server) -> Optional[int]:
     for table in _PROC_TABLES:
         try:
             with open(table, "r", encoding = "ascii", errors = "replace") as fh:
-                next(fh, None)  # header
+                next(fh, None)
                 for line in fh:
                     parts = line.split()
                     if len(parts) < 8 or parts[3].upper() in _TCP_NOT_A_LIVE_CLIENT:
