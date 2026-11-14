@@ -273,8 +273,9 @@ class DeepseekV41HyperConnection(nn.Module):
     def forward(self, x):
         """x [b, s, hc, d] -> pre [b, s, hc], post [b, s, hc], comb [b, s, hc, hc] (fp32)."""
         hc, eps = self.hc_mult, self.hc_eps
+        # One statistic over the whole flattened hc*d stream (model.py:953-956). unsloth_zoo's compiler matches these
+        # three lines and the Sinkhorn loop below verbatim (eager projection recompute, compiled Sinkhorn).
         flat = x.flatten(2).float()
-        # one statistic over the whole flattened hc*d stream (model.py:953-956)
         rsqrt = torch.rsqrt(flat.square().mean(-1, keepdim = True) + self.norm_eps)
         mixes = F.linear(flat, self.fn.float()) * rsqrt
         scale, base = self.scale.float(), self.base.float()
@@ -601,7 +602,9 @@ class _DeepseekV41Experts(nn.Module):
             up = up.clamp(min = -self.limit, max = self.limit)
         return F.silu(gate) * up
 
-    def forward(self, hidden_states, top_k_index, top_k_weights):
+    def forward(
+        self, hidden_states: torch.Tensor, top_k_index: torch.Tensor, top_k_weights: torch.Tensor
+    ) -> torch.Tensor:
         """Eager fallback (transformers' / Unsloth's experts backends replace it when configured): routes sorted by
         expert, counts by scatter_add_, one host read of the counts per layer to split the groups."""
         _count("experts_sorted_loop")
