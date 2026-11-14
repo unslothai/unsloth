@@ -2452,7 +2452,8 @@ export const Thread: FC<{
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
           />
-          {voiceRequested && (
+          {/* Compare's read-only panes hide the composer: the orb would cover both conversations. */}
+          {voiceRequested && !hideComposer && (
             <Suspense fallback={null}>
               <VoiceOrb />
             </Suspense>

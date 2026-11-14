@@ -55,8 +55,8 @@ test("the voice chunk is rendered only once Voice is requested", () => {
   for (const name of ["VoiceOrb", "VoiceEngine", "VoiceControlButton"]) {
     const at = thread.indexOf(`<${name} />`);
     assert.ok(at > 0, name);
-    const gate = thread.lastIndexOf("{voiceRequested && (", at);
-    assert.ok(gate > 0 && at - gate < 120, `${name} is gated on voiceRequested`);
+    const gate = thread.lastIndexOf("{voiceRequested && ", at);
+    assert.ok(gate > 0 && at - gate < 140, `${name} is gated on voiceRequested`);
   }
 });
 

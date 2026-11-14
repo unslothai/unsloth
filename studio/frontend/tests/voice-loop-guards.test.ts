@@ -145,3 +145,8 @@ test("a re-arm strips only the voice fragment after a typed draft", () => {
   assert.match(engine, /const typed = withoutVoiceText\(fresh\.getState\(\)\.text\);\s*if \(typed !== null\) fresh\.setText\(typed\);/);
   assert.match(loop, /if \(!said \|\| !box\.endsWith\(said\)\) return null;[\s\S]{0,200}if \(before && !\/\\s\$\/\.test\(before\)\) return null;/);
 });
+
+test("Compare's read-only threads never mount the voice orb", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(thread, /\{voiceRequested && !hideComposer && \(\s*<Suspense fallback=\{null\}>\s*<VoiceOrb \/>/);
+});
