@@ -3715,6 +3715,8 @@ export const hi = {
       llamaCppVersion: "llama.cpp संस्करण",
       audioCppVersion: "audio.cpp संस्करण",
       mlxVersion: "MLX संस्करण",
+      fastflowlmVersion: "FastFlowLM संस्करण",
+      lemonadeVersion: "Lemonade संस्करण",
       whisperCppVersion: "whisper.cpp संस्करण",
       engines: {
         title: "इंजन",

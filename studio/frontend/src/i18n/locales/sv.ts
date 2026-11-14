@@ -3894,6 +3894,8 @@ export const sv = {
       llamaCppVersion: "llama.cpp-version",
       audioCppVersion: "audio.cpp-version",
       mlxVersion: "MLX-version",
+      fastflowlmVersion: "FastFlowLM-version",
+      lemonadeVersion: "Lemonade-version",
       whisperCppVersion: "whisper.cpp-version",
       engines: {
         title: "Motorer",
