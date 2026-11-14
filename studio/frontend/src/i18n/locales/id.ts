@@ -2306,6 +2306,15 @@ export const id = {
         loadError: "Gagal memuat pengaturan jalankan saat masuk.",
         saveError: "Gagal memperbarui pengaturan jalankan saat masuk.",
       },
+      power: {
+        sectionTitle: "Daya",
+        keepAwake: "Biarkan komputer tetap aktif",
+        keepAwakeDescription:
+          "Mencegah komputer ini masuk mode tidur dengan sendirinya selama Unsloth berjalan. Layar tetap bisa mati.",
+        keepAwakeKeywords: "tidur suspend siaga hibernasi daya sleep caffeinate",
+        loadError: "Gagal memuat pengaturan biarkan komputer tetap aktif.",
+        saveError: "Gagal memperbarui pengaturan biarkan komputer tetap aktif.",
+      },
       hub: {
         source: "Sumber model",
         sourceDescription:

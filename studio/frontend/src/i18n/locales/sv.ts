@@ -2244,6 +2244,15 @@ export const sv = {
         saveError:
           "Det gick inte att uppdatera inställningen för start vid inloggning.",
       },
+      power: {
+        sectionTitle: "Energi",
+        keepAwake: "Håll datorn vaken",
+        keepAwakeDescription:
+          "Hindrar datorn från att gå i viloläge av sig själv medan Unsloth körs. Skärmen kan fortfarande stängas av.",
+        keepAwakeKeywords: "viloläge sömn vänteläge strömsparläge energi sleep caffeinate",
+        loadError: "Det gick inte att läsa in inställningen för att hålla datorn vaken.",
+        saveError: "Det gick inte att uppdatera inställningen för att hålla datorn vaken.",
+      },
       hub: {
         source: "Modellkälla",
         sourceDescription:

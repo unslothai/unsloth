@@ -2311,6 +2311,15 @@ export const vi = {
         loadError: "Không thể tải cài đặt khởi chạy khi đăng nhập.",
         saveError: "Không thể cập nhật cài đặt khởi chạy khi đăng nhập.",
       },
+      power: {
+        sectionTitle: "Nguồn điện",
+        keepAwake: "Giữ máy tính luôn thức",
+        keepAwakeDescription:
+          "Ngăn máy tính tự chuyển sang chế độ ngủ khi Unsloth đang chạy. Màn hình vẫn có thể tắt.",
+        keepAwakeKeywords: "ngủ tạm ngưng chờ ngủ đông nguồn sleep caffeinate",
+        loadError: "Không thể tải cài đặt giữ máy tính luôn thức.",
+        saveError: "Không thể cập nhật cài đặt giữ máy tính luôn thức.",
+      },
       hub: {
         source: "Nguồn mô hình",
         sourceDescription:

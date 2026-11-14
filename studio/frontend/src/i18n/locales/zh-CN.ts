@@ -2091,6 +2091,15 @@ export const zhCN = {
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },
+      power: {
+        sectionTitle: "电源",
+        keepAwake: "保持电脑唤醒",
+        keepAwakeDescription:
+          "在 Unsloth 运行期间阻止这台电脑自动进入睡眠。显示器仍可关闭。",
+        keepAwakeKeywords: "睡眠 休眠 待机 挂起 电源 sleep caffeinate",
+        loadError: "无法加载保持电脑唤醒设置。",
+        saveError: "无法更新保持电脑唤醒设置。",
+      },
       hub: {
         source: "模型来源",
         sourceDescription: "模型中心搜索和下载的来源。如果你的网络无法访问 Hugging Face 或速度很慢，请选择 ModelScope。",

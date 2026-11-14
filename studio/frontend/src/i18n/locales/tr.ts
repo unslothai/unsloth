@@ -2300,6 +2300,15 @@ export const tr = {
         loadError: "Oturum açıldığında başlatma ayarı yüklenemedi.",
         saveError: "Oturum açıldığında başlatma ayarı güncellenemedi.",
       },
+      power: {
+        sectionTitle: "Güç",
+        keepAwake: "Bilgisayarı uyanık tut",
+        keepAwakeDescription:
+          "Unsloth çalışırken bu bilgisayarın kendiliğinden uyku moduna geçmesini engeller. Ekran yine de kapanabilir.",
+        keepAwakeKeywords: "uyku askıya alma bekleme hazırda bekletme güç sleep caffeinate",
+        loadError: "Bilgisayarı uyanık tut ayarı yüklenemedi.",
+        saveError: "Bilgisayarı uyanık tut ayarı güncellenemedi.",
+      },
       hub: {
         source: "Model kaynağı",
         sourceDescription:

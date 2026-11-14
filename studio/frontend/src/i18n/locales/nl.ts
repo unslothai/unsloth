@@ -2344,6 +2344,15 @@ export const nl = {
         saveError:
           "Kan de instelling voor starten bij inloggen niet bijwerken.",
       },
+      power: {
+        sectionTitle: "Energie",
+        keepAwake: "Computer wakker houden",
+        keepAwakeDescription:
+          "Voorkomt dat deze computer vanzelf in slaapstand gaat zolang Unsloth draait. Het scherm kan wel uitgaan.",
+        keepAwakeKeywords: "slaapstand sluimer stand-by energie sleep caffeinate",
+        loadError: "De instelling computer wakker houden kon niet worden geladen.",
+        saveError: "De instelling computer wakker houden kon niet worden bijgewerkt.",
+      },
       hub: {
         source: "Modelbron",
         sourceDescription:

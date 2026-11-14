@@ -2339,6 +2339,15 @@ export const es419 = {
         saveError:
           "No se pudo actualizar la opción de ejecutar al iniciar sesión.",
       },
+      power: {
+        sectionTitle: "Energía",
+        keepAwake: "Mantener la computadora activa",
+        keepAwakeDescription:
+          "Evita que esta computadora entre en suspensión por sí sola mientras Unsloth está en ejecución. La pantalla puede apagarse de todos modos.",
+        keepAwakeKeywords: "suspensión reposo hibernar energía sleep caffeinate",
+        loadError: "No se pudo cargar la opción de mantener la computadora activa.",
+        saveError: "No se pudo actualizar la opción de mantener la computadora activa.",
+      },
       hub: {
         source: "Origen de los modelos",
         sourceDescription:

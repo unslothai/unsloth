@@ -2323,6 +2323,15 @@ export const cs = {
         saveError:
           "Nastavení spouštění po přihlášení se nepodařilo aktualizovat.",
       },
+      power: {
+        sectionTitle: "Napájení",
+        keepAwake: "Nechat počítač vzhůru",
+        keepAwakeDescription:
+          "Zabrání tomu, aby počítač sám přešel do režimu spánku, dokud běží Unsloth. Displej se může i tak vypnout.",
+        keepAwakeKeywords: "spánek uspání hibernace úspora napájení sleep caffeinate",
+        loadError: "Nastavení nechat počítač vzhůru se nepodařilo načíst.",
+        saveError: "Nastavení nechat počítač vzhůru se nepodařilo aktualizovat.",
+      },
       hub: {
         source: "Zdroj modelů",
         sourceDescription:

@@ -2147,6 +2147,15 @@ export const en = {
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
+      power: {
+        sectionTitle: "Power",
+        keepAwake: "Keep computer awake",
+        keepAwakeDescription:
+          "Stop this computer from going to sleep on its own while Unsloth is running. The display can still turn off.",
+        keepAwakeKeywords: "sleep suspend standby hibernate caffeinate insomnia no sleep power",
+        loadError: "Failed to load the keep computer awake setting.",
+        saveError: "Failed to update the keep computer awake setting.",
+      },
       hub: {
         source: "Model source",
         sourceDescription: "Where the model hub searches and downloads. Choose ModelScope if Hugging Face is blocked or slow on your network.",

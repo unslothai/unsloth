@@ -2101,6 +2101,15 @@ export const ja = {
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },
+      power: {
+        sectionTitle: "電源",
+        keepAwake: "コンピューターをスリープさせない",
+        keepAwakeDescription:
+          "Unsloth の実行中は、このコンピューターが自動でスリープしないようにします。ディスプレイはオフになる場合があります。",
+        keepAwakeKeywords: "スリープ サスペンド 休止 スタンバイ 電源 sleep caffeinate",
+        loadError: "スリープ防止の設定を読み込めませんでした。",
+        saveError: "スリープ防止の設定を更新できませんでした。",
+      },
       hub: {
         source: "モデルの取得元",
         sourceDescription: "モデルハブの検索とダウンロード先です。ネットワークで Hugging Face がブロックされている、または遅い場合は ModelScope を選んでください。",

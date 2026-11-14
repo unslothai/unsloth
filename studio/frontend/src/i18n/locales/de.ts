@@ -2134,6 +2134,15 @@ export const de = {
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
       },
+      power: {
+        sectionTitle: "Energie",
+        keepAwake: "Computer wach halten",
+        keepAwakeDescription:
+          "Verhindert, dass dieser Computer von selbst in den Ruhezustand wechselt, solange Unsloth läuft. Der Bildschirm kann sich trotzdem ausschalten.",
+        keepAwakeKeywords: "ruhezustand schlafen standby energiesparen sleep caffeinate",
+        loadError: "Die Einstellung „Computer wach halten“ konnte nicht geladen werden.",
+        saveError: "Die Einstellung „Computer wach halten“ konnte nicht aktualisiert werden.",
+      },
       hub: {
         source: "Modellquelle",
         sourceDescription: "Wo der Model-Hub sucht und herunterlädt. Wählen Sie ModelScope, wenn Hugging Face in Ihrem Netzwerk blockiert oder langsam ist.",

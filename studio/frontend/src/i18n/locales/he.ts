@@ -2180,6 +2180,15 @@ export const he = {
         loadError: "טעינת הגדרת ההפעלה בכניסה למערכת נכשלה.",
         saveError: "עדכון הגדרת ההפעלה בכניסה למערכת נכשל.",
       },
+      power: {
+        sectionTitle: "חשמל",
+        keepAwake: "השארת המחשב ער",
+        keepAwakeDescription:
+          "מונע מהמחשב לעבור למצב שינה מעצמו כל עוד Unsloth פועל. המסך עדיין יכול לכבות.",
+        keepAwakeKeywords: "שינה השהיה המתנה חשמל sleep caffeinate",
+        loadError: "טעינת ההגדרה של השארת המחשב ער נכשלה.",
+        saveError: "עדכון ההגדרה של השארת המחשב ער נכשל.",
+      },
       hub: {
         source: "מקור המודלים",
         sourceDescription:
