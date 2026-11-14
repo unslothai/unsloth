@@ -302,7 +302,7 @@ def test_a_durable_run_refunds_its_override_only_when_it_generated_nothing(
 
 
 @pytest.mark.parametrize("finished_first", [False, True])
-def test_a_durable_run_stopped_before_its_payload_loads_refunds_only_once_owned(
+def test_a_durable_run_stopped_before_its_payload_loads_refunds_only_while_active(
     monkeypatch, finished_first
 ):
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
@@ -327,6 +327,22 @@ def test_a_durable_run_stopped_before_its_payload_loads_refunds_only_once_owned(
     app = SimpleNamespace(state = SimpleNamespace(bind_host = "127.0.0.1"))
     asyncio.run(ChatGenerationSupervisor(app)._produce("run"))
     assert _refused() is finished_first
+
+
+def test_a_lifecycle_cancel_before_a_run_starts_refunds_its_override():
+    import threading
+
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    _reach_cap()
+    token_limit.grant_override()
+    _durable_run(token_limit.enforce())
+    # A forced model swap signals the event (cancel_all) without request_cancel's refund.
+    cancelled = threading.Event()
+    cancelled.set()
+    app = SimpleNamespace(state = SimpleNamespace(bind_host = "127.0.0.1"))
+    asyncio.run(ChatGenerationSupervisor(app)._produce("run", cancelled))
+    assert not _refused()
 
 
 def test_cancelling_a_queued_run_refunds_its_override():

@@ -705,6 +705,11 @@ class ChatGenerationSupervisor:
             worker_token = await asyncio.to_thread(db.get_worker_token, run_id)
             if worker_token is None:
                 return
+            state = await asyncio.to_thread(db.get_run_state, run_id)
+            if (claim := override_claim()) is not None and state is not None:
+                # This worker settles the override of a run it found active (a lifecycle cancel can
+                # end it before mark_running); a finished or already-cancelled run is not refunded.
+                claim["owned"] = state["status"] not in db.TERMINAL_STATUSES
             if cancel_event.is_set():
                 shutting_down = run_id in self._shutdown_runs
                 await asyncio.to_thread(
@@ -732,10 +737,6 @@ class ChatGenerationSupervisor:
                     return
                 if not await asyncio.to_thread(db.mark_running, run_id, worker_token):
                     return
-                if (claim := override_claim()) is not None:
-                    # Only the worker that started the run settles its override (a queued cancel
-                    # refunds in request_cancel); a run that already finished is never refunded.
-                    claim["owned"] = True
                 worker_run = await asyncio.to_thread(db.get_worker_run, run_id, worker_token)
                 if worker_run is None:
                     return

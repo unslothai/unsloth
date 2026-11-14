@@ -95,6 +95,17 @@ def _usage(
         # Generated text the reply buffer never shows still counts.
         (True, 0, [("reasoning", 400)], "cancelled", (0, 100, 100)),
         (True, 0, [("hidden", 400)], "cancelled", (0, 100, 100)),
+        # An adapter's all-zero placeholder (no stats yet) is not a report.
+        (
+            False,
+            0,
+            [
+                ("reply", 400),
+                ("route_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}),
+            ],
+            "cancelled",
+            (0, 100, 100),
+        ),
         (False, 0, [_usage(10), ("thinking", 400)], "cancelled", (10, 100, 110)),
         (False, 0, [("tool_args", 4000)], "cancelled", (0, 1000, 1000)),
         (False, 0, [("tool_args", 4000), ("flush", 0)], "cancelled", (0, 1000, 1000)),
@@ -298,7 +309,8 @@ def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
     assert receipt.prompt_tokens == 10_000
 
 
-def test_a_chatgpt_subscription_stream_settles_a_receipt(monkeypatch):
+@pytest.mark.parametrize("silent_cancel", [False, True])
+def test_a_chatgpt_subscription_stream_settles_a_receipt(monkeypatch, silent_cancel):
     import asyncio
     import json
     from types import SimpleNamespace
@@ -323,6 +335,10 @@ def test_a_chatgpt_subscription_stream_settles_a_receipt(monkeypatch):
             pass
 
         async def stream(self, **kwargs):
+            if silent_cancel:
+                # The client returns on cancel without yielding anything more.
+                kwargs["cancel_event"].set()
+                return
             yield chunk({"content": "hello"})
             yield chunk({}, {"prompt_tokens": 30, "completion_tokens": 7, "total_tokens": 37})
 
@@ -386,5 +402,8 @@ def test_a_chatgpt_subscription_stream_settles_a_receipt(monkeypatch):
 
     asyncio.run(run())
     [receipt] = receipts
+    if silent_cancel:
+        assert receipt.status == "cancelled"
+        return
     assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (30, 7, 37)
     assert receipt.via_api_key is False

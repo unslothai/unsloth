@@ -7217,8 +7217,18 @@ def _monitor_usage(
                     sink.get("context_length"),
                     timings = timings,
                 )
-    # isinstance, not truthiness: a non-dict usage would raise into the stream.
-    if isinstance(usage, dict) and usage:
+    # isinstance, not truthiness: a non-dict usage would raise into the stream. All zeros is an
+    # adapter's placeholder (no stats yet), not a report: leave the fallback estimate to it.
+    if isinstance(usage, dict) and any(
+        usage.get(key)
+        for key in (
+            "prompt_tokens",
+            "input_tokens",
+            "completion_tokens",
+            "output_tokens",
+            "total_tokens",
+        )
+    ):
         api_monitor.set_usage(
             monitor_id,
             prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens"),
@@ -29682,7 +29692,8 @@ async def _proxy_to_external_provider(
                 if _owed is not None:
                     _monitor_openai_sse_line(codex_monitor_id, _owed)
                     yield f"{_owed}\n\n"
-                if not codex_stopped:
+                # The client can return silently on cancel: that is a stop, not a completion.
+                if not codex_stopped and not cancel_event.is_set():
                     _monitor_openai_sse_line(codex_monitor_id, "data: [DONE]")
                 yield "data: [DONE]\n\n"
             except asyncio.CancelledError:
