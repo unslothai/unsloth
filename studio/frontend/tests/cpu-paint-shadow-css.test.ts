@@ -137,3 +137,13 @@ test("main.tsx adds the class only on the shell's explicit yes, after the Linux 
   assert.match(MAIN, /if \(status\.cpuPainting\) \{\s*document\.documentElement\.classList\.add\("webkit-cpu-paint"\);/);
   assert.doesNotMatch(MAIN, /cpu-paint-shadows/);
 });
+
+test("dialogs drop their rounded clip under CPU painting, gated like the edges", () => {
+  const square = gated().filter(([, b]) => /border-radius:\s*0 !important;/.test(b));
+  assert.equal(square.length, 1);
+  for (const part of square[0][0].split(SPLIT)) {
+    assert.ok(part.trim().startsWith(POPUP_GATE), part);
+    assert.match(part, /dialog-content"\]/);
+  }
+  assert.doesNotMatch(square[0][0], /sheet-content|composer|toast/);
+});

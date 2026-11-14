@@ -1906,6 +1906,12 @@ html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear], [
 	:is(.chat-composer-surface, .unsloth-composer-surface):not([data-wallpaper-ready] *):focus-within {
 	box-shadow: var(--cpu-paint-focus-edge);
 }
+/* A dialog's rounded overflow clip is re-applied to its scrolled content on every frame: square
+   corners took Settings scroll from 28 to 41 fps on WebKitGTK 2.50.4. !important beats `rounded-*!`. */
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear])
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]) {
+	border-radius: 0 !important;
+}
 
 /* Chat font: only applies while a custom chat font is set. Elements with
    explicit font utilities (headings, code) keep their own families. */
