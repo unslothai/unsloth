@@ -1,5 +1,7 @@
-"""A 4-bit request that Studio turns into a 16-bit load (latest-transformers sidecar models) must reach the run
-status as a warning, not only the server log."""
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A forced 4-bit -> 16-bit load must surface as a run warning, not only a log line."""
 
 import ast
 from pathlib import Path
@@ -54,7 +56,6 @@ def test_text_run_with_mlp_off_is_told_the_selector_is_ignored():
     }
     message = _ignored_selector_warning(_Trainer(), config)
     assert message and "finetune_mlp_modules" in message and "gate_proj" in message
-    # Defaults, vision runs and full finetuning stay quiet.
     assert _ignored_selector_warning(_Trainer(), {"target_modules": ["q_proj"]}) is None
     assert _ignored_selector_warning(_Trainer(is_vlm = True), config) is None
     assert (
