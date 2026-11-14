@@ -572,6 +572,9 @@ function normalizeGpuFields(partial: RawConfig): {
   ) {
     out.nCpuMoe = Math.trunc(partial.nCpuMoe);
   }
+  if (out.gpuLayers === 0) {
+    out.nCpuMoe = 0;
+  }
   if (partial.selectedGpuIds === null) {
     out.selectedGpuIds = null;
   } else if (
