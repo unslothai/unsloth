@@ -44,24 +44,38 @@ function children(node: PasteNode, ctx: Ctx): string {
 
 const FENCED = new RegExp(`${FENCE_OPEN}[\\s\\S]*?${FENCE_CLOSE}`, "g");
 
+function trimLineEnd(line: string): string {
+  let end = line.length;
+  while (end > 0 && " \t\u00a0".includes(line[end - 1])) end--;
+  return line.slice(0, end);
+}
+
 function clean(text: string): string {
   const fences: string[] = [];
+  // Per-line index trim: a `[ \t\u00a0]+\n` regex is quadratic on long non-breaking space runs.
   return text
     .replace(FENCED, (block) => `${FENCE_OPEN}${fences.push(block) - 1}${FENCE_CLOSE}`)
-    .replace(/[ \t\u00a0]+\n/g, "\n")
+    .split("\n")
+    .map(trimLineEnd)
+    .join("\n")
     .replace(/\n[ \t]+/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim()
     .replace(new RegExp(`${FENCE_OPEN}(\\d+)${FENCE_CLOSE}`, "g"), (_, i: string) => fences[Number(i)]);
 }
 
-const EDGES = new RegExp(`^([\\s${FENCE_OPEN}${FENCE_CLOSE}]*)([\\s\\S]*?)([\\s${FENCE_OPEN}${FENCE_CLOSE}]*)$`);
+const EDGE = new RegExp(`[\\s${FENCE_OPEN}${FENCE_CLOSE}]`);
 const MARKS = new RegExp(`[${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
 const NOT_MARKS = new RegExp(`[^${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
 
 // Edge whitespace moves out past fence marks, so `**bold **` never forms; it stays fenced if it was.
 function edges(inner: string): [string, string, string] {
-  const [, head, body, tail] = EDGES.exec(inner) ?? ["", "", inner, ""];
+  // Index scans, not a regex: a backtracking edge match is quadratic on long whitespace runs.
+  let start = 0;
+  let end = inner.length;
+  while (start < end && EDGE.test(inner[start])) start++;
+  while (end > start && EDGE.test(inner[end - 1])) end--;
+  const [head, body, tail] = [inner.slice(0, start), inner.slice(start, end), inner.slice(end)];
   const marks = (s: string) => s.replace(NOT_MARKS, "");
   const space = (s: string, keep: boolean) => {
     const ws = s.replace(MARKS, "");
@@ -182,7 +196,11 @@ function convert(node: PasteNode, parent: Ctx): string {
   if (node.nodeType === 3) {
     const text = node.textContent ?? "";
     if (parent.space === "pre") return `${FENCE_OPEN}${text}${FENCE_CLOSE}`;
-    return text.replace(parent.space === "line" ? /[^\S\n\u00a0]+/g : /[^\S\u00a0]+/g, " ");
+    if (parent.space === "collapse") return text.replace(/[^\S\u00a0]+/g, " ");
+    return text
+      .replace(/[^\S\n\u00a0]+/g, " ")
+      .replace(/ ?\n ?/g, "\n")
+      .replace(/\n{3,}/g, (run) => `${FENCE_OPEN}${run}${FENCE_CLOSE}`);
   }
   if (node.nodeType !== 1) return "";
   const tag = node.nodeName.toUpperCase();
@@ -283,7 +301,7 @@ export function richPasteMarkdown(
   const plain = data.getData("text/plain");
   if (!markdown || squash(markdown) === squash(plain)) return null;
   // Restore the copied text's edge whitespace, which conversion trims.
-  return `${/^\s*/.exec(plain)?.[0] ?? ""}${markdown}${/\s*$/.exec(plain)?.[0] ?? ""}`;
+  return `${plain.slice(0, plain.length - plain.trimStart().length)}${markdown}${plain.slice(plain.trimEnd().length)}`;
 }
 
 function parseHtml(html: string): PasteNode | null {

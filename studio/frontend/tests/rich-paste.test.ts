@@ -229,3 +229,21 @@ test("pre-line keeps line breaks but collapses spaces", () => {
   const body = el("body", el("div", { style: "white-space:pre-line" }, el("b", "Note"), el("br"), el("br"), "    run  fast\n  next"));
   assert.equal(htmlNodeToMarkdown(body), "**Note**\n\nrun fast\nnext");
 });
+
+test("pre-line keeps runs of blank lines", () => {
+  const body = el("body", el("div", { style: "white-space:pre-line" }, el("b", "Code"), '\nmessage = """first\n\n\nfourth"""'));
+  assert.equal(htmlNodeToMarkdown(body), '**Code**\nmessage = """first\n\n\nfourth"""');
+});
+
+test("long whitespace runs convert in linear time", () => {
+  const run = (ch: string) => `a${ch.repeat(60_000)}b`;
+  const bodies = [
+    el("body", el("p", el("b", "x"), run(" "))),
+    el("body", el("div", { style: "white-space:pre-wrap" }, el("b", run(" ")))),
+  ];
+  const start = performance.now();
+  for (const body of bodies) htmlNodeToMarkdown(body);
+  const plain = run(" ");
+  richPasteMarkdown({ types: ["text/html"], getData: (type: string) => (type === "text/html" ? "<b>x</b>" : plain) }, () => el("body", el("b", "q")));
+  assert.ok(performance.now() - start < 1000);
+});
