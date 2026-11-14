@@ -171,6 +171,8 @@ def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
         )
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
     account_path(grant.canonical_path)
     # Path.name is one component, so a "\" in it is part of the name, as in "AC\DC.pdf".
@@ -257,7 +259,8 @@ class SearchRequest(BaseModel):
 class LinkFolderRequest(BaseModel):
     name: str | None = Field(default = None, alias = "displayName", max_length = 200)
     auto_sync: bool = Field(default = True, alias = "autoSync")
-    native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+    native_path_lease: str | None = Field(default = None, alias = "nativePathLease", min_length = 1)
+    server_path: str | None = Field(default = None, alias = "serverPath", min_length = 1)
 
 
 class UpdateFolderRequest(BaseModel):
@@ -289,7 +292,24 @@ def _resolve_linked_folder_path(
         )
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    except ValueError as exc:
+
+
+def _resolve_server_linked_folder_path(server_path: str) -> tuple[str, tuple[int, int]]:
+    """Resolve a path selected by the browser's server-side folder picker.
+
+    ``routes.models`` owns the browse allowlist and symlink/system-directory checks used by the
+    model picker. Reuse that policy here so remote clients can link a folder on the Studio host
+    without granting arbitrary filesystem access.
+    """
+    from routes.models import resolve_browseable_directory
+    try:
+        target = resolve_browseable_directory(server_path)
+        path = folder_sync.validate_folder_path(str(target))
+        identity = os.stat(path, follow_symlinks = True)
+        return path, (identity.st_dev, identity.st_ino)
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
@@ -369,7 +389,18 @@ def _require_document_owner(conn: sqlite3.Connection, document: dict) -> None:
 
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
     from utils.native_path_leases import redact_native_paths
-    path, signed_identity = _resolve_linked_folder_path(payload.native_path_lease)
+
+    if bool(payload.native_path_lease) == bool(payload.server_path):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Provide exactly one of nativePathLease or serverPath",
+        )
+    if payload.server_path:
+        path, signed_identity = _resolve_server_linked_folder_path(payload.server_path)
+    else:
+        # The presence check above narrows this for type checkers and keeps the legacy helper's
+        # one-argument contract intact for callers that inject a lease verifier in tests.
+        path, signed_identity = _resolve_linked_folder_path(payload.native_path_lease or "")
     try:
         with folder_sync.scope_lock(_scope_for_owner(scope_type, scope_id)):
             _require_scope_owner(scope_type, scope_id)

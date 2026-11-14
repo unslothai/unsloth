@@ -1912,6 +1912,31 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
     )
 
 
+def resolve_browseable_directory(path: Optional[str]) -> Path:
+    """Resolve a server-side folder through the same safety policy as the folder browser.
+
+    This is intentionally shared with RAG's linked-folder picker: a browser client may choose
+    a directory on the Studio host, but it must not turn that picker into an arbitrary path read.
+    The returned path is realpath-checked by ``_resolve_browse_target`` and is therefore safe to
+    pass to a server-side scanner.
+    """
+    from utils.paths.storage_roots import workspace_root
+    from utils.paths import external_media
+
+    managed = account_access.managed_account()
+    requested = path
+    if managed:
+        requested = account_access.private_directory(path or str(workspace_root()), "")
+        allowed_roots = [workspace_root().resolve()]
+    else:
+        media_roots = [
+            *external_media.linux_external_mount_roots(),
+            *external_media.macos_volume_roots(),
+        ]
+        allowed_roots = _build_browse_allowlist(media_roots, external_media.windows_drive_roots())
+    return _resolve_browse_target(requested, allowed_roots)
+
+
 # Sync def so FastAPI threadpools it: a dead mapped drive would stall the loop.
 @router.get("/browse-folders", response_model = BrowseFoldersResponse)
 def browse_folders(

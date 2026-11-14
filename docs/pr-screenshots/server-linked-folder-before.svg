@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560" role="img" aria-labelledby="title desc">
+  <title id="title">Before: linked folders only use a local picker</title>
+  <desc id="desc">A project source folders panel with one Add folder action and a note that folder selection is unavailable over a browser connection.</desc>
+  <rect width="960" height="560" fill="#f5f7fb"/>
+  <rect x="120" y="52" width="720" height="456" rx="20" fill="#ffffff" stroke="#d7dce5"/>
+  <text x="160" y="102" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700" fill="#182230">Source folders</text>
+  <text x="160" y="133" font-family="Inter,Arial,sans-serif" font-size="14" fill="#667085">Keep supported documents in sync for chats to search.</text>
+  <rect x="160" y="174" width="640" height="152" rx="12" fill="#fbfcfe" stroke="#d7dce5"/>
+  <text x="194" y="220" font-family="Inter,Arial,sans-serif" font-size="16" fill="#667085">No source folders.</text>
+  <rect x="160" y="350" width="310" height="52" rx="12" fill="#ffffff" stroke="#c8ced8"/>
+  <text x="202" y="382" font-family="Inter,Arial,sans-serif" font-size="16" fill="#344054">＋ Add folder</text>
+  <text x="160" y="444" font-family="Inter,Arial,sans-serif" font-size="13" fill="#667085">Open Unsloth Desktop to add a source folder.</text>
+</svg>

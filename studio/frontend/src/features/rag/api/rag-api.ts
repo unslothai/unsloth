@@ -627,13 +627,31 @@ export function createLinkedFolder(
   nativePathLease: string,
   displayName: string,
 ): Promise<LinkedFolderMutationResult> {
+  return createLinkedFolderRequest(scope, { nativePathLease, displayName });
+}
+
+export function createServerLinkedFolder(
+  scope: LinkedFolderScope,
+  serverPath: string,
+  displayName?: string,
+): Promise<LinkedFolderMutationResult> {
+  return createLinkedFolderRequest(scope, {
+    serverPath,
+    ...(displayName ? { displayName } : {}),
+  });
+}
+
+function createLinkedFolderRequest(
+  scope: LinkedFolderScope,
+  body: { nativePathLease?: string; serverPath?: string; displayName?: string },
+): Promise<LinkedFolderMutationResult> {
   const parent =
     scope.type === "knowledge_base" ? "knowledge-bases" : "projects";
   return ragRequest(
     `/${parent}/${encodeURIComponent(scope.id)}/linked-folders`,
     {
       method: "POST",
-      body: { nativePathLease, displayName },
+      body,
     },
   );
 }
