@@ -320,3 +320,16 @@ test("a preserved link label is split into one link per paragraph", () => {
   const body = el("body", el("a", { href: "https://x.com", style: "white-space:pre-wrap" }, "first\n\nsecond"));
   assert.equal(htmlNodeToMarkdown(body), "[first](https://x.com)\n\n[second](https://x.com)");
 });
+
+test("a link around only a code block keeps its destination", () => {
+  const body = el("body", el("a", { href: "https://x.com/s.py" }, el("pre", "x = 1")));
+  assert.equal(htmlNodeToMarkdown(body), "```\nx = 1\n```\n\nhttps://x.com/s.py");
+});
+
+test("table section and row white-space resets reach their cells", () => {
+  const body = el(
+    "body",
+    el("table", { style: "white-space:pre-wrap" }, el("tbody", { style: "white-space:normal" }, el("tr", el("th", "k")), el("tr", el("td", el("b", "a    b"))))),
+  );
+  assert.equal(htmlNodeToMarkdown(body), "| k |\n| --- |\n| **a b** |");
+});

@@ -189,12 +189,12 @@ function list(node: PasteNode, ctx: Ctx, ordered: boolean): string {
   return lines.join("\n");
 }
 
-function tableRows(node: PasteNode): PasteNode[] {
-  const rows: PasteNode[] = [];
+function tableRows(node: PasteNode, ctx: Ctx): [PasteNode, Ctx][] {
+  const rows: [PasteNode, Ctx][] = [];
   for (const child of elements(node)) {
     const tag = child.nodeName.toUpperCase();
-    if (tag === "TR") rows.push(child);
-    else if (tag === "THEAD" || tag === "TBODY" || tag === "TFOOT") rows.push(...tableRows(child));
+    if (tag === "TR") rows.push([child, resolve(child, ctx)]);
+    else if (tag === "THEAD" || tag === "TBODY" || tag === "TFOOT") rows.push(...tableRows(child, resolve(child, ctx)));
   }
   return rows;
 }
@@ -213,14 +213,14 @@ function span(cell: PasteNode, name: string, max: number): number {
 }
 
 function table(node: PasteNode, ctx: Ctx): string {
-  const physical = tableRows(node);
+  const physical = tableRows(node, ctx);
   // Lay merged cells onto the grid so every value stays under its own header.
   const rows: string[][] = physical.map(() => []);
-  physical.forEach((row, r) => {
+  physical.forEach(([row, rowCtx], r) => {
     let c = 0;
     for (const cell of elements(row).filter((child) => /^T[DH]$/i.test(child.nodeName))) {
       while (rows[r][c] !== undefined) c++;
-      const text = flatten(clean(children(cell, resolve(cell, ctx))).replaceAll(INDENT, "")).replace(/\|/g, "\\|");
+      const text = flatten(clean(children(cell, resolve(cell, rowCtx))).replaceAll(INDENT, "")).replace(/\|/g, "\\|");
       const cols = span(cell, "colspan", 1000);
       const down = span(cell, "rowspan", physical.length - r);
       for (let dr = 0; dr < down; dr++)
@@ -274,7 +274,9 @@ function convert(node: PasteNode, parent: Ctx): string {
       const [lead, text, trail] = edges(inner);
       const plain = text.replace(MARKS, "");
       if (!plain || plain === raw || plain === href || `mailto:${plain}` === raw) return `${lead}${href}${trail}`;
-      return perParagraph(inner, (body) => `[${body.replace(/([[\]])/g, "\\$1")}](${href})`);
+      const linked = perParagraph(inner, (body) => `[${body.replace(/([[\]])/g, "\\$1")}](${href})`);
+      // Only code blocks inside: no link syntax can hold them, so keep the destination after them.
+      return linked === inner ? `${inner.trimEnd()}\n\n${href}\n\n` : linked;
     }
     case "STRONG":
     case "B":
