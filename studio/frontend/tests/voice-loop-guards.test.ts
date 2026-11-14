@@ -83,3 +83,15 @@ test("turning voice off forgets the open reply stream", () => {
   const off = engine.slice(engine.indexOf('if (next === "off") {'));
   assert.match(off.slice(0, 600), /streamBegunRef\.current = false;[\s\S]*stop\(\);/);
 });
+
+test("a clip still being transcribed when voice turns off is dropped, not held", () => {
+  const off = loop.indexOf('if (getVoiceMode() === "off") {\n          finish("cancelled");');
+  assert.ok(off > 0 && off < loop.indexOf("heldTurn = {\n            text: transcript,"));
+});
+
+test("the coalesced run waits for a phrase still being heard", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const fire = engine.slice(engine.indexOf("const fireCoalescedRun = "));
+  const wait = fire.indexOf("(rt.voiceHearing || rt.voiceTranscribing) && attempt < VOICE_COALESCE_MAX_RETRIES");
+  assert.ok(wait > 0 && wait < fire.indexOf("t.startRun("));
+});
