@@ -23,7 +23,7 @@ import {
   parkVoiceTurnAudio,
   takeVoiceTurnAudio,
   voiceRevealText,
-  typedDraftIn,
+  takeTypedDraft,
   voiceWroteBox,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
@@ -433,7 +433,8 @@ export const VoiceEngine: FC = () => {
     const deferredClear = (n: number) => {
       if (voiceModeRef.current !== "active") return;
       const fresh = auiRef.current.composer();
-      if (!fresh.getState().text) return;
+      // Only the transcript the composer refills: a draft typed since, or another chat's, stays.
+      if (!voiceWroteBox(fresh.getState().text)) return;
       fresh.setText("");
       if (n < 5) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
     };
@@ -638,7 +639,7 @@ export const VoiceEngine: FC = () => {
   const submitTranscript = useCallback((spoken?: string, typed?: boolean) => {
     if (voiceModeRef.current !== "active") return;
     const composer = auiRef.current.composer();
-    const draft = spoken ? typedDraftIn(composer.getState().text) : "";
+    const draft = spoken ? takeTypedDraft(composer.getState().text) : "";
     if (composer.getState().dictation) composer.stopDictation();
     let text = (spoken ?? composer.getState().text).trim();
     if (draft) text = `${draft} ${text}`;

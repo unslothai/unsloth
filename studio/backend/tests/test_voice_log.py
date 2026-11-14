@@ -12,6 +12,7 @@ from core.inference import voice_log as vl
 @pytest.fixture(autouse = True)
 def _log_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_VOICE_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(vl, "_DELETED", set())
     return tmp_path
 
 
@@ -180,6 +181,13 @@ def test_a_chat_delete_drops_only_the_callers_rows():
     assert {r["id"] for r in vl.read_rows()} == {alice, legacy}
     assert vl.delete_thread_rows(["t1"], OWNER_ACCOUNT_ID) == 1
     assert {r["id"] for r in vl.read_rows()} == {alice}
+
+
+def test_a_decision_finishing_after_its_chat_was_deleted_is_not_logged():
+    vl.delete_thread_rows(["chat-gone"], "alice")
+    vl.append("judge", {"text": "secret"}, "sent", 0.9, 1.0, thread_id = "chat-gone", account = "alice")
+    vl.append("judge", {"text": "bob's"}, "sent", 0.9, 1.0, thread_id = "chat-gone", account = "bob")
+    assert [r["input"]["text"] for r in vl.read_rows()] == ["bob's"]
 
 
 def test_an_outcome_for_a_deleted_chat_is_not_written():

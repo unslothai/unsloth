@@ -94,12 +94,18 @@ test("the barge-in probe is judged on the shorter bar its clip can meet", () => 
 });
 
 test("a draft typed before speaking leads the spoken turn instead of being cleared", () => {
-  assert.match(engine, /const draft = spoken \? typedDraftIn\(composer\.getState\(\)\.text\) : "";/);
+  assert.match(engine, /const draft = spoken \? takeTypedDraft\(composer\.getState\(\)\.text\) : "";/);
   assert.match(engine, /if \(draft\) text = `\$\{draft\} \$\{text\}`;/);
-  assert.match(loop, /export function typedDraftIn\(box: string\): string \{/);
+  assert.match(loop, /export function takeTypedDraft\(box: string\): string \{/);
 });
 
 test("a mic lost mid-utterance sends what was heard instead of waiting for a frame that never comes", () => {
   const reopen = loop.slice(loop.indexOf("const reopen = (why: string"));
   assert.match(reopen.slice(0, 400), /if \(utteranceInFlight\) \{[\s\S]*?void finalize\(\);\s*return;/);
+});
+
+test("the delayed composer cleanup clears only the refilled transcript", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const clear = engine.slice(engine.indexOf("const deferredClear = (n: number) => {"));
+  assert.match(clear.slice(0, 400), /if \(!voiceWroteBox\(fresh\.getState\(\)\.text\)\) return;/);
 });
