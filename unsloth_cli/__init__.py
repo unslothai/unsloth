@@ -104,6 +104,7 @@ _COMMAND_ORDER = (
     "install-kernels",
     "studio",
     "start",
+    "spark",
     "mcp",
     "connect",
 )
@@ -129,6 +130,7 @@ if _load_every_command:
     from unsloth_cli.commands.inference import inference
     from unsloth_cli.commands.chat import chat
     from unsloth_cli.commands.start import start_app
+    from unsloth_cli.commands.spark import spark_app
     from unsloth_cli.commands.export import export, list_checkpoints
     from unsloth_cli.commands.eval import evaluate as eval_command
     from unsloth_cli.commands.doctor import doctor
@@ -273,6 +275,7 @@ _LAZY_COMMANDS = (
     "doctor",
     "run",
     "start",
+    "spark",
     "mcp",
     "connect",
 )
@@ -308,6 +311,13 @@ def _register_command(app, name):
             name = "start",
             help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe, "
             "VS Code) against Unsloth.",
+        )
+    elif name == "spark":
+        from unsloth_cli.commands.spark import spark_app
+        app.add_typer(
+            spark_app,
+            name = "spark",
+            help = "Pair a second NVIDIA DGX Spark over its 200GbE ConnectX link.",
         )
     elif name == "mcp":
         from unsloth_cli.commands.mcp import mcp_app
@@ -405,6 +415,7 @@ _LAZY_ATTRIBUTES = {
     "list_checkpoints": ("unsloth_cli.commands.export", "list_checkpoints"),
     "eval_command": ("unsloth_cli.commands.eval", "evaluate"),
     "doctor": ("unsloth_cli.commands.doctor", "doctor"),
+    "spark_app": ("unsloth_cli.commands.spark", "spark_app"),
     "mcp_app": ("unsloth_cli.commands.mcp", "mcp_app"),
     "studio_run": ("unsloth_cli.commands.studio", "run"),
     "studio_app": ("unsloth_cli.commands.studio", "studio_app"),

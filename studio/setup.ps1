@@ -1576,6 +1576,51 @@ function Get-LlamaBuildJobs {
     return (Get-LlamaJobsFor -Cores ([Environment]::ProcessorCount) -TotalMb (Get-UsableMemoryMb))
 }
 
+# "ggml-rpc-server", "rpc-server" on older trees, '' when the tree has no RPC tool.
+function Get-LlamaRpcServerTarget {
+    param([string]$SourceDir)
+    foreach ($rel in @('tools\rpc\CMakeLists.txt', 'examples\rpc\CMakeLists.txt')) {
+        $cml = Join-Path $SourceDir $rel
+        if (-not (Test-Path -LiteralPath $cml -PathType Leaf)) { continue }
+        $text = Get-Content -LiteralPath $cml -Raw -ErrorAction SilentlyContinue
+        if ($text -match 'ggml-rpc-server') { return 'ggml-rpc-server' }
+        if ($text -match 'rpc-server') { return 'rpc-server' }
+        return ''
+    }
+    return ''
+}
+
+# Best-effort, like Step G: adds the RPC server to a reused build that predates it. The target
+# exists only once the build is configured with GGML_RPC=ON; cmake keeps every other cached option.
+function Backfill-LlamaRpcServer {
+    param([string]$SourceDir, [string]$BuildDir)
+    foreach ($rpcName in @('ggml-rpc-server', 'rpc-server')) {
+        if (Test-PathQuiet (Join-Path $BuildDir "bin\Release\$rpcName.exe") "Leaf") { return }
+    }
+    $target = Get-LlamaRpcServerTarget -SourceDir $SourceDir
+    if (-not $target) { return }
+    $cache = Join-Path $BuildDir "CMakeCache.txt"
+    if (-not (Test-PathQuiet $cache "Leaf")) {
+        substep "the reused build has no $target and no configured build directory to add it to; re-run with UNSLOTH_LLAMA_FORCE_COMPILE=1 for RPC support" "Yellow"
+        return
+    }
+    if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+        substep "the reused build has no $target and cmake is not available to add it; RPC serving will be unavailable" "Yellow"
+        return
+    }
+    substep "the reused build has no $target; building it in place..."
+    $rpcOn = Select-String -LiteralPath $cache -Pattern '^GGML_RPC:BOOL=ON' -Quiet -ErrorAction SilentlyContinue
+    if (-not $rpcOn) {
+        $null = cmake -S $SourceDir -B $BuildDir -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF 2>&1 | Out-String
+    }
+    $output = cmake --build $BuildDir --config Release --target $target -j (Get-LlamaBuildJobs) 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) {
+        step "rpc-server" "built ($target)"
+    } else {
+        substep "could not add $target to the reused build; RPC serving will be unavailable" "Yellow"
+    }
+}
+
 # "cu126" when it covers every GPU, "uncovered" for an incompatible mix, else empty.
 # Ignores CUDA_VISIBLE_DEVICES: the wheel must support the host. Mirrors install.sh.
 function Get-NvidiaCu126Verdict {
@@ -9871,6 +9916,8 @@ if ($LocalLlamaCppLinked) {
     # Skip rebuild only for pinned tags; "master" moves, so always rebuild.
     Write-StudioLine ""
     step "llama.cpp" "already built"
+    # Step G never runs on this branch, so an install from before it has no RPC server.
+    Backfill-LlamaRpcServer -SourceDir $LlamaCppDir -BuildDir $BuildDir
 } elseif ($script:LlamaBuildToolsDeclined) {
     Write-StudioLine ""
     step "llama.cpp" "build skipped (build tools not installed)" "Yellow"
@@ -10221,6 +10268,11 @@ if ($LocalLlamaCppLinked) {
         $CmakeArgs += '-DLLAMA_BUILD_EXAMPLES=OFF'
         $CmakeArgs += '-DLLAMA_BUILD_SERVER=ON'
         $CmakeArgs += '-DGGML_NATIVE=ON'
+        # Configures the RPC server target Step G builds best-effort. RDMA off as on every platform:
+        # it is what every shipped prebuilt is built with, and it avoids the hard runtime dependency
+        # on a verbs library that ggml-rpc otherwise picks up whenever one is on the build host.
+        $CmakeArgs += '-DGGML_RPC=ON'
+        $CmakeArgs += '-DGGML_RPC_RDMA=OFF'
         if ($LlamaBuildNumber) {
             $CmakeArgs += "-DLLAMA_BUILD_NUMBER=$LlamaBuildNumber"
         }
@@ -10333,6 +10385,23 @@ if ($LocalLlamaCppLinked) {
         $null = cmake --build $BuildDir --config Release --target llama-bench -j $NumCpu 2>&1 | Out-String
     }
 
+    # -- Step G: Build the RPC server (optional, best-effort) --
+    # The VS generator writes it to build\bin\Release, where rpc_server_binary() looks, so there
+    # is no copy step and no root-level link. A tree without the tool, or a failed link, keeps
+    # the llama-server build as is.
+    if ($BuildOk) {
+        $RpcServerTarget = Get-LlamaRpcServerTarget -SourceDir $LlamaCppDir
+        if ($RpcServerTarget) {
+            Write-StudioLine ""
+            Write-StudioLine "--- cmake build ($RpcServerTarget) ---" -ForegroundColor Cyan
+            $output = cmake --build $BuildDir --config Release --target $RpcServerTarget -j $NumCpu 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+                substep "$RpcServerTarget build failed (two-node RPC serving unavailable)" "Yellow"
+                Write-LlamaFailureLog -Output $output
+            }
+        }
+    }
+
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install" -IsCustom $RuntimeRootIsCustom
@@ -10379,6 +10448,11 @@ if ($LocalLlamaCppLinked) {
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
         if (Test-PathQuiet $QuantizeBin "Leaf") {
             step "llama-quantize" "built"
+        }
+        foreach ($rpcName in @('ggml-rpc-server', 'rpc-server')) {
+            if (Test-PathQuiet (Join-Path $BuildDir "bin\Release\$rpcName.exe") "Leaf") {
+                step "rpc-server" "built ($rpcName)"
+            }
         }
         step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
     } else {

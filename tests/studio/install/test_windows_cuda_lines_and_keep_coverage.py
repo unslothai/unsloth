@@ -281,3 +281,27 @@ class TestTheKeepPathsRequireSmCoverage:
         with pytest.raises(SystemExit) as exit_info:
             m.install_prebuilt(root, "latest", BUNDLE.repo, "")
         assert exit_info.value.code == m.EXIT_FALLBACK
+
+
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_the_fast_path_backfills_a_missing_rpc_server(
+    monkeypatch, tmp_path, system, healthy_payload
+):
+    """An install from before ggml-rpc-server entered the copy allowlist has its client library and a
+    matching tag."""
+    monkeypatch.setitem(
+        globals(), "BUNDLE", dataclasses.replace(BUNDLE, release_tag = "b11541-mix-2500203")
+    )
+    h = host(system, ("89",))
+    # The kept-install host profile records detected CUDA runtime lines: a real scan reads the runner's own.
+    monkeypatch.setattr(m, "detected_linux_runtime_lines", lambda: ([], {}))
+    root = tmp_path / "llama"
+    seed_install(root, h, choice_for(h))
+    monkeypatch.setattr(m, "_download_host_latest_release_tag", lambda *a: BUNDLE.release_tag)
+    monkeypatch.setattr(m, "detect_host", lambda **k: h)
+    runtime_dir = m.install_runtime_dir(root, h)
+    assert fast_path(root) is True
+    (runtime_dir / ("ggml-rpc.dll" if h.is_windows else "libggml-rpc.so")).write_bytes(b"client")
+    assert fast_path(root) is False
+    (runtime_dir / ("ggml-rpc-server.exe" if h.is_windows else "ggml-rpc-server")).write_bytes(b"x")
+    assert fast_path(root) is True
