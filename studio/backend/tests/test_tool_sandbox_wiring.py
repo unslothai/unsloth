@@ -795,6 +795,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "config_no_user_key",
         "upgrade_isolated",
         "download_into_install",
+        "isolated_terminator",
+        "pip_home_env",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -847,6 +849,10 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         f"PIP_CONFIG_FILE=pip.ini {_PIP} {wheel} && {show}",
         # --upgrade is a flag of its own, not an abbreviation of --upgrade-strategy eating --isolated.
         "upgrade_isolated": f"python -m pip install -q --no-index --no-deps --upgrade --isolated {wheel} && {show}",
+        # pip --isolated -- install: the word after a leading -- is still the subcommand.
+        "isolated_terminator": f"python -m pip --isolated -- install -q --no-index --no-deps {wheel} && {show}",
+        # PIP_HOME is no pip option (no --home): it chooses nothing.
+        "pip_home_env": f"PIP_HOME=elsewhere {_PIP} {wheel} && {show}",
         # A download destination literally named install is no install subcommand to add --prefix to.
         "download_into_install": f"python -m pip download -q --isolated --dest install --no-index --no-deps {wheel}"
         ' && find "$PWD/install" -name "*.whl"',
@@ -911,6 +917,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "config_no_user_key": packages,
         "upgrade_isolated": packages,
         "download_into_install": str(workdir / "install"),
+        "isolated_terminator": packages,
+        "pip_home_env": packages,
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1533,6 +1541,29 @@ def test_host_session_packages_never_supply_a_stdlib_name(tmp_path):
     code = "import subprocess; print('ok')"
     out = subprocess.run([sys.executable, "-c", code], env = env, capture_output = True, text = True)
     assert out.stdout.strip() == "ok" and not marker.exists(), out.stderr
+
+
+def test_a_preset_prefix_tracks_python_m_pip_without_orig_argv(tmp_path):
+    """OS-isolated launches set PIP_PREFIX themselves: on 3.9 a -m pip still gets the exit-status tracking."""
+    code = (
+        "import runpy, sys; del sys.orig_argv; sys.argv[:] = ['-m', 'pip', '--version']; sys.path.insert(0, %r); "
+        "import sitecustomize as s\n"
+        "try:\n    runpy.run_module('pip', run_name = '__main__', alter_sys = True)\n"
+        "except SystemExit:\n    pass\n"
+        "print('tracked', bool(s._pip_tracked))"
+    ) % tools._SANDBOX_SITE_DIR
+    env = {
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("PIP_", "_UNSLOTH", "PYTHONPATH"))
+        },
+        "PIP_PREFIX": str(tmp_path / "prefix"),
+    }
+    out = subprocess.run(
+        [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
+    )
+    assert "tracked True" in out.stdout, out.stderr
 
 
 def test_a_module_launch_without_orig_argv_is_not_taken_for_pip():

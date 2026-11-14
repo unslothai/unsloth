@@ -343,7 +343,6 @@ _PIP_LOCATION_FLAGS = (
     ("--target", 4),
     ("--prefix", 6),
     ("--root", 6),
-    ("--home", 6),
     ("--python", 8),
 )
 
@@ -352,7 +351,7 @@ _PIP_LOCATION_FLAGS = (
 _PIP_VALUE_OPTIONS = (
     "--abi --all-releases --build --build-constraint --build-option --cache-dir --cert --client-cert "
     "--config-settings --constraint --default-timeout --download --editable --exists-action "
-    "--extra-index-url --find-links --global-option --group --home --implementation --index-url "
+    "--extra-index-url --find-links --global-option --group --implementation --index-url "
     "--install-option --keyring-provider --local-log --log --log-file --no-binary --only-binary "
     "--only-final --platform --prefix --progress-bar --proxy --pypi-url --python --python-version "
     "--refresh-package --report --requirement --requirements-from-script --resume-retries --retries "
@@ -368,12 +367,18 @@ _PIP_PREFIX_FLAGS = ("--pre", "--upgrade")
 
 def _pip_words():
     # (argv index, word, is option) over pip's command line; operands of value options (-C --prefix=x) skipped.
-    args, i = sys.argv, 1
+    args, i, command = sys.argv, 1, False
     while i < len(args):
         arg, at = args[i], i
         i += 1
         if arg == "--":
-            return
+            if command or i >= len(args):
+                return
+            # pip --isolated -- install x: the word after a leading -- is still the subcommand.
+            command = True
+            yield i, args[i], False
+            i += 1
+            continue
         if arg.startswith("--"):
             yield at, arg, True
             name = arg.split("=", 1)[0]
@@ -390,6 +395,7 @@ def _pip_words():
                     i += j == len(arg) - 1  # -C VALUE; -CVALUE carries it
                     break
         else:
+            command = True
             yield at, arg, False
 
 
@@ -545,7 +551,7 @@ def _config_chooses_location(isolated = False, use_user = True):
                 return found
         return ""
 
-    if any(value(k).strip() for k in ("target", "prefix", "root", "home")):
+    if any(value(k).strip() for k in ("target", "prefix", "root")):
         return True
     items = []
     for section in ("global", "install"):
@@ -583,10 +589,22 @@ class _LatePipFinder:
     ):
         if name == "pip.__main__":
             sys.meta_path[:] = [f for f in sys.meta_path if f is not self]
-            _route_pip(True)
             if os.environ.get("PIP_PREFIX"):
-                _start_cleanup(True)
+                _track_pip()  # a prefix set before start (OS-isolated launches): cleanup already began
+            else:
+                _route_pip(True)
+                if os.environ.get("PIP_PREFIX"):
+                    _start_cleanup(True)
         return None
+
+
+def _late_pip_launch():
+    # Python < 3.10 has no orig_argv: a -m launch is told apart only when runpy asks for pip.__main__.
+    if hasattr(sys, "orig_argv") or sys.argv[:1] != ["-m"]:
+        return False
+    if not any(isinstance(f, _LatePipFinder) for f in sys.meta_path):
+        sys.meta_path.insert(0, _LatePipFinder())
+    return True
 
 
 def _route_pip(is_pip = None):
@@ -610,8 +628,8 @@ def _route_pip(is_pip = None):
             # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
             if is_pip is None:
                 is_pip = _is_pip_launch()
-                if not is_pip and not hasattr(sys, "orig_argv") and sys.argv[:1] == ["-m"]:
-                    sys.meta_path.insert(0, _LatePipFinder())
+                if not is_pip:
+                    _late_pip_launch()
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             cli_user = _cli_user()
             options = _pip_options()
@@ -619,9 +637,7 @@ def _route_pip(is_pip = None):
             isolated = "--isolated" in options
             if not isolated:
                 # --isolated makes pip ignore these, so then they choose nothing.
-                placed = placed or any(
-                    os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT", "PIP_HOME")
-                )
+                placed = placed or any(os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT"))
                 placed = placed or (cli_user is None and _user_site())
                 placed = placed or os.environ.get("PIP_PREFIX", prefix) not in ("", prefix)
             placed = placed or (is_pip and _config_chooses_location(isolated, cli_user is None))
@@ -630,6 +646,10 @@ def _route_pip(is_pip = None):
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
                 command = next((at for at, arg, option in _pip_words() if not option), None)
                 if isolated and command and sys.argv[command] == "install":
+                    if sys.argv[command - 1] == "--":
+                        # Else pip hands install the -- too and takes what follows for requirements.
+                        del sys.argv[command - 1]
+                        command -= 1
                     # --isolated ignores PIP_* variables: pass the same options on the command line.
                     sys.argv[command + 1 : command + 1] = ["--prefix", prefix, "--ignore-installed"]
             elif os.environ.get("PIP_PREFIX") == prefix:
@@ -1326,10 +1346,22 @@ def _start_cleanup(is_pip):
     _failed_installs()  # a killed pip's note is read before anything else changes the prefix
     _prune_stale_dist_info()
     if is_pip:
-        sys.meta_path.insert(0, _PipStatusFinder())
-        atexit.register(_after_pip, _record_snapshot())
+        _track_pip()
+    elif _late_pip_launch():
+        atexit.register(lambda: _pip_tracked or _prune_stale_dist_info())
     else:
         atexit.register(_prune_stale_dist_info)
+
+
+_pip_tracked = []
+
+
+def _track_pip():
+    import atexit
+
+    _pip_tracked.append(True)
+    sys.meta_path.insert(0, _PipStatusFinder())
+    atexit.register(_after_pip, _record_snapshot())
 
 
 if os.environ.get("PIP_PREFIX"):
