@@ -3291,6 +3291,7 @@ function persistParamEdit(
   changedParams: PersistedInferenceParams,
   paramsByModel: Record<string, PersistedInferenceParams> | null,
   modelId: string | undefined,
+  modelOnly = false,
 ): void {
   if (!hasKeys(changedParams)) {
     return;
@@ -3301,12 +3302,15 @@ function persistParamEdit(
     pickRememberedChanges(changedParams),
     modelId ? rememberedWindow(modelId) : null,
   );
-  saveSettingsPatch({
-    inferenceParams: changedParams,
-    ...(paramsByModel && modelId && hasKeys(rememberedChanges)
+  const byModel =
+    paramsByModel && modelId && hasKeys(rememberedChanges)
       ? { inferenceParamsByModel: { [modelId]: rememberedChanges } }
-      : {}),
-  });
+      : null;
+  if (modelOnly) {
+    if (byModel) saveSettingsPatch(byModel);
+    return;
+  }
+  saveSettingsPatch({ inferenceParams: changedParams, ...byModel });
 }
 
 function getHydratedCustomPresets(
@@ -4710,11 +4714,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             sharedParams,
             options?.persist !== false && !fromModelDefaults,
           );
+      // An edit over a link reaches the model's memory only: the installation defaults stay as
+      // they were before the link, or a reload hands the edit to every other model.
+      const overLink =
+        !replayed && !fromPreset && linkShownOn(state, nextParams.checkpoint);
       if (persistingGlobally) {
         persistParamEdit(
           sharedParams,
           checkpointChanged || fromPreset ? null : paramsByModel,
           nextParams.checkpoint,
+          overLink,
         );
         // The row is forgotten and an unmoved value sends nothing, so the defaults need the whole preset.
         if (fromPreset) {
@@ -4722,7 +4731,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         }
         // Level with what was just written, or a chat opened later this session falls back to the
         // sampling from before this model loaded.
-        noteThreadScopedDefaults(sharedParams);
+        if (!overLink) noteThreadScopedDefaults(sharedParams);
       } else if (fromModelDefaults && !state.settingsHydrated) {
         noteModelDefaultsBeforeHydration(
           nextParams.checkpoint,
@@ -4795,7 +4804,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         activePresetSource === "builtin-default" &&
         state.activePresetSource !== "builtin-default";
       activePresetSourceMutationVersion += 1;
-      saveSettingsPatch({ activePresetSource });
+      // Over a link the stored source stays the earlier pick's.
+      if (!linkShownOn(state, state.params.checkpoint)) {
+        saveSettingsPatch({ activePresetSource });
+      }
       return { activePresetSource };
     });
     if (returnedToBuiltInDefault) {
@@ -6374,6 +6386,23 @@ let pickBeforeLink: {
 let lastLinkCheckpoint = "";
 let linkValues: ReturnType<typeof getPresetOwnedParams> | null = null;
 let recommendationMergedFor: string | null = null;
+
+function linkShownOn(
+  state: Pick<ChatRuntimeStore, "activePreset" | "modelPresets" | "customPresets">,
+  modelId: string,
+): boolean {
+  return (
+    linkShown !== null &&
+    state.activePreset === linkShown &&
+    getLinkedPreset(modelId, state.modelPresets, state.customPresets)?.name === linkShown
+  );
+}
+
+/** Whether the preset on screen is there through the loaded model's link, not a pick. */
+export function linkedPresetShown(): boolean {
+  const state = useChatRuntimeStore.getState();
+  return linkShownOn(state, state.params.checkpoint);
+}
 
 function linkedParams(base: InferenceParams, preset: Preset): InferenceParams {
   const applied = applyPresetForProvider(base, preset, null);

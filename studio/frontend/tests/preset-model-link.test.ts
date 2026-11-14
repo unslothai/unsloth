@@ -17,7 +17,12 @@ register("./store-settings-resolver.mjs", import.meta.url);
 const { settingsHttp, deepMerge } = await import(
   "./helpers/store-stubs/settings-http.ts"
 );
-const { presetSourceForModel, suspendLinkedPresetSync, useChatRuntimeStore } = await import(
+const {
+  linkedPresetShown,
+  presetSourceForModel,
+  suspendLinkedPresetSync,
+  useChatRuntimeStore,
+} = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
 );
 const {
@@ -832,6 +837,52 @@ test("a temporary override neither moves the link nor survives the next switch",
   await switchTo(QWEN);
   assert.equal(live().activePreset, "Research");
   assert.equal(live().temperature, 0.2);
+});
+
+test("an edit over a link stays out of the stored pick and installation defaults", async () => {
+  await switchTo(QWEN);
+  // chat-settings-sheet's set(): the source, then the value.
+  const store = useChatRuntimeStore.getState();
+  store.setActivePresetSource("modified");
+  store.setParams({ ...store.params, temperature: 0.9 });
+  await settled();
+  assert.equal(live().temperature, 0.9);
+  const saved = stored() as {
+    activePreset?: string;
+    activePresetSource?: string;
+    inferenceParams?: { temperature?: number };
+    inferenceParamsByModel?: Record<string, { temperature?: number }>;
+  };
+  assert.equal(saved.activePreset, "Default");
+  assert.equal(saved.activePresetSource, "builtin-default", "a reload here finds the pick as it was");
+  assert.notEqual(saved.inferenceParams?.temperature, 0.9, "other models do not inherit the edit");
+  assert.equal(saved.inferenceParamsByModel?.[QWEN]?.temperature, 0.9, "the model keeps its edit");
+});
+
+test("deleting the linked preset while its link shows puts the earlier pick back", async () => {
+  await switchTo(LLAMA);
+  pickPreset(CREATIVE);
+  await switchTo(QWEN);
+  assert.equal(live().activePreset, "Research");
+  const store = useChatRuntimeStore.getState();
+  const saved = store.customPresets;
+  try {
+    // chat-settings-sheet's deletePreset.
+    const shownByLink = linkedPresetShown();
+    assert.equal(shownByLink, true);
+    store.setCustomPresets(saved.filter((kept) => kept.name !== RESEARCH.name));
+    store.setModelPreset(QWEN, null);
+    await Promise.resolve();
+    assert.equal(linkedPresetShown(), false);
+    assert.equal(live().activePreset, "Creative");
+    assert.equal(live().systemPrompt, "Be imaginative.");
+    await settled();
+    assert.equal((stored() as { activePreset?: string }).activePreset, "Creative");
+  } finally {
+    store.setCustomPresets(saved);
+    useChatRuntimeStore.getState().setModelPreset(QWEN, RESEARCH.name);
+    await settled();
+  }
 });
 
 test("a link to a preset that no longer exists is ignored", async () => {

@@ -124,6 +124,7 @@ import {
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
+  linkedPresetShown,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -995,11 +996,13 @@ export function ChatSettingsPanel({
     const fallbackPreset =
       BUILTIN_PRESETS.find((preset) => preset.name === "Default") ?? null;
     const next = customPresets.filter((preset) => preset.name !== name);
+    // Shown through a link, the unlink below puts the earlier pick back instead of Default.
+    const shownByLink = activePreset === name && linkedPresetShown();
     setCustomPresets(next);
     for (const [modelId, linkedName] of Object.entries(modelPresets)) {
       if (linkedName === name) setModelPreset(modelId, null);
     }
-    if (activePreset === name) {
+    if (activePreset === name && !shownByLink) {
       if (fallbackPreset) {
         setParams(
           applyPresetParamsWithinCurrentLimits(fallbackPreset),
