@@ -2462,6 +2462,9 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
 
 
 _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
+_SD_CPP_LIB_NAME = re.compile(
+    r"(lib)?stable-diffusion(\.dll|\.so(\.\d+)*|(\.\d+)*\.dylib)", re.IGNORECASE
+)
 
 
 def _file_carries_marker(path: str, marker: str) -> Optional[bool]:
@@ -2499,7 +2502,9 @@ def binary_carries_marker(
     *,
     unreadable: bool = True,
 ) -> bool:
-    """No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the caller passes unreadable=False."""
+    """The binary or the libstable-diffusion beside it (shared builds keep some markers only there) carries the
+    marker. No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the
+    caller passes unreadable=False."""
     if not marker:
         return True
     if not binary:
@@ -2507,13 +2512,10 @@ def binary_carries_marker(
     found = _file_carries_marker(binary, marker)
     if found is None:
         return unreadable
-    if found:
-        return True
-    path = Path(binary)
-    return any(
-        lib.is_file() and _file_carries_marker(str(lib), marker)
-        for lib in sorted(path.parent.glob("*stable-diffusion*"))
-        if lib != path
+    return found or any(
+        _file_carries_marker(str(lib), marker)
+        for lib in sorted(Path(binary).parent.glob("*stable-diffusion*"))
+        if _SD_CPP_LIB_NAME.fullmatch(lib.name)
     )
 
 

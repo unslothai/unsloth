@@ -171,8 +171,10 @@ def test_a_shared_library_build_advertises_edit(tmp_path, lib):
         mode = "server",
         server = types.SimpleNamespace(binary = str(binary), is_alive = lambda: True),
     )
+    marked = b"xx" + FAM.sd_cpp_edit_marker.encode() + b"yy"
+    (tmp_path / "stable-diffusion.pdb").write_bytes(marked)
     assert "edit" not in b.status()["workflows"]
-    (tmp_path / lib).write_bytes(b"xx" + FAM.sd_cpp_edit_marker.encode() + b"yy")
+    (tmp_path / lib).write_bytes(marked)
     assert "edit" in b.status()["workflows"]
 
 
