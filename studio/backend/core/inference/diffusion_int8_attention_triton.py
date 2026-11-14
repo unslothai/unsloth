@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""INT8 attention in Triton, for cards the CUDA kernel cannot reach (ROCm; only gfx1151 has a config).
+"""INT8 attention in Triton, for cards the CUDA kernel cannot reach: ROCm (only gfx1151 has a config) and NVIDIA
+cards where the CUDA kernel cannot be built or loaded (no NVRTC, a failed compile or module load), sm80 and newer.
 
 Same quantisation as ``diffusion_int8_attention`` (written from scratch, ideas from QuaRot arXiv 2404.00456,
 SageAttention arXiv 2410.02367 / 2411.10958, INT-FlashAttention arXiv 2409.16997):
@@ -17,6 +18,9 @@ Rounding is round-half-even through the fp32 1.5 * 2**23 constant, so nothing de
 ``float2int_rn`` (ROCm's libdevice has none).
 
 Inputs are the strided ``[B, S, H, D]`` views; the output is ``[B, S, H, D]`` in V's dtype.
+
+On NVIDIA sm_8x the attention kernel's 8-bit dots compile through ``diffusion_triton_prefetch`` (Triton >= 3.8 would
+otherwise spill them); ``PREFETCH_FIX`` keeps cubins compiled with and without that fix apart in Triton's cache.
 """
 
 from __future__ import annotations
@@ -373,6 +377,7 @@ if triton is not None:
         PV_MODE: tl.constexpr,
         EVEN_K: tl.constexpr,
         ACC_IN_DOT: tl.constexpr,
+        PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
     ):
         # PV_MODE 0: 16-bit P.V, V read from the strided input; 1: 16-bit P.V, V from a heads-major padded copy;
         # 2: INT8 P.V, P as 0..127 relative to each (row, key tile) maximum, V centred / gained, one scale per tile;
@@ -488,9 +493,29 @@ if triton is not None:
         )
 
 
+_PREFETCH_FIX_ON: Optional[bool] = None
+
+
+def prefetch_fix() -> bool:
+    """True once the sm_8x 8-bit prefetch fix is installed in this process (NVIDIA builds of torch only)."""
+    global _PREFETCH_FIX_ON
+    if _PREFETCH_FIX_ON is None:
+        on = False
+        try:
+            import torch
+            if getattr(torch.version, "hip", None) is None:
+                from .diffusion_triton_prefetch import fix_triton_sm8x_8bit_prefetch
+                on = bool(fix_triton_sm8x_8bit_prefetch())
+        except Exception:  # noqa: BLE001 -- the kernels compile as stock Triton would
+            on = False
+        _PREFETCH_FIX_ON = on
+    return _PREFETCH_FIX_ON
+
+
 def kernels() -> Any:
     if triton is None:
         raise RuntimeError("Triton is not installed")
+    prefetch_fix()
     return types.SimpleNamespace(
         stats = stats_kernel,
         quant_rows = quant_rows_kernel,
@@ -645,6 +670,7 @@ def attend(p: dict) -> Any:
         PV_MODE = mode,
         EVEN_K = Sk % bn == 0,
         ACC_IN_DOT = bool(cfg.get("acc_in_dot", False)),
+        PREFETCH_FIX = prefetch_fix(),
         **_launch_options(cfg),
     )
     return out
@@ -722,6 +748,7 @@ def half_attention(
         PV_MODE = 0,
         EVEN_K = Sk % bn == 0,
         ACC_IN_DOT = bool(config.get("acc_in_dot", False)),
+        PREFETCH_FIX = prefetch_fix(),
         **_launch_options(config),
     )
     return out
