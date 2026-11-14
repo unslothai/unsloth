@@ -434,6 +434,7 @@ def test_list_names_how_each_worker_is_reached(fakes, monkeypatch):
     relays_allowed = [False]
     remote = SimpleNamespace(
         enabled = lambda: True,
+        ensure_helper = lambda note = None: True,
         relay_allowed = lambda: relays_allowed[0],
         forward = lambda node_id, address, port: ports[node_id],
         path = lambda node_id: SimpleNamespace(direct = node_id == "node-bbbb2222"),

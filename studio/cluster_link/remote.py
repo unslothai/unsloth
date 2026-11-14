@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from .paths import private_dir, state_dir, write_private
 
 logger = logging.getLogger(__name__)
+_LOCK = threading.Lock()
 
 RELAYED = "reachable only through a relay, too slow to serve models"
 LOCAL = "local network"
@@ -37,6 +38,38 @@ def _tailnet() -> Any:
 
 def enabled() -> bool:
     return _tailnet() is not None
+
+
+_HELPER: Dict[str, Any] = {}
+_HELPER_LOCK = threading.Lock()
+
+
+def ensure_helper(note: Optional[Callable[[str], None]] = None) -> bool:
+    """Install the tailcat helper once per process if it is missing; False (LAN only) on any failure.
+
+    The only place that may download it: ``tailnet.available()`` and ``helper_path()`` never do."""
+    if (os.environ.get("UNSLOTH_CLUSTER_TAILNET") or "").strip() == "0":
+        return False
+    with _HELPER_LOCK:
+        if "ok" not in _HELPER:
+            ok, why = False, ""
+            try:
+                from . import tailnet
+
+                install = getattr(tailnet, "install", None)
+                if not tailnet.available() and install is not None:
+                    install()
+                ok = tailnet.available()
+                why = "" if ok else "it is not installed"
+            except Exception as exc:
+                why = str(exc).strip() or type(exc).__name__
+            _HELPER.update(ok = ok, why = why)
+        ok, why = _HELPER["ok"], _HELPER["why"]
+    if not ok and note is not None:
+        note(
+            f"Reaching machines on other networks is off here ({why}); using the local network only."
+        )
+    return ok
 
 
 def relay_allowed() -> bool:
@@ -120,7 +153,6 @@ def worker_address(agent_port: int) -> Optional[Tuple[str, str]]:
     return address, pub
 
 
-_LOCK = threading.Lock()
 _CLIENT: Any = None
 _FORWARDS: Dict[str, Tuple[str, Set[int]]] = {}  # node_id -> (address, remote ports)
 

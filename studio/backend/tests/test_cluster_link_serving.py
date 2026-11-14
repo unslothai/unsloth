@@ -739,9 +739,18 @@ def _off_the_lan(monkeypatch, relays, **kw):
     """node-a no longer answers on the LAN but has a tailcat address; node-b is unchanged."""
     fake = FakeRemote(**kw)
     monkeypatch.setattr(cs, "_remote", lambda: fake)
+    monkeypatch.setattr(cs, "_ensure_helper", lambda: True)
     FakeRegistry.peers[0].tc_addr = "tcNODEA0123456789"
     relays.only["node-a"] = (("127.0.0.1", 47001), REFUSED)
     return fake
+
+
+def test_a_helper_that_cannot_be_installed_leaves_the_master_on_the_lan(monkeypatch, relays):
+    fake = _off_the_lan(monkeypatch, relays)
+    monkeypatch.setattr(cs, "_ensure_helper", lambda: False)
+    nodes = {n.node_id: n for n in cs.load_nodes()}
+    assert fake.forwards == [] and "node-a" not in cs.LINK_VIA
+    assert nodes["node-b"].via == "" and cs.LINK_VIA.get("node-b") == "local network"
 
 
 def test_a_worker_off_the_lan_is_reached_through_its_tailcat_address(monkeypatch, relays):

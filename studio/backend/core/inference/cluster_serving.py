@@ -1237,6 +1237,14 @@ def _same_link_worker(endpoint: str, node: "Node") -> bool:
     return False
 
 
+def _ensure_helper() -> bool:
+    try:
+        from studio.cluster_link import remote
+        return remote.ensure_helper()
+    except Exception:
+        return False
+
+
 def _remote() -> Any:
     try:
         from studio.cluster_link import remote
@@ -1249,8 +1257,10 @@ def _verified_through_tailnet(
     relays: Any, peer: Any, default_port: int
 ) -> Tuple[Optional[Tuple[str, int, Dict[str, Any]]], Optional[str]]:
     """LAN failed: the worker's agent through a tailcat forward, or (None, why it cannot serve)."""
+    if not getattr(peer, "tc_addr", "") or not _ensure_helper():
+        return None, None
     remote = _remote()
-    if remote is None or not getattr(peer, "tc_addr", ""):
+    if remote is None:
         return None, None
     local = remote.forward(peer.node_id, peer.tc_addr, int(peer.agent_port or default_port))
     if local is None:

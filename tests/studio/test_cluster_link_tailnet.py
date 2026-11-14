@@ -283,3 +283,32 @@ def test_real_helpers_tunnel_refuse_strangers_and_revoke(tmp_path, monkeypatch):
         with pytest.raises(OSError):
             _roundtrip(local, b"again", timeout = 5)
     srv.close()
+
+
+def test_ensure_helper_installs_once_and_falls_back_to_the_lan(monkeypatch):
+    from studio.cluster_link import remote
+
+    state = {"installed": False, "calls": 0, "fail": False}
+
+    def install():
+        state["calls"] += 1
+        if state["fail"]:
+            raise tailnet.TailnetError("download refused")
+        state["installed"] = True
+
+    notes = []
+    monkeypatch.setattr(tailnet, "available", lambda: state["installed"])
+    monkeypatch.setattr(tailnet, "install", install, raising = False)
+    monkeypatch.setattr(remote, "_HELPER", {})
+    assert remote.ensure_helper(notes.append) and remote.ensure_helper(notes.append)
+    assert state["calls"] == 1 and notes == []
+
+    monkeypatch.setattr(remote, "_HELPER", {})
+    state.update(installed = False, fail = True)
+    assert not remote.ensure_helper(notes.append) and not remote.ensure_helper()
+    assert state["calls"] == 2 and len(notes) == 1 and "download refused" in notes[0]
+    assert "local network only" in notes[0]
+
+    monkeypatch.setattr(remote, "_HELPER", {})
+    monkeypatch.setenv("UNSLOTH_CLUSTER_TAILNET", "0")
+    assert not remote.ensure_helper(notes.append) and state["calls"] == 2 and len(notes) == 1

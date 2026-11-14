@@ -171,7 +171,11 @@ def worker(
             "ggml-rpc-server was not found. `unsloth worker` uses Unsloth Studio's llama.cpp: "
             "install Studio on this machine first."
         )
+    from studio.cluster_link import remote
     from studio.cluster_link.agent import Agent
+
+    if remote.key_path("server").is_file():
+        remote.ensure_helper(_say)
 
     def authorize(peer: Any) -> bool:
         try:
@@ -291,8 +295,10 @@ def pair(
     import asyncio
 
     identity = _link(crypto = True)
-    from studio.cluster_link import PAIR_PORT_DEFAULT
+    from studio.cluster_link import PAIR_PORT_DEFAULT, remote
     from studio.cluster_link.pairing import PairingError, PairingWindow
+
+    remote.ensure_helper(_say)
 
     seconds = parse_duration(ttl)
     try:
@@ -384,8 +390,12 @@ def _join_with_code(token: str, name: Optional[str], port: Optional[int]) -> Any
     import asyncio
 
     _link(crypto = True)
+    from studio.cluster_link import remote
     from studio.cluster_link.pairing import PairingError, PairingUnconfirmed, join as join_cluster
-    from studio.cluster_link.tokens import TokenError
+    from studio.cluster_link.tokens import PREFIX_V2, TokenError
+
+    if token.strip().startswith(PREFIX_V2):
+        remote.ensure_helper(_say)
 
     def show(words: List[str]) -> None:
         _say(f"Check that the master shows these words, then allow it there: {' '.join(words)}")
@@ -469,7 +479,7 @@ def _through_tailnet(peer: Any, ask: Any) -> Optional[Tuple[str, Any]]:
     """("direct" | "relayed", status) for a worker answering through its tailcat address, else None."""
     from studio.cluster_link import AGENT_PORT_DEFAULT, remote
 
-    if not getattr(peer, "tc_addr", "") or not remote.enabled():
+    if not getattr(peer, "tc_addr", "") or not remote.ensure_helper() or not remote.enabled():
         return None
     local = remote.forward(peer.node_id, peer.tc_addr, int(peer.agent_port or AGENT_PORT_DEFAULT))
     if local is None:
