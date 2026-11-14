@@ -17,16 +17,16 @@
     }
   },
   "fastflowlm": {
-    "version": "v1.0.12",
+    "version": "v1.0.13",
     "repo": "ROCm/FastFlowLM",
     "assets": {
       "linux-x64": {
-        "name": "fastflowlm_1.0.12_linux.tar.gz",
-        "sha256": "626fbee5e5206a215a8c2c4d3d961055cbf7289d257d36599e9fef38f2f555a8"
+        "name": "fastflowlm_1.0.13_linux.tar.gz",
+        "sha256": "7c2ee388f23503f323d6c21beca8401e7ef675ce700a92f2c786ca6581322a72"
       },
       "windows-x64": {
-        "name": "fastflowlm_1.0.12_windows_amd64.zip",
-        "sha256": "568706c537398d597f3f24b5094fc58e65126c56f118971f2910c26a86ae027c"
+        "name": "fastflowlm_1.0.13_windows_amd64.zip",
+        "sha256": "a88117407c0115168b5beb7b7710d0cb61dd3e0187a3289f23396dd1b5011133"
       }
     }
   }
