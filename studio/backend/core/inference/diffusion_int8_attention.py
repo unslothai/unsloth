@@ -587,16 +587,42 @@ def unsupported_reason(q: Any, k: Any, v: Any) -> Optional[str]:
     return None
 
 
-def _verified(q: Any, k: Any, v: Any) -> bool:
+def _verified(
+    q: Any,
+    k: Any,
+    v: Any,
+    impl: Optional[str] = None,
+) -> bool:
     """Whether the accuracy check passed for this call's card, head dim and operand dtypes on the implementation that
     serves it (the op runs the kernel only then: a check passed in one dtype, or by the other implementation, says
     nothing about this one)."""
     index = _device_index(q.device)
     head_dim = int(q.shape[-1])
-    impl = implementation(index, head_dim)
+    impl = impl or implementation(index, head_dim)
     return impl is not None and all(
         (index, head_dim, str(x.dtype), impl) in _VERIFIED for x in (q, k, v)
     )
+
+
+def _run(
+    q: Any,
+    k: Any,
+    v: Any,
+    impl: Optional[str],
+    config: Optional[dict] = None,
+    scale: Optional[float] = None,
+) -> Any:
+    """The kernels of ``impl`` on a call ``unsupported_reason`` accepted."""
+    import torch
+
+    index = q.device.index if q.device.index is not None else torch.cuda.current_device()
+    config = config or device_config(index, q.shape[-1], impl)
+    if impl == "triton":
+        from . import diffusion_int8_attention_triton as triton_kernel
+        with torch.no_grad(), torch.cuda.device(q.device):
+            return triton_kernel.int8_attention(q, k, v, config, scale = scale)
+    with torch.no_grad():
+        return attend(quantise(q, k, v, config, scale))
 
 
 def int8_attention(
@@ -614,14 +640,7 @@ def int8_attention(
     if reason is not None:
         raise ValueError(f"INT8 attention cannot take this call: {reason}")
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    impl = implementation(index, int(q.shape[-1]))
-    config = config or device_config(index, q.shape[-1], impl)
-    if impl == "triton":
-        from . import diffusion_int8_attention_triton as triton_kernel
-        with torch.no_grad(), torch.cuda.device(q.device):
-            return triton_kernel.int8_attention(q, k, v, config, scale = scale)
-    with torch.no_grad():
-        return attend(quantise(q, k, v, config, scale))
+    return _run(q, k, v, implementation(index, int(q.shape[-1])), config, scale)
 
 
 def native_attention(q: Any, k: Any, v: Any) -> Any:
@@ -638,11 +657,14 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
     """The kernel where it can run, native attention elsewhere and after any failure."""
     import torch
 
-    if unsupported_reason(q, k, v) is None and _verified(q, k, v):
+    impl = None
+    if unsupported_reason(q, k, v) is None:
+        impl = implementation(_device_index(q.device), int(q.shape[-1]))
+    if impl is not None and _verified(q, k, v, impl):
         try:
-            out = int8_attention(q, k, v)
+            out = _run(q, k, v, impl)
             STATS["int8"] += 1
-            if implementation(_device_index(q.device), int(q.shape[-1])) == "triton":
+            if impl == "triton":
                 STATS["triton"] += 1
             return out
         except torch.OutOfMemoryError:
