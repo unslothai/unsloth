@@ -51,6 +51,13 @@ const GPU_OFF_REASON: &str = "GPU rendering off (setting)";
 const GPU_ON_REASON: &str = "GPU rendering on (setting)";
 const GPU_ON_OLD_NVIDIA_REASON: &str =
     "GPU rendering on (setting), held off: NVIDIA drivers before 610 leak with compositing on X11";
+// #17722: an Arc Pro B70 that also ran llama-server generated 3-4x slower while the window drew
+// through the DMA-BUF renderer; the CPU path (the Off setting) gave the speed back.
+const INTEL_XE_REASON: &str =
+    "Intel xe GPU with no other GPU (the window would draw on the GPU that runs models)";
+const DRM_CLASS_DIR: &str = "/sys/class/drm";
+const INTEL_PCI_VENDOR: &str = "0x8086";
+const INTEL_XE_DRIVER: &str = "xe";
 const GPU_UNSAFE_REASON: &str = "GPU rendering crashed at launch on this host before";
 const NVIDIA_WAYLAND_GPU_REASON: &str = "NVIDIA driver loaded (Wayland session, WebKitGTK 2.54.2+)";
 const FORCE_DMABUF_REASON: &str = "DMA-BUF renderer requested by the environment (Wayland session)";
@@ -66,6 +73,8 @@ const NVIDIA_X11_BLANK_WITHOUT_COMPOSITING: (u32, u32, u32) = (2, 54, 0);
 pub struct GpuInputs {
     pub setting: GpuRendering,
     pub unsafe_flag: bool,
+    /// Every GPU is Intel and one runs on the xe driver (see `intel_xe_only_host`).
+    pub intel_xe_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,17 +339,19 @@ fn rendering_plan(
             return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, reason);
         }
         let shared_memory = gles_usable && supports_force_shared_memory(webkit_version);
+        // X11 keeps an SHM transport with compositing off; DISABLE_DMABUF can leave none.
+        let cpu_path = || {
+            if wayland_session || !shared_memory {
+                RenderingWorkaround::DisableDmabuf
+            } else if nvidia_driver_loaded {
+                nvidia_x11_compositing_off()
+            } else {
+                RenderingWorkaround::DisableCompositingOnX11
+            }
+        };
         match gpu.setting {
             GpuRendering::Off => {
-                // X11 keeps an SHM transport with compositing off; DISABLE_DMABUF can leave none.
-                let workaround = if wayland_session || !shared_memory {
-                    RenderingWorkaround::DisableDmabuf
-                } else if nvidia_driver_loaded {
-                    nvidia_x11_compositing_off()
-                } else {
-                    RenderingWorkaround::DisableCompositingOnX11
-                };
-                return RenderingPlan::Apply(workaround, GPU_OFF_REASON);
+                return RenderingPlan::Apply(cpu_path(), GPU_OFF_REASON);
             }
             GpuRendering::On if gpu.unsafe_flag && wayland_session => {
                 return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_UNSAFE_REASON);
@@ -382,6 +393,10 @@ fn rendering_plan(
                     force_dmabuf: false,
                     reason: NVIDIA_WAYLAND_GPU_REASON,
                 };
+            }
+            // The only GPU would draw the window and run the model at once. On keeps the GPU path.
+            GpuRendering::Auto if gpu.intel_xe_only && !nvidia_driver_loaded => {
+                return RenderingPlan::Apply(cpu_path(), INTEL_XE_REASON);
             }
             GpuRendering::Auto => {}
         }
@@ -520,6 +535,39 @@ fn driver_branch(text: &str) -> Option<u32> {
     })
 }
 
+/// Whether every GPU under `drm_dir` is Intel and at least one runs on the xe driver (Arc B-series
+/// and newer). Such a host has no other GPU to run a model on. Cards that name no PCI vendor
+/// (simpledrm, vkms) are skipped; an unreadable folder reads as false.
+fn intel_xe_only_host(drm_dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(drm_dir) else {
+        return false;
+    };
+    let mut xe = false;
+    for entry in entries.flatten() {
+        // `card0`, not its connectors (`card0-DP-1`) or `renderD128`.
+        let name = entry.file_name();
+        let is_card = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("card"))
+            .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()));
+        if !is_card {
+            continue;
+        }
+        let device = entry.path().join("device");
+        let Ok(vendor) = std::fs::read_to_string(device.join("vendor")) else {
+            continue;
+        };
+        if !vendor.trim().eq_ignore_ascii_case(INTEL_PCI_VENDOR) {
+            return false;
+        }
+        xe |= std::fs::read_link(device.join("driver"))
+            .ok()
+            .and_then(|driver| driver.file_name().map(|name| name == INTEL_XE_DRIVER))
+            .unwrap_or(false);
+    }
+    xe
+}
+
 fn gles_is_usable() -> bool {
     // Match libepoxy's runtime load, including unresolved dependencies.
     unsafe {
@@ -608,6 +656,7 @@ pub fn configure_renderer(
     let gpu = GpuInputs {
         setting,
         unsafe_flag: unsafe_flag(webkit_version, decision.wayland_session),
+        intel_xe_only: intel_xe_only_host(std::path::Path::new(DRM_CLASS_DIR)),
     };
     match rendering_plan(
         env,
@@ -1929,7 +1978,168 @@ mod tests {
         GpuInputs {
             setting,
             unsafe_flag,
+            intel_xe_only: false,
         }
+    }
+
+    fn intel_xe(setting: GpuRendering) -> GpuInputs {
+        GpuInputs {
+            setting,
+            unsafe_flag: false,
+            intel_xe_only: true,
+        }
+    }
+
+    /// A fake /sys/class/drm: one `(card, vendor, driver)` per entry, plus a connector folder.
+    fn drm_dir(cards: &[(&str, Option<&str>, &str)]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for (card, vendor, driver) in cards {
+            let device = root.path().join(card).join("device");
+            std::fs::create_dir_all(&device).unwrap();
+            if let Some(vendor) = vendor {
+                std::fs::write(device.join("vendor"), format!("{vendor}\n")).unwrap();
+            }
+            std::os::unix::fs::symlink(
+                format!("../../../bus/pci/drivers/{driver}"),
+                device.join("driver"),
+            )
+            .unwrap();
+            std::fs::create_dir_all(root.path().join(format!("{card}-DP-1"))).unwrap();
+        }
+        std::fs::create_dir_all(root.path().join("renderD128")).unwrap();
+        root
+    }
+
+    #[test]
+    fn only_an_all_intel_host_with_an_xe_card_counts_as_intel_xe_only() {
+        let host = |cards: &[(&str, Option<&str>, &str)]| intel_xe_only_host(drm_dir(cards).path());
+        assert!(host(&[("card0", Some("0x8086"), "xe")]));
+        assert!(host(&[
+            ("card1", Some("0x8086"), "xe"),
+            ("card0", Some("0x8086"), "i915")
+        ]));
+        // simpledrm names no PCI vendor.
+        assert!(host(&[
+            ("card0", None, "simple-framebuffer"),
+            ("card1", Some("0x8086"), "xe")
+        ]));
+        assert!(!host(&[("card0", Some("0x8086"), "i915")]));
+        assert!(!host(&[
+            ("card0", Some("0x8086"), "xe"),
+            ("card1", Some("0x10de"), "nvidia")
+        ]));
+        assert!(!host(&[
+            ("card0", Some("0x8086"), "xe"),
+            ("card1", Some("0x1002"), "amdgpu")
+        ]));
+        assert!(!host(&[("card0", Some("0x1002"), "amdgpu")]));
+        assert!(!host(&[]));
+        assert!(!intel_xe_only_host(std::path::Path::new(
+            "/nonexistent/drm"
+        )));
+    }
+
+    #[test]
+    fn auto_takes_the_off_path_on_an_intel_xe_only_host() {
+        for vars in [X11_HOST, WAYLAND_HOST, APPIMAGE_WAYLAND_HOST] {
+            for version in [WEBKIT_2_54, WEBKIT_BUNDLED, (2, 42, 0)] {
+                let RenderingPlan::Apply(off, _) =
+                    plan_with_setting(vars, version, true, false, gpu(GpuRendering::Off, false))
+                else {
+                    panic!("Off applies a workaround");
+                };
+                assert_eq!(
+                    plan_with_setting(vars, version, true, false, intel_xe(GpuRendering::Auto)),
+                    RenderingPlan::Apply(off, INTEL_XE_REASON),
+                    "{vars:?} {version:?}"
+                );
+            }
+        }
+        // The reporter's host: X11, WebKitGTK 2.52.
+        assert_eq!(
+            plan_with_setting(
+                X11_HOST,
+                (2, 52, 6),
+                true,
+                false,
+                intel_xe(GpuRendering::Auto)
+            ),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnX11,
+                INTEL_XE_REASON
+            )
+        );
+    }
+
+    #[test]
+    fn an_intel_xe_only_host_keeps_on_off_and_operator_variables() {
+        assert_eq!(
+            plan_with_setting(
+                X11_HOST,
+                WEBKIT_2_54,
+                true,
+                false,
+                intel_xe(GpuRendering::On)
+            ),
+            RenderingPlan::Gpu {
+                force_dmabuf: false,
+                reason: GPU_ON_REASON
+            }
+        );
+        assert_eq!(
+            plan_with_setting(
+                X11_HOST,
+                WEBKIT_2_54,
+                true,
+                false,
+                intel_xe(GpuRendering::Off)
+            ),
+            RenderingPlan::Apply(RenderingWorkaround::DisableCompositingOnX11, GPU_OFF_REASON)
+        );
+        for variable in [DISABLE_DMABUF, FORCE_SHARED_MEMORY, DISABLE_COMPOSITING] {
+            for value in ["0", "1"] {
+                let vars = [(X11_DISPLAY, ":0"), (variable, value)];
+                assert_eq!(
+                    plan_with_setting(
+                        &vars,
+                        WEBKIT_2_54,
+                        true,
+                        false,
+                        intel_xe(GpuRendering::Auto)
+                    ),
+                    RenderingPlan::PreserveEnvironment,
+                    "{variable}={value}"
+                );
+            }
+        }
+        let vars = [(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING_SETTING, "0")];
+        assert_eq!(
+            plan_with_setting(
+                &vars,
+                WEBKIT_2_54,
+                true,
+                false,
+                intel_xe(GpuRendering::Auto)
+            ),
+            RenderingPlan::PreserveEnvironment
+        );
+        // A loaded NVIDIA driver keeps its own plan.
+        assert_eq!(
+            plan_with_setting(
+                X11_HOST,
+                WEBKIT_2_54,
+                true,
+                true,
+                intel_xe(GpuRendering::Auto)
+            ),
+            plan_with_setting(
+                X11_HOST,
+                WEBKIT_2_54,
+                true,
+                true,
+                gpu(GpuRendering::Auto, false)
+            )
+        );
     }
 
     #[test]
