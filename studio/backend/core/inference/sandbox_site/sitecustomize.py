@@ -471,14 +471,20 @@ def _pip_options():
 def _cli_locations():
     # {target|prefix|root|python: value} as pip ends up with it: the last occurrence wins, an empty one included
     # (pip tests it for truthiness, so --target= after --target vendor chooses nothing).
-    found, argv = {}, sys.argv + [""]
+    found, argv, command = {}, sys.argv + [""], False
     for at, arg, option in _pip_words():
         if not option:
+            command = True
             continue
         name, eq, value = arg.partition("=")
         if name.startswith("--"):
             for full, n in _PIP_LOCATION_FLAGS:
-                if full.startswith(name) and len(name) >= n:
+                # --python is the main parser's: only before the subcommand does it re-run pip elsewhere.
+                if (
+                    full.startswith(name)
+                    and len(name) >= n
+                    and not (command and full == "--python")
+                ):
                     found[full[2:]] = value if eq else argv[at + 1]
             continue
         # -t DIR, -tDIR, or clustered after no-operand flags (-qt DIR, -Ut).
@@ -865,6 +871,22 @@ def _install_editable_finder(module, mapping, namespaces):
 
 # PYTHONPATH skips .pth files: take their path lines and setuptools' editable finders, never run their imports.
 # Paths go right after the session dirs, so a chat's editable fork wins over Studio's copy like its other installs.
+def _read_pth(path):
+    # As site.addpackage: UTF-8 first, else the locale's encoding (setuptools wrote it in that one before 3.13).
+    with open(path, "rb") as f:
+        data = f.read()
+    try:
+        return data.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        saved = sys.path[:]
+        sys.path[:] = _stdlib_paths()
+        try:
+            import locale
+        finally:
+            sys.path[:] = saved
+        return data.decode(locale.getpreferredencoding(False)).splitlines()
+
+
 def _read_pth_files(entries, on_sys_path = True):
     added, finders = [], []
     for entry in entries:
@@ -874,8 +896,7 @@ def _read_pth_files(entries, on_sys_path = True):
             continue
         for name in names:
             try:
-                with open(os.path.join(entry, name), encoding = "utf-8") as f:
-                    lines = f.read().splitlines()
+                lines = _read_pth(os.path.join(entry, name))
                 for line in lines:
                     line = line.strip()
                     if line.startswith(("import ", "import\t")):
@@ -1162,8 +1183,10 @@ def _killed_installs():
         return found
     for name in names:
         pid = name[len(_PENDING) :]
-        if not pid.isdigit() or int(pid) == os.getpid() or _alive(int(pid)):
+        if not pid.isdigit() or int(pid) == os.getpid():
             continue
+        # A live one is another pip mid-wheel: what it changed is unfinished for now, its note stays.
+        live = _alive(int(pid))
         path = os.path.join(prefix, name)
         try:
             with open(path, encoding = "utf-8") as f:
@@ -1171,11 +1194,12 @@ def _killed_installs():
             before = {(r[0], r[1]): r[2] for r in rows if len(r) == 3}
             now = {(os.path.abspath(e), n): str(v) for (e, n), v in _dist_stamps().items()}
             lines = [f"{e}\t{n}\t{v}\n" for (e, n), v in now.items() if before.get((e, n)) != v]
+            found.update(tuple(line.rstrip("\n").split("\t")) for line in lines)
+            if live:
+                continue
             if lines:
                 with open(os.path.join(prefix, _INCOMPLETE), "a", encoding = "utf-8") as f:
                     f.writelines(lines)
-            found.update(tuple(line.rstrip("\n").split("\t")) for line in lines)
-            # The killed run's pre-install file lists, so a later reinstall still retires the old-only files.
             os.remove(path)
         except (OSError, ValueError):
             pass

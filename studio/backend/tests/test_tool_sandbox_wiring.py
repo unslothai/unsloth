@@ -806,6 +806,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "cli_empties_env_target",
         "config_dashed_user",
         "user_config_python_isolated",
+        "python_main_parser",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -877,6 +878,9 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "user_config_python_isolated": "python -m venv venv && mkdir -p .config/pip && "
         "printf '[global]\\npython = %s\\n' \"$PWD/venv/bin/python\" > .config/pip/pip.conf && "
         f"python -m pip --isolated install -q --no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
+        # --python is the main parser's: an install-level --python= cannot undo the one before the subcommand.
+        "python_main_parser": 'python -m venv venv && python -m pip --python "$PWD/venv/bin/python" --isolated install'
+        f" -q --no-index --no-deps --python= {wheel} && env -u PYTHONPATH venv/bin/{show}",
         # The last --target wins, and an empty one chooses nothing; a CLI value overrides PIP_TARGET too.
         "last_target_empty": f"{_PIP} --target vendor --target= {wheel} && {show}",
         "cli_empties_env_target": f"PIP_TARGET=vendor {_PIP} --target= {wheel} && {show}",
@@ -962,6 +966,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "cli_empties_env_target": packages,
         "config_dashed_user": packages,
         "user_config_python_isolated": str(workdir / "venv"),
+        "python_main_parser": str(workdir / "venv"),
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -2023,6 +2028,39 @@ def test_a_run_killed_between_wheels_keeps_its_file_lists(tmp_path):
         [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
     )
     assert out.stdout.strip() == repr([gone]), out.stderr
+
+
+def test_a_live_pip_mid_wheel_is_not_pruned_around(tmp_path):
+    """Another interpreter starting while pip is mid-wheel leaves that pip's half-written version alone."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    old = _dist(site_dir, "unsloth_live", "1.0", 1, module = "old.py")
+    _dist(site_dir, "unsloth_live", "2.0", 2, module = "new.py")
+    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        note = prefix / f".unsloth-installing-{live.pid}"
+        note.write_text(f"{os.path.abspath(site_dir)}\t{old.name}\t{10**9}\n")
+        _prune(prefix, site_dir)
+        assert old.exists() and (site_dir / "old.py").exists() and note.exists()
+    finally:
+        live.kill()
+        live.wait()
+
+
+def test_path_line_files_fall_back_to_the_locale_encoding(tmp_path):
+    """As site.addpackage: a path-line file that is not UTF-8 is read in the locale's encoding."""
+    source = tmp_path / "caf\u00e9"
+    path = tmp_path / "x.pth"
+    path.write_bytes(str(source).encode("cp1252") + b"\n")
+    code = (
+        "import locale, sys; locale.getpreferredencoding = lambda do_setlocale = True: 'cp1252'; "
+        "sys.path.insert(0, %r); import sitecustomize as s; print(s._read_pth(%r) == [%r])"
+    ) % (tools._SANDBOX_SITE_DIR, str(path), str(source))
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH", "PYTHON"))}
+    out = subprocess.run(
+        [sys.executable, "-S", "-c", code], env = env, capture_output = True, text = True
+    )
+    assert out.stdout.strip() == "True", out.stderr
 
 
 def test_an_unfinished_install_retires_nothing(tmp_path):
