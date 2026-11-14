@@ -208,3 +208,11 @@ test("native spoken replies are held back only while the voice loop runs", () =>
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /voiceModeOn: getVoiceMode\(\) === "active",/);
 });
+
+test("turning voice off mid-reveal stops the transcript reaching the composer", () => {
+  // Part C: turnOff clears the held turn, which bumps heldEpoch; the reveal stops on that epoch.
+  const reveal = loop.slice(loop.indexOf("const stepChars = Math.max("));
+  assert.match(reveal.slice(0, 900), /if \(ended \|\| epoch !== heldEpoch\) break;[\s\S]*if \(epoch !== heldEpoch\) \{\s*(?:\/\/[^\n]*\s*)?voiceTrace\("stt\.drop"/);
+  const off = engine.slice(engine.indexOf("const turnOff = useCallback("));
+  assert.match(off.slice(0, off.indexOf("}, [stop")), /clearHeldTurn\(\);/);
+});
