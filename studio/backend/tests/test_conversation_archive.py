@@ -5243,3 +5243,42 @@ def test_a_repeat_that_came_back_into_the_prompt_keeps_one_copy(conn):
     assert found is not None
     texts = [source["text"] for source in found[1]]
     assert len(texts) == len(set(texts)), texts
+
+
+@pytest.mark.parametrize("vec", [True, False])
+def test_deleting_a_thread_scans_the_fts_table_once_not_once_per_turn(conn, monkeypatch, vec):
+    thread = f"many-turns-{vec}"
+    turns = []
+    for i in range(4):
+        turns += _turn(f"question {i} about ducks", f"answer {i}: SCANONCE-{i}")
+    _save_thread(thread, turns, append = True)
+    assert conversation_archive.archive_turns(thread, turns) >= 2
+    archived = len(store.list_documents(conn, store.conversation_archive_scope(thread)))
+
+    statements = []
+
+    def traced(open_conn):
+        def opener(*args, **kwargs):
+            c = open_conn(*args, **kwargs)
+            c.set_trace_callback(statements.append)
+            return c
+
+        return opener
+
+    if vec:
+        monkeypatch.setattr(rag_db, "get_connection", traced(rag_db.get_connection))
+    else:
+
+        def no_vec():
+            raise rag_db.RagExtensionUnavailable("vec0 will not load")
+
+        monkeypatch.setattr(rag_db, "get_connection", no_vec)
+        monkeypatch.setattr(
+            rag_db, "get_metadata_connection", traced(rag_db.get_metadata_connection)
+        )
+    removed = conversation_archive.delete_for_thread(thread)
+    monkeypatch.undo()
+
+    assert removed == archived
+    assert conversation_archive.has_archive(thread) is False
+    assert sum("DELETE FROM chunks_fts" in s for s in statements) == 1

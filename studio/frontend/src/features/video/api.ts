@@ -28,6 +28,11 @@ export interface VideoGenerationDefaults {
   guidance: number;
   num_frames: number;
   fps: number;
+  fps_range?: [number, number] | null;
+  fps_choices?: number[];
+  // Absent on older backends.
+  min_num_frames?: number | null;
+  max_num_frames?: number | null;
   // Valid frame counts are k * frame_step + frame_offset.
   frame_step: number;
   frame_offset: number;
@@ -92,6 +97,7 @@ export interface VideoStatus {
   supports_first_frame?: boolean;
   supports_last_frame?: boolean;
   supports_references?: boolean;
+  supports_video_continuation?: boolean;
   h3_task?: string | null;
   defaults?: VideoGenerationDefaults | null;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
@@ -208,7 +214,11 @@ export interface VideoGenerateRequest {
   // Video schedule shift, and the audio one (Diffusers engine only).
   flow_shift?: number;
   audio_flow_shift?: number;
+  continuation_video?: string;
+  continuation_keep?: VideoContinuationKeep;
 }
+
+export type VideoContinuationKeep = "last" | "first";
 
 export interface GalleryVideo {
   id: string;
@@ -433,4 +443,93 @@ export async function fetchGalleryVideoExport(
   );
   if (!res.ok) throw new Error(await readFastApiError(res));
   return res.blob();
+}
+
+export interface VideoRestyleProgress {
+  active: boolean;
+  pending?: boolean;
+  id?: string;
+  phase: string | null;
+  // Latent frames done out of total; Cosmos3 makes one per 4 output frames.
+  step?: number;
+  total?: number;
+  num_frames?: number;
+  eta_seconds?: number | null;
+  error?: string | null;
+  video?: GalleryVideo | null;
+  seed?: number | null;
+}
+
+export interface VideoRestyleStatus {
+  available: boolean;
+  reason: string | null;
+}
+
+export interface VideoRestylePreview {
+  frames: number;
+  seconds: number;
+  source_seconds: number | null;
+  width: number;
+  height: number;
+  frame_jpeg: string;
+  edges_jpeg: string;
+}
+
+export async function fetchVideoRestyleStatus(): Promise<VideoRestyleStatus> {
+  return parseJson(await authFetch("/api/inference/video/restyle/status"));
+}
+
+function restyleForm(video?: File | null, frames?: File[]): FormData {
+  const form = new FormData();
+  if (video) form.append("video", video);
+  for (const frame of frames ?? []) form.append("frames", frame, frame.name);
+  return form;
+}
+
+/** The frames a restyle would use and one of them with its edge control. Runs no model. */
+export async function previewVideoRestyle(input: {
+  video?: File | null;
+  frames?: File[];
+}): Promise<VideoRestylePreview> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/preview", {
+      method: "POST",
+      body: restyleForm(input.video, input.frames),
+    }),
+  );
+}
+
+export async function startVideoRestyle(input: {
+  prompt: string;
+  seed?: number | null;
+  video?: File | null;
+  frames?: File[];
+}): Promise<VideoRestyleProgress> {
+  const form = restyleForm(input.video, input.frames);
+  form.append("prompt", input.prompt);
+  if (input.seed != null) form.append("seed", String(input.seed));
+  return parseJson(
+    await authFetch("/api/inference/video/restyle", { method: "POST", body: form }),
+  );
+}
+
+export async function fetchVideoRestyleProgress(): Promise<VideoRestyleProgress> {
+  return parseJson(await authFetch("/api/inference/video/restyle/progress"));
+}
+
+export async function cancelVideoRestyle(): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/cancel", { method: "POST" }),
+  );
+}
+
+export async function fetchVideoRestyleClip(
+  id: string,
+  kind: "input" | "control" | "output",
+): Promise<Blob> {
+  const response = await authFetch(
+    `/api/inference/video/restyle/${encodeURIComponent(id)}/${kind}.mp4`,
+  );
+  if (!response.ok) throw new Error(await readFastApiError(response));
+  return response.blob();
 }

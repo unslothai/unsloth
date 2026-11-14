@@ -932,6 +932,7 @@ export const ru = {
       showLess: "Показать меньше",
       settings: "Настройки",
       api: "API",
+      apiMonitor: "Монитор API",
       lightMode: "Светлая тема",
       darkMode: "Тёмная тема",
       guidedTour: "Обзор интерфейса",
@@ -2213,6 +2214,18 @@ export const ru = {
         deviceGpu: "GPU",
         deviceLocked: "Задано через {name}.",
         deviceSaveError: "Не удалось изменить устройство для эмбеддингов",
+        offlineDocs: {
+          folderLabel: "Документация Unsloth офлайн",
+          folderDescription: "Сохраняет полную документацию Unsloth в папку, чтобы она была доступна без интернета.",
+          folderHint: "Unsloth скачивает unsloth.ai/docs/llms-full.txt в эту папку как \"Unsloth Docs LLMs Full Text [Documentation] (date).md\", заменяя предыдущую копию. Привяжите папку к базе знаний, чтобы искать по документации в чате без интернета. Папка сохраняется при обновлениях.",
+          choose: "Выбрать",
+          autoUpdateLabel: "Обновлять документацию с каждым релизом",
+          autoUpdateDescription: "Скачивает свежую копию при первом запуске новой версии Unsloth.",
+          downloadNow: "Скачать сейчас",
+          downloading: "Скачивание документации…",
+          notDownloaded: "Ещё не скачана",
+          lastUpdated: "Обновлено {date} для {release}",
+        },
       },
       storage: {
         sectionTitle: "Хранилище",
@@ -3056,11 +3069,11 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
-      showGenerationDetails: "Подробности о скорости и загрузке",
+      showGenerationDetails: "Подробности о скорости",
       showGenerationDetailsDescription:
-        "Добавляет к живым показателям скорость чтения запроса, число токенов и принятие черновиков, а также показывает, куда загружены слои модели.",
+        "Добавляет к живым показателям скорость чтения запроса, число токенов и принятие черновиков.",
       showGenerationDetailsKeywords:
-        "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "подробности скорость токены статистика verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Статистика скорости и контекста",
       generationStatsUpdatesDescription:
         "В реальном времени считает токены в секунду и использование контекста, пока ответ передаётся. По завершении обновляет их, когда каждый ответ закончен.",

@@ -83,8 +83,8 @@ test("the selector's tick asks the caller, and defaults to the old rule", () => 
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(
     page,
-    /loaded=\{chatModelLoaded\(\{/,
-    "the chat header must pass it",
+    /loaded: chatModelLoaded\(\{/,
+    "the composer picker must be given it",
   );
   assert.match(page, /residentCheckpoint,/);
 });

@@ -359,3 +359,63 @@ def test_storage_kill_switch_does_not_touch_the_turing_w8a8_build(nvidia, monkey
     assert tq.int8_storage_scheme(target, offload = True) is None
     layers = _quantised_layers(torch.float16, target)
     assert layers and all(m.act_int8 for m in layers)
+
+
+# AUTO on Turing: only the families with a measured ``turing_auto_int8`` reason take int8; every other answer is fp16.
+_TURING_AUTO_FAMILIES = ("flux.2-klein", "flux.3-klein", "flux.3-klein-base", "z-image")
+
+
+@pytest.mark.parametrize("family", _TURING_AUTO_FAMILIES)
+def test_turing_auto_int8_names_the_measured_families(nvidia, monkeypatch, family):
+    _cap(monkeypatch, (7, 5))
+    reason = tq.turing_auto_int8_reason(_target(torch.float16), family)
+    assert reason and "T4" in reason and "LPIPS" in reason
+    assert tq.turing_auto_int8_reason(_target(torch.float16), family.upper() + " ") == reason
+
+
+@pytest.mark.parametrize(
+    "family",
+    [
+        "moss-image",
+        "qwen-image-2.1",
+        "flux.1",
+        None,
+        "unknown",
+    ],
+)
+def test_turing_auto_int8_leaves_unmeasured_families_on_fp16(nvidia, monkeypatch, family):
+    _cap(monkeypatch, (7, 5))
+    assert tq.turing_auto_int8_reason(_target(torch.float16), family) is None
+
+
+@pytest.mark.parametrize(
+    "cap", [(6, 1), (7, 0), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None]
+)
+@pytest.mark.parametrize("family", _TURING_AUTO_FAMILIES)
+def test_turing_auto_int8_is_turing_fp16_only(nvidia, monkeypatch, cap, family):
+    _cap(monkeypatch, cap)
+    for dtype in (torch.float16, torch.float32, torch.bfloat16):
+        assert tq.turing_auto_int8_reason(_target(dtype), family) is None
+    _cap(monkeypatch, (7, 5))
+    assert tq.turing_auto_int8_reason(_target(torch.bfloat16), family) is None
+    assert tq.turing_auto_int8_reason(_target(torch.float16, device = "cpu"), family) is None
+
+
+@pytest.mark.parametrize("family", _TURING_AUTO_FAMILIES)
+def test_turing_auto_int8_honours_the_kill_switch_rocm_and_deny(nvidia, monkeypatch, family):
+    _cap(monkeypatch, (7, 5))
+    monkeypatch.setenv(KILL_SWITCH, "0")
+    assert tq.turing_auto_int8_reason(_target(torch.float16), family) is None
+    monkeypatch.delenv(KILL_SWITCH)
+    monkeypatch.setattr(tq, "torch_is_rocm", lambda: True)
+    assert tq.turing_auto_int8_reason(_target(torch.float16), family) is None
+    monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
+    monkeypatch.setattr(tq, "_family_denied", lambda fam, scheme, base = None: scheme == "int8")
+    assert tq.turing_auto_int8_reason(_target(torch.float16), family) is None
+
+
+def test_turing_auto_int8_does_not_widen_the_explicit_scheme(nvidia, monkeypatch):
+    _cap(monkeypatch, (7, 5))
+    for family in _TURING_AUTO_FAMILIES:
+        assert tq.fp16_card_int8_scheme(_target(torch.float16), "auto", family) is None
+        assert tq.fp16_card_int8_scheme(_target(torch.float16), None, family) is None

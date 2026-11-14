@@ -83,7 +83,7 @@ from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
-from utils.datasets.cells import csv_as_text_kwargs
+from utils.datasets.cells import cell_text, csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import (
     apply_completion_masking,
@@ -116,7 +116,12 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
-from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_size_from_env
+from .dataset_bounds import (
+    bound_dataset_rows,
+    slice_dataset_rows,
+    world_size_env_report,
+    world_size_from_env,
+)
 
 logger = get_logger(__name__)
 
@@ -2341,6 +2346,17 @@ class UnslothTrainer:
         )
         self._audio_vlm_image_col = image_col
 
+        total = len(dataset)
+        dataset = dataset.filter(
+            lambda text: bool(cell_text(text).strip()), input_columns = [text_col]
+        )
+        if not len(dataset):
+            raise ValueError(f"Every transcript in the '{text_col}' column is blank.")
+        if len(dataset) < total:
+            self._record_warning(
+                f"Skipped {total - len(dataset):,} of {total:,} audio rows with a blank transcript."
+            )
+
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 16000))
         if image_col:
             dataset = prepare_audio_vlm_image_column(dataset, image_col)
@@ -2353,7 +2369,7 @@ class UnslothTrainer:
                 formatted["messages"].append(
                     audio_transcription_messages(
                         samples[audio_col][idx]["array"],
-                        str(samples[text_col][idx]),
+                        cell_text(samples[text_col][idx]),
                         image_slot_count(row_images),
                     )
                 )
@@ -3624,11 +3640,9 @@ class UnslothTrainer:
                 dataset_slice_start is not None or dataset_slice_end is not None
             ):
                 total_rows = len(dataset)
-                start = dataset_slice_start if dataset_slice_start is not None else 0
-                end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
-                start = max(0, min(start, total_rows - 1))
-                end = max(start, min(end, total_rows - 1))
-                dataset = dataset.select(range(start, end + 1))
+                dataset, start, end = slice_dataset_rows(
+                    dataset, dataset_slice_start, dataset_slice_end
+                )
                 logger.info(
                     f"Sliced dataset to rows [{start}, {end}]: {len(dataset)} of {total_rows} rows\n"
                 )

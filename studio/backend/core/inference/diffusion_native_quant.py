@@ -493,6 +493,9 @@ def native_linear_class():
     from torch import nn
     from torch.nn import functional as F
 
+    from . import diffusion_native_w8a8_cuda as cuda_rotq
+    from . import diffusion_native_w8a8_rdna as rdna
+
     class NativeWeightOnlyLinear(nn.Module):
         """A Linear whose weight is stored as int8 / fp8 with a per-output-row scale."""
 
@@ -555,6 +558,16 @@ def native_linear_class():
                     )
             else:
                 weight = linear.weight.detach()
+                if (
+                    isinstance(cast, torch.dtype)
+                    and cast.is_floating_point
+                    and weight.is_floating_point()
+                    and weight.dtype != cast
+                ):
+                    # A manual-cast Linear stores bf16 for a float16 / float32 compute: round to the compute dtype
+                    # first, as a load widened on the host would have (bf16 -> float16 is not exact), so the
+                    # codes are the same either way.
+                    weight = weight.to(cast)
                 with torch.no_grad():
                     w = weight.float()
                     if self.rot_group:
@@ -594,6 +607,23 @@ def native_linear_class():
             # Registered here, in eager, so a compiled forward only reads the handle (see _row_major_op).
             self._row_major = _row_major_op() if self.act_int8 and not self.rot_group else None
             self._int8pack_scales: dict = {}
+            # ROCm RDNA: fused rotate+quant and int8 GEMM kernels, probed per card here, in eager, before any trace.
+            self._rdna = False
+            if self.act_int8:
+                self._rdna = (
+                    rdna.shape_supported(self.in_features, self.out_features, self.rot_group)
+                    and rdna.prepare()
+                )
+                # NVIDIA: the fused rotation + act quant compiled forwards take, probed once per card in eager. Only
+                # on a live CUDA context (diffusion_speed probes the denoiser's card again before the compile).
+                if (
+                    not self._rdna
+                    and cuda_rotq.shape_ok(self.in_features, self.rot_group)
+                    and torch.cuda.is_initialized()
+                ):
+                    cuda_rotq.prepare()
+            # this load's kill switches (probe results stay cached per card; routing is per Linear, refreshed by install)
+            self._cuda_rotq_load, self._cuda_gemm_load = cuda_rotq.load_switches()
 
         def _widen(self, codes: Any) -> Any:
             """Exact float32 values of a row slice of ``weight_q``, as the eager branches below."""
@@ -682,14 +712,86 @@ def native_linear_class():
             if not self.rot_group and (torch.compiler.is_compiling() or not xq.is_contiguous()):
                 op = getattr(self, "_row_major", None)
                 xq = op(xq) if op is not None else xq.contiguous()
-            acc = torch._int_mm(xq, self.weight_q.t())
+            return self._int_mm_from_q(xq, x_scale, x2.dtype)
+
+        def _int_mm_from_q(self, xq: Any, x_scale: Any, x_dtype: Any) -> Any:
+            """int8 GEMM + fp32 epilogue of ``_int_mm_rows`` from its codes and fp32 [rows, 1] scales."""
             w_scale = self.weight_scale.view(torch.float32)
+            if (
+                self.bias is None
+                and x_dtype == torch.float16
+                and xq.is_cuda
+                and not torch.compiler.is_compiling()
+            ):
+                from . import diffusion_int8_cutlass as _cut  # noqa: PLC0415
+                tile = _cut.native_tile(xq, self.weight_q, x_scale, w_scale)
+                if tile is not None:
+                    try:
+                        return _cut.native_gemm(xq, self.weight_q, x_scale, w_scale, tile)
+                    except Exception:  # noqa: BLE001 - the stock maths below
+                        _cut._NATIVE_PLAN.clear()
+            acc = torch._int_mm(xq, self.weight_q.t())
             out = torch.mul(acc, x_scale)
             if self.bias is not None:
                 out = torch.addcmul(self.bias.float(), out, w_scale)
             else:
                 out = out.mul_(w_scale)
             return out
+
+        def _cuda_rotq_on(self, x: Any) -> bool:
+            """NVIDIA, traced forward only: the fused rotation + act quant (``diffusion_native_w8a8_cuda``)."""
+            if not (
+                self.rot_group
+                and torch.compiler.is_compiling()
+                and x.is_cuda
+                and x.dtype == torch.bfloat16
+                and cuda_rotq.shape_ok(self.in_features, self.rot_group)
+            ):
+                return False
+            # The custom op has no backward: a graph that needs input gradients keeps the stock maths.
+            if x.requires_grad and torch.is_grad_enabled():
+                return False
+            if not getattr(self, "_cuda_rotq_load", True):
+                return False
+            return cuda_rotq.enabled_for(x.device.index) and self._int_mm_ok(
+                x.numel() // max(1, self.in_features)
+            )
+
+        def _forward_cuda_rotq(self, x: Any) -> Any:
+            x2 = x.reshape(-1, self.in_features)
+            xq, xs = cuda_rotq.rotq(x2, self.rot_group)
+            if (
+                getattr(self, "_cuda_gemm_load", True)
+                and cuda_rotq.gemm_enabled_for(x.device.index)
+            ) and cuda_rotq.gemm_shape_ok(self.in_features, self.out_features):
+                # dequant + bias inside the GEMM: bf16 out, no int32 [rows, N] round trip
+                out = cuda_rotq.gemm(
+                    xq, self.weight_q, xs, self.weight_scale.view(torch.float32), self.bias
+                )
+            else:
+                out = self._int_mm_from_q(xq, xs, x.dtype).to(x.dtype)
+            return out.reshape(*x.shape[:-1], self.out_features)
+
+        def _forward_rdna(self, x: Any) -> Any:
+            x2 = x.reshape(-1, self.in_features)
+            xq, xs = rdna.rotq(x2, self.rot_group)
+            out = rdna.w8a8_mm(
+                xq, xs, self.weight_q, self.weight_scale.view(torch.float32), self.bias, x.dtype
+            )
+            return out.reshape(*x.shape[:-1], self.out_features)
+
+        def _rdna_on(self, x: Any) -> bool:
+            if not (self._rdna and x.is_cuda and x.dtype in (torch.bfloat16, torch.float16)):
+                return False
+            # The custom ops have no backward: a graph that needs input gradients keeps the stock maths.
+            if x.requires_grad and torch.is_grad_enabled():
+                return False
+            index = x.device.index
+            if not torch.compiler.is_compiling() and index not in rdna._STATE["on"]:
+                rdna.prepare(x.device)
+            return rdna.enabled_for(index) and self._int_mm_ok(
+                x.numel() // max(1, self.in_features)
+            )
 
         def _forward_int_mm(self, x: Any) -> Any:
             x2 = x.reshape(-1, self.in_features)
@@ -827,10 +929,24 @@ def native_linear_class():
             return out.reshape(*x.shape[:-1], self.out_features)
 
         def forward(self, x: Any) -> Any:
+            if (
+                self.act_int8
+                and self.bias is None
+                and x.is_cuda
+                and x.dtype == torch.float16
+                and not torch.compiler.is_compiling()
+            ):
+                # race once per card and shape, before any graph capture
+                from . import diffusion_int8_cutlass as _cut  # noqa: PLC0415
+                _cut.native_prepare(self.weight_q, x.dtype, False)
             if self._int8pack_ok(x):
                 out = self._forward_int8pack(x)
                 if out is not None:
                     return out
+            if self.act_int8 and self._rdna_on(x):
+                return self._forward_rdna(x)
+            if self.act_int8 and self._cuda_rotq_on(x):
+                return self._forward_cuda_rotq(x)
             if self.act_int8 and x.is_cuda and not torch.compiler.is_compiling():
                 out = self._forward_fused(x)
                 if out is not None:

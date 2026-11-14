@@ -933,6 +933,7 @@ export const de = {
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
       api: "API",
+      apiMonitor: "API-Monitor",
       lightMode: "Heller Modus",
       darkMode: "Dunkler Modus",
       guidedTour: "Geführte Tour",
@@ -2231,6 +2232,18 @@ export const de = {
         deviceGpu: "GPU",
         deviceLocked: "Festgelegt durch {name}.",
         deviceSaveError: "Das Embedding-Gerät konnte nicht geändert werden",
+        offlineDocs: {
+          folderLabel: "Unsloth-Dokumentation offline",
+          folderDescription: "Speichert die vollständige Unsloth-Dokumentation in einem Ordner, damit sie ohne Internet verfügbar ist.",
+          folderHint: "Unsloth lädt unsloth.ai/docs/llms-full.txt als \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" in diesen Ordner und ersetzt die vorherige Kopie. Verknüpfe den Ordner mit einer Wissensdatenbank, um die Dokumentation offline im Chat zu durchsuchen. Der Ordner bleibt bei Updates erhalten.",
+          choose: "Auswählen",
+          autoUpdateLabel: "Dokumentation bei jedem Release aktualisieren",
+          autoUpdateDescription: "Lädt eine neue Kopie, sobald eine neue Unsloth-Version zum ersten Mal startet.",
+          downloadNow: "Jetzt herunterladen",
+          downloading: "Dokumentation wird heruntergeladen…",
+          notDownloaded: "Noch nicht heruntergeladen",
+          lastUpdated: "Aktualisiert am {date} für {release}",
+        },
       },
       storage: {
         sectionTitle: "Speicher",
@@ -3084,11 +3097,11 @@ export const de = {
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
-      showGenerationDetails: "Detaillierte Geschwindigkeits- und Ladeinfos",
+      showGenerationDetails: "Detaillierte Geschwindigkeitsinfos",
       showGenerationDetailsDescription:
-        "Ergänzt die Live-Anzeigen um Prompt-Lesegeschwindigkeit, Tokenzahlen und Entwurfsannahme und zeigt, wo die Schichten eines Modells geladen wurden.",
+        "Ergänzt die Live-Anzeigen um Prompt-Lesegeschwindigkeit, Tokenzahlen und Entwurfsannahme.",
       showGenerationDetailsKeywords:
-        "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "Details Geschwindigkeit Token Statistik verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Geschwindigkeits- und Kontextstatistik",
       generationStatsUpdatesDescription:
         "Echtzeit zählt Token pro Sekunde und Kontextnutzung, während eine Antwort gestreamt wird. Nach Abschluss aktualisiert sie, sobald jede Antwort fertig ist.",

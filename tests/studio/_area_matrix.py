@@ -38,6 +38,7 @@ import http.server
 import json
 import os
 import re
+import statistics
 import threading
 import time
 from pathlib import Path
@@ -60,6 +61,27 @@ GLASS = "liquid-3d"
 LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_LENGTH_RATIO", "2.0"))
 # Counts below this many elements / layout objects at LONG turns never fail the length check.
 COUNT_FLOOR = int(os.environ.get("LONG_THREAD_AREAS_COUNT_FLOOR", "3000"))
+# Paint and main-thread CPU, long over short chat (the cheapest long reading over the median short one,
+# each from the first reading and its rechecks):
+# fails over TIME_LENGTH_RATIO AND over TIME_LENGTH_FLOOR_MS more (TIME_LENGTH_CPU_FLOOR_MS for CPU). A short reading below
+# TIME_BASE_FLOOR_MS counts as that, so a near-free area cannot make a large ratio.
+TIME_LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_RATIO", "2.5"))
+# Blocking. A first reading at LONG turns carries 100-250 ms of work spilled over from the areas run
+# before it (chat_row_menu 404-518 ms first, 178-268 on a fresh page), so a cell over the limit is
+# measured again on fresh pages at both lengths and judged on those. Main, 3 local gate runs: worst
+# 2.1x after rechecks, 2.4x on a first reading that stayed under the limit; a menu-open script walk
+# over every message (+~1 s at 200 turns) reads 2.8-3.0x after rechecks. Set
+# LONG_THREAD_AREAS_LENGTH_TIME_BLOCKING=0 to report only.
+LENGTH_TIME_BLOCKING = os.environ.get("LONG_THREAD_AREAS_LENGTH_TIME_BLOCKING", "1") == "1"
+TIME_LENGTH_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_FLOOR_MS", "50"))
+# Main-thread CPU also has to grow by this much. On 2-core GitHub runners (10 gate runs, rechecked) message-level
+# actions and a few sidebar surfaces read 2.3-2.9x, up to +175 ms (sidebar_toggle 119 -> 294, tools_menu
+# 99 -> 269), so a ratio alone has no margin there; a feature adding real per-interaction work over the
+# thread (the synthetic menu-open walk: about +1 s) is far above this.
+TIME_LENGTH_CPU_FLOOR_MS = float(
+    os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_CPU_FLOOR_MS", "250")
+)
+TIME_BASE_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_BASE_FLOOR_MS", "20"))
 MAX_RATIO = float(os.environ.get("LONG_THREAD_AREAS_MAX_RATIO", "4.0"))
 # Also judged on CPU growth with chat length: a streamed reply restyles only its own message, so its
 # element / layout counts stay flat while per-token work over the thread grows.
@@ -87,6 +109,10 @@ KNOWN_DEFAULT = ",".join(
     + [f"{m}:thread_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:settings_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:type=6" for m in _GLASS_MODES]
+    # Opening Settings restyles elements across the thread, on main too (fresh pages, default
+    # appearance: 1,975 -> 9,721 elements at 40 -> 200 turns, 4.9x). Reduce motion's blanket
+    # transitions used to add ~3,800 elements to the gate's 40 turn reading, which hid the growth.
+    + ["length:settings=5"]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 
@@ -251,6 +277,15 @@ STREAMED = """(end) => {
 }"""
 
 # Answers /v1/chat/completions from the page with STREAM's frames, one per STREAM_MS.
+# The thread mounts only the rows near the reader, so "loaded" is the length its rows publish
+# (aria-setsize); a thread short enough to mount whole publishes none and is counted instead.
+THREAD_LOADED = """(n) => {
+  const rows = document.querySelectorAll('[data-role]');
+  if (rows.length >= n) return true;
+  const last = rows[rows.length - 1];
+  return !!last && Number(last.getAttribute('aria-setsize')) >= n;
+}"""
+
 STREAM_SHIM = """(([frames, ms]) => {
   const realFetch = window.fetch.bind(window);
   window.__gateStreams = 0;
@@ -342,11 +377,12 @@ AREAS: dict[str, dict] = {
         "covers": ["Search"],
     },
     "model_picker": {
-        "open": ("click", "button.unsloth-model-selector-trigger"),
+        # The composer's model chip; its label reads "Model: <name>" (or "Model: Select model").
+        "open": ("click", 'button[data-tour="chat-model-selector"]'),
         "ready": ("overlay",),
         "close": ("key", "Escape"),
         "gone": ("overlay_gone",),
-        "covers": ["popover-trigger:Select model", f"popover-trigger:{STUB_MODEL.split('/')[-1]}"],
+        "covers": ["popover-trigger:Model: "],
     },
     "composer_menu": {
         "open": ("key", "Mod+Shift+Period"),
@@ -709,7 +745,17 @@ class Api:
             "/api/hub/local": {"models": []},
             "/api/hub/hidden-models": {"hidden": []},
             "/api/settings/pinned-models": {"pinned": []},
-            "/api/health": {"status": "ok"},
+            # A settled hardware verdict, as the real backend gives once detection ends. Without
+            # `version` / `chat_only` the app keeps capabilities "unknown" and the sidebar Train row
+            # spins for the whole run: an always-running animation, and Chromium then recomputes every
+            # IntersectionObserver target on each frame, so every action's cost grew with the chat.
+            "/api/health": {
+                "status": "healthy",
+                "version": "2026.11.1",
+                "device_type": "linux",
+                "chat_only": False,
+                "hardware_detecting": False,
+            },
             "/api/inference/status": {
                 "active_model": STUB_MODEL,
                 "model_identifier": STUB_MODEL,
@@ -762,8 +808,14 @@ PROBE = (
     """() => {
   const OVER = '%s';
   const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 1 && r.height > 1; };
-  window.__gateOverlays = () => [...document.querySelectorAll(OVER)].filter(vis).length;
-  window.__gateVisible = (sel) => [...document.querySelectorAll(sel)].some(vis);
+  // Polled every frame inside the measured window, so never a document-wide query: that would cost the
+  // gate's own CPU in proportion to the chat. Message bodies (nearly all of a long chat) are skipped; no
+  // overlay or waited-for control renders inside one (portals sit under <body>).
+  const skip = { acceptNode: (e) => (e.hasAttribute('data-role') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT) };
+  const outside = (sel) => { const out = []; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, skip);
+    for (let e = w.nextNode(); e; e = w.nextNode()) if (e.matches(sel)) out.push(e); return out; };
+  window.__gateOverlays = () => outside(OVER).filter(vis).length;
+  window.__gateVisible = (sel) => outside(sel).some(vis);
   window.__gateFrames = (n) => new Promise((r) => { let k = 0; const f = () => (++k >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
   window.__gateFocusins = [];
   document.addEventListener('focusin', (e) => window.__gateFocusins.push(e.target), true);
@@ -831,7 +883,9 @@ TABS = """async (timeoutMs) => {
   return {count: tabs.length, missing, failed};
 }"""
 FIND = """(spec) => {
-  document.querySelectorAll('[data-gate-target]').forEach((e) => e.removeAttribute('data-gate-target'));
+  // The target is kept by reference: a document-wide lookup would cost in proportion to the chat.
+  if (window.__gateTarget) window.__gateTarget.removeAttribute('data-gate-target');
+  window.__gateTarget = null;
   const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   let el = null;
   if (spec.startsWith('js|')) el = (0, eval)(spec.slice(3));
@@ -843,13 +897,13 @@ FIND = """(spec) => {
   if (!el) return false;
   // Instant: the thread viewport is scroll-smooth, so a plain scrollIntoView animates and returns while the
   // target is still moving; a trusted pointer action then lands wherever the target has got to.
-  el.setAttribute('data-gate-target', ''); el.scrollIntoView({block: 'nearest', behavior: 'instant'});
+  el.setAttribute('data-gate-target', ''); window.__gateTarget = el; el.scrollIntoView({block: 'nearest', behavior: 'instant'});
   return true;
 }"""
 # The target must hold still and be hit at its centre: the floating composer can cover a row scrolled in from
 # below. Only an occluded target is re-centred, so a clear one adds no scroll to the measured window.
 STEADY = """async () => {
-  const el = document.querySelector('[data-gate-target]');
+  const el = window.__gateTarget;
   if (!el) return false;
   const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
   const still = async () => {
@@ -867,7 +921,7 @@ STEADY = """async () => {
   return hit();
 }"""
 CLICK = """(right) => {
-  const el = document.querySelector('[data-gate-target]'); const r = el.getBoundingClientRect();
+  const el = window.__gateTarget; const r = el.getBoundingClientRect();
   const at = {bubbles: true, cancelable: true, composed: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2,
               button: right ? 2 : 0, buttons: right ? 2 : 1, pointerType: 'mouse', isPrimary: true, view: window};
   el.dispatchEvent(new PointerEvent('pointerdown', at)); el.dispatchEvent(new MouseEvent('mousedown', at));
@@ -1012,7 +1066,7 @@ class Page:
                 f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000
             )
             page.wait_for_function(
-                "(n) => document.querySelectorAll('[data-role]').length >= n",
+                THREAD_LOADED,
                 arg = 2 * turns,
                 timeout = 120_000,
             )
@@ -1066,6 +1120,11 @@ class Page:
     def close(self) -> None:
         self.ctx.close()
 
+    def target(self):
+        # A handle, not a locator: Playwright's selector engine walks the whole document (for shadow
+        # roots) on every resolve, inside the measured window, at a cost that grows with the chat.
+        return self.page.evaluate_handle("() => window.__gateTarget").as_element()
+
     def chord(self, arg) -> str:
         if isinstance(arg, dict):
             return arg["mac" if self.mac else "other"]
@@ -1114,12 +1173,12 @@ class Page:
             self.last_error = "target never held still and clear of overlays under its centre"
             return False
         if kind == "hover":
-            page.locator("[data-gate-target]").first.hover(timeout = 3_000, force = True)
+            self.target().hover(timeout = 3_000, force = True)
             self.hovered = True
             return True
         if kind == "pclick":
             # A trusted click (mouse move, press, native focus), for areas whose cost is the focus change.
-            page.locator("[data-gate-target]").first.click(timeout = 3_000, force = True)
+            self.target().click(timeout = 3_000, force = True)
             self.hovered = True
             return True
         # Clicks are dispatched in the page: the pointer stays parked, so no tooltip or :hover state
@@ -1383,6 +1442,10 @@ def split_trace(events: list) -> dict[str, dict]:
                 row["layout_objects"] += int((args.get("beginData") or {}).get("dirtyObjects") or 0)
             elif name in ("Paint", "PrePaint", "Layerize", "PaintImage"):
                 row["paint_ms"] += dur
+    for row in out.values():
+        # The renderer's main thread alone: raster and compositor threads (busy on every frame under
+        # software compositing) are noise for a "does this area do more work in a longer chat" check.
+        row["main_ms"] = row["threads"].get("CrRendererMain", 0.0)
     return out
 
 
@@ -1657,6 +1720,15 @@ def cheapest(cell: dict, key: str) -> float:
     return min(vals)
 
 
+def typical(cell: dict, key: str) -> float:
+    """Median of the first reading and its rechecks: the yardstick a length ratio divides by. The
+    cheapest short reading would let one unusually quiet sample inflate every ratio taken over it."""
+    vals = [cell.get(key, 0.0)] + [
+        c.get(key, 0.0) for c in cell.get("again", []) if c.get("status") == "OK"
+    ]
+    return statistics.median(vals)
+
+
 def judge(result: dict, known: str | None = None) -> list[dict]:
     """Verdict rows: kind length / appearance / broken; `fail` set on the failing ones."""
     limits = known_limits(KNOWN if known is None else known)
@@ -1761,6 +1833,32 @@ def judge(result: dict, known: str | None = None) -> list[dict]:
             lc, sc = settled(page["cells"].get(area, {})), settled(short.get(area, {}))
             if lc.get("status") != "OK" or sc.get("status") != "OK":
                 continue
+            # Time grows where counts may not (paint behind an overlay grows with the thread while style
+            # and layout stay flat): paint and main-thread CPU, the cheapest long reading over the
+            # median short one (a single quiet short sample cannot inflate the ratio).
+            for metric, key in (("paint_ms", "paint"), ("main_ms", "cpu")):
+                lv, sv = cheapest(lc, metric), typical(sc, metric)
+                ratio = lv / max(sv, TIME_BASE_FLOOR_MS)
+                tlimit = limits.get(
+                    (f"{key}@{mode}", area), limits.get((key, area), TIME_LENGTH_RATIO)
+                )
+                out.append(
+                    {
+                        "kind": "length",
+                        "metric": metric,
+                        "turns": turns,
+                        "mode": mode,
+                        "area": area,
+                        "value": lv,
+                        "base_value": sv,
+                        "ratio": ratio,
+                        "limit": tlimit,
+                        "would_fail": (
+                            over := ratio > tlimit and lv - sv > length_floor_ms(metric)
+                        ),
+                        "fail": LENGTH_TIME_BLOCKING and over,
+                    }
+                )
             limit = limits.get(("length", area), LENGTH_RATIO)
             cap = limits.get(("count", area))
             if area in CPU_LENGTH:
@@ -1880,6 +1978,35 @@ def thread_split(threads: dict[str, float]) -> str:
     return ", ".join(f"{n or '?'} {v:.0f} ms" for n, v in top)
 
 
+def length_floor_ms(metric: str) -> float:
+    """How much a paint / main-thread length cell must grow, on top of the ratio, to fail."""
+    return TIME_LENGTH_CPU_FLOOR_MS if metric == "main_ms" else TIME_LENGTH_FLOOR_MS
+
+
+def recheck_keys(verdicts: list[dict]) -> list[tuple[int, str, str]]:
+    """(turns, mode, area) to measure again: every failing CPU cell and broken area, and a paint /
+    main-thread length failure at both lengths (also while report-only: a single first reading at LONG
+    turns carries 100-250 ms of work spilled over from the areas run before it)."""
+    keys = {
+        (v["turns"], v["mode"], v["area"])
+        for v in verdicts
+        if v["fail"]
+        and (
+            v["kind"] in ("appearance", "length")
+            and v["metric"] == "cpu_ms"
+            or v["kind"] == "broken"
+            and v["area"] != "*"
+        )
+    }
+    keys |= {
+        (t, v["mode"], v["area"])
+        for v in verdicts
+        if v.get("would_fail") and v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")
+        for t in (SHORT, LONG)
+    }
+    return sorted(keys)
+
+
 def run(
     dist: Path,
     launch_args,
@@ -1890,22 +2017,9 @@ def run(
     result = measure(dist, launch_args, log = log)
     verdicts = judge(result)
     # One reading per cell, so every CPU failure is measured again (fresh pages of the mode and its
-    # base, RECHECKS times, the cheapest reading kept). Grouped by page; at most 4 mode pages.
-    again = sorted(
-        {
-            (v["turns"], v["mode"], v["area"])
-            for v in verdicts
-            if v["fail"]
-            and (
-                v["kind"] in ("appearance", "length")
-                and v["metric"] == "cpu_ms"
-                or v["kind"] == "broken"
-                and v["area"] != "*"
-            )
-        }
-    )
-    # Pages with the fewest failing cells first (a lone outlier is the usual noise); a mode that
-    # fails many cells is one page anyway.
+    # base, RECHECKS times, the cheapest reading kept). Grouped by page; at most RECHECK_PAGES pages,
+    # those with the fewest failing cells first (a lone outlier is the usual noise).
+    again = recheck_keys(verdicts)
     per_page: dict = {}
     for t, m, _ in again:
         per_page[(t, m)] = per_page.get((t, m), 0) + 1
@@ -1914,6 +2028,13 @@ def run(
     if again and RECHECKS:
         _in_thread(remeasure, result, again, log)
         verdicts = judge(result)
+        # A recheck that lowers one side of a comparison (the short chat, or the base appearance) can
+        # make a failure appear only now, judged on a reading that was never measured again: those
+        # cells get the same fresh-page rechecks once.
+        late = sorted(set(recheck_keys(verdicts)) - set(again))
+        if late:
+            _in_thread(remeasure, result, late, log)
+            verdicts = judge(result)
     failures, details = [], []
     trig = (result["pages"].get((SHORT, "default")) or {}).get("triggers")
     if trig is None:
@@ -1931,6 +2052,16 @@ def run(
             continue
         if v["kind"] == "broken":
             failures.append(f"area {v['area']} ({v['mode']}, {v['turns']} turns): {v['why']}")
+        elif v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms"):
+            what = "paint" if v["metric"] == "paint_ms" else "main-thread CPU"
+            key = "paint" if v["metric"] == "paint_ms" else "cpu"
+            failures.append(
+                f"area {v['area']} ({v['mode']}) costs more as the chat grows: {what} {v['base_value']:,.0f} ms at "
+                f"{SHORT} turns -> {v['value']:,.0f} ms at {LONG} turns = {v['ratio']:.1f}x (limit {v['limit']:.1f}x over "
+                f"{length_floor_ms(v['metric']):.0f} ms more; LONG_THREAD_AREAS_KNOWN {key}:{v['area']}=... or {key}@{v['mode']}:{v['area']}=...). "
+                "Element and layout counts can stay flat while this grows: the thread behind the surface is repainted, "
+                "or script walks every message"
+            )
         elif v["kind"] == "length":
             bound = (
                 f"known ceiling {v['cap']:,.0f} elements, LONG_THREAD_AREAS_KNOWN count:{v['area']}=..."
@@ -2019,4 +2150,30 @@ def table(result: dict, verdicts: list[dict]) -> list[str]:
             + ("!" if lv and lv["fail"] else "")
         )
         lines.append(row)
+    timed = sorted(
+        (v for v in verdicts if v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")),
+        key = lambda v: -(v["ratio"] / v["limit"]),
+    )
+    if timed:
+        lines.append(
+            f"  paint / CPU growth {SHORT} -> {LONG} turns, highest against limit (! = over): "
+            + ", ".join(
+                f"{v['mode']}/{v['area']} {v['metric'][:-3]} {v['base_value']:.0f}->{v['value']:.0f} ms "
+                f"{v['ratio']:.1f}x/{v['limit']:.1f}{'!' if v.get('would_fail') else ''}"
+                for v in timed[:6]
+            )
+        )
+        would = [v for v in timed if v.get("would_fail")]
+        mode_note = "blocking" if LENGTH_TIME_BLOCKING else "report-only, not failing the gate"
+        lines.append(
+            f"  paint / CPU growth would fail ({mode_note}): "
+            + (
+                ", ".join(
+                    f"{v['mode']}/{v['area']} {v['metric'][:-3]} {v['base_value']:.0f}->{v['value']:.0f} ms "
+                    f"{v['ratio']:.1f}x/{v['limit']:.1f}"
+                    for v in would
+                )
+                or "none"
+            )
+        )
     return lines

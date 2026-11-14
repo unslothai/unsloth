@@ -977,6 +977,7 @@ export const zhTW = {
       showLess: "顯示較少",
       settings: "設定",
       api: "API",
+      apiMonitor: "API 監控",
       lightMode: "淺色模式",
       darkMode: "深色模式",
       guidedTour: "導覽",
@@ -2298,6 +2299,18 @@ export const zhTW = {
         deviceGpu: "GPU",
         deviceLocked: "由 {name} 設定。",
         deviceSaveError: "無法變更嵌入裝置",
+        offlineDocs: {
+          folderLabel: "離線 Unsloth 文件",
+          folderDescription: "將完整的 Unsloth 文件儲存到資料夾,無網路時也能使用。",
+          folderHint: "Unsloth 會將 unsloth.ai/docs/llms-full.txt 下載到此資料夾,檔名為 \"Unsloth Docs LLMs Full Text [Documentation] (date).md\",並取代先前的副本。將此資料夾連結到知識庫,即可在離線時於聊天中搜尋文件。更新後仍會保留此資料夾。",
+          choose: "選擇",
+          autoUpdateLabel: "每次發布時更新文件",
+          autoUpdateDescription: "新版 Unsloth 首次啟動時下載最新副本。",
+          downloadNow: "立即下載",
+          downloading: "正在下載文件…",
+          notDownloaded: "尚未下載",
+          lastUpdated: "已於 {date} 更新({release})",
+        },
       },
       storage: {
         sectionTitle: "儲存空間",
@@ -3138,11 +3151,11 @@ export const zhTW = {
       showReplyTimesDescription: "在每則回覆下方顯示其完成時間。",
       showReplyTimesKeywords:
         "時間戳記 時間 時鐘 日期 小時 完成 抵達 回覆 回應 訊息 timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "詳細速度與載入資訊",
+      showGenerationDetails: "詳細速度資訊",
       showGenerationDetailsDescription:
-        "在即時讀數中加入提示詞讀取速度、token 數和草稿採用率，並顯示模型各層載入在哪裡。",
+        "在即時讀數中加入提示詞讀取速度、token 數和草稿採用率。",
       showGenerationDetailsKeywords:
-        "詳細 開發人員 統計 速度 預填 解碼 層 卸載 專家 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "詳細 開發人員 統計 速度 預填 解碼 verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "速度與上下文統計",
       generationStatsUpdatesDescription:
         "即時模式在回覆串流輸出時統計每秒 token 數和上下文用量。完成後模式在每則回覆結束時更新。",

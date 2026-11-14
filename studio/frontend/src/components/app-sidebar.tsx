@@ -81,7 +81,6 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import {
   DesktopTitlebarNavigation,
   shouldUseCustomWindowTitlebar,
-  usesWindowsTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 // deep imports avoid the Images index because its ImagesPage re-export would undo the code split.
@@ -258,6 +257,7 @@ import {
   useSectionDrag,
 } from "@/features/chat/hooks/use-section-drag";
 import { prefetchChatPage } from "@/features/chat/load-chat-page";
+import { clearAllChatsWithToast } from "@/features/chat/utils/clear-all-chats-toast";
 import {
   imeOwnsInputKeydown,
   inputImeHandlers,
@@ -347,7 +347,8 @@ import {
 } from "@/features/chat/hooks/use-sidebar-drag";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
-import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
+import { PinnedPageRow, usePinnedPages } from "@/features/browser/pinned-page-row";
+import type { PinnedPage } from "@/features/browser/pinned-pages-store";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import { translate, useT, type TranslationKey } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -3429,7 +3430,6 @@ export function AppSidebar() {
     audio: {
       icon: AiSpeechIcon,
       label: t("shell.navigation.audio"),
-      badge: t("shell.navigation.newBadge"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
       onClick: () => {
         navigateFromRow({ to: "/audio" });
@@ -3489,7 +3489,6 @@ export function AppSidebar() {
     tasks: {
       icon: scheduledNotice ? CLOCK_NOTICE_ICON : Clock01Icon,
       label: t("shell.navigation.tasks"),
-      badge: t("shell.navigation.newBadge"),
       active: pathname === "/tasks",
       dot: scheduledNotice,
       onClick: () => {
@@ -3761,15 +3760,20 @@ export function AppSidebar() {
     | { kind: "chats"; items: SidebarItem[] }
     | { kind: "project"; project: ProjectRecord }
     | { kind: "projects"; projects: ProjectRecord[] }
-    | { kind: "run"; run: TrainingRunSummary };
+    | { kind: "run"; run: TrainingRunSummary }
+    | { kind: "clearAll" };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
 
   /** Always through here: a stale switch would delete an unrelated sandbox. */
   function openDeleteDialog(target: DeleteTarget) {
     // Project workspaces always ask from scratch; chats follow the preference.
-    const chats = target.kind === "chat" || target.kind === "chats";
+    const chats =
+      target.kind === "chat" ||
+      target.kind === "chats" ||
+      target.kind === "clearAll";
     setDeleteFilesOnDelete(chats && alwaysDeleteChatFiles);
     setConfirmingDelete(target);
   }
@@ -3787,7 +3791,27 @@ export function AppSidebar() {
       (target.kind === "project" || target.kind === "projects") &&
       deleteFilesOnDelete;
     const shouldDeleteChatFiles =
-      (target.kind === "chat" || target.kind === "chats") && deleteFilesOnDelete;
+      (target.kind === "chat" ||
+        target.kind === "chats" ||
+        target.kind === "clearAll") &&
+      deleteFilesOnDelete;
+    if (target.kind === "clearAll") {
+      // Stay modal until done: the backend clear is unfiltered, so a chat sent meanwhile would go too.
+      setClearingAll(true);
+      clearSelection();
+      if (activeThreadId !== undefined) {
+        useChatRuntimeStore.getState().setActiveThreadId(null);
+        navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+      }
+      try {
+        await clearAllChatsWithToast({ deleteFiles: shouldDeleteChatFiles });
+      } finally {
+        setClearingAll(false);
+        setConfirmingDelete(null);
+        setDeleteFilesOnDelete(false);
+      }
+      return;
+    }
     setConfirmingDelete(null);
     setDeleteFilesOnDelete(false);
     if (target.kind === "chat") {
@@ -4509,6 +4533,14 @@ export function AppSidebar() {
           <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "create" })}>
             <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.organize.newSection")}</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() => openDeleteDialog({ kind: "clearAll" })}
+          >
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("settings.chat.clearAllChats")}</span>
           </DropdownMenuItem>
         </>
       );
@@ -5884,7 +5916,7 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}
-      data-windows-glass-frame={(pinned && usesWindowsTitlebar()) || undefined}
+      data-windows-glass-frame={(pinned && usesCustomTitlebar) || undefined}
       variant="sidebar"
       className={cn(
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
@@ -6754,7 +6786,10 @@ export function AppSidebar() {
                     return (
                       <DropdownMenuItem
                         key={item.id}
-                        onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
+                        onSelect={() => {
+                          navigateFromRow({ to: "/api-monitor" });
+                          closeMobileIfOpen();
+                        }}
                       >
                         <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
@@ -6913,7 +6948,7 @@ export function AppSidebar() {
     <Dialog
       open={confirmingDelete !== null}
       onOpenChange={(open) => {
-        if (!open) {
+        if (!open && !clearingAll) {
           setConfirmingDelete(null);
           setDeleteFilesOnDelete(false);
         }
@@ -6930,7 +6965,9 @@ export function AppSidebar() {
                   ? t("shell.selection.deleteTitle")
                   : confirmingDelete?.kind === "projects"
                     ? t("shell.selection.deleteProjectsTitle")
-                    : t("shell.dialog.deleteChat.title")}
+                    : confirmingDelete?.kind === "clearAll"
+                      ? t("settings.chat.clearAllChats")
+                      : t("shell.dialog.deleteChat.title")}
           </DialogTitle>
           <DialogDescription>
             {confirmingDelete?.kind === "run" ? (
@@ -6949,6 +6986,8 @@ export function AppSidebar() {
               t("shell.selection.deleteProjectsDescription", {
                 count: confirmingDelete.projects.length,
               })
+            ) : confirmingDelete?.kind === "clearAll" ? (
+              t("settings.chat.clearChatsConfirmDescription")
             ) : confirmingDelete?.kind === "project" ? (
               t("projectsPage.deleteProjectDescription", {
                 name: confirmingDelete.project.name,
@@ -6968,7 +7007,8 @@ export function AppSidebar() {
                     "The project workspace folder will be removed from disk.")
                   : confirmingDelete?.kind === "projects"
                     ? t("shell.selection.deleteProjectsFilesDescription")
-                    : confirmingDelete?.kind === "chats"
+                    : confirmingDelete?.kind === "chats" ||
+                        confirmingDelete?.kind === "clearAll"
                       ? t("shell.selection.deleteFilesDescription")
                     : t("shell.selection.deleteChatFilesDescription")}
               </span>
@@ -6978,6 +7018,7 @@ export function AppSidebar() {
               id="delete-files-on-delete"
               checked={deleteFilesOnDelete}
               onCheckedChange={setDeleteFilesOnDelete}
+              disabled={clearingAll}
               aria-label={t("shell.selection.deleteFilesLabel")}
             />
           </div>
@@ -6986,6 +7027,7 @@ export function AppSidebar() {
           <Button
             type="button"
             variant="ghost"
+            disabled={clearingAll}
             onClick={() => setConfirmingDelete(null)}
           >
             {t("common.cancel")}
@@ -6993,11 +7035,14 @@ export function AppSidebar() {
           <Button
             type="button"
             variant="destructive"
+            disabled={clearingAll}
             onClick={() => void commitDelete()}
           >
-            {deleteTargetHasFiles(confirmingDelete) && deleteFilesOnDelete
-              ? "Delete all"
-              : t("common.delete")}
+            {clearingAll
+              ? t("settings.chat.clearingAction")
+              : deleteTargetHasFiles(confirmingDelete) && deleteFilesOnDelete
+                ? "Delete all"
+                : t("common.delete")}
           </Button>
         </DialogFooter>
       </DialogContent>

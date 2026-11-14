@@ -608,7 +608,11 @@ async function loadConversationForHtml(
     title: title ?? (thread?.title?.trim() || "Conversation"),
     messages: messages.map((msg) => ({
       role: String(msg.role ?? ""),
-      content: stripSearchImageTokens(messageToMarkdown(msg)),
+      content: stripSearchImageTokens(
+        msg.role === "user" || msg.role === "system"
+          ? messageToText(msg)
+          : messageToMarkdown(msg),
+      ),
     })),
   };
 }

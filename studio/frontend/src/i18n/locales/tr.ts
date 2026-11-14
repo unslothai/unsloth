@@ -1027,6 +1027,7 @@ export const tr = {
       showLess: "Daha az göster",
       settings: "Ayarlar",
       api: "API",
+      apiMonitor: "API İzleyicisi",
       lightMode: "Açık Mod",
       darkMode: "Koyu Mod",
       guidedTour: "Rehberli Tur",
@@ -2408,6 +2409,18 @@ export const tr = {
         deviceGpu: "GPU",
         deviceLocked: "Şunun tarafından ayarlandı: {name}",
         deviceSaveError: "Gömme aygıtı değiştirilemedi",
+        offlineDocs: {
+          folderLabel: "Çevrimdışı Unsloth belgeleri",
+          folderDescription: "Unsloth belgelerinin tamamını bir klasöre kaydedin, internet olmadan da kullanın.",
+          folderHint: "Unsloth, unsloth.ai/docs/llms-full.txt dosyasını bu klasöre \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" adıyla indirir ve önceki kopyanın yerine koyar. Belgelerde çevrimdışıyken sohbette arama yapmak için klasörü bir bilgi tabanına bağlayın. Klasör güncellemelerde korunur.",
+          choose: "Seç",
+          autoUpdateLabel: "Belgeleri her sürümde güncelle",
+          autoUpdateDescription: "Yeni bir Unsloth sürümü ilk kez başladığında yeni bir kopya indirir.",
+          downloadNow: "Şimdi indir",
+          downloading: "Belgeler indiriliyor…",
+          notDownloaded: "Henüz indirilmedi",
+          lastUpdated: "{release} için {date} tarihinde güncellendi",
+        },
       },
       storage: {
         sectionTitle: "Depolama",
@@ -3290,11 +3303,11 @@ export const tr = {
         "Her yanıtın ne zaman tamamlandığını yanıtın altında gösterin.",
       showReplyTimesKeywords:
         "zaman damgası zaman saat tarih ne zaman bitti geldi yanıt cevap mesaj timestamp",
-      showGenerationDetails: "Ayrıntılı hız ve yükleme bilgisi",
+      showGenerationDetails: "Ayrıntılı hız bilgisi",
       showGenerationDetailsDescription:
-        "Canlı göstergelere istem okuma hızını, token sayılarını ve taslak kabulünü ekler ve modelin katmanlarının nereye yüklendiğini gösterir.",
+        "Canlı göstergelere istem okuma hızını, token sayılarını ve taslak kabulünü ekler.",
       showGenerationDetailsKeywords:
-        "ayrıntılı geliştirici istatistik hız tok/s prefill decode katmanlar aktarım offload vram uzmanlar experts",
+        "ayrıntılı geliştirici istatistik hız tok/s prefill decode",
       generationStatsUpdates: "Hız ve bağlam istatistikleri",
       generationStatsUpdatesDescription:
         "Gerçek zamanlı, bir yanıt akarken saniye başına token ve bağlam kullanımını sayar. Bitince, her yanıt tamamlandığında bunları günceller.",

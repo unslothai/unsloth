@@ -980,6 +980,7 @@ export const th = {
       showLess: "แสดงน้อยลง",
       settings: "การตั้งค่า",
       api: "API",
+      apiMonitor: "ตัวตรวจสอบ API",
       lightMode: "โหมดสว่าง",
       darkMode: "โหมดมืด",
       guidedTour: "ทัวร์แนะนำ",
@@ -2310,6 +2311,18 @@ export const th = {
         deviceGpu: "GPU",
         deviceLocked: "กำหนดโดย {name}",
         deviceSaveError: "ไม่สามารถเปลี่ยนอุปกรณ์สำหรับเอ็มเบดดิงได้",
+        offlineDocs: {
+          folderLabel: "เอกสาร Unsloth แบบออฟไลน์",
+          folderDescription: "บันทึกเอกสาร Unsloth ฉบับเต็มลงในโฟลเดอร์ เพื่อใช้งานได้โดยไม่ต้องมีอินเทอร์เน็ต",
+          folderHint: "Unsloth จะดาวน์โหลด unsloth.ai/docs/llms-full.txt ลงในโฟลเดอร์นี้เป็น \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" และแทนที่สำเนาก่อนหน้า เชื่อมโฟลเดอร์กับฐานความรู้เพื่อค้นหาเอกสารในแชทขณะออฟไลน์ โฟลเดอร์จะยังคงอยู่หลังการอัปเดต",
+          choose: "เลือก",
+          autoUpdateLabel: "อัปเดตเอกสารทุกครั้งที่มีรุ่นใหม่",
+          autoUpdateDescription: "ดาวน์โหลดสำเนาใหม่เมื่อ Unsloth เวอร์ชันใหม่เริ่มทำงานครั้งแรก",
+          downloadNow: "ดาวน์โหลดเลย",
+          downloading: "กำลังดาวน์โหลดเอกสาร…",
+          notDownloaded: "ยังไม่ได้ดาวน์โหลด",
+          lastUpdated: "อัปเดตเมื่อ {date} สำหรับ {release}",
+        },
       },
       storage: {
         sectionTitle: "พื้นที่จัดเก็บ",
@@ -3156,11 +3169,11 @@ export const th = {
       showReplyTimesDescription: "แสดงเวลาที่การตอบกลับแต่ละครั้งเสร็จสิ้นไว้ใต้การตอบกลับ",
       showReplyTimesKeywords:
         "เวลา นาฬิกา วันที่ ชั่วโมง เมื่อใด เสร็จ มาถึง ตอบกลับ คำตอบ ข้อความ timestamp time clock date reply response message",
-      showGenerationDetails: "ข้อมูลความเร็วและการโหลดแบบละเอียด",
+      showGenerationDetails: "ข้อมูลความเร็วแบบละเอียด",
       showGenerationDetailsDescription:
-        "เพิ่มความเร็วการอ่านพรอมต์ จำนวนโทเค็น และอัตราการยอมรับร่างลงในการแสดงผลสด และแสดงว่าเลเยอร์ของโมเดลโหลดไว้ที่ใด",
+        "เพิ่มความเร็วการอ่านพรอมต์ จำนวนโทเค็น และอัตราการยอมรับร่างลงในการแสดงผลสด",
       showGenerationDetailsKeywords:
-        "ละเอียด นักพัฒนา สถิติ ความเร็ว เลเยอร์ verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "ละเอียด นักพัฒนา สถิติ ความเร็ว verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "สถิติความเร็วและบริบท",
       generationStatsUpdatesDescription:
         "แบบเรียลไทม์จะนับโทเค็นต่อวินาทีและการใช้บริบทระหว่างที่คำตอบกำลังสตรีม แบบเมื่อเสร็จจะอัปเดตเมื่อแต่ละคำตอบจบ",

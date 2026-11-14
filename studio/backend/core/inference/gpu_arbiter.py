@@ -277,6 +277,30 @@ def _release_idle_video_servers(reason: str) -> None:
         logger.warning("gpu_arbiter: could not release the idle video sd-server: %s", exc)
 
 
+# Set by the restyle route around its own acquire, which a reserved runner must not refuse.
+restyle_handoff: ContextVar[bool] = ContextVar("restyle_handoff", default = False)
+
+
+def _refuse_beside_a_running_restyle() -> None:
+    module = sys.modules.get("core.inference.video_restyle")
+    if module is not None and not restyle_handoff.get() and module.runner.holds_gpu():
+        raise RestyleRunningError()
+
+
+def _release_idle_restyle_server() -> None:
+    module = sys.modules.get("core.inference.video_restyle")
+    if module is None:
+        return
+    try:
+        released = module.runner.unload_if_idle()
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on this
+        logger.warning("gpu_arbiter: could not release the idle restyle sd-server: %s", exc)
+        return
+    if not released and not restyle_handoff.get():
+        # A restyle reserved the server after the refusal check: its VRAM is not coming back.
+        raise RestyleRunningError()
+
+
 def _release_idle_decision_worker() -> None:
     module = sys.modules.get("core.systemone.laya_runtime")
     if module is None:
@@ -609,6 +633,21 @@ class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
         )
 
 
+class RestyleRunningError(GpuOwnerBusyError):
+    """A video restyle holds the GPU outside every owner; a load waits for it (409, retryable)."""
+
+    def __init__(self):
+        super().__init__("video restyle")
+
+    def as_http_exception(self, path: Optional[str] = None):
+        from fastapi import HTTPException
+        return HTTPException(
+            status_code = 409,
+            detail = "A video restyle is running. Try again when it finishes, or cancel it.",
+            headers = {"Retry-After": "30"},
+        )
+
+
 def other_accounts_active(account_id: str) -> int:
     from state import active_generations
 
@@ -643,7 +682,7 @@ def acquire_for_request(
     from core.inference.gpu_residency import ChatLoadInFlightRefusal
     try:
         return acquire_for(owner, register, **kwargs)
-    except (GpuBusyForAnotherAccountError, ChatLoadInFlightRefusal) as exc:
+    except (GpuBusyForAnotherAccountError, ChatLoadInFlightRefusal, RestyleRunningError) as exc:
         raise exc.as_http_exception() from exc
 
 
@@ -692,6 +731,7 @@ def acquire_for(
             admit()
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
+        _refuse_beside_a_running_restyle()
         coreside = policy != "off" and owner in _KEPT_UNDER_ALWAYS
         if (register is not None or replacing) and not coreside:
             raise_if_other_accounts_active(acting)
@@ -741,6 +781,7 @@ def acquire_for(
                 _EVICTORS[name]()
                 note_evictions(unloading, sink)
                 _drop_resident(name)
+        _release_idle_restyle_server()
         if owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")

@@ -20,6 +20,7 @@ from utils.paths.storage_roots import account_path
 
 from .diffusion_content import ROLE_LORA, inspect_checkpoint
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
+from .sd_cpp_args import strip_lora_tags
 from utils.paths.path_utils import is_appledouble_metadata
 
 _ALL_EXTS = (".safetensors", ".gguf")
@@ -628,13 +629,9 @@ def materialize_native_dir(
     return out
 
 
-_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
-
-
 def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
     """Strips all user <lora:...> tags first so the validated weight wins over any typed weight."""
-    cleaned = _TAG_RE.sub("", prompt)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    cleaned = re.sub(r"[ \t]{2,}", " ", strip_lora_tags(prompt)).strip()
     tags = [f"<lora:{r.alias}:{_fmt_weight(r.weight)}>" for r in resolved]
     if not tags:
         return cleaned

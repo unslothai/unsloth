@@ -20,24 +20,38 @@ from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests na
 
 # Not H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror, the conditioner did not.
 H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
-# Hosted quantized conditioners, by ``text_encoder_quant`` scheme. nvfp4
-# (``qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors``, 14.61 GiB) is deliberately absent: it is an AWQ NVFP4 layout with
-# two levels of scale and a per-tensor global scale, a different loader and a different kernel, and shipping it needs
-# its own numerical verification. The table is the one place to add it.
+H3_TE_INT8 = "int8"
+# Hosted Q4_K_M GGUF: 18.2 GB vs 27.2, but 5.8% hidden_states[50] error vs bf16 against int8's 1.6%.
+H3_TE_Q4_K_M = "q4_k_m"
 H3_TE_QUANT_FILES: dict[str, str] = {
     # Built from MiniMaxAI text_encoder/ with quantize_convrot_int8_weight; reads the official path
     # only.
-    "int8": "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    H3_TE_INT8: "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    H3_TE_Q4_K_M: "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
 }
+H3_TE_QUANT_SOURCES: dict[str, str] = {
+    H3_TE_INT8: H3_TE_QUANT_REPO,
+    H3_TE_Q4_K_M: "unsloth/MiniMax-H3-GGUF",
+}
+# Never a request value: an explicit "nvfp4" keeps meaning the W4A4 runtime cast (refused for H3).
+H3_TE_AUTO_ONLY_SCHEMES = frozenset({H3_TE_Q4_K_M})
 
 # Default int8: 27 GB over 50 layers vs 66.7 GB dense 64-layer; transformers has no early exit.
 # Not an INT8 GEMM: ConvRot dequantizes then F.linear; the win is bytes moved, not math.
-H3_TE_QUANT_DEFAULT = "int8"
+H3_TE_QUANT_DEFAULT = H3_TE_INT8
 
-# From Hub safetensors headers; the load is storage-faithful, so file size == resident size.
 H3_TE_QUANT_RESIDENT_GB: dict[str, float] = {
-    "int8": 27.2,
+    H3_TE_INT8: 27.2,
+    H3_TE_Q4_K_M: 18.3,
 }
+
+H3_TE_QUANT_AUTO_ENV = "UNSLOTH_H3_TE_QUANT_AUTO"
+# Conditioner + denoiser + VAEs + headroom; below it int8 is re-read every prompt (L4: 47-53 s vs 19.7 s).
+H3_TE_INT8_HOST_SET_GB = 27.2 + 20.3 + 11.1 + 5.9
+H3_TE_LOW_RAM_SCHEME = H3_TE_Q4_K_M
+# Off until the q4_k_m accuracy trade (LPIPS 0.08-0.30 vs int8) is accepted.
+H3_TE_LOW_RAM_AUTO = False
+
 
 # Must equal MiniMaxH3ModularPipeline.text_encoder_layer.
 H3_TE_READ_LAYER = 50
@@ -61,16 +75,48 @@ def h3_te_quant_scheme(mode: Optional[str]) -> Optional[str]:
     return normalized if normalized in H3_TE_QUANT_FILES else None
 
 
+def h3_te_auto_scheme(
+    *, host_capacity_gb: Optional[float] = None, denoiser_gb: Optional[float] = None
+) -> str:
+    """Scheme for an unset request. Uses total (cgroup-capped) RAM, not free RAM, so plan, staging and assembly agree."""
+    import os
+
+    forced = h3_te_quant_scheme(os.environ.get(H3_TE_QUANT_AUTO_ENV))
+    if forced is not None:
+        return forced
+    if not H3_TE_LOW_RAM_AUTO:
+        return H3_TE_INT8
+    try:
+        if host_capacity_gb is None:
+            from utils.host_memory import host_ram_capacity_mib
+
+            mib = host_ram_capacity_mib()
+            if mib is None:
+                return H3_TE_INT8
+            host_capacity_gb = mib * (1 << 20) / 1e9
+        need = H3_TE_INT8_HOST_SET_GB
+        if denoiser_gb is not None:
+            need = need - 20.3 + float(denoiser_gb)
+        if float(host_capacity_gb) >= need:
+            return H3_TE_INT8
+        # Without gguf the 4-bit load falls back to the 66.7 GB dense encoder.
+        import importlib.util
+
+        if H3_TE_LOW_RAM_SCHEME == H3_TE_Q4_K_M and importlib.util.find_spec("gguf") is None:
+            return H3_TE_INT8
+        return H3_TE_LOW_RAM_SCHEME
+    except Exception:  # noqa: BLE001 -- no reading, no change
+        return H3_TE_INT8
+
+
 def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:
     """The hosted checkpoint's path inside ``H3_TE_QUANT_REPO`` for ``scheme``, or None."""
     return H3_TE_QUANT_FILES.get(scheme or "")
 
 
 def h3_te_quant_source(scheme: Optional[str]) -> str:
-    """The repo to fetch the hosted quantized conditioner for ``scheme`` from: always ``H3_TE_QUANT_REPO``. A video
-    load never reads from the Comfy-Org repack, not even bytes an older install cached under it."""
-    del scheme
-    return H3_TE_QUANT_REPO
+    """Unsloth repo for ``scheme``; never a third-party repack, even one an older install cached."""
+    return H3_TE_QUANT_SOURCES.get(h3_te_quant_scheme(scheme) or "", H3_TE_QUANT_REPO)
 
 
 def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
@@ -130,10 +176,18 @@ def _int8_convrot_linear_class() -> Any:
                 )
             else:
                 self.bias = None
+            # float16: scale the weight before the matmul; the unscaled int8 sum overflows 65504.
+            self.scale_weight_first = False
 
         def forward(self, x: Any) -> Any:  # noqa: D102
             h = build_convrot_hadamard(self.group_size, device = x.device, dtype = x.dtype)
             rotated = rotate_convrot_activation(x, h, self.group_size)
+            if getattr(self, "scale_weight_first", False):
+                weight = (self.weight.to(torch.float32) * self.weight_scale).to(x.dtype)
+                out = torch.nn.functional.linear(rotated, weight)
+                if self.bias is not None:
+                    out = out + self.bias.to(out.dtype)
+                return out
             out = torch.nn.functional.linear(rotated, self.weight.to(x.dtype))
             out = out * self.weight_scale.reshape(1, -1).to(dtype = out.dtype, device = out.device)
             if self.bias is not None:
@@ -265,60 +319,68 @@ def load_h3_quantized_text_encoder(
         language_model.norm = torch.nn.Identity()
         encoder.lm_head = torch.nn.Identity()
 
-        int8_linear_cls = _int8_convrot_linear_class()
-        with safe_open(path, framework = "pt", device = "cpu") as handle:
-            names = set(handle.keys())
-            quantized = {
-                name[: -len(_SCALE_SUFFIX)] for name in names if name.endswith(_SCALE_SUFFIX)
-            }
-            # Swap before loading so the state dict lands on int8 buffers, not bf16 Linears.
-            for prefix in sorted(quantized):
-                quant_key = prefix + _QUANT_SUFFIX
-                if quant_key not in names:
-                    raise ValueError(f"{prefix}: quantized weight with no {_QUANT_SUFFIX} metadata")
-                _validate_comfy_quant(handle.get_tensor(quant_key), prefix)
-                target = h3_te_remap_key(prefix)
-                parent_path, _, leaf = target.rpartition(".")
-                parent = encoder.get_submodule(parent_path)
-                existing = getattr(parent, leaf)
-                slice_ = handle.get_slice(prefix + ".weight")
-                out_features, in_features = slice_.get_shape()
-                if (existing.out_features, existing.in_features) != (out_features, in_features):
-                    raise ValueError(
-                        f"{target}: checkpoint shape {(out_features, in_features)} != model "
-                        f"{(existing.out_features, existing.in_features)}"
+        gguf_weights: set = set()
+        if filename.endswith(".gguf"):
+            state_dict, quantized, gguf_weights = _h3_gguf_state(encoder, path, dtype)
+        else:
+            int8_linear_cls = _int8_convrot_linear_class()
+            with safe_open(path, framework = "pt", device = "cpu") as handle:
+                names = set(handle.keys())
+                quantized = {
+                    name[: -len(_SCALE_SUFFIX)] for name in names if name.endswith(_SCALE_SUFFIX)
+                }
+                # Swap before loading so the state dict lands on int8 buffers, not bf16 Linears.
+                for prefix in sorted(quantized):
+                    quant_key = prefix + _QUANT_SUFFIX
+                    if quant_key not in names:
+                        raise ValueError(
+                            f"{prefix}: quantized weight with no {_QUANT_SUFFIX} metadata"
+                        )
+                    _validate_comfy_quant(handle.get_tensor(quant_key), prefix)
+                    target = h3_te_remap_key(prefix)
+                    parent_path, _, leaf = target.rpartition(".")
+                    parent = encoder.get_submodule(parent_path)
+                    existing = getattr(parent, leaf)
+                    slice_ = handle.get_slice(prefix + ".weight")
+                    out_features, in_features = slice_.get_shape()
+                    if (existing.out_features, existing.in_features) != (out_features, in_features):
+                        raise ValueError(
+                            f"{target}: checkpoint shape {(out_features, in_features)} != model "
+                            f"{(existing.out_features, existing.in_features)}"
+                        )
+                    setattr(
+                        parent,
+                        leaf,
+                        int8_linear_cls(
+                            in_features,
+                            out_features,
+                            bias = (prefix + ".bias") in names,
+                            group_size = H3_TE_CONVROT_GROUP,
+                        ),
                     )
-                setattr(
-                    parent,
-                    leaf,
-                    int8_linear_cls(
-                        in_features,
-                        out_features,
-                        bias = (prefix + ".bias") in names,
-                        group_size = H3_TE_CONVROT_GROUP,
-                    ),
-                )
 
-            # INT8 payload and fp32 scales keep their dtypes; dense parts follow the compute dtype.
-            state_dict = {}
-            for name in names:
-                if name.endswith(_QUANT_SUFFIX):
-                    continue
-                tensor = handle.get_tensor(name)
-                if (
-                    not name.endswith(_SCALE_SUFFIX)
-                    and tensor.is_floating_point()
-                    and dtype is not None
-                ):
-                    tensor = tensor.to(dtype)
-                state_dict[h3_te_remap_key(name)] = tensor
+                # INT8 payload and fp32 scales keep their dtypes; dense parts follow the compute dtype.
+                state_dict = {}
+                for name in names:
+                    if name.endswith(_QUANT_SUFFIX):
+                        continue
+                    tensor = handle.get_tensor(name)
+                    if (
+                        not name.endswith(_SCALE_SUFFIX)
+                        and tensor.is_floating_point()
+                        and dtype is not None
+                    ):
+                        tensor = tensor.to(dtype)
+                    state_dict[h3_te_remap_key(name)] = tensor
 
         # strict=True does not prove quantization: a dense re-upload loads as bf16 Linear and breaks
         # the VRAM preflight, so no plain Linear may survive in the decoder stack.
+        from .diffusion_weight_only_quant import is_dense_linear
+
         dense = [
             name
             for name, module in language_model.layers.named_modules()
-            if isinstance(module, torch.nn.Linear)
+            if is_dense_linear(module)
         ]
         if dense:
             raise ValueError(
@@ -326,7 +388,13 @@ def load_h3_quantized_text_encoder(
                 f"e.g. {', '.join(sorted(dense)[:3])}; it is not the {scheme} checkpoint this "
                 f"path budgets for"
             )
-        encoder.load_state_dict(state_dict, strict = True, assign = True)
+        # GGUF projections were swapped in whole, so only their weights may be missing.
+        missing, unexpected = encoder.load_state_dict(state_dict, strict = False, assign = True)
+        if unexpected or set(missing) - gguf_weights:
+            raise ValueError(
+                f"the {scheme} checkpoint does not match the conditioner: missing "
+                f"{sorted(set(missing) - gguf_weights)[:3]}, unexpected {sorted(unexpected)[:3]}"
+            )
         # A dense CPU rebuild is the 51 GB allocation this path avoids, so leftover meta is a refusal.
         stranded = _meta_tensor_names(encoder)
         if stranded:
@@ -338,7 +406,7 @@ def load_h3_quantized_text_encoder(
         if logger is not None:
             logger.info(
                 "video.h3_te_quant: loaded the hosted %s conditioner (%s, %s), "
-                "%d ConvRot INT8 projections over %d decoder layers",
+                "%d quantized layers over %d decoder layers",
                 scheme,
                 source_repo,
                 filename,
@@ -355,6 +423,69 @@ def load_h3_quantized_text_encoder(
                 exc,
             )
         return None
+
+
+def _model_shape(module: Any, name: str) -> Optional[tuple]:
+    owner_path, _, leaf = name.rpartition(".")
+    try:
+        owner = module.get_submodule(owner_path) if owner_path else module
+    except AttributeError:
+        return None
+    tensor = owner._parameters.get(leaf)
+    if tensor is None:
+        tensor = owner._buffers.get(leaf)
+    return None if tensor is None else tuple(tensor.shape)
+
+
+def _h3_gguf_state(encoder: Any, path: str, dtype: Any) -> tuple[dict, set, set]:
+    """``(dense state dict, quantized layer names, swapped weight keys)``; quantized projections become ``GGUFLinear``."""
+    import math
+
+    import gguf
+    import torch
+
+    from .diffusion_weight_only_quant import gguf_tensor, gguf_weight_only_linear
+
+    reader = gguf.GGUFReader(path)
+    state: dict = {}
+    quantized: set = set()
+    swapped: set = set()
+    for t in reader.tensors:
+        target = h3_te_remap_key(t.name)
+        tensor, qtype = gguf_tensor(t)
+        if qtype is None:
+            if tensor.is_floating_point() and dtype is not None:
+                tensor = tensor.to(dtype)
+            # GGUF caps tensors at 4-D: the 5-D patch conv is stored with its first two dims merged.
+            want = _model_shape(encoder, target)
+            if want is not None and tuple(tensor.shape) != want:
+                if tensor.numel() != math.prod(want) or len(tensor.shape) > len(want):
+                    raise ValueError(
+                        f"{t.name}: shape {tuple(tensor.shape)} cannot hold the model's {want}"
+                    )
+                tensor = tensor.reshape(want)
+            state[target] = tensor
+            continue
+        if not target.endswith(".weight"):
+            raise ValueError(f"{t.name}: a block-quantized tensor that is not a weight")
+        parent_path, _, leaf = target[: -len(".weight")].rpartition(".")
+        existing = getattr(encoder.get_submodule(parent_path), leaf)
+        if type(existing) is not torch.nn.Linear or existing.bias is not None:
+            raise ValueError(f"{target}: a quantized weight on a {type(existing).__name__}")
+        setattr(
+            encoder.get_submodule(parent_path),
+            leaf,
+            gguf_weight_only_linear(
+                tensor,
+                qtype,
+                in_features = existing.in_features,
+                out_features = existing.out_features,
+                compute_dtype = dtype or torch.bfloat16,
+            ),
+        )
+        quantized.add(target[: -len(".weight")])
+        swapped.add(target)
+    return state, quantized, swapped
 
 
 def _meta_tensor_names(module: Any) -> list[str]:
@@ -498,21 +629,38 @@ def _pinned_arena(size: int, fill: Any) -> Any:
     return arena
 
 
+# Arenas sized to their payload (0.61 GB audio VAE pinned 2.15 GB); the host-looked-up vocab table stays mapped. =0 reverts.
+H3_HOST_PIN_TRIM_ENV = "UNSLOTH_H3_HOST_PIN_TRIM"
+_PIN_PAGE = 4096
+
+
+def h3_host_pin_trim_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_HOST_PIN_TRIM_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
 def pin_module_in_place(
     module: Any,
     *,
     arena_bytes: int = _PIN_ARENA_BYTES,
     _arena_factory: Any = None,
     repoint: bool = False,
+    skip: tuple = (),
 ) -> int:
     """Replaces tensors in _parameters/_buffers rather than .data, which would keep the mmap alive."""
     import torch
 
+    skipped = {id(t) for t in skip if t is not None}
     slots: dict[int, list] = {}  # id(tensor) -> [tensor, [(owner dict, name, is_param)]]
     for sub in module.modules():
         for table, is_param in ((sub._parameters, True), (sub._buffers, False)):
             for name, tensor in list(table.items()):
-                if tensor is None:
+                if tensor is None or id(tensor) in skipped:
                     continue
                 entry = slots.setdefault(id(tensor), [tensor, []])
                 entry[1].append((table, name, is_param))
@@ -537,6 +685,10 @@ def pin_module_in_place(
         slot[2].append((tensor, owners, slot[1]))
         slot[1] += need
         pinned += nbytes
+    if h3_host_pin_trim_enabled():
+        # placement is final: an arena's unused tail would only be zeroed and locked
+        for arena in arenas:
+            arena[0] = min(arena[0], _round_up(arena[1], _PIN_PAGE))
     placed = []  # (tensor, owners, pinned view)
     for size, _used, entries in arenas:
         fill = functools.partial(_fill_arena, entries = entries)
@@ -636,6 +788,43 @@ def _host_rows_forward(self: Any, input: Any) -> Any:
         self.sparse,
     )
     return rows.to(self.__dict__[_HOST_ROWS_ATTR])
+
+
+def _host_rows_table(target: Any) -> Any:
+    """The table ``keep_h3_embedding_on_host`` will take out of the stream (same static checks), or None."""
+    try:
+        import torch
+
+        if target is None or not h3_host_embed_rows_enabled():
+            return None
+        getter = getattr(target, "get_input_embeddings", None)
+        emb = getter() if callable(getter) else None
+        if type(emb) is not torch.nn.Embedding or _HOST_ROWS_ATTR in emb.__dict__:
+            return None
+        weight = emb.weight
+        if (
+            type(weight.data) is not torch.Tensor
+            or weight.device.type != "cpu"
+            or emb.max_norm is not None
+            or emb.sparse
+            or weight.dtype not in (torch.bfloat16, torch.float16, torch.float32)
+        ):
+            return None
+        return weight
+    except Exception:  # noqa: BLE001 -- pin it with the rest
+        return None
+
+
+def _pin_streamed_table(target: Any, weight: Any) -> None:
+    """The table stayed in the stream after all: pin it as the whole-module pin would have."""
+    from .diffusion_memory import _offload_groups
+
+    owner = next(m for m in target.modules() if m._parameters.get("weight") is weight)
+    pin_module_in_place(owner, repoint = True)
+    for group in _offload_groups(target):
+        cpu = getattr(group, "cpu_param_dict", None)
+        if isinstance(cpu, dict) and weight in cpu:
+            cpu[weight] = weight.data
 
 
 def keep_h3_embedding_on_host(target: Any, logger: Any = None) -> bool:
@@ -754,13 +943,20 @@ def stream_h3_text_encoder(
         pin = False
     elif pin is None:
         pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder), onload)
+    # Looked up on the host, so a pinned copy buys nothing; needs diffusers to take the pinned rest as it is.
+    table = (
+        _host_rows_table(target)
+        if pin and h3_host_pin_trim_enabled() and "low_cpu_mem_usage" in params
+        else None
+    )
     if pin:
         try:
-            pin_module_in_place(text_encoder)
+            pinned_bytes = pin_module_in_place(text_encoder, skip = (table,))
         except Exception as exc:  # noqa: BLE001 -- pinned host RAM refused: stream unpinned
             if logger is not None:
                 logger.warning("video.h3_te_stream: pinning failed, streaming unpinned: %s", exc)
             pin = False
+            table = None
     kwargs: dict[str, Any] = {
         "onload_device": onload,
         "offload_device": torch.device("cpu"),
@@ -774,7 +970,8 @@ def stream_h3_text_encoder(
             kwargs["record_stream"] = True
         if "low_cpu_mem_usage" in params:
             # Already pinned in place, so diffusers' pin_memory() returns the same tensor: no second host copy.
-            kwargs["low_cpu_mem_usage"] = not pin
+            # With the table left mapped, the onload pins only what is not pinned yet: nothing once the table is out.
+            kwargs["low_cpu_mem_usage"] = not pin or table is not None
         elif not pin:
             return None
     try:
@@ -783,7 +980,22 @@ def stream_h3_text_encoder(
         install_group_offload_buffer_restore()
         install_group_offload_hooks_eager()
         apply_group_offloading(target, **kwargs)
-        keep_h3_embedding_on_host(target, logger = logger)
+        on_host = keep_h3_embedding_on_host(target, logger = logger)
+        if table is not None:
+            if on_host:
+                if logger is not None:
+                    logger.info(
+                        "video.h3_host_pin_trim: conditioner pins %.2f GB in arenas sized to their weights, its "
+                        "vocabulary table (%.2f GB) stays on its mapping",
+                        pinned_bytes / 1e9,
+                        table.numel() * table.element_size() / 1e9,
+                    )
+            else:
+                try:
+                    _pin_streamed_table(target, table)
+                except Exception as exc:  # noqa: BLE001 -- streams pageable: correct, slower
+                    if logger is not None:
+                        logger.warning("video.h3_host_pin_trim: table not pinned: %s", exc)
         # Image prompts: Qwen3-VL's position interpolation reads the offloaded embedding's CPU device (transformers 5.5).
         _pin_vision_embedding_device(target)
     except Exception as exc:  # noqa: BLE001 -- keep the rotation
@@ -1013,6 +1225,232 @@ def _copy_host_tensors_(entries: list, undo: Optional[list] = None) -> int:
                 undo.append((group, tensor, host, new))
             copied += new.numel() * new.element_size()
     return copied
+
+
+# Once every denoiser block is resident, leftover budget keeps conditioner leaf groups on device in read order (48 GB:
+# ~0.8 s per render saved); requests needing more take it back first. Vision tower keeps streaming. =0 disables.
+H3_TE_DEVICE_RESIDENT_ENV = "UNSLOTH_H3_TE_DEVICE_RESIDENT"
+_TE_DEVICE_ATTR = "_unsloth_te_device"
+_TE_SAVED_IO_ATTR = "_unsloth_te_saved_io"
+# Planned device bytes per tensor: the allocator's 512-byte rounding plus an unsplit remainder (at most 1 MiB).
+_ALLOC_ROUND = 512
+_ALLOC_SPLIT_SLACK = 1 << 20
+
+
+def h3_te_device_resident_enabled() -> bool:
+    import os
+    return str(os.environ.get(H3_TE_DEVICE_RESIDENT_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _planned_device_bytes(group: Any) -> int:
+    from .video_minimax_h3_residency import _group_tensors, _tensor_bytes
+
+    total = 0
+    for t in _group_tensors(group):
+        n = _tensor_bytes(t)
+        total += _round_up(n, _ALLOC_ROUND) + (_ALLOC_SPLIT_SLACK if n > _ALLOC_SPLIT_SLACK else 0)
+    return total
+
+
+def _allocated_bytes(device: Any) -> Optional[int]:
+    try:
+        import torch
+
+        dev = torch.device(device)
+        if dev.type != "cuda" or not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.memory_allocated(dev))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _te_resident_onload(group: Any) -> Any:
+    """Keep the side-stream sync: the next group may still be arriving via the previous group's prefetch."""
+    stream = getattr(group, "stream", None)
+
+    def onload_(*_a: Any, **_k: Any) -> None:
+        if stream is not None:
+            stream.synchronize()
+
+    try:
+        import torch
+        return torch.compiler.disable(onload_)
+    except Exception:  # noqa: BLE001
+        return onload_
+
+
+def _te_noop(*_a: Any, **_k: Any) -> None:
+    return None
+
+
+class H3TeDeviceShare:
+    """The streamed conditioner's leaf groups resident on the device: a prefix in read order (language layers first)."""
+
+    def __init__(
+        self,
+        text_encoder: Any,
+        device: Any,
+        *,
+        logger: Any = None,
+    ) -> None:
+        from .diffusion_memory import _offload_groups
+        from .video_minimax_h3_residency import _group_tensors
+
+        target = getattr(text_encoder, "model", None)
+        self.device = device
+        self.logger = logger
+        self.groups: list = []
+        self.layer_of: list = []
+        names = {id(m): n for n, m in target.named_modules()} if target is not None else {}
+        for group in _offload_groups(target) if target is not None else []:
+            mods = list(getattr(group, "modules", None) or ())
+            leader = mods[0] if mods else getattr(group, "onload_leader", None)
+            parts = names.get(id(leader), "").split(".")
+            if (
+                "visual" in parts
+                or getattr(group, "stream", None) is None
+                or not isinstance(getattr(group, "cpu_param_dict", None), dict)
+                or not _group_tensors(group)
+            ):
+                continue
+            layer = None
+            if "layers" in parts and parts.index("layers") + 1 < len(parts):
+                index = parts[parts.index("layers") + 1]
+                layer = int(index) if index.isdigit() else None
+            self.groups.append(group)
+            self.layer_of.append(layer)
+        self.planned = [_planned_device_bytes(g) for g in self.groups]
+        self.layers = len({x for x in self.layer_of if x is not None})
+        self._logged: Optional[int] = None
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.groups)
+
+    def resident_count(self) -> int:
+        n = 0
+        for group in self.groups:
+            if not group.__dict__.get(_TE_DEVICE_ATTR):
+                break
+            n += 1
+        return n
+
+    def resident_bytes(self) -> int:
+        """Measured at onload; planned bytes off CUDA."""
+        return sum(
+            int(group.__dict__.get(_TE_DEVICE_ATTR) or 0)
+            for group in self.groups
+            if group.__dict__.get(_TE_DEVICE_ATTR)
+        )
+
+    def plan(self, budget_bytes: int) -> int:
+        n = 0
+        left = int(budget_bytes)
+        while n < len(self.groups) and self.planned[n] <= left:
+            left -= self.planned[n]
+            n += 1
+        return n
+
+    def shrink(self, n: int) -> None:
+        import torch
+        demoted = False
+        for group in reversed(self.groups[n:]):
+            if not group.__dict__.get(_TE_DEVICE_ATTR):
+                continue
+            if not demoted and torch.cuda.is_available():
+                torch.cuda.current_stream().synchronize()
+            saved_on, saved_off = group.__dict__.get(_TE_SAVED_IO_ATTR, (None, None))
+            for name, saved in (("onload_", saved_on), ("offload_", saved_off)):
+                if saved is not None:
+                    setattr(group, name, saved)
+                else:
+                    group.__dict__.pop(name, None)
+            group.__dict__.pop(_TE_DEVICE_ATTR, None)
+            group.offload_()  # back to its host copy, which was never dropped
+            demoted = True
+
+    def grow(self, n: int) -> None:
+        import torch
+        for group in self.groups[:n]:
+            if group.__dict__.get(_TE_DEVICE_ATTR):
+                continue
+            before = _allocated_bytes(self.device)
+            stream = getattr(group, "stream", None)
+            try:
+                group.onload_()
+                if stream is not None:
+                    stream.synchronize()
+                if torch.cuda.is_available():
+                    torch.cuda.current_stream().synchronize()
+            except Exception:
+                group.offload_()  # a half-onloaded group back on its host copy
+                raise
+            after = _allocated_bytes(self.device)
+            held = after - before if before is not None and after is not None else None
+            if held is None or held <= 0:
+                held = _planned_device_bytes(group)
+            group.__dict__[_TE_SAVED_IO_ATTR] = (
+                group.__dict__.get("onload_"),
+                group.__dict__.get("offload_"),
+            )
+            group.onload_ = _te_resident_onload(group)
+            group.offload_ = _te_noop
+            group.__dict__[_TE_DEVICE_ATTR] = max(1, int(held))
+
+    def report(
+        self,
+        budget_bytes: int,
+        *,
+        force: bool = False,
+    ) -> None:
+        n = self.resident_count()
+        if self.logger is None or (n == self._logged and not force):
+            return
+        self._logged = n
+        full = sum(
+            1
+            for layer in {x for x in self.layer_of if x is not None}
+            if all(
+                self.groups[i].__dict__.get(_TE_DEVICE_ATTR)
+                for i, x in enumerate(self.layer_of)
+                if x == layer
+            )
+        )
+        self.logger.info(
+            "video.h3_te_resident_device: %d of %d TE layers resident on %s (%.2f GB, %d of %d leaf groups, "
+            "%.2f GB left beside the resident denoiser)",
+            full,
+            self.layers,
+            self.device,
+            self.resident_bytes() / 1e9,
+            n,
+            len(self.groups),
+            max(0, budget_bytes) / 1e9,
+        )
+
+
+def h3_te_device_share(
+    text_encoder: Any,
+    device: Any,
+    mode: Any,
+    *,
+    logger: Any = None,
+) -> Optional[H3TeDeviceShare]:
+    """None unless the conditioner streams with a side stream. Never raises."""
+    try:
+        if mode not in ("stream", "stream_lazy") or not h3_te_device_resident_enabled():
+            return None
+        share = H3TeDeviceShare(text_encoder, device, logger = logger)
+        return share if share.usable else None
+    except Exception as exc:  # noqa: BLE001 -- the conditioner streams as before
+        if logger is not None:
+            logger.warning("video.h3_te_resident_device: staying streamed: %s", exc)
+        return None
 
 
 # "0": the H3 conditioner records every hidden state again.

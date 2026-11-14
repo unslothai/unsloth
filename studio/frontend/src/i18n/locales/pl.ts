@@ -1038,6 +1038,7 @@ export const pl = {
       showLess: "Pokaż mniej",
       settings: "Ustawienia",
       api: "API",
+      apiMonitor: "Monitor API",
       lightMode: "Tryb jasny",
       darkMode: "Tryb ciemny",
       guidedTour: "Przewodnik",
@@ -2446,6 +2447,18 @@ export const pl = {
         deviceGpu: "GPU",
         deviceLocked: "Ustawione przez {name}.",
         deviceSaveError: "Nie udało się zmienić urządzenia osadzeń",
+        offlineDocs: {
+          folderLabel: "Dokumentacja Unsloth offline",
+          folderDescription: "Zapisz pełną dokumentację Unsloth w folderze, aby działała bez internetu.",
+          folderHint: "Unsloth pobiera unsloth.ai/docs/llms-full.txt do tego folderu jako \"Unsloth Docs LLMs Full Text [Documentation] (date).md\", zastępując poprzednią kopię. Połącz folder z bazą wiedzy, aby przeszukiwać dokumentację w czacie offline. Folder jest zachowywany przy aktualizacjach.",
+          choose: "Wybierz",
+          autoUpdateLabel: "Aktualizuj dokumentację z każdym wydaniem",
+          autoUpdateDescription: "Pobiera nową kopię przy pierwszym uruchomieniu nowej wersji Unsloth.",
+          downloadNow: "Pobierz teraz",
+          downloading: "Pobieranie dokumentacji…",
+          notDownloaded: "Jeszcze nie pobrano",
+          lastUpdated: "Zaktualizowano {date} dla {release}",
+        },
       },
       storage: {
         sectionTitle: "Miejsce na dysku",
@@ -3328,11 +3341,11 @@ export const pl = {
         "Pokazuj pod odpowiedzią, kiedy się zakończyła.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message znacznik czasu godzina data odpowiedź wiadomość",
-      showGenerationDetails: "Szczegółowe informacje o szybkości i ładowaniu",
+      showGenerationDetails: "Szczegółowe informacje o szybkości",
       showGenerationDetailsDescription:
-        "Dodaje do odczytów na żywo szybkość czytania promptu, liczbę tokenów i akceptację szkiców oraz pokazuje, gdzie załadowano warstwy modelu.",
+        "Dodaje do odczytów na żywo szybkość czytania promptu, liczbę tokenów i akceptację szkiców.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts szczegóły statystyki szybkość warstwy eksperci",
+        "verbose developer stats speed tok/s prefill decode szczegóły statystyki szybkość",
       generationStatsUpdates: "Statystyki szybkości i kontekstu",
       generationStatsUpdatesDescription:
         "Tryb Na bieżąco liczy tokeny na sekundę i użycie kontekstu podczas strumieniowania odpowiedzi. Po zakończeniu aktualizuje je, gdy każda odpowiedź się skończy.",

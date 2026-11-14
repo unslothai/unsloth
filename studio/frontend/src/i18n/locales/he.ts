@@ -966,6 +966,7 @@ export const he = {
       showLess: "הצג פחות",
       settings: "הגדרות",
       api: "API",
+      apiMonitor: "ניטור API",
       lightMode: "מצב בהיר",
       darkMode: "מצב כהה",
       guidedTour: "סיור מודרך",
@@ -2278,6 +2279,18 @@ export const he = {
         deviceGpu: "GPU",
         deviceLocked: "מוגדר על ידי {name}.",
         deviceSaveError: "לא ניתן היה לשנות את התקן ההטמעה",
+        offlineDocs: {
+          folderLabel: "תיעוד Unsloth במצב לא מקוון",
+          folderDescription: "שומר את התיעוד המלא של Unsloth בתיקייה כדי שיעבוד בלי אינטרנט.",
+          folderHint: "Unsloth מוריד את unsloth.ai/docs/llms-full.txt לתיקייה הזו בשם \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" ומחליף את העותק הקודם. קשרו את התיקייה למאגר ידע כדי לחפש בתיעוד מהצ׳אט גם בלי חיבור. התיקייה נשמרת בין עדכונים.",
+          choose: "בחירה",
+          autoUpdateLabel: "עדכון התיעוד בכל גרסה",
+          autoUpdateDescription: "הורדת עותק חדש בהפעלה הראשונה של גרסת Unsloth חדשה.",
+          downloadNow: "הורדה עכשיו",
+          downloading: "מוריד את התיעוד…",
+          notDownloaded: "עדיין לא הורד",
+          lastUpdated: "עודכן ב-{date} עבור {release}",
+        },
       },
       storage: {
         sectionTitle: "אחסון",
@@ -3123,11 +3136,11 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
-      showGenerationDetails: "מידע מפורט על מהירות וטעינה",
+      showGenerationDetails: "מידע מפורט על מהירות",
       showGenerationDetailsDescription:
-        "מוסיף למדדים החיים את מהירות קריאת ההנחיה, ספירת טוקנים וקבלת טיוטות, ומציג היכן נטענו שכבות המודל.",
+        "מוסיף למדדים החיים את מהירות קריאת ההנחיה, ספירת טוקנים וקבלת טיוטות.",
       showGenerationDetailsKeywords:
-        "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "פרטים מהירות אסימונים סטטיסטיקה verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "נתוני מהירות והקשר",
       generationStatsUpdatesDescription:
         "מצב זמן אמת סופר טוקנים לשנייה ושימוש בהקשר בזמן שתשובה מוזרמת. מצב בסיום מעדכן אותם כשכל תשובה מסתיימת.",

@@ -929,6 +929,7 @@ export const ar = {
       showLess: "عرض أقل",
       settings: "الإعدادات",
       api: "API",
+      apiMonitor: "مراقبة API",
       lightMode: "الوضع الفاتح",
       darkMode: "الوضع الداكن",
       guidedTour: "جولة إرشادية",
@@ -2203,6 +2204,18 @@ export const ar = {
         deviceGpu: "GPU",
         deviceLocked: "مضبوط بواسطة {name}.",
         deviceSaveError: "تعذّر تغيير جهاز التضمين",
+        offlineDocs: {
+          folderLabel: "وثائق Unsloth دون اتصال",
+          folderDescription: "احفظ وثائق Unsloth الكاملة في مجلد لتعمل دون إنترنت.",
+          folderHint: "ينزّل Unsloth الملف unsloth.ai/docs/llms-full.txt إلى هذا المجلد باسم \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" ويستبدل النسخة السابقة. اربط المجلد بقاعدة معرفة للبحث في الوثائق من المحادثة دون اتصال. يبقى المجلد محفوظًا عبر التحديثات.",
+          choose: "اختيار",
+          autoUpdateLabel: "تحديث الوثائق مع كل إصدار",
+          autoUpdateDescription: "تنزيل نسخة جديدة عند أول تشغيل لإصدار جديد من Unsloth.",
+          downloadNow: "تنزيل الآن",
+          downloading: "جارٍ تنزيل الوثائق…",
+          notDownloaded: "لم يتم التنزيل بعد",
+          lastUpdated: "حُدّثت في {date} للإصدار {release}",
+        },
       },
       storage: {
         sectionTitle: "التخزين",
@@ -3043,11 +3056,11 @@ export const ar = {
       showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
       showReplyTimesKeywords:
         "طابع زمني وقت ساعة تاريخ متى انتهى رد رسالة timestamp time clock date reply",
-      showGenerationDetails: "معلومات مفصّلة عن السرعة والتحميل",
+      showGenerationDetails: "معلومات مفصّلة عن السرعة",
       showGenerationDetailsDescription:
-        "يضيف سرعة قراءة الموجّه وعدد الرموز وقبول المسودات إلى القراءات المباشرة، ويعرض مكان تحميل طبقات النموذج.",
+        "يضيف سرعة قراءة الموجّه وعدد الرموز وقبول المسودات إلى القراءات المباشرة.",
       showGenerationDetailsKeywords:
-        "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "تفاصيل سرعة رموز إحصاءات verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "إحصاءات السرعة والسياق",
       generationStatsUpdatesDescription:
         "يحسب الوضع الفوري الرموز في الثانية واستخدام السياق أثناء بث الرد. أما عند الانتهاء فيحدّثها عند اكتمال كل رد.",

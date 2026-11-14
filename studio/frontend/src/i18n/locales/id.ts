@@ -1031,6 +1031,7 @@ export const id = {
       showLess: "Tampilkan lebih sedikit",
       settings: "Pengaturan",
       api: "API",
+      apiMonitor: "Monitor API",
       lightMode: "Mode Terang",
       darkMode: "Mode Gelap",
       guidedTour: "Tur Terpandu",
@@ -2413,6 +2414,18 @@ export const id = {
         deviceGpu: "GPU",
         deviceLocked: "Diatur oleh {name}.",
         deviceSaveError: "Tidak dapat mengubah perangkat embedding",
+        offlineDocs: {
+          folderLabel: "Dokumentasi Unsloth offline",
+          folderDescription: "Simpan dokumentasi Unsloth lengkap ke folder agar bisa dipakai tanpa internet.",
+          folderHint: "Unsloth mengunduh unsloth.ai/docs/llms-full.txt ke folder ini sebagai \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" dan mengganti salinan sebelumnya. Tautkan folder ke basis pengetahuan untuk mencari dokumentasi di chat saat offline. Folder tetap tersimpan saat pembaruan.",
+          choose: "Pilih",
+          autoUpdateLabel: "Perbarui dokumentasi setiap rilis",
+          autoUpdateDescription: "Unduh salinan baru saat versi Unsloth baru pertama kali dijalankan.",
+          downloadNow: "Unduh sekarang",
+          downloading: "Mengunduh dokumentasi…",
+          notDownloaded: "Belum diunduh",
+          lastUpdated: "Diperbarui {date} untuk {release}",
+        },
       },
       storage: {
         sectionTitle: "Penyimpanan",
@@ -3292,11 +3305,11 @@ export const id = {
         "Tampilkan kapan setiap balasan selesai, di bawah balasan.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message waktu jam tanggal balasan pesan",
-      showGenerationDetails: "Info kecepatan dan pemuatan terperinci",
+      showGenerationDetails: "Info kecepatan terperinci",
       showGenerationDetailsDescription:
-        "Menambahkan kecepatan membaca prompt, jumlah token, dan penerimaan draf ke tampilan langsung, serta menunjukkan tempat lapisan model dimuat.",
+        "Menambahkan kecepatan membaca prompt, jumlah token, dan penerimaan draf ke tampilan langsung.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts statistik kecepatan lapisan",
+        "verbose developer stats speed tok/s prefill decode statistik kecepatan",
       generationStatsUpdates: "Statistik kecepatan dan konteks",
       generationStatsUpdatesDescription:
         "Waktu nyata menghitung token per detik dan penggunaan konteks saat balasan sedang dialirkan. Setelah selesai memperbaruinya saat setiap balasan selesai.",

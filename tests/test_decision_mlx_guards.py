@@ -202,3 +202,41 @@ def test_an_older_zoo_is_told_to_upgrade_for_a_d1(decision_mlx, monkeypatch, tmp
     monkeypatch.setattr(decision_mlx, "_decision_zoo", lambda: zoo)
     with pytest.raises(ImportError, match = "newer unsloth-zoo"):
         _load_d1(decision_mlx, tmp_path)
+
+
+@pytest.mark.parametrize("head", ["d1", "clef"])
+def test_a_language_model_naming_its_own_model_file_is_refused(
+    decision_mlx, monkeypatch, tmp_path, head
+):
+    # mlx-vlm / mlx-lm exec a config.json model_file, so it must never reach the zoo loaders.
+    zoo, *_ = _d1_zoo(tmp_path)
+    zoo.load_language_model_as_d1 = lambda *args, **kwargs: pytest.fail(
+        "model_file reached the d1 loader"
+    )
+    zoo.load_language_model_as_clef = lambda *args, **kwargs: pytest.fail(
+        "model_file reached the Clef loader"
+    )
+    monkeypatch.setattr(decision_mlx, "_decision_zoo", lambda: zoo)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "lfm3_vl", "model_file": "evil.py"}), encoding = "utf-8"
+    )
+    with pytest.raises(ValueError, match = "repository code"):
+        _load_d1(decision_mlx, tmp_path, head)
+
+
+def test_a_decision_checkpoint_naming_its_own_model_file_is_refused(
+    decision_mlx, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(decision_mlx, "_checkpoint_folder", lambda *args: tmp_path)
+    monkeypatch.setattr(decision_mlx, "is_clef_checkpoint", lambda folder: True)
+    monkeypatch.setattr(decision_mlx, "_is_plain_lm", lambda *args: False)
+    monkeypatch.setattr(
+        decision_mlx,
+        "_load_clef",
+        lambda *args, **kwargs: pytest.fail("model_file reached the loader"),
+    )
+    (tmp_path / "config.json").write_text(
+        json.dumps({"architectures": ["D1Model"], "model_file": "evil.py"}), encoding = "utf-8"
+    )
+    with pytest.raises(ValueError, match = "repository code"):
+        decision_mlx.FastDecisionModel.from_pretrained(str(tmp_path))

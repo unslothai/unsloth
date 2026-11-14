@@ -752,8 +752,11 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "!size-[30px]" in new_chat_tokens, new_chat_tokens
     assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
     assert "text-muted-foreground" in new_chat_tokens, new_chat_tokens
+    # The model picker moved into the composer; New chat leads the header's model controls.
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
-    assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
+    controls = chat_page.index('data-chat-model-controls=""')
+    assert controls < new_chat_click < chat_page.index("<ChatModelNotice", new_chat_click)
+    assert "<ModelSelector" not in chat_page[controls:new_chat_click]
 
 
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
@@ -813,12 +816,46 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         ), (combination, hidden[0])
 
 
+_TITLEBAR_MIRROR = re.compile(
+    r'set\(\s*"--studio-custom-titlebar-height",\s*usesCustomTitlebar\s*\?\s*'
+    r'(?P<value>"[^"]*"|[A-Za-z_]\w*)\s*:\s*null\s*,?\s*\)'
+)
+
+
+def _mirrored_titlebar_heights(provider: str) -> set[str]:
+    """The values the <html> mirror gives --studio-custom-titlebar-height for a custom titlebar.
+
+    A literal is read as is; a local (fullscreen picks `customTop`) is read from its `const`."""
+    m = _TITLEBAR_MIRROR.search(provider)
+    if m is None:
+        return set()
+    value = m.group("value")
+    if value.startswith('"'):
+        return {value.strip('"')}
+    decl = re.search(rf"const {re.escape(value)}\s*=\s*([^;]+);", provider)
+    return set(re.findall(r'"([^"]*)"', decl.group(1))) if decl else set()
+
+
+def test_the_titlebar_mirror_reader_follows_a_local():
+    assert _mirrored_titlebar_heights(
+        'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);'
+    ) == {"34px"}
+    assert _mirrored_titlebar_heights(
+        'const customTop = customTitlebarHidden ? "0px" : "34px";\n'
+        'set("--studio-custom-titlebar-height", usesCustomTitlebar ? customTop : null);'
+    ) == {"0px", "34px"}
+    assert _mirrored_titlebar_heights('set("--studio-titlebar-height", "34px");') == set()
+
+
 def test_fixed_sheets_start_below_the_custom_titlebar():
     provider = _window_chrome_source(APP_PROVIDER)
     sheet = _ui_source(SHEET)
 
-    # Portalled sheets read the height off <html>, so the mirror has to stay.
-    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
+    # Portalled sheets read the height off <html>, so the mirror has to stay, and give the 34px
+    # titlebar band whenever the titlebar shows (fullscreen hides it, so 0px is allowed too).
+    heights = _mirrored_titlebar_heights(provider)
+    assert "34px" in heights, f"the <html> titlebar-height mirror is gone or changed: {heights}"
+    assert heights <= {"34px", "0px"}, heights
 
     assert 'position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE' in sheet
     for side in ("left", "right", "top"):
@@ -2069,7 +2106,8 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
-    assert "@[50rem]:border-r" in header
+    # The rail continues the sidebar surface: no divider between rail and preview.
+    assert "@[50rem]:border-r" not in header
     # The media model picker shares Chat's control height (scaled in index.css), see _MEDIA_PICKER_CLASS.
     assert _MEDIA_PICKER_CLASS in header
     # No label override: the trigger reads exactly like Chat's.
@@ -2078,18 +2116,18 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "<LibraryPageLink" in links
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
-    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "@[50rem]:flex-row @[50rem]:gap-0 @[50rem]:overflow-hidden" in layout
     assert RAIL_WIDTH in layout
     assert RAIL_WIDTH_SCALED in AUDIO_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
-    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
-    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
+    assert "@[50rem]:border-r" not in layout
+    assert "gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[60px] @[50rem]:overflow-y-auto" in layout
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
-    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3" in layout
+    assert "relative z-10 flex shrink-0 justify-center px-6 pt-3 pb-5" in layout
     assert "btn-float-action" not in layout
     assert "absolute inset-x-0 bottom-0" not in layout
-    assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
+    assert layout.count("p-6 @[50rem]:mt-[52px] @[50rem]:pt-4") == 2
 
 
 TRAIN_SCROLLER_LAYOUT = (
@@ -2267,7 +2305,12 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (VIDEO_PAGE, "", "h", "48px", 1),
     (CHAT_PAGE, "", "h", "48px", 1),
     (IMAGES_PAGE, "@[50rem]:", "pt", "60px", 1),
-    (AUDIO_PAGE, "@[50rem]:", "pt", "60px", 2),
+    # The header overlays the panes (-mt cancels its 64px); rail and preview then clear it.
+    (AUDIO_PAGE, "@[50rem]:", "h", "64px", 1),
+    (AUDIO_PAGE, "@[50rem]:", "-mt", "64px", 1),
+    (AUDIO_PAGE, "@[50rem]:", "pt", "22px", 3),
+    (AUDIO_PAGE, "@[50rem]:", "mt", "60px", 1),
+    (AUDIO_PAGE, "@[50rem]:", "mt", "52px", 2),
     (DIFFUSION_TRAIN_PANEL, "@[50rem]:", "pt", "42px", 1),
     (DIFFUSION_TRAIN_PANEL, "", "pt", "42px", 1),
     # Hand-set sidebar lengths stay put as labels grow, so rows clip their text; seven 30px rows

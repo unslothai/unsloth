@@ -1044,6 +1044,7 @@ export const nl = {
       showLess: "Minder weergeven",
       settings: "Instellingen",
       api: "API",
+      apiMonitor: "API-monitor",
       lightMode: "Lichte modus",
       darkMode: "Donkere modus",
       guidedTour: "Rondleiding",
@@ -2452,6 +2453,18 @@ export const nl = {
         deviceGpu: "GPU",
         deviceLocked: "Ingesteld door {name}.",
         deviceSaveError: "Kan het embeddingapparaat niet wijzigen",
+        offlineDocs: {
+          folderLabel: "Offline Unsloth-documentatie",
+          folderDescription: "Sla de volledige Unsloth-documentatie op in een map, zodat je die zonder internet kunt gebruiken.",
+          folderHint: "Unsloth downloadt unsloth.ai/docs/llms-full.txt naar deze map als \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" en vervangt de vorige kopie. Koppel de map aan een kennisbank om de documentatie offline in de chat te doorzoeken. De map blijft bewaard bij updates.",
+          choose: "Kiezen",
+          autoUpdateLabel: "Documentatie bijwerken bij elke release",
+          autoUpdateDescription: "Download een nieuwe kopie de eerste keer dat een nieuwe Unsloth-versie start.",
+          downloadNow: "Nu downloaden",
+          downloading: "Documentatie wordt gedownload…",
+          notDownloaded: "Nog niet gedownload",
+          lastUpdated: "Bijgewerkt op {date} voor {release}",
+        },
       },
       storage: {
         sectionTitle: "Opslag",
@@ -3333,11 +3346,11 @@ export const nl = {
         "Onder elk antwoord tonen wanneer het klaar was.",
       showReplyTimesKeywords:
         "tijdstempel tijd klok datum uur wanneer voltooid aangekomen antwoord reactie bericht timestamp time",
-      showGenerationDetails: "Gedetailleerde snelheids- en laadinfo",
+      showGenerationDetails: "Gedetailleerde snelheidsinfo",
       showGenerationDetailsDescription:
-        "Voegt promptleessnelheid, tokenaantallen en conceptacceptatie toe aan de live weergaven en toont waar de lagen van een model zijn geladen.",
+        "Voegt promptleessnelheid, tokenaantallen en conceptacceptatie toe aan de live weergaven.",
       showGenerationDetailsKeywords:
-        "uitgebreid ontwikkelaar statistieken snelheid tok/s prefill decode lagen offload vram experts verbose developer stats speed layers",
+        "uitgebreid ontwikkelaar statistieken snelheid tok/s prefill decode verbose developer stats speed",
       generationStatsUpdates: "Snelheids- en contextstatistieken",
       generationStatsUpdatesDescription:
         "Realtime telt tokens per seconde en contextgebruik terwijl een antwoord wordt gestreamd. Na afloop werkt ze bij zodra elk antwoord klaar is.",

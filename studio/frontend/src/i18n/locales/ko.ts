@@ -929,6 +929,7 @@ export const ko = {
       showLess: "간략히 보기",
       settings: "설정",
       api: "API",
+      apiMonitor: "API 모니터",
       lightMode: "라이트 모드",
       darkMode: "다크 모드",
       guidedTour: "가이드 투어",
@@ -2197,6 +2198,18 @@ export const ko = {
         deviceGpu: "GPU",
         deviceLocked: "{name}(으)로 설정됨.",
         deviceSaveError: "임베딩 장치를 변경할 수 없습니다",
+        offlineDocs: {
+          folderLabel: "오프라인 Unsloth 문서",
+          folderDescription: "인터넷 없이도 사용할 수 있도록 Unsloth 전체 문서를 폴더에 저장합니다.",
+          folderHint: "Unsloth가 unsloth.ai/docs/llms-full.txt를 이 폴더에 \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" 이름으로 내려받고 이전 사본을 대체합니다. 폴더를 지식 베이스에 연결하면 오프라인에서도 채팅에서 문서를 검색할 수 있습니다. 폴더는 업데이트 후에도 유지됩니다.",
+          choose: "선택",
+          autoUpdateLabel: "릴리스마다 문서 업데이트",
+          autoUpdateDescription: "새 Unsloth 버전이 처음 시작될 때 새 사본을 내려받습니다.",
+          downloadNow: "지금 다운로드",
+          downloading: "문서를 다운로드하는 중…",
+          notDownloaded: "아직 다운로드하지 않음",
+          lastUpdated: "{date}에 {release}용으로 업데이트됨",
+        },
       },
       storage: {
         sectionTitle: "저장소",
@@ -3036,11 +3049,11 @@ export const ko = {
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:
         "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
-      showGenerationDetails: "자세한 속도 및 로딩 정보",
+      showGenerationDetails: "자세한 속도 정보",
       showGenerationDetailsDescription:
-        "실시간 표시에 프롬프트 읽기 속도, 토큰 수, 초안 채택률을 더하고 모델 레이어가 로드된 위치를 보여 줍니다.",
+        "실시간 표시에 프롬프트 읽기 속도, 토큰 수, 초안 채택률을 더합니다.",
       showGenerationDetailsKeywords:
-        "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "세부 속도 토큰 통계 verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "속도 및 컨텍스트 통계",
       generationStatsUpdatesDescription:
         "실시간은 응답이 스트리밍되는 동안 초당 토큰과 컨텍스트 사용량을 셉니다. 완료 시는 각 응답이 끝날 때 업데이트합니다.",

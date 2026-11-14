@@ -1032,6 +1032,7 @@ export const vi = {
       showLess: "Ẩn bớt",
       settings: "Cài đặt",
       api: "API",
+      apiMonitor: "Giám sát API",
       lightMode: "Chế độ sáng",
       darkMode: "Chế độ tối",
       guidedTour: "Hướng dẫn tham quan",
@@ -2418,6 +2419,18 @@ export const vi = {
         deviceGpu: "GPU",
         deviceLocked: "Được đặt bởi {name}.",
         deviceSaveError: "Không thể thay đổi thiết bị nhúng",
+        offlineDocs: {
+          folderLabel: "Tài liệu Unsloth ngoại tuyến",
+          folderDescription: "Lưu toàn bộ tài liệu Unsloth vào một thư mục để dùng khi không có internet.",
+          folderHint: "Unsloth tải unsloth.ai/docs/llms-full.txt vào thư mục này với tên \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" và thay thế bản trước. Liên kết thư mục với một cơ sở tri thức để tìm trong tài liệu khi trò chuyện ngoại tuyến. Thư mục được giữ lại qua các bản cập nhật.",
+          choose: "Chọn",
+          autoUpdateLabel: "Cập nhật tài liệu mỗi bản phát hành",
+          autoUpdateDescription: "Tải bản mới lần đầu một phiên bản Unsloth mới khởi động.",
+          downloadNow: "Tải ngay",
+          downloading: "Đang tải tài liệu…",
+          notDownloaded: "Chưa tải",
+          lastUpdated: "Đã cập nhật {date} cho {release}",
+        },
       },
       storage: {
         sectionTitle: "Lưu trữ",
@@ -3291,11 +3304,11 @@ export const vi = {
         "Hiển thị thời điểm mỗi câu trả lời hoàn tất, bên dưới câu trả lời.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message dấu thời gian giờ ngày hoàn tất trả lời tin nhắn",
-      showGenerationDetails: "Thông tin chi tiết về tốc độ và tải",
+      showGenerationDetails: "Thông tin chi tiết về tốc độ",
       showGenerationDetailsDescription:
-        "Thêm tốc độ đọc lời nhắc, số token và tỷ lệ chấp nhận bản nháp vào chỉ số trực tiếp, và cho biết các lớp của mô hình được tải ở đâu.",
+        "Thêm tốc độ đọc lời nhắc, số token và tỷ lệ chấp nhận bản nháp vào chỉ số trực tiếp.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts chi tiết nhà phát triển thống kê tốc độ lớp",
+        "verbose developer stats speed tok/s prefill decode chi tiết nhà phát triển thống kê tốc độ",
       generationStatsUpdates: "Thống kê tốc độ và ngữ cảnh",
       generationStatsUpdatesDescription:
         "Thời gian thực đếm token mỗi giây và mức dùng ngữ cảnh trong khi phản hồi đang truyền. Khi xong cập nhật chúng khi mỗi phản hồi kết thúc.",

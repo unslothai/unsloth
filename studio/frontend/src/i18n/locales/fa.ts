@@ -1025,6 +1025,7 @@ export const fa = {
       showLess: "نمایش کمتر",
       settings: "تنظیمات",
       api: "API",
+      apiMonitor: "پایش API",
       lightMode: "حالت روشن",
       darkMode: "حالت تیره",
       guidedTour: "تور راهنما",
@@ -2403,6 +2404,18 @@ export const fa = {
         deviceGpu: "GPU",
         deviceLocked: "با {name} تنظیم شده است.",
         deviceSaveError: "تغییر دستگاه جاسازی ممکن نشد",
+        offlineDocs: {
+          folderLabel: "مستندات آفلاین Unsloth",
+          folderDescription: "مستندات کامل Unsloth را در یک پوشه ذخیره کنید تا بدون اینترنت در دسترس باشد.",
+          folderHint: "Unsloth فایل unsloth.ai/docs/llms-full.txt را با نام \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" در این پوشه دانلود می‌کند و جایگزین نسخهٔ قبلی می‌شود. پوشه را به یک پایگاه دانش وصل کنید تا در حالت آفلاین در گفتگو در مستندات جستجو کنید. پوشه پس از به‌روزرسانی‌ها حفظ می‌شود.",
+          choose: "انتخاب",
+          autoUpdateLabel: "به‌روزرسانی مستندات با هر انتشار",
+          autoUpdateDescription: "نخستین بار که نسخهٔ جدید Unsloth اجرا شود، نسخهٔ تازه دانلود می‌شود.",
+          downloadNow: "اکنون دانلود کن",
+          downloading: "در حال دانلود مستندات…",
+          notDownloaded: "هنوز دانلود نشده",
+          lastUpdated: "به‌روزشده در {date} برای {release}",
+        },
       },
       storage: {
         sectionTitle: "فضای ذخیره‌سازی",
@@ -3278,11 +3291,11 @@ export const fa = {
         "زمان پایان هر پاسخ، زیر همان پاسخ نمایش داده شود.",
       showReplyTimesKeywords:
         "مهر زمانی زمان ساعت تاریخ پایان رسیدن پاسخ پیام timestamp",
-      showGenerationDetails: "اطلاعات دقیق سرعت و بارگذاری",
+      showGenerationDetails: "اطلاعات دقیق سرعت",
       showGenerationDetailsDescription:
-        "سرعت خواندن پرامپت، شمار توکن‌ها و پذیرش پیش‌نویس را به نمایش زنده می‌افزاید و نشان می‌دهد لایه‌های مدل کجا بارگذاری شده‌اند.",
+        "سرعت خواندن پرامپت، شمار توکن‌ها و پذیرش پیش‌نویس را به نمایش زنده می‌افزاید.",
       showGenerationDetailsKeywords:
-        "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode لایه‌ها offload vram experts",
+        "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode",
       generationStatsUpdates: "آمار سرعت و زمینه",
       generationStatsUpdatesDescription:
         "حالت بی‌درنگ توکن در ثانیه و مصرف زمینه را هنگام پخش پاسخ می‌شمارد. حالت پس از پایان آن‌ها را با تمام شدن هر پاسخ به‌روز می‌کند.",

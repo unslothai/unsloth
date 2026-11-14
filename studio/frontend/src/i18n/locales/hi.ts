@@ -933,6 +933,7 @@ export const hi = {
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
       api: "API",
+      apiMonitor: "API मॉनिटर",
       lightMode: "लाइट मोड",
       darkMode: "डार्क मोड",
       guidedTour: "गाइडेड टूर",
@@ -2209,6 +2210,18 @@ export const hi = {
         deviceGpu: "GPU",
         deviceLocked: "{name} द्वारा सेट।",
         deviceSaveError: "एम्बेडिंग डिवाइस नहीं बदला जा सका",
+        offlineDocs: {
+          folderLabel: "ऑफ़लाइन Unsloth दस्तावेज़",
+          folderDescription: "पूरे Unsloth दस्तावेज़ किसी फ़ोल्डर में सहेजें ताकि वे बिना इंटरनेट के भी काम करें।",
+          folderHint: "Unsloth इस फ़ोल्डर में unsloth.ai/docs/llms-full.txt को \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" नाम से डाउनलोड करता है और पिछली कॉपी को बदल देता है। ऑफ़लाइन चैट में दस्तावेज़ खोजने के लिए फ़ोल्डर को किसी नॉलेज बेस से जोड़ें। अपडेट के बाद भी फ़ोल्डर बना रहता है।",
+          choose: "चुनें",
+          autoUpdateLabel: "हर रिलीज़ के साथ दस्तावेज़ अपडेट करें",
+          autoUpdateDescription: "नया Unsloth संस्करण पहली बार शुरू होने पर नई कॉपी डाउनलोड करें।",
+          downloadNow: "अभी डाउनलोड करें",
+          downloading: "दस्तावेज़ डाउनलोड हो रहे हैं…",
+          notDownloaded: "अभी डाउनलोड नहीं हुए",
+          lastUpdated: "{release} के लिए {date} को अपडेट किया गया",
+        },
       },
       storage: {
         sectionTitle: "स्टोरेज",
@@ -3052,11 +3065,11 @@ export const hi = {
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:
         "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
-      showGenerationDetails: "गति और लोडिंग की विस्तृत जानकारी",
+      showGenerationDetails: "गति की विस्तृत जानकारी",
       showGenerationDetailsDescription:
-        "लाइव रीडआउट में प्रॉम्प्ट पढ़ने की गति, टोकन गिनती और ड्राफ़्ट स्वीकृति जोड़ता है, और दिखाता है कि मॉडल की लेयर कहाँ लोड हुईं।",
+        "लाइव रीडआउट में प्रॉम्प्ट पढ़ने की गति, टोकन गिनती और ड्राफ़्ट स्वीकृति जोड़ता है।",
       showGenerationDetailsKeywords:
-        "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "विवरण गति टोकन आँकड़े verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "गति और संदर्भ आँकड़े",
       generationStatsUpdatesDescription:
         "रीयल-टाइम उत्तर स्ट्रीम होते समय प्रति सेकंड टोकन और संदर्भ उपयोग गिनता है। पूरा होने पर हर उत्तर खत्म होने पर इन्हें अपडेट करता है।",

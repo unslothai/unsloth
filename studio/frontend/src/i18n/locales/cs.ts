@@ -1033,6 +1033,7 @@ export const cs = {
       showLess: "Zobrazit méně",
       settings: "Nastavení",
       api: "API",
+      apiMonitor: "Monitor API",
       lightMode: "Světlý režim",
       darkMode: "Tmavý režim",
       guidedTour: "Průvodce",
@@ -2431,6 +2432,18 @@ export const cs = {
         deviceGpu: "GPU",
         deviceLocked: "Nastaveno pomocí {name}.",
         deviceSaveError: "Zařízení pro embedding se nepodařilo změnit",
+        offlineDocs: {
+          folderLabel: "Offline dokumentace Unsloth",
+          folderDescription: "Uložte celou dokumentaci Unsloth do složky, aby fungovala i bez internetu.",
+          folderHint: "Unsloth stáhne unsloth.ai/docs/llms-full.txt do této složky jako \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" a nahradí předchozí kopii. Propojte složku se znalostní bází a prohledávejte dokumentaci v chatu i offline. Složka se při aktualizacích zachová.",
+          choose: "Vybrat",
+          autoUpdateLabel: "Aktualizovat dokumentaci s každým vydáním",
+          autoUpdateDescription: "Stáhne novou kopii při prvním spuštění nové verze Unsloth.",
+          downloadNow: "Stáhnout nyní",
+          downloading: "Stahování dokumentace…",
+          notDownloaded: "Zatím nestaženo",
+          lastUpdated: "Aktualizováno {date} pro {release}",
+        },
       },
       storage: {
         sectionTitle: "Úložiště",
@@ -3308,11 +3321,11 @@ export const cs = {
         "Pod každou odpovědí zobrazovat, kdy byla dokončena.",
       showReplyTimesKeywords:
         "časové razítko čas hodiny datum kdy dokončeno odpověď zpráva timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Podrobné informace o rychlosti a načítání",
+      showGenerationDetails: "Podrobné informace o rychlosti",
       showGenerationDetailsDescription:
-        "Přidá do živých údajů rychlost čtení výzvy, počty tokenů a přijetí návrhů a ukáže, kam se načetly vrstvy modelu.",
+        "Přidá do živých údajů rychlost čtení výzvy, počty tokenů a přijetí návrhů.",
       showGenerationDetailsKeywords:
-        "podrobné vývojář statistiky rychlost vrstvy verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "podrobné vývojář statistiky rychlost verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Statistiky rychlosti a kontextu",
       generationStatsUpdatesDescription:
         "Režim V reálném čase počítá tokeny za sekundu a využití kontextu během streamování odpovědi. Po dokončení je aktualizuje, až každá odpověď skončí.",

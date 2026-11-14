@@ -931,6 +931,7 @@ export const ja = {
       showLess: "表示を減らす",
       settings: "設定",
       api: "API",
+      apiMonitor: "API モニター",
       lightMode: "ライトモード",
       darkMode: "ダークモード",
       guidedTour: "ガイドツアー",
@@ -2190,6 +2191,18 @@ export const ja = {
         deviceGpu: "GPU",
         deviceLocked: "{name} で設定されています。",
         deviceSaveError: "埋め込みデバイスを変更できませんでした",
+        offlineDocs: {
+          folderLabel: "オフラインの Unsloth ドキュメント",
+          folderDescription: "Unsloth のドキュメント全体をフォルダーに保存し、インターネットなしでも使えるようにします。",
+          folderHint: "Unsloth は unsloth.ai/docs/llms-full.txt をこのフォルダーに \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" として保存し、以前のコピーを置き換えます。フォルダーをナレッジベースにリンクすると、オフラインでもチャットからドキュメントを検索できます。フォルダーはアップデート後も保持されます。",
+          choose: "選択",
+          autoUpdateLabel: "リリースごとにドキュメントを更新",
+          autoUpdateDescription: "新しい Unsloth バージョンの初回起動時に最新のコピーをダウンロードします。",
+          downloadNow: "今すぐダウンロード",
+          downloading: "ドキュメントをダウンロード中…",
+          notDownloaded: "まだダウンロードされていません",
+          lastUpdated: "{date} に {release} 用に更新",
+        },
       },
       storage: {
         sectionTitle: "ストレージ",
@@ -3029,11 +3042,11 @@ export const ja = {
       showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
       showReplyTimesKeywords:
         "タイムスタンプ 時刻 時間 日付 完了 応答 メッセージ timestamp time clock date reply",
-      showGenerationDetails: "速度と読み込みの詳細情報",
+      showGenerationDetails: "速度の詳細情報",
       showGenerationDetailsDescription:
-        "ライブ表示にプロンプトの読み取り速度、トークン数、ドラフトの採用率を追加し、モデルのレイヤーの読み込み先を表示します。",
+        "ライブ表示にプロンプトの読み取り速度、トークン数、ドラフトの採用率を追加します。",
       showGenerationDetailsKeywords:
-        "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "詳細 速度 トークン 統計 verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "速度とコンテキストの統計",
       generationStatsUpdatesDescription:
         "リアルタイムでは、応答のストリーミング中に毎秒トークン数とコンテキスト使用量を数えます。完了時は各応答の終了時に更新します。",

@@ -932,6 +932,7 @@ export const es = {
       showLess: "Mostrar menos",
       settings: "Configuración",
       api: "API",
+      apiMonitor: "Monitor de API",
       lightMode: "Modo claro",
       darkMode: "Modo oscuro",
       guidedTour: "Recorrido guiado",
@@ -2226,6 +2227,18 @@ export const es = {
         deviceGpu: "GPU",
         deviceLocked: "Definido por {name}.",
         deviceSaveError: "No se pudo cambiar el dispositivo de embeddings",
+        offlineDocs: {
+          folderLabel: "Documentación de Unsloth sin conexión",
+          folderDescription: "Guarda la documentación completa de Unsloth en una carpeta para usarla sin internet.",
+          folderHint: "Unsloth descarga unsloth.ai/docs/llms-full.txt en esta carpeta como \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" y reemplaza la copia anterior. Vincula la carpeta a una base de conocimiento para buscar en la documentación desde el chat sin conexión. La carpeta se conserva entre actualizaciones.",
+          choose: "Elegir",
+          autoUpdateLabel: "Actualizar la documentación con cada versión",
+          autoUpdateDescription: "Descarga una copia nueva la primera vez que se inicia una nueva versión de Unsloth.",
+          downloadNow: "Descargar ahora",
+          downloading: "Descargando la documentación…",
+          notDownloaded: "Aún no descargada",
+          lastUpdated: "Actualizada el {date} para {release}",
+        },
       },
       storage: {
         sectionTitle: "Almacenamiento",
@@ -3075,11 +3088,11 @@ export const es = {
       showReplyTimesDescription: "Mostrar debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora fecha cuándo terminó respuesta mensaje timestamp time clock date reply",
-      showGenerationDetails: "Información detallada de velocidad y carga",
+      showGenerationDetails: "Información detallada de velocidad",
       showGenerationDetailsDescription:
-        "Añade a las lecturas en directo la velocidad de lectura del prompt, el recuento de tokens y la aceptación de borradores, y muestra dónde se cargaron las capas del modelo.",
+        "Añade a las lecturas en directo la velocidad de lectura del prompt, el recuento de tokens y la aceptación de borradores.",
       showGenerationDetailsKeywords:
-        "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "detalles velocidad tokens estadísticas verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Estadísticas de velocidad y contexto",
       generationStatsUpdatesDescription:
         "En tiempo real cuenta los tokens por segundo y el uso del contexto mientras se transmite una respuesta. Al terminar los actualiza cuando acaba cada respuesta.",

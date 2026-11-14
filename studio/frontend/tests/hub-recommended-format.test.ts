@@ -88,11 +88,12 @@ test("Recommended browsing lists checkpoints only past 30 likes", async () => {
     hasRecommendedCheckpointLikes({ ...gguf, tags: ["safetensors", "gguf"] }),
     true,
   );
-  const page = await readSrcAsync("features/hub/hub-page.tsx");
+  const rule = await readSrcAsync("features/hub/lib/recommended-browse.ts");
   assert.match(
-    page,
+    rule,
     /\(!browsing \|\|[\s\S]{0,240}hasRecommendedCheckpointLikes\(result\)\)\) &&\s*matchesRecommended\(result, quantFormats\)/,
   );
+  const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
     /matchesFormat\(row\.result\.isGguf, "gguf"\)\)[\s\S]{0,200}\.filter\(\s*\(row\) => isDiffusionRow\(row\) \|\| hasRecommendedCheckpointLikes\(row\.result\),?\s*\)/,
@@ -136,7 +137,11 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /if \(format !== "recommended"\) \{\s*return matchesFormat\(detectResultFormat\(result\), format\);\s*\}\s*if \(diffusion\) return matchesRecommendedDiffusion\(result, quantFormats\);\s*return \(\s*\(!browsing \|\|\s*\(\(resolveOwnerProviderLogo/,
+    /if \(format !== "recommended"\) \{\s*return matchesFormat\(detectResultFormat\(result\), format\);\s*\}\s*if \(diffusion\) return matchesRecommendedDiffusion\(result, quantFormats\);\s*return matchesRecommendedBrowse\(result, quantFormats, browsing\);/,
+  );
+  assert.match(
+    await readSrcAsync("features/hub/lib/recommended-browse.ts"),
+    /\(!browsing \|\|\s*\(\(resolveOwnerProviderLogo/,
   );
   // The search's skip test follows the formats' contents: a system poll's new array must not restart it.
   assert.match(
@@ -212,4 +217,32 @@ test("a capable Recommended channel query drops the GGUF-only tag", async () => 
     page,
     /tags: widenRecommendedChannel\s*\?\s*withoutGgufTag\(liveListChannel\.tags\)\s*:\s*liveListChannel\.tags/,
   );
+});
+
+test("on a Mac, the chat picker skips FP8 / NVFP4 / GPTQ / AWQ checkpoints but keeps MLX and plain safetensors", async () => {
+  const { isRecommendableFormat } = await import(
+    "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+  );
+  for (const id of [
+    "unsloth/Mistral-Large-4-1T-A52B-NVFP4",
+    "unsloth/Mistral-Large-4-1T-A52B-FP8",
+    "org/Llama-4-GPTQ-Int4",
+    "org/Qwen3-32B-AWQ",
+  ]) {
+    assert.equal(isRecommendableFormat(id, false, true), false, id);
+  }
+  assert.equal(
+    isRecommendableFormat("unsloth/Qwen3-8B", false, true, "fp8"),
+    false,
+  );
+  for (const id of [
+    "unsloth/Qwen3-8B",
+    "mlx-community/Qwen3-8B-4bit",
+    "unsloth/Qwen3-8B-FP8-mlx",
+    "unsloth/Qwen3-8B-GGUF",
+  ]) {
+    assert.equal(isRecommendableFormat(id, false, true), true, id);
+  }
+  assert.equal(isRecommendableFormat("unsloth/Qwen3-8B", false, false), false);
+  assert.equal(isRecommendableFormat("unsloth/Qwen3-8B-GGUF", false, false), true);
 });

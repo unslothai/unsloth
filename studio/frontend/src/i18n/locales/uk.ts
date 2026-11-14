@@ -1038,6 +1038,7 @@ export const uk = {
       showLess: "Показати менше",
       settings: "Налаштування",
       api: "API",
+      apiMonitor: "Монітор API",
       lightMode: "Світлий режим",
       darkMode: "Темний режим",
       guidedTour: "Ознайомлювальний тур",
@@ -2439,6 +2440,18 @@ export const uk = {
         deviceGpu: "GPU",
         deviceLocked: "Задано змінною {name}.",
         deviceSaveError: "Не вдалося змінити пристрій для ембедингів",
+        offlineDocs: {
+          folderLabel: "Офлайн-документація Unsloth",
+          folderDescription: "Збережіть повну документацію Unsloth у теці, щоб користуватися нею без інтернету.",
+          folderHint: "Unsloth завантажує unsloth.ai/docs/llms-full.txt у цю теку як \"Unsloth Docs LLMs Full Text [Documentation] (date).md\", замінюючи попередню копію. Під'єднайте теку до бази знань, щоб шукати в документації в чаті офлайн. Тека зберігається під час оновлень.",
+          choose: "Вибрати",
+          autoUpdateLabel: "Оновлювати документацію з кожним випуском",
+          autoUpdateDescription: "Завантажує свіжу копію під час першого запуску нової версії Unsloth.",
+          downloadNow: "Завантажити зараз",
+          downloading: "Завантаження документації…",
+          notDownloaded: "Ще не завантажено",
+          lastUpdated: "Оновлено {date} для {release}",
+        },
       },
       storage: {
         sectionTitle: "Сховище",
@@ -3318,11 +3331,11 @@ export const uk = {
         "Показувати під кожною відповіддю, коли її завершено.",
       showReplyTimesKeywords:
         "позначка часу час годинник дата година коли завершено надійшло відповідь повідомлення timestamp",
-      showGenerationDetails: "Докладна інформація про швидкість і завантаження",
+      showGenerationDetails: "Докладна інформація про швидкість",
       showGenerationDetailsDescription:
-        "Додає до живих показників швидкість читання запиту, кількість токенів і прийняття чернеток, а також показує, куди завантажено шари моделі.",
+        "Додає до живих показників швидкість читання запиту, кількість токенів і прийняття чернеток.",
       showGenerationDetailsKeywords:
-        "докладно розробник статистика швидкість tok/s prefill decode шари вивантаження offload vram експерти",
+        "докладно розробник статистика швидкість tok/s prefill decode",
       generationStatsUpdates: "Статистика швидкості й контексту",
       generationStatsUpdatesDescription:
         "У реальному часі рахує токени за секунду й використання контексту, поки відповідь передається. Після завершення оновлює їх, коли кожна відповідь закінчена.",
