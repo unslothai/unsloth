@@ -1940,6 +1940,29 @@ def test_a_killed_reinstall_keeps_its_old_file_list(tmp_path):
     assert not (prefix / f".unsloth-old-files-{dead.pid}").exists()
 
 
+def test_malformed_cleanup_state_never_disables_the_metadata_hook(tmp_path):
+    """A non-UTF-8 byte in the chat-writable bookkeeping must not stop the shim before the audit hook."""
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    for name in (".unsloth-incomplete", ".unsloth-old-files"):
+        (prefix / name).write_bytes(b"\xff\xfe\n")
+    code = (
+        "import socket\ns = socket.socket()\ns.settimeout(0.1)\n"
+        "try:\n    s.connect(('169.254.169.254', 80))\nexcept PermissionError:\n    print('blocked')\n"
+        "except OSError:\n    print('unblocked')"
+    )
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": tools._SANDBOX_SITE_DIR,
+        "PIP_PREFIX": str(prefix),
+        "_UNSLOTH_SANDBOX_BLOCK_METADATA": "1",
+    }
+    out = subprocess.run(
+        [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
+    )
+    assert out.stdout.strip() == "blocked", out.stderr
+
+
 def test_an_unfinished_install_retires_nothing(tmp_path):
     """A RECORD without pip's INSTALLER row is a wheel's own copy from an install that died halfway."""
     site_dir = tmp_path / "prefix" / "lib" / "site-packages"

@@ -597,12 +597,15 @@ class _LatePipFinder:
     ):
         if name == "pip.__main__":
             sys.meta_path[:] = [f for f in sys.meta_path if f is not self]
-            if os.environ.get("PIP_PREFIX"):
-                _track_pip()  # a prefix set before start (OS-isolated launches): cleanup already began
-            else:
-                _route_pip(True)
+            try:
                 if os.environ.get("PIP_PREFIX"):
-                    _start_cleanup(True)
+                    _track_pip()  # a prefix set before start (OS-isolated launches): cleanup already began
+                else:
+                    _route_pip(True)
+                    if os.environ.get("PIP_PREFIX"):
+                        _start_cleanup(True)
+            except Exception:  # noqa: BLE001
+                pass
         return None
 
 
@@ -1015,7 +1018,7 @@ def _failed_installs():
                     parts = line.rstrip("\n").split("\t")
                     if len(parts) == 3:
                         found.add(tuple(parts))
-        except (KeyError, OSError):
+        except (KeyError, OSError, ValueError):
             pass
         found |= _killed_installs()
         _incomplete.append(found)
@@ -1072,7 +1075,7 @@ def _killed_installs():
                 with open(os.path.join(prefix, _SAVED), "a", encoding = "utf-8") as f:
                     f.writelines(rows)
             os.remove(path)
-        except OSError:
+        except (OSError, ValueError):
             pass
     for name in os.listdir(prefix):
         pid = name[len(_SAVED) + 1 :] if name.startswith(_SAVED + "-") else ""
@@ -1228,7 +1231,7 @@ def _saved_inventory():
                 )
                 if len(row) == 3 and row[2].startswith(root) and folder.startswith(real):
                     saved.setdefault((row[0], row[1]), set()).add(row[2])
-    except (KeyError, OSError):
+    except (KeyError, OSError, ValueError):
         pass
     return saved
 
@@ -1397,6 +1400,13 @@ class _PipStatusFinder:
 
 
 def _after_pip(snapshot):
+    try:
+        _after_pip_run(snapshot)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _after_pip_run(snapshot):
     # Only once pip's main() returned 0: an install that failed halfway leaves the old version's files alone,
     # and what it wrote is remembered so a later process does not take it for a finished replacement.
     if not _pip_status:
@@ -1427,16 +1437,20 @@ def _after_pip(snapshot):
 
 
 def _start_cleanup(is_pip):
-    import atexit
+    # Chat-writable bookkeeping: whatever it holds, it must not stop this file before the audit hook below.
+    try:
+        import atexit
 
-    _failed_installs()  # a killed pip's note is read before anything else changes the prefix
-    _prune_stale_dist_info()
-    if is_pip:
-        _track_pip()
-    elif _late_pip_launch():
-        atexit.register(lambda: _pip_tracked or _prune_stale_dist_info())
-    else:
-        atexit.register(_prune_stale_dist_info)
+        _failed_installs()  # a killed pip's note is read before anything else changes the prefix
+        _prune_stale_dist_info()
+        if is_pip:
+            _track_pip()
+        elif _late_pip_launch():
+            atexit.register(lambda: _pip_tracked or _prune_stale_dist_info())
+        else:
+            atexit.register(_prune_stale_dist_info)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 _pip_tracked = []
