@@ -404,12 +404,14 @@ export const VoiceEngine: FC = () => {
     if (held.length) voiceTrace("engine.foldHeld", { held, text });
     // Drained on every send, so speech kept while the model could not answer in it never rides along later.
     const taken = takeVoiceTurnAudio();
-    const turnAudio = voiceHearsAudio(
-      useChatRuntimeStore.getState(),
-      useVoiceSettingsStore.getState().micTarget,
-    )
-      ? taken
-      : null;
+    // Non-GGUF backends refuse audio beside an image or video, so such a turn goes as its transcript.
+    const visual = composer
+      .getState()
+      .attachments.some((a) => a.type === "image" || /^(image|video)\//.test(a.contentType ?? ""));
+    const turnAudio =
+      !visual && voiceHearsAudio(useChatRuntimeStore.getState(), useVoiceSettingsStore.getState().micTarget)
+        ? taken
+        : null;
     // Cover the tail clip (isPlaying) too, not just an active streaming session (isSpeaking).
     voiceTrace("engine.commitUtterance", { text, speaking: isSpeakingRef.current, playing: isPlayingRef.current });
     if (isSpeakingRef.current || isPlayingRef.current) stop();

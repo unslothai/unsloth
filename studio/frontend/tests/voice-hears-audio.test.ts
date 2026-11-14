@@ -91,7 +91,7 @@ test("the loop keeps and sends the turn's speech through the hearing gate, not t
   assert.match(loop, /onCleared: \(\) => turnAudio\.clear\(\)/);
   assert.match(loop, /const editing = !heldEdit\.autoSend\(\);[\s\S]{0,400}turnAudio\.add\(analysis\.samples, sampleRate\)/);
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
-  assert.match(engine, /const turnAudio = voiceHearsAudio\(/);
+  assert.match(engine, /const turnAudio =\s*!visual && voiceHearsAudio\(/);
   assert.doesNotMatch(engine, /const turnAudio = speaksWithChatModel\(\)/);
   // The text TTS is skipped only for a reply the chat model speaks itself.
   assert.match(engine, /spokenRunRef\.current =\s*speaksWithChatModel\(\) && lastUserTurnHasAudio/);
@@ -126,3 +126,9 @@ test("a turn whose audio attaches slowly re-arms the run once it lands", () => {
     /\.then\(\(\) => \{\s*if \(voiceModeRef\.current !== "active" \|\| voiceNotesEpoch\(\) !== turn\) return;\s*send\(\);[\s\S]{0,200}if \(!voiceCoalesceTimerRef\.current\)\s*voiceCoalesceTimerRef\.current = setTimeout\(\(\) => fireCoalescedRun\(0\), VOICE_COALESCE_MS\);/,
   );
 });
+
+test("a turn with an image or video attached goes as its transcript, not with the mic audio", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /attachments\.some\(\(a\) => a\.type === "image" \|\| \/\^\(image\|video\)\\\/\/\.test\(a\.contentType \?\? ""\)\)/);
+});
+
