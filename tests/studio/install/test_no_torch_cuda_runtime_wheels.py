@@ -305,6 +305,7 @@ def test_a_pipless_uv_venv_with_uv_off_path_gets_the_wheels(tmp_path):
     py = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     home = tmp_path / "home"
     (home / ".local" / "bin").mkdir(parents = True)
+    # lint-allow: AV009 copies the uv found on PATH, not a system binary; System32 only goes on the child's PATH below
     shutil.copy2(uv, home / ".local" / "bin" / pathlib.Path(uv).name)
     system_dirs = [
         os.environ.get("SystemRoot", ""),
