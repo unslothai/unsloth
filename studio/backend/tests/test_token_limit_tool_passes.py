@@ -502,3 +502,145 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     source = inspect.getsource(inference_route)
     assert '_sf_streamed_calls.add(event.get("tool_call_id"))' in source
     assert 'event.get("tool_call_id") not in _sf_streamed_calls' in source
+
+
+def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
+    from core.inference import api_monitor as monitor_module
+
+    monkeypatch.setattr(monitor_module, "_MAX_PROMPT_BYTES", 10_000)
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+
+    def start(prompt):
+        return monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "m",
+            prompt = prompt,
+            subject = "owner",
+            via_api_key = True,
+        )
+
+    entry = start("p" * 40_000)
+    start("q" * 4_000)  # retention trims the older running prompt to a preview
+    monitor.append_reply(entry, "r" * 40)
+    monitor.finish(entry, "cancelled")
+    [receipt] = receipts
+    assert receipt.prompt_tokens == 10_000
+
+
+def test_a_reported_zero_completion_is_not_replaced_by_an_estimate():
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    entry = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "m",
+        prompt = "p" * 4,
+        subject = "owner",
+        via_api_key = True,
+    )
+    # max_tokens 0 scoring: the preview carries choice headings, but nothing was generated.
+    monitor.append_reply(entry, "Choice 1\nChoice 2")
+    monitor.set_usage(entry, prompt_tokens = 1, completion_tokens = 0, total_tokens = 1)
+    monitor.finish(entry)
+    [receipt] = receipts
+    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (1, 0, 1)
+
+
+def test_a_temporary_chatgpt_subscription_stream_settles_a_receipt(monkeypatch):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from core.inference import openai_codex_auth, openai_codex_client
+    from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
+    from models.inference import ChatCompletionRequest
+
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+
+    def chunk(delta, usage = None):
+        body = {"id": "c", "object": "chat.completion.chunk", "model": "gpt-x"}
+        body["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
+        if usage:
+            body["usage"] = usage
+        return "data: " + json.dumps(body)
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def stream(self, **kwargs):
+            yield chunk({"content": "hello"})
+            yield chunk({}, {"prompt_tokens": 30, "completion_tokens": 7, "total_tokens": 37})
+
+        async def close(self):
+            pass
+
+    async def resolve_access(*args, **kwargs):
+        return "token", "acct"
+
+    monkeypatch.setattr(openai_codex_client, "OpenAICodexClient", _Client)
+    monkeypatch.setattr(
+        openai_codex_client, "subscription_catalog_matches_account", lambda *a: True
+    )
+    monkeypatch.setattr(openai_codex_client, "restore_subscription_catalog", lambda *a: None)
+    monkeypatch.setattr(openai_codex_client, "subscription_catalog_known", lambda *a: True)
+    monkeypatch.setattr(openai_codex_client, "offered_subscription_model_ids", lambda *a: {"gpt-x"})
+    monkeypatch.setattr(
+        openai_codex_client, "offered_subscription_model", lambda *a: {"vision": False}
+    )
+    monkeypatch.setattr(openai_codex_auth, "load_oauth_bundle", lambda *a: {"account_id": "acct"})
+    monkeypatch.setattr(openai_codex_auth, "resolve_access", resolve_access)
+    monkeypatch.setattr(
+        inference_route.providers_db,
+        "get_provider",
+        lambda pid: {
+            "id": pid,
+            "provider_type": "openai_codex",
+            "base_url": openai_codex_auth.OPENAI_CODEX_API_BASE,
+            "display_name": "ChatGPT",
+            "is_enabled": True,
+            "models": ["gpt-x"],
+        },
+    )
+    monkeypatch.setattr(inference_route, "validate_provider_base_url", lambda url: url)
+    monkeypatch.setattr(inference_route, "_request_has_api_key", lambda request: False)
+    monkeypatch.setattr(inference_route, "_request_used_api_key", lambda request: False)
+    monkeypatch.setattr(
+        inference_route.account_access, "require_connection_model_allowed", lambda *a: None
+    )
+
+    class _Request:
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        headers = {}
+        state = SimpleNamespace()
+
+        async def is_disconnected(self):
+            return False
+
+    payload = ChatCompletionRequest(
+        model = "gpt-x",
+        provider_id = "chatgpt",
+        stream = True,
+        messages = [{"role": "user", "content": "hi"}],
+    )
+
+    async def run():
+        with temporary_usage_scope(TemporaryUsage("thread", "external")):
+            response = await inference_route._proxy_to_external_provider(
+                payload, _Request(), "owner"
+            )
+            async for _ in response.body_iterator:
+                pass
+
+    asyncio.run(run())
+    [receipt] = receipts
+    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (30, 7, 37)
+    assert receipt.temporary_thread == "thread"

@@ -252,6 +252,8 @@ class ApiMonitorEntry:
     reply_chars: int = 0
     # reply_chars when output usage was last reported; only text after it is unaccounted.
     reported_reply_chars: int = 0
+    # Retention can trim prompt to a preview; the fallback estimate needs the original length.
+    prompt_chars: int = 0
     finished_at: Optional[float] = None
     context_length: Optional[int] = None
     prompt_tokens: Optional[int] = None
@@ -463,6 +465,7 @@ class ApiMonitor:
             # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
             model = str(model) if model else "default",
             prompt = prompt or "",
+            prompt_chars = len(prompt or ""),
             status = "running",
             started_at = now,
             updated_at = now,
@@ -1037,14 +1040,15 @@ class ApiMonitor:
         # stopped one adds what streamed after its last report (a tool pass reports mid-request).
         unreported = (
             entry.reply_chars
-            if not completion_tokens
+            # A reported zero is real (max_tokens 0 scoring); only missing usage is estimated.
+            if entry.completion_tokens is None
             else 0
             if entry.status == "completed"
             else entry.reply_chars - entry.reported_reply_chars
         )
         if (entry.temporary_usage or entry.via_api_key) and unreported > 0:
             # Anthropic streams report input at message_start, so keep a reported prompt.
-            prompt_tokens = prompt_tokens or -(-len(entry.prompt) // 4)
+            prompt_tokens = prompt_tokens or -(-entry.prompt_chars // 4)
             completion_tokens += -(-unreported // 4)
             total_tokens = prompt_tokens + completion_tokens
         return (

@@ -29620,6 +29620,19 @@ async def _proxy_to_external_provider(
                 account_id,
                 refresh_access = _refresh_codex_access,
             )
+            # Like the generic provider path: the receipt is what debits a temporary or API-key call.
+            # Started in the body (still under the request's scopes) so an unstarted one leaks no row.
+            codex_monitor_id = None
+            codex_stopped = False
+            if not getattr(getattr(request, "state", None), "skip_api_monitor", False):
+                codex_monitor_id = api_monitor.start(
+                    endpoint = getattr(getattr(request, "url", None), "path", "/v1/chat/completions"),
+                    via_api_key = _request_used_api_key(request),
+                    method = getattr(request, "method", "POST"),
+                    model = model,
+                    prompt = _monitor_prompt_from_messages(payload.messages),
+                    subject = current_subject,
+                )
             try:
                 # Closing upstream from the watcher makes cancel immediate even while no SSE line arrives.
                 generator = (
@@ -29646,8 +29659,10 @@ async def _proxy_to_external_provider(
                 )
                 async for line in generator:
                     if cancel_event.is_set() or await request.is_disconnected():
+                        codex_stopped = True
                         await generator.aclose()
                         break
+                    _monitor_openai_sse_line(codex_monitor_id, line)
                     if not _ui_events and is_ui_control_sse_line(line):
                         if _drop_keepalive.due():
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
@@ -29664,11 +29679,15 @@ async def _proxy_to_external_provider(
                 # The loop can end without opening the turn a withheld call promised; flush the owed terminal chunk.
                 _owed = _tool_call_stripper.owed_terminal_chunk()
                 if _owed is not None:
+                    _monitor_openai_sse_line(codex_monitor_id, _owed)
                     yield f"{_owed}\n\n"
+                if not codex_stopped:
+                    _monitor_openai_sse_line(codex_monitor_id, "data: [DONE]")
                 yield "data: [DONE]\n\n"
             except asyncio.CancelledError:
                 raise
             except CodexReauthorizationError as exc:
+                api_monitor.fail(codex_monitor_id, str(exc))
                 from core.inference.openai_codex_auth import (
                     mark_reauthorization_required,
                     provider_oauth_write_guard,
@@ -29686,6 +29705,7 @@ async def _proxy_to_external_provider(
                 )
                 yield "data: [DONE]\n\n"
             except CodexQuotaError as exc:
+                api_monitor.fail(codex_monitor_id, str(exc))
                 yield (
                     "data: "
                     + json.dumps(
@@ -29702,6 +29722,7 @@ async def _proxy_to_external_provider(
                 yield "data: [DONE]\n\n"
 
             except CodexTransportError as exc:
+                api_monitor.fail(codex_monitor_id, str(exc))
                 logger.warning(
                     "openai_codex.stream_failed",
                     error_type = type(exc).__name__,
@@ -29716,6 +29737,7 @@ async def _proxy_to_external_provider(
                 yield "data: [DONE]\n\n"
 
             except Exception as exc:
+                api_monitor.fail(codex_monitor_id, _friendly_error(exc))
                 logger.warning(
                     "openai_codex.stream_failed",
                     error_type = type(exc).__name__,
@@ -29731,6 +29753,8 @@ async def _proxy_to_external_provider(
                 )
                 yield "data: [DONE]\n\n"
             finally:
+                # Idempotent: a [DONE] or failure above already settled it.
+                api_monitor.finish(codex_monitor_id, "cancelled")
                 await client.close()
                 await _stop_local_disconnect_cancel_watcher(disconnect_task)
 
