@@ -657,3 +657,40 @@ def test_release_fp8_config_is_dropped_only_where_it_cannot_load(monkeypatch, ne
     assert (getattr(config, "quantization_config", None) is None) == (needs_conversion == "1")
     bnb = {"quant_method": "bitsandbytes", "load_in_4bit": True}
     assert DeepseekV41Config(quantization_config = bnb).quantization_config == bnb
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "all-linear",
+        None,
+    ],
+)
+def test_default_lora_targets_map_to_the_real_projections(targets):
+    """FastLanguageModel's q/k/v/o/gate/up/down defaults, "all-linear" and None reach q_a/q_b, kv, o_a/o_b, the
+    compressor, the engram wkv and the shared expert; never the indexer (selection only) or a router."""
+    peft = pytest.importorskip("peft")
+    mapped = dsv41.DeepseekV41ForCausalLM.unsloth_lora_target_modules(targets)
+    model = peft.get_peft_model(_tiny_model(), peft.LoraConfig(r = 4, target_modules = mapped))
+    wrapped = {n.rsplit(".lora_A", 1)[0] for n, _ in model.named_parameters() if ".lora_A." in n}
+    kinds = {".".join(n.split(".")[-2:]) for n in wrapped}
+    for kind in (
+        "self_attn.q_a_proj",
+        "self_attn.q_b_proj",
+        "self_attn.kv_proj",
+        "self_attn.o_a_proj",
+        "self_attn.o_b_proj",
+        "compressor.kv_proj",
+        "compressor.gate_proj",
+        "engram.wkv",
+        "shared_experts.gate_proj",
+        "shared_experts.up_proj",
+        "shared_experts.down_proj",
+    ):
+        assert kind in kinds, kind
+    assert not any(".indexer." in n or n.endswith(".gate") for n in wrapped)
+    # the family filters and a caller's regex
+    attention_only = dsv41.DeepseekV41ForCausalLM.unsloth_lora_target_modules(None, mlp = False)
+    assert "down_proj" not in attention_only and "self_attn.kv_proj" in attention_only
+    assert dsv41.DeepseekV41ForCausalLM.unsloth_lora_target_modules(r".*q_a_proj") == r".*q_a_proj"

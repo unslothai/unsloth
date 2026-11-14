@@ -1154,6 +1154,20 @@ def pipeline_safe_cut_points(config):
     return [i for i in range(config.num_hidden_layers) if _engram_cut_safe(config, i)]
 
 
+_LORA_KV_TARGETS = (
+    "self_attn.kv_proj",
+    "compressor.kv_proj",
+    "compressor.gate_proj",
+    "engram.wkv",
+)
+_LORA_TARGET_MAP = {
+    "q_proj": ("self_attn.q_a_proj", "self_attn.q_b_proj"),
+    "k_proj": _LORA_KV_TARGETS,
+    "v_proj": _LORA_KV_TARGETS,
+    "o_proj": ("self_attn.o_a_proj", "self_attn.o_b_proj"),
+}
+
+
 class DeepseekV41PreTrainedModel(PreTrainedModel):
     config_class = DeepseekV41Config
     base_model_prefix = "model"
@@ -1247,6 +1261,34 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
             }
             target._autobind_tokenizer(pretrained_model_name_or_path, **hub)
         return model
+
+    @staticmethod
+    def unsloth_lora_target_modules(
+        target_modules,
+        attention = True,
+        mlp = True,
+    ):
+        """Unsloth's get_peft_model calls this to translate the usual LoRA names into this model's Linears.
+        q_proj -> q_a_proj / q_b_proj, k_proj / v_proj -> the single KV head (kv_proj), the compressor (kv_proj /
+        gate_proj) and the engram key-value (wkv), o_proj -> o_a_proj (grouped) / o_b_proj; gate / up / down_proj stay
+        leaves, which reach the shared expert and, through Unsloth's MoE detection, the routed experts. None and
+        "all-linear" select all of them (filtered by the attention / mlp families). The indexer (selection only, no
+        gradient) and the routers (frozen) are never targeted. A regex string or names this map does not know pass
+        through unchanged."""
+        if isinstance(target_modules, str) and target_modules != "all-linear":
+            return target_modules
+        if target_modules is None or target_modules == "all-linear":
+            wanted = (["q_proj", "k_proj", "o_proj"] if attention else []) + (
+                ["gate_proj", "up_proj", "down_proj"] if mlp else []
+            )
+        else:
+            wanted = list(target_modules)
+        out = []
+        for name in wanted:
+            for target in _LORA_TARGET_MAP.get(name, (name,)):
+                if target not in out:
+                    out.append(target)
+        return out
 
     def _autobind_tokenizer(
         self,

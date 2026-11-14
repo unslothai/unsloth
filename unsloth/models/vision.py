@@ -5571,6 +5571,19 @@ class FastBaseModel:
             return model
         transformers_set_seed(random_state)
 
+        # Models with their own projection names (Unsloth's native DeepSeek-V4.1) translate q/k/v/o/gate/up/down_proj,
+        # "all-linear" and None into their real Linears; the attention / mlp family choice is applied there.
+        _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
+        if callable(_remap_targets) and finetune_language_layers:
+            _remapped = _remap_targets(
+                target_modules,
+                attention = finetune_attention_modules,
+                mlp = finetune_mlp_modules,
+            )
+            if _remapped is not target_modules:
+                target_modules = _remapped
+                finetune_attention_modules = finetune_mlp_modules = True
+
         if type(r) is not int:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
         if r <= 0:
