@@ -82,6 +82,8 @@ __all__ = [
     "sparse_attn",
     "sparse_attn_reference",
     "DSV41_STATS",
+    "make_engram_table",
+    "pipeline_safe_cut_points",
 ]
 
 ENGRAM_DEAD = -1
@@ -240,10 +242,12 @@ class DeepseekV41GroupedLinear(nn.Linear):
         self.n_groups = n_groups
 
     def forward(self, x):
-        weight = self.weight.view(self.n_groups, -1, self.in_features)
+        # Groups from the input, not n_groups: under tensor parallelism a rank holds whole groups (colwise rows).
+        groups = x.shape[-2]
+        weight = self.weight.view(groups, -1, self.in_features)
         out = torch.einsum("...gi,goi->...go", x, weight.to(x.dtype))
         if self.bias is not None:
-            out = out + self.bias.view(self.n_groups, -1).to(out.dtype)
+            out = out + self.bias.view(groups, -1).to(out.dtype)
         return out
 
 
@@ -492,7 +496,9 @@ class DeepseekV41Attention(nn.Module):
         inv_freq = _inv_freq_on(*self._rope_key, positions.device, inference)
         cos, sin = _rope_cos_sin(positions, inv_freq)
         qr = self.q_a_norm(self.q_a_proj(x))
-        q = self.q_b_proj(qr).unflatten(-1, (self.n_heads, self.head_dim))
+        q = self.q_b_proj(qr).unflatten(
+            -1, (-1, self.head_dim)
+        )  # local heads under tensor parallelism
         q = apply_rotary(q, cos, sin)
         kv = apply_rotary(self.kv_norm(self.kv_proj(x)), cos, sin)
         window_idxs = _window_idxs(self.window, seqlen, x.device).unsqueeze(0).expand(bsz, -1, -1)
@@ -521,7 +527,7 @@ class DeepseekV41Attention(nn.Module):
             topk_idxs = window_idxs
         o = sparse_attn(q, kv, self.sinks, topk_idxs, self.softmax_scale)
         o = apply_rotary(o, cos, sin, inverse = True)
-        o = self.o_a_proj(o.reshape(bsz, seqlen, self.n_groups, -1))
+        o = self.o_a_proj(o.reshape(bsz, seqlen, -1, self.o_a_proj.in_features))
         return self.o_b_proj(o.flatten(2))
 
 
@@ -674,6 +680,63 @@ class DeepseekV41SparseMoeBlock(nn.Module):
 # ----------------------------------------------------------------------------------------------------------------
 # Engram (model.py:296-365, engram.py)
 # ----------------------------------------------------------------------------------------------------------------
+class _TensorTableStore:
+    """Rows held in memory as plain tensors (no Parameter / buffer): for a model built from a config rather than
+    a checkpoint (tests, tiny-model builders). Duck-types the parts of unsloth_zoo's FrozenTableStore that
+    UnslothFrozenTableEmbedding reads."""
+
+    def __init__(
+        self,
+        weight,
+        scale = None,
+        block_size = 32,
+    ):
+        self.weight, self.scale, self.block_size = weight, scale, block_size
+        self.num_rows = weight.shape[0]
+        self.planes = {}  # nothing file-backed to export
+        self._paths = []
+        self.nbytes = weight.numel() * weight.element_size()
+
+    def gather(
+        self,
+        ids,
+        dtype = None,
+    ):
+        idx = ids.to(self.weight.device).long()
+        values = F.embedding(idx, self.weight)
+        if self.scale is not None and values.dtype == getattr(torch, "float8_e4m3fn", None):
+            scales = F.embedding(idx, self.scale).float()
+            values = (
+                values.float().unflatten(-1, (-1, self.block_size)) * scales.unsqueeze(-1)
+            ).flatten(-2)
+        return values.to(device = ids.device, dtype = dtype or values.dtype)
+
+
+def make_engram_table(
+    layer_id,
+    num_embeddings,
+    head_dim,
+    block_size = 32,
+):
+    """Parameter-free table (unsloth_zoo's UnslothFrozenTableEmbedding, bound to the checkpoint after the load)
+    when the installed unsloth_zoo provides it, else the Parameter-holding DeepseekV41EngramEmbedding.
+    UNSLOTH_DSV41_FROZEN_ENGRAM=0 forces the latter."""
+    if os.environ.get("UNSLOTH_DSV41_FROZEN_ENGRAM", "1") != "0":
+        try:
+            from unsloth_zoo.temporary_patches.deepseek_v41 import make_deepseek_v41_engram_table
+        except Exception:
+            make_deepseek_v41_engram_table = None
+        if make_deepseek_v41_engram_table is not None:
+            return make_deepseek_v41_engram_table(layer_id, num_embeddings, head_dim, block_size)
+    return DeepseekV41EngramEmbedding(num_embeddings, head_dim, block_size)
+
+
+def is_parameter_free_table(module):
+    return hasattr(module, "frozen_table_store") and not any(
+        True for _ in module.parameters(recurse = False)
+    )
+
+
 class DeepseekV41EngramEmbedding(nn.Embedding):
     """One n-gram hash table: rows in the checkpoint dtype (fp8 e4m3 with one e8m0 scale per ``block_size``
     channels in the released files, or a float copy), dequantized on lookup (model.py:312-325). Lives at model level
@@ -856,8 +919,15 @@ class DeepseekV41NgramHashState(nn.Module):
         self,
         input_ids,
         token_mask = None,
+        left_context = None,
     ):
-        """-> [b, s, n_engram_layers, (max_ngram_size - 1) * n_heads] int64 row ids."""
+        """-> [b, s, n_engram_layers, (max_ngram_size - 1) * n_heads] int64 row ids.
+
+        A pure function of the token ids and the config (no rank, device or process state). ``left_context``
+        [b, k] holds the raw ids of the k tokens right before ``input_ids[:, 0]`` (-1 = no token / padding): a
+        sequence-sharded rank (context / sequence parallel) passes the previous shard's last
+        ``max_ngram_size - 1`` ids and gets the same hashes as one process over the whole sequence. None = the
+        sequence starts here."""
         if self._token_map is None:
             raise ValueError(
                 "Unsloth: DeepSeek-V4.1's engram layers need the tokenizer's compressed token map: call "
@@ -866,13 +936,21 @@ class DeepseekV41NgramHashState(nn.Module):
         token_map, primes, offsets, multipliers = self._tables(input_ids.device)
         compressed = token_map[input_ids]
         if token_mask is not None:
-            compressed = compressed.masked_fill(~token_mask, ENGRAM_DEAD)
-        seqlen = compressed.shape[1]
-        positions = torch.arange(seqlen, device = input_ids.device).expand_as(compressed)
+            compressed = compressed.masked_fill(~token_mask.to(compressed.device), ENGRAM_DEAD)
+        ctx_len = self.max_ngram_size - 1
+        bsz, seqlen = compressed.shape
+        # History = [left context | ids]; the reference's "positions < shift" start-of-sequence block
+        # (engram.py:171-174) is a DEAD left context.
+        history = compressed.new_full((bsz, ctx_len), ENGRAM_DEAD)
+        if left_context is not None and ctx_len > 0:
+            ctx = left_context.to(compressed.device)[:, -ctx_len:]
+            ctx = torch.where(ctx >= 0, token_map[ctx.clamp_min(0)], ENGRAM_DEAD)
+            history[:, ctx_len - ctx.shape[1] :] = ctx
+        history = torch.cat([history, compressed], dim = 1)
         tokens, blocked = [], torch.zeros_like(compressed, dtype = torch.bool)
         for shift in range(self.max_ngram_size):
-            source = compressed.gather(1, (positions - shift).clamp_min(0))
-            blocked = blocked | (positions < shift) | (source == ENGRAM_DEAD)
+            source = history[:, ctx_len - shift : ctx_len - shift + seqlen]
+            blocked = blocked | (source == ENGRAM_DEAD)
             tokens.append(torch.where(blocked, torch.full_like(source, self.pad_id), source))
         tokens = torch.stack(tokens, dim = -1)  # [b, s, n]
         products = tokens.unsqueeze(2) * multipliers  # [b, s, L, n]
@@ -1014,6 +1092,55 @@ def _released_layout(names):
     return bool(names) and ("embed.weight" in names or any(n.startswith("layers.") for n in names))
 
 
+_ENGRAM_FULL_SAVE = [0]
+
+
+def _drop_engram_tables_outside_full_save(module, state_dict, prefix, local_metadata):
+    """The engram tables (~98 GB each) go into a state dict only inside save_pretrained of the full model; DCP,
+    FSDP2 state dicts, Trainer and adapter saves never carry them (they stay in the base checkpoint)."""
+    if _ENGRAM_FULL_SAVE[0] > 0:
+        # A file-backed table exports its own checkpoint views (unsloth_zoo); rows held in memory are added here.
+        for key, table in getattr(module, "engram_tables", {}).items():
+            store = getattr(table, "frozen_table_store", None)
+            if isinstance(store, _TensorTableStore):
+                state_dict[f"{prefix}engram_tables.{key}.weight"] = store.weight
+                if store.scale is not None:
+                    state_dict[f"{prefix}engram_tables.{key}.weight_scale_inv"] = store.scale
+        return state_dict
+    for key in [k for k in state_dict if k.startswith(prefix + "engram_tables.")]:
+        del state_dict[key]
+    return state_dict
+
+
+def _engram_cut_safe(config, cut):
+    """True when a pipeline stage may start at layer ``cut``: no layer at or after it reads per-forward group
+    state (compressed KV, indexer keys, top-k, candidates) written by a layer before it."""
+    kv_src, ix_src = list(config.kv_source_layer_ids), list(config.index_source_layer_ids)
+    cand = config.candidate_source_layer_id
+    for j in range(cut, config.num_hidden_layers):
+        if not config.compress_ratios[j]:
+            continue
+        writers = []
+        prior_kv = [s for s in kv_src if s <= j]
+        prior_ix = [s for s in ix_src if s <= j]
+        if prior_kv:
+            writers.append(prior_kv[-1])  # compress_kv and the indexer keys
+        if prior_ix:
+            writers.append(prior_ix[-1])  # top-k
+        if j in ix_src and cand is not None and 0 <= cand < j:
+            writers.append(cand)  # candidates
+        if any(w < cut for w in writers):
+            return False
+    return True
+
+
+def pipeline_safe_cut_points(config):
+    """Layer indices where a pipeline stage may start without passing the per-forward group state across stages
+    (released config: 0, 1, 2, 8, 14, 20)."""
+    config = config.get_text_config() if hasattr(config, "get_text_config") else config
+    return [i for i in range(config.num_hidden_layers) if _engram_cut_safe(config, i)]
+
+
 class DeepseekV41PreTrainedModel(PreTrainedModel):
     config_class = DeepseekV41Config
     base_model_prefix = "model"
@@ -1041,12 +1168,22 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     # The engram tables stay wherever they fit under device_map (the frozen table store streams them from disk).
     _no_placement_params = ["weight", "weight_scale_inv"]
     _keys_to_ignore_on_load_unexpected = [
+        # parameter-free engram tables: bound to the checkpoint by unsloth_zoo after the load
+        r"(^|\.)engram_tables\.\d+\.(weight|weight_scale_inv|scale)$",
+        r"(^|\.)layers\.\d+\.engram\.embed\.(weight|scale)$",
         r"(^|\.)mtp\.",
         r"(^|\.)vision\.",
         r"(^|\.)aligner\.",
         r"(^|\.)image_(start|end|newline)$",
     ]
     _keys_to_ignore_on_load_missing = [r"engram_tables\.\d+\.weight_scale_inv$"]
+
+    def save_pretrained(self, *args, **kwargs):
+        _ENGRAM_FULL_SAVE[0] += 1
+        try:
+            return super().save_pretrained(*args, **kwargs)
+        finally:
+            _ENGRAM_FULL_SAVE[0] -= 1
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
@@ -1149,7 +1286,8 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         self.engram_tables = nn.ModuleDict()
         if config.engram_layer_ids:
             for i, layer_id in enumerate(config.engram_layer_ids):
-                self.engram_tables[str(layer_id)] = DeepseekV41EngramEmbedding(
+                self.engram_tables[str(layer_id)] = make_engram_table(
+                    layer_id,
                     config.engram_num_embeddings[i],
                     config.engram_head_dim,
                     config.engram_block_size,
@@ -1158,6 +1296,7 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         else:
             self.ngram_hash = None
         self.gradient_checkpointing = False
+        self._register_state_dict_hook(_drop_engram_tables_outside_full_save)
         self.post_init()
 
     def get_input_embeddings(self):
@@ -1165,6 +1304,28 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
 
     def set_input_embeddings(self, value):
         self.embed_tokens = value
+
+    def set_engram_table(
+        self,
+        layer_id,
+        weight,
+        scale = None,
+    ):
+        """Give one engram table its rows from memory (a model built from a config): fp8 rows + per-block e8m0
+        scales, or float rows. Held as plain tensors, never Parameters or buffers."""
+        table = self.engram_tables[str(layer_id)]
+        if is_parameter_free_table(table):
+            table.frozen_table_store = _TensorTableStore(
+                weight, scale, int(getattr(table, "block_size", 32))
+            )
+            table._memo = None
+            if weight.dtype == getattr(torch, "float8_e4m3fn", None):
+                table.table_dtype = torch.float32
+        else:
+            with torch.no_grad():
+                table.weight.data = weight.clone()
+                if scale is not None:
+                    table.weight_scale_inv.data = scale.clone()
 
     def bind_tokenizer(self, tokenizer):
         if self.ngram_hash is not None:
@@ -1219,7 +1380,7 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         engram_rows = {}
         if self.ngram_hash is not None and input_ids is not None:
             self._maybe_autobind()
-            hash_ids = self.ngram_hash(input_ids, token_mask)
+            hash_ids = self.ngram_hash(input_ids, token_mask, kwargs.get("engram_left_context"))
             for k, layer_id in enumerate(self.ngram_hash.layer_ids):
                 with torch.no_grad():
                     engram_rows[layer_id] = self.engram_tables[str(layer_id)](hash_ids[:, :, k, :])
@@ -1304,6 +1465,7 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             position_ids = position_ids,
             inputs_embeds = inputs_embeds,
             output_hidden_states = output_hidden_states,
+            engram_left_context = kwargs.pop("engram_left_context", None),
         )
         hidden = out.last_hidden_state
         sl = (

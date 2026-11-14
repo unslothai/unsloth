@@ -74,6 +74,9 @@ def _tiny_model(seed = 0, **over):
     torch.manual_seed(seed)
     model = dsv41.DeepseekV41ForCausalLM(_tiny_config(**over)).float()
     model.bind_token_map([i % 97 for i in range(512)])
+    text = model.config.text_config
+    for rows, layer_id in zip(text.engram_num_embeddings, text.engram_layer_ids):
+        model.model.set_engram_table(layer_id, torch.randn(rows, text.engram_head_dim) * 0.5)
     return model
 
 
@@ -292,3 +295,118 @@ def test_shared_group_state_survives_accelerate_device_hooks(monkeypatch, skip_s
         with pytest.raises(KeyError):
             with torch.no_grad():
                 model(input_ids = ids)
+
+
+needs_frozen_tables = pytest.mark.skipif(
+    not hasattr(
+        __import__("unsloth_zoo.temporary_patches.deepseek_v41", fromlist = ["x"]),
+        "make_deepseek_v41_engram_table",
+    ),
+    reason = "unsloth_zoo without the parameter-free DeepSeek-V4.1 engram table",
+)
+
+
+@needs_frozen_tables
+def test_engram_tables_hold_no_parameters_or_buffers_and_survive_meta_init():
+    model = _tiny_model()
+    for table in model.model.engram_tables.values():
+        assert not list(table.parameters()) and not list(table.buffers())
+    assert not any("engram_tables" in n for n, _ in model.named_parameters())
+    assert not any(
+        "engram_tables" in k for k in model.state_dict()
+    )  # DCP / FSDP2 / adapter saves skip them
+    with torch.device("meta"):
+        meta = dsv41.DeepseekV41ForCausalLM(_tiny_config())
+    meta.to_empty(device = "cpu")  # nothing of the tables to allocate or copy
+    assert all(not list(t.parameters()) for t in meta.model.engram_tables.values())
+
+
+@needs_frozen_tables
+def test_full_save_writes_the_tables_and_reload_rebinds_them(tmp_path):
+    from transformers import AutoModelForCausalLM
+
+    register_deepseek_v41()
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 20))
+    with torch.no_grad():
+        before = model(input_ids = ids).logits
+    model.save_pretrained(tmp_path)
+    loaded = AutoModelForCausalLM.from_pretrained(tmp_path, dtype = torch.float32).eval()
+    assert all(t.is_bound for t in loaded.model.engram_tables.values())
+    loaded.bind_token_map([i % 97 for i in range(512)])
+    with torch.no_grad():
+        assert torch.equal(loaded(input_ids = ids).logits, before)
+
+
+def test_engram_hashes_of_a_sequence_shard_match_the_whole_sequence_with_left_context():
+    model = _tiny_model()
+    hash_state = model.model.ngram_hash
+    ids = torch.randint(0, 512, (2, 30))
+    whole = hash_state(ids)
+    k = hash_state.max_ngram_size - 1
+    for cut in (1, 2, 7, 18):
+        shard = hash_state(ids[:, cut:], left_context = ids[:, max(0, cut - k) : cut])
+        assert torch.equal(shard, whole[:, cut:]), cut
+        # flip: without the context the shard's first n-grams differ
+        assert not torch.equal(hash_state(ids[:, cut:])[:, 0], whole[:, cut])
+    # -1 in the context = no token there (the sequence starts inside the window)
+    assert torch.equal(
+        hash_state(
+            ids[:, 1:], left_context = torch.tensor([[-1, -1, 5]]).expand(2, 3).clone().fill_(-1)
+        ),
+        hash_state(ids[:, 1:]),
+    )
+
+
+def test_tp_plan_names_real_modules_and_keeps_the_kv_head_and_engram_replicated():
+    import re
+
+    plan = DeepseekV41TextConfig.base_model_tp_plan
+    model = _tiny_model()
+    names = {n for n, _ in model.model.named_modules()} | {
+        n for n, _ in model.model.named_parameters()
+    }
+    for pattern in plan:
+        rx = re.compile("^" + re.escape(pattern).replace(r"\*", r"\d+") + "$")
+        assert any(rx.match(n) for n in names), pattern
+    assert not any(
+        k.endswith(("kv_proj", "compressor.kv_proj")) or "engram" in k or "indexer" in k
+        for k in plan
+    )
+    assert (
+        plan["layers.*.self_attn.q_b_proj"] == "colwise"
+        and plan["layers.*.self_attn.o_b_proj"] == "rowwise"
+    )
+
+
+def test_attention_runs_with_a_tensor_parallel_shard_of_heads_and_groups():
+    """Rank 0 of tp=2: half the q heads / sinks / o_a groups (colwise) and the matching o_b columns (rowwise); the
+    partial outputs of both ranks sum to the unsharded output."""
+    model = _tiny_model().eval()
+    attn = model.model.layers[2].self_attn
+    x = torch.randn(1, 12, model.config.text_config.hidden_size)
+    pos = torch.arange(12)
+    with torch.no_grad():
+        full = attn(x, pos, {})
+        total = 0
+        for rank in range(2):
+            shard = __import__("copy").deepcopy(attn)
+            h, g = attn.n_heads // 2, attn.n_groups // 2
+            d, r = attn.head_dim, attn.o_lora_rank
+            shard.q_b_proj.weight.data = attn.q_b_proj.weight[
+                rank * h * d : (rank + 1) * h * d
+            ].clone()
+            shard.sinks.data = attn.sinks[rank * h : (rank + 1) * h].clone()
+            shard.o_a_proj.weight.data = attn.o_a_proj.weight[
+                rank * g * r : (rank + 1) * g * r
+            ].clone()
+            shard.o_b_proj.weight.data = attn.o_b_proj.weight[
+                :, rank * g * r : (rank + 1) * g * r
+            ].clone()
+            total = total + shard(x, pos, {})
+    torch.testing.assert_close(total, full, rtol = 1e-5, atol = 1e-6)
+
+
+def test_pipeline_cut_points_follow_the_group_sources():
+    real = DeepseekV41TextConfig()
+    assert dsv41.pipeline_safe_cut_points(real) == [0, 1, 2, 8, 14, 20]
