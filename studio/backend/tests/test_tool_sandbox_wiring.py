@@ -1395,6 +1395,27 @@ def test_retirement_keeps_a_file_another_distribution_now_ships(monkeypatch, tmp
     assert "feature.py" in out and "Error" not in out, out
 
 
+def test_another_python_sharing_studios_prefix_is_not_redirected():
+    """/usr/local holds 3.11 and 3.12: only Studio's minor version gets the chat prefix."""
+    code = "import sitecustomize as s; print('chat', s._chat_prefix)"
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": tools._SANDBOX_SITE_DIR,
+        "_UNSLOTH_PIP_PREFIX": "/nonexistent/.unsloth-packages",
+        "_UNSLOTH_PIP_PREFIX_FOR": sys.prefix,
+    }
+    runs = {
+        version: subprocess.run(
+            [sys.executable, "-c", code],
+            env = {**env, "_UNSLOTH_PIP_PREFIX_PY": version},
+            capture_output = True,
+            text = True,
+        ).stdout.strip()
+        for version in ("%d.%d" % sys.version_info[:2], "2.7")
+    }
+    assert list(runs.values()) == ["chat /nonexistent/.unsloth-packages", "chat None"], runs
+
+
 def test_the_stdlib_inventory_has_a_fallback_before_python_3_10():
     """Without sys.stdlib_module_names (3.9), the interpreter's own stdlib dirs still name shutil."""
     code = (
@@ -1417,6 +1438,8 @@ def test_a_failed_upgrade_keeps_the_old_versions_files(monkeypatch, tmp_path):
     workdir = tmp_path / "chat"
     workdir.mkdir()
     old = _wheel(workdir, name, {f"{name}/__init__.py": "", f"{name}/old.py": ""})
+    # A companion upgraded in the same run before the failing wheel: its finished 2.0 stays the one in use.
+    done = [_wheel(workdir, f"{name}_ok", {f"{name}_ok.py": ""}, v) for v in ("1.0", "2.0")]
     info = f"{name}-2.0.dist-info"
     new = _wheel(
         workdir,
@@ -1431,17 +1454,24 @@ def test_a_failed_upgrade_keeps_the_old_versions_files(monkeypatch, tmp_path):
     )
     packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
-    tools._bash_exec(f"{_PIP} {old}", None, 120, _SESSION, tool_execution_mode = "software")
+    tools._bash_exec(f"{_PIP} {old} {done[0]}", None, 120, _SESSION, tool_execution_mode = "software")
     # A non-empty folder where pip must write the console script makes the install fail late.
     (packages / "bin" / f"{name}_cli" / "x").mkdir(parents = True)
     out = tools._bash_exec(
-        f"{_PIP} {new}; echo rc=$?", None, 120, _SESSION, tool_execution_mode = "software"
+        f"{_PIP} {done[1]} {new}; echo rc=$?", None, 120, _SESSION, tool_execution_mode = "software"
     )
     assert "rc=0" not in out, out
     assert list(packages.rglob(f"{name}/old.py")), out
     # Nor does a later process take the half-written 2.0 for a finished replacement.
-    tools._bash_exec("python -m pip --version", None, 120, _SESSION, tool_execution_mode = "software")
+    later = tools._bash_exec(
+        f"python -m pip --version; python -c \"import importlib.metadata as m; print('ok', m.version('{name}_ok'))\"",
+        None,
+        120,
+        _SESSION,
+        tool_execution_mode = "software",
+    )
     assert list(packages.rglob(f"{name}/old.py")), out
+    assert "ok 2.0" in later and not list(packages.rglob(f"{name}_ok-1.0.dist-info")), later
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")

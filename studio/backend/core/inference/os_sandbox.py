@@ -70,7 +70,11 @@ def session_script_dirs(packages: str) -> list[str]:
 
 
 def studio_pip_prefix(packages: str) -> dict:
-    return {"_UNSLOTH_PIP_PREFIX": packages, "_UNSLOTH_PIP_PREFIX_FOR": sys.prefix}
+    return {
+        "_UNSLOTH_PIP_PREFIX": packages,
+        "_UNSLOTH_PIP_PREFIX_FOR": sys.prefix,
+        "_UNSLOTH_PIP_PREFIX_PY": "%d.%d" % sys.version_info[:2],
+    }
 
 
 def with_session_packages(env: dict, workdir: str) -> dict:

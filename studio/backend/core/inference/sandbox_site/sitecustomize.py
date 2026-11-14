@@ -512,7 +512,12 @@ def _route_pip():
         def key(path):
             return os.path.normcase(os.path.realpath(path))
 
-        if key(sys.prefix) == key(owner):
+        version = "%d.%d" % sys.version_info[:2]
+        # Another minor version sharing the prefix (/usr/local) would install into a lib/pythonX.Y never exposed.
+        if (
+            key(sys.prefix) == key(owner)
+            and os.environ.get("_UNSLOTH_PIP_PREFIX_PY", version) == version
+        ):
             global _chat_prefix
             _chat_prefix = prefix
             # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
@@ -1022,40 +1027,81 @@ def _retire_rewritten(snapshot):
 _pip_status = []
 
 
+_failed_wheels = []
+
+
+def _dist_stamps():
+    # RECORD mtime of every dist-info in the prefix's site dirs.
+    root = os.path.join(os.path.normcase(os.path.abspath(os.environ["PIP_PREFIX"])), "")
+    stamps = {}
+    for entry in _site_dirs(root):
+        try:
+            names = os.listdir(entry)
+        except OSError:
+            continue
+        for name in names:
+            if name.endswith(".dist-info"):
+                try:
+                    stamps[(entry, name)] = os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns
+                except OSError:
+                    pass
+    return stamps
+
+
+def _track_status(entry):
+    def wrapped(*args, **kwargs):
+        try:
+            status = entry(*args, **kwargs)
+        except BaseException:
+            _pip_status.append(1)
+            raise
+        _pip_status.append(status or 0)
+        return status
+
+    return wrapped
+
+
+def _track_wheel(entry):
+    # The dist-info one wheel left half-written when its install raised: other wheels of the run are finished.
+    def wrapped(*args, **kwargs):
+        before = _dist_stamps()
+        try:
+            return entry(*args, **kwargs)
+        except BaseException:
+            _failed_wheels.append({k: v for k, v in _dist_stamps().items() if before.get(k) != v})
+            raise
+
+    return wrapped
+
+
 class _PipStatusFinder:
-    # Records what pip's main() returns, so a failed install retires nothing: its RECORD alone cannot tell
-    # (a wheel may ship INSTALLER itself). Wraps the attribute after pip's module loads; imports nothing of pip.
+    # Records what pip's main returns and which wheel failed, so a failed install retires nothing: its RECORD
+    # alone cannot tell (a wheel may ship INSTALLER itself). Wraps attributes after pip's modules load.
     from importlib.machinery import PathFinder as _path_finder
+
+    # cli: console scripts and python -m pip (pip >= 25.1); main: older pip. install_wheel: one wheel.
+    _patches = {
+        "pip._internal.cli.main": (("cli", "main"), _track_status),
+        "pip._internal.operations.install.wheel": (("install_wheel",), _track_wheel),
+    }
+
     def find_spec(
         self,
         name,
         path = None,
         target = None,
     ):
-        if name != "pip._internal.cli.main":
+        if name not in self._patches:
             return None
         spec = self._path_finder.find_spec(name, path, target)
         loader = getattr(spec, "loader", None)
         if loader is None or not hasattr(loader, "exec_module"):
             return spec
-        run = loader.exec_module
-
-        def wrap(entry):
-            def wrapped(*args, **kwargs):
-                try:
-                    status = entry(*args, **kwargs)
-                except BaseException:
-                    _pip_status.append(1)
-                    raise
-                _pip_status.append(status or 0)
-                return status
-
-            return wrapped
+        run, (attrs, wrap) = loader.exec_module, self._patches[name]
 
         def exec_module(module):
             run(module)
-            # cli: the console scripts and python -m pip (pip >= 25.1); main: older pip.
-            for attr in ("cli", "main"):
+            for attr in attrs:
                 if callable(getattr(module, attr, None)):
                     setattr(module, attr, wrap(getattr(module, attr)))
 
@@ -1073,21 +1119,16 @@ def _after_pip(snapshot):
         _prune_stale_dist_info()
         return
     try:
-        prefix = os.environ["PIP_PREFIX"]
-        root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
-        lines = []
-        for entry in _site_dirs(root):
-            for name in os.listdir(entry):
-                if not name.endswith(".dist-info"):
-                    continue
-                try:
-                    stamp = os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns
-                except OSError:
-                    continue
-                if snapshot.get((entry, name), (None,))[0] != stamp:
-                    lines.append(f"{os.path.abspath(entry)}\t{name}\t{stamp}\n")
+        if _failed_wheels:
+            failed = {k: v for found in _failed_wheels for k, v in found.items()}
+        else:
+            # A pip without install_wheel to wrap: everything this run rewrote.
+            failed = {k: v for k, v in _dist_stamps().items() if snapshot.get(k, (None,))[0] != v}
+        lines = [f"{os.path.abspath(e)}\t{n}\t{stamp}\n" for (e, n), stamp in failed.items()]
         if lines:
-            with open(os.path.join(prefix, _INCOMPLETE), "a", encoding = "utf-8") as f:
+            with open(
+                os.path.join(os.environ["PIP_PREFIX"], _INCOMPLETE), "a", encoding = "utf-8"
+            ) as f:
                 f.writelines(lines)
     except Exception:  # noqa: BLE001
         pass
