@@ -9,6 +9,8 @@ uvicorn==0.52.1; python_version >= "3.10"
 uvicorn==0.39.0; python_version < "3.10"
 pydantic==2.13.4
 packaging==26.3
+# The cluster link records and reaps its ggml-rpc-server, and reads its connections, through psutil.
+psutil==7.2.2
 matplotlib==3.10.9
 # Held at 2.3.3 rather than the 3.0.x line: single-env/constraints.txt pins
 # pandas==2.3.3, and 2.3.3 is also the newest release that still installs on
