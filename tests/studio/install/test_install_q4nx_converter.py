@@ -29,7 +29,15 @@ COMMIT = "c" * 40
 
 def _archive(directory: Path) -> Path:
     top = f"FLM_Q4NX_Converter-{COMMIT}"
-    files = {f"{top}/convert.py": b"print('ok')\n", f"{top}/q4nx/__init__.py": b""}
+    config = {
+        "default_tensor_type": "Q4_K",
+        "name_map": {"linear_out_proj": {"default_tensor_type": "Q4_1"}},
+    }
+    files = {
+        f"{top}/convert.py": b"print('ok')\n",
+        f"{top}/q4nx/__init__.py": b"",
+        f"{top}/configs/qwen3.5_0.8b.json": json.dumps(config).encode(),
+    }
     path = directory / "converter.tar.gz"
     with tarfile.open(path, "w:gz") as archive:
         for name, data in files.items():
@@ -58,9 +66,15 @@ def served(tmp_path):
     thread.start()
     url = f"http://127.0.0.1:{httpd.server_address[1]}/{archive.name}"
 
-    def pins(digest: str = sha, commit: str = COMMIT) -> Path:
+    def pins(
+        digest: str = sha,
+        commit: str = COMMIT,
+        overrides = None,
+    ) -> Path:
         path = tmp_path / "pins.json"
         pin = {"commit": commit, "archive_sha256": digest, "archive_size": archive.stat().st_size}
+        if overrides is not None:
+            pin["config_overrides"] = overrides
         path.write_text(
             json.dumps(
                 {
@@ -140,4 +154,47 @@ def test_shipped_pins_are_full_commits_and_digests(name):
 def test_shipped_q4nx_pin_predates_the_q4_1_repack():
     # d1d5232 repacked Q4_0/Q4_1 in an order FastFlowLM's aie2p engines misread; stay on dd0993c.
     assert qc.load_pins(name = "q4nx")["commit"].startswith("dd0993c")
-    assert qc.load_pins(name = "q4k")["commit"].startswith("d1d5232")
+    # ROCm/FLM_Q4NX_Converter#26 (on 93b8398): writes the bf16 prefill copies and encodes Q4_K. Without
+    # them FastFlowLM 1.0.12 refuses a Qwen3.5 export (missing ssm_alpha_proj.bf16) or answers "////".
+    q4k = qc.load_pins(name = "q4k")
+    assert q4k["commit"].startswith("ea1df7e")
+    # Its 0.8B / 2B configs still pack ssm_out as Q4_1, which FastFlowLM's q4k Qwen3.5 engine aborts on.
+    assert q4k["config_overrides"] == {
+        f"configs/qwen3.5_{size}.json": {"name_map.linear_out_proj.default_tensor_type": "Q4_K"}
+        for size in ("0.8b", "2b")
+    }
+
+
+_OUT_PROJ = {"configs/qwen3.5_0.8b.json": {"name_map.linear_out_proj.default_tensor_type": "Q4_K"}}
+
+
+def _out_proj_type(script: Path) -> str:
+    config = json.loads((script.parent / "configs" / "qwen3.5_0.8b.json").read_text())
+    return config["name_map"]["linear_out_proj"]["default_tensor_type"]
+
+
+def test_config_overrides_are_applied_at_install(tmp_path, served):
+    pins, url, _ = served
+    path = pins(overrides = _OUT_PROJ)
+    script = qc.install(tmp_path / "root", pins_path = path, url = url)
+    assert _out_proj_type(script) == "Q4_K"
+    assert qc.installed_converter(tmp_path / "root", qc.load_pins(path)) == script
+
+
+def test_changed_overrides_reinstall(tmp_path, served):
+    pins, url, _ = served
+    script = qc.install(tmp_path / "root", pins_path = pins(), url = url)
+    assert _out_proj_type(script) == "Q4_1"
+    path = pins(overrides = _OUT_PROJ)
+    assert qc.installed_converter(tmp_path / "root", qc.load_pins(path)) is None
+    assert _out_proj_type(qc.install(tmp_path / "root", pins_path = path, url = url)) == "Q4_K"
+
+
+def test_an_override_naming_a_missing_key_installs_nothing(tmp_path, served):
+    pins, url, _ = served
+    path = pins(
+        overrides = {"configs/qwen3.5_0.8b.json": {"name_map.no_such.default_tensor_type": "Q4_K"}}
+    )
+    with pytest.raises(RuntimeError, match = "no name_map.no_such"):
+        qc.install(tmp_path / "root", pins_path = path, url = url)
+    assert qc.installed_converter(tmp_path / "root", qc.load_pins(path)) is None

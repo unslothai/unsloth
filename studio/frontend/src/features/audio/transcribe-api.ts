@@ -39,6 +39,7 @@ export async function transcribeSourceWithProgress(
     language: string;
     timestamps: boolean;
     speakers: boolean;
+    speakerAccent?: string;
     providerId?: string;
     signal: AbortSignal;
   },
@@ -61,6 +62,7 @@ export async function transcribeSourceWithProgress(
       language: options.language || null,
       timestamps: options.timestamps,
       speakers: options.speakers,
+      ...(options.speakerAccent && { speaker_accent: options.speakerAccent }),
       title: title.slice(0, 255),
       ...(options.providerId && { provider_id: options.providerId }),
     }),

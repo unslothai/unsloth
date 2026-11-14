@@ -94,9 +94,9 @@ import {
   type NpuCatalog,
   type NpuModel,
   type NpuPickerSource,
-  NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
+  npuMemoryTag,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -571,7 +571,7 @@ function npuFooterHint(
   return count ? `${count} available` : "";
 }
 
-function ListLabel({
+export function ListLabel({
   children,
   icon,
   action,
@@ -1217,7 +1217,7 @@ function ConnectedGroupHeading({
   );
 }
 
-function ModelRow({
+export function ModelRow({
   label,
   meta,
   selected,
@@ -7688,9 +7688,11 @@ export function HubModelPicker({
     const downloading = model.id in npuCatalog.downloads;
     const progress = npuCatalog.downloads[model.id];
     const reconnecting = model.id in npuCatalog.reconnecting;
+    const phase = npuCatalog.phases[model.id];
     const details = [
       "NPU",
       npuSizeLabel(model.size_gb),
+      npuMemoryTag(model),
       npuResumeLabel(model),
     ].filter(Boolean);
     const meta = {
@@ -7704,7 +7706,7 @@ export function HubModelPicker({
         label={model.id}
         meta={
           downloading
-            ? `NPU · ${npuDownloadLabel(progress, reconnecting)}`
+            ? `NPU · ${npuDownloadLabel(progress, reconnecting, phase)}`
             : details.join(" · ")
         }
         selected={isSelected}
@@ -7722,6 +7724,7 @@ export function HubModelPicker({
         onClick={() => {
           if (downloading) return;
           if (model.downloaded) {
+            npuCatalog.warnMemory(model);
             pick();
             return;
           }
@@ -8555,10 +8558,6 @@ export function HubModelPicker({
                       <NpuSetupNotice catalog={npuCatalog} />
                     )}
                     {npuBrowseRows.map((model) => renderNpuRow(model, false))}
-                    <NpuRuntimeVersions
-                      catalog={npuCatalog}
-                      className="px-2.5 pb-1 pt-1.5"
-                    />
                   </>
                 ) : null}
 

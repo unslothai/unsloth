@@ -953,6 +953,7 @@ def test_minimax_h3_video_command_packs_references_in_reading_order():
     assert [c for c in cmd if c.startswith("--ref")] == [
         "--ref-image",
         "--ref-image",
+        "--ref-image-args",
         "--ref-video",
         "--ref-video",
         "--ref-video-audio",

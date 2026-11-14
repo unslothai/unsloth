@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -148,6 +149,7 @@ export function TranscribeRail({
 }) {
   const source = useAudioTranscribeStore((state) => state.source);
   const language = useAudioTranscribeStore((state) => state.language);
+  const speakerAccent = useAudioTranscribeStore((state) => state.speakerAccent);
   // A saved language the model no longer lists falls back to Auto rather than vanishing.
   const languageValue = transcribeLanguageFor(language, languages) || AUTO;
   return (
@@ -201,6 +203,28 @@ export function TranscribeRail({
           </Select>
         </Field>
       ) : null}
+
+      <Field
+        label="Speaker accent"
+        optional
+        htmlFor="transcribe-accent"
+        hint={switches.accent.hint}
+      >
+        <Input
+          id="transcribe-accent"
+          value={speakerAccent}
+          onChange={(event) =>
+            useAudioTranscribeStore.setState({
+              speakerAccent: event.target.value,
+            })
+          }
+          placeholder="For example, Chinese-accented English"
+          maxLength={200}
+          autoComplete="off"
+          spellCheck={false}
+          disabled={disabled || switches.accent.disabled}
+        />
+      </Field>
 
       {(["timestamps", "speakers"] as const).map((name) => (
         <SwitchRow
