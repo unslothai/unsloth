@@ -3,7 +3,7 @@
 
 import { authFetch } from "@/features/auth/api";
 import type { ImageCheckpointFile } from "../download-manager/required-assets";
-import type { ModelSizeInfo } from "./dataset-size";
+import { IMAGE_CHECKPOINT_PATH_RE, type ModelSizeInfo } from "./dataset-size";
 import { hubTokenHeader } from "./hub-token-header";
 
 // ModelSizeInfo is already cached by endpoint, repo and token. Keep only confirmed header verdicts.
@@ -73,6 +73,6 @@ export function rememberSdxlCheckpoints(repoId: string, files: ImageCheckpointFi
 export function rememberedSdxlCheckpoints(repoId: string): ImageCheckpointFile[] | undefined {
   const files = readRemembered()[repoId.toLowerCase()];
   return Array.isArray(files)
-    ? files.filter((f) => typeof f?.filename === "string" && /^[^/\\]+\.safetensors$/i.test(f.filename))
+    ? files.filter((f) => typeof f?.filename === "string" && IMAGE_CHECKPOINT_PATH_RE.test(f.filename))
     : undefined;
 }

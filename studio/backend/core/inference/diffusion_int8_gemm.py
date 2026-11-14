@@ -253,12 +253,18 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         ws_ptr,
         b_ptr,
         c_ptr,
+        r_ptr,
+        g_ptr,
         M,
         N,
         K,
         stride_am,
         stride_wn,
         stride_cm,
+        stride_rm,
+        T,
+        stride_gb,
+        stride_gt,
         HAS_BIAS: tl.constexpr,  # bias present
         XS_FP32: tl.constexpr,  # activation scale is fp32
         WS_FP32: tl.constexpr,  # weight scale is fp32
@@ -268,6 +274,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         BLOCK_K: tl.constexpr,  # block size along K (in features)
         GROUP_M: tl.constexpr,  # M tiles per swizzle group
         PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
+        NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear epilogue: fp32 acc * xs * ws (+ bias), one bf16 round
+        RES: tl.constexpr = False,  # gated residual: r + bf16(linear out) * g, rows of T tokens per batch
+        ACT: tl.constexpr = 0,  # 1: tanh GELU of the bf16 Linear out (Inductor's decomposition, fp32, one bf16 round)
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -303,18 +312,41 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         # torchao epilogue, every rounding kept: (int32 * xs) -> xs dtype, * ws -> ws dtype, -> bf16, + bias.
         xs = tl.load(xs_ptr + rm).to(tl.float32)
         ws = tl.load(ws_ptr + rn).to(tl.float32)
-        if XS_FP32:
-            y = acc.to(tl.float32)
+        if NATIVE:
+            # ``_int_mm_rows``: torch.mul(acc, x_scale), .mul_(w_scale) or addcmul(bias.float(), out, w_scale), -> bf16
+            y = tl.extra.cuda.libdevice.mul_rn(
+                tl.extra.cuda.libdevice.int2float_rn(acc), xs[:, None]
+            )
+            if HAS_BIAS:
+                # addcmul on CUDA is one fused multiply-add
+                y = tl.extra.cuda.libdevice.fma_rn(
+                    y, ws[None, :], tl.load(b_ptr + rn).to(tl.float32)[None, :]
+                )
+            else:
+                y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
+            if RES:
+                # the block's ``residual + out * gate`` as Inductor compiles it: bf16 Linear out, one FMA, one bf16 round
+                gb = (rm // T) * stride_gb + (rm % T) * stride_gt
+                g = tl.load(g_ptr + gb[:, None] + rn[None, :]).to(tl.float32)
+                r = tl.load(r_ptr + rm[:, None] * stride_rm + rn[None, :]).to(tl.float32)
+                y = tl.extra.cuda.libdevice.fma_rn(_rbf16(y), g, r)
+            if ACT == 1:
+                y = _rbf16(y)
+                inner = (y + y * y * y * 0.044715) * 0.7978845608028654
+                y = (y * 0.5) * (tl.extra.cuda.libdevice.tanh(inner) + 1.0)
         else:
-            # int32 -> fp32 -> bf16 rounds twice; Triton folds ``acc.to(fp32).to(bf16)`` into one rounding.
-            y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
-        y = _rbf16(y * xs[:, None])
-        # *_rn: ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
-        y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
-        if not WS_FP32:
-            y = _rbf16(y)
-        if HAS_BIAS:
-            y = tl.extra.cuda.libdevice.add_rn(y, tl.load(b_ptr + rn).to(tl.float32)[None, :])
+            if XS_FP32:
+                y = acc.to(tl.float32)
+            else:
+                # int32 -> fp32 -> bf16 rounds twice; Triton folds ``acc.to(fp32).to(bf16)`` into one rounding.
+                y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
+            y = _rbf16(y * xs[:, None])
+            # *_rn: ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+            y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
+            if not WS_FP32:
+                y = _rbf16(y)
+            if HAS_BIAS:
+                y = tl.extra.cuda.libdevice.add_rn(y, tl.load(b_ptr + rn).to(tl.float32)[None, :])
         c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :]
         mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
         tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
@@ -401,7 +433,21 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     return y.to(torch.bfloat16)
 
 
-def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
+def _launch(
+    a: Any,
+    w: Any,
+    xs: Any,
+    ws: Any,
+    bias: Any,
+    cfg: tuple,
+    native: bool = False,
+    residual: Any = None,
+    gate: Any = None,
+    tokens: int = 1,
+    act: int = 0,
+) -> Any:
+    """``residual`` [m, n] (unit last stride) and ``gate`` [B, T | 1, n] (unit last stride, B * tokens == m) add the
+    gated residual in the native epilogue; ``act`` 1 applies a tanh GELU to its output."""
     import torch
 
     k = _kernels()
@@ -410,6 +456,10 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
     bm, bn, bk, gm, warps, stages = cfg
     out = torch.empty((m, n), device = a.device, dtype = torch.bfloat16)
     grid = (triton.cdiv(m, bm) * triton.cdiv(n, bn),)
+    res = residual is not None
+    if res:
+        sgb = gate.stride(0) if gate.shape[0] > 1 else 0
+        sgt = gate.stride(1) if gate.shape[1] > 1 else 0
     with torch.cuda.device(a.device):
         k.i8mm_dq[grid](
             a,
@@ -418,12 +468,18 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
             ws,
             bias if bias is not None else ws,
             out,
+            residual if res else out,
+            gate if res else ws,
             m,
             n,
             kk,
             a.stride(0),
             w.stride(0),
             out.stride(0),
+            residual.stride(0) if res else 0,
+            max(1, int(tokens)),
+            sgb if res else 0,
+            sgt if res else 0,
             HAS_BIAS = bias is not None,
             XS_FP32 = xs.dtype == torch.float32,
             WS_FP32 = ws.dtype == torch.float32,
@@ -433,6 +489,9 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
             BLOCK_K = bk,
             GROUP_M = gm,
             PREFETCH_FIX = _prefetch_fix_key(),
+            NATIVE = bool(native),
+            RES = res,
+            ACT = int(act),
             num_warps = warps,
             num_stages = stages,
             enable_fp_fusion = False,

@@ -8553,6 +8553,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
+        npu_context_fit = None,
         npu_power_mode = None,
         npu_prefill_chunk_len = None,
         npu_img_pre_resize = None,
@@ -18905,7 +18906,9 @@ def _npu_load_response(
         inference = load_inference_config(model.id),
         context_length = resident.context_length,
         **flm_args_status(flm_args),
-        max_context_length = model.max_context_length,
+        # The free-RAM estimate where one was made, as llama.cpp reports its fit.
+        max_context_length = resident.max_context_length,
+        npu_context_fit = resident.fitted_context_length,
         native_context_length = model.max_context_length,
         context_length_enforced = True,
         context_length_fitted = None,
@@ -19940,6 +19943,11 @@ async def _load_model_impl(
             # every rejection and drain has completed. the load now owns the slot for studio.
             _set_preview_resident(None)
 
+            # Save slot KV before replacing llama-server, as /unload does (#9037).
+            if replacing and llama_backend.is_loaded:
+                from core.inference.chat_swap_kv import save_chat_kv_before_unload
+                await save_chat_kv_before_unload()
+
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
                 logger.info(
@@ -20107,6 +20115,10 @@ async def _load_model_impl(
             )
         # every rejection and drain has completed. the load now owns the slot for studio.
         _set_preview_resident(None)
+        # Save slot KV before teardown, as /unload does (#9037).
+        if replacing and llama_backend.is_loaded:
+            from core.inference.chat_swap_kv import save_chat_kv_before_unload
+            await save_chat_kv_before_unload()
         # Off-loop: a 600 GB teardown takes ~160s.
         try:
             await _unload_llama_before_standard_load(llama_backend)
@@ -22795,7 +22807,8 @@ async def _slot_status(current_subject: str):
                 context_length = _npu_resident.context_length,
                 requested_context_length = _npu_resident.requested_context_length,
                 **flm_args_status(_npu_resident.flm_args),
-                max_context_length = _npu_model.max_context_length,
+                max_context_length = _npu_resident.max_context_length,
+                npu_context_fit = _npu_resident.fitted_context_length,
                 native_context_length = _npu_model.max_context_length,
                 context_length_enforced = True,
                 context_length_fitted = None,

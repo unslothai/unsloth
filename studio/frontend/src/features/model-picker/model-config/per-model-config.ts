@@ -256,8 +256,10 @@ export function resumesThought(x: {
 export function loadedContextFields(resp: {
   is_gguf?: boolean;
   is_mlx?: boolean;
+  is_npu?: boolean;
   context_length?: number | null;
   native_context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
   context_unbounded_when_batched?: boolean;
@@ -272,6 +274,7 @@ export function loadedContextFields(resp: {
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
+  loadedNpuContextFit: number | null;
   loadedContextBudget: number | null;
 } {
   if (!resp) {
@@ -284,13 +287,20 @@ export function loadedContextFields(resp: {
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
+      loadedNpuContextFit: null,
       loadedContextBudget: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
   // Unknown, not a default: omitted when reading the window failed.
   const loaded = resp.context_length ?? null;
-  if (!isGguf && !resp.is_mlx && resp.native_context_length == null) {
+  // The NPU reports the ctx_size it loaded even when Lemonade gives no model limit.
+  if (
+    !isGguf &&
+    !resp.is_mlx &&
+    !resp.is_npu &&
+    resp.native_context_length == null
+  ) {
     return {
       loadedContextLength: null,
       maxContextLength: null,
@@ -300,6 +310,7 @@ export function loadedContextFields(resp: {
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
+      loadedNpuContextFit: null,
       loadedContextBudget: null,
     };
   }
@@ -317,6 +328,7 @@ export function loadedContextFields(resp: {
       ? false
       : (resp.context_unbounded_when_batched ?? false),
     loadedParallelSlots: resp.parallel_slots ?? null,
+    loadedNpuContextFit: resp.is_npu ? (resp.npu_context_fit ?? null) : null,
     loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
@@ -609,6 +621,9 @@ function normalizeGpuFields(partial: RawConfig): {
     partial.nCpuMoe >= 0
   ) {
     out.nCpuMoe = Math.trunc(partial.nCpuMoe);
+  }
+  if (out.gpuLayers === 0) {
+    out.nCpuMoe = 0;
   }
   if (partial.selectedGpuIds === null) {
     out.selectedGpuIds = null;

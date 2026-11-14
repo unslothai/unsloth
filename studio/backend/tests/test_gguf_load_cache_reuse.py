@@ -1187,6 +1187,7 @@ class TestLoadHubDownloadExclusion:
             "parallel_slots",
             "is_mlx",
             "is_npu",
+            "npu_context_fit",
             "npu_power_mode",
             "npu_prefill_chunk_len",
             "npu_img_pre_resize",

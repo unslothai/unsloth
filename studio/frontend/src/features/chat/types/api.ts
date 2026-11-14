@@ -268,6 +268,7 @@ export interface LoadModelResponse {
   };
   requires_trust_remote_code?: boolean;
   context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
@@ -433,6 +434,7 @@ export interface InferenceStatusResponse {
   supports_tools?: boolean;
   chat_template?: string | null;
   context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;

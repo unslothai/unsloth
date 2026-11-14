@@ -56,6 +56,8 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  gpuLayersPatch,
+  moeCpuOffloadApplies,
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
@@ -243,7 +245,6 @@ import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import {
   isNpuModelId,
-  NPU_DEFAULT_CONTEXT_LENGTH,
   refreshNpuModels,
   useNpuCatalogStore,
   useNpuStatus,
@@ -267,7 +268,7 @@ import {
   type NumericValueInputHandle,
 } from "./numeric-value-input";
 
-const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
+const ROW_CLASS = "config-row flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
   "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
@@ -508,6 +509,7 @@ function MaxSeqLengthSetting({
   pinned,
   fittedToMemory,
   windowUnknown,
+  unknownLabel = "—",
   hint,
 }: {
   value: number;
@@ -519,6 +521,7 @@ function MaxSeqLengthSetting({
   pinned?: boolean;
   fittedToMemory?: boolean;
   windowUnknown?: boolean;
+  unknownLabel?: string;
   hint?: string;
 }) {
   const label = isMlx ? "Context Length" : "Max Seq Length";
@@ -550,7 +553,7 @@ function MaxSeqLengthSetting({
           max={inputMax}
           step={MAX_SEQ_LENGTH_STEP}
           onChange={onChange}
-          displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}
+          displayValue={isMlx && windowUnknown && !dragging ? unknownLabel : undefined}
           derived={isMlx && !pinned && !dragging}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
@@ -713,7 +716,8 @@ function GpuMemorySettings({
   const gpuLayersMax = layerCount != null ? layerCount + 1 : 256;
   const nCpuMoe = config.nCpuMoe ?? 0;
   const moeLayersMax = moeLayerCount ?? 0;
-  const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
+  const showMoeSlider =
+    isManual && moeCpuOffloadApplies(gpuLayers) && moeLayersMax > 0;
   const selectedGpuIds = config.selectedGpuIds ?? null;
   const gpuContext = pinnableGpuContext(gpuDevices, isDiffusion);
   const pinnableDevices = gpuContext.devices ?? [];
@@ -854,9 +858,7 @@ function GpuMemorySettings({
             value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
             min={GPU_LAYERS_AUTO}
             max={gpuLayersMax}
-            onChange={(v) =>
-              update(v < 0 ? { gpuLayers: v, tensorSplit: null } : { gpuLayers: v })
-            }
+            onChange={(v) => update(gpuLayersPatch(v))}
             format={(v) => (v < 0 ? "Auto" : undefined)}
             info={
               <>
@@ -2667,6 +2669,7 @@ export function ModelConfigPage({
   const loadedDefaultChatTemplate = useChatRuntimeStore(
     (s) => s.defaultChatTemplate,
   );
+  const npuContextFit = useChatRuntimeStore((s) => s.loadedNpuContextFit);
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.maxContextLength,
   );
@@ -3350,11 +3353,17 @@ export function ModelConfigPage({
   const contextAtDefault = !target.isGguf
     ? savedContextPin(config) == null
     : config.customContextLength == null;
+  // Normalized as the set store compares: a loaded config spells its defaults out
+  // (`speculativeType: "auto"`, `gpuLayers: -1`), which read raw made Default look edited.
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(
-      { ...config, customContextLength: null },
-      DEFAULT_PER_MODEL_CONFIG,
+      normalizePerModelConfig(
+        storedSpeculativeAuto({ ...config, customContextLength: null }, targetIsMlx),
+      ),
+      normalizePerModelConfig(
+        storedSpeculativeAuto(DEFAULT_PER_MODEL_CONFIG, targetIsMlx),
+      ),
     );
   const nativeMaxSeqLength =
     floorMaxSeqLength(
@@ -3483,10 +3492,9 @@ export function ModelConfigPage({
     mlxFittedWindow,
     mlxProspectiveWindow,
   );
-  const npuServedWindow = targetIsNpu
-    ? ((isActiveModel ? servedWindow(loadedContextLength) : null) ??
-      Math.min(NPU_DEFAULT_CONTEXT_LENGTH, nativeMaxSeqLength))
-    : null;
+  // Auto is sized to free RAM at load time, so only a resident model knows its window.
+  const npuServedWindow =
+    targetIsNpu && isActiveModel ? servedWindow(loadedContextLength) : null;
   const maxSeqLengthValue =
     servedWindow(savedContextPin(config)) ??
     mlxServedWindow ??
@@ -3794,6 +3802,10 @@ export function ModelConfigPage({
     }
     if (committedMoeLayers != null) {
       pendingPatch.nCpuMoe = committedMoeLayers;
+    }
+    if (committedGpuLayers === 0) {
+      // Typed after the MoE input in the same click: 0 layers still zeroes the hidden count.
+      pendingPatch.nCpuMoe = 0;
     }
     const hasPending =
       committedContext != null ||
@@ -4238,7 +4250,7 @@ export function ModelConfigPage({
     >
       {variant === "page" && showHeader && (
         // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
-        <div className="flex items-center gap-2.5 pb-5">
+        <div data-config-header="" className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
@@ -4254,17 +4266,11 @@ export function ModelConfigPage({
             </button>
           )}
           <div className="min-w-0 flex-1">
-            <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+            <div data-config-eyebrow="" className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
+            <div data-config-title="" className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
-            </div>
-            <div
-              className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground"
-              aria-live="polite"
-            >
-              {saveStatus || "\u00a0"}
             </div>
           </div>
         </div>
@@ -4431,15 +4437,25 @@ export function ModelConfigPage({
                 mlxServedWindow == null &&
                 npuServedWindow == null
               }
+              unknownLabel={targetIsNpu ? "Auto" : undefined}
               hint={
                 targetIsNpu
-                  ? `Context the NPU loads the model with. Default ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if lower.`
+                  ? "Context the NPU loads the model with. Auto fits it to the RAM free at load time, up to 65,536 tokens or the model's limit."
                   : undefined
               }
               onChange={(value) =>
                 update(contextPinPatch(value, pinsContextLength, config.npuPrefillChunkLen))
               }
             />
+            {targetIsNpu &&
+              isActiveModel &&
+              npuContextFit != null &&
+              maxSeqLengthValue > npuContextFit && (
+                <p className="text-ui-11 text-amber-500">
+                  This window exceeds the free-memory estimate at load time
+                  ({npuContextFit.toLocaleString()} tokens).
+                </p>
+              )}
             <AdvancedSettingsToggle
               checked={showAdvanced}
               onCheckedChange={toggleAdvanced}
@@ -4492,12 +4508,13 @@ export function ModelConfigPage({
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
       <div
+        data-pinned-footer={variant === "page" || undefined}
         className={cn(
           "mt-5",
           // Sticky offsets start inside the scroller's 18px padding: -bottom-4.5 reaches the panel edge,
           // and the negative margins cover that padding with the panel's fill.
           variant === "page" &&
-            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4.5 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
+            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-[var(--run-settings-pad-l,calc(var(--spacing)*7))] -mr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] bg-popover pb-4.5 pl-[var(--run-settings-pad-l,calc(var(--spacing)*7))] pr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] dark:bg-sidebar",
         )}
       >
       {/* pt-4.25 plus the 1px rule: 18px above the picker, as below the buttons. */}
@@ -4522,12 +4539,13 @@ export function ModelConfigPage({
         <div
           className={cn(
             "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2",
-            naming && (variant === "sidebar" ? "hidden" : "invisible"),
+            // The sidebar's name box takes this row; the page keeps it, its checkbox disabled meanwhile.
+            naming && variant === "sidebar" && "hidden",
           )}
         >
           <Checkbox
             id={alwaysLoadId}
-            className="size-3.5 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
+            className="size-[calc(13px*var(--ui-space-scale,1))] rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
             aria-label="Always load with these settings"
             aria-describedby={saveStatusId}
             checked={selectedSet !== null && selectedSet === pinnedSet}
@@ -4566,6 +4584,7 @@ export function ModelConfigPage({
             variant="dark"
             type="button"
             size="sm"
+            className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/85"
             disabled={
               sharedVariantUnresolved ||
               ((config.engine ?? "auto") !== "auto" && !engineReady) ||

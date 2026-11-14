@@ -2438,6 +2438,7 @@ type ChatRuntimeStore = {
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
+  loadedNpuContextFit: number | null;
   loadedContextBudget: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
@@ -4257,6 +4258,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedContextEnforced: null,
   loadedContextUnboundedWhenBatched: false,
   loadedParallelSlots: null,
+  loadedNpuContextFit: null,
   loadedContextBudget: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
