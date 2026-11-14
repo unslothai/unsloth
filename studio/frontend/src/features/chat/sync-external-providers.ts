@@ -110,6 +110,12 @@ export function resolveUiProviderTypeFromConfig(
   if (configProviderType === "gemini" && isVertexBaseUrl(configBaseUrl)) {
     return "vertex";
   }
+  if (
+    configProviderType === LEGACY_CUSTOM_PROVIDER_TYPE &&
+    (configDisplayName ?? "").trim().toLowerCase() === "sglang"
+  ) {
+    return "sglang";
+  }
   if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
     return configProviderType;
   }

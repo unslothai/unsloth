@@ -290,6 +290,13 @@ test("a typed key is checked once it stops changing, and a late answer cannot la
     assert.ok(body, `${fn} not found`);
     assert.match(body, /formCheckRequestRef\.current \+= 1;/);
   }
+  // Switching provider retires the load too, and the load it retired cannot clear its own spinner.
+  const choose = dialog.match(/const chooseProviderType = \(value: string\) => \{([\s\S]*?)\n {2}\};/)?.[1];
+  assert.ok(choose, "chooseProviderType not found");
+  assert.match(
+    choose,
+    /formCheckRequestRef\.current \+= 1;[\s\S]*?setModelsLoading\(false\);/,
+  );
 });
 
 test("a key the listing cannot vouch for is tested first", () => {
@@ -331,6 +338,12 @@ test("cloud presets keep their identity across a save and a sync", async () => {
   assert.equal(
     uiType("azure", "https://res.openai.azure.com/openai/v1"),
     "azure",
+  );
+  // SGLang is saved as a plain custom server (chat completions), and reads back as SGLang.
+  assert.equal(providers.toExternalBackendProviderType("sglang"), "custom");
+  assert.equal(
+    sync.resolveUiProviderTypeFromConfig("custom", "SGLang", "http://localhost:30000/v1", [], undefined),
+    "sglang",
   );
   for (const type of ["azure", "bedrock", "vertex"]) {
     assert.equal(providers.isCustomProviderType(type), true);

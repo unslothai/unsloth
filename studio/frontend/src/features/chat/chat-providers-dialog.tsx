@@ -472,6 +472,8 @@ export function ChatProvidersSettings({
       setApiKey("");
     }
     formCheckRequestRef.current += 1;
+    // The retired load no longer owns the form, so it will not clear this itself.
+    setModelsLoading(false);
     checkedKeyRef.current = "";
     setFormCheck(null);
     setProviderType(value);

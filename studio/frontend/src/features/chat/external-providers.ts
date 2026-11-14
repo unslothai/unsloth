@@ -645,6 +645,8 @@ export function toExternalBackendProviderType(
   if (providerType === "ollama") return "ollama";
   if (providerType === "llama_cpp") return "llama_cpp";
   if (providerType === "azure" || providerType === "bedrock") return providerType;
+  // A plain OpenAI-compatible server: "openai" would send it to /v1/responses.
+  if (providerType === "sglang") return LEGACY_CUSTOM_PROVIDER_TYPE;
   // Vertex speaks the native Gemini API at another host.
   if (providerType === "vertex") return "gemini";
   if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {
