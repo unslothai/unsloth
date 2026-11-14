@@ -3,7 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readTranscriptStream } from "../src/features/audio/transcript-stream.ts";
+import {
+  readTranscriptStream,
+  transcriptProgressPercent,
+} from "../src/features/audio/transcript-stream.ts";
 
 function stream(text: string, chunkSize = 3) {
   const bytes = new TextEncoder().encode(text);
@@ -69,4 +72,20 @@ test("a failed save still delivers the complete transcript", async () => {
   );
   assert.equal(result.text, "keep me");
   assert.equal(result.record, null);
+});
+
+test("measured transcription progress is converted to a safe percentage", () => {
+  assert.equal(
+    transcriptProgressPercent({ text: "", processed_seconds: 30, duration: 120 }),
+    25,
+  );
+  assert.equal(
+    transcriptProgressPercent({ text: "", processed_seconds: 180, duration: 120 }),
+    100,
+  );
+  assert.equal(
+    transcriptProgressPercent({ text: "", processed_seconds: 1, duration: 0 }),
+    null,
+  );
+  assert.equal(transcriptProgressPercent({ text: "", phase: "transcribing" }), null);
 });

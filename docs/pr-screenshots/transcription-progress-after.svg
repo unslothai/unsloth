@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <rect width="1200" height="700" fill="#0b1220"/>
+  <rect x="48" y="42" width="1104" height="616" rx="18" fill="#111b2e" stroke="#334155" stroke-width="2"/>
+  <text x="88" y="102" fill="#f8fafc" font-family="Arial, sans-serif" font-size="30" font-weight="700">Transcribe audio</text>
+  <text x="88" y="144" fill="#94a3b8" font-family="Arial, sans-serif" font-size="20">Whisper / Transformers engine</text>
+  <rect x="88" y="205" width="1024" height="132" rx="12" fill="#172236"/>
+  <text x="120" y="255" fill="#e2e8f0" font-family="Arial, sans-serif" font-size="22">Transcribing…</text>
+  <text x="545" y="255" fill="#cbd5e1" font-family="monospace" font-size="21">00:18 elapsed</text>
+  <text x="800" y="255" fill="#6ee7b7" font-family="monospace" font-size="21">25% · 0:30 / 2:00</text>
+  <rect x="120" y="286" width="960" height="10" rx="5" fill="#27364f"/>
+  <rect x="120" y="286" width="240" height="10" rx="5" fill="#34d399"/>
+  <text x="120" y="385" fill="#86efac" font-family="Arial, sans-serif" font-size="22" font-weight="700">Measured progress: 25%</text>
+  <text x="120" y="427" fill="#cbd5e1" font-family="Arial, sans-serif" font-size="18">The bar and accessible status now use the processed-audio counter when an engine provides it.</text>
+  <text x="120" y="493" fill="#94a3b8" font-family="monospace" font-size="19">processed_seconds = 30</text>
+  <text x="120" y="528" fill="#94a3b8" font-family="monospace" font-size="19">duration = 120</text>
+  <text x="830" y="493" fill="#6ee7b7" font-family="Arial, sans-serif" font-size="20">Audio.cpp remains phase-only</text>
+</svg>
