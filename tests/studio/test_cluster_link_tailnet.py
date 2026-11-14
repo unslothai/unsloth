@@ -431,10 +431,8 @@ def test_ensure_helper_installs_once_and_falls_back_to_the_lan(monkeypatch):
     assert state["calls"] == 2 and len(notes) == 1 and "download refused" in notes[0]
     assert "local network only" in notes[0]
 
-    # Installed meanwhile (another process): seen at once, without another download.
     state["installed"] = True
     assert remote.ensure_helper() and state["calls"] == 2
-    # A failed download is retried once its backoff has passed.
     monkeypatch.setattr(remote, "_HELPER", {})
     state.update(installed = False, fail = True)
     clock = [1000.0]
