@@ -66,3 +66,9 @@ test("a voice the GPU has no room for is loaded on the CPU instead", () => {
   assert.ok(!voiceLoadNeedsCpu(new Error("Repository not found")));
   assert.ok(!voiceLoadNeedsCpu(undefined));
 });
+
+test("voice mode never offers a voice that needs a description it cannot send", () => {
+  const maya = "audio-cpp/audio.cpp-gguf/Maya1-GGUF";
+  assert.ok(!VOICE_TTS_MODELS.some((id) => id.toLowerCase() === maya.toLowerCase()));
+  assert.equal(migrateVoiceTtsModel(maya), VOICE_DEFAULT_TTS_MODEL);
+});
