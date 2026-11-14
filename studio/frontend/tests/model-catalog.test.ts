@@ -20,9 +20,11 @@ const {
   getPublishedExternalMaxOutputTokens,
   reasoningFieldsAfterCatalogRefresh,
 } = await import("../src/features/chat/provider-capabilities.ts");
-const { providerModelSupportsVision } = await import(
-  "../src/features/chat/external-providers.ts"
-);
+const {
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
+  setProviderModelCapabilities,
+} = await import("../src/features/chat/external-providers.ts");
 
 test("an OpenRouter route exposes the snapshot's effort ladder", () => {
   const caps = getExternalReasoningCapabilities("openrouter", "deepseek/deepseek-v4-pro");
@@ -467,5 +469,19 @@ test("NVIDIA NIM offers no reasoning control, since no request field reaches its
     }
   } finally {
     clearProviderModelCatalog("nvidia");
+  }
+});
+
+test("SGLang and Vertex connections read the registry entry they are sent as", () => {
+  setProviderModelCapabilities("custom", { "*": { studio_tools: true } });
+  setProviderModelCapabilities("gemini", { "gemini-3-pro": { studio_tools: true, vision: true } });
+  try {
+    assert.equal(providerModelSupportsStudioTools("sglang", "qwen3"), true);
+    assert.equal(providerModelSupportsStudioTools("vertex", "gemini-3-pro"), true);
+    assert.equal(providerModelSupportsVision("vertex", "gemini-3-pro"), true);
+    assert.equal(providerModelSupportsStudioTools("cohere", "command-a"), null);
+  } finally {
+    setProviderModelCapabilities("custom", undefined);
+    setProviderModelCapabilities("gemini", undefined);
   }
 });

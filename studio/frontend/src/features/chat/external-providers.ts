@@ -208,6 +208,16 @@ export function getProviderModelCapabilities(
   return REGISTRY_MODEL_CAPABILITIES.get(providerType);
 }
 
+/** SGLang and Vertex save their own type, but the registry describes them as `custom` and `gemini`. */
+function registryCapabilitiesFor(
+  providerType: string,
+): Record<string, ProviderModelCapability> | undefined {
+  return (
+    REGISTRY_MODEL_CAPABILITIES.get(providerType) ??
+    REGISTRY_MODEL_CAPABILITIES.get(toExternalBackendProviderType(providerType))
+  );
+}
+
 export function setProviderModelCapabilities(
   providerType: string,
   capabilities: Record<string, ProviderModelCapability> | undefined,
@@ -243,7 +253,7 @@ export function providerModelSupportsVision(
 
   hydrateProviderModelCapabilities();
   if (providerType && modelId) {
-    const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
+    const capability = registryCapabilitiesFor(providerType)?.[modelId];
     if (typeof capability?.vision === "boolean") return capability.vision;
   }
   if (providerType != null && IMAGE_STRIPPING_PROVIDER_TYPES.has(providerType)) return false;
@@ -291,7 +301,7 @@ export function providerModelTakesMcpImages(
   if (providerTypeSupportsVision(providerType) === false) return false;
   hydrateProviderModelCapabilities();
   if (providerType && modelId) {
-    const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
+    const capability = registryCapabilitiesFor(providerType)?.[modelId];
     if (typeof capability?.vision === "boolean") return capability.vision;
   }
   if (providerType && MIXED_CATALOG_PROVIDER_TYPES.has(providerType)) {
@@ -309,7 +319,7 @@ export function providerModelSupportsStudioTools(
 ): boolean | null {
   if (!providerType) return null;
   hydrateProviderModelCapabilities();
-  const capabilities = REGISTRY_MODEL_CAPABILITIES.get(providerType);
+  const capabilities = registryCapabilitiesFor(providerType);
   if (modelId) {
     const value = capabilities?.[modelId]?.studio_tools;
     if (typeof value === "boolean") return value;
@@ -326,7 +336,7 @@ export function providerModelSupportsThinking(
   if (!providerType || !modelId) return null;
   hydrateProviderModelCapabilities();
   const value =
-    REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.thinking;
+    registryCapabilitiesFor(providerType)?.[modelId]?.thinking;
   return typeof value === "boolean" ? value : null;
 }
 
