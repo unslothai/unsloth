@@ -15,7 +15,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 
 // The desktop titlebar paints at z-70, so a fixed sheet starts below it; 0px in browser/macOS.
 const VIEWPORT_TOP_EDGE =
-  "data-[side=left]:top-[var(--studio-custom-titlebar-height,0px)] data-[side=right]:top-[var(--studio-custom-titlebar-height,0px)] data-[side=top]:top-[var(--studio-custom-titlebar-height,0px)]";
+  "data-[side=left]:top-[var(--studio-custom-titlebar-height, 0)] data-[side=right]:top-[var(--studio-custom-titlebar-height, 0)] data-[side=top]:top-[var(--studio-custom-titlebar-height, 0)]";
 
 const CONTAINED_TOP_EDGE =
   "data-[side=left]:top-0 data-[side=right]:top-0 data-[side=top]:top-0";

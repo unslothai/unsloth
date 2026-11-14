@@ -1892,8 +1892,8 @@ export function ChatSettingsPanel({
       style={
         {
           "--chat-settings-width": `${settingsWidth * settingsScale}px`,
-          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
-          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+          height: "calc(100% - var(--studio-custom-titlebar-height, 0))",
+          marginTop: "var(--studio-custom-titlebar-height, 0)",
         } as CSSProperties
       }
     >

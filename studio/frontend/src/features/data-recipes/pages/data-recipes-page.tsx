@@ -434,7 +434,7 @@ export function DataRecipesPage(): ReactElement {
   const isBusy = creatingRecipe || Boolean(loadingTemplateId);
 
   return (
-    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
+    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height, 0))] bg-background">
       <main className="mx-auto w-full max-w-7xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] px-5 py-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
         <div className="flex items-center justify-between gap-4">

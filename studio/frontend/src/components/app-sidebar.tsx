@@ -3289,8 +3289,8 @@ export function AppSidebar() {
   // the list scroller add the rail width it does not lose, so both end on the same edge whether or
   // not the scrollbar takes space. Logical sides, since the rail moves under rtl.
   const rowPadding = usesDesktopTitlebar
-    ? "ps-[calc(5px*var(--ui-space-scale,1))] pe-[calc(var(--sidebar-rail,0px)+5px*var(--ui-space-scale,1))]"
-    : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px*var(--ui-space-scale,1))]";
+    ? "ps-[calc(5px*var(--ui-space-scale,1))] pe-[calc(var(--sidebar-rail, 0)+5px*var(--ui-space-scale,1))]"
+    : "ps-1.5 pe-[calc(var(--sidebar-rail, 0)+6px*var(--ui-space-scale,1))]";
 
   // The profile footer uses this padding deliberately: independent of the list's scrollbar.
   const unrailedRowPadding = usesDesktopTitlebar ? "px-[calc(5px*var(--ui-space-scale,1))]" : "px-1.5";
@@ -5928,7 +5928,7 @@ export function AppSidebar() {
         className={cn(
           "relative",
           usesCustomTitlebar
-            ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-padding-top,11px))]"
+            ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset, 0)+var(--studio-chat-header-padding-top,11px))]"
             : usesNativeMacTitlebar
               ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
               : // The chat header's top padding, so the two rows line up.
@@ -6671,7 +6671,7 @@ export function AppSidebar() {
           aria-hidden="true"
           className={cn(
             // from-[8px] holds the fade opaque across the hard clip, matching the list's pb-2.
-            "pointer-events-none absolute start-0 end-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute start-0 end-[var(--sidebar-rail, 0)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             showUpdateCard ? "h-7" : "h-10",
             // data-visible is written by syncFade, not React.
             "opacity-0 data-[visible=true]:opacity-100",

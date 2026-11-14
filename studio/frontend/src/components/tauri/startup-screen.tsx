@@ -611,7 +611,7 @@ export function StartupScreen({
 /** The chrome both full-window screens sit in, so they agree on insets and scrolling. */
 function StartupSurface({ children }: { children: ReactNode }) {
   return (
-    <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
+    <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset, 0)]">
       <div className="flex min-h-0 flex-1 w-full max-w-md items-center justify-center px-6">
         {children}
       </div>

@@ -663,7 +663,7 @@ function TabStrip({
     // Above the desktop titlebar's drag strip (z-40), which would swallow tab clicks.
     <div
       data-tauri-drag-region={true}
-      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]"
+      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset, 0)))]"
     >
       <div
         ref={listRef}
@@ -2554,7 +2554,7 @@ export const BrowserPanel = memo(function BrowserPanel({
       }}
       className={cn(
         "side-pane-lock-cover relative flex h-full min-h-0 flex-col overflow-hidden bg-muted",
-        floating ? "rounded-[inherit]" : "pt-[var(--studio-content-top-inset,0px)]",
+        floating ? "rounded-[inherit]" : "pt-[var(--studio-content-top-inset, 0)]",
         documentShown
           ? "[--browser-surface:color-mix(in_oklab,var(--muted)_55%,var(--card))]"
           : "[--browser-surface:var(--card)]",

@@ -534,7 +534,7 @@ function ModelSelectorContent({
       >
         {visibleConfigTarget ? (
           // 28px sides like the list's text; the right is 20px plus the bar, an overlay strip capped at 8px.
-          <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
+          <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter, 0),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
             <ModelConfigPage
               key={modelConfigInstanceKey(
                 visibleConfigTarget.configId ?? visibleConfigTarget.id,

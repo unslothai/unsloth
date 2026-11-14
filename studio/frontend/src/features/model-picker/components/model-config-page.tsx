@@ -4516,7 +4516,7 @@ export function ModelConfigPage({
           // Sticky offsets start inside the scroller's 18px padding: -bottom-4.5 reaches the panel edge,
           // and the negative margins cover that padding with the panel's fill.
           variant === "page" &&
-            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-[var(--run-settings-pad-l,calc(var(--spacing)*7))] -mr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] bg-popover pb-4.5 pl-[var(--run-settings-pad-l,calc(var(--spacing)*7))] pr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] dark:bg-sidebar",
+            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-[var(--run-settings-pad-l,calc(var(--spacing)*7))] -mr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter, 0),var(--spacing)*2)))] bg-popover pb-4.5 pl-[var(--run-settings-pad-l,calc(var(--spacing)*7))] pr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter, 0),var(--spacing)*2)))] dark:bg-sidebar",
         )}
       >
       {/* pt-4.25 plus the 1px rule: 18px above the picker, as below the buttons. */}

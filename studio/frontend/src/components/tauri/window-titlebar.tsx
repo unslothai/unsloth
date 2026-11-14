@@ -226,7 +226,7 @@ export function DesktopTitlebarNavigation({
   return (
     <div
       className={cn(
-        "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center",
+        "flex mt-[var(--studio-titlebar-navigation-margin-top, 0)] translate-y-[var(--studio-titlebar-navigation-offset-y, 0)] items-center",
         customTitlebar ? "gap-[4px]" : "gap-0.5",
         className,
       )}

@@ -1508,14 +1508,14 @@ export function ApiMonitorPage(): ReactElement {
         className={cn(
           "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
           !isMobileShell &&
-            "-mt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-content-top-inset,0px))]",
+            "-mt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset, 0))-var(--studio-content-top-inset, 0))]",
           isMobileShell
             ? "pl-12"
             : pinned
               ? "pl-2"
               : isTauri
                 ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset, 0)-var(--sidebar-width-icon,3rem)))]",
         )}
       >
         <div data-tour="api-toolbar" className="pointer-events-auto flex min-w-0 max-w-full">

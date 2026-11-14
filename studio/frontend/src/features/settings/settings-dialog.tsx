@@ -687,14 +687,14 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            "settings-surface !max-w-[min(1000px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(1000px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface !max-w-[min(1000px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top, 0)-2rem))] w-[min(1000px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring.
             "shadow-border rounded-3xl ring-0",
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
-            "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
-            "4xl:w-[min(1160px,calc(100vw-2rem))] 4xl:!max-w-[min(1160px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
+            "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top, 0))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+            "4xl:w-[min(1160px,calc(100vw-2rem))] 4xl:!max-w-[min(1160px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top, 0)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -814,7 +814,7 @@ export function SettingsDialog() {
                   // A short window leaves the list taller than the clipped sidebar, so scroll it.
                   // Full width, so the scroll bar sits at the panel edge; the right padding gives back
                   // what the bar takes, and a bar wider than the inset widens the left to match.
-                  "hover-scrollbar settings-rail-fade -mx-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pl-[max(calc(var(--spacing)*3),var(--rail-scrollbar,0px))] pr-[max(0px,calc(var(--spacing)*3-var(--rail-scrollbar,0px)))]",
+                  "hover-scrollbar settings-rail-fade -mx-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pl-[max(calc(var(--spacing)*3),var(--rail-scrollbar, 0))] pr-[max(0px,calc(var(--spacing)*3-var(--rail-scrollbar, 0)))]",
                   railFadeClass,
                   "group-data-stacked/settings:mx-0 group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:px-1 group-data-stacked/settings:py-0",
                   results !== null && "group-data-stacked/settings:flex hidden",

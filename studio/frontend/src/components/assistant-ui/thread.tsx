@@ -2429,7 +2429,7 @@ export const Thread: FC<{
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
               hideComposer
                 ? "pt-4"
-                : "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)-var(--studio-chat-scroller-top,0px)+var(--studio-chat-header-height,48px))] mt-[var(--studio-chat-scroller-top,0px)] pt-[var(--thread-header-offset)]",
+                : "[--thread-header-offset:calc(var(--studio-content-top-inset, 0)-var(--studio-chat-scroller-top, 0)+var(--studio-chat-header-height,48px))] mt-[var(--studio-chat-scroller-top, 0)] pt-[var(--thread-header-offset)]",
             )}
           />
           <GeneratedImageViewportOverlay

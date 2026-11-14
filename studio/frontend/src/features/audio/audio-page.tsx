@@ -1854,7 +1854,7 @@ export function AudioPage({
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
       ref={pageRootRef}
-      className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar pt-[var(--studio-content-top-inset,0px)]"
+      className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar pt-[var(--studio-content-top-inset, 0)]"
     >
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
@@ -2044,7 +2044,7 @@ export function AudioPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-initial flex-col gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[calc(60px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto @[50rem]:pt-2 @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*6-var(--classic-scrollbar-width,0px))]",
+              "hover-scrollbar flex min-h-0 flex-initial flex-col gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[calc(60px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto @[50rem]:pt-2 @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*6-var(--classic-scrollbar-width, 0))]",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
