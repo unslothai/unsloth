@@ -235,6 +235,7 @@ function readAloudError(
   detail: string,
   model: string | null,
   voiceId: string,
+  readAloud: boolean,
 ): Error {
   if (/no model loaded|not an audio model/i.test(detail)) {
     return new Error(
@@ -242,14 +243,14 @@ function readAloudError(
     );
   }
   // The named model was unloaded after the listing (an image or video load, or idle unload).
-  if (model && /downloaded but not loaded|is not loaded/i.test(detail)) {
+  if (readAloud && model && /downloaded but not loaded|is not loaded/i.test(detail)) {
     return new Error(
       "The Unsloth speech model for read aloud is no longer loaded. Load it again in Audio › Text to Speech.",
     );
   }
   // Only this 404 is about the voice; another one (a model hidden from the account) must not
   // drop the user's choice.
-  if (voiceId && /saved voice no longer exists/i.test(detail)) {
+  if (readAloud && voiceId && /saved voice no longer exists/i.test(detail)) {
     useVoiceSettingsStore.getState().setTtsStudioVoiceId("");
     return new Error(
       "The saved voice for read aloud no longer exists. Read aloud now uses the model's own voice.",
@@ -266,9 +267,13 @@ function readAloudError(
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
+  options?: { model: string; voiceId: string },
 ): Promise<string> {
-  const { ttsStudioVoiceId } = useVoiceSettingsStore.getState();
-  const model = await resolveReadAloudModel(Boolean(ttsStudioVoiceId), signal);
+  const ttsStudioVoiceId =
+    options?.voiceId ?? useVoiceSettingsStore.getState().ttsStudioVoiceId;
+  const model = options
+    ? options.model
+    : await resolveReadAloudModel(Boolean(ttsStudioVoiceId), signal);
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -290,6 +295,7 @@ export async function generateStudioTtsAudio(
       formatApiErrorBody(body) ?? `HTTP ${response.status}`,
       model,
       ttsStudioVoiceId,
+      !options,
     );
   }
   const data = (await response.json()) as {

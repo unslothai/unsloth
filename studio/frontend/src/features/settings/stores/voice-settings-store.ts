@@ -38,6 +38,8 @@ const QUOTA_TRIM_KEEP = 200;
 const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
+// Legacy key the removed chat-header mic picker wrote; adopted once by merge().
+const LEGACY_LOOP_MIC_KEY = "unsloth_chat_mic_device_id";
 
 const HF_REPO_ID =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
@@ -402,9 +404,16 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         )
           ? savedSttModel
           : DEFAULT_STT_MODEL;
+        let micDeviceId = asString(saved?.micDeviceId, "default");
+        if (micDeviceId === "default") {
+          try {
+            micDeviceId = localStorage.getItem(LEGACY_LOOP_MIC_KEY) || "default";
+          } catch {
+          }
+        }
         return {
           ...current,
-          micDeviceId: asString(saved?.micDeviceId, "default"),
+          micDeviceId,
           dictationEngine,
           micTarget: saved?.micTarget === "model" ? "model" : "asr",
           sttModel,

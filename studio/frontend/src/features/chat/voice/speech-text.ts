@@ -1,6 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+const SPEECH_STRIP_RE =
+  /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{20E3}\u{FE00}-\u{FE0F}\u{200D}]/gu;
+
+export function stripForSpeech(text: string): string {
+  return text
+    .replace(SPEECH_STRIP_RE, "")
+    .replace(/−(?=\d)/g, "-") //                                 a numeric minus is not a dash
+    .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ")
+    .replace(/[^\S\n]*…[^\S\n]*/g, " ")
+    .replace(/\.{2,}/g, " ")
+    .replace(/[‐‑]/g, "-")
+    .replace(/[*_`~^|#<>\\{}[\]]/g, " ")
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[“”„‟]/g, '"')
+    // Horizontal only: newlines are sentence boundaries for splitIntoSentences.
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
 // A trailing period on these ends an abbreviation, not a sentence ("Dr.").
 const SPEECH_ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "eg",
@@ -59,4 +79,16 @@ export function splitIntoSentences(text: string): string[] {
   }
   if (lead) out.push(lead);
   return out;
+}
+
+/**
+ * Sentences of a reply still streaming that can no longer change. The last part may still grow
+ * ("Dr." before "Dr. Smith", "3." before "3.5"), and whether it joins the one before turns on
+ * its first two characters, so it stays partial until endStream.
+ */
+export function splitStreaming(text: string): { complete: string[]; partial: string } {
+  const parts = splitIntoSentences(text);
+  const tail = parts[parts.length - 1] ?? "";
+  const settled = Math.max(0, parts.length - (tail.length >= 2 ? 1 : 2));
+  return { complete: parts.slice(0, settled), partial: parts.slice(settled).join(" ") };
 }
