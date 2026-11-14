@@ -23,27 +23,21 @@ import {
 interface ChatTemplateEditorDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCloseAutoFocus?: (event: Event) => void;
   value: string | null;
   defaultTemplate: string | null;
   defaultLoading: boolean;
   onSave: (override: string | null) => void;
   readOnly?: boolean;
-  /** Replaces the read-only blurb, whose default explains a backend that cannot take a
-   *  custom template. A viewer opened for another reason says its own. */
-  description?: string;
 }
 
 export function ChatTemplateEditorDialog({
   open,
   onOpenChange,
-  onCloseAutoFocus,
   value,
   defaultTemplate,
   defaultLoading,
   onSave,
   readOnly = false,
-  description,
 }: ChatTemplateEditorDialogProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -110,19 +104,15 @@ export function ChatTemplateEditorDialog({
         handleClose();
       }}
     >
-      <DialogContent
-        className="corner-squircle dialog-soft-surface sm:max-w-3xl"
-        onCloseAutoFocus={onCloseAutoFocus}
-      >
+      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>
             {readOnly ? "Chat Template" : "Edit Chat Template"}
           </DialogTitle>
           <DialogDescription>
-            {description ??
-              (readOnly
-                ? "This is the model's chat template. This model's backend cannot take a custom one, so it is view only."
-                : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override.")}
+            {readOnly
+              ? "This is the model's chat template. This model's backend cannot take a custom one, so it is view only."
+              : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override."}
           </DialogDescription>
         </DialogHeader>
         <div className="corner-squircle overflow-hidden rounded-xl">

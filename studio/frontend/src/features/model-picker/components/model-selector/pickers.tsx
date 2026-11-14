@@ -140,10 +140,10 @@ import {
   HelpCircleIcon,
   ImageIcon,
   InformationCircleIcon,
-  PinIcon,
   PlusSignIcon,
   RemoveCircleIcon,
   Search01Icon,
+  StarIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon } from "@/lib/folder-icons";
@@ -223,13 +223,13 @@ import {
   curatedSizeBytesFor,
   curatedTotalParamsFor,
   groupForRepoId,
-  recommendedQuantForDevice,
 } from "./model-catalog";
 import {
   curatedPickerFit,
   mediaGgufPickerStatus,
   type PickerFitStatus,
 } from "./media-picker-fit";
+import { AMBER, isOverBudget, VRAM_VERDICT } from "./fit-verdict";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -317,8 +317,11 @@ import {
   ggufVariantContextLength,
   groupGgufVariantsForPicker,
   h3PickerHasOnlyPrunedBuilds,
-  preferredGgufVariantByGroup,
 } from "./variant-presentation";
+import {
+  orderGgufVariantsForPicker,
+  recommendedQuantByGroup,
+} from "./variant-order";
 import {
   shouldMountVariantExpander,
   toggleAutoExpandedRow,
@@ -857,76 +860,9 @@ function PartialBadge({ resumable }: { resumable?: boolean }) {
   );
 }
 
-interface FitVerdict {
-  label: string;
-  tone: string;
-  hint: string;
-}
-
-const AMBER = "!text-yellow-600 dark:!text-yellow-400";
-const ORANGE = "!text-orange-600 dark:!text-orange-300";
-
-/** Over the VRAM Budget but under the card: `_select_gpus` hands it to --fit every time. */
-const MIGHT_FIT: FitVerdict = {
-  label: "Over budget",
-  tone: AMBER,
-  hint: "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.",
-};
-/** Past the card; llama-server never refuses a GGUF on size, --fit offloads. */
-const OFFLOADS: FitVerdict = {
-  label: "Does not fit",
-  tone: ORANGE,
-  hint: "Model may not fit but still works with offloading. Expect slower inference.",
-};
-/** checkVramFit's 75-100% band, the only source of `tight`: fits on the card with no --fit. */
-const DEVICE_TIGHT: FitVerdict = {
-  label: "Tight fit",
-  tone: AMBER,
-  hint: "Uses nearly all your VRAM, with little headroom for anything else.",
-};
-/** A torch load has no --fit: the pipeline goes wholly on the device. */
-const WONT_FIT: FitVerdict = {
-  label: "Does not fit",
-  tone: ORANGE,
-  // "memory", not "VRAM": this also covers diffusion refusals on a shared pool.
-  hint: "Estimated memory exceeds this device's usable capacity. Try a smaller model or free memory.",
-};
-
-/** Fit verdict marks keyed by the Hub's classes; `tight`/`exceeds` come only from torch or
- *  QLoRA estimates, which never offload. */
-const VRAM_VERDICT: Record<PickerFitStatus, FitVerdict | null> = {
-  fits: null,
-  offload: {
-    label: "RAM offloading",
-    tone: AMBER,
-    hint: "Might be slower with RAM offloading.",
-  },
-  marginal: MIGHT_FIT,
-  tight: DEVICE_TIGHT,
-  partial: OFFLOADS,
-  ram: null,
-  streamed: {
-    label: "Fits (lookup tables streamed from disk)",
-    tone: AMBER,
-    hint: "Fits with its lookup tables streamed from disk, llama.cpp's default for them. Prefill and decode can be slower and vary with disk speed.",
-  },
-  oom: OFFLOADS,
-  exceeds: WONT_FIT,
-};
-
 /** Zero on a host pool, where offload frees nothing. llama.cpp differs: GGUFs spill to host RAM. */
 function mediaRamBudgetGb(systemRamGb: number, hostPooled: boolean): number {
   return hostPooled ? 0 : systemRamGb;
-}
-
-/** `marginal` is not over budget: it is a full GPU load with little room to spare. */
-function isOverBudget(status?: PickerFitStatus | null): boolean {
-  return (
-    status === "partial" ||
-    status === "ram" ||
-    status === "oom" ||
-    status === "exceeds"
-  );
 }
 
 /** A checkpoint (non-GGUF) row's verdict. A CPU backend chats with GGUF only, so a checkpoint
@@ -1779,6 +1715,7 @@ function ejectMenuItemsFor(
             />
           ),
           onSelect: () => actions.get().eject(modelId),
+          destructive: true,
         },
       ]
     : undefined;
@@ -1915,23 +1852,15 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
         />
       </div>
       <span className={isPartial ? ROW_ACTIONS_PINNED_CLASS : ROW_ACTIONS_CLASS}>
-        {canConfigure && (
-          <ModelLoadSettingsAction
-            ariaLabel={`Inference settings for ${c.repo_id}`}
-            onConfigure={() => actions.get().configure(c.repo_id, gearMeta)}
-            savedFor={configTarget}
-          />
-        )}
         <ModelRowMenu
           ariaLabel={`More options for ${c.repo_id}`}
           cachePath={{ repoId: c.repo_id }}
-          info={{ repoId: c.repo_id }}
           items={ejectMenuItemsFor(actions, c.repo_id, ejectable)}
           runSettings={configTarget}
           pin={{
             pinned,
-            pinLabel: "Pin",
-            unpinLabel: "Unpin",
+            pinLabel: "Favorite",
+            unpinLabel: "Remove favorite",
             onToggle: () => actions.get().togglePinned(c.repo_id),
           }}
           del={{
@@ -1960,6 +1889,13 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
             onDeleted: () => actions.get().refreshCachedLists(),
           }}
         />
+        {canConfigure && (
+          <ModelLoadSettingsAction
+            ariaLabel={`Inference settings for ${c.repo_id}`}
+            onConfigure={() => actions.get().configure(c.repo_id, gearMeta)}
+            savedFor={configTarget}
+          />
+        )}
       </span>
     </div>
   );
@@ -2142,21 +2078,9 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
           />
         </div>
         <span className={ROW_ACTIONS_CLASS}>
-          {canConfigure && (
-            <ModelLoadSettingsAction
-              ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
-              onConfigure={() => actions.get().configure(c.repo_id, selectMeta)}
-              savedFor={configTarget}
-            />
-          )}
           <ModelRowMenu
             ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
-            info={{
-              repoId: c.repo_id,
-              variant: variant.quant,
-              hasLocalGguf: isDownloaded,
-            }}
             runSettings={configTarget}
             // The expander reads Hub-only state (updates, companions); a collapsed row never asks.
             items={[
@@ -2181,8 +2105,8 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
             ]}
             pin={{
               pinned: isPinned,
-              pinLabel: "Pin",
-              unpinLabel: "Unpin",
+              pinLabel: "Favorite",
+              unpinLabel: "Remove favorite",
               onToggle: () => actions.get().togglePinned(c.repo_id, variant.quant),
             }}
             del={{
@@ -2227,6 +2151,13 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
               },
             }}
           />
+          {canConfigure && (
+            <ModelLoadSettingsAction
+              ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
+              onConfigure={() => actions.get().configure(c.repo_id, selectMeta)}
+              savedFor={configTarget}
+            />
+          )}
         </span>
       </div>
       {expanderOpen &&
@@ -2311,7 +2242,6 @@ const DownloadedGgufDeviceRow = memo(function DownloadedGgufDeviceRow({
             <ModelRowMenu
               ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)}`}
               cachePath={{ repoId: c.repo_id }}
-              info={{ repoId: c.repo_id }}
               del={{
                 title: "Delete cached model?",
                 impact: { repoId: c.repo_id },
@@ -2459,6 +2389,29 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
           />
         </div>
         <span className={ROW_ACTIONS_CLASS}>
+          <ModelRowMenu
+            ariaLabel={`More options for ${name}`}
+            onReveal={() => revealLocalModel(m.path, m.id)}
+            del={
+              DELETABLE_LOCAL_SOURCES.has(m.source)
+                ? {
+                    title: "Delete local model?",
+                    description: (
+                      <>
+                        This will permanently remove{" "}
+                        <span className="font-medium text-foreground">{name}</span>{" "}
+                        from{" "}
+                        <span className="break-all font-mono text-xs">{m.path}</span>.
+                      </>
+                    ),
+                    successMessage: `Deleted ${name}`,
+                    disabled: deleteDisabled,
+                    onConfirm: () => deleteLocalModel(m.path, m.id),
+                    onDeleted: () => actions.get().refreshLocalModelsList(),
+                  }
+                : undefined
+            }
+          />
           {isDirectGguf && canConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${name}`}
@@ -2485,29 +2438,6 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
               )}
             />
           )}
-          <ModelRowMenu
-            ariaLabel={`More options for ${name}`}
-            onReveal={() => revealLocalModel(m.path, m.id)}
-            del={
-              DELETABLE_LOCAL_SOURCES.has(m.source)
-                ? {
-                    title: "Delete local model?",
-                    description: (
-                      <>
-                        This will permanently remove{" "}
-                        <span className="font-medium text-foreground">{name}</span>{" "}
-                        from{" "}
-                        <span className="break-all font-mono text-xs">{m.path}</span>.
-                      </>
-                    ),
-                    successMessage: `Deleted ${name}`,
-                    disabled: deleteDisabled,
-                    onConfirm: () => deleteLocalModel(m.path, m.id),
-                    onDeleted: () => actions.get().refreshLocalModelsList(),
-                  }
-                : undefined
-            }
-          />
         </span>
       </div>
       {showExpander && (
@@ -3005,26 +2935,16 @@ function GgufVariantExpander({
     () => groupGgufVariantsForPicker(variants ?? []),
     [variants],
   );
-  const preferredByGroup = useMemo(
-    () => preferredGgufVariantByGroup(variantGroups, defaultVariant),
-    [variantGroups, defaultVariant],
+  const effectiveRecommendedByGroup = useMemo(
+    () =>
+      recommendedQuantByGroup(variantGroups, defaultVariant, {
+        fitOf: getGgufFit,
+        anyBudget: anyBudgetGb,
+        budgetKnown,
+        cardGb,
+      }),
+    [variantGroups, defaultVariant, anyBudgetGb, budgetKnown, getGgufFit, cardGb],
   );
-
-  const effectiveRecommendedByGroup = useMemo(() => {
-    const recommended = new Map<string, string>();
-    for (const group of variantGroups) {
-      const preferred = preferredByGroup.get(group.key) ?? null;
-      if (!anyBudgetGb && !budgetKnown) {
-        if (preferred) recommended.set(group.key, preferred.quant);
-        continue;
-      }
-      const pick =
-        recommendedQuantForDevice(group.variants, getGgufFit, preferred, cardGb) ??
-        preferred;
-      if (pick) recommended.set(group.key, pick.quant);
-    }
-    return recommended;
-  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit, cardGb]);
   // Keyed by presentation group while footprints bucket by dependency_key, so ask via the variant.
   const recommendedQuantForVariant = useMemo(() => {
     const byVariant = new Map<GgufVariantDetail, string>();
@@ -3036,34 +2956,17 @@ function GgufVariantExpander({
     return byVariant;
   }, [variantGroups, effectiveRecommendedByGroup]);
 
-  const sortedVariants = useMemo(() => {
-    if (!variants) return variants;
-    // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight, 4 = OOM
-    const tierOf = (v: GgufVariantDetail) => {
-      const f = getVariantFit(v);
-      if (f === "oom") return 4;
-      const base = f === "fits" ? 0 : 1;
-      return v.downloaded ? base : base + 2;
-    };
-    return variantGroups.flatMap((group) => {
-      const recommended = effectiveRecommendedByGroup.get(group.key);
-      return [...group.variants].sort((a, b) => {
-        const aTier = tierOf(a);
-        const bTier = tierOf(b);
-        if (aTier !== bTier) return aTier - bTier;
-
-        const aIsRec = a.quant === recommended;
-        const bIsRec = b.quant === recommended;
-        if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
-
-        // fits: largest first; tight/OOM: smallest first (closest to fitting).
-        const fitsInGpu = aTier === 0 || aTier === 2;
-        return fitsInGpu
-          ? b.size_bytes - a.size_bytes
-          : a.size_bytes - b.size_bytes;
-      });
-    });
-  }, [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit]);
+  const sortedVariants = useMemo(
+    () =>
+      variants
+        ? orderGgufVariantsForPicker(
+            variantGroups,
+            getVariantFit,
+            effectiveRecommendedByGroup,
+          )
+        : variants,
+    [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit],
+  );
 
   const displayVariants = useMemo(() => {
     if (!sortedVariants) return sortedVariants;
@@ -3080,19 +2983,14 @@ function GgufVariantExpander({
     () => h3PickerHasOnlyPrunedBuilds(displayVariants ?? []),
     [displayVariants],
   );
-  const variantOnDisk = (v: GgufVariantDetail): boolean =>
-    v.downloaded === true || v.partial === true;
-  // Undownloaded Hub quants keep a menu for Model info: the licence matters before the download.
-  // checkpointIsLocal, not isLocalPath: a marker-less relative dir would otherwise query the Hub.
   const variantHasMenu = (v: GgufVariantDetail): boolean =>
-    variantOnDisk(v)
-      ? Boolean(
-          allowPin ||
-            (v.update_available && onUpdateVariant) ||
-            onDeleteVariant ||
-            !isLocalPath,
-        )
-      : !checkpointIsLocal;
+    (v.downloaded === true || v.partial === true) &&
+    Boolean(
+      allowPin ||
+        (v.update_available && onUpdateVariant) ||
+        onDeleteVariant ||
+        !isLocalPath,
+    );
   // Rows without a menu hold its slot, so every gear and size lines up with the downloaded rows.
   const reserveMenuSlot = (displayVariants ?? []).some(variantHasMenu);
 
@@ -3407,19 +3305,6 @@ function GgufVariantExpander({
               </Tooltip>
             )}
             {/* Every quant, downloaded or not: settings are set before the download starts. */}
-            {!unusableLocal && onConfigure && (
-              <ModelLoadSettingsAction
-                ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
-                className={cn(
-                  "relative left-0.5",
-                  // Always shown once on device; otherwise only on row hover or focus.
-                  v.downloaded !== true &&
-                    "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/quant:opacity-100 group-focus-within/quant:opacity-100 [@media(hover:none)]:opacity-100",
-                )}
-                onConfigure={() => onConfigure(repoId, selectMeta)}
-                savedFor={configTarget}
-              />
-            )}
             {!variantHasMenu(v) && (
               <SavedRunSettingsMenu
                 ariaLabel={`More options for ${repoId} ${v.quant}`}
@@ -3433,25 +3318,14 @@ function GgufVariantExpander({
                 iconClassName="size-3"
                 runSettings={configTarget}
                 cachePath={
-                  isLocalPath || !variantOnDisk(v)
-                    ? undefined
-                    : { repoId, variant: v.quant }
-                }
-                info={
-                  checkpointIsLocal
-                    ? undefined
-                    : {
-                        repoId,
-                        variant: v.quant,
-                        hasLocalGguf: variantsAreGguf && v.downloaded === true,
-                      }
+                  isLocalPath ? undefined : { repoId, variant: v.quant }
                 }
                 pin={
                   allowPin && v.downloaded
                     ? {
                         pinned: pinnedKeys.includes(pinKey(repoId, v.quant)),
-                        pinLabel: "Pin",
-                        unpinLabel: "Unpin",
+                        pinLabel: "Favorite",
+                        unpinLabel: "Remove favorite",
                         onToggle: () => togglePinnedQuant(repoId, v.quant),
                       }
                     : undefined
@@ -3481,7 +3355,7 @@ function GgufVariantExpander({
                     : undefined
                 }
                 del={
-                  onDeleteVariant && variantOnDisk(v)
+                  onDeleteVariant
                     ? {
                         title: deleteVariantTitle,
                         impact: {
@@ -3516,6 +3390,19 @@ function GgufVariantExpander({
                       }
                     : undefined
                 }
+              />
+            )}
+            {!unusableLocal && onConfigure && (
+              <ModelLoadSettingsAction
+                ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
+                className={cn(
+                  "relative left-0.5",
+                  // Always shown once on device; otherwise only on row hover or focus.
+                  v.downloaded !== true &&
+                    "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/quant:opacity-100 group-focus-within/quant:opacity-100 [@media(hover:none)]:opacity-100",
+                )}
+                onConfigure={() => onConfigure(repoId, selectMeta)}
+                savedFor={configTarget}
               />
             )}
           </div>,
@@ -3580,7 +3467,7 @@ const MEDIA_PAGE_TASKS: readonly string[] = [
   ...AUDIO_GEN_TASKS,
 ];
 
-function mediaPageForTask(
+export function mediaPageForTask(
   task: string | null | undefined,
 ): "images" | "video" | "audio" | null {
   if (!task || !MEDIA_PAGE_TASKS.includes(task)) return null;
@@ -4837,7 +4724,7 @@ export function HubModelPicker({
           ),
           matchesTask: chatSupportedCheckpointQuant(r),
           isRecommendable:
-            isRecommendableFormat(r.id, r.isGguf, isMac) ||
+            isRecommendableFormat(r.id, r.isGguf, isMac, r.quantMethod) ||
             runsCheckpointQuant(r),
         })
       );
@@ -7057,17 +6944,13 @@ export function HubModelPicker({
     otherAdditionalOnDeviceModels.length > 0;
 
   const renderHubModelRow = (id: string, row: ReactNode) => {
-    // Repo-level: no quant is named, so no local GGUF probe (it would pick an arbitrary file).
-    // audio.cpp package ids are folders inside one repo, not repos the Hub can describe.
-    const infoMenu = isAudioCppFolderId(id) ? null : (
-      <ModelRowMenu ariaLabel={`More options for ${id}`} info={{ repoId: id }} />
-    );
-    // GGUF repos configure per quant, so they carry the menu alone.
-    if (!onConfigure || isKnownGgufRepo(id)) {
+    if (!onConfigure) return row;
+    if (isKnownGgufRepo(id)) {
+      // Empty slot: GGUF repos configure per quant, and badges must line up.
       return (
         <div className={downloadedRowShellClassName(isValueRow(id))}>
           <div className="min-w-0 flex-1">{row}</div>
-          <span className={ROW_ACTIONS_CLASS}>{infoMenu}</span>
+          <span className={ROW_ACTIONS_CLASS} aria-hidden={true} />
         </div>
       );
     }
@@ -7088,7 +6971,6 @@ export function HubModelPicker({
             onConfigure={() => onConfigure(configId, configMeta)}
             savedFor={modelConfigTarget(configId, configMeta)}
           />
-          {infoMenu}
         </span>
       </div>
     );
@@ -7241,13 +7123,6 @@ export function HubModelPicker({
             />
           </div>
           <span className={ROW_ACTIONS_VISIBLE_CLASS}>
-            {onConfigure && (
-              <ModelLoadSettingsAction
-                ariaLabel={`Inference settings for ${entry.id}`}
-                onConfigure={() => onConfigure(...configureArgs)}
-                savedFor={configTarget}
-              />
-            )}
             <ModelRowMenu
               ariaLabel={`More options for ${entry.id}`}
               runSettings={configTarget}
@@ -7272,6 +7147,7 @@ export function HubModelPicker({
                           />
                         ),
                         onSelect: () => onEject?.(checkpoint),
+                        destructive: true,
                       },
                     ]
                   : undefined
@@ -7281,12 +7157,19 @@ export function HubModelPicker({
                   ? undefined
                   : {
                       pinned: pinnedSet.has(pinKey(pinRepoId, quant ?? undefined)),
-                      pinLabel: "Pin",
-                      unpinLabel: "Unpin",
+                      pinLabel: "Favorite",
+                      unpinLabel: "Remove favorite",
                       onToggle: () => togglePinned(pinRepoId, quant ?? undefined),
                     }
               }
             />
+            {onConfigure && (
+              <ModelLoadSettingsAction
+                ariaLabel={`Inference settings for ${entry.id}`}
+                onConfigure={() => onConfigure(...configureArgs)}
+                savedFor={configTarget}
+              />
+            )}
           </span>
         </div>
         {expanded && (
@@ -7378,29 +7261,12 @@ export function HubModelPicker({
           />
         </div>
         <span className={ROW_ACTIONS_CLASS}>
-          <ModelLoadSettingsAction
-            ariaLabel={`Settings for ${model.name}`}
-            tooltip="Model settings"
-            onConfigure={() =>
-              setSettingsModel({
-                model,
-                providerModelId,
-                apiType: externalApiTypeById.get(model.providerId),
-                baseUrl,
-                isReasoningProvider:
-                  externalReasoningFlagById.get(model.providerId) === true,
-                reasoningConfig: externalReasoningConfigById.get(model.providerId),
-                connectionMaxOutputTokens:
-                  externalMaxOutputById.get(model.providerId) ?? null,
-              })
-            }
-          />
           <ModelRowMenu
             ariaLabel={`More options for ${model.name}`}
             pin={{
               pinned: isPinned,
-              pinLabel: "Pin",
-              unpinLabel: "Unpin",
+              pinLabel: "Favorite",
+              unpinLabel: "Remove favorite",
               onToggle: () => togglePinnedConnected(model.id),
             }}
             items={[
@@ -7438,6 +7304,23 @@ export function HubModelPicker({
                 onSelect: () => void copyConnectedModelId(providerModelId),
               },
             ]}
+          />
+          <ModelLoadSettingsAction
+            ariaLabel={`Settings for ${model.name}`}
+            tooltip="Model settings"
+            onConfigure={() =>
+              setSettingsModel({
+                model,
+                providerModelId,
+                apiType: externalApiTypeById.get(model.providerId),
+                baseUrl,
+                isReasoningProvider:
+                  externalReasoningFlagById.get(model.providerId) === true,
+                reasoningConfig: externalReasoningConfigById.get(model.providerId),
+                connectionMaxOutputTokens:
+                  externalMaxOutputById.get(model.providerId) ?? null,
+              })
+            }
           />
         </span>
       </div>
@@ -7538,26 +7421,14 @@ export function HubModelPicker({
           />
         </div>
         <span className={ROW_ACTIONS_CLASS}>
-          {onConfigure && (
-            <ModelLoadSettingsAction
-              ariaLabel={`Inference settings for ${entry.repoId} ${entry.quant}`}
-              onConfigure={() => onConfigure(entry.repoId, configMeta)}
-              savedFor={configTarget}
-            />
-          )}
           <ModelRowMenu
             ariaLabel={`More options for ${entry.repoId} ${entry.quant}`}
             cachePath={{ repoId: entry.repoId, variant: entry.quant }}
-            info={{
-              repoId: entry.repoId,
-              variant: entry.quant,
-              hasLocalGguf: true,
-            }}
             runSettings={configTarget}
             pin={{
               pinned: true,
-              pinLabel: "Pin",
-              unpinLabel: "Unpin",
+              pinLabel: "Favorite",
+              unpinLabel: "Remove favorite",
               onToggle: () => togglePinned(entry.repoId, entry.quant),
             }}
             del={{
@@ -7595,6 +7466,13 @@ export function HubModelPicker({
               },
             }}
           />
+          {onConfigure && (
+            <ModelLoadSettingsAction
+              ariaLabel={`Inference settings for ${entry.repoId} ${entry.quant}`}
+              onConfigure={() => onConfigure(entry.repoId, configMeta)}
+              savedFor={configTarget}
+            />
+          )}
         </span>
       </div>
     );
@@ -8071,9 +7949,9 @@ export function HubModelPicker({
                     <div>
                       <ConnectedGroupHeading
                         icon={
-                          <HugeiconsIcon icon={PinIcon} className="size-3.5" />
+                          <HugeiconsIcon icon={StarIcon} className="size-3.5" />
                         }
-                        label="Pinned"
+                        label="Favorites"
                         collapsed={pinnedConnectedCollapsed}
                         onToggle={() =>
                           setPinnedConnectedCollapsed((value) => !value)
@@ -8159,12 +8037,12 @@ export function HubModelPicker({
                   <>
                     <ListLabel
                       icon={
-                        <HugeiconsIcon icon={PinIcon} className="size-3.5" />
+                        <HugeiconsIcon icon={StarIcon} className="size-3.5" />
                       }
                       collapsed={pinnedCollapsed}
                       onToggle={() => setPinnedCollapsed((v) => !v)}
                     >
-                      Pinned
+                      Favorites
                     </ListLabel>
                     {!pinnedCollapsed &&
                       pinnedRows.map((row) =>
@@ -9359,20 +9237,13 @@ function FineTunedRows({
                 />
               </div>
               <span className={ROW_ACTIONS_CLASS}>
-                {canConfigure && onConfigure && (
-                  <ModelLoadSettingsAction
-                    ariaLabel={`Inference settings for ${adapter.name}`}
-                    onConfigure={() => onConfigure(adapter.id, selectionMeta)}
-                    savedFor={configTarget}
-                  />
-                )}
                 <ModelRowMenu
                   ariaLabel={`More options for ${adapter.name}`}
                   runSettings={configTarget}
                   pin={{
                     pinned: pinnedKeys.includes(pinKey(adapter.id)),
-                    pinLabel: "Pin",
-                    unpinLabel: "Unpin",
+                    pinLabel: "Favorite",
+                    unpinLabel: "Remove favorite",
                     onToggle: () => togglePinned(adapter.id),
                   }}
                   onReveal={
@@ -9412,6 +9283,13 @@ function FineTunedRows({
                       : undefined
                   }
                 />
+                {canConfigure && onConfigure && (
+                  <ModelLoadSettingsAction
+                    ariaLabel={`Inference settings for ${adapter.name}`}
+                    onConfigure={() => onConfigure(adapter.id, selectionMeta)}
+                    savedFor={configTarget}
+                  />
+                )}
               </span>
             </div>
             {expandedGguf === adapter.id && (

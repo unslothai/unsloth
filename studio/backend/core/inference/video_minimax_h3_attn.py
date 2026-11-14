@@ -9,6 +9,8 @@ backend runs inside the strided processor instead of the stock one); all but the
 
 from __future__ import annotations
 
+import contextlib
+
 import os
 from functools import lru_cache
 from typing import Any, Optional
@@ -86,7 +88,7 @@ def h3_attention_backend(
         return selected
     try:
         from .diffusion_attention import ATTN_AUTO, normalize_attention_backend
-        if normalize_attention_backend(requested) != ATTN_AUTO:
+        if normalize_attention_backend(requested) not in (ATTN_AUTO, "unsloth_int8"):
             return selected
     except Exception:  # noqa: BLE001 -- unparseable request: leave it alone
         return selected
@@ -156,6 +158,9 @@ def _strided_processor_for(base: Any) -> Any:
         _unsloth_shared_qkv = False
         # set from UNSLOTH_H3_STRIDED_SAGE at install: a sage backend runs here, not in the stock processor
         _unsloth_sage = False
+        # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
+        _unsloth_int8 = False
+        _unsloth_int8_min_tokens = 0
 
         def __call__(
             self,
@@ -171,7 +176,7 @@ def _strided_processor_for(base: Any) -> Any:
                 dispatch = getattr(base_module, "dispatch_attention_fn", None)
             sage = dispatch is not None
             if (
-                (kernel is None and not sage)
+                (kernel is None and not sage and not self._unsloth_int8)
                 or attention_mask is not None
                 or self._parallel_config is not None
             ):
@@ -213,7 +218,18 @@ def _strided_processor_for(base: Any) -> Any:
                     query = _apply_rotary_emb(query, *rotary_emb)
                     key = _apply_rotary_emb(key, *rotary_emb)
 
-            if sage:
+            if (
+                self._unsloth_int8
+                and query.shape[1] >= self._unsloth_int8_min_tokens
+                # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
+                and not (
+                    torch.is_grad_enabled()
+                    and (query.requires_grad or key.requires_grad or value.requires_grad)
+                )
+            ):
+                hidden_states = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
+                hidden_states = hidden_states.flatten(2, 3).type_as(query)
+            elif sage:
                 # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot
                 # take still run native there)
                 hidden_states = dispatch(
@@ -228,7 +244,8 @@ def _strided_processor_for(base: Any) -> Any:
                 )
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             else:
-                with sdpa_kernel(kernel):
+                # an INT8 route over a default SDPA pick has no kernel to pin
+                with sdpa_kernel(kernel) if kernel is not None else contextlib.nullcontext():
                     out = F.scaled_dot_product_attention(
                         query.permute(0, 2, 1, 3),
                         key.permute(0, 2, 1, 3),

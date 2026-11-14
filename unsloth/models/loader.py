@@ -2870,9 +2870,15 @@ class FastModel(FastBaseModel):
                 "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
             )
         elif "deepseek_v41," in model_types_all or "deepseek_v41_text," in model_types_all:
-            # DeepSeek-V4.1 port: under gradient checkpointing a compiled helper inside a layer (rope, mHC, LoRA
-            # forwards) ran compiled in the forward and not in the recompute, and the saved tensors no longer matched.
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+            # DeepSeek-V4.1 port: its layers checkpoint non-reentrant, so a compiled region must save the same tensors
+            # in the recompute as in the forward. unsloth_zoo's prepare_compiled_checkpoint makes that hold; an older
+            # unsloth_zoo without it keeps torch.compile off for the model's forward as before.
+            try:
+                from unsloth_zoo.temporary_patches.deepseek_v41 import prepare_compiled_checkpoint
+            except ImportError:
+                prepare_compiled_checkpoint = None
+            if prepare_compiled_checkpoint is None or not prepare_compiled_checkpoint():
+                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
         elif "csm" in model_types_all:
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"  # Inference is too slow
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"  # Sesame fails

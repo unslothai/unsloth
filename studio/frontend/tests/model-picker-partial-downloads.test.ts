@@ -572,19 +572,8 @@ test("a torn quant inside the expander keeps its own menu", () => {
   // A partial still occupies disk, so its quant row needs reveal and delete.
   assert.match(
     PICKERS,
-    /const variantOnDisk = \(v: GgufVariantDetail\): boolean =>\n\s*v\.downloaded === true \|\| v\.partial === true;[\s\S]*?variantOnDisk\(v\)\n\s*\? Boolean\(\n\s*allowPin \|\|/,
+    /const variantHasMenu = \(v: GgufVariantDetail\): boolean =>\n\s*\(v\.downloaded === true \|\| v\.partial === true\) &&\n\s*Boolean\(\n\s*allowPin \|\|/,
     "the menu follows disk, not completeness",
-  );
-  // Reveal and delete are what a torn quant needs; both must stay reachable for a partial.
-  assert.match(
-    PICKERS,
-    /isLocalPath \|\| !variantOnDisk\(v\)/,
-    "reveal follows disk, so a partial keeps it",
-  );
-  assert.match(
-    PICKERS,
-    /onDeleteVariant && variantOnDisk\(v\)/,
-    "delete follows disk, so a partial keeps it",
   );
   // Pinning an unloadable quant would put a dead row at the top of the list.
   assert.match(
@@ -630,9 +619,4 @@ test("a GGUF's borrowed companion base is not offered as a picker row", () => {
   const filter = INVENTORY.slice(start, INVENTORY.indexOf(".map(", start));
   assert.match(filter, /!row\.companion &&/);
   assert.match(filter, /!row\.companionPrefetch &&/);
-});
-
-test("only GGUF expander rows probe the local header for Model info", () => {
-  // MLX precision folders share the expander; validating them runs every non-GGUF preflight.
-  assert.match(PICKERS, /hasLocalGguf: variantsAreGguf && v\.downloaded === true,/);
 });

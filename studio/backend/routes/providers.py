@@ -1288,6 +1288,12 @@ async def load_served_window(provider_id: str, model: str):
         return {"context_length": None}
 
 
+def _listed_display_name(model: dict) -> str:
+    """The provider's own name (Anthropic ``display_name``, Gemini ``displayName``), else the id."""
+    name = model.get("display_name")
+    return name.strip() if isinstance(name, str) and name.strip() else model.get("id", "")
+
+
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
@@ -1420,7 +1426,7 @@ async def list_provider_models(
         return [
             ProviderModelInfo(
                 id = m.get("id", ""),
-                display_name = m.get("id", ""),
+                display_name = _listed_display_name(m),
                 context_length = m.get("context_length") or m.get("context_window"),
                 owned_by = m.get("owned_by"),
                 capabilities = _model_capability_names(m),

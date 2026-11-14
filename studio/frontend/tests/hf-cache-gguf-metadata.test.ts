@@ -8,7 +8,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { cachedModelInfo, primeCacheFromListing } = await import(
+const { cachedModelInfo } = await import(
   "../src/features/hub/lib/hf-cache.ts"
 );
 
@@ -38,25 +38,4 @@ test("a cold metadata lookup preserves GGUF parameters and caches the result", a
   const cached = await cachedModelInfo({ name, fetch: fetchInfo });
   assert.equal(cached.gguf?.total, total);
   assert.equal(requests, 1);
-});
-
-test("listing-primed GGUF metadata is reused without a request", async () => {
-  const name = "test/primed-gguf";
-  primeCacheFromListing(name, undefined, {
-    id: "primed-gguf",
-    name,
-    private: false,
-    gated: false,
-    downloads: 0,
-    likes: 0,
-    updatedAt: new Date("2026-09-01T00:00:00Z"),
-    gguf: { total: 8_190_735_360, architecture: "qwen3" },
-  });
-  const result = await cachedModelInfo({
-    name,
-    fetch: async () => {
-      throw new Error("Listing metadata should satisfy this lookup");
-    },
-  });
-  assert.equal(result.gguf?.total, 8_190_735_360);
 });

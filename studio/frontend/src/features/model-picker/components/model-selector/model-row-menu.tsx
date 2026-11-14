@@ -25,10 +25,9 @@ import { cn } from "@/lib/utils";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  InformationCircleIcon,
   MoreVerticalIcon,
-  PinIcon,
-  PinOffIcon,
+  StarIcon,
+  StarOffIcon,
   Undo02Icon,
 } from "@hugeicons/core-free-icons";
 import { Folder01Icon } from "@/lib/folder-icons";
@@ -45,7 +44,6 @@ import {
   useHasRememberedRunSettings,
 } from "../../model-config/remembered-run-settings";
 import type { ModelPickTarget } from "./types";
-import { ModelInfoDialog } from "./model-info-dialog";
 
 /** Rendered under the pin and above cache/update, so delete stays last. */
 export interface ModelRowMenuItem {
@@ -54,6 +52,8 @@ export interface ModelRowMenuItem {
   icon: ReactNode;
   onSelect: () => void;
   disabled?: boolean;
+  /** Listed in red under Delete. */
+  destructive?: boolean;
 }
 
 interface ModelRowMenuPin {
@@ -61,14 +61,6 @@ interface ModelRowMenuPin {
   pinLabel: string;
   unpinLabel: string;
   onToggle: () => void;
-}
-
-/** Hub rows only: local paths have no Hub entry. */
-interface ModelRowMenuInfo {
-  repoId: string;
-  variant?: string | null;
-  /** Probe the local header only for downloaded GGUFs. */
-  hasLocalGguf?: boolean;
 }
 
 interface ModelRowMenuUpdate {
@@ -104,24 +96,27 @@ export function ModelRowMenu({
   cachePath,
   onReveal,
   pin,
-  info,
   items,
   runSettings,
   update,
   del,
+  details,
+  contentClassName,
 }: {
+  contentClassName?: string;
+  details?: ReactNode;
   ariaLabel: string;
   buttonClassName?: string;
   iconClassName?: string;
   cachePath?: ModelRowMenuCachePath;
   onReveal?: () => Promise<void>;
   pin?: ModelRowMenuPin;
-  info?: ModelRowMenuInfo;
   items?: readonly ModelRowMenuItem[];
   runSettings?: ModelPickTarget;
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
+  const destructiveItems = items?.filter((item) => item.destructive) ?? [];
   // Null unless the owner is on the backend's own machine with a file manager.
   const revealLabel = useRevealLabel();
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -133,8 +128,6 @@ export function ModelRowMenu({
     del?.impact?.cachePath,
   );
   const [updateOpen, setUpdateOpen] = useState(false);
-  const [infoOpen, setInfoOpen] = useState(false);
-  const menuTriggerRef = useRef<HTMLButtonElement>(null);
 
   const onUpdatedRef = useRef(update?.onUpdated);
   useEffect(() => {
@@ -229,7 +222,6 @@ export function ModelRowMenu({
     !update &&
     !del &&
     !canReveal &&
-    !info &&
     !items?.length &&
     !hasSavedRunSettings
   )
@@ -240,7 +232,6 @@ export function ModelRowMenu({
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <button
-            ref={menuTriggerRef}
             type="button"
             onClick={(e) => e.stopPropagation()}
             aria-label={ariaLabel}
@@ -260,8 +251,18 @@ export function ModelRowMenu({
           side="bottom"
           align="end"
           sideOffset={2}
-          className="unsloth-plus-menu menu-flat-destructive w-48"
+          className={cn(
+            "unsloth-plus-menu menu-flat-destructive",
+            details ? "w-60" : "w-48",
+            contentClassName,
+          )}
         >
+          {details ? (
+            <>
+              {details}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           {pin && (
             <DropdownMenuItem
               onSelect={(e) => {
@@ -270,41 +271,28 @@ export function ModelRowMenu({
               }}
             >
               <HugeiconsIcon
-                icon={pin.pinned ? PinOffIcon : PinIcon}
+                icon={pin.pinned ? StarOffIcon : StarIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />
               <span>{pin.pinned ? pin.unpinLabel : pin.pinLabel}</span>
             </DropdownMenuItem>
           )}
-          {info && (
-            <DropdownMenuItem
-              onSelect={(e) => {
-                e.stopPropagation();
-                setInfoOpen(true);
-              }}
-            >
-              <HugeiconsIcon
-                icon={InformationCircleIcon}
-                strokeWidth={1.75}
-                className="size-icon"
-              />
-              <span>Model info</span>
-            </DropdownMenuItem>
-          )}
-          {items?.map((item) => (
-            <DropdownMenuItem
-              key={item.key}
-              disabled={item.disabled}
-              onSelect={(e) => {
-                e.stopPropagation();
-                item.onSelect();
-              }}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </DropdownMenuItem>
-          ))}
+          {items
+            ?.filter((item) => !item.destructive)
+            .map((item) => (
+              <DropdownMenuItem
+                key={item.key}
+                disabled={item.disabled}
+                onSelect={(e) => {
+                  e.stopPropagation();
+                  item.onSelect();
+                }}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </DropdownMenuItem>
+            ))}
           {hasSavedRunSettings && (
             <DropdownMenuItem
               onSelect={(e) => {
@@ -347,16 +335,14 @@ export function ModelRowMenu({
               <span>Update</span>
             </DropdownMenuItem>
           )}
+          {(del || destructiveItems.length > 0) &&
+            (canReveal ||
+              pin ||
+              update ||
+              items?.some((item) => !item.destructive) ||
+              hasSavedRunSettings) && <DropdownMenuSeparator />}
           {del && (
             <>
-              {(canReveal ||
-                pin ||
-                info ||
-                update ||
-                items?.length ||
-                hasSavedRunSettings) && (
-                <DropdownMenuSeparator />
-              )}
               <DropdownMenuItem
                 variant="destructive"
                 disabled={del.disabled}
@@ -374,6 +360,20 @@ export function ModelRowMenu({
               </DropdownMenuItem>
             </>
           )}
+          {destructiveItems.map((item) => (
+            <DropdownMenuItem
+              key={item.key}
+              variant="destructive"
+              disabled={item.disabled}
+              onSelect={(e) => {
+                e.stopPropagation();
+                item.onSelect();
+              }}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </DropdownMenuItem>
+          ))}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -394,20 +394,6 @@ export function ModelRowMenu({
           deleting={deleting}
           blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
           onConfirm={() => void handleDeleteConfirm()}
-        />
-      )}
-
-      {info && infoOpen && (
-        <ModelInfoDialog
-          repoId={info.repoId}
-          variant={info.variant}
-          hasLocalGguf={info.hasLocalGguf}
-          open={infoOpen}
-          onOpenChange={setInfoOpen}
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            menuTriggerRef.current?.focus();
-          }}
         />
       )}
 
