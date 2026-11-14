@@ -35,3 +35,6 @@ class Peer:
     agent_port: int = 0
     added_at: float = 0.0
     removed: bool = False  # a tombstone: kept so a removed worker cannot quietly come back
+    # tailcat: a worker's persistent address (a secret) and public key; on a worker, the master's client key.
+    tc_addr: str = field(default = "", repr = False)
+    tc_pub: str = ""
