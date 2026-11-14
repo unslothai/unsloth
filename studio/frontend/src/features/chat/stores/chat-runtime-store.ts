@@ -56,6 +56,10 @@ import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
+  BUILTIN_PRESET_NAMES,
+  BUILTIN_PRESETS,
+  applyPresetForProvider,
+  getLinkedPreset,
   getPresetOwnedParams,
   getPresetSource,
 } from "../presets/preset-policy";
@@ -481,6 +485,7 @@ let hasShownSettingsPersistenceWarning = false;
 let customPresetsMutationVersion = 0;
 let activePresetMutationVersion = 0;
 let activePresetSourceMutationVersion = 0;
+let modelPresetsMutationVersion = 0;
 let settingsHydrationPromise: Promise<void> | null = null;
 
 function warnSettingsPersistenceFailure(): void {
@@ -1226,7 +1231,7 @@ function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
     }
     kept[key] = held;
   }
-  return hasKeys(kept) ? { ...params, ...kept } : params;
+  return withLinkOverlay(hasKeys(kept) ? { ...params, ...kept } : params);
 }
 
 function withoutActiveThreadParams(
@@ -1342,6 +1347,7 @@ function buildThreadScopedSnapshot(
   }
   restoreChatOwnedValues(threadId, settings);
   if (threadId === threadScopedSettingsThreadId) {
+    withoutLinkOverlay(settings);
     activeThreadScopedSettings = settings;
   }
   explicitlyEditedThreadFields.clear();
@@ -2436,6 +2442,7 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
+  modelPresets: Record<string, string>;
   models: ChatModelRow[];
   loras: ChatLoraSummary[];
   loraInventorySettled: boolean;
@@ -2714,6 +2721,7 @@ type ChatRuntimeStore = {
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
+  setModelPreset: (modelId: string, presetName: string | null) => void;
   setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   setThreadRunning: (
@@ -2919,6 +2927,7 @@ type PresetHydrationVersions = {
   customPresets: number;
   activePreset: number;
   activePresetSource: number;
+  modelPresets: number;
 };
 
 type SettingsHydrationVersions = {
@@ -3041,6 +3050,7 @@ function getSettingsHydrationVersions(): SettingsHydrationVersions {
       customPresets: customPresetsMutationVersion,
       activePreset: activePresetMutationVersion,
       activePresetSource: activePresetSourceMutationVersion,
+      modelPresets: modelPresetsMutationVersion,
     },
   };
 }
@@ -3315,6 +3325,7 @@ function persistParamEdit(
   changedParams: PersistedInferenceParams,
   paramsByModel: Record<string, PersistedInferenceParams> | null,
   modelId: string | undefined,
+  modelOnly = false,
 ): void {
   if (!hasKeys(changedParams)) {
     return;
@@ -3325,12 +3336,15 @@ function persistParamEdit(
     pickRememberedChanges(changedParams),
     modelId ? rememberedWindow(modelId) : null,
   );
-  saveSettingsPatch({
-    inferenceParams: changedParams,
-    ...(paramsByModel && modelId && hasKeys(rememberedChanges)
+  const byModel =
+    paramsByModel && modelId && hasKeys(rememberedChanges)
       ? { inferenceParamsByModel: { [modelId]: rememberedChanges } }
-      : {}),
-  });
+      : null;
+  if (modelOnly) {
+    if (byModel) saveSettingsPatch(byModel);
+    return;
+  }
+  saveSettingsPatch({ inferenceParams: changedParams, ...byModel });
 }
 
 function getHydratedCustomPresets(
@@ -3360,15 +3374,25 @@ function getHydratedPresetState(
 ): Partial<
   Pick<
     ChatRuntimeStore,
-    "customPresets" | "activePreset" | "activePresetSource"
+    "customPresets" | "activePreset" | "activePresetSource" | "modelPresets"
   >
 > {
   const nextState: Partial<
     Pick<
       ChatRuntimeStore,
-      "customPresets" | "activePreset" | "activePresetSource"
+      "customPresets" | "activePreset" | "activePresetSource" | "modelPresets"
     >
   > = {};
+  if (
+    settings.modelPresets !== undefined &&
+    modelPresetsMutationVersion === versions.modelPresets
+  ) {
+    nextState.modelPresets = Object.fromEntries(
+      Object.entries(settings.modelPresets).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+  }
   if (customPresetsMutationVersion === versions.customPresets) {
     nextState.customPresets = getHydratedCustomPresets(settings, state);
   }
@@ -4258,6 +4282,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   customPresets: [],
   activePreset: "Default",
   activePresetSource: getPresetSource("Default"),
+  modelPresets: {},
   models: [],
   loras: [],
   loraInventorySettled: false,
@@ -4724,11 +4749,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             sharedParams,
             options?.persist !== false && !fromModelDefaults,
           );
+      // An edit over a link reaches the model's memory only: the installation defaults stay as
+      // they were before the link, or a reload hands the edit to every other model.
+      const overLink =
+        !replayed && !fromPreset && linkShownOn(state, nextParams.checkpoint);
       if (persistingGlobally) {
         persistParamEdit(
           sharedParams,
           checkpointChanged || fromPreset ? null : paramsByModel,
           nextParams.checkpoint,
+          overLink,
         );
         // The row is forgotten and an unmoved value sends nothing, so the defaults need the whole preset.
         if (fromPreset) {
@@ -4736,7 +4766,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         }
         // Level with what was just written, or a chat opened later this session falls back to the
         // sampling from before this model loaded.
-        noteThreadScopedDefaults(sharedParams);
+        if (!overLink) noteThreadScopedDefaults(sharedParams);
       } else if (fromModelDefaults && !state.settingsHydrated) {
         noteModelDefaultsBeforeHydration(
           nextParams.checkpoint,
@@ -4770,11 +4800,37 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveSettingsPatch({ customPresets });
       return { customPresets };
     }),
-  setActivePreset: (activePreset) =>
+  setActivePreset: (activePreset) => {
+    // Saving what a link put on (any name) makes it a real pick.
+    const promote = linkShown !== null && get().activePreset === linkShown;
+    forgetLinkShown();
     set(() => {
       activePresetMutationVersion += 1;
       saveSettingsPatch({ activePreset });
       return { activePreset };
+    });
+    if (promote) {
+      const state = get();
+      state.setParams(state.params, { fromPreset: true, minPChoiceEdited: true });
+    }
+  },
+  setModelPreset: (modelId, presetName) =>
+    set((state) => {
+      if (!modelId || (state.modelPresets[modelId] ?? null) === presetName) {
+        return state;
+      }
+      modelPresetsMutationVersion += 1;
+      saveSettingsPatch({ modelPresets: { [modelId]: presetName } });
+      const modelPresets = { ...state.modelPresets };
+      if (presetName === null) {
+        delete modelPresets[modelId];
+        if (modelId === state.params.checkpoint) {
+          queueMicrotask(() => syncLinkedPreset(modelId, false));
+        }
+      } else {
+        modelPresets[modelId] = presetName;
+      }
+      return { modelPresets };
     }),
   setActivePresetSource: (activePresetSource) => {
     let returnedToBuiltInDefault = false;
@@ -4783,7 +4839,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         activePresetSource === "builtin-default" &&
         state.activePresetSource !== "builtin-default";
       activePresetSourceMutationVersion += 1;
-      saveSettingsPatch({ activePresetSource });
+      // Over a link the stored source stays the earlier pick's.
+      if (!linkShownOn(state, state.params.checkpoint)) {
+        saveSettingsPatch({ activePresetSource });
+      }
       return { activePresetSource };
     });
     if (returnedToBuiltInDefault) {
@@ -5069,7 +5128,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           own && own.modelId && own.modelId !== state.params.checkpoint ? null : own,
       };
     }),
-  applyThreadScopedSettings: (threadId, settings) =>
+  applyThreadScopedSettings: (threadId, settings) => {
+    const shownBefore = getPresetOwnedParams(get().params);
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
       flushThreadScopedSettingsWrite();
@@ -5247,7 +5307,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         threadScopedSettingsPending: pending,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
+    });
+    reapplyShownLink(shownBefore);
+  },
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
     if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
@@ -6340,3 +6402,272 @@ export function syncKeepModelsLoaded(mode: unknown): void {
     useChatRuntimeStore.getState().setKeepModelsLoaded(keep);
   }
 }
+
+/** A link applies to this tab only, never the settings DB, a chat or model memory, so the stored
+ *  pick stays the user's own across leaving or reloading (#14900). */
+let linkShown: string | null = null;
+const RECOMMENDED_KEYS = new Set([
+  "temperature",
+  "topP",
+  "topK",
+  "minP",
+  "presencePenalty",
+  "maxTokens",
+]);
+let pickBeforeLink: {
+  name: string;
+  source: ChatPresetSource;
+  params: ReturnType<typeof getPresetOwnedParams>;
+} | null = null;
+let lastLinkCheckpoint = "";
+let linkValues: ReturnType<typeof getPresetOwnedParams> | null = null;
+let recommendationMergedFor: string | null = null;
+
+function linkShownOn(
+  state: Pick<ChatRuntimeStore, "activePreset" | "modelPresets" | "customPresets">,
+  modelId: string,
+): boolean {
+  return (
+    linkShown !== null &&
+    state.activePreset === linkShown &&
+    getLinkedPreset(modelId, state.modelPresets, state.customPresets)?.name === linkShown
+  );
+}
+
+/** Whether the preset on screen is there through the loaded model's link, not a pick. */
+export function linkedPresetShown(): boolean {
+  const state = useChatRuntimeStore.getState();
+  return linkShownOn(state, state.params.checkpoint);
+}
+
+function linkedParams(base: InferenceParams, preset: Preset): InferenceParams {
+  const applied = applyPresetForProvider(base, preset, null);
+  const cap = isExternalModelId(base.checkpoint)
+    ? externalOutputCap(base.checkpoint)
+    : loadedContextFor(base.checkpoint);
+  return cap !== null && applied.maxTokens > cap ? { ...applied, maxTokens: cap } : applied;
+}
+let linkSyncSuspended = 0;
+
+export function suspendLinkedPresetSync(): () => void {
+  linkSyncSuspended += 1;
+  let resumed = false;
+  return () => {
+    if (resumed) return;
+    resumed = true;
+    linkSyncSuspended -= 1;
+    if (linkSyncSuspended > 0) return;
+    const modelId = useChatRuntimeStore.getState().params.checkpoint;
+    if (!modelId || modelId === lastLinkCheckpoint) return;
+    lastLinkCheckpoint = modelId;
+    queueMicrotask(() => syncLinkedPreset(modelId, false));
+  };
+}
+
+function externalOutputCap(modelId: string): number | null {
+  const external = parseExternalModelId(modelId);
+  if (!external) return null;
+  const provider = useExternalProvidersStore
+    .getState()
+    .providers.find((candidate) => candidate.id === external.providerId);
+  if (!provider) return null;
+  return getExternalMaxOutputTokens(
+    provider.providerType,
+    external.modelId,
+    provider.maxOutputTokens,
+  );
+}
+
+function providerTypeFor(modelId: string): string | null {
+  const external = isExternalModelId(modelId) ? parseExternalModelId(modelId) : null;
+  if (!external) return null;
+  return (
+    useExternalProvidersStore
+      .getState()
+      .providers.find((provider) => provider.id === external.providerId)
+      ?.providerType ?? null
+  );
+}
+
+function syncLinkedPreset(modelId: string, keepRestored: boolean): void {
+  const state = useChatRuntimeStore.getState();
+  if (!state.settingsHydrated || !modelId || state.params.checkpoint !== modelId) {
+    return;
+  }
+  const preset = getLinkedPreset(modelId, state.modelPresets, state.customPresets);
+  const shown = linkShown !== null && state.activePreset === linkShown;
+  if (preset) {
+    if (!shown && keepRestored && state.activePreset === preset.name) return;
+    if (!shown) {
+      pickBeforeLink = {
+        name: state.activePreset,
+        source: state.activePresetSource,
+        params: getPresetOwnedParams(withoutActiveThreadParams(state, state.params)),
+      };
+    }
+    freezePendingChatWrite(shown);
+    recommendationMergedFor = null;
+    state.setParams(linkedParams(state.params, preset), { persist: false });
+    modelsShowingPresetPick.add(modelId);
+    useChatRuntimeStore.setState({
+      activePreset: preset.name,
+      activePresetSource: getPresetSource(preset.name),
+    });
+    linkShown = preset.name;
+    linkValues = getPresetOwnedParams(useChatRuntimeStore.getState().params);
+    return;
+  }
+  freezePendingChatWrite(shown);
+  const before = pickBeforeLink;
+  linkShown = null;
+  linkValues = null;
+  pickBeforeLink = null;
+  if (!shown || !before) return;
+  const fallback = BUILTIN_PRESETS[0];
+  const exists =
+    BUILTIN_PRESET_NAMES.has(before.name) ||
+    state.customPresets.some((saved) => saved.name === before.name);
+  state.setActivePreset(exists ? before.name : fallback.name);
+  state.setActivePresetSource(exists ? before.source : getPresetSource(fallback.name));
+  const live = useChatRuntimeStore.getState();
+  // Under Default a status merge already applied this model's recommendation.
+  const values =
+    exists && before.source === "builtin-default" && recommendationMergedFor === modelId
+      ? Object.fromEntries(
+          Object.entries(before.params).filter(([key]) => !RECOMMENDED_KEYS.has(key)),
+        )
+      : before.params;
+  live.setParams(
+    exists
+      ? { ...live.params, ...values }
+      : applyPresetForProvider(live.params, fallback, providerTypeFor(modelId)),
+    { fromModelDefaults: true, maxTokensCap: loadedContextFor(modelId) ?? undefined },
+  );
+  if (useChatRuntimeStore.getState().activePresetSource !== "custom") {
+    modelsShowingPresetPick.delete(modelId);
+  }
+}
+
+export function presetSourceForModel(modelId: string): ChatPresetSource {
+  const state = useChatRuntimeStore.getState();
+  if (
+    linkShown !== null &&
+    pickBeforeLink !== null &&
+    state.activePreset === linkShown &&
+    !getLinkedPreset(modelId, state.modelPresets, state.customPresets)
+  ) {
+    recommendationMergedFor = modelId;
+    return pickBeforeLink.source;
+  }
+  return state.activePresetSource;
+}
+
+function withLinkOverlay(params: InferenceParams): InferenceParams {
+  if (linkShown === null) return params;
+  const state = useChatRuntimeStore.getState();
+  if (state.activePreset !== linkShown) return params;
+  const preset = getLinkedPreset(params.checkpoint, state.modelPresets, state.customPresets);
+  if (preset?.name !== linkShown) return params;
+  const live = getPresetOwnedParams(state.params);
+  const linked = getPresetOwnedParams(linkedParams(params, preset));
+  // Against the values last applied: a reload moving the cap is not an edit.
+  const shownValues = linkValues ?? linked;
+  const kept = Object.fromEntries(
+    Object.entries(linked).filter(
+      ([key]) =>
+        JSON.stringify(live[key as keyof typeof live]) ===
+        JSON.stringify(shownValues[key as keyof typeof shownValues]),
+    ),
+  );
+  linkValues = { ...shownValues, ...kept };
+  return { ...params, ...kept };
+}
+
+function reapplyShownLink(shownBefore: ReturnType<typeof getPresetOwnedParams>): void {
+  if (linkShown === null || linkValues === null) return;
+  const applied = linkValues;
+  const state = useChatRuntimeStore.getState();
+  if (state.activePreset !== linkShown || !state.settingsHydrated) return;
+  const preset = getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
+  if (preset?.name !== linkShown) return;
+  const linked = linkedParams(state.params, preset);
+  const chatKeys = Object.fromEntries(
+    THREAD_SCOPED_PARAM_KEYS.filter(
+      (key) =>
+        JSON.stringify(shownBefore[key as keyof typeof shownBefore]) ===
+        JSON.stringify(applied[key as keyof typeof applied]),
+    ).map((key) => [key, linked[key]]),
+  ) as Partial<InferenceParams>;
+  if (Object.keys(chatKeys).length === 0) return;
+  state.setParams({ ...state.params, ...chatKeys }, { persist: false });
+  const owned = getPresetOwnedParams(useChatRuntimeStore.getState().params);
+  linkValues = {
+    ...applied,
+    ...Object.fromEntries(
+      Object.keys(chatKeys).map((key) => [key, owned[key as keyof typeof owned]]),
+    ),
+  };
+}
+
+/** A debounced chat write reads live values when it fires, so snapshot them before a link moves them. */
+function freezePendingChatWrite(shown: boolean): void {
+  if (
+    threadSettingsWriteThreadId === null ||
+    threadSettingsWriteThreadId !== threadScopedSettingsThreadId ||
+    threadSettingsWriteSnapshot !== null
+  ) {
+    return;
+  }
+  const state = useChatRuntimeStore.getState();
+  const pending = readThreadScopedSettings(state);
+  if (shown) {
+    withoutLinkOverlay(
+      pending,
+      state.customPresets.find((saved) => saved.name === linkShown) ?? null,
+    );
+  }
+  threadSettingsWriteSnapshot = pending;
+}
+
+function withoutLinkOverlay(
+  settings: ThreadScopedSettings,
+  outgoing: Preset | null = null,
+): void {
+  if (linkShown === null) return;
+  const state = useChatRuntimeStore.getState();
+  if (state.activePreset !== linkShown) return;
+  const preset =
+    outgoing ?? getLinkedPreset(state.params.checkpoint, state.modelPresets, state.customPresets);
+  if (preset?.name !== linkShown) return;
+  const linked = linkValues ?? getPresetOwnedParams(linkedParams(state.params, preset));
+  const own = settings as Record<string, unknown>;
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (explicitlyEditedThreadFields.has(key)) continue;
+    if (JSON.stringify(own[key]) !== JSON.stringify(linked[key as keyof typeof linked])) continue;
+    const chatValue = (activeThreadScopedSettings as Record<string, unknown> | null)?.[key];
+    // undefined only: a chat's null seed is a choice.
+    const underlying =
+      chatValue !== undefined ? chatValue : pickBeforeLink?.params[key as keyof typeof linked];
+    if (underlying !== undefined) own[key] = underlying;
+  }
+}
+
+function forgetLinkShown(): void {
+  linkShown = null;
+  linkValues = null;
+  pickBeforeLink = null;
+}
+
+// A microtask, so the load path's own setParams files the model's defaults first.
+useChatRuntimeStore.subscribe((state, previous) => {
+  const modelId = state.params.checkpoint;
+  if (modelId !== previous.params.checkpoint) {
+    if (!modelId || linkSyncSuspended > 0) return;
+    const first = !lastLinkCheckpoint;
+    lastLinkCheckpoint = modelId;
+    queueMicrotask(() => syncLinkedPreset(modelId, first));
+  } else if (state.settingsHydrated && !previous.settingsHydrated) {
+    lastLinkCheckpoint = modelId;
+    queueMicrotask(() => syncLinkedPreset(modelId, true));
+  }
+});

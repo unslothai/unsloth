@@ -29,6 +29,7 @@ import {
   normalizeSpeculativeType,
   noteLoadedModelReasoningMode,
   pinHoldsLiveEffort,
+  presetSourceForModel,
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   takeEffortDisplacedByPin,
@@ -193,7 +194,7 @@ export function applyActiveModelStatusToStore(
         current: { ...store.params, ...residentEngine },
         response: status,
         modelId: checkpointId,
-        presetSource: store.activePresetSource,
+        presetSource: presetSourceForModel(checkpointId),
         loadedContextLength: loadedContextFields(status).loadedContextLength,
       }),
       // Remembered settings outrank the recommendation, capped at the loaded context.
@@ -761,7 +762,7 @@ export function applyActiveModelStatusToStore(
       checkpointId,
       reasoningAlwaysOn || current.reasoningEnabled,
     );
-    if (qwenParams !== null && current.activePresetSource === "builtin-default") {
+    if (qwenParams !== null && presetSourceForModel(checkpointId) === "builtin-default") {
       current.setParams(
         { ...current.params, ...qwenParams },
         {

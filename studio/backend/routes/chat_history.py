@@ -549,6 +549,10 @@ class ChatSettingsPayload(BaseModel):
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
+    # Deep-merged per model id; a null value removes that model's link.
+    modelPresets: Optional[dict[str, Optional[Annotated[str, Field(max_length = 200)]]]] = Field(
+        default = None, max_length = 1_000
+    )
     autoTitle: Optional[bool] = None
     reasoningEffort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]

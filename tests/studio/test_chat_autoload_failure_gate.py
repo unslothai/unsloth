@@ -273,6 +273,7 @@ function isExternalModelId(value: unknown) {
 //   Boolean(resp.supports_preserve_thinking && resp.preserve_thinking_default)
 // Present because the sliced region calls it; without it every scenario in this
 // file fails on the harness guard rather than on anything it means to test.
+function suspendLinkedPresetSync() { return () => {}; }
 function resolvePreserveThinkingOnLoad(resp: any) {
   return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
 }

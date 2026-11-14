@@ -306,6 +306,7 @@ import {
   withChatOwnedSettings,
   withLoadedModelOverrides,
   localMediaToolsForTurn,
+  suspendLinkedPresetSync,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -2876,6 +2877,7 @@ function applyAutoLoadRuntimeState(
   const visibleState = options?.preserveVisibleSettings
     ? snapshotVisibleModelState(useChatRuntimeStore.getState())
     : null;
+  const resumeLinks = visibleState ? suspendLinkedPresetSync() : null;
   try {
     apply();
     options?.captureResolvedRuntime?.(
@@ -2885,6 +2887,7 @@ function applyAutoLoadRuntimeState(
     if (visibleState) {
       restoreVisibleModelState(visibleState);
     }
+    resumeLinks?.();
   }
 }
 
@@ -4458,6 +4461,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
       const visibleRoute = window.location.href;
       let result: Awaited<ReturnType<typeof autoLoadSmallestModel>>;
       let modelRuntime: QueuedResolvedModelRuntime | null = null;
+      const resumeLinks = suspendLinkedPresetSync();
       try {
         result = await autoLoadSmallestModel({
           skipAdoptServerModel: true,
@@ -4482,6 +4486,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
         ) {
           restoreVisibleModelState(visibleExternalState);
         }
+        resumeLinks();
       }
       return { ...result, modelRuntime };
     }
