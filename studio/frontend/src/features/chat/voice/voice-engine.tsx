@@ -20,6 +20,7 @@ import {
   rushVoiceReveal,
   setMicMuted,
   voiceRevealText,
+  typedDraftIn,
   voiceWroteBox,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
@@ -544,8 +545,10 @@ export const VoiceEngine: FC = () => {
   const submitTranscript = useCallback((spoken?: string, typed?: boolean) => {
     if (voiceModeRef.current !== "active") return;
     const composer = auiRef.current.composer();
+    const draft = spoken ? typedDraftIn(composer.getState().text) : "";
     if (composer.getState().dictation) composer.stopDictation();
     let text = (spoken ?? composer.getState().text).trim();
+    if (draft) text = `${draft} ${text}`;
     voiceTrace("engine.submit", { text });
     const pending = pendingForVoiceRef.current;
     // A reply sent now would land before the voice can speak it: park the turn until the slot loads.

@@ -144,6 +144,14 @@ let voiceBoxText = "";
 export function voiceWroteBox(text: string): boolean {
   return text.trim() !== "" && text.trim() === voiceBoxText.trim();
 }
+
+/** A draft typed ahead of the loop's own text in the composer: the start of the spoken turn. */
+export function typedDraftIn(box: string): string {
+  const own = voiceBoxText.trim();
+  const text = box.trim();
+  if (!own || text === own || !text.endsWith(own)) return "";
+  return text.slice(0, text.length - own.length).trim();
+}
 // Bumped by clearHeldTurn (voice off, thread switch, stop, typed send): a transcript still
 // in STT or the turn judge when it runs belongs to the cleared turn and must not be held.
 let heldEpoch = 0;
@@ -376,7 +384,13 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     liveSession = handle;
     voiceTrace("session.start", { playback: isVoicePlaybackActive() });
     const reopen = (why: string, detail?: Record<string, unknown>) => {
-      if (ended || utteranceInFlight) return;
+      if (ended) return;
+      // Mid-utterance the dead mic may deliver no frame to end it: send what was heard, then re-arm.
+      if (utteranceInFlight) {
+        voiceTrace("session.reopenFinalize", { why, ...detail });
+        void finalize();
+        return;
+      }
       voiceTrace("session.reopen", { why, ...detail });
       teardown();
       finish("stopped");

@@ -86,7 +86,20 @@ test("a turn queued behind a reply that already ended is sent, not parked", () =
     engine,
     /const replyGone =\s*!auiRef\.current\.thread\(\)\.getState\(\)\.isRunning && !isSpeakingRef\.current && !isPlayingRef\.current;\s*if \(action === "ignore" \|\| \(action === "queue" && !replyGone\)\) \{/,
   );
+});
+
 test("the barge-in probe is judged on the shorter bar its clip can meet", () => {
   assert.match(loop, /const BARGE_VAD_MIN_SPEECH_MS = 200;/);
   assert.match(loop, /BARGE_VAD_MIN_SPEECH_MS,?\s*\)\.then\(\(voiced\) => \{/);
+});
+
+test("a draft typed before speaking leads the spoken turn instead of being cleared", () => {
+  assert.match(engine, /const draft = spoken \? typedDraftIn\(composer\.getState\(\)\.text\) : "";/);
+  assert.match(engine, /if \(draft\) text = `\$\{draft\} \$\{text\}`;/);
+  assert.match(loop, /export function typedDraftIn\(box: string\): string \{/);
+});
+
+test("a mic lost mid-utterance sends what was heard instead of waiting for a frame that never comes", () => {
+  const reopen = loop.slice(loop.indexOf("const reopen = (why: string"));
+  assert.match(reopen.slice(0, 400), /if \(utteranceInFlight\) \{[\s\S]*?void finalize\(\);\s*return;/);
 });
