@@ -707,3 +707,95 @@ def test_a_paired_worker_whose_probe_finds_no_device_is_reported_dropped(monkeyp
     assert st.topology == "layer_split", st.reason
     assert set(cs.LINK_DROPPED) == {a.name}
     assert "did not answer" in cs.LINK_DROPPED[a.name]
+
+
+class FakeRemote:
+    RELAYED = "reachable only through a relay, too slow to serve models"
+    DIRECT = "direct internet connection"
+
+    def __init__(
+        self,
+        direct = True,
+        allow_relay = False,
+    ):
+        self.direct, self.allow_relay = direct, allow_relay
+        self.forwards, self.dropped = [], []
+
+    def forward(self, node_id, address, port):
+        self.forwards.append((node_id, address, port))
+        return 47000 + len(self.forwards)
+
+    def path(self, node_id):
+        return SimpleNamespace(direct = self.direct, rtt_ms = 20.0, via = "fake")
+
+    def usable(self, info):
+        return info is not None and (info.direct or self.allow_relay)
+
+    def drop(self, node_id):
+        self.dropped.append(node_id)
+
+
+def _off_the_lan(monkeypatch, relays, **kw):
+    """node-a no longer answers on the LAN but has a tailcat address; node-b is unchanged."""
+    fake = FakeRemote(**kw)
+    monkeypatch.setattr(cs, "_remote", lambda: fake)
+    FakeRegistry.peers[0].tc_addr = "tcNODEA0123456789"
+    relays.only["node-a"] = (("127.0.0.1", 47001), REFUSED)
+    return fake
+
+
+def test_a_worker_off_the_lan_is_reached_through_its_tailcat_address(monkeypatch, relays):
+    fake = _off_the_lan(monkeypatch, relays)
+    nodes = {n.node_id: n for n in cs.load_nodes()}
+    a = nodes["node-a"]
+    assert fake.forwards == [("node-a", "tcNODEA0123456789", 50070)]
+    assert relays.dest["node-a"] == ("127.0.0.1", 47001) and a.via == "tailnet"
+    assert cs.LINK_VIA == {"node-a": "direct internet connection", "node-b": "local network"}
+    assert nodes["node-b"].via == "" and "node-b" not in [f[0] for f in fake.forwards]
+
+
+def test_a_worker_on_the_lan_never_opens_a_tunnel(monkeypatch, relays):
+    fake = FakeRemote()
+    monkeypatch.setattr(cs, "_remote", lambda: fake)
+    FakeRegistry.peers[0].tc_addr = "tcNODEA0123456789"
+    assert [n.via for n in cs.load_nodes()] == ["", ""] and fake.forwards == []
+
+
+@pytest.mark.parametrize("allow_relay", [False, True])
+def test_a_relayed_only_worker_is_left_out_unless_allowed(monkeypatch, relays, allow_relay):
+    fake = _off_the_lan(monkeypatch, relays, direct = False, allow_relay = allow_relay)
+    nodes = [n.node_id for n in cs.load_nodes()]
+    if allow_relay:
+        assert nodes == ["node-a", "node-b"]
+    else:
+        assert nodes == ["node-b"]
+        assert cs.LINK_DROPPED == {"desk": FakeRemote.RELAYED}
+        assert fake.dropped == ["node-a"] and "node-a" in relays.removed
+
+
+def test_native_tls_through_tailcat_dials_the_forwarded_native_port(monkeypatch, relays):
+    fake = _off_the_lan(monkeypatch, relays)
+    _offer_native(monkeypatch, relays)
+    a = {n.node_id: n for n in cs.load_nodes()}["node-a"]
+    assert fake.forwards[-1] == ("node-a", "tcNODEA0123456789", 50053)
+    assert a.endpoint == f"tls://{FP_A}@127.0.0.1:47002"
+    again = {n.node_id: n for n in cs._link_nodes(verify = False)}["node-a"]
+    assert again.endpoint == a.endpoint and again.via == "tailnet"
+
+
+def test_removing_a_tunnelled_worker_closes_its_tunnel(monkeypatch, relays):
+    fake = _off_the_lan(monkeypatch, relays)
+    cs.load_nodes()
+    FakeRegistry.peers[0].removed = True
+    cs.load_nodes()
+    assert fake.dropped == ["node-a"] and "node-a" not in cs.LINK_VIA
+
+
+def test_a_tunnelled_worker_address_is_never_recorded(monkeypatch, relays):
+    _off_the_lan(monkeypatch, relays)
+    node = {n.node_id: n for n in cs.load_nodes()}["node-a"]
+    monkeypatch.setattr(cs, "link_status", lambda node_id, timeout: ({"rpc_up": True}, ""))
+    planner = cs.ClusterServing.__new__(cs.ClusterServing)
+    planner._link_status = {}
+    assert asyncio.run(planner._reachable(node))
+    assert FakeRegistry.recorded == []
