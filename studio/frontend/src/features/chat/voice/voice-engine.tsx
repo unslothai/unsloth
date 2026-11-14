@@ -29,8 +29,7 @@ import {
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
 import { splitStreaming, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
-import { useChatRuntimeStore
-} from "@/features/chat/stores/chat-runtime-store";
+import { codeToolsOn, useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { stopChatThread
 } from "@/features/chat/utils/stop-chat-thread";
 import {
@@ -419,8 +418,13 @@ export const VoiceEngine: FC = () => {
     const visual = composer
       .getState()
       .attachments.some((a) => a.type === "image" || /^(image|video)\//.test(a.contentType ?? ""));
+    const rt = useChatRuntimeStore.getState();
+    // The audio-input route skips Studio's tool loop, so with tools on the turn goes as its transcript.
+    const toolsOn =
+      rt.supportsTools &&
+      (rt.toolsEnabled || codeToolsOn(rt) || rt.mcpEnabledForChat || rt.ragEnabled || rt.deepResearchEnabled);
     const turnAudio =
-      !visual && voiceHearsAudio(useChatRuntimeStore.getState(), useVoiceSettingsStore.getState().micTarget)
+      !visual && !toolsOn && voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)
         ? taken
         : null;
     // Cover the tail clip (isPlaying) too, not just an active streaming session (isSpeaking).

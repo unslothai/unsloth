@@ -266,3 +266,9 @@ test("a research run keeps its own Stop while voice mode is on", () => {
   assert.match(thread, /\{isResearchActive \? \(\s*<Button[\s\S]{0,200}aria-label=\{researchStopping \? "Stopping research" : "Stop research"\}/);
   assert.match(thread, /\) : voiceEngaged \? null : \(\s*<AuiIf condition=\{\(\{ thread \}\) => thread\.isRunning\}>/);
 });
+
+test("a voice turn with local tools on goes as its transcript, so the tools still run", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /const toolsOn =\s*rt\.supportsTools &&\s*\(rt\.toolsEnabled \|\| codeToolsOn\(rt\) \|\| rt\.mcpEnabledForChat \|\| rt\.ragEnabled \|\| rt\.deepResearchEnabled\);/);
+  assert.match(engine, /!visual && !toolsOn && voiceHearsAudio\(rt,/);
+});
