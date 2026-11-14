@@ -298,8 +298,11 @@ def _write_partial_frame(replies):
     writer = replies._writer
     if hasattr(writer, "_send"):
         writer._send(struct.pack("!i", len(payload)) + payload[: 32 * 1024])
-    else:  # Windows PipeConnection has no partial write; fall back to a whole frame from the feeder.
+    else:
+        # Windows PipeConnection has no raw write: send the frame through the feeder and keep the
+        # earlier wait for bytes on the pipe, so the caller does not exit before anything is sent.
         replies.put(pickle.loads(payload))
+        assert replies._reader.poll(30)
 
 
 def _send_interrupted_frame(replies, send, wrote):
