@@ -269,27 +269,64 @@ def grant_override(pool: str, *, password: Optional[str] = None) -> dict[str, An
     return status()
 
 
+def restore_override(pool: str, start_ms: int) -> None:
+    """Gives back an override whose request was refused before it generated anything."""
+    with _override_lock:
+        overrides = _overrides()
+        if _override_state(overrides, pool, start_ms) == "used":
+            overrides[pool] = {"periodStart": start_ms, "state": "granted"}
+            upsert_app_settings({OVERRIDES_KEY: overrides}, read_back = False)
+
+
+class OverrideRefundMiddleware:
+    """Restores a spent override when its request ends in an error response, e.g. no model loaded."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        status = None
+
+        async def send_status(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_status)
+        finally:
+            spent = (scope.get("state") or {}).get("token_limit_override")
+            if spent and (status is None or status >= 400):
+                import asyncio
+                await asyncio.to_thread(restore_override, *spent)
+
+
 def _period_label(period: str) -> str:
     return {"day": "daily", "week": "weekly", "month": "monthly"}.get(period, period)
 
 
-def enforce(*, api: bool) -> None:
+def enforce(*, api: bool) -> Optional[tuple[str, int]]:
+    """Returns (pool, periodStart) when this request spent the one-time override."""
     settings = load_settings()
     if not settings["enabled"]:
-        return
+        return None
     _require_usage_accounting()
     start_ms, end_ms = period_window(settings["period"], settings["timezone"])
     pool = request_pool(settings, api = api)
     usage = _pool_usage(settings, start_ms)[pool]
     if not usage.reached:
-        return
+        return None
     with _override_lock:
         overrides = _overrides()
         state = _override_state(overrides, pool, start_ms)
         if state == "granted":
             overrides[pool] = {"periodStart": start_ms, "state": "used"}
             upsert_app_settings({OVERRIDES_KEY: overrides}, read_back = False)
-            return
+            return pool, start_ms
     scope = {"local": "local model ", "api": "API "}.get(pool, "")
     retry_after = max(1, (end_ms - int(time.time() * 1000)) // 1000)
     raise HTTPException(

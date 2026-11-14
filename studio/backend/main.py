@@ -2048,6 +2048,10 @@ from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
 
 app.add_middleware(LlamaKeepWarmMiddleware)
 
+from core.inference.token_limit import OverrideRefundMiddleware
+
+app.add_middleware(OverrideRefundMiddleware)
+
 app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,

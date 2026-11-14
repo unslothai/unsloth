@@ -1117,6 +1117,9 @@ def reconcile_runs(
             )
             # Marks the assistant message incomplete, which releases the frontend's generating state.
             _sync_assistant_status_locked(conn, run_id, status)
+            from storage.token_usage_ledger import settle_interrupted_run
+
+            settle_interrupted_run(conn, run_id)
             settled.append(str(run_id))
         _commit(conn, notify = bool(settled))
         return settled

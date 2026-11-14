@@ -3709,9 +3709,11 @@ async def _enforce_token_limit(request: Any, *, external: bool) -> None:
     from core.inference import token_limit
 
     api = external or _request_used_api_key(request)
-    await asyncio.to_thread(token_limit.enforce, api = api)
+    spent = await asyncio.to_thread(token_limit.enforce, api = api)
     if state is not None:
         state.token_limit_admitted = True
+        if spent:
+            state.token_limit_override = spent
 
 
 from state.tool_approvals import (

@@ -4211,6 +4211,27 @@ def _mark_chat_attachment_inventory_clean(conn: sqlite3.Connection) -> None:
     )
 
 
+def _verified_usage_marker(conn, thread_id: str, message: dict) -> dict:
+    """tokenUsageCharged exempts a saved reply only when its temporary receipt exists; client
+    metadata alone must never waive an allowance debit."""
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict) or "tokenUsageCharged" not in metadata:
+        return message
+    key = hashlib.sha256(f"{thread_id}\0{message['id']}".encode("utf-8")).hexdigest()
+    try:
+        receipt = conn.execute(
+            "SELECT 1 FROM token_usage_ledger WHERE message_id = ?", (key,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        receipt = None
+    if receipt is not None:
+        return message
+    return {
+        **message,
+        "metadata": {k: v for k, v in metadata.items() if k != "tokenUsageCharged"},
+    }
+
+
 def insert_server_chat_message(
     conn: sqlite3.Connection,
     message_id: str,
@@ -4363,9 +4384,13 @@ def upsert_chat_message(
             message["threadId"],
             [message["id"]],
         )
-        reconciled = _reconcile_chat_message_uploads(
-            message,
-            *deletions.get(message["id"], (set(), 0)),
+        reconciled = _verified_usage_marker(
+            conn,
+            message["threadId"],
+            _reconcile_chat_message_uploads(
+                message,
+                *deletions.get(message["id"], (set(), 0)),
+            ),
         )
         content_json = json.dumps(reconciled.get("content", []))
         attachments_json = (
@@ -4517,7 +4542,11 @@ def sync_chat_messages(
             [m["id"] for m in messages],
         )
         reconciled_messages = [
-            _reconcile_chat_message_uploads(m, *deletions.get(m["id"], (set(), 0)))
+            _verified_usage_marker(
+                conn,
+                thread_id,
+                _reconcile_chat_message_uploads(m, *deletions.get(m["id"], (set(), 0))),
+            )
             for m in messages
         ]
         serialized_messages = [

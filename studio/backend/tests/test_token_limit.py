@@ -142,7 +142,85 @@ def test_a_reported_count_replaces_an_earlier_estimate():
     assert _pools()["combined"]["used"] == 350
 
 
+def test_client_metadata_cannot_waive_an_existing_debit():
+    now = _now_ms()
+    _thread("t1", now)
+    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    assert _pools()["combined"]["reached"]
+    message = studio_db.get_chat_message("t1", "a1")
+    studio_db.upsert_chat_message(
+        {**message, "metadata": {**(message.get("metadata") or {}), "tokenUsageCharged": True}}
+    )
+    assert _pools()["combined"]["used"] == 100
+    assert "tokenUsageCharged" not in (studio_db.get_chat_message("t1", "a1").get("metadata") or {})
+
+
+def test_a_refused_request_gives_its_override_back():
+    import asyncio
+
+    now = _now_ms()
+    _thread("t1", now)
+    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override("combined")
+
+    async def refused_app(scope, receive, send):
+        scope.setdefault("state", {})["token_limit_override"] = token_limit.enforce(api = False)
+        await send({"type": "http.response.start", "status": 400, "headers": []})
+        await send({"type": "http.response.body", "body": b"no model"})
+
+    async def ignore(message):
+        pass
+
+    middleware = token_limit.OverrideRefundMiddleware(refused_app)
+    asyncio.run(middleware({"type": "http"}, None, ignore))
+    # The override is still available: this would raise 429 if it had been spent.
+    assert token_limit.enforce(api = False) is not None
+
+
+def test_a_reconciled_run_settles_its_output():
+    from storage import chat_generation_runs_db as runs
+
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "user",
+            "threadId": "t1",
+            "role": "user",
+            "createdAt": now,
+            "content": [{"type": "text", "text": "hi"}],
+        }
+    )
+    runs.create_run(
+        run_id = "run",
+        owner_subject = "owner",
+        thread_id = "t1",
+        user_message_id = "user",
+        assistant_message_id = "assistant",
+        request_payload = {"model": "local", "messages": []},
+    )
+    token = runs.get_worker_token("run")
+    runs.mark_running("run", token)
+    runs.append_events(
+        "run",
+        token,
+        [
+            ("chunk", {"choices": [{"delta": {"content": "a" * 400}}]}),
+            ("chunk", {"type": "tool_args", "tool_name": "render_html", "text": "h" * 300}),
+            ("chunk", {"type": "tool_args", "tool_name": "render_html", "text": "h" * 100}),
+            ("chunk", {"type": "tool_end", "tool_name": "render_html", "result": "x" * 9000}),
+        ],
+    )
+    assert runs.reconcile_orphaned_runs() == 1
+    _enable(limit = 10_000)
+    # 400 reply characters and 400 argument characters; tool output is not generated text.
+    assert _pools()["combined"]["used"] == 200
+
+
 def test_saving_a_temporary_chat_does_not_charge_its_reply_again():
+    import hashlib
     from types import SimpleNamespace
 
     from storage.token_usage_ledger import record_temporary_usage
@@ -151,8 +229,9 @@ def test_saving_a_temporary_chat_does_not_charge_its_reply_again():
     record_temporary_usage(
         SimpleNamespace(
             id = "receipt",
-            temporary_message_id = "hashed-message",
-            temporary_thread = "hashed-thread",
+            # The chat route keys a temporary receipt by sha256(thread \0 message).
+            temporary_message_id = hashlib.sha256(b"t1\0a1").hexdigest(),
+            temporary_thread = hashlib.sha256(b"t1").hexdigest(),
             created_at = now + 1,
             temporary_source = "local",
             prompt_tokens = 90,

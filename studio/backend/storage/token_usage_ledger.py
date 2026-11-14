@@ -76,7 +76,9 @@ def _ledger_insert(message: str, rows: str = "") -> str:
               AND json_extract(r.request_json, '$.api_monitor_via_api_key') = 1
           )
         ON CONFLICT(message_id) DO UPDATE SET
-            source = CASE WHEN source IN ('inherited', 'api') THEN source ELSE excluded.source END,
+            -- An existing debit is never re-labelled exempt by later metadata.
+            source = CASE WHEN source IN ('inherited', 'api') OR excluded.source = 'inherited'
+                THEN source ELSE excluded.source END,
             -- A reported count replaces a text-length estimate and is never moved by one.
             prompt_tokens = CASE WHEN estimated > excluded.estimated THEN excluded.prompt_tokens
                 WHEN estimated < excluded.estimated THEN prompt_tokens
@@ -262,6 +264,10 @@ def settle_interrupted_run(conn: sqlite3.Connection, run_id: str) -> None:
             or isinstance(chunk.get("timings"), dict)
         ):
             output, reported = 0, True
+            continue
+        if chunk.get("type") == "tool_args":
+            # Generated arguments (e.g. render_html), sent as additive slices; tool output is not.
+            output += _text_chars(chunk.get("text"))
             continue
         choices = chunk.get("choices")
         for choice in choices if isinstance(choices, list) else ():
