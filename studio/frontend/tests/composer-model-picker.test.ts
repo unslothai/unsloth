@@ -346,7 +346,7 @@ test("a quant still resolving never overrides a newer pick", () => {
   );
   assert.match(
     picker,
-    /await rowQuants\(target\);\s+if \(pickSeq\.current !== seq\) \{\s+return;/,
+    /await rowQuants\(target\);\s+if \(pickSeq\.current !== seq \|\| resolveGen\.current !== gen\) \{\s+return;/,
   );
   assert.match(
     picker,
@@ -584,14 +584,17 @@ test("a downloaded MLX repo still resolves its precision folder", () => {
   assert.match(src, /row\.kind === "cached" && !\(mlx && quant\)/);
 });
 
-test("cached MLX snapshots load whole and favorites show quant offers", () => {
+test("cached MLX repos offer their precisions, plain snapshots load whole, and favorites show quant offers", () => {
   const src = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  // The offer's whole-checkpoint fallback is hub-only, so a cached snapshot must not open one.
+  // As the header picker: an MLX repo with precision folders expands into them.
+  assert.match(src, /\(row\.kind === "cached" \|\|\s+offerAll \|\|/);
+  assert.match(src, /\(row\.kind === "cached" && row\.format === "mlx"\);/);
+  // With none, the cached copy loads whole (it may be partial, so cachedMeta, not the hub meta).
   assert.match(
     src,
-    /row\.kind !== "cached" &&\s+\(offerAll \|\| \(target\.remote/,
+    /row\.kind === "cached" \? cachedMeta\(row\) : wholeHubMeta\(row\)/,
   );
   // The Favorites wrapper renders an open offer as the plain list does.
   const fav = src.slice(src.indexOf("{...drag.rowProps(favoriteKey)}"));
@@ -990,9 +993,15 @@ test("an interrupted quant counts as a variant, so the row names no quant", () =
     picker,
     /const manyQuants = onDisk\.length \+ partials\.length > 1;/,
   );
-  assert.match(picker, /const soleQuant = manyQuants \? null : wholeQuant;/);
+  assert.match(
+    picker,
+    /const soleQuant = row\.favoriteQuant \?\? \(manyQuants \? null : wholeQuant\);/,
+  );
   // A click folds both open, as for two whole quants.
-  assert.match(picker, /if \(variantCount\(row\) > 1\) \{\s+setFoldedQuants/);
+  assert.match(
+    picker,
+    /if \(!row\.favoriteQuant && variantCount\(row\) > 1\) \{\s+setFoldedQuants/,
+  );
 });
 
 test("an audio pick opens the Audio page instead of loading into Chat", () => {
@@ -1301,5 +1310,190 @@ test("an audio pick hands the Audio page the inventory's audio type", () => {
   assert.match(
     picker,
     /audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask, audioType \}\)/,
+  );
+});
+
+test("Favorites lists each pinned quant of a repo as its own row, as the header picker did", async () => {
+  const { expandQuantFavorites, favoritePinKey } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  const repo = {
+    key: "gguf:unsloth/Test-GGUF",
+    id: "unsloth/Test-GGUF",
+    label: "Test-GGUF",
+    tab: "device",
+    kind: "gguf" as const,
+    loaded: true,
+    loadedQuant: "Q8_0",
+    favoriteQuant: undefined as string | undefined,
+    inventoryKey: undefined as string | undefined,
+  };
+  const other = {
+    ...repo,
+    key: "gguf:org/Other",
+    id: "org/Other",
+    loaded: false,
+  };
+  const ext = {
+    ...repo,
+    key: "ext:x",
+    id: "ext::p::m",
+    kind: "external" as const,
+  };
+  const pinned = [
+    "unsloth/Test-GGUF::Q4_K_M",
+    "unsloth/test-gguf::Q8_0",
+    "org/Other",
+  ];
+  const rows = expandQuantFavorites([repo, other, ext], pinned);
+  // Disk state stays keyed by the repo's row.
+  assert.deepEqual(
+    rows.slice(0, 2).map((r) => r.inventoryKey),
+    ["gguf:unsloth/Test-GGUF", "gguf:unsloth/Test-GGUF"],
+  );
+  assert.deepEqual(
+    rows.map((r) => [r.key, r.favoriteQuant, r.loaded]),
+    [
+      ["gguf:unsloth/Test-GGUF::Q4_K_M", "Q4_K_M", false],
+      ["gguf:unsloth/Test-GGUF::Q8_0", "Q8_0", true],
+      ["gguf:org/Other", undefined, false],
+      ["ext:x", undefined, true],
+    ],
+  );
+  // A bare repo pin beside quant pins keeps its own row too.
+  assert.equal(
+    expandQuantFavorites(
+      [repo],
+      ["unsloth/Test-GGUF", "unsloth/Test-GGUF::Q8_0"],
+    ).length,
+    2,
+  );
+  assert.equal(
+    favoritePinKey(pinned, "unsloth/Test-GGUF", "q8_0"),
+    "unsloth/test-gguf::Q8_0",
+  );
+  assert.equal(
+    favoritePinKey(pinned, "unsloth/Test-GGUF"),
+    "unsloth/Test-GGUF::Q4_K_M",
+  );
+  assert.equal(favoritePinKey(pinned, "unsloth/Test-GGUF", "IQ1_M"), null);
+});
+
+test("a pinned quant loads that quant, never the repo's default", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /\(favorite && list\.find\(\(v\) => v\.quant\.toLowerCase\(\) === favorite\)\) \|\|\s*chooseQuant\(/,
+  );
+  assert.match(picker, /return expandQuantFavorites\(found, pinned\)\.sort\(/);
+  assert.match(
+    picker,
+    /return favoritePinKey\(pinned, row\.id, row\.favoriteQuant\);/,
+  );
+  // Unstarring a quant row drops only that quant's pin.
+  assert.match(
+    picker,
+    /const pinnedKey = row\.favoriteQuant \? favoriteKeyOf\(row\) : null;/,
+  );
+});
+
+test("closing, a tab change or unmount abandons a quant still resolving, but not an NPU download", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /useEffect\(\(\) => \{\s*resolveGen\.current \+= 1;\s*offerAbort\.current\?\.abort\(\);/,
+  );
+  assert.match(
+    picker,
+    /\(\) => \(\) => \{\s*resolveGen\.current \+= 1;\s*offerAbort\.current\?\.abort\(\);/,
+  );
+  assert.match(
+    picker,
+    /if \(pickSeq\.current !== seq \|\| resolveGen\.current !== gen\) \{\s*return;\s*\}\s*if \(row\.kind === "cached"\)/,
+  );
+  // The NPU download's load still keys on pickSeq alone.
+  assert.match(
+    picker,
+    /done &&\s*pickSeq\.current === seq &&\s*now\.params\.checkpoint === before/,
+  );
+});
+
+test("deleting an exported GGUF quant moves its favorite to a surviving file, in both pickers", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /ggufVariant: variant\.quant,\s*\}\);\s*await repinExportedGgufAfterDelete\(row\.id\);/,
+  );
+  const header = readSrc(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  assert.match(header, /await repinExportedGgufAfterDelete\(adapter\.id\);/);
+});
+
+test("an open on-device quant list asks the Hub for updates, as the header picker's expanded row did", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /expandQuantizations !== foldedQuants\.has\(row\.key\) &&\s*updatesReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
+  );
+  assert.match(
+    picker,
+    /const \{ quants \} = await rowQuants\(\{\s*\.\.\.target,\s*remote: true,\s*everyQuant: true,\s*\}\);/,
+  );
+});
+
+test("Discover keeps the header picker's runtime gate on Hub results", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /classifyUnslothSupport\(\{\s*modelId: r\.id,/);
+  assert.match(
+    picker,
+    /\(supported\(r\) \|\|\s*\(r\.quantMethod\?\.toLowerCase\(\) === "compressed-tensors" &&/,
+  );
+});
+
+test("deleting a whole cached repo sends the token and keeps quant pins another copy still holds", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const token = useHfTokenStore\.getState\(\)\.token \|\| undefined;\s*await deleteCachedModel\(\s*repo\.repo_id,\s*undefined,\s*token,/,
+  );
+  assert.match(
+    picker,
+    /if \(row\.gguf && isChatGgufTask\(row\.gguf\.task\)\) \{\s*await reconcileGgufPinsAfterDelete\(repo\.repo_id, token\);/,
+  );
+});
+
+test("a pinned-quant row reads its repo's disk state, opens its own Run settings, and updates once disk quants land", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /deviceQuants\.get\(row\.inventoryKey \?\? row\.key\) \?\? NO_QUANTS/,
+  );
+  assert.match(
+    picker,
+    /devicePartials\.get\(row\.inventoryKey \?\? row\.key\)/,
+  );
+  const settings = picker.slice(picker.indexOf("const settingsMeta = async ("));
+  assert.match(
+    settings.slice(0, 1600),
+    /\(favorite && list\.find\(\(v\) => v\.quant\.toLowerCase\(\) === favorite\)\) \|\|\s*chooseQuant\(/,
+  );
+  assert.match(
+    picker,
+    /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*foldedQuants,\s*expandQuantizations,\s*quantsEpoch,\s*\]\);/,
   );
 });
