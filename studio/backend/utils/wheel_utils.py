@@ -169,6 +169,25 @@ MAMBA_SSM_PURE_VERSION = "2.3.2.post1"
 MAMBA_SSM_PURE_WHEEL = f"mamba_ssm-{MAMBA_SSM_PURE_VERSION}-py3-none-any.whl"
 
 
+# studio/native_kernels/int8_gemm: C ABI + static cudart, so one py3-none wheel per platform fits every torch and CUDA 12/13.
+I8GEMM_DISTRIBUTION = "unsloth-studio-i8gemm"
+I8GEMM_VERSION = "1.0.0"
+_I8GEMM_PLATFORMS = {"linux_x86_64": "manylinux_2_28_x86_64", "win_amd64": "win_amd64"}
+
+
+def int8_gemm_wheel_url(env: dict[str, str] | None) -> str | None:
+    """The prebuilt int8 GEMM wheel for an NVIDIA CUDA torch on x86_64 Linux / Windows, else None."""
+    if env is None or env.get("hip_version") or not env.get("cuda_major"):
+        return None
+    platform = _I8GEMM_PLATFORMS.get(str(env.get("platform_tag") or ""))
+    if platform is None:
+        return None
+    return (
+        f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/"
+        f"unsloth_studio_i8gemm-{I8GEMM_VERSION}-py3-none-{platform}.whl"
+    )
+
+
 def mamba_ssm_pure_wheel_url(env: dict[str, str] | None = None) -> str:
     """The extension-free mamba_ssm wheel (the same file for every environment)."""
     return (

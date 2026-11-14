@@ -4772,8 +4772,9 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
         if not meta_path.is_file():
             continue
         # Tolerate a bad upload (invalid UTF-8, or non-object JSON): skip the record so these endpoints do not 500.
+        # split("\n"), not splitlines(): JSON keeps U+2028, U+2029 and U+0085 raw inside a string.
         try:
-            lines = meta_path.read_text(encoding = "utf-8").splitlines()
+            lines = meta_path.read_text(encoding = "utf-8").split("\n")
         except (OSError, UnicodeError):
             continue
         for line in lines:
@@ -5252,7 +5253,7 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     captions: dict[str, str] = {}
     # read_text on a companion raises and fails the whole import.
     for jf in drop_appledouble_metadata(sorted(snap.rglob("*.jsonl"))):
-        for line in jf.read_text(encoding = "utf-8").splitlines():
+        for line in jf.read_text(encoding = "utf-8").split("\n"):
             line = line.strip()
             if not line:
                 continue

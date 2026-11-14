@@ -2463,8 +2463,22 @@ class _PerDeviceRopeCache:
     allocate on their peers. A row depends only on its position, so a shorter cache matches the
     full one row for row."""
 
+    _rope_rows_pick_factors = False
+
     def _init_rope_cache_state(self, dtype):
         self._rope_cache_dtype = dtype
+        if not hasattr(self, "inv_freq") and not self._rope_rows_pick_factors:
+            # Keep Gemma's CPU FP32 constants before widening the compiled arithmetic.
+            exponents = (2.0 / self.dim) * torch.arange(
+                self.dim // 2, dtype = torch.int64, device = "cpu"
+            ).float()
+            self._rope_timescale_cpu = self.base**exponents
+            self._rope_reciprocal_cpu = self._rope_timescale_cpu.double().reciprocal()
+            self._rope_scaling_factor = float(
+                torch.tensor(
+                    getattr(self, "scaling_factor", 1.0), dtype = torch.float32, device = "cpu"
+                )
+            )
         # Bumped whenever the eager code rebuilt every device (growth), so stale devices rebuild.
         self._rope_cache_version = 0
         self._rope_cache_versions = [None] * DEVICE_COUNT
@@ -2554,6 +2568,8 @@ class _PerDeviceRopeCache:
     ):
         if position_ids is not None and seq_len is None:
             # Stock transformers call (a plain model built after the patch): per-position cos/sin.
+            if torch.compiler.is_compiling() and not self._rope_rows_pick_factors:
+                return self._compiled_position_embeddings(x, position_ids)
             rows = int(position_ids.max()) + 1
             if rows > self.current_rope_size:
                 self._grow_rope_cache(rows, x.dtype)
@@ -2567,6 +2583,20 @@ class _PerDeviceRopeCache:
         self._need_rope_rows(self.current_rope_size if seq_len is None else seq_len)
         device_index = self._ensure_rope_cache(x.device.index)
         return self._slice_rope_cache(device_index, seq_len)
+
+    def _compiled_position_embeddings(self, x, position_ids):
+        positions = position_ids.to(x.device).float()
+        # Arc and Metal do not support FP64 tensors.
+        compute_dtype = torch.float64 if x.device.type in ("cpu", "cuda") else torch.float32
+        positions = (positions.to(compute_dtype) / self._rope_scaling_factor).float()
+        if compute_dtype == torch.float64:
+            # FP64 reciprocals preserve FP32 division rounding without slow GPU divides.
+            reciprocal = self._rope_reciprocal_cpu.to(x.device)
+            freqs = (positions[..., None].double() * reciprocal).float()
+        else:
+            freqs = positions[..., None] / self._rope_timescale_cpu.to(x.device)
+        emb = torch.cat((freqs, freqs), dim = -1)
+        return emb.cos().to(x.dtype), emb.sin().to(x.dtype)
 
     def _slice_rope_cache(self, device_index, seq_len):
         return (
@@ -2646,6 +2676,8 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
 
         inv_freq = self._unsloth_recompute_inv_freq()
+        # Transformers may replace nonpersistent buffers while loading a stock model.
+        self._unsloth_inv_freq_cpu = inv_freq.detach().clone()
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Built per device on first use, not for every visible GPU here.
@@ -2658,6 +2690,15 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
 
+    def _compiled_position_embeddings(self, x, position_ids):
+        inv_freq = self._unsloth_inv_freq_cpu.to(device = x.device)
+        positions = self._apply_time_scaling(position_ids.to(x.device).float())
+        freqs = positions[..., None] * inv_freq
+        emb = torch.cat((freqs, freqs), dim = -1)
+        cos = (emb.cos() * self.attention_scaling).to(self._rope_cache_dtype)
+        sin = (emb.sin() * self.attention_scaling).to(self._rope_cache_dtype)
+        return cos.to(x.dtype), sin.to(x.dtype)
+
     def _apply_inv_freq_scaling(self, inv_freq):
         """Override to apply custom inv_freq scaling (e.g., extended RoPE)."""
         return inv_freq
@@ -2667,6 +2708,7 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         config = getattr(self, "_unsloth_rope_config", None)
         config_inv_freq = None
         rope_scaling = getattr(config, "rope_scaling", None) if config is not None else None
+        # Scaling subclasses here would apply their factor twice.
         if rope_scaling is not None and type(self) is LlamaRotaryEmbedding:
             config_inv_freq, self.attention_scaling = _compute_config_rope_inv_freq(
                 config,
@@ -2809,6 +2851,8 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
 
 class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     # For Phi 3.5 128K; see microsoft/Phi-3.5-mini-instruct modeling_phi3.py
+    _rope_rows_pick_factors = True
+
     def __init__(
         self,
         dim = None,

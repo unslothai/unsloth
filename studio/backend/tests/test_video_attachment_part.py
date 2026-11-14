@@ -98,7 +98,7 @@ def test_the_cap_admits_a_clip_of_exactly_the_composer_limit():
 
     from routes.inference import _MAX_VIDEO_B64_CHARS
 
-    limit_bytes = 64 * 1024 * 1024
+    limit_bytes = 256 * 1024 * 1024
     # Padded base64 is 4 characters per 3 bytes, rounded up.
     assert len(base64.b64encode(b"x" * 3001)) == 4 * math.ceil(3001 / 3)
     assert 4 * math.ceil(limit_bytes / 3) <= _MAX_VIDEO_B64_CHARS
@@ -322,7 +322,7 @@ def test_every_data_uri_part_is_sized_not_only_the_first():
     assert _request_video_rejection(fits) is None
     oversized = "data:video/mp4;base64," + "A" * (_MAX_VIDEO_B64_CHARS + 1)
     too_big = _video_url_request("data:video/mp4;base64,QUJD", oversized)
-    assert _request_video_rejection(too_big) == (413, "Video file is too large (max 64 MB).")
+    assert _request_video_rejection(too_big) == (413, "Video file is too large (max 256 MB).")
     assert _request_video_rejection(_video_url_request("")) == (
         400,
         "Could not read the provided video file.",
@@ -334,7 +334,7 @@ def test_the_legacy_field_is_sized_beside_a_message_part():
     req = _video_url_request(
         "https://example.com/clip.mp4", video_base64 = "A" * (_MAX_VIDEO_B64_CHARS + 1)
     )
-    assert _request_video_rejection(req) == (413, "Video file is too large (max 64 MB).")
+    assert _request_video_rejection(req) == (413, "Video file is too large (max 256 MB).")
 
 
 def test_admission_prices_a_message_clip_as_media_not_prompt_text():
