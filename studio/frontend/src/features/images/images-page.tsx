@@ -141,6 +141,7 @@ import {
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
+  PAGE_MAX_ATTEMPTS,
   applyPin,
   fetchNextPage,
   fetchWhileStable,
@@ -339,7 +340,8 @@ import {
   unloadDiffusionModel,
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
-import { queuedJobs, runningJob } from "./lib/generation-queue";
+import { collectGalleryWindow } from "./lib/gallery-window";
+import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
   shouldContinueGenerating,
@@ -2044,6 +2046,7 @@ export function ImagesPage({
   );
   const componentsReconciled = useRef(false);
   const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
+  const [generateProbed, setGenerateProbed] = useState(false);
   const reconcileInitialComponents = useCallback(
     (loaded: DiffusionStatus) => {
       if (componentsReconciled.current || initialLoadProbe === "pending") return;
@@ -2124,6 +2127,18 @@ export function ImagesPage({
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
+  const [pickedDuringRun, setPickedDuringRun] = useState(false);
+  const pickedDuringRunRef = useRef(false);
+  useEffect(() => {
+    pickedDuringRunRef.current = pickedDuringRun;
+  }, [pickedDuringRun]);
+  const pickImage = useCallback((id: string) => {
+    // Set now, not after the render: an in-flight gallery refresh reads it.
+    galleryCache.selectedId = id;
+    setSelectedId(id);
+    setPickedDuringRun(true);
+  }, []);
   // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
   const [sessionSeed, setSessionSeed] = useState<number | null>(null);
   // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
@@ -2571,6 +2586,7 @@ export function ImagesPage({
   const selectedThumb = selected ? thumbById[selected.id] : undefined;
   const livePreviewSrc =
     busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;
+  const stagePreviewSrc = pickedDuringRun ? undefined : livePreviewSrc;
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
@@ -2659,6 +2675,7 @@ export function ImagesPage({
   const stripEpoch = useRef(0);
   const pageEpoch = useRef(0);
   const resyncSeq = useRef(0);
+  const refreshSeq = useRef(0);
   // The epoch is an EDGE, so a page starting after the bump sees it unchanged.
   const pendingShelfMutations = useRef(0);
 
@@ -2805,22 +2822,19 @@ export function ImagesPage({
   const resyncWindow = useCallback(
     async (count: number, stillFresh?: () => boolean) => {
       const ticket = (resyncSeq.current += 1);
+      const fresh = () => resyncSeq.current === ticket && (!stillFresh || stillFresh());
       for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
         const paged = pageEpoch.current;
-        const wanted = Math.max(count, galleryCache.images.length, PAGE_SIZE);
-        const collected: GalleryImage[] = [];
-        let more = false;
-        while (collected.length < wanted) {
-          const page = await getGallery(
-            collected.length,
-            Math.min(PAGE_SIZE, wanted - collected.length),
-          );
-          collected.push(...page.images);
-          more = page.has_more;
-          if (!page.has_more || page.images.length === 0) break;
-        }
-        if (stillFresh && !stillFresh()) return;
-        if (resyncSeq.current !== ticket) return;
+        const result = await collectGalleryWindow(
+          (offset, limit) => getGallery(offset, limit),
+          galleryCache.images,
+          Math.max(count, galleryCache.images.length, PAGE_SIZE),
+          PAGE_SIZE,
+          () => galleryCache.selectedId,
+          fresh,
+        );
+        if (!result) return false;
+        const { images: collected, hasMore: more } = result;
         if (pageEpoch.current !== paged) continue;
         galleryCache.images = collected;
         galleryCache.hasMore = more;
@@ -2829,26 +2843,31 @@ export function ImagesPage({
         if (typeof IntersectionObserver === "undefined") {
           collected.forEach((image) => void ensureThumb(image));
         }
-        return;
+        return true;
       }
+      return false;
     },
     [ensureThumb],
   );
 
-  // This page stays mounted across routes, so an archive restore needs a resync.
-  useEffect(
-    () =>
-      subscribeGalleryChanged("images", () => {
-        // Bumped FIRST so in-flight reads are discarded.
-        stripEpoch.current += 1;
+  const refreshLoadedGallery = useCallback(() => {
+    const ticket = (refreshSeq.current += 1);
+    // Bumped FIRST so in-flight reads are discarded.
+    stripEpoch.current += 1;
+    void (async () => {
+      // Retried: a pin or archive mid-fetch discards it, and nothing else refetches the new image.
+      for (let attempt = 0; attempt < PAGE_MAX_ATTEMPTS && refreshSeq.current === ticket; attempt += 1) {
+        // After pending pin PATCHes, or this read could undo a pin on screen.
+        if (attempt > 0) await serializeById("image-pin", async () => {});
         const epoch = stripEpoch.current;
-        void resyncWindow(
-          galleryCache.images.length,
-          () => stripEpoch.current === epoch,
-        ).catch(() => void loadGallery());
-      }),
-    [loadGallery, resyncWindow],
-  );
+        const fresh = () => stripEpoch.current === epoch && refreshSeq.current === ticket;
+        if (await resyncWindow(galleryCache.images.length, fresh)) return;
+      }
+    })().catch(() => void loadGallery());
+  }, [loadGallery, resyncWindow]);
+
+  // This page stays mounted across routes, so an archive restore needs a resync.
+  useEffect(() => subscribeGalleryChanged("images", refreshLoadedGallery), [refreshLoadedGallery]);
 
   const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
@@ -3645,7 +3664,7 @@ export function ImagesPage({
           if (!isMounted.current) return;
           setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
-          void loadGallery();
+          refreshLoadedGallery();
           void refreshStatus();
           return;
         }
@@ -3664,14 +3683,10 @@ export function ImagesPage({
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
-  }, [loadGallery, refreshStatus]);
+  }, [refreshLoadedGallery, refreshStatus]);
 
   const imageQueue = useImageQueue(active, (finished) => {
-    if (finished.some((job) => job.status === "done")) {
-      // Fences an earlier refresh still in flight, so it refetches instead of landing after this one.
-      stripEpoch.current += 1;
-      void loadGallery();
-    }
+    if (finished.some((job) => job.status === "done")) refreshLoadedGallery();
     let latest: ImageQueueJob | null = null;
     for (const job of finished) {
       if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
@@ -3687,6 +3702,16 @@ export function ImagesPage({
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
+  if (
+    pickedDuringRun &&
+    pickReleased({
+      statusKnown: generateProbed && imageQueue.polled,
+      generating: busy === "generating",
+      queueBusy: queueBusy(imageQueue.jobs),
+    })
+  ) {
+    setPickedDuringRun(false);
+  }
   useEffect(() => {
     if (busy !== null) return;
     followingJob.current = null;
@@ -3766,6 +3791,7 @@ export function ImagesPage({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      setGenerateProbed(true);
     })();
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -4167,7 +4193,7 @@ export function ImagesPage({
   useLayoutEffect(() => {
     stripTileActions.set({
       tileProps: stripReorder.tileProps,
-      select: setSelectedId,
+      select: pickImage,
       setMenuId: setTileMenuId,
       togglePin: (id, pinned) => void handleTogglePin(id, pinned),
       archive: (id) => void handleArchive(id),
@@ -4731,14 +4757,14 @@ export function ImagesPage({
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
       if (found) {
-        setSelectedId(routedItem);
+        pickImage(routedItem);
       } else {
         toast(translate("library.toast.imageNotFound"), {
           description: translate("library.toast.notFoundDescription"),
         });
       }
     });
-  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+  }, [routedItem, navigateSelf, loadGallery, loadMore, pickImage]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
@@ -5538,6 +5564,7 @@ export function ImagesPage({
     }
     followingJob.current = null;
     localRun.current = true;
+    setPickedDuringRun(false);
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -5629,7 +5656,7 @@ export function ImagesPage({
         // Deduplicated: a resync may already have fetched the record.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
-        if (res.images[0]) setSelectedId(res.images[0].id);
+        if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);
         const runSeed = lastSeedOf(res.images);
         const runAt = Math.max(0, ...res.images.map((image) => image.created_at));
         // A late reply never replaces the seed of a queued run that finished after it.
@@ -7447,9 +7474,9 @@ export function ImagesPage({
             </MediaViewer>
           )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
-            {livePreviewSrc ? (
+            {stagePreviewSrc ? (
               <img
-                src={livePreviewSrc}
+                src={stagePreviewSrc}
                 alt="Live preview of the image being generated"
                 data-testid="images-live-preview"
                 style={{ maxWidth: width, maxHeight: height }}
@@ -7629,20 +7656,27 @@ export function ImagesPage({
               }}
             >
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-wash-30">
+                <button
+                  type="button"
+                  data-testid="images-live-tile"
+                  aria-label="Follow the running generation"
+                  title="Follow the running generation"
+                  onClick={() => setPickedDuringRun(false)}
+                  className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 outline-none ring-2 ring-wash-30 focus-visible:ring-ring"
+                >
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (
                     <Spinner className="size-5 text-muted-foreground" />
                   )}
-                </div>
+                </button>
               )}
               {images.map((image) => (
                 <GalleryStripTile
                   key={image.id}
                   image={image}
                   src={thumbById[image.id] ?? srcById[image.id]}
-                  selected={image.id === selected?.id}
+                  selected={!stagePreviewSrc && image.id === selected?.id}
                   menuOpen={tileMenuId === image.id}
                   active={active}
                   favorite={isFavorite(`image:${image.id}`)}
