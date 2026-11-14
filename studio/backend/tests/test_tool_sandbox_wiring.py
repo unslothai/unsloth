@@ -807,6 +807,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "config_dashed_user",
         "user_config_python_isolated",
         "python_main_parser",
+        "log_takes_dashdash",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -878,6 +879,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "user_config_python_isolated": "python -m venv venv && mkdir -p .config/pip && "
         "printf '[global]\\npython = %s\\n' \"$PWD/venv/bin/python\" > .config/pip/pip.conf && "
         f"python -m pip --isolated install -q --no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
+        # --log -- : that -- is the log file name, no terminator to drop before install.
+        "log_takes_dashdash": f"python -m pip --isolated --log -- install -q --no-index --no-deps {wheel} && {show}",
         # --python is the main parser's: an install-level --python= cannot undo the one before the subcommand.
         "python_main_parser": 'python -m venv venv && python -m pip --python "$PWD/venv/bin/python" --isolated install'
         f" -q --no-index --no-deps --python= {wheel} && env -u PYTHONPATH venv/bin/{show}",
@@ -967,6 +970,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "config_dashed_user": packages,
         "user_config_python_isolated": str(workdir / "venv"),
         "python_main_parser": str(workdir / "venv"),
+        "log_takes_dashdash": packages,
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -2045,6 +2049,61 @@ def test_a_live_pip_mid_wheel_is_not_pruned_around(tmp_path):
     finally:
         live.kill()
         live.wait()
+
+
+def test_path_line_files_drop_a_utf8_bom(tmp_path):
+    """site.addpackage decodes utf-8-sig: a BOM before the first path is not part of it."""
+    path = tmp_path / "x.pth"
+    path.write_bytes(b"\xef\xbb\xbf" + str(tmp_path).encode() + b"\n")
+    code = (
+        "import sys; sys.path.insert(0, %r); import sitecustomize as s; print(s._read_pth(%r) == [%r])"
+        % (
+            tools._SANDBOX_SITE_DIR,
+            str(path),
+            str(tmp_path),
+        )
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH", "PYTHON"))}
+    out = subprocess.run(
+        [sys.executable, "-S", "-c", code], env = env, capture_output = True, text = True
+    )
+    assert out.stdout.strip() == "True", out.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_replaced_editable_finder_stops_answering(monkeypatch, tmp_path):
+    """An editable replaced by a regular wheel in this process: the retired finder no longer supplies 1.0."""
+    template = os.path.join(
+        sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
+    )
+    if not os.path.exists(template):
+        pytest.skip("finder-based editable installs need setuptools in Studio's environment")
+    name = "unsloth_retired_editable"
+    workdir = tmp_path / "chat"
+    proj = workdir / "proj" / "impl"
+    proj.mkdir(parents = True)
+    (proj / "__init__.py").write_text("VERSION = 'editable'\n")
+    finder = f"__editable___{name}_1_0_finder"
+    editable = _wheel(
+        workdir,
+        name,
+        {
+            f"__editable__.{name}-1.0.pth": f"import {finder}; {finder}.install()\n",
+            f"{finder}.py": f"MAPPING: dict = {{{name!r}: {str(proj)!r}}}\nNAMESPACES: dict = {{}}\n",
+        },
+    )
+    (workdir / "newer").mkdir()
+    regular = "newer/" + _wheel(
+        workdir / "newer", name, {f"{name}/__init__.py": "VERSION = 'wheel'\n"}, "2.0"
+    )
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    tools._bash_exec(f"{_PIP} {editable}", None, 120, _SESSION, tool_execution_mode = "software")
+    command = (
+        'python -c "import subprocess, sys; subprocess.check_call(sys.argv[1:]); '
+        f'import {name}; print({name}.VERSION)" ' + _PIP + f" {regular}"
+    )
+    out = tools._bash_exec(command, None, 120, _SESSION, tool_execution_mode = "software")
+    assert out.strip().endswith("wheel"), out
 
 
 def test_path_line_files_fall_back_to_the_locale_encoding(tmp_path):

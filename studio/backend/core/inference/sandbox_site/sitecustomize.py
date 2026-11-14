@@ -441,6 +441,7 @@ def _pip_words():
                 return
             # pip --isolated -- install x: the word after a leading -- is still the subcommand.
             command = True
+            yield at, arg, True
             yield i, args[i], False
             i += 1
             continue
@@ -775,9 +776,11 @@ def _route_pip(is_pip = None):
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
-                command = next((at for at, arg, option in _pip_words() if not option), None)
+                words = list(_pip_words())
+                command = next((at for at, arg, option in words if not option), None)
                 if isolated and command and sys.argv[command] == "install":
-                    if sys.argv[command - 1] == "--":
+                    # Only a terminator -- (not one a value option took as its operand, --log --).
+                    if (command - 1, "--", True) in words:
                         # Else pip hands install the -- too and takes what follows for requirements.
                         del sys.argv[command - 1]
                         command -= 1
@@ -844,7 +847,12 @@ def _editable_finder_data(entry, module):
     return mapping, namespaces
 
 
-def _install_editable_finder(module, mapping, namespaces):
+def _install_editable_finder(
+    module,
+    mapping,
+    namespaces,
+    finder_file = None,
+):
     # setuptools' editable finder, built from the template of the setuptools in Studio's own site-packages (never
     # one the chat folder could shadow) with the chat file's literal MAPPING / NAMESPACES: the chat-written module
     # never runs. Read as text: importing setuptools is slow. Without setuptools there (torch ships it from 3.12)
@@ -864,9 +872,22 @@ def _install_editable_finder(module, mapping, namespaces):
 
     finder_module = types.ModuleType(module)
     exec(compile(code, "<" + module + ">", "exec"), finder_module.__dict__)
+    finder = finder_module._EditableFinder
+    if finder_file:
+        # Retired once its finder file is gone (the editable was replaced or uninstalled mid-process).
+        lookup = finder.find_spec
+
+        def find_spec(
+            fullname,
+            path = None,
+            target = None,
+        ):
+            return lookup(fullname, path, target) if os.path.exists(finder_file) else None
+
+        finder.find_spec = staticmethod(find_spec)
     sys.modules[module] = finder_module
     finder_module.install()
-    return finder_module._EditableFinder
+    return finder
 
 
 # PYTHONPATH skips .pth files: take their path lines and setuptools' editable finders, never run their imports.
@@ -876,7 +897,7 @@ def _read_pth(path):
     with open(path, "rb") as f:
         data = f.read()
     try:
-        return data.decode("utf-8").splitlines()
+        return data.decode("utf-8-sig").splitlines()
     except UnicodeDecodeError:
         saved = sys.path[:]
         sys.path[:] = _stdlib_paths()
@@ -928,10 +949,10 @@ def _read_pth_files(entries, on_sys_path = True):
                 except Exception:  # noqa: BLE001
                     data = None
                 if data is not None:
-                    parsed.append((module, data))
-            for module, (mapping, namespaces) in parsed:
+                    parsed.append((module, data, os.path.join(entry, module + ".py")))
+            for module, (mapping, namespaces), source in parsed:
                 try:
-                    installed.append(_install_editable_finder(module, mapping, namespaces))
+                    installed.append(_install_editable_finder(module, mapping, namespaces, source))
                 except Exception:  # noqa: BLE001
                     pass
         finally:
