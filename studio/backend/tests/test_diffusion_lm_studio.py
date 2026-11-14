@@ -59,6 +59,36 @@ _needs_torch = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def inference_mod(monkeypatch):
+    """core.inference.inference, imported with unsloth stubbed where it cannot load (no unsloth_zoo).
+
+    These tests read helpers and source, not models. Without this they only passed when an earlier file
+    on the same worker had imported the module with its own stubs."""
+    import core.inference as package
+
+    if (
+        "core.inference.inference" in sys.modules
+        or importlib.util.find_spec("unsloth_zoo") is not None
+    ):
+        return importlib.import_module("core.inference.inference")
+    from unittest.mock import MagicMock
+
+    for name, attrs in (
+        ("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported")),
+        ("unsloth.chat_templates", ("get_chat_template",)),
+    ):
+        stub = types.ModuleType(name)
+        stub.__spec__ = None
+        for attr in attrs:
+            setattr(stub, attr, MagicMock())
+        monkeypatch.setitem(sys.modules, name, stub)
+    # Dropped again afterwards, so no later test inherits a module bound to these stubs.
+    monkeypatch.setattr(package, "inference", None, raising = False)
+    monkeypatch.delitem(sys.modules, "core.inference.inference", raising = False)
+    return importlib.import_module("core.inference.inference")
+
+
 @pytest.mark.parametrize("profile", sorted(DIFFUSION_CONFIGS))
 def test_each_family_is_detected_from_raw_config(profile):
     assert diffusion_lm_profile(DIFFUSION_CONFIGS[profile]) == profile
@@ -644,9 +674,7 @@ def test_chat_classifies_a_hub_lora_by_its_base_before_the_vision_branch():
     assert diffusion_load < src.index("elif config.is_vision:", base_probe)
 
 
-def test_chat_diffusion_load_refuses_an_unmarked_model_and_keeps_the_token_boundary():
-    from core.inference import inference as inference_mod
-
+def test_chat_diffusion_load_refuses_an_unmarked_model_and_keeps_the_token_boundary(inference_mod):
     src = inspect.getsource(inference_mod.InferenceBackend.load_model)
     branch = src[src.index("diffusion_lm_profile = diffusion_lm_profile_for_model(") :]
     branch = branch[: branch.index('self.models[model_name]["is_vision"] = False')]
@@ -882,8 +910,8 @@ def test_an_older_core_without_on_frame_is_never_passed_one(monkeypatch):
     assert "on_frame" not in _Sampler.calls[-1]
 
 
-def test_frame_relay_throttles_and_never_raises_into_the_sampler():
-    from core.inference.inference import _diffusion_frame_relay
+def test_frame_relay_throttles_and_never_raises_into_the_sampler(inference_mod):
+    _diffusion_frame_relay = inference_mod._diffusion_frame_relay
 
     sent = []
     relay = _diffusion_frame_relay(_CanvasTokenizer(), sent.append, interval_s = 3600)
@@ -902,8 +930,8 @@ def test_frame_relay_throttles_and_never_raises_into_the_sampler():
     )
 
 
-def test_frame_relay_sends_zero_based_steps_and_honours_stop_sequences():
-    from core.inference.inference import _diffusion_frame_relay
+def test_frame_relay_sends_zero_based_steps_and_honours_stop_sequences(inference_mod):
+    _diffusion_frame_relay = inference_mod._diffusion_frame_relay
 
     sent = []
     relay = _diffusion_frame_relay(_CanvasTokenizer(), sent.append, interval_s = 0, stop = ["<2>"])
@@ -915,8 +943,8 @@ def test_frame_relay_sends_zero_based_steps_and_honours_stop_sequences():
     assert sent[-1]["text"] == "<1>"
 
 
-def test_frame_relay_cuts_frames_at_the_first_eos():
-    from core.inference.inference import _diffusion_frame_relay
+def test_frame_relay_cuts_frames_at_the_first_eos(inference_mod):
+    _diffusion_frame_relay = inference_mod._diffusion_frame_relay
 
     sent = []
     relay = _diffusion_frame_relay(_CanvasTokenizer(), sent.append, interval_s = 0, eos_ids = (9,))
@@ -925,9 +953,7 @@ def test_frame_relay_cuts_frames_at_the_first_eos():
     assert sent[-1]["text"] == "<1>\u2591"
 
 
-def test_diffusion_eos_ids_match_the_sampler_cut(monkeypatch):
-    from core.inference import inference as inference_mod
-
+def test_diffusion_eos_ids_match_the_sampler_cut(monkeypatch, inference_mod):
     samplers = types.ModuleType("unsloth.models.diffusion_samplers")
     samplers.unwrap_diffusion_model = lambda model: model
     samplers._eos_ids = lambda base, tokenizer: [7]
