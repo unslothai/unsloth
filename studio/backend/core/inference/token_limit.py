@@ -279,7 +279,7 @@ def restore_override(pool: str, start_ms: int) -> None:
 
 
 class OverrideRefundMiddleware:
-    """Restores a spent override when its request is refused before inference, e.g. no model loaded."""
+    """Restores a spent override when its request generated nothing (e.g. no model loaded)."""
 
     def __init__(self, app):
         self.app = app
@@ -288,6 +288,8 @@ class OverrideRefundMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        from core.inference.api_monitor import override_claim_scope
+
         status = None
 
         async def send_status(message):
@@ -296,15 +298,19 @@ class OverrideRefundMiddleware:
                 status = message["status"]
             await send(message)
 
-        try:
-            await self.app(scope, receive, send_status)
-        finally:
-            spent = (scope.get("state") or {}).get("token_limit_override")
-            # Only a 4xx refusal (no model, bad request) is known to precede inference; a 5xx or a
-            # crash can follow generated output, which must keep the override spent.
-            if spent and status is not None and 400 <= status < 500:
-                import asyncio
-                await asyncio.to_thread(restore_override, *spent)
+        with override_claim_scope({"spent": None, "generated": False}) as claim:
+            try:
+                await self.app(scope, receive, send_status)
+            finally:
+                await refund_if_unused(claim, failed = status is None or status >= 400)
+
+
+async def refund_if_unused(claim: dict, *, failed: bool) -> None:
+    # Both: a 503 no-model refusal generated nothing, but a 502 can follow output, and a success
+    # through a path the monitor does not see must never refund.
+    if failed and claim.get("spent") and not claim.get("generated"):
+        import asyncio
+        await asyncio.to_thread(restore_override, *claim["spent"])
 
 
 def _period_label(period: str) -> str:

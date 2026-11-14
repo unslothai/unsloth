@@ -60,3 +60,7 @@ test("title requests are marked stateless so their receipt is charged", () => {
   const build = TITLE.slice(TITLE.indexOf("export async function buildTitleRequest("));
   assert.match(build.slice(0, 2500), /temporary_chat: true,/);
 });
+
+test("live, final and failed replies carry a prompt estimate for interrupted saves", () => {
+  assert.equal(ADAPTER.match(/\n\s+tokenUsageEstimatedPrompt,\n/g)?.length, 3);
+});

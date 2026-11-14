@@ -156,29 +156,6 @@ def test_client_metadata_cannot_waive_an_existing_debit():
     assert "tokenUsageCharged" not in (studio_db.get_chat_message("t1", "a1").get("metadata") or {})
 
 
-def test_a_refused_request_gives_its_override_back():
-    import asyncio
-
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
-    _enable(limit = 100)
-    token_limit.grant_override("combined")
-
-    async def refused_app(scope, receive, send):
-        scope.setdefault("state", {})["token_limit_override"] = token_limit.enforce(api = False)
-        await send({"type": "http.response.start", "status": 400, "headers": []})
-        await send({"type": "http.response.body", "body": b"no model"})
-
-    async def ignore(message):
-        pass
-
-    middleware = token_limit.OverrideRefundMiddleware(refused_app)
-    asyncio.run(middleware({"type": "http"}, None, ignore))
-    # The override is still available: this would raise 429 if it had been spent.
-    assert token_limit.enforce(api = False) is not None
-
-
 def test_a_receipt_that_lands_after_the_save_merges_instead_of_charging_twice():
     import hashlib
     from types import SimpleNamespace
@@ -219,9 +196,14 @@ def test_a_receipt_that_lands_after_the_save_merges_instead_of_charging_twice():
     assert _pools()["combined"]["used"] == 100
 
 
-@pytest.mark.parametrize("status, refunded", [(400, True), (502, False)])
-def test_only_a_refusal_before_inference_refunds_the_override(status, refunded):
+@pytest.mark.parametrize(
+    "status, generates, refunded",
+    [(400, False, True), (503, False, True), (502, True, False), (200, True, False)],
+)
+def test_the_override_is_refunded_exactly_when_nothing_was_generated(status, generates, refunded):
     import asyncio
+
+    from core.inference.api_monitor import api_monitor
 
     now = _now_ms()
     _thread("t1", now)
@@ -230,7 +212,16 @@ def test_only_a_refusal_before_inference_refunds_the_override(status, refunded):
     token_limit.grant_override("combined")
 
     async def app(scope, receive, send):
-        scope.setdefault("state", {})["token_limit_override"] = token_limit.enforce(api = False)
+        from routes.inference import _enforce_token_limit
+        from types import SimpleNamespace
+
+        await _enforce_token_limit(SimpleNamespace(state = SimpleNamespace()), external = False)
+        if generates:
+            entry = api_monitor.start(
+                endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "", subject = "o"
+            )
+            api_monitor.append_reply(entry, "partial answer")
+            api_monitor.finish(entry, "failed")
         await send({"type": "http.response.start", "status": status, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
@@ -245,108 +236,21 @@ def test_only_a_refusal_before_inference_refunds_the_override(status, refunded):
             token_limit.enforce(api = False)
 
 
-def _durable_run(request_payload):
-    from storage import chat_generation_runs_db as runs
-
+def test_an_interrupted_saved_reply_charges_its_estimated_prompt():
     now = _now_ms()
     _thread("t1", now)
     studio_db.upsert_chat_message(
         {
-            "id": "user",
+            "id": "live",
             "threadId": "t1",
-            "role": "user",
-            "createdAt": now,
-            "content": [{"type": "text", "text": "hi"}],
+            "role": "assistant",
+            "createdAt": now + 1,
+            "content": [{"type": "text", "text": "half"}],
+            "metadata": {"resumeTiming": {"tokenCount": 10}, "tokenUsageEstimatedPrompt": 10_000},
         }
     )
-    runs.create_run(
-        run_id = "run",
-        owner_subject = "owner",
-        thread_id = "t1",
-        user_message_id = "user",
-        assistant_message_id = "assistant",
-        request_payload = request_payload,
-    )
-    token = runs.get_worker_token("run")
-    runs.mark_running("run", token)
-    return runs, token
-
-
-def test_a_durable_run_refused_before_inference_refunds_its_override():
-    now = _now_ms()
-    _thread("seed", now)
-    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
-    _enable(limit = 100)
-    token_limit.grant_override("combined")
-    spent = token_limit.enforce(api = False)
-    runs, token = _durable_run(
-        {"model": "local", "messages": [], "token_limit_override": list(spent)}
-    )
-    runs.finish_run("run", worker_token = token, status = "failed", error = "No model loaded")
-    # Nothing was generated, so the override is available again.
-    assert token_limit.enforce(api = False) is not None
-
-
-def test_a_finalized_tool_call_is_charged_and_keeps_the_override_spent():
-    now = _now_ms()
-    _thread("seed", now)
-    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
-    _enable(limit = 100)
-    token_limit.grant_override("combined")
-    spent = token_limit.enforce(api = False)
-    runs, token = _durable_run(
-        {"model": "local", "messages": [], "token_limit_override": list(spent)}
-    )
-    runs.append_events(
-        "run",
-        token,
-        [
-            ("chunk", {"type": "tool_args", "tool_call_id": "r1", "text": "h" * 100}),
-            ("chunk", {"type": "tool_start", "tool_call_id": "r1", "arguments_text": "h" * 100}),
-            (
-                "chunk",
-                {
-                    "type": "tool_start",
-                    "tool_call_id": "p1",
-                    "tool_name": "python",
-                    "arguments_text": "x" * 300,
-                    "awaiting_confirmation": True,
-                },
-            ),
-        ],
-    )
-    assert runs.reconcile_orphaned_runs() == 1
-    # 100 streamed + 300 finalized characters, the streamed call not counted twice.
-    assert _pools()["combined"]["used"] == 100 + 100
-    with pytest.raises(HTTPException):
-        token_limit.enforce(api = False)
-
-
-def test_native_tool_call_deltas_count_in_an_interrupted_run():
-    runs, token = _durable_run({"model": "local", "messages": []})
-    runs.append_events(
-        "run",
-        token,
-        [
-            (
-                "chunk",
-                {
-                    "choices": [
-                        {
-                            "delta": {
-                                "tool_calls": [
-                                    {"index": 0, "function": {"name": "", "arguments": "x" * 400}}
-                                ]
-                            }
-                        }
-                    ]
-                },
-            )
-        ],
-    )
-    runs.finish_run("run", worker_token = token, status = "cancelled")
-    _enable(limit = 10_000)
-    assert _pools()["combined"]["used"] == 100
+    _enable(limit = 100_000)
+    assert _pools()["combined"]["used"] == 10_010
 
 
 def test_a_reconciled_run_settles_its_output():

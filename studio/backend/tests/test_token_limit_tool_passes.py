@@ -460,3 +460,45 @@ def test_responses_tool_arguments_count_as_they_stream_and_once():
         inference_route.api_monitor = monitor_before
     assert streamed == 4004
     assert finished == streamed
+
+
+def test_a_healed_responses_tool_call_counts_when_emitted():
+    from types import SimpleNamespace
+
+    from models.inference import ChatCompletionRequest, ResponsesRequest
+
+    monitor = ApiMonitor()
+    entry = _api_key_entry(monitor)
+    monitor_before = inference_route.api_monitor
+    inference_route.api_monitor = monitor
+    try:
+        translator = inference_route._ResponsesStreamTranslator(
+            payload = ResponsesRequest(model = "m", input = "hi"),
+            chat_req = ChatCompletionRequest(model = "m", messages = [{"role": "user", "content": "hi"}]),
+            request = SimpleNamespace(state = SimpleNamespace()),
+            monitor_id = entry,
+            resp_id = "resp",
+            created_at = 0,
+            model = "m",
+            context_length = None,
+            parse_think_markers = False,
+            healer = None,
+        )
+        translator._healed_event_sse(
+            [("call", {"id": "h1", "function": {"name": "edit", "arguments": "a" * 400}})]
+        )
+        healed = monitor._find_locked(entry).reply_chars
+        list(translator.finish())
+        finished = monitor._find_locked(entry).reply_chars
+    finally:
+        inference_route.api_monitor = monitor_before
+    assert healed == 404
+    assert finished == healed
+
+
+def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed():
+    import inspect
+
+    source = inspect.getsource(inference_route)
+    assert '_sf_streamed_calls.add(event.get("tool_call_id"))' in source
+    assert 'event.get("tool_call_id") not in _sf_streamed_calls' in source

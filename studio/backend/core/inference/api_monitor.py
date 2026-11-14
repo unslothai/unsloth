@@ -45,6 +45,29 @@ class TemporaryUsage:
 _temporary_usage: ContextVar[Optional[TemporaryUsage]] = ContextVar("temporary_usage", default = None)
 
 
+# Shared per request: monitor rows started under it mark it once any output is generated, so a
+# spent one-time override is refunded exactly when nothing was.
+_override_claim: ContextVar[Optional[dict]] = ContextVar("token_override_claim", default = None)
+
+
+@contextmanager
+def override_claim_scope(claim: dict):
+    token = _override_claim.set(claim)
+    try:
+        yield claim
+    finally:
+        _override_claim.reset(token)
+
+
+def override_claim() -> Optional[dict]:
+    return _override_claim.get()
+
+
+def _note_generated(entry) -> None:
+    if entry.override_claim is not None:
+        entry.override_claim["generated"] = True
+
+
 @contextmanager
 def temporary_usage_scope(value: Optional[TemporaryUsage]):
     token = _temporary_usage.set(value)
@@ -210,6 +233,7 @@ class ApiMonitorEntry:
     # True for sk-unsloth callers only: the panel auto-opens on these, not Unsloth's chat.
     via_api_key: bool = False
     temporary_usage: Optional[TemporaryUsage] = None
+    override_claim: Optional[dict] = None
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
     finished_monotonic: Optional[float] = None
@@ -437,6 +461,7 @@ class ApiMonitor:
             started_monotonic = time.monotonic(),
             context_length = context_length,
             temporary_usage = _temporary_usage.get(),
+            override_claim = _override_claim.get(),
         )
         with self._lock:
             self._entries.appendleft(entry)
@@ -595,6 +620,7 @@ class ApiMonitor:
                 entry.openai_stream_last_segment_was_tool = False
             if not counted:
                 entry.reply_chars += len(text)
+            _note_generated(entry)
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
                 entry.running_phase = "token_generation"
@@ -694,6 +720,7 @@ class ApiMonitor:
             for fragment in (name_fragment, arguments_fragment):
                 text = _stream_tool_fragment(fragment, serialize_json = True)
                 entry.reply_chars += len(text or "")
+            _note_generated(entry)
             pending_chars = sum(
                 len(candidate.name) + len(candidate.arguments)
                 for candidate in entry.openai_stream_tool_calls
@@ -775,6 +802,8 @@ class ApiMonitor:
             if entry is None:
                 return
             entry.reply_chars += output_chars
+            if decoded or output_chars:
+                _note_generated(entry)
             if entry.first_token_monotonic is None:
                 entry.first_token_monotonic = now
             if decoded and entry.first_decode_monotonic is None:
@@ -875,6 +904,8 @@ class ApiMonitor:
             if completion_tokens is not None:
                 entry.completion_tokens = completion_tokens
                 entry.reported_reply_chars = entry.reply_chars
+            if prompt_tokens or completion_tokens or total_tokens:
+                _note_generated(entry)
             if total_tokens is not None:
                 entry.total_tokens = total_tokens
                 entry.total_tokens_authoritative = True

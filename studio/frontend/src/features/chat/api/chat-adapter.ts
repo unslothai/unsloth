@@ -5936,9 +5936,23 @@ export function createOpenAIStreamAdapter(
       const tokenUsageProvider = isExternalRequest
         ? externalProvider?.providerType
         : undefined;
+      // Charged only when no usage report ever arrives (an interrupted saved reply).
+      const tokenUsageEstimatedPrompt = Math.ceil(
+        outboundMessages.reduce((total: number, message) => {
+          const content = (message as { content?: unknown }).content;
+          if (typeof content === "string") return total + content.length;
+          if (!Array.isArray(content)) return total;
+          return content.reduce(
+            (sum: number, part) =>
+              sum + (typeof part?.text === "string" ? part.text.length : 0),
+            total,
+          );
+        }, 0) / 4,
+      );
       const liveCustom = () => ({
         tokenUsageParentId: continuation?.sourceMessageId,
         tokenUsageProvider,
+        tokenUsageEstimatedPrompt,
         tokenUsagePriorCount: priorTiming?.tokenCount,
         ...reasoningDurationTracker.metadata(),
         resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
@@ -8947,6 +8961,7 @@ export function createOpenAIStreamAdapter(
               ...reasoningDurationTracker.metadata(),
               tokenUsageParentId: continuation?.sourceMessageId,
               tokenUsageProvider,
+              tokenUsageEstimatedPrompt,
               tokenUsagePriorCount: priorTiming?.tokenCount,
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
@@ -9133,6 +9148,7 @@ export function createOpenAIStreamAdapter(
                 ...reasoningDurationTracker.metadata(),
                 tokenUsageParentId: continuation?.sourceMessageId,
                 tokenUsageProvider,
+                tokenUsageEstimatedPrompt,
                 // timing below adds the continued reply's count, which its own row already charged.
                 tokenUsagePriorCount: priorTiming?.tokenCount,
                 contextTruncation,

@@ -3710,6 +3710,8 @@ async def _enforce_token_limit(request: Any, *, external: bool) -> None:
 
     api = external or _request_used_api_key(request)
     spent = await asyncio.to_thread(token_limit.enforce, api = api)
+    if spent and (claim := override_claim()) is not None:
+        claim["spent"] = spent
     if state is not None:
         state.token_limit_admitted = True
         if spent:
@@ -3723,7 +3725,12 @@ from state.tool_approvals import (
 )
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
-from core.inference.api_monitor import api_monitor, TemporaryUsage, temporary_usage_scope
+from core.inference.api_monitor import (
+    api_monitor,
+    override_claim,
+    TemporaryUsage,
+    temporary_usage_scope,
+)
 from core.inference.image_orientation import exif_upright
 from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
@@ -35077,6 +35084,7 @@ async def produce_openai_chat_completions(
         async def sf_tool_stream():
             gen = None
             _sf_next_task = None
+            _sf_streamed_calls: set = set()
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -35193,9 +35201,19 @@ async def produce_openai_chat_completions(
                     if event["type"] == "tool_args":
                         # Generated arguments (not tool stdout): count them for a stopped request.
                         _args_text = event.get("text")
+                        _sf_streamed_calls.add(event.get("tool_call_id"))
                         api_monitor.mark_first_token(
                             monitor_id,
                             output_chars = len(_args_text) if isinstance(_args_text, str) else 0,
+                        )
+                    elif (
+                        event["type"] == "tool_start"
+                        and event.get("tool_call_id") not in _sf_streamed_calls
+                        and isinstance(event.get("arguments_text"), str)
+                    ):
+                        # A finalized call (python, terminal) arrives whole here, never as tool_args.
+                        api_monitor.mark_first_token(
+                            monitor_id, decoded = False, output_chars = len(event["arguments_text"])
                         )
                     if event["type"] in ("tool_output", "tool_args", "tool_approved"):
                         # Live stdout/stderr, tool-call arguments as the model writes them, or an approval.
@@ -40795,6 +40813,17 @@ class _ResponsesStreamTranslator:
                 tc = self._healed_tc(value)
                 if tc is None:
                     continue
+                fn = tc.get("function") if isinstance(tc, dict) else None
+                if isinstance(fn, dict):
+                    # Native deltas count as they stream; a healed call is counted here instead.
+                    api_monitor.mark_first_token(
+                        self.monitor_id,
+                        output_chars = sum(
+                            len(v)
+                            for v in (fn.get("name"), fn.get("arguments"))
+                            if isinstance(v, str)
+                        ),
+                    )
                 out.extend(self._close_message_item())
                 out.extend(self._tool_call_delta_events(tc))
         return out
