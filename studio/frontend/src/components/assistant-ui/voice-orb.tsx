@@ -213,14 +213,16 @@ export const VoiceOrb: FC = () => {
 
   useEffect(() => {
     if (!showOverlay) return;
+    // Window capture, before the composer's cancelOnEscape: Escape hides the orb, it never stops the reply.
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !e.isComposing) {
         e.preventDefault();
+        e.stopPropagation();
         setVoiceOrbCollapsed(true);
       }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [showOverlay, setVoiceOrbCollapsed]);
 
   return (

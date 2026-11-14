@@ -38,6 +38,7 @@ let _prevRunning = false;
 
 const VOICE_COALESCE_MS = 650;
 const VOICE_COALESCE_MAX_RETRIES = 15;
+const VOICE_HEARING_HOLD_MAX_MS = 30000;
 const SYNTH_GAP_MS = 350;
 
 export { VoiceOrb };
@@ -238,9 +239,17 @@ export const VoiceEngine: FC = () => {
     composer.setText("");
     setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
     resumeListen();
+    const armedAt = Date.now();
     const fireCoalescedRun = (attempt: number) => {
       voiceCoalesceTimerRef.current = null;
       if (voiceModeRef.current !== "active") return;
+      // A phrase begun inside the window joins this turn: starting the run now would stop its recorder mid-word.
+      // Timed on its own clock, as long as one utterance can record, not by the cancel/attach retries.
+      const rt = useChatRuntimeStore.getState();
+      if ((rt.voiceHearing || rt.voiceTranscribing) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
+        voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt), VOICE_COALESCE_MS);
+        return;
+      }
       const t = auiRef.current.thread();
       if (t.getState().isRunning) {
         // cancelRun() has not settled yet: retry rather than leave the bubbles unanswered.
@@ -250,12 +259,6 @@ export const VoiceEngine: FC = () => {
             VOICE_COALESCE_MS,
           );
         }
-        return;
-      }
-      // A phrase begun inside the window joins this turn: starting the run now would stop its recorder mid-word.
-      const rt = useChatRuntimeStore.getState();
-      if ((rt.voiceHearing || rt.voiceTranscribing) && attempt < VOICE_COALESCE_MAX_RETRIES) {
-        voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_MS);
         return;
       }
       const msgs = t.getState().messages;
