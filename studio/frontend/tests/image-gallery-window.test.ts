@@ -60,7 +60,6 @@ test("a selection deleted elsewhere costs one extra page on the next refresh, an
   const refreshed = await collect(gallery.fetchPage, strip(["gone", ...range(99)]), 100, 50, () => "gone");
   assert.equal(refreshed.images.length, 150);
   assert.equal(gallery.calls, 3);
-  // The page passes the refreshed strip and its length back in; a window growing per refresh would page it all.
   const again = await collect(gallery.fetchPage, refreshed.images, 150, 50, () => "gone");
   assert.equal(again.images.length, 150);
   assert.equal(gallery.calls, 6);

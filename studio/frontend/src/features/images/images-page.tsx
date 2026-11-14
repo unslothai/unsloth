@@ -2855,9 +2855,9 @@ export function ImagesPage({
     // Bumped FIRST so in-flight reads are discarded.
     stripEpoch.current += 1;
     void (async () => {
-      // Retried like fetchWhileStable: a pin or archive mid-fetch discards it, and nothing else refetches the new image.
+      // Retried: a pin or archive mid-fetch discards it, and nothing else refetches the new image.
       for (let attempt = 0; attempt < PAGE_MAX_ATTEMPTS && refreshSeq.current === ticket; attempt += 1) {
-        // After the pin's PATCH, or this read would snapshot the shelf before it and undo the pin on screen.
+        // After pending pin PATCHes, or this read could undo a pin on screen.
         if (attempt > 0) await serializeById("image-pin", async () => {});
         const epoch = stripEpoch.current;
         const fresh = () => stripEpoch.current === epoch && refreshSeq.current === ticket;
