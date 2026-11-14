@@ -154,3 +154,8 @@ test("turning voice off forgets the open reply stream", () => {
   const off = engine.slice(engine.indexOf("const turnOff = useCallback("));
   assert.match(off.slice(0, off.indexOf("}, [stop")), /streamBegunRef\.current = false;\s*stop\(\);/);
 });
+
+test("opening a saved chat from an unsent draft drops the draft's held fragment", () => {
+  const page = readSrc("features/chat/chat-page.tsx");
+  assert.match(page, /if \(prev === null && current !== null\) \{\s*if \(getVoiceMode\(\) !== "off"\) clearHeldTurn\(\);/);
+});

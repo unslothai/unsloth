@@ -33,6 +33,7 @@ import {
 } from "@/features/chat/voice/voice-loop-bridge";
 import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
 import { unloadSttModel } from "@/features/chat/adapters/studio-model-dictation-adapter";
+import { clearHeldTurn } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import {
   type ComposerModelPickerSource,
   ComposerModelPickerContext,
@@ -873,7 +874,9 @@ const SingleContent = memo(function SingleContent({
       return;
     }
     // Thread birth (null -> __LOCALID_xxx) is not a switch: skip the reset but advance the ref.
+    // Birth follows a send that consumed any held fragment, so one still held belongs to a draft left for a saved chat.
     if (prev === null && current !== null) {
+      if (getVoiceMode() !== "off") clearHeldTurn();
       prevVoiceThreadIdRef.current = current;
       return;
     }

@@ -69,3 +69,10 @@ test("a reversed or explicitly corrected request is not the same ask", () => {
   assert.equal(isSameAsk("move alpha into beta", "can you move alpha into beta"), true);
 });
 
+
+test("an added or dropped negation is not the same ask", () => {
+  assert.equal(isSameAsk("Show accounts with balances", "Show accounts with no balances"), false);
+  assert.equal(isSameAsk("delete the old files", "don't delete the old files"), false);
+  assert.equal(isSameAsk("show me files without tags", "show me files with tags"), false);
+  assert.equal(isSameAsk("don't send the email", "please don't send the email"), true);
+});

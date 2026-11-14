@@ -42,8 +42,13 @@ const CORRECTION_CUE = /^\W*(?:no|nope|actually|instead|i mean|sorry|rather|wait
  * order of the words it shares ("beta into alpha" reverses "alpha into beta") and opens with no
  * correction cue ("No, ...", "Actually ...").
  */
+const NEGATOR = /\b(?:no|not|never|none|nothing|without|\w+n['’]t)\b/gi;
+const negations = (text: string) => (text.match(NEGATOR) ?? []).length;
+
 export function isSameAsk(earlier: string, later: string): boolean {
   if (CORRECTION_CUE.test(later)) return false;
+  // "with no balances" for "with balances": the stop list drops the one word that changed.
+  if (negations(earlier) !== negations(later)) return false;
   const before = contentWords(earlier);
   const after = contentWords(later);
   if (!sharesMostWords(earlier, later) || ![...after].every((w) => before.has(w))) return false;
