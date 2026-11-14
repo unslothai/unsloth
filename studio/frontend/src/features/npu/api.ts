@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
-import { npuVersionTag } from "./runtime-versions";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
 
@@ -42,6 +41,8 @@ export interface NpuStatus {
   loading_model: string | null;
   /** Installed runtime versions; absent from servers that predate them. */
   versions?: { lemonade: string | null; fastflowlm: string | null };
+  /** About how much memory this PC can give the NPU, in GB; null when unknown. */
+  memory_window_gb?: number | null;
 }
 
 export interface NpuModel {
@@ -107,21 +108,6 @@ function npuRank(checkpoint: string): number {
   return rank === -1 ? NPU_RECOMMENDED.length : rank;
 }
 
-/** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */
-export function npuRuntimeLabel(
-  versions: NpuStatus["versions"],
-): string | null {
-  const parts: string[] = [];
-  for (const [name, version] of [
-    ["FastFlowLM", versions?.fastflowlm],
-    ["Lemonade", versions?.lemonade],
-  ] as const) {
-    const tag = npuVersionTag(version);
-    if (tag) parts.push(`${name} ${tag}`);
-  }
-  return parts.length > 0 ? parts.join(" · ") : null;
-}
-
 export interface NpuCapability {
   key: "vision" | "reasoning" | "tools";
   label: string;
@@ -148,6 +134,13 @@ export function npuSizeLabel(sizeGb: number | null): string | null {
   return sizeGb < 1
     ? `${Math.round(sizeGb * 1000)} MB`
     : `${sizeGb.toFixed(1)} GB`;
+}
+
+/** FastFlowLM pins repos by branch, which moves; only a commit revision matches the hash-checked files. */
+export function npuReadmeNote(model: NpuModel): string | null {
+  return model.hf_repo && !/^[0-9a-f]{40}$/i.test(model.hf_revision ?? "")
+    ? "Latest on Hugging Face (may be newer than the installed files)"
+    : null;
 }
 
 export function npuResumeLabel(model: NpuModel): string | null {

@@ -15,7 +15,7 @@ function client(response: () => Response) {
   const api = loadWithStubs<typeof NpuApi>(
     new URL("../src/features/npu/api.ts", import.meta.url),
     {
-      "@/features/auth": {
+      "@/features/auth/api": {
         authFetch: async (path: string, init?: RequestInit) => {
           requests.push({ path, init });
           return response();
@@ -47,20 +47,6 @@ test("recognizes NPU model paths only", () => {
   assert.equal(api.isNpuModelId("lemonade:qwen3-0.6b-FLM"), true);
   assert.equal(api.isNpuModelId("unsloth/Qwen3-0.6B-GGUF"), false);
   assert.equal(api.isNpuModelId(null), false);
-});
-
-test("npuRuntimeLabel names the installed FastFlowLM and Lemonade versions", () => {
-  const { api } = client(() => Response.json({}));
-  assert.equal(
-    api.npuRuntimeLabel({ fastflowlm: "1.0.12", lemonade: "2026.44.1" }),
-    "FastFlowLM v1.0.12 · Lemonade v2026.44.1",
-  );
-  assert.equal(
-    api.npuRuntimeLabel({ fastflowlm: "v1.0.12", lemonade: null }),
-    "FastFlowLM v1.0.12",
-  );
-  assert.equal(api.npuRuntimeLabel({ fastflowlm: null, lemonade: null }), null);
-  assert.equal(api.npuRuntimeLabel(undefined), null);
 });
 
 test("download reports progress across split frames and resolves on complete", async () => {
@@ -259,4 +245,29 @@ test("NPU capability tags and context label", () => {
   assert.equal(api.npuContextLabel(10000), "10,000 context");
   assert.equal(api.npuContextLabel(null), null);
   assert.equal(api.npuContextLabel(0), null);
+});
+
+// model_info.json's oids are per-file blob hashes, not a commit, so a branch-pinned card can drift.
+test("an NPU card read from a branch says it may be newer than the installed files", () => {
+  const { api } = client(() => new Response(null));
+  const model = (hf_repo: string | null, hf_revision: string | null) =>
+    ({ hf_repo, hf_revision }) as Parameters<typeof api.npuReadmeNote>[0];
+  assert.equal(
+    api.npuReadmeNote(model("FastFlowLM/Qwen3-0.6B-NPU2", null)),
+    "Latest on Hugging Face (may be newer than the installed files)",
+  );
+  // A pinned branch moves too; only a commit revision is the card the files came from.
+  assert.equal(
+    api.npuReadmeNote(
+      model("FastFlowLM/Qwen3.5-9B-NPU2", "flm_q4k_high_precision"),
+    ),
+    "Latest on Hugging Face (may be newer than the installed files)",
+  );
+  assert.equal(
+    api.npuReadmeNote(
+      model("FastFlowLM/Qwen3.5-9B-NPU2", "0123456789abcdef0123456789abcdef01234567"),
+    ),
+    null,
+  );
+  assert.equal(api.npuReadmeNote(model(null, null)), null);
 });

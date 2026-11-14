@@ -2422,7 +2422,7 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     resident_on_gpu: Optional[bool] = Field(
         None,
-        description = "True when resident_mib is model buffers on the GPUs /api/system reports, false for a CPU-only llama.cpp build, null when unknown (Vulkan or SYCL buffers are not parsed).",
+        description = "True when resident_mib is model buffers on the GPUs /api/system reports, false for system RAM (a CPU-only llama.cpp build, an NPU model), null when unknown (Vulkan or SYCL buffers are not parsed).",
     )
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
@@ -7117,6 +7117,15 @@ class TranscribeSourceRequest(SttContextSettings):
     language: Optional[str] = Field(None, max_length = 64)
     timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
     speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
+    speaker_accent: Optional[str] = Field(
+        None,
+        max_length = 200,
+        description = (
+            "Optional accent of the speaker, such as 'Chinese-accented English'. Sent as a text hint "
+            "to models that take one (stt capabilities 'accent_hint'); the transcript stays in the "
+            "spoken language."
+        ),
+    )
     title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
     provider_id: Optional[str] = Field(
         None,
