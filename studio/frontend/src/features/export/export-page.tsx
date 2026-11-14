@@ -46,10 +46,7 @@ import { usePlatformStore } from "@/config/env";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { hfApiToken, useHfTokenStore, useHubModelSearch } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import {
-  loadQ4nxExportSettings,
-  useQ4nxExportStore,
-} from "@/features/settings";
+import { useNpuStatus } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
@@ -300,14 +297,11 @@ export function ExportPage() {
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
   // The converter writes beside the GGUFs, so a Hub-only export has nowhere to put it.
-  // Conversion runs on the CPU: an NPU machine always gets it, any other once opted in (Settings).
-  const q4nxSettings = useQ4nxExportStore((s) => s.settings);
-  useEffect(() => {
-    void loadQ4nxExportSettings().catch(() => {});
-  }, []);
-  const showQ4nx = !!q4nxSettings?.npuSupported || !!q4nxSettings?.enabled;
+  const [npuStatus] = useNpuStatus();
+  // An AMD NPU feature: only with a supported NPU and FastFlowLM installed, never on NVIDIA.
+  const hasNpu = !!npuStatus?.supported && !!npuStatus?.ready;
   const effectiveNpuQ4nx =
-    showQ4nx && npuQ4nx && q4nxSourceSelected && destination === "local";
+    hasNpu && npuQ4nx && q4nxSourceSelected && destination === "local";
   const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
     null,
   );
@@ -1180,7 +1174,7 @@ export function ExportPage() {
         {(loadingCheckpoints || !!checkpointError) && (
           <>
             <ImageLoraExportCard preselect={preselectImageLora} />
-            {showQ4nx && <Q4nxConvertCard />}
+            {hasNpu && <Q4nxConvertCard />}
           </>
         )}
 
@@ -2078,7 +2072,7 @@ export function ExportPage() {
                                   </p>
                                 </div>
                               )}
-                              {showQ4nx && (
+                              {hasNpu && (
                                 <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
                                   <div className="space-y-0.5">
                                     <div className="text-sm font-medium">
@@ -2088,7 +2082,7 @@ export function ExportPage() {
                                       {destination !== "local"
                                         ? "Local destination only."
                                         : q4nxSourceSelected
-                                          ? "Adds a Q4NX copy next to the GGUFs. Runs on AMD Ryzen AI NPUs; converting works on any machine."
+                                          ? "Adds a Q4NX copy next to the GGUFs. Only supported on AMD NPUs."
                                           : "Needs Q4_0, Q4_1 or Q4_K_M."}
                                     </div>
                                   </div>
@@ -2236,7 +2230,7 @@ export function ExportPage() {
                   </button>
                 )}
                 <ImageLoraExportCard preselect={preselectImageLora} />
-                {showQ4nx && <Q4nxConvertCard />}
+                {hasNpu && <Q4nxConvertCard />}
               </div>
               <div className="@4xl/export-configure:sticky @4xl/export-configure:top-6 @4xl/export-configure:self-start">
                 <ExportSummaryCard

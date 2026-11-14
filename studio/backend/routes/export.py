@@ -656,9 +656,9 @@ async def export_gguf(
     validate_job_paths(request.model_dump())
     if request.npu_q4nx:
         from starlette.concurrency import run_in_threadpool
-        from utils.q4nx_export_settings import Q4NX_EXPORT_DISABLED_DETAIL, q4nx_export_allowed
+        from utils.q4nx_export_gate import Q4NX_EXPORT_UNAVAILABLE_DETAIL, q4nx_export_allowed
         if not await run_in_threadpool(q4nx_export_allowed):
-            raise HTTPException(status_code = 403, detail = Q4NX_EXPORT_DISABLED_DETAIL)
+            raise HTTPException(status_code = 403, detail = Q4NX_EXPORT_UNAVAILABLE_DETAIL)
     if request.reap and request.reap.dataset:
         validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
@@ -722,10 +722,10 @@ async def convert_q4nx(
     """
     validate_job_paths(request.model_dump())
     from starlette.concurrency import run_in_threadpool
-    from utils.q4nx_export_settings import Q4NX_EXPORT_DISABLED_DETAIL, q4nx_export_allowed
+    from utils.q4nx_export_gate import Q4NX_EXPORT_UNAVAILABLE_DETAIL, q4nx_export_allowed
 
     if not await run_in_threadpool(q4nx_export_allowed):
-        raise HTTPException(status_code = 403, detail = Q4NX_EXPORT_DISABLED_DETAIL)
+        raise HTTPException(status_code = 403, detail = Q4NX_EXPORT_UNAVAILABLE_DETAIL)
     # A managed account may only read a GGUF inside its own workspace.
     account_path(request.gguf_path)
     if bool(request.gguf_path) == bool(request.repo_id and request.filename):

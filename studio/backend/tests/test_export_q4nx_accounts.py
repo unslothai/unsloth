@@ -20,9 +20,9 @@ BOB = AccountContext("bob-q4nx-account", "bob")
 
 
 @pytest.fixture(autouse = True)
-def q4nx_opted_in(monkeypatch):
-    from utils import q4nx_export_settings
-    monkeypatch.setattr(q4nx_export_settings, "q4nx_export_allowed", lambda: True)
+def npu_machine(monkeypatch):
+    from utils import q4nx_export_gate
+    monkeypatch.setattr(q4nx_export_gate, "q4nx_export_allowed", lambda: True)
 
 
 def _convert(
@@ -124,38 +124,47 @@ def test_managed_account_and_owner_reach_the_converter_for_allowed_paths(convert
     assert len(converted) == 2
 
 
-def test_no_npu_and_no_opt_in_refuses_before_anything(monkeypatch, authorized):
-    from utils import q4nx_export_settings
+def test_a_machine_without_an_npu_and_fastflowlm_is_refused_before_anything(
+    monkeypatch, authorized
+):
+    from utils import q4nx_export_gate
 
-    monkeypatch.setattr(q4nx_export_settings, "q4nx_export_allowed", lambda: False)
+    monkeypatch.setattr(q4nx_export_gate, "q4nx_export_allowed", lambda: False)
     with pytest.raises(HTTPException) as exc:
         _convert(ALICE, repo_id = "org/private-GGUF", filename = "m.Q4_1.gguf")
     assert exc.value.status_code == 403
     assert authorized == []
 
 
-def test_q4nx_export_is_allowed_by_an_npu_or_the_setting(monkeypatch):
-    from utils import q4nx_export_settings as s
-    monkeypatch.undo()  # drop the autouse opt-in
-    for npu, setting, allowed in [(False, False, False), (True, False, True), (False, True, True)]:
-        monkeypatch.setattr(s, "npu_supported", lambda: npu)
-        monkeypatch.setattr(s, "get_q4nx_export_setting", lambda: setting)
-        assert s.q4nx_export_allowed() is allowed
+@pytest.mark.parametrize(
+    "status, allowed",
+    [
+        ({"supported": True, "ready": True}, True),
+        # An NPU whose FastFlowLM runtime is not installed yet.
+        ({"supported": True, "ready": False}, False),
+        # NVIDIA or any other machine without a supported NPU.
+        ({"supported": False, "ready": False}, False),
+        ({"supported": False, "ready": True}, False),
+    ],
+)
+def test_q4nx_export_needs_an_npu_and_its_runtime(monkeypatch, status, allowed):
+    from core.inference import npu_backend
+    from utils import q4nx_export_gate as gate
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        npu_backend, "get_npu_backend", lambda: type("B", (), {"status": lambda self: status})()
+    )
+    assert gate.q4nx_export_allowed() is allowed
 
 
-def test_q4nx_export_settings_hide_the_npu_from_a_managed_account(monkeypatch):
-    from routes import settings as settings_routes
-    from utils import q4nx_export_settings as s
-    from utils.account_context import run_as
+def test_a_failed_npu_probe_refuses_q4nx_export(monkeypatch):
+    from core.inference import npu_backend
+    from utils import q4nx_export_gate as gate
 
-    monkeypatch.setattr(s, "npu_supported", lambda: True)
-    monkeypatch.setattr(s, "get_q4nx_export_setting", lambda: False)
-    # _shared_policy_read rebinds a managed caller to OWNER, which would undo the redaction.
-    [route] = [
-        r
-        for r in settings_routes._account_settings_router.routes
-        if r.path == "/q4nx-export" and "GET" in r.methods
-    ]
-    assert route.endpoint is settings_routes.get_q4nx_export
-    assert run_as(OWNER, settings_routes.get_q4nx_export, "s").npu_supported is True
-    assert run_as(ALICE, settings_routes.get_q4nx_export, "s").npu_supported is False
+    def broken():
+        raise RuntimeError("probe failed")
+
+    monkeypatch.undo()
+    monkeypatch.setattr(npu_backend, "get_npu_backend", broken)
+    assert gate.q4nx_export_allowed() is False

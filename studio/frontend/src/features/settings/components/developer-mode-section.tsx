@@ -25,12 +25,11 @@ import {
   videoCpuRamCheck,
   videoCpuToggleNeedsConfirm,
 } from "../lib/video-cpu-warning";
-import { Q4nxExportRow } from "./q4nx-export-row";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-/** Owner-only. Experimental video generation on a CPU-only host, plus the Q4NX export opt-in.
- *  Enabling video asks first, with the host's RAM against the minimum; disabling restores the GPU gate. */
+/** Owner-only. Developer mode's one switch: experimental video generation on a CPU-only host.
+ *  Enabling asks first, with the host's RAM against the minimum; disabling restores the GPU gate. */
 export function DeveloperModeSection() {
   const t = useT();
   const [settings, setSettings] = useState<DeveloperModeSettings | null>(null);
@@ -133,7 +132,6 @@ export function DeveloperModeSection() {
             onCheckedChange={onToggle}
           />
         </SettingsRow>
-        <Q4nxExportRow />
       </SettingsSection>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
