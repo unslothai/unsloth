@@ -81,7 +81,7 @@ def test_token_cap_blocks_new_requests_and_preserves_disabled_behavior(admission
     refused = client.post("/v1/chat/completions", json = body)
     assert refused.status_code == 429
     assert "daily token limit" in refused.json()["detail"]
-    assert refused.headers["X-Unsloth-Token-Limit"] == "combined"
+    assert refused.headers["X-Unsloth-Token-Limit"] == "reached"
     assert produced == [body["model"]]
     for endpoint, extra in (
         ("completions", {"prompt": "hi"}),
@@ -126,20 +126,16 @@ def test_legacy_streams_charge_usage_and_stop_at_the_allowance(admission, monkey
         reset_generation_state = lambda *args: None,
     )
     monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
-    token_limit.update_settings(
-        {"enabled": True, "mode": "split", "localLimit": 110, "apiLimit": 10},
-        password = None,
-        new_password = None,
-    )
+    # The fixture's saved reply already used 100.
+    token_limit.update_settings({"enabled": True, "limit": 110})
     body = {"messages": [{"role": "user", "content": "hi"}]}
     first = client.post("/api/inference/generate/stream", json = body)
     assert first.status_code == 200 and '"content": "answer"' in first.text
-    pool = token_limit.status()["pools"][1 if api_key else 0]
-    assert pool["used"] == pool["limit"]
+    assert token_limit.status()["used"] == 110
     refused = client.post("/api/inference/generate/stream", json = body)
     assert refused.status_code == 429
     assert len(produced) == 1
-    token_limit.update_settings({"enabled": False}, password = None, new_password = None)
+    token_limit.update_settings({"enabled": False})
     after = client.post("/api/inference/generate/stream", json = body)
     assert after.content == first.content
 
@@ -156,10 +152,8 @@ def test_delegated_request_consumes_one_override(admission, monkeypatch, endpoin
 
     client, body, produced = admission
     monkeypatch.setattr(inference, "_in_process_model_resident", lambda: True)
-    token_limit.update_settings(
-        {"enabled": True, "limit": 100, "timezone": "UTC"}, password = None, new_password = None
-    )
-    token_limit.grant_override("combined")
+    token_limit.update_settings({"enabled": True, "limit": 100, "timezone": "UTC"})
+    token_limit.grant_override()
     response = client.post(f"/v1/{endpoint}", json = {"model": body["model"], **extra})
     assert response.status_code == 200, response.text
     assert produced == [body["model"]]
@@ -167,18 +161,12 @@ def test_delegated_request_consumes_one_override(admission, monkeypatch, endpoin
 
 
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize(
-    "usage_steps,new_tokens,internal_workflow,parents",
-    [
-        ([(90, 10, None)], 100, False, [""]),
-        ([(250, 20, 160), (180, 5, 185)], 295, False, ["", "private-msg-0"]),
-        ([(100, 50, None), (100, 50, None)], 300, False, ["", ""]),
-        ([(90, 10, None), (90, 10, None)], 200, True, ["", ""]),
-    ],
+    "usage_steps,internal_workflow",
+    [([(90, 10)], False), ([(100, 50), (100, 50)], False), ([(90, 10), (90, 10)], True)],
 )
 def test_temporary_chat_counts_without_persisting_its_content(
-    admission, monkeypatch, stream, external, usage_steps, new_tokens, internal_workflow, parents
+    admission, monkeypatch, stream, usage_steps, internal_workflow
 ):
     from fastapi.responses import StreamingResponse
     from core.inference.api_monitor import ApiMonitor
@@ -192,10 +180,9 @@ def test_temporary_chat_counts_without_persisting_its_content(
     monkeypatch.setattr(
         inference, "_request_is_internal_workflow", lambda request: internal_workflow
     )
-    completed = 0
+    steps = iter(usage_steps * 2)
 
     def finish():
-        nonlocal completed
         entry = monitor.start(
             endpoint = "/v1/chat/completions",
             method = "POST",
@@ -203,15 +190,13 @@ def test_temporary_chat_counts_without_persisting_its_content(
             prompt = "private prompt",
             subject = "owner",
         )
-        prompt, completion, context = usage_steps[completed % len(usage_steps)]
-        completed += 1
+        prompt, completion = next(steps)
         inference._monitor_usage(
             entry,
             {
                 "prompt_tokens": prompt,
                 "completion_tokens": completion,
                 "total_tokens": prompt + completion,
-                "context_tokens": context,
             },
         )
         monitor.set_reply(entry, "private answer")
@@ -229,32 +214,19 @@ def test_temporary_chat_counts_without_persisting_its_content(
         return JSONResponse({"choices": []})
 
     monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
-    studio_db.upsert_app_settings(
-        {
-            "token_limit": {
-                "enabled": True,
-                "mode": "split",
-                "method": "incremental",
-                "localLimit": 100 + new_tokens,
-                "apiLimit": new_tokens,
-            }
-        }
-    )
+    new_tokens = sum(p + c for p, c in usage_steps)
+    # The fixture's saved reply already used 100.
+    studio_db.upsert_app_settings({"token_limit": {"enabled": True, "limit": 100 + new_tokens}})
     payload = {
         **body,
         "temporary_chat": not internal_workflow,
         "thread_id": "temporary-thread",
         "stream": stream,
     }
-    if external:
-        payload["provider_type"] = "openai"
-    for index, parent in enumerate(parents):
+    for index in range(len(usage_steps)):
         payload["temporary_message_id"] = f"private-msg-{index}"
-        payload["temporary_parent_id"] = parent
         assert client.post("/v1/chat/completions", json = payload).status_code == 200
-    assert token_limit.status()["pools"][1 if external else 0]["used"] == new_tokens + (
-        0 if external else 100
-    )
+    assert token_limit.status()["used"] == 100 + new_tokens
     assert client.post("/v1/chat/completions", json = payload).status_code == 429
 
     studio_db.upsert_app_settings({"token_limit": {"enabled": False}})
@@ -267,9 +239,6 @@ def test_temporary_chat_counts_without_persisting_its_content(
         assert conn.execute("SELECT COUNT(*) FROM api_usage_events").fetchone()[0] == 0
         rows = conn.execute("SELECT * FROM token_usage_ledger").fetchall()
         assert len(rows) == 1 + len(usage_steps)
-        assert sum(row["total_tokens"] for row in rows) == 100 + sum(
-            p + c for p, c, _ in usage_steps
-        )
         assert not any(
             "private" in str(tuple(row)) or "temporary-thread" in str(tuple(row)) for row in rows
         )
@@ -300,14 +269,14 @@ def test_a_stopped_legacy_stream_settles_an_estimate(admission, monkeypatch):
         reset_generation_state = lambda *args: None,
     )
     monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
-    token_limit.update_settings({"enabled": True, "limit": 1000}, password = None, new_password = None)
-    before = token_limit.status()["pools"][0]["used"]
+    token_limit.update_settings({"enabled": True, "limit": 1000})
+    before = token_limit.status()["used"]
     response = client.post(
         "/api/inference/generate/stream", json = {"messages": [{"role": "user", "content": "hi"}]}
     )
     assert response.status_code == 200
     # "user: hi" is 2 estimated prompt tokens; the 80-character reply is 20.
-    assert token_limit.status()["pools"][0]["used"] - before == 22
+    assert token_limit.status()["used"] - before == 22
 
 
 def test_stateless_requests_never_share_an_accounting_thread(admission, monkeypatch):
@@ -355,13 +324,11 @@ def test_a_stateless_session_request_is_charged_without_opting_in(admission, mon
         return JSONResponse({"choices": []})
 
     monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
-    token_limit.update_settings(
-        {"enabled": True, "limit": 10_000}, password = None, new_password = None
-    )
-    before = token_limit.status()["pools"][0]["used"]
+    token_limit.update_settings({"enabled": True, "limit": 10_000})
+    before = token_limit.status()["used"]
     stateless = {key: value for key, value in body.items() if key != "thread_id"}
     assert client.post("/v1/chat/completions", json = stateless).status_code == 200
-    assert token_limit.status()["pools"][0]["used"] - before == 25
+    assert token_limit.status()["used"] - before == 25
 
 
 @pytest.mark.parametrize(
@@ -375,10 +342,7 @@ def test_stateless_routes_are_metered(name):
     route = next(
         node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name
     )
-    assert any(
-        isinstance(d, ast.Call) and getattr(d.func, "id", None) == "_meters_stateless_session"
-        for d in route.decorator_list
-    )
+    assert any(getattr(d, "id", None) == "_meters_stateless_session" for d in route.decorator_list)
 
 
 @pytest.mark.parametrize("api_key", [False, True])
@@ -396,7 +360,7 @@ def test_a_metered_session_route_is_charged(monkeypatch, stream, api_key):
     monkeypatch.setattr(inference, "api_monitor", monitor)
     monkeypatch.setattr(inference, "_request_used_api_key", lambda request: api_key)
 
-    @inference._meters_stateless_session(inference._local_source)
+    @inference._meters_stateless_session
     async def route(request: Request):
         entry = monitor.start(
             endpoint = "/v1/completions", method = "POST", model = "m", prompt = "hi", subject = "owner"
@@ -420,10 +384,8 @@ def test_a_metered_session_route_is_charged(monkeypatch, stream, api_key):
 
     app = FastAPI()
     app.add_api_route("/v1/completions", route, methods = ["POST"])
-    token_limit.update_settings(
-        {"enabled": True, "limit": 10_000}, password = None, new_password = None
-    )
-    before = token_limit.status()["pools"][0]["used"]
+    token_limit.update_settings({"enabled": True, "limit": 10_000})
+    before = token_limit.status()["used"]
     assert TestClient(app).post("/v1/completions", json = {}).status_code == 200
     # An API-key call is settled by the monitor itself (via_api_key), not this scope.
-    assert token_limit.status()["pools"][0]["used"] - before == (0 if api_key else 25)
+    assert token_limit.status()["used"] - before == (0 if api_key else 25)

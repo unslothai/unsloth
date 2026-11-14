@@ -5,44 +5,22 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type TokenLimitPeriod = "day" | "week" | "month";
-export type TokenLimitMode = "combined" | "split";
-export type TokenLimitMethod = "total" | "incremental";
-export type TokenLimitPool = "combined" | "local" | "api";
 
 export type TokenLimitSettings = {
   enabled: boolean;
   period: TokenLimitPeriod;
-  mode: TokenLimitMode;
-  method: TokenLimitMethod;
   limit: number;
-  localLimit: number;
-  apiLimit: number;
   timezone: string;
-  passwordProtected: boolean;
-};
-
-export type TokenLimitPoolStatus = {
-  pool: TokenLimitPool;
-  used: number;
-  limit: number;
-  reached: boolean;
-  warning: boolean;
-  override: "granted" | "used" | null;
 };
 
 export type TokenLimitStatus = {
   settings: TokenLimitSettings;
   periodStart: number;
   resetsAt: number;
-  pools: TokenLimitPoolStatus[];
-};
-
-export type TokenLimitUpdate = Partial<
-  Omit<TokenLimitSettings, "passwordProtected">
-> & {
-  password?: string;
-  /** Sets or changes the password; an empty string removes it. */
-  newPassword?: string;
+  used: number;
+  reached: boolean;
+  warning: boolean;
+  override: "granted" | "used" | null;
 };
 
 export const TOKEN_LIMIT_CHANGED_EVENT = "unsloth:token-limit-changed";
@@ -50,24 +28,14 @@ export const TOKEN_LIMIT_CHANGED_EVENT = "unsloth:token-limit-changed";
 async function requestTokenLimit(
   path: string,
   fallbackMessage: string,
-  method: "GET" | "PUT" | "POST" = "GET",
-  body?: object,
+  init?: RequestInit,
 ): Promise<TokenLimitStatus> {
-  const res = await authFetch(
-    `/api/token-limit${path}`,
-    method === "GET"
-      ? undefined
-      : {
-          method,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-  );
+  const res = await authFetch(`/api/token-limit${path}`, init);
   if (!res.ok) {
     throw new Error(await readFastApiError(res, fallbackMessage));
   }
   const status = (await res.json()) as TokenLimitStatus;
-  if (method !== "GET") {
+  if (init) {
     window.dispatchEvent(
       new CustomEvent(TOKEN_LIMIT_CHANGED_EVENT, { detail: status }),
     );
@@ -75,26 +43,25 @@ async function requestTokenLimit(
   return status;
 }
 
-export async function fetchTokenLimitStatus(
+export function fetchTokenLimitStatus(
   fallbackMessage: string,
 ): Promise<TokenLimitStatus> {
   return requestTokenLimit("/status", fallbackMessage);
 }
 
-export async function updateTokenLimit(
-  patch: TokenLimitUpdate,
+export function updateTokenLimit(
+  patch: Partial<TokenLimitSettings>,
   fallbackMessage: string,
 ): Promise<TokenLimitStatus> {
-  return requestTokenLimit("", fallbackMessage, "PUT", patch);
+  return requestTokenLimit("", fallbackMessage, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
 }
 
-export async function overrideTokenLimit(
-  pool: TokenLimitPool,
+export function overrideTokenLimit(
   fallbackMessage: string,
-  password?: string,
 ): Promise<TokenLimitStatus> {
-  return requestTokenLimit("/override", fallbackMessage, "POST", {
-    pool,
-    password,
-  });
+  return requestTokenLimit("/override", fallbackMessage, { method: "POST" });
 }

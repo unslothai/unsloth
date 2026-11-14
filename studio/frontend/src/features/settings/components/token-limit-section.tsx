@@ -13,9 +13,8 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   TOKEN_LIMIT_CHANGED_EVENT,
-  type TokenLimitPool,
+  type TokenLimitSettings,
   type TokenLimitStatus,
-  type TokenLimitUpdate,
   fetchTokenLimitStatus,
   updateTokenLimit,
 } from "@/features/profile";
@@ -25,26 +24,11 @@ import { useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-type Draft = {
-  period: TokenLimitStatus["settings"]["period"];
-  mode: TokenLimitStatus["settings"]["mode"];
-  method: TokenLimitStatus["settings"]["method"];
-  limit: string;
-  localLimit: string;
-  apiLimit: string;
-};
-
-function draftFrom(status: TokenLimitStatus): Draft {
-  const { settings } = status;
-  return {
-    period: settings.period,
-    mode: settings.mode,
-    method: settings.method,
-    limit: String(settings.limit),
-    localLimit: String(settings.localLimit),
-    apiLimit: String(settings.apiLimit),
-  };
-}
+const PERIODS = [
+  ["day", "settings.profile.tokenLimit.periodDay"],
+  ["week", "settings.profile.tokenLimit.periodWeek"],
+  ["month", "settings.profile.tokenLimit.periodMonth"],
+] as const;
 
 function parseCap(value: string): number | null {
   const cap = Number(value.replace(/[\s,._]/g, ""));
@@ -59,36 +43,34 @@ function browserTimezone(): string {
   }
 }
 
-const POOL_LABEL_KEYS = {
-  combined: "settings.profile.tokenLimit.poolCombined",
-  local: "settings.profile.tokenLimit.poolLocal",
-  api: "settings.profile.tokenLimit.poolApi",
-} as const satisfies Record<TokenLimitPool, string>;
-
 export function TokenLimitSection() {
   const t = useT();
   const [status, setStatus] = useState<TokenLimitStatus | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [password, setPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
+  const [period, setPeriod] = useState<TokenLimitSettings["period"]>("day");
+  const [limit, setLimit] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const load = (next: TokenLimitStatus) => {
+    setStatus(next);
+    setPeriod(next.settings.period);
+    setLimit(String(next.settings.limit));
+  };
 
   useEffect(() => {
     let cancelled = false;
     void fetchTokenLimitStatus(t("settings.profile.tokenLimit.loadError"))
       .then((loaded) => {
-        if (cancelled) return;
-        setStatus(loaded);
-        setDraft(draftFrom(loaded));
+        if (!cancelled) load(loaded);
       })
       .catch((loadError) => {
-        if (cancelled) return;
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : t("settings.profile.tokenLimit.loadError"),
-        );
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : t("settings.profile.tokenLimit.loadError"),
+          );
+        }
       });
     const onChanged = (event: Event) => {
       const next = (event as CustomEvent<TokenLimitStatus>).detail;
@@ -101,25 +83,27 @@ export function TokenLimitSection() {
     };
   }, [t]);
 
-  const locked = status?.settings.passwordProtected ?? false;
+  const cap = parseCap(limit);
+  const busy = !status || saving;
+  const enabled = status?.settings.enabled ?? false;
 
-  const save = async (patch: TokenLimitUpdate, message?: string) => {
+  // Every save carries the visible draft, or a cap typed before flipping the switch is dropped.
+  const save = async (patch: Partial<TokenLimitSettings> = {}) => {
     setSaving(true);
     setError(null);
     try {
-      const saved = await updateTokenLimit(
-        {
-          ...patch,
-          timezone: browserTimezone(),
-          ...(locked ? { password } : {}),
-        },
-        t("settings.profile.tokenLimit.saveError"),
+      load(
+        await updateTokenLimit(
+          {
+            period,
+            ...(cap === null ? {} : { limit: cap }),
+            timezone: browserTimezone(),
+            ...patch,
+          },
+          t("settings.profile.tokenLimit.saveError"),
+        ),
       );
-      setStatus(saved);
-      setDraft(draftFrom(saved));
-      setPassword("");
-      setNewPassword("");
-      toast.success(message ?? t("settings.profile.tokenLimit.saved"));
+      toast.success(t("settings.profile.tokenLimit.saved"));
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -129,96 +113,6 @@ export function TokenLimitSection() {
     } finally {
       setSaving(false);
     }
-  };
-
-  const caps = draft
-    ? {
-        limit: parseCap(draft.limit),
-        localLimit: parseCap(draft.localLimit),
-        apiLimit: parseCap(draft.apiLimit),
-      }
-    : null;
-  const capsValid =
-    caps !== null &&
-    (draft?.mode === "split"
-      ? caps.localLimit !== null && caps.apiLimit !== null
-      : caps.limit !== null);
-  const needsPassword = locked && password.length === 0;
-  const busy = !status || !draft || saving;
-
-  const draftPatch = (): TokenLimitUpdate | null =>
-    draft && caps && capsValid
-      ? {
-          period: draft.period,
-          mode: draft.mode,
-          method: draft.method,
-          ...(caps.limit !== null ? { limit: caps.limit } : {}),
-          ...(caps.localLimit !== null ? { localLimit: caps.localLimit } : {}),
-          ...(caps.apiLimit !== null ? { apiLimit: caps.apiLimit } : {}),
-          ...(newPassword ? { newPassword } : {}),
-        }
-      : null;
-  const enabled = status?.settings.enabled ?? false;
-
-  const saveDraft = () => {
-    const patch = draftPatch();
-    if (patch) void save(patch);
-  };
-
-  const capInput = (
-    key: "limit" | "localLimit" | "apiLimit",
-    label: string,
-  ) => (
-    <SettingsRow key={key} label={label}>
-      <Input
-        inputMode="numeric"
-        value={draft?.[key] ?? ""}
-        onChange={(event) =>
-          setDraft((current) =>
-            current ? { ...current, [key]: event.target.value } : current,
-          )
-        }
-        aria-label={label}
-        aria-invalid={draft ? caps?.[key] === null : undefined}
-        disabled={busy}
-        className="w-40"
-      />
-    </SettingsRow>
-  );
-
-  const selectInput = <K extends "period" | "mode" | "method">(
-    key: K,
-    options: readonly (readonly [Draft[K], string])[],
-    description?: string,
-  ) => {
-    const label = t(`settings.profile.tokenLimit.${key}`);
-    return (
-      <SettingsRow label={label} description={description}>
-        <Select
-          value={draft?.[key] ?? options[0][0]}
-          onValueChange={(value) =>
-            setDraft((current) =>
-              current ? { ...current, [key]: value } : current,
-            )
-          }
-          disabled={busy}
-        >
-          <SelectTrigger
-            aria-label={label}
-            className={`${key === "period" ? "w-40" : "w-56"} data-[size=default]:h-control`}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {options.map(([value, text]) => (
-              <SelectItem key={value} value={value}>
-                {text}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </SettingsRow>
-    );
   };
 
   const resetsAt = status
@@ -240,116 +134,73 @@ export function TokenLimitSection() {
         <Switch
           aria-label={t("settings.profile.tokenLimit.enable")}
           checked={enabled}
-          // The switch saves the visible draft too, or typed caps and passwords are silently dropped.
-          disabled={busy || needsPassword || (!enabled && !capsValid)}
-          onCheckedChange={(next) => void save({ ...(draftPatch() ?? {}), enabled: next })}
+          // Turning it off never needs a valid cap.
+          disabled={busy || (!enabled && cap === null)}
+          onCheckedChange={(next) => void save({ enabled: next })}
         />
       </SettingsRow>
-      {status?.pools.map((pool) => (
+      {status?.settings.enabled ? (
         <SettingsRow
-          key={pool.pool}
-          label={t(POOL_LABEL_KEYS[pool.pool])}
+          label={t("settings.profile.tokenLimit.poolCombined")}
           description={t("settings.profile.tokenLimit.resets", {
             time: resetsAt,
           })}
         >
           <span
             className={
-              pool.reached
+              status.reached
                 ? "text-sm font-medium text-destructive"
                 : "text-sm text-muted-foreground"
             }
           >
             {t("settings.profile.tokenLimit.usage", {
-              used: pool.used.toLocaleString(),
-              limit: pool.limit.toLocaleString(),
+              used: status.used.toLocaleString(),
+              limit: status.settings.limit.toLocaleString(),
             })}
           </span>
         </SettingsRow>
-      ))}
-      {selectInput("period", [
-        ["day", t("settings.profile.tokenLimit.periodDay")],
-        ["week", t("settings.profile.tokenLimit.periodWeek")],
-        ["month", t("settings.profile.tokenLimit.periodMonth")],
-      ])}
-      {selectInput(
-        "mode",
-        [
-          ["combined", t("settings.profile.tokenLimit.modeCombined")],
-          ["split", t("settings.profile.tokenLimit.modeSplit")],
-        ],
-        t("settings.profile.tokenLimit.modeDescription"),
-      )}
-      {selectInput(
-        "method",
-        [
-          ["total", t("settings.profile.tokenLimit.methodTotal")],
-          ["incremental", t("settings.profile.tokenLimit.methodIncremental")],
-        ],
-        t("settings.profile.tokenLimit.methodDescription"),
-      )}
-      {draft?.mode === "split"
-        ? [
-            capInput("localLimit", t("settings.profile.tokenLimit.localLimit")),
-            capInput("apiLimit", t("settings.profile.tokenLimit.apiLimit")),
-          ]
-        : capInput("limit", t("settings.profile.tokenLimit.limit"))}
-      <SettingsRow
-        label={t("settings.profile.tokenLimit.newPassword")}
-        description={t("settings.profile.tokenLimit.passwordDescription")}
-      >
+      ) : null}
+      <SettingsRow label={t("settings.profile.tokenLimit.period")}>
+        <Select
+          value={period}
+          onValueChange={(value) =>
+            setPeriod(value as TokenLimitSettings["period"])
+          }
+          disabled={busy}
+        >
+          <SelectTrigger
+            aria-label={t("settings.profile.tokenLimit.period")}
+            className="w-40 data-[size=default]:h-control"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {PERIODS.map(([value, key]) => (
+              <SelectItem key={value} value={value}>
+                {t(key)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </SettingsRow>
+      <SettingsRow label={t("settings.profile.tokenLimit.limit")}>
         <Input
-          type="password"
-          autoComplete="new-password"
-          value={newPassword}
-          onChange={(event) => setNewPassword(event.target.value)}
-          aria-label={t("settings.profile.tokenLimit.newPassword")}
+          inputMode="numeric"
+          value={limit}
+          onChange={(event) => setLimit(event.target.value)}
+          aria-label={t("settings.profile.tokenLimit.limit")}
+          aria-invalid={status ? cap === null : undefined}
           disabled={busy}
           className="w-40"
         />
       </SettingsRow>
-      {locked ? (
-        <SettingsRow
-          label={t("settings.general.password")}
-          description={t("settings.profile.tokenLimit.passwordRequired")}
-        >
-          <Input
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            aria-label={t("settings.general.password")}
-            disabled={busy}
-            className="w-40"
-          />
-        </SettingsRow>
-      ) : null}
       <div className="flex flex-wrap items-center justify-end gap-2 pb-3">
         {error ? (
           <p role="alert" className="mr-auto text-xs text-destructive">
             {error}
           </p>
         ) : null}
-        {locked ? (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy || needsPassword}
-            onClick={() =>
-              void save(
-                { newPassword: "" },
-                t("settings.profile.tokenLimit.passwordRemoved"),
-              )
-            }
-          >
-            {t("settings.profile.tokenLimit.removePassword")}
-          </Button>
-        ) : null}
-        <Button
-          size="sm"
-          disabled={busy || needsPassword || !capsValid}
-          onClick={saveDraft}
-        >
+        <Button size="sm" disabled={busy || cap === null} onClick={() => void save()}>
           {t("common.save")}
         </Button>
       </div>

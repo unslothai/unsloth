@@ -1088,7 +1088,7 @@ def _refund_override(refund) -> None:
     # After commit: restore_override writes app settings on its own connection.
     if refund:
         from core.inference.token_limit import restore_override
-        restore_override(*refund)
+        restore_override(refund)
 
 
 def reconcile_runs(

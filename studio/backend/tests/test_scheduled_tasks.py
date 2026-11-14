@@ -1079,16 +1079,12 @@ def test_scheduled_replies_respect_the_cap_and_one_override(monkeypatch, externa
     answer = generate(monkeypatch, FakeProducer(JSONResponse(response)), task)
     assert answer.content == "Done."
     scheduler_module.save_chat(task, {"id": "run-1"}, answer, now, now + 1)
-    token_limit.update_settings(
-        {"enabled": True, "mode": "split", "localLimit": 100, "apiLimit": 100},
-        password = None,
-        new_password = None,
-    )
-    assert token_limit.status()["pools"][1 if external else 0]["used"] == 100
+    token_limit.update_settings({"enabled": True, "limit": 100})
+    assert token_limit.status()["used"] == 100
     producer = FakeProducer(completion("Done."))
     for granted in (False, True, False):
         if granted:
-            token_limit.grant_override("api" if external else "local")
+            token_limit.grant_override()
             assert generate(monkeypatch, producer, task).content == "Done."
         else:
             producer.payload = None
@@ -1111,8 +1107,8 @@ def test_a_scheduled_run_refused_before_inference_keeps_its_override(monkeypatch
     response["usage"] = {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}
     answer = generate(monkeypatch, FakeProducer(JSONResponse(response)), task)
     scheduler_module.save_chat(task, {"id": "run-1"}, answer, now, now + 1)
-    token_limit.update_settings({"enabled": True, "limit": 100}, password = None, new_password = None)
-    token_limit.grant_override("combined")
+    token_limit.update_settings({"enabled": True, "limit": 100})
+    token_limit.grant_override()
     refused = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded"))
     with pytest.raises(RunFailed):
         generate(monkeypatch, refused, task)
@@ -1158,17 +1154,13 @@ def test_scheduled_usage_is_recorded_before_a_chat_is_saved(monkeypatch, externa
         assert failure.value.code == "empty"
     else:
         answer = generate(monkeypatch, produce, task)
-    token_limit.update_settings(
-        {"enabled": True, "mode": "split", "localLimit": 100, "apiLimit": 100},
-        password = None,
-        new_password = None,
-    )
-    assert token_limit.status()["pools"][1 if external else 0]["used"] == 100
+    token_limit.update_settings({"enabled": True, "limit": 100})
+    assert token_limit.status()["used"] == 100
     assert studio_db.list_chat_threads() == []
     if not empty:
         now = db.now_ms()
         scheduler_module.save_chat(task, {"id": "run-1"}, answer, now, now + 1)
-        assert token_limit.status()["pools"][1 if external else 0]["used"] == 100
+        assert token_limit.status()["used"] == 100
     with pytest.raises(RunFailed, match = "token limit"):
         generate(monkeypatch, FakeProducer(completion("Unexpected.")), task)
 

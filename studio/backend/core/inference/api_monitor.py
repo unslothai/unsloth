@@ -37,9 +37,7 @@ TerminalCallback = Callable[[ApiUsageReceipt], None]
 @dataclass(frozen = True, slots = True)
 class TemporaryUsage:
     thread: str
-    source: str
     message_id: Optional[str] = None
-    parent_id: Optional[str] = None
 
 
 _temporary_usage: ContextVar[Optional[TemporaryUsage]] = ContextVar("temporary_usage", default = None)
@@ -258,7 +256,6 @@ class ApiMonitorEntry:
     context_length: Optional[int] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
-    context_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
@@ -897,7 +894,6 @@ class ApiMonitor:
         completion_tokens: Optional[int] = None,
         total_tokens: Optional[int] = None,
         context_length: Optional[int] = None,
-        context_tokens: Optional[int] = None,
     ) -> None:
         if not entry_id:
             return
@@ -906,8 +902,6 @@ class ApiMonitor:
         completion_tokens = _token_count_or_none(completion_tokens)
         total_tokens = _token_count_or_none(total_tokens)
         context_length = _token_count_or_none(context_length)
-        if context_tokens is not None:
-            context_tokens = _token_count_or_none(context_tokens)
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
@@ -929,8 +923,6 @@ class ApiMonitor:
                 entry.total_tokens = (entry.prompt_tokens or 0) + (entry.completion_tokens or 0)
             if context_length is not None:
                 entry.context_length = context_length
-            if context_tokens is not None:
-                entry.context_tokens = context_tokens
             _advance_updated_at(entry)
 
     def finish(
@@ -1067,14 +1059,9 @@ class ApiMonitor:
                 kind = entry.kind,
                 via_api_key = entry.via_api_key,
                 temporary_thread = entry.temporary_usage.thread if entry.temporary_usage else None,
-                temporary_source = entry.temporary_usage.source if entry.temporary_usage else "local",
                 temporary_message_id = entry.temporary_usage.message_id
                 if entry.temporary_usage
                 else None,
-                temporary_parent_id = entry.temporary_usage.parent_id
-                if entry.temporary_usage
-                else None,
-                context_tokens = entry.context_tokens,
             ),
         )
 

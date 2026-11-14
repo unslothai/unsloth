@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import sqlite3
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -14,8 +18,10 @@ from fastapi.testclient import TestClient
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference import token_limit
 from routes import token_limit as token_limit_routes
+from storage import chat_generation_runs_db as runs
 from storage import studio_db
 from storage.api_usage_db import ApiUsageReceipt, record_api_usage
+from storage.token_usage_ledger import record_temporary_usage
 from utils.paths import studio_db_path
 
 
@@ -35,38 +41,48 @@ def _thread(thread_id: str, created_at: int) -> None:
     )
 
 
-def _reply(
-    message_id: str,
-    thread_id: str,
-    created_at: int,
+def _message(
+    message_id,
+    thread_id,
+    created_at,
+    metadata,
     *,
-    prompt: int,
-    completion: int,
-    provider: str = "local",
-    context: int | None = None,
-    parent: str | None = None,
-    continued_from: str | None = None,
-) -> None:
+    role = "assistant",
+    parent = None,
+):
     studio_db.upsert_chat_message(
         {
             "id": message_id,
             "threadId": thread_id,
-            "role": "assistant",
+            "role": role,
             "parentId": parent,
             "createdAt": created_at,
             "content": [{"type": "text", "text": "answer"}],
-            "metadata": {
-                "tokenUsageParentId": continued_from,
-                "contextUsage": {
-                    "promptTokens": prompt,
-                    "completionTokens": completion,
-                    "totalTokens": prompt + completion,
-                    "contextTokens": context,
-                },
-                "responseDetails": {"providerType": provider},
-            },
+            "metadata": metadata,
         }
     )
+
+
+def _usage(prompt: int, completion: int) -> dict:
+    return {
+        "contextUsage": {
+            "promptTokens": prompt,
+            "completionTokens": completion,
+            "totalTokens": prompt + completion,
+        }
+    }
+
+
+def _reply(
+    message_id,
+    thread_id,
+    created_at,
+    *,
+    prompt,
+    completion,
+    parent = None,
+) -> None:
+    _message(message_id, thread_id, created_at, _usage(prompt, completion), parent = parent)
 
 
 def _api_request(receipt_id: str, created_at: int, total: int) -> None:
@@ -86,13 +102,61 @@ def _api_request(receipt_id: str, created_at: int, total: int) -> None:
 
 
 def _enable(**settings) -> None:
-    token_limit.update_settings(
-        {"enabled": True, "timezone": "UTC", **settings}, password = None, new_password = None
+    token_limit.update_settings({"enabled": True, "timezone": "UTC", **settings})
+
+
+def _used() -> int:
+    return token_limit.status()["used"]
+
+
+def _refused() -> bool:
+    try:
+        token_limit.enforce()
+    except HTTPException as error:
+        assert error.status_code == 429
+        return True
+    return False
+
+
+def _spend_override() -> int:
+    """Reaches a 100 token cap, grants the override and spends it."""
+    now = _now_ms()
+    _thread("seed", now)
+    _reply("seed-reply", "seed", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override()
+    return token_limit.enforce()
+
+
+def _run(request_payload, *, start = True):
+    now = _now_ms()
+    _thread("t1", now)
+    _message("user", "t1", now, None, role = "user")
+    runs.create_run(
+        run_id = "run",
+        owner_subject = "owner",
+        thread_id = "t1",
+        user_message_id = "user",
+        assistant_message_id = "assistant",
+        request_payload = {"model": "local", "messages": [], **request_payload},
     )
+    token = runs.get_worker_token("run")
+    if start:
+        runs.mark_running("run", token)
+    return token
 
 
-def _pools() -> dict[str, dict]:
-    return {pool["pool"]: pool for pool in token_limit.status()["pools"]}
+def _receipt(prompt = 90, completion = 10):
+    # The chat route keys a temporary receipt by sha256(thread \0 message).
+    return SimpleNamespace(
+        id = "receipt",
+        temporary_message_id = hashlib.sha256(b"t1\0a1").hexdigest(),
+        temporary_thread = hashlib.sha256(b"t1").hexdigest(),
+        created_at = _now_ms(),
+        prompt_tokens = prompt,
+        completion_tokens = completion,
+        total_tokens = prompt + completion,
+    )
 
 
 def test_deleting_a_chat_does_not_give_its_tokens_back():
@@ -100,14 +164,9 @@ def test_deleting_a_chat_does_not_give_its_tokens_back():
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 900, completion = 100)
     _enable(limit = 1000)
-    assert _pools()["combined"]["used"] == 1000
-
     studio_db.delete_chat_threads(["t1"])
-
-    assert _pools()["combined"]["used"] == 1000
-    with pytest.raises(HTTPException) as refused:
-        token_limit.enforce(api = False)
-    assert refused.value.status_code == 429
+    assert _used() == 1000
+    assert _refused()
 
 
 def test_rewriting_a_reply_does_not_shrink_its_count():
@@ -116,7 +175,7 @@ def test_rewriting_a_reply_does_not_shrink_its_count():
     _reply("a1", "t1", now + 1, prompt = 400, completion = 100)
     _reply("a1", "t1", now + 1, prompt = 10, completion = 5)
     _enable(limit = 10_000)
-    assert _pools()["combined"]["used"] == 500
+    assert _used() == 500
 
 
 def test_a_reported_count_replaces_an_earlier_estimate():
@@ -124,22 +183,13 @@ def test_a_reported_count_replaces_an_earlier_estimate():
     _thread("t1", now)
     for metadata in (
         {"resumeTiming": {"tokenCount": 400}},
-        {"contextUsage": {"promptTokens": 50, "completionTokens": 300, "totalTokens": 350}},
+        _usage(50, 300),
         {"resumeTiming": {"tokenCount": 900}},
     ):
-        studio_db.upsert_chat_message(
-            {
-                "id": "a1",
-                "threadId": "t1",
-                "role": "assistant",
-                "createdAt": now + 1,
-                "content": [{"type": "text", "text": "answer"}],
-                "metadata": metadata,
-            }
-        )
+        _message("a1", "t1", now + 1, metadata)
     _enable(limit = 10_000)
     # The estimate gives way to the report; a later estimate cannot raise it again.
-    assert _pools()["combined"]["used"] == 350
+    assert _used() == 350
 
 
 def test_client_metadata_cannot_waive_an_existing_debit():
@@ -147,188 +197,122 @@ def test_client_metadata_cannot_waive_an_existing_debit():
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
     _enable(limit = 100)
-    assert _pools()["combined"]["reached"]
     message = studio_db.get_chat_message("t1", "a1")
     studio_db.upsert_chat_message(
         {**message, "metadata": {**(message.get("metadata") or {}), "tokenUsageCharged": True}}
     )
-    assert _pools()["combined"]["used"] == 100
+    assert _used() == 100
     assert "tokenUsageCharged" not in (studio_db.get_chat_message("t1", "a1").get("metadata") or {})
 
 
-def test_a_receipt_that_lands_after_the_save_merges_instead_of_charging_twice():
-    import hashlib
-    from types import SimpleNamespace
-
-    from storage.token_usage_ledger import record_temporary_usage
-
+@pytest.mark.parametrize("receipt_first", [True, False])
+def test_saving_a_temporary_chat_charges_its_reply_once(receipt_first):
+    if receipt_first:
+        record_temporary_usage(_receipt())
     now = _now_ms()
     _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "a1",
-            "threadId": "t1",
-            "role": "assistant",
-            "createdAt": now + 1,
-            "content": [{"type": "text", "text": "answer"}],
-            "metadata": {
-                "tokenUsageCharged": True,
-                "contextUsage": {"promptTokens": 90, "completionTokens": 10, "totalTokens": 100},
-            },
-        }
-    )
+    _message("a1", "t1", now + 1, {"tokenUsageCharged": True, **_usage(90, 10)})
+    if not receipt_first:
+        record_temporary_usage(_receipt())
     _enable(limit = 10_000)
-    assert _pools()["combined"]["used"] == 100
-    record_temporary_usage(
-        SimpleNamespace(
-            id = "receipt",
-            temporary_message_id = hashlib.sha256(b"t1\0a1").hexdigest(),
-            temporary_thread = hashlib.sha256(b"t1").hexdigest(),
-            created_at = now + 1,
-            temporary_source = "local",
-            prompt_tokens = 90,
-            completion_tokens = 10,
-            total_tokens = 100,
-            context_tokens = 100,
-            temporary_parent_id = None,
-        )
-    )
-    assert _pools()["combined"]["used"] == 100
-
-
-@pytest.mark.parametrize(
-    "status, generates, refunded",
-    [(400, False, True), (503, False, True), (502, True, False), (200, True, False)],
-)
-def test_the_override_is_refunded_exactly_when_nothing_was_generated(status, generates, refunded):
-    import asyncio
-
-    from core.inference.api_monitor import api_monitor
-
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
-    _enable(limit = 100)
-    token_limit.grant_override("combined")
-
-    async def app(scope, receive, send):
-        from routes.inference import _enforce_token_limit
-        from types import SimpleNamespace
-
-        await _enforce_token_limit(SimpleNamespace(state = SimpleNamespace()), external = False)
-        if generates:
-            entry = api_monitor.start(
-                endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "", subject = "o"
-            )
-            api_monitor.append_reply(entry, "partial answer")
-            api_monitor.finish(entry, "failed")
-        await send({"type": "http.response.start", "status": status, "headers": []})
-        await send({"type": "http.response.body", "body": b""})
-
-    async def ignore(message):
-        pass
-
-    asyncio.run(token_limit.OverrideRefundMiddleware(app)({"type": "http"}, None, ignore))
-    if refunded:
-        assert token_limit.enforce(api = False) is not None
-    else:
-        with pytest.raises(HTTPException):
-            token_limit.enforce(api = False)
+    assert _used() == 100
 
 
 @pytest.mark.parametrize(
     "metadata, used",
     [
+        # An estimated prompt counts only once output shows inference ran (not a refusal).
         ({"tokenUsageEstimatedPrompt": 10_000, "incomplete": {"reason": "interrupted"}}, 0),
         ({"tokenUsageEstimatedPrompt": 100, "tokenUsageEstimatedToolOutput": 2_500}, 2_600),
+        ({"resumeTiming": {"tokenCount": 10}, "tokenUsageEstimatedPrompt": 10_000}, 10_010),
+        # A reply saved only mid-stream is charged; a continued one minus what its source cost.
+        ({"resumeTiming": {"tokenCount": 150}, "tokenUsagePriorCount": 100}, 50),
+        ({"timing": {"tokenCount": 100}, "incomplete": {"reason": "interrupted"}}, 100),
     ],
 )
-def test_estimates_charge_a_prompt_only_once_output_shows_inference_ran(metadata, used):
+def test_saved_reply_estimates(metadata, used):
     now = _now_ms()
     _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "a1",
-            "threadId": "t1",
-            "role": "assistant",
-            "createdAt": now + 1,
-            "content": [],
-            "metadata": metadata,
-        }
-    )
+    _message("a1", "t1", now + 1, metadata)
     _enable(limit = 100_000)
-    assert _pools()["combined"]["used"] == used
+    assert _used() == used
 
 
-def test_an_interrupted_saved_reply_charges_its_estimated_prompt():
+def test_a_rejected_continuation_does_not_charge_the_reply_it_continues():
     now = _now_ms()
     _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "live",
-            "threadId": "t1",
-            "role": "assistant",
-            "createdAt": now + 1,
-            "content": [{"type": "text", "text": "half"}],
-            "metadata": {"resumeTiming": {"tokenCount": 10}, "tokenUsageEstimatedPrompt": 10_000},
-        }
+    _message("original", "t1", now + 1, {"timing": {"tokenCount": 100}})
+    _message(
+        "continued", "t1", now + 2, {"timing": {"tokenCount": 100}, "tokenUsagePriorCount": 100}
     )
-    _enable(limit = 100_000)
-    assert _pools()["combined"]["used"] == 10_010
+    _enable(limit = 1000)
+    assert _used() == 100
 
 
-def _durable_run(request_payload):
-    from storage import chat_generation_runs_db as runs
+async def _ignore(message):
+    pass
+
+
+@pytest.mark.parametrize(
+    "status, output, finish, in_band_failure, refunded",
+    [
+        (400, False, None, False, True),
+        (503, False, None, False, True),
+        (502, True, "failed", False, False),
+        (200, True, "failed", False, False),
+        # A 200 stream can still fail in band, or be cancelled, before generating anything.
+        (200, False, None, True, True),
+        (200, False, "cancelled", False, True),
+        (200, True, "cancelled", False, False),
+        (200, False, "completed", False, False),
+    ],
+)
+def test_the_override_is_refunded_exactly_when_nothing_was_generated(
+    status, output, finish, in_band_failure, refunded
+):
+    from core.inference.api_monitor import ApiMonitor
+    from core.inference.llama_keepwarm import mark_response_failed
+    from routes.inference import _enforce_token_limit
 
     now = _now_ms()
     _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "user",
-            "threadId": "t1",
-            "role": "user",
-            "createdAt": now,
-            "content": [{"type": "text", "text": "hi"}],
-        }
-    )
-    runs.create_run(
-        run_id = "run",
-        owner_subject = "owner",
-        thread_id = "t1",
-        user_message_id = "user",
-        assistant_message_id = "assistant",
-        request_payload = request_payload,
-    )
-    token = runs.get_worker_token("run")
-    runs.mark_running("run", token)
-    return runs, token
-
-
-def test_a_durable_run_refused_before_inference_refunds_its_override():
-    now = _now_ms()
-    _thread("seed", now)
-    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
+    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
     _enable(limit = 100)
-    token_limit.grant_override("combined")
-    spent = token_limit.enforce(api = False)
-    runs, token = _durable_run(
-        {"model": "local", "messages": [], "token_limit_override": list(spent)}
-    )
-    runs.finish_run("run", worker_token = token, status = "failed", error = "No model loaded")
-    # Nothing was generated, so the override is available again.
-    assert token_limit.enforce(api = False) is not None
+    token_limit.grant_override()
+    monitor = ApiMonitor()
+
+    async def app(scope, receive, send):
+        await _enforce_token_limit(SimpleNamespace(state = SimpleNamespace()))
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        if finish:
+            entry = monitor.start(
+                endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = ""
+            )
+            if output:
+                monitor.append_reply(entry, "partial answer")
+            monitor.finish(entry, finish)
+        if in_band_failure:
+            mark_response_failed(scope)
+        await send({"type": "http.response.body", "body": b""})
+
+    asyncio.run(token_limit.OverrideRefundMiddleware(app)({"type": "http"}, None, _ignore))
+    assert _refused() is not refunded
+
+
+# Refused before inference (e.g. no model loaded), or cancelled while still queued.
+@pytest.mark.parametrize("queued", [False, True])
+def test_a_durable_run_that_generated_nothing_refunds_its_override(queued):
+    token = _run({"token_limit_override": _spend_override()}, start = not queued)
+    if queued:
+        runs.request_cancel("run")
+    else:
+        runs.finish_run("run", worker_token = token, status = "failed", error = "No model loaded")
+    assert not _refused()
 
 
 def test_a_finalized_tool_call_is_charged_and_keeps_the_override_spent():
-    now = _now_ms()
-    _thread("seed", now)
-    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
-    _enable(limit = 100)
-    token_limit.grant_override("combined")
-    spent = token_limit.enforce(api = False)
-    runs, token = _durable_run(
-        {"model": "local", "messages": [], "token_limit_override": list(spent)}
-    )
+    spent = _spend_override()
+    token = _run({"token_limit_override": spent})
     runs.append_events(
         "run",
         token,
@@ -337,231 +321,221 @@ def test_a_finalized_tool_call_is_charged_and_keeps_the_override_spent():
             ("chunk", {"type": "tool_start", "tool_call_id": "r1", "arguments_text": "h" * 100}),
             (
                 "chunk",
-                {
-                    "type": "tool_start",
-                    "tool_call_id": "p1",
-                    "tool_name": "python",
-                    "arguments_text": "x" * 300,
-                    "awaiting_confirmation": True,
-                },
+                {"type": "tool_start", "tool_call_id": "p1", "arguments_text": "x" * 300},
             ),
         ],
     )
     assert runs.reconcile_orphaned_runs() == 1
     # 100 streamed + 300 finalized characters, the streamed call not counted twice.
-    assert _pools()["combined"]["used"] == 100 + 100
-    with pytest.raises(HTTPException):
-        token_limit.enforce(api = False)
+    assert _used() == 100 + 100
+    assert _refused()
 
 
-def test_native_tool_call_deltas_count_in_an_interrupted_run():
-    runs, token = _durable_run({"model": "local", "messages": []})
-    runs.append_events(
-        "run",
-        token,
-        [
-            (
-                "chunk",
-                {
-                    "choices": [
-                        {
-                            "delta": {
-                                "tool_calls": [
-                                    {"index": 0, "function": {"name": "", "arguments": "x" * 400}}
-                                ]
-                            }
-                        }
-                    ]
-                },
-            )
-        ],
-    )
+_PASS = {"type": "context_usage", "prompt_tokens": 900, "completion_tokens": 100}
+
+
+@pytest.mark.parametrize(
+    "messages, events, status, used",
+    [
+        # Reply, reasoning and generated tool arguments count; tool output does not.
+        (
+            [],
+            [
+                {"choices": [{"delta": {"content": "a" * 400}}]},
+                {"type": "tool_args", "tool_name": "render_html", "text": "h" * 400},
+                {"type": "tool_end", "tool_name": "render_html", "result": "x" * 9000},
+            ],
+            None,
+            200,
+        ),
+        (
+            [{"role": "user", "content": "x" * 400}],
+            [
+                {"choices": [{"delta": {"reasoning_content": "t" * 400}}]},
+                {"choices": [{"delta": {"content": "a" * 400}}]},
+            ],
+            "cancelled",
+            100 + 200,
+        ),
+        (
+            [],
+            [{"choices": [{"delta": {"tool_calls": [{"function": {"arguments": "x" * 400}}]}}]}],
+            "cancelled",
+            100,
+        ),
+        # A stop after a pass report adds only what streamed after it.
+        (
+            [],
+            [
+                {"choices": [{"delta": {"content": "b" * 40}}]},
+                {"type": "context_usage", "prompt_tokens": 100, "completion_tokens": 10},
+                {"choices": [{"delta": {"content": "a" * 4000}}]},
+            ],
+            "cancelled",
+            110 + 1000,
+        ),
+        # Interrupted tool passes: the last prompt plus every pass's completion.
+        (
+            [],
+            [{**_PASS, "prompt_tokens": 700, "completion_tokens": 50}, _PASS],
+            "cancelled",
+            900 + 50 + 100,
+        ),
+        (
+            [],
+            [
+                _PASS,
+                {"usage": {"prompt_tokens": 1100, "completion_tokens": 150, "total_tokens": 1250}},
+            ],
+            "completed",
+            1250,
+        ),
+    ],
+)
+def test_an_interrupted_run_settles_what_it_generated(messages, events, status, used):
+    token = _run({"messages": messages})
+    runs.append_events("run", token, [("chunk", event) for event in events])
+    if status:
+        runs.finish_run("run", worker_token = token, status = status)
+    else:
+        assert runs.reconcile_orphaned_runs() == 1
+    _enable(limit = 100_000)
+    assert _used() == used
+
+
+def test_a_settled_estimate_gives_way_to_reported_usage():
+    token = _run({"messages": [{"role": "user", "content": "x" * 400}]})
+    runs.append_events("run", token, [("chunk", {"choices": [{"delta": {"content": "a" * 400}}]})])
     runs.finish_run("run", worker_token = token, status = "cancelled")
     _enable(limit = 10_000)
-    assert _pools()["combined"]["used"] == 100
-
-
-def test_cancelling_a_queued_run_refunds_its_override():
-    now = _now_ms()
-    _thread("seed", now)
-    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
-    _enable(limit = 100)
-    token_limit.grant_override("combined")
-    spent = token_limit.enforce(api = False)
-    from storage import chat_generation_runs_db as runs
-
-    _thread("t1", now)
+    assert _used() == 200
+    message = studio_db.get_chat_message("t1", "assistant")
     studio_db.upsert_chat_message(
+        {**message, "metadata": {**message["metadata"], **_usage(90, 60)}}
+    )
+    assert _used() == 150
+
+
+@pytest.mark.parametrize("via_api_key", [False, True])
+def test_durable_usage_is_counted_once_before_a_browser_recovers_the_run(via_api_key):
+    token = _run(
         {
-            "id": "user",
-            "threadId": "t1",
-            "role": "user",
-            "createdAt": now,
-            "content": [{"type": "text", "text": "hi"}],
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "api_monitor_via_api_key": via_api_key,
         }
     )
-    runs.create_run(
-        run_id = "run",
-        owner_subject = "owner",
-        thread_id = "t1",
-        user_message_id = "user",
-        assistant_message_id = "assistant",
-        request_payload = {"model": "local", "messages": [], "token_limit_override": list(spent)},
-    )
-    runs.request_cancel("run")
-    assert token_limit.enforce(api = False) is not None
-
-
-def test_a_failed_200_stream_that_generated_nothing_refunds_the_override():
-    import asyncio
-
-    from core.inference.llama_keepwarm import mark_response_failed
-
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
+    usage = {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}
+    runs.append_events("run", token, [("chunk", {"usage": usage})])
+    runs.finish_run("run", worker_token = token, status = "completed")
+    if via_api_key:
+        # An API-key run is charged by its receipt, never again by its saved row.
+        _api_request("durable-receipt", _now_ms(), 100)
     _enable(limit = 100)
-    token_limit.grant_override("combined")
-
-    async def app(scope, receive, send):
-        from types import SimpleNamespace
-
-        from routes.inference import _enforce_token_limit
-
-        await _enforce_token_limit(SimpleNamespace(state = SimpleNamespace()), external = False)
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        mark_response_failed(scope)
-        await send({"type": "http.response.body", "body": b'data: {"error": "down"}'})
-
-    async def ignore(message):
-        pass
-
-    asyncio.run(token_limit.OverrideRefundMiddleware(app)({"type": "http"}, None, ignore))
-    assert token_limit.enforce(api = False) is not None
+    message = studio_db.get_chat_message("t1", "assistant")
+    message["metadata"] = {**(message["metadata"] or {}), **_usage(90, 10)}
+    studio_db.upsert_chat_message(message)
+    message["metadata"] = _usage(90, 10)
+    message["content"] = [{"type": "text", "text": "edited"}]
+    studio_db.upsert_chat_message(message, allow_generation_edit = True)
+    assert _used() == 100
+    assert _refused()
 
 
-@pytest.mark.parametrize("output", [False, True])
-def test_a_cancelled_200_stream_refunds_only_when_nothing_was_generated(output):
-    import asyncio
-
-    from core.inference.api_monitor import ApiMonitor
-
+@pytest.mark.parametrize("clock_offset", [-10, 1, 10])
+def test_a_fork_does_not_count_the_history_it_copies(clock_offset):
     now = _now_ms()
     _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
-    _enable(limit = 100)
-    token_limit.grant_override("combined")
-    monitor = ApiMonitor()
-
-    async def app(scope, receive, send):
-        from types import SimpleNamespace
-
-        from routes.inference import _enforce_token_limit
-
-        await _enforce_token_limit(SimpleNamespace(state = SimpleNamespace()), external = True)
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        entry = monitor.start(
-            endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi"
-        )
-        if output:
-            monitor.append_reply(entry, "partial")
-        monitor.finish(entry, "cancelled")
-
-    async def ignore(message):
-        pass
-
-    asyncio.run(token_limit.OverrideRefundMiddleware(app)({"type": "http"}, None, ignore))
-    if output:
-        with pytest.raises(HTTPException):
-            token_limit.enforce(api = False)
-    else:
-        assert token_limit.enforce(api = False) is not None
-
-
-def test_a_reconciled_run_settles_its_output():
-    from storage import chat_generation_runs_db as runs
-
-    now = _now_ms()
-    _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "user",
-            "threadId": "t1",
-            "role": "user",
-            "createdAt": now,
-            "content": [{"type": "text", "text": "hi"}],
-        }
+    _reply("a1", "t1", now + 1, prompt = 400, completion = 100)
+    forked = studio_db.fork_chat_thread(
+        "t1", "a1", "fork", now + clock_offset, id_factory = iter(["copy"]).__next__
     )
-    runs.create_run(
-        run_id = "run",
-        owner_subject = "owner",
-        thread_id = "t1",
-        user_message_id = "user",
-        assistant_message_id = "assistant",
-        request_payload = {"model": "local", "messages": []},
-    )
-    token = runs.get_worker_token("run")
-    runs.mark_running("run", token)
-    runs.append_events(
-        "run",
-        token,
-        [
-            ("chunk", {"choices": [{"delta": {"content": "a" * 400}}]}),
-            ("chunk", {"type": "tool_args", "tool_name": "render_html", "text": "h" * 300}),
-            ("chunk", {"type": "tool_args", "tool_name": "render_html", "text": "h" * 100}),
-            ("chunk", {"type": "tool_end", "tool_name": "render_html", "result": "x" * 9000}),
-        ],
-    )
-    assert runs.reconcile_orphaned_runs() == 1
+    assert forked is not None
+    _reply("a2", "fork", now + 20, prompt = 600, completion = 50)
     _enable(limit = 10_000)
-    # 400 reply characters and 400 argument characters; tool output is not generated text.
-    assert _pools()["combined"]["used"] == 200
+    assert _used() == 500 + 650
 
 
-def test_saving_a_temporary_chat_does_not_charge_its_reply_again():
-    import hashlib
-    from types import SimpleNamespace
-
-    from storage.token_usage_ledger import record_temporary_usage
-
+@pytest.mark.parametrize("old_layout", [False, True])
+def test_history_from_before_the_limiter_existed_is_backfilled(old_layout):
     now = _now_ms()
-    record_temporary_usage(
-        SimpleNamespace(
-            id = "receipt",
-            # The chat route keys a temporary receipt by sha256(thread \0 message).
-            temporary_message_id = hashlib.sha256(b"t1\0a1").hexdigest(),
-            temporary_thread = hashlib.sha256(b"t1").hexdigest(),
-            created_at = now + 1,
-            temporary_source = "local",
-            prompt_tokens = 90,
-            completion_tokens = 10,
-            total_tokens = 100,
-            context_tokens = 100,
-            temporary_parent_id = None,
-        )
-    )
     _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "a1",
-            "threadId": "t1",
-            "role": "assistant",
-            "createdAt": now + 1,
-            "content": [{"type": "text", "text": "answer"}],
-            "metadata": {
-                "tokenUsageCharged": True,
-                "contextUsage": {"promptTokens": 90, "completionTokens": 10, "totalTokens": 100},
-            },
-        }
-    )
-    for method in ("total", "incremental"):
-        _enable(limit = 10_000, method = method)
-        assert _pools()["combined"]["used"] == 100
+    _reply("a1", "t1", now + 1, prompt = 70, completion = 30)
+    with sqlite3.connect(studio_db_path()) as conn:
+        conn.execute("DROP TABLE token_usage_ledger")
+        if old_layout:
+            conn.execute("""CREATE TABLE token_usage_ledger (
+                message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+                source TEXT NOT NULL, prompt_tokens INTEGER NOT NULL,
+                completion_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL
+            ) WITHOUT ROWID""")
+    studio_db._schema_ready.clear()
+    _enable(limit = 10_000)
+    assert _used() == 100
+
+
+def test_malformed_metadata_never_blocks_the_chat_write():
+    now = _now_ms()
+    _thread("t1", now)
+    _reply("a1", "t1", now + 1, prompt = 70, completion = 30)
+    with sqlite3.connect(studio_db_path()) as conn:
+        conn.execute("UPDATE chat_messages SET metadata_json = '{broken' WHERE id = 'a1'")
+    _enable(limit = 10_000)
+    assert _used() == 100
+
+
+def test_usage_before_the_period_does_not_count():
+    start, _end = token_limit.period_window("day", "UTC")
+    _thread("t1", start - 10_000)
+    _reply("yesterday", "t1", start - 5_000, prompt = 5000, completion = 0)
+    _reply("today", "t1", start + 1, prompt = 100, completion = 50)
+    _api_request("old", start - 1, 900)
+    _api_request("new", start + 2, 300)
+    _enable(limit = 1000)
+    assert _used() == 150 + 300
+
+
+def test_periods_start_at_local_midnight_monday_and_the_first():
+    now = int(datetime(2026, 11, 4, 5, 0, tzinfo = timezone.utc).timestamp() * 1000)
+    tz = "Asia/Kolkata"
+    zone = token_limit._zone(tz)
+    for period, start, end in (
+        ("day", "2026-11-04 00:00", "2026-11-05 00:00"),
+        ("week", "2026-11-02 00:00", "2026-11-09 00:00"),
+        ("month", "2026-11-01 00:00", "2026-12-01 00:00"),
+    ):
+        window = token_limit.period_window(period, tz, now)
+        assert [
+            datetime.fromtimestamp(edge / 1000, zone).strftime("%Y-%m-%d %H:%M") for edge in window
+        ] == [start, end]
+    december = int(datetime(2026, 12, 20, tzinfo = timezone.utc).timestamp() * 1000)
+    _start, end = token_limit.period_window("month", "UTC", december)
+    assert end == int(datetime(2027, 1, 1, tzinfo = timezone.utc).timestamp() * 1000)
+    for hour in (4, 5, 6):
+        repeated_hour = int(datetime(2026, 11, 1, hour, 30, tzinfo = timezone.utc).timestamp() * 1000)
+        start, _end = token_limit.period_window("day", "America/Havana", repeated_hour)
+        assert start == int(datetime(2026, 11, 1, 4, tzinfo = timezone.utc).timestamp() * 1000)
+
+
+def test_the_override_lets_exactly_one_request_through_per_period():
+    _enable(limit = 1000)
+    with pytest.raises(HTTPException) as below:
+        token_limit.grant_override()
+    assert below.value.status_code == 409
+    now = _now_ms()
+    _thread("t1", now)
+    _reply("a1", "t1", now + 1, prompt = 990, completion = 10)
+    assert _refused()
+    assert token_limit.grant_override()["override"] == "granted"
+    assert not _refused()
+    assert token_limit.status()["override"] == "used"
+    assert _refused()
+    with pytest.raises(HTTPException) as again:
+        token_limit.grant_override()
+    assert again.value.status_code == 409
 
 
 def test_settings_reads_stay_fresh_across_keeper_lifetimes():
-    import json
-
     studio_db.upsert_app_settings({"token_limit": {"limit": 100}})
     assert token_limit.load_settings()["limit"] == 100
     assert studio_db.open_wal_keeper()
@@ -578,518 +552,6 @@ def test_settings_reads_stay_fresh_across_keeper_lifetimes():
     assert token_limit.load_settings()["limit"] == 200
 
 
-@pytest.mark.parametrize("clock_offset", [-10, 1, 10])
-def test_a_fork_does_not_count_the_history_it_copies(clock_offset):
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 400, completion = 100)
-    forked = studio_db.fork_chat_thread(
-        "t1", "a1", "fork", now + clock_offset, id_factory = iter(["copy"]).__next__
-    )
-    assert forked is not None
-    _reply("a2", "fork", now + 20, prompt = 600, completion = 50)
-    _enable(limit = 10_000)
-    assert _pools()["combined"]["used"] == 500 + 650
-    _enable(method = "incremental")
-    assert _pools()["combined"]["used"] == 500 + 100 + 50
-
-
-@pytest.mark.parametrize("existing_ledger", [False, True])
-def test_history_from_before_the_limiter_existed_is_backfilled(existing_ledger):
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 70, completion = 30)
-    conn = sqlite3.connect(studio_db_path())
-    try:
-        conn.execute("DROP TABLE token_usage_ledger")
-        if existing_ledger:
-            conn.execute("""CREATE TABLE token_usage_ledger (
-                message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, created_at INTEGER NOT NULL,
-                source TEXT NOT NULL, prompt_tokens INTEGER NOT NULL,
-                completion_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL
-            ) WITHOUT ROWID""")
-        conn.commit()
-    finally:
-        conn.close()
-    studio_db._schema_ready.clear()
-    _enable(limit = 10_000)
-    assert _pools()["combined"]["used"] == 100
-
-
-def test_malformed_metadata_never_blocks_the_chat_write():
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 70, completion = 30)
-    conn = sqlite3.connect(studio_db_path())
-    try:
-        conn.execute("UPDATE chat_messages SET metadata_json = '{broken' WHERE id = 'a1'")
-        conn.commit()
-    finally:
-        conn.close()
-    _enable(limit = 10_000)
-    assert _pools()["combined"]["used"] == 100
-
-
-@pytest.mark.parametrize(
-    "prompt,completion,context,next_prompt,next_completion,expected",
-    [
-        (100, 50, None, 170, 30, 200),
-        (250, 20, 160, 180, 5, 295),
-    ],
-)
-def test_incremental_counting_skips_history_the_previous_reply_saw(
-    prompt, completion, context, next_prompt, next_completion, expected
-):
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = prompt, completion = completion, context = context)
-    _reply("a2", "t1", now + 2, prompt = next_prompt, completion = next_completion)
-    _enable(limit = 10_000, method = "total")
-    assert _pools()["combined"]["used"] == prompt + completion + next_prompt + next_completion
-    _enable(limit = 10_000, method = "incremental")
-    assert _pools()["combined"]["used"] == expected
-
-
-def test_incremental_counting_uses_the_reply_ancestor_after_switching_branches():
-    now = _now_ms()
-    _thread("t1", now)
-    for index, parent, prompt, completion, context in (
-        (1, None, 100, 20, 120),
-        (2, "a1", 1000, 20, 1020),
-        (3, "a1", 150, 5, 155),
-    ):
-        studio_db.upsert_chat_message(
-            {
-                "id": f"u{index}",
-                "threadId": "t1",
-                "role": "user",
-                "parentId": parent,
-                "createdAt": now + index * 2,
-                "content": [{"type": "text", "text": "question"}],
-            }
-        )
-        _reply(
-            f"a{index}",
-            "t1",
-            now + index * 2 + 1,
-            prompt = prompt,
-            completion = completion,
-            context = context,
-            parent = f"u{index}",
-        )
-    _enable(limit = 10_000, method = "incremental")
-    assert _pools()["combined"]["used"] == 120 + 900 + 35
-    for index, source, prompt in ((4, "a3", 155), (5, "a4", 205)):
-        _reply(
-            f"a{index}",
-            "t1",
-            now + index * 2 + 1,
-            prompt = prompt,
-            completion = 50,
-            parent = "u3",
-            continued_from = source,
-        )
-        assert _pools()["combined"]["used"] == 120 + 900 + 35 + 50 * (index - 3)
-    _enable(method = "total")
-    assert _pools()["combined"]["used"] == 1755
-
-
-def test_context_refresh_cannot_refund_a_later_reply():
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 100, completion = 10, context = 20)
-    _reply("a2", "t1", now + 2, prompt = 120, completion = 10)
-    _enable(limit = 1000, method = "incremental")
-    assert _pools()["combined"]["used"] == 220
-    _reply("a1", "t1", now + 1, prompt = 100, completion = 10, context = 110)
-    assert _pools()["combined"]["used"] == 220
-
-
-def test_split_mode_keeps_local_chats_apart_from_api_and_providers():
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("local", "t1", now + 1, prompt = 90, completion = 10)
-    _thread("t2", now)
-    _reply("cloud", "t2", now + 2, prompt = 190, completion = 10, provider = "openai")
-    _api_request("receipt", now + 3, 300)
-    _enable(mode = "split", localLimit = 1000, apiLimit = 400)
-    pools = _pools()
-    assert pools["local"]["used"] == 100 and not pools["local"]["reached"]
-    assert pools["api"]["used"] == 500 and pools["api"]["reached"]
-
-    token_limit.enforce(api = False)
-    with pytest.raises(HTTPException) as refused:
-        token_limit.enforce(api = True)
-    assert refused.value.headers["X-Unsloth-Token-Limit"] == "api"
-
-    _enable(mode = "combined", limit = 600)
-    with pytest.raises(HTTPException):
-        token_limit.enforce(api = False)
-
-
-def test_a_failed_provider_reply_is_charged_to_the_api_pool():
-    now = _now_ms()
-    _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "partial",
-            "threadId": "t1",
-            "role": "assistant",
-            "createdAt": now + 1,
-            "content": [{"type": "text", "text": "half an answer"}],
-            "metadata": {
-                "timing": {"tokenCount": 100},
-                "tokenUsageProvider": "openai",
-                "incomplete": {"reason": "interrupted"},
-            },
-        }
-    )
-    _enable(mode = "split", localLimit = 1000, apiLimit = 1000)
-    pools = _pools()
-    assert pools["local"]["used"] == 0
-    assert pools["api"]["used"] == 100
-
-
-@pytest.mark.parametrize("method", ["total", "incremental"])
-def test_a_rejected_continuation_does_not_charge_the_reply_it_continues(method):
-    now = _now_ms()
-    _thread("t1", now)
-    for message_id, created_at, timing, extra in (
-        ("original", now + 1, {"tokenCount": 100}, {}),
-        (
-            "continued",
-            now + 2,
-            {"tokenCount": 100},
-            {"tokenUsageParentId": "original", "tokenUsagePriorCount": 100},
-        ),
-    ):
-        studio_db.upsert_chat_message(
-            {
-                "id": message_id,
-                "threadId": "t1",
-                "role": "assistant",
-                "createdAt": created_at,
-                "content": [{"type": "text", "text": "answer"}],
-                "metadata": {"timing": timing, **extra},
-            }
-        )
-    _enable(limit = 1000, method = method)
-    assert _pools()["combined"]["used"] == 100
-
-
-@pytest.mark.parametrize(
-    "metadata, local, api",
-    [
-        ({"resumeTiming": {"tokenCount": 100}, "tokenUsageProvider": "openai"}, 0, 100),
-        ({"resumeTiming": {"tokenCount": 150}, "tokenUsagePriorCount": 100}, 50, 0),
-    ],
-)
-def test_a_reply_saved_only_mid_stream_is_still_charged(metadata, local, api):
-    now = _now_ms()
-    _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "live",
-            "threadId": "t1",
-            "role": "assistant",
-            "createdAt": now + 1,
-            "content": [{"type": "text", "text": "half"}],
-            "metadata": metadata,
-        }
-    )
-    _enable(mode = "split", localLimit = 1000, apiLimit = 1000)
-    pools = _pools()
-    assert (pools["local"]["used"], pools["api"]["used"]) == (local, api)
-
-
-def test_usage_before_the_period_does_not_count():
-    start, end = token_limit.period_window("day", "UTC")
-    _thread("t1", start - 10_000)
-    _reply("yesterday", "t1", start - 5_000, prompt = 5000, completion = 0)
-    _reply("today", "t1", start + 1, prompt = 5100, completion = 50)
-    _enable(limit = 1000, method = "incremental")
-    assert _pools()["combined"]["used"] == 150
-
-
-def test_periods_start_at_local_midnight_monday_and_the_first():
-    now = int(datetime(2026, 11, 4, 5, 0, tzinfo = timezone.utc).timestamp() * 1000)
-    tz = "Asia/Kolkata"
-    for period, start, end in (
-        ("day", "2026-11-04 00:00", "2026-11-05 00:00"),
-        ("week", "2026-11-02 00:00", "2026-11-09 00:00"),
-        ("month", "2026-11-01 00:00", "2026-12-01 00:00"),
-    ):
-        window = token_limit.period_window(period, tz, now)
-        zone = token_limit._zone(tz)
-        assert [
-            datetime.fromtimestamp(edge / 1000, zone).strftime("%Y-%m-%d %H:%M") for edge in window
-        ] == [start, end]
-    december = int(datetime(2026, 12, 20, tzinfo = timezone.utc).timestamp() * 1000)
-    _start, end = token_limit.period_window("month", "UTC", december)
-    assert end == int(datetime(2027, 1, 1, tzinfo = timezone.utc).timestamp() * 1000)
-    for hour in (4, 5, 6):
-        repeated_hour = int(datetime(2026, 11, 1, hour, 30, tzinfo = timezone.utc).timestamp() * 1000)
-        start, _end = token_limit.period_window("day", "America/Havana", repeated_hour)
-        assert start == int(datetime(2026, 11, 1, 4, tzinfo = timezone.utc).timestamp() * 1000)
-
-
-def test_the_override_lets_exactly_one_request_through_per_period():
-    now = _now_ms()
-    _thread("t1", now)
-    _reply("a1", "t1", now + 1, prompt = 990, completion = 10)
-    _enable(limit = 1000)
-    with pytest.raises(HTTPException):
-        token_limit.enforce(api = False)
-
-    granted = token_limit.grant_override("combined")
-    assert granted["pools"][0]["override"] == "granted"
-    token_limit.enforce(api = False)
-    assert _pools()["combined"]["override"] == "used"
-    with pytest.raises(HTTPException):
-        token_limit.enforce(api = False)
-    with pytest.raises(HTTPException) as again:
-        token_limit.grant_override("combined")
-    assert again.value.status_code == 409
-
-
-def test_no_override_is_granted_below_the_cap():
-    _enable(limit = 1000)
-    with pytest.raises(HTTPException) as refused:
-        token_limit.grant_override("combined")
-    assert refused.value.status_code == 409
-
-
-@pytest.mark.parametrize("final_usage", [False, True])
-def test_an_interrupted_tool_run_still_debits_its_finished_pass(final_usage):
-    from storage import chat_generation_runs_db as runs
-
-    now = _now_ms()
-    _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "user",
-            "threadId": "t1",
-            "role": "user",
-            "createdAt": now,
-            "content": [{"type": "text", "text": "hi"}],
-        }
-    )
-    runs.create_run(
-        run_id = "run",
-        owner_subject = "owner",
-        thread_id = "t1",
-        user_message_id = "user",
-        assistant_message_id = "assistant",
-        request_payload = {"model": "local", "messages": [], "stream": True},
-    )
-    token = runs.get_worker_token("run")
-    runs.mark_running("run", token)
-    pass_end = {
-        "type": "context_usage",
-        "prompt_tokens": 900,
-        "completion_tokens": 100,
-        "context_tokens": 1000,
-        "cached_tokens": 0,
-    }
-    events = [
-        (
-            "chunk",
-            {**pass_end, "prompt_tokens": 700, "completion_tokens": 50, "context_tokens": 750},
-        ),
-        ("chunk", pass_end),
-    ]
-    if final_usage:
-        events.append(
-            (
-                "chunk",
-                {"usage": {"prompt_tokens": 1100, "completion_tokens": 150, "total_tokens": 1250}},
-            )
-        )
-    runs.append_events("run", token, events)
-    runs.finish_run("run", worker_token = token, status = "completed" if final_usage else "cancelled")
-    _enable(limit = 100)
-    # Interrupted: the last prompt plus both passes' completions, as the final frame would report.
-    assert _pools()["combined"]["used"] == (1250 if final_usage else 900 + 50 + 100)
-
-
-def test_a_run_stopped_after_a_tool_pass_adds_only_the_later_output():
-    from storage import chat_generation_runs_db as runs
-
-    now = _now_ms()
-    _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "user",
-            "threadId": "t1",
-            "role": "user",
-            "createdAt": now,
-            "content": [{"type": "text", "text": "hi"}],
-        }
-    )
-    runs.create_run(
-        run_id = "run",
-        owner_subject = "owner",
-        thread_id = "t1",
-        user_message_id = "user",
-        assistant_message_id = "assistant",
-        request_payload = {"model": "local", "messages": []},
-    )
-    token = runs.get_worker_token("run")
-    runs.mark_running("run", token)
-    runs.append_events(
-        "run",
-        token,
-        [
-            ("chunk", {"choices": [{"delta": {"content": "b" * 40}}]}),
-            ("chunk", {"type": "context_usage", "prompt_tokens": 100, "completion_tokens": 10}),
-            ("chunk", {"choices": [{"delta": {"content": "a" * 4000}}]}),
-        ],
-    )
-    runs.finish_run("run", worker_token = token, status = "cancelled")
-    _enable(limit = 10_000)
-    assert _pools()["combined"]["used"] == 110 + 1000
-
-
-def test_a_run_stopped_before_any_usage_frame_settles_an_estimate():
-    from storage import chat_generation_runs_db as runs
-
-    now = _now_ms()
-    _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "user",
-            "threadId": "t1",
-            "role": "user",
-            "createdAt": now,
-            "content": [{"type": "text", "text": "hi"}],
-        }
-    )
-    runs.create_run(
-        run_id = "run",
-        owner_subject = "owner",
-        thread_id = "t1",
-        user_message_id = "user",
-        assistant_message_id = "assistant",
-        request_payload = {"model": "local", "messages": [{"role": "user", "content": "x" * 400}]},
-    )
-    token = runs.get_worker_token("run")
-    runs.mark_running("run", token)
-    runs.append_events(
-        "run",
-        token,
-        [
-            ("chunk", {"choices": [{"delta": {"reasoning_content": "t" * 400}}]}),
-            ("chunk", {"choices": [{"delta": {"content": "a" * 400}}]}),
-        ],
-    )
-    runs.finish_run("run", worker_token = token, status = "cancelled")
-    _enable(limit = 10_000)
-    assert _pools()["combined"]["used"] == 100 + 200
-    message = studio_db.get_chat_message("t1", "assistant")
-    metadata = dict(message.get("metadata") or {})
-    metadata["contextUsage"] = {"promptTokens": 90, "completionTokens": 60, "totalTokens": 150}
-    studio_db.upsert_chat_message({**message, "metadata": metadata})
-    # The reported usage replaces the estimate.
-    assert _pools()["combined"]["used"] == 150
-
-
-@pytest.mark.parametrize("via_api_key", [False, True])
-def test_durable_usage_is_counted_before_a_browser_recovers_the_run(via_api_key):
-    from storage import chat_generation_runs_db as runs
-
-    now = _now_ms()
-    _thread("t1", now)
-    studio_db.upsert_chat_message(
-        {
-            "id": "user",
-            "threadId": "t1",
-            "role": "user",
-            "createdAt": now,
-            "content": [{"type": "text", "text": "hi"}],
-        }
-    )
-    runs.create_run(
-        run_id = "run",
-        owner_subject = "owner",
-        thread_id = "t1",
-        user_message_id = "user",
-        assistant_message_id = "assistant",
-        request_payload = {
-            "model": "local",
-            "messages": [{"role": "user", "content": "hi"}],
-            "stream": True,
-            "api_monitor_via_api_key": via_api_key,
-        },
-    )
-    token = runs.get_worker_token("run")
-    runs.mark_running("run", token)
-    runs.append_events(
-        "run",
-        token,
-        [
-            (
-                "chunk",
-                {
-                    "usage": {
-                        "prompt_tokens": 90,
-                        "completion_tokens": 10,
-                        "total_tokens": 100,
-                    }
-                },
-            )
-        ],
-    )
-    runs.finish_run("run", worker_token = token, status = "completed")
-    if via_api_key:
-        _api_request("durable-receipt", now, 100)
-    _enable(limit = 100, method = "incremental")
-    assert _pools()["combined"]["used"] == 100
-    expected = 100
-    if not via_api_key:
-        studio_db.fork_chat_thread(
-            "t1",
-            "assistant",
-            "fork",
-            now + 10,
-            id_factory = iter(["copy-user", "copy-assistant"]).__next__,
-        )
-        studio_db.upsert_chat_message(
-            {
-                "id": "fork-user",
-                "threadId": "fork",
-                "role": "user",
-                "parentId": "copy-assistant",
-                "createdAt": now + 30,
-                "content": [{"type": "text", "text": "next"}],
-            }
-        )
-        _reply("fork-reply", "fork", now + 31, prompt = 120, completion = 10, parent = "fork-user")
-        expected = 130
-        assert _pools()["combined"]["used"] == expected
-    message = studio_db.get_chat_message("t1", "assistant")
-    message["metadata"] = {
-        **(message["metadata"] or {}),
-        "contextUsage": {
-            "promptTokens": 90,
-            "completionTokens": 10,
-            "totalTokens": 100,
-        },
-    }
-    studio_db.upsert_chat_message(message)
-    assert _pools()["combined"]["used"] == expected
-    with pytest.raises(HTTPException):
-        token_limit.enforce(api = False)
-
-    message["metadata"] = {"contextUsage": message["metadata"]["contextUsage"]}
-    message["content"] = [{"type": "text", "text": "edited"}]
-    studio_db.upsert_chat_message(message, allow_generation_edit = True)
-    assert _pools()["combined"]["used"] == expected
-    if via_api_key:
-        _enable(mode = "split", localLimit = 100, apiLimit = 100)
-        assert _pools()["local"]["used"] == 0
-        assert _pools()["api"]["used"] == 100
-
-
 def test_disabled_monitor_cannot_silently_leave_an_allowance_unenforced(monkeypatch):
     from core.inference import api_monitor
 
@@ -1099,64 +561,12 @@ def test_disabled_monitor_cannot_silently_leave_an_allowance_unenforced(monkeypa
     assert error.value.status_code == 409
     assert token_limit.load_settings()["enabled"] is False
     studio_db.upsert_app_settings({"token_limit": {"enabled": True}})
-    for action in (
-        lambda: token_limit.enforce(api = True),
-        lambda: token_limit.grant_override("combined"),
-    ):
+    for action in (token_limit.enforce, token_limit.grant_override):
         with pytest.raises(HTTPException) as error:
             action()
         assert error.value.status_code == 409
-    token_limit.update_settings({"enabled": False}, password = None, new_password = None)
-    token_limit.enforce(api = True)
-
-
-def test_a_password_locks_every_change_until_it_is_given():
-    token_limit.update_settings(
-        {"enabled": True, "limit": 1000}, password = None, new_password = "guardian"
-    )
-    status = token_limit.status()
-    assert status["settings"]["passwordProtected"] is True
-    assert "passwordHash" not in status["settings"]
-
-    for password in (None, "wrong"):
-        with pytest.raises(token_limit.TokenLimitPasswordError):
-            token_limit.update_settings({"enabled": False}, password = password, new_password = None)
-    assert token_limit.load_settings()["enabled"] is True
-
-    token_limit.update_settings({"enabled": False}, password = "guardian", new_password = "")
-    settings = token_limit.load_settings()
-    assert settings["enabled"] is False and settings["passwordHash"] is None
-
-
-def test_a_concurrent_save_cannot_remove_a_new_password(monkeypatch):
-    from concurrent.futures import ThreadPoolExecutor
-    import threading
-
-    loaded = threading.Event()
-    protected = threading.Event()
-    original = token_limit.load_settings
-
-    def snapshot():
-        value = original()
-        if threading.current_thread().name.endswith("_0") and not loaded.is_set():
-            loaded.set()
-            protected.wait(timeout = 1)
-        return value
-
-    def protect():
-        assert loaded.wait(timeout = 5)
-        token_limit.update_settings({}, password = None, new_password = "guardian")
-        protected.set()
-
-    monkeypatch.setattr(token_limit, "load_settings", snapshot)
-    with ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "save") as pool:
-        first = pool.submit(
-            token_limit.update_settings, {"limit": 100}, password = None, new_password = None
-        )
-        second = pool.submit(protect)
-        first.result(timeout = 5)
-        second.result(timeout = 5)
-    assert token_limit.status()["settings"]["passwordProtected"] is True
+    token_limit.update_settings({"enabled": False})
+    token_limit.enforce()
 
 
 def test_routes_refuse_api_key_changes_and_report_status():
@@ -1168,37 +578,22 @@ def test_routes_refuse_api_key_changes_and_report_status():
     client = TestClient(app)
 
     assert client.put("/api/token-limit", json = {"enabled": True}).status_code == 403
+    assert client.post("/api/token-limit/override").status_code == 403
     via_api_key["value"] = False
-    saved = client.put(
-        "/api/token-limit",
-        json = {"enabled": True, "limit": 5, "timezone": "UTC", "newPassword": "pw"},
-    )
+    saved = client.put("/api/token-limit", json = {"enabled": True, "limit": 5, "timezone": "UTC"})
     assert saved.status_code == 200
-    assert saved.json()["settings"]["passwordProtected"] is True
-    assert client.put("/api/token-limit", json = {"enabled": False}).status_code == 403
-    assert client.put("/api/token-limit", json = {"limit": 0, "password": "pw"}).status_code == 422
+    assert client.put("/api/token-limit", json = {"limit": 0}).status_code == 422
     status = client.get("/api/token-limit/status").json()
-    assert status["pools"] == [
-        {
-            "pool": "combined",
-            "used": 0,
-            "limit": 5,
-            "reached": False,
-            "warning": False,
-            "override": None,
-        }
-    ]
+    assert (status["used"], status["reached"], status["warning"], status["override"]) == (
+        0,
+        False,
+        False,
+        None,
+    )
     assert status["resetsAt"] > status["periodStart"]
     now = _now_ms()
-    _thread("protected", now)
-    _reply("protected-reply", "protected", now, prompt = 5, completion = 1)
-    for credentials in ({}, {"password": "wrong"}):
-        refused = client.post("/api/token-limit/override", json = {"pool": "combined", **credentials})
-        assert refused.status_code == 403, refused.text
-        assert _pools()["combined"]["override"] is None
-    granted = client.post("/api/token-limit/override", json = {"pool": "combined", "password": "pw"})
-    assert granted.status_code == 200
-    token_limit.enforce(api = False)
-    with pytest.raises(HTTPException) as exhausted:
-        token_limit.enforce(api = False)
-    assert exhausted.value.status_code == 429
+    _thread("t1", now)
+    _reply("a1", "t1", now, prompt = 5, completion = 1)
+    assert client.post("/api/token-limit/override").status_code == 200
+    assert not _refused()
+    assert _refused()

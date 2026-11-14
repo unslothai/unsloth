@@ -624,35 +624,31 @@ async def generate_answer(
                 # Settled in this task: slot routing lives in its context, which the caller never sees.
                 reply = None
                 failed = True
-                claim_scope = override_claim_scope({"spent": None, "generated": False})
-                claim = claim_scope.__enter__()
+                claim = {"spent": None, "generated": False}
                 try:
-                    await _enforce_token_limit(request, external = provider is not None)
-                    with temporary_usage_scope(
-                        TemporaryUsage(
-                            thread_id,
-                            "external" if provider is not None else "local",
-                            message_id = str(
-                                uuid.uuid5(uuid.NAMESPACE_URL, f"{thread_id}/assistant")
-                            ),
-                            parent_id = "",
-                        )
-                    ):
-                        reply = await produce_openai_chat_completions(
-                            payload,
-                            request,
-                            task["ownerSubject"],
-                            cancel_on_disconnect = False,
-                        )
-                        if provider is not None and isinstance(reply, StreamingResponse):
-                            reply.body_iterator = _relay_split_thinking(
-                                reply.body_iterator,
-                                payload.stop,
-                                parse_thinking = payload.enable_thinking is not False,
+                    with override_claim_scope(claim):
+                        await _enforce_token_limit(request)
+                        with temporary_usage_scope(
+                            TemporaryUsage(
+                                thread_id,
+                                str(uuid.uuid5(uuid.NAMESPACE_URL, f"{thread_id}/assistant")),
                             )
-                            reply = await _chat_completion_from_connection_stream(
-                                reply, payload.model
+                        ):
+                            reply = await produce_openai_chat_completions(
+                                payload,
+                                request,
+                                task["ownerSubject"],
+                                cancel_on_disconnect = False,
                             )
+                            if provider is not None and isinstance(reply, StreamingResponse):
+                                reply.body_iterator = _relay_split_thinking(
+                                    reply.body_iterator,
+                                    payload.stop,
+                                    parse_thinking = payload.enable_thinking is not False,
+                                )
+                                reply = await _chat_completion_from_connection_stream(
+                                    reply, payload.model
+                                )
                     if provider is None:
                         serving.update(_serving_checkpoint())
                     # Checked before the request ends, while nobody else can have loaded a model yet.
@@ -666,7 +662,6 @@ async def generate_answer(
                         answered = reply is not None
                         and int(getattr(reply, "status_code", 200)) < 400,
                     )
-                    claim_scope.__exit__(None, None, None)
                     # No HTTP middleware sees this in-process request: refund a failure that generated nothing.
                     await refund_if_unused(claim, failed = failed)
 

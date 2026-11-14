@@ -8,42 +8,24 @@ import { readSrc } from "./helpers/kit.ts";
 
 const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
-test("only external requests stamp a provider for the token allowance", () => {
-  assert.match(
-    ADAPTER,
-    /const tokenUsageProvider = isExternalRequest\s*\?\s*externalProvider\?\.providerType\s*:\s*undefined;/,
-  );
+test("live, final and failed replies all carry the allowance estimates", () => {
+  const helper = ADAPTER.slice(ADAPTER.indexOf("const tokenUsageMetadata = () => ({"));
+  for (const field of [
+    "tokenUsageEstimatedPrompt,",
+    "tokenUsageEstimatedToolOutput: tokenUsageEstimatedToolOutput(),",
+    // timing adds the continued reply's count, which must not be charged twice.
+    "tokenUsagePriorCount: priorTiming?.tokenCount,",
+  ]) {
+    assert.ok(helper.slice(0, 400).includes(field), field);
+  }
+  assert.equal(ADAPTER.match(/\.\.\.tokenUsageMetadata\(\),/g)?.length, 3);
 });
 
-test("live, final and failed replies all carry the provider stamp", () => {
-  const live = ADAPTER.slice(ADAPTER.indexOf("const liveCustom = () => ({"));
-  assert.match(live.slice(0, 300), /tokenUsageProvider,/);
-  const failed = ADAPTER.slice(
-    ADAPTER.indexOf("const partialTiming = withPriorTiming("),
-    ADAPTER.indexOf("resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,\n                ...generationCustom()"),
-  );
-  assert.match(failed, /tokenUsageProvider,/);
-  const final = ADAPTER.slice(
-    ADAPTER.lastIndexOf("timing: finalTiming,\n            custom: {"),
-    ADAPTER.indexOf("responseDetails: buildResponseDetails(finishedAt),"),
-  );
-  assert.match(final, /tokenUsageProvider,/);
-});
-
-test("live, final and failed counts name the continued reply's tokens so they are not charged twice", () => {
-  assert.equal(
-    ADAPTER.match(/tokenUsagePriorCount: priorTiming\?\.tokenCount,/g)?.length,
-    3,
-  );
-});
-
-test("the allowance switch saves the visible draft with it", () => {
+test("the allowance switch saves the visible draft and can always turn it off", () => {
   const SECTION = readSrc("features/settings/components/token-limit-section.tsx");
-  assert.match(
-    SECTION,
-    /onCheckedChange=\{\(next\) => void save\(\{ \.\.\.\(draftPatch\(\) \?\? \{\}\), enabled: next \}\)\}/,
-  );
-  assert.match(SECTION, /disabled=\{busy \|\| needsPassword \|\| \(!enabled && !capsValid\)\}/);
+  assert.match(SECTION, /onCheckedChange=\{\(next\) => void save\(\{ enabled: next \}\)\}/);
+  assert.match(SECTION, /disabled=\{busy \|\| \(!enabled && cap === null\)\}/);
+  assert.match(SECTION, /\{\s*period,\s*\.\.\.\(cap === null \? \{\} : \{ limit: cap \}\)/);
 });
 
 test("saving a temporary chat marks its replies as already charged", () => {
@@ -59,15 +41,4 @@ test("title requests are marked stateless so their receipt is charged", () => {
   const TITLE = readSrc("features/chat/utils/chat-title.ts");
   const build = TITLE.slice(TITLE.indexOf("export async function buildTitleRequest("));
   assert.match(build.slice(0, 2500), /temporary_chat: true,/);
-});
-
-test("live, final and failed replies carry a prompt estimate for interrupted saves", () => {
-  assert.equal(ADAPTER.match(/\n\s+tokenUsageEstimatedPrompt,\n/g)?.length, 3);
-});
-
-test("live, final and failed replies estimate their generated tool arguments", () => {
-  assert.equal(
-    ADAPTER.match(/tokenUsageEstimatedToolOutput: tokenUsageEstimatedToolOutput\(\),/g)?.length,
-    3,
-  );
 });

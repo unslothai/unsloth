@@ -3703,14 +3703,13 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
-async def _enforce_token_limit(request: Any, *, external: bool) -> None:
+async def _enforce_token_limit(request: Any) -> None:
     state = getattr(request, "state", None)
     if state is not None and getattr(state, "token_limit_admitted", False):
         return
     from core.inference import token_limit
 
-    api = external or _request_used_api_key(request)
-    spent = await asyncio.to_thread(token_limit.enforce, api = api)
+    spent = await asyncio.to_thread(token_limit.enforce)
     if spent and (claim := override_claim()) is not None:
         claim["spent"] = spent
     if state is not None:
@@ -7229,7 +7228,6 @@ def _monitor_usage(
             completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens"),
             total_tokens = usage.get("total_tokens"),
             context_length = context_length,
-            context_tokens = usage.get("context_tokens"),
         )
     tok_per_sec = prompt_tok_per_sec = prompt_ms = decode_ms = None
     if isinstance(timings, dict):
@@ -22409,7 +22407,7 @@ async def generate_stream(
             headers = {"Retry-After": "1"},
         )
 
-    await _enforce_token_limit(fastapi_request, external = False)
+    await _enforce_token_limit(fastapi_request)
     backend = await asyncio.to_thread(get_inference_backend)
 
     if not backend.active_model_name:
@@ -22466,7 +22464,7 @@ async def generate_stream(
         _tracker.__enter__()
         try:
             via_api_key = _request_used_api_key(fastapi_request)
-            temporary = None if via_api_key else TemporaryUsage(uuid.uuid4().hex, "local")
+            temporary = None if via_api_key else TemporaryUsage(uuid.uuid4().hex)
             with temporary_usage_scope(temporary):
                 monitor_id = api_monitor.start(
                     endpoint = "/api/inference/generate/stream",
@@ -31530,28 +31528,19 @@ async def openai_chat_completions(
             status_code = 403,
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
         )
-    await _enforce_token_limit(request, external = bool(payload.provider_id or payload.provider_type))
+    await _enforce_token_limit(request)
     temporary = None
     internal = _request_is_internal_workflow(request)
     # Server-side, not a client opt-in: with no thread no saved message will ever debit this call.
     if (payload.temporary_chat or internal or not payload.thread_id) and not _request_used_api_key(
         request
     ):
-        thread = (
-            uuid.uuid4().hex
-            if internal
-            # Never cancel_id: a caller could reuse it to make unrelated requests one incremental thread.
-            else payload.thread_id or uuid.uuid4().hex
-        )
+        # Never cancel_id: a caller could reuse it to merge unrelated requests into one receipt.
+        thread = uuid.uuid4().hex if internal else payload.thread_id or uuid.uuid4().hex
+        message = payload.temporary_message_id if not internal else None
         temporary = TemporaryUsage(
             _hashlib.sha256(thread.encode("utf-8")).hexdigest(),
-            "external" if payload.provider_id or payload.provider_type else "local",
-            _hashlib.sha256(f"{thread}\0{payload.temporary_message_id}".encode()).hexdigest()
-            if not internal and payload.temporary_message_id
-            else None,
-            _hashlib.sha256(f"{thread}\0{payload.temporary_parent_id}".encode()).hexdigest()
-            if not internal and payload.temporary_parent_id
-            else (None if internal else payload.temporary_parent_id),
+            _hashlib.sha256(f"{thread}\0{message}".encode()).hexdigest() if message else None,
         )
     with temporary_usage_scope(temporary):
         response = await produce_openai_chat_completions(
@@ -31590,38 +31579,20 @@ async def _scoped_stream(iterator, temporary):
         await _close_openai_admitted_stream_iterator(iterator, cancelled = cancelled)
 
 
-def _meters_stateless_session(source):
+def _meters_stateless_session(route):
     """These routes carry no thread, so no saved message debits them: a session (non API key)
     call settles its own temporary receipt. Each starts its monitor before returning a stream,
     and an entry keeps the scope it started under."""
+    signature = inspect.signature(route)
 
-    def decorate(route):
-        signature = inspect.signature(route)
+    @functools.wraps(route)
+    async def metered(*args, **kwargs):
+        request = signature.bind(*args, **kwargs).arguments.get("request")
+        temporary = None if _request_used_api_key(request) else TemporaryUsage(uuid.uuid4().hex)
+        with temporary_usage_scope(temporary):
+            return await route(*args, **kwargs)
 
-        @functools.wraps(route)
-        async def metered(*args, **kwargs):
-            arguments = signature.bind(*args, **kwargs).arguments
-            request = arguments.get("request")
-            temporary = (
-                None
-                if _request_used_api_key(request)
-                else TemporaryUsage(uuid.uuid4().hex, source(arguments))
-            )
-            with temporary_usage_scope(temporary):
-                return await route(*args, **kwargs)
-
-        return metered
-
-    return decorate
-
-
-def _local_source(arguments) -> str:
-    return "local"
-
-
-def _payload_source(arguments) -> str:
-    payload = arguments.get("payload")
-    return "external" if _connection_model_ref(getattr(payload, "model", None)) else "local"
+    return metered
 
 
 async def produce_openai_chat_completions(
@@ -33420,7 +33391,6 @@ async def produce_openai_chat_completions(
                                     "prompt_tokens": _pass_prompt,
                                     "completion_tokens": _passes_completion,
                                     "total_tokens": _pass_prompt + _passes_completion,
-                                    "context_tokens": event.get("context_tokens"),
                                 },
                                 _monitor_context_length(),
                             )
@@ -38570,7 +38540,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
 
 @router.post("/completions")
 @account_access.gpu_busy_route
-@_meters_stateless_session(_local_source)
+@_meters_stateless_session
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
     OpenAI-compatible text completions endpoint (non-chat).
@@ -38580,7 +38550,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     """
     from utils.hardware import DeviceType, get_device
 
-    await _enforce_token_limit(request, external = False)
+    await _enforce_token_limit(request)
     try:
         _pre = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -39418,11 +39388,11 @@ def _embeddings_input_present(body: dict) -> bool:
 
 @router.post("/embeddings")
 @account_access.gpu_busy_route
-@_meters_stateless_session(_local_source)
+@_meters_stateless_session
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Unsloth's configured embedding model."""
-    await _enforce_token_limit(request, external = False)
+    await _enforce_token_limit(request)
     if model_slots.slots:
         try:
             await _route_to_extra_slot(_raw_body_model(await request.json()))
@@ -42018,7 +41988,7 @@ async def _responses_stream(
 
 @router.post("/responses")
 @account_access.gpu_busy_route
-@_meters_stateless_session(_payload_source)
+@_meters_stateless_session
 async def openai_responses(
     payload: ResponsesRequest,
     request: Request,
@@ -42033,7 +42003,7 @@ async def openai_responses(
     """
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
-    await _enforce_token_limit(request, external = connection is not None)
+    await _enforce_token_limit(request)
     for history_param in ("previous_response_id", "conversation"):
         if getattr(payload, history_param, None) is not None:
             raise HTTPException(
@@ -44697,7 +44667,7 @@ async def _anthropic_in_process_messages(
 
 @router.post("/messages")
 @account_access.gpu_busy_route
-@_meters_stateless_session(_payload_source)
+@_meters_stateless_session
 async def anthropic_messages(
     payload: AnthropicMessagesRequest,
     request: Request,
@@ -44714,7 +44684,7 @@ async def anthropic_messages(
     _mark_claude_code_thinking(payload, request)
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
-    await _enforce_token_limit(request, external = connection is not None)
+    await _enforce_token_limit(request)
     if connection is not None:
         return await _anthropic_messages_via_connection(
             payload, request, current_subject, *connection

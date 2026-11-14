@@ -101,7 +101,7 @@ def test_nothing_loaded_serves_from_the_studio_embedder(studio_embedder):
     assert payload["usage"] == {"prompt_tokens": 9, "total_tokens": 9}
 
 
-def test_embeddings_stop_at_the_shared_api_allowance(studio_embedder):
+def test_embeddings_stop_at_the_allowance(studio_embedder):
     import time
     from core.inference import token_limit
     from storage.api_usage_db import ApiUsageReceipt, record_api_usage
@@ -124,11 +124,9 @@ def test_embeddings_stop_at_the_shared_api_allowance(studio_embedder):
             created_at = int(time.time() * 1000),
         )
     )
-    token_limit.update_settings(
-        {"enabled": True, "mode": "split", "apiLimit": 100}, password = None, new_password = None
-    )
+    token_limit.update_settings({"enabled": True, "limit": 100})
     assert _http_error({"input": "alpha"}).status_code == 429
-    token_limit.update_settings({"enabled": False}, password = None, new_password = None)
+    token_limit.update_settings({"enabled": False})
     assert _call({"input": "alpha"}) == before
 
 

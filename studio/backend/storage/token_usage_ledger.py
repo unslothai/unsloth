@@ -41,36 +41,29 @@ def _usage_columns(row: str) -> str:
              WHEN {server_completion} > 0 THEN {server_completion}
              ELSE {timing_completion} END AS completion_tokens,
         {_count(row, "$.contextUsage.totalTokens")} AS reported_total,
-        NULLIF({_count(row, "$.contextUsage.contextTokens")}, 0) AS context_tokens,
         CASE WHEN {usage_prompt} + {usage_completion} + {server_completion} + {server_prompt} > 0
              THEN 0 ELSE 1 END AS estimated,
         json_extract({row}, '$.tokenUsageTemporaryKey') AS temporary_key,
-        CASE WHEN json_extract({row}, '$.tokenUsageCharged') = 1 THEN 'inherited'
-             WHEN COALESCE(json_extract({row}, '$.responseDetails.providerType'),
-                           json_extract({row}, '$.tokenUsageProvider'), 'local')
-                  IN ('local', '') THEN 'local' ELSE 'external' END AS source
+        -- Charged already: a saved temporary chat's receipt, or a fork's copied history.
+        CASE WHEN json_extract({row}, '$.tokenUsageCharged') = 1 THEN 'inherited' ELSE 'chat' END
+            AS source
     """
 
 
 def _ledger_insert(message: str, rows: str = "") -> str:
-    # Fork copies seed incremental context without charging it; MAX prevents refunds.
+    # MAX: a later edit never refunds what a reply already cost. source is never updated, so a
+    # debit is never re-labelled exempt by later metadata.
     return f"""
         INSERT INTO {LEDGER_TABLE}
             (message_id, thread_id, created_at, source,
-             prompt_tokens, completion_tokens, total_tokens, context_tokens, parent_message_id,
-             estimated, temporary_key)
-        SELECT u.id, u.thread_id, u.created_at, u.source,
-               u.prompt_tokens, u.completion_tokens,
+             prompt_tokens, completion_tokens, total_tokens, estimated, temporary_key)
+        SELECT u.id, u.thread_id, u.created_at, u.source, u.prompt_tokens, u.completion_tokens,
                CASE WHEN u.reported_total > 0 THEN u.reported_total
-                    ELSE u.prompt_tokens + u.completion_tokens END, u.context_tokens,
-               u.parent_message_id, u.estimated, u.temporary_key
+                    ELSE u.prompt_tokens + u.completion_tokens END,
+               u.estimated, u.temporary_key
         FROM (
             SELECT {message}.id AS id, {message}.thread_id AS thread_id,
                    {message}.created_at AS created_at,
-                   COALESCE(NULLIF(json_extract({message}.metadata_json, '$.tokenUsageParentId'), ''),
-                   CASE WHEN {message}.parent_id IS NULL THEN NULL ELSE COALESCE((
-                       SELECT p.parent_id FROM chat_messages p WHERE p.id = {message}.parent_id
-                   ), '') END) AS parent_message_id,
                    {_usage_columns(f"{message}.metadata_json")}
             {rows}
         ) AS u
@@ -80,9 +73,6 @@ def _ledger_insert(message: str, rows: str = "") -> str:
               AND json_extract(r.request_json, '$.api_monitor_via_api_key') = 1
           )
         ON CONFLICT(message_id) DO UPDATE SET
-            -- An existing debit is never re-labelled exempt by later metadata.
-            source = CASE WHEN source IN ('inherited', 'api') OR excluded.source = 'inherited'
-                THEN source ELSE excluded.source END,
             -- A reported count replaces a text-length estimate and is never moved by one.
             prompt_tokens = CASE WHEN estimated > excluded.estimated THEN excluded.prompt_tokens
                 WHEN estimated < excluded.estimated THEN prompt_tokens
@@ -95,13 +85,7 @@ def _ledger_insert(message: str, rows: str = "") -> str:
                 WHEN estimated < excluded.estimated THEN total_tokens
                 ELSE MAX(total_tokens, excluded.total_tokens) END,
             estimated = MIN(estimated, excluded.estimated),
-            temporary_key = COALESCE(excluded.temporary_key, temporary_key),
-            context_tokens = CASE WHEN EXISTS (
-                SELECT 1 FROM {LEDGER_TABLE} later
-                WHERE later.thread_id = {LEDGER_TABLE}.thread_id
-                AND (later.created_at, later.message_id) > ({LEDGER_TABLE}.created_at, {LEDGER_TABLE}.message_id)
-            ) THEN context_tokens ELSE COALESCE(excluded.context_tokens, context_tokens) END,
-            parent_message_id = excluded.parent_message_id
+            temporary_key = COALESCE(excluded.temporary_key, temporary_key)
     """
 
 
@@ -116,6 +100,12 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
         ).fetchone()
         is not None
     )
+    if existed and "temporary_key" not in {
+        row[1] for row in conn.execute(f"PRAGMA table_info({LEDGER_TABLE})")
+    }:
+        # A pre-release layout: rebuild from the saved messages below.
+        conn.execute(f"DROP TABLE {LEDGER_TABLE}")
+        existed = False
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {LEDGER_TABLE} (
@@ -126,36 +116,17 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
             prompt_tokens INTEGER NOT NULL,
             completion_tokens INTEGER NOT NULL,
             total_tokens INTEGER NOT NULL,
-            context_tokens INTEGER,
-            parent_message_id TEXT,
             estimated INTEGER NOT NULL DEFAULT 0,
             temporary_key TEXT
         ) WITHOUT ROWID
         """
     )
-    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({LEDGER_TABLE})")}
-    missing = {
-        name: kind
-        for name, kind in (
-            ("context_tokens", "INTEGER"),
-            ("parent_message_id", "TEXT"),
-            ("estimated", "INTEGER NOT NULL DEFAULT 0"),
-            ("temporary_key", "TEXT"),
-        )
-        if name not in columns
-    }
-    for name, column_type in missing.items():
-        conn.execute(f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN {name} {column_type}")
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{LEDGER_TABLE}_created_at ON {LEDGER_TABLE}(created_at)"
     )
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{LEDGER_TABLE}_temporary_key "
         f"ON {LEDGER_TABLE}(temporary_key) WHERE temporary_key IS NOT NULL"
-    )
-    conn.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{LEDGER_TABLE}_thread_created_at "
-        f"ON {LEDGER_TABLE}(thread_id, created_at)"
     )
     for event, timing in (
         ("insert", "AFTER INSERT ON chat_messages"),
@@ -172,7 +143,7 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
             END
             """
         )
-    if not existed or missing:
+    if not existed:
         conn.execute(
             _ledger_insert(
                 "m",
@@ -193,6 +164,23 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
         """)
 
 
+def _record_run_metadata(conn: sqlite3.Connection, run_id: str, metadata: dict) -> None:
+    """Debits the run's assistant row as if this metadata were already saved on it."""
+    conn.execute(
+        _ledger_insert(
+            "m",
+            """
+            FROM (
+                SELECT c.id, c.thread_id, c.created_at,
+                       json_patch(c.metadata_json, ?) AS metadata_json
+                FROM chat_messages c JOIN chat_generation_runs r ON r.assistant_message_id = c.id
+                WHERE r.id = ?
+            ) m""",
+        ),
+        (json.dumps(metadata), run_id),
+    )
+
+
 def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None:
     metadata = {}
     usage = chunk.get("usage")
@@ -210,7 +198,6 @@ def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None
             "prompt_tokens": prompt,
             "completion_tokens": completion,
             "total_tokens": prompt + completion,
-            "context_tokens": chunk.get("context_tokens"),
         }
     if isinstance(usage, dict):
         metadata["contextUsage"] = {
@@ -219,26 +206,12 @@ def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None
                 ("promptTokens", "prompt_tokens"),
                 ("completionTokens", "completion_tokens"),
                 ("totalTokens", "total_tokens"),
-                ("contextTokens", "context_tokens"),
             )
         }
     if isinstance(chunk.get("timings"), dict):
         metadata["serverTimings"] = chunk["timings"]
     if metadata:
-        conn.execute(
-            _ledger_insert(
-                "m",
-                """
-            FROM (
-                SELECT c.id, c.thread_id, c.created_at, c.parent_id,
-                       json_patch(c.metadata_json, ?) AS metadata_json
-                FROM chat_messages c JOIN chat_generation_runs r ON r.assistant_message_id = c.id
-                WHERE r.id = ?
-            ) m
-        """,
-            ),
-            (json.dumps(metadata), run_id),
-        )
+        _record_run_metadata(conn, run_id, metadata)
 
 
 def _text_chars(content) -> int:
@@ -307,12 +280,9 @@ def settle_interrupted_run(conn: sqlite3.Connection, run_id: str):
             " WHERE id = ?",
             (run_id,),
         ).fetchone()
-        try:
-            spent = json.loads(row[0]) if row and row[0] else None
-        except (TypeError, ValueError):
-            spent = None
         # Nothing was generated, so the run's admission must not cost the one-time override.
-        return tuple(spent) if isinstance(spent, list) and len(spent) == 2 else None
+        spent = row[0] if row else None
+        return spent if isinstance(spent, int) else None
     tail = -(-output // 4)
     if reported:
         # The last frame's counts stand; add only what streamed after it.
@@ -334,20 +304,7 @@ def settle_interrupted_run(conn: sqlite3.Connection, run_id: str):
         messages = []
     prompt = sum(_text_chars(m.get("content")) for m in messages if isinstance(m, dict))
     metadata = {"timing": {"tokenCount": tail}, "tokenUsageEstimatedPrompt": -(-prompt // 4)}
-    conn.execute(
-        _ledger_insert(
-            "m",
-            """
-            FROM (
-                SELECT c.id, c.thread_id, c.created_at, c.parent_id,
-                       json_patch(c.metadata_json, ?) AS metadata_json
-                FROM chat_messages c JOIN chat_generation_runs r ON r.assistant_message_id = c.id
-                WHERE r.id = ?
-            ) m
-        """,
-        ),
-        (json.dumps(metadata), run_id),
-    )
+    _record_run_metadata(conn, run_id, metadata)
 
 
 def record_temporary_usage(receipt) -> bool:
@@ -355,40 +312,26 @@ def record_temporary_usage(receipt) -> bool:
     conn = get_connection()
     try:
         key = receipt.temporary_message_id or receipt.id
+        # Saved before this receipt landed, its row already debits the reply: merge into it.
         saved = conn.execute(
             f"SELECT message_id FROM {LEDGER_TABLE} WHERE temporary_key = ?", (key,)
         ).fetchone()
-        if saved is not None:
-            # Saved before this receipt landed: its row already debits the reply, so merge.
-            conn.execute(
-                f"""UPDATE {LEDGER_TABLE} SET
-                        prompt_tokens = MAX(prompt_tokens, ?),
-                        completion_tokens = MAX(completion_tokens, ?),
-                        total_tokens = MAX(total_tokens, ?)
-                    WHERE message_id = ?""",
-                (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens, saved[0]),
-            )
-            conn.commit()
-            return True
         conn.execute(
             f"""INSERT INTO {LEDGER_TABLE}
-                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens, total_tokens, context_tokens, parent_message_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens,
+                 total_tokens)
+                VALUES (?, ?, ?, 'chat', ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     prompt_tokens = MAX(prompt_tokens, excluded.prompt_tokens),
                     completion_tokens = MAX(completion_tokens, excluded.completion_tokens),
-                    total_tokens = MAX(total_tokens, excluded.total_tokens),
-                    context_tokens = COALESCE(context_tokens, excluded.context_tokens)""",
+                    total_tokens = MAX(total_tokens, excluded.total_tokens)""",
             (
-                receipt.temporary_message_id or receipt.id,
+                saved[0] if saved else key,
                 receipt.temporary_thread,
                 receipt.created_at,
-                receipt.temporary_source,
                 receipt.prompt_tokens,
                 receipt.completion_tokens,
                 receipt.total_tokens,
-                receipt.context_tokens,
-                receipt.temporary_parent_id,
             ),
         )
         conn.commit()
@@ -397,43 +340,14 @@ def record_temporary_usage(receipt) -> bool:
         conn.close()
 
 
-def window_usage(conn: sqlite3.Connection, start_ms: int, method: str) -> dict[str, int]:
-    if method == "total":
-        usage = dict(
-            conn.execute(
-                f"SELECT source, SUM(total_tokens) FROM {LEDGER_TABLE} "
-                "WHERE created_at >= ? AND source != 'inherited' GROUP BY source",
-                (start_ms,),
-            )
-        )
-    else:
-        usage = dict(
-            conn.execute(
-                f"""
-        WITH turns AS (
-            SELECT t.source, t.created_at, t.completion_tokens,
-                   t.prompt_tokens - CASE WHEN t.parent_message_id IS NULL THEN
-                       LAG(COALESCE(t.context_tokens, t.prompt_tokens + t.completion_tokens), 1, 0)
-                       OVER (PARTITION BY t.thread_id ORDER BY t.created_at, t.message_id)
-                   ELSE COALESCE(p.context_tokens, p.prompt_tokens + p.completion_tokens, 0)
-                   END AS prompt_delta
-            FROM {LEDGER_TABLE} t
-            LEFT JOIN {LEDGER_TABLE} p ON p.message_id = t.parent_message_id
-            WHERE t.thread_id IN (
-                SELECT DISTINCT thread_id FROM {LEDGER_TABLE} WHERE created_at >= ?
-            )
-        )
-        SELECT source, SUM(MAX(0, prompt_delta) + completion_tokens) FROM turns
-        WHERE created_at >= ? AND source != 'inherited' GROUP BY source
-        """,
-                (start_ms, start_ms),
-            )
-        )
-    # API receipts supply the debit; ledger rows only retain origin.
-    usage["api"] = int(
-        conn.execute(
-            "SELECT COALESCE(SUM(total_tokens), 0) FROM api_usage_events WHERE created_at >= ?",
-            (start_ms,),
-        ).fetchone()[0]
-    )
-    return usage
+def window_usage(conn: sqlite3.Connection, start_ms: int) -> int:
+    # API receipts supply their own debit, so an 'api' row (an edited API-key reply) only marks
+    # origin; 'inherited' rows were charged already.
+    (used,) = conn.execute(
+        f"""SELECT COALESCE((SELECT SUM(total_tokens) FROM {LEDGER_TABLE}
+                             WHERE created_at >= ? AND source = 'chat'), 0)
+                 + COALESCE((SELECT SUM(total_tokens) FROM api_usage_events
+                             WHERE created_at >= ?), 0)""",
+        (start_ms, start_ms),
+    ).fetchone()
+    return int(used)

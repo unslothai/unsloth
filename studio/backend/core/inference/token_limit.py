@@ -3,12 +3,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import secrets
+import asyncio
 import threading
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -19,53 +16,20 @@ from storage.studio_db import get_app_setting, get_connection, upsert_app_settin
 from storage.token_usage_ledger import window_usage
 
 SETTINGS_KEY = "token_limit"
-OVERRIDES_KEY = "token_limit_overrides"
+OVERRIDE_KEY = "token_limit_override"
 
 PERIODS: tuple[str, ...] = ("day", "week", "month")
-MODES: tuple[str, ...] = ("combined", "split")
-METHODS: tuple[str, ...] = ("total", "incremental")
 MAX_LIMIT = 1 << 40
 WARNING_FRACTION = 0.8
-
-_PASSWORD_ITERATIONS = 200_000
-_PASSWORD_SCHEME = "pbkdf2_sha256"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "enabled": False,
     "period": "day",
-    "mode": "combined",
-    "method": "total",
     "limit": 150_000,
-    "localLimit": 150_000,
-    "apiLimit": 150_000,
     "timezone": "",
-    "passwordHash": None,
 }
 
 _override_lock = threading.Lock()
-
-
-class TokenLimitPasswordError(Exception):
-    pass
-
-
-def hash_password(password: str, *, salt: Optional[bytes] = None) -> str:
-    salt = salt if salt is not None else secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PASSWORD_ITERATIONS)
-    return f"{_PASSWORD_SCHEME}${_PASSWORD_ITERATIONS}${salt.hex()}${digest.hex()}"
-
-
-def verify_password(password: str, stored: str) -> bool:
-    try:
-        scheme, iterations, salt_hex, digest_hex = stored.split("$")
-        if scheme != _PASSWORD_SCHEME:
-            return False
-        digest = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations)
-        )
-    except (ValueError, TypeError):
-        return False
-    return hmac.compare_digest(digest.hex(), digest_hex)
 
 
 def _clean_settings(raw: Any) -> dict[str, Any]:
@@ -74,28 +38,18 @@ def _clean_settings(raw: Any) -> dict[str, Any]:
         return settings
     if isinstance(raw.get("enabled"), bool):
         settings["enabled"] = raw["enabled"]
-    for key, allowed in (("period", PERIODS), ("mode", MODES), ("method", METHODS)):
-        if raw.get(key) in allowed:
-            settings[key] = raw[key]
-    for key in ("limit", "localLimit", "apiLimit"):
-        value = raw.get(key)
-        if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= MAX_LIMIT:
-            settings[key] = value
+    if raw.get("period") in PERIODS:
+        settings["period"] = raw["period"]
+    limit = raw.get("limit")
+    if isinstance(limit, int) and not isinstance(limit, bool) and 0 < limit <= MAX_LIMIT:
+        settings["limit"] = limit
     if isinstance(raw.get("timezone"), str):
         settings["timezone"] = raw["timezone"][:64]
-    if isinstance(raw.get("passwordHash"), str) and raw["passwordHash"]:
-        settings["passwordHash"] = raw["passwordHash"]
     return settings
 
 
 def load_settings() -> dict[str, Any]:
     return _clean_settings(get_app_setting(SETTINGS_KEY, reuse_keeper = True))
-
-
-def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    visible = {key: value for key, value in settings.items() if key != "passwordHash"}
-    visible["passwordProtected"] = bool(settings.get("passwordHash"))
-    return visible
 
 
 def _zone(name: str):
@@ -121,99 +75,48 @@ def period_window(
         end = start + timedelta(days = 7)
     elif period == "month":
         start = day.replace(day = 1)
-        if start.month == 12:
-            end = start.replace(year = start.year + 1, month = 1)
-        else:
-            end = start.replace(month = start.month + 1)
+        end = start.replace(year = start.year + start.month // 12, month = start.month % 12 + 1)
     else:
         start = day
         end = start + timedelta(days = 1)
+    # Re-attach the zone so a DST day is 23 or 25 hours, not 24 from the wrong offset.
     start = start.replace(tzinfo = None).replace(tzinfo = zone)
     end = end.replace(tzinfo = None).replace(tzinfo = zone)
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
 
-def _pools(settings: dict[str, Any]) -> dict[str, int]:
-    if settings["mode"] == "split":
-        return {"local": settings["localLimit"], "api": settings["apiLimit"]}
-    return {"combined": settings["limit"]}
-
-
-def request_pool(settings: dict[str, Any], *, api: bool) -> str:
-    if settings["mode"] != "split":
-        return "combined"
-    return "api" if api else "local"
-
-
-@dataclass(frozen = True)
-class PoolUsage:
-    pool: str
-    used: int
-    limit: int
-
-    @property
-    def reached(self) -> bool:
-        return self.used >= self.limit
-
-    @property
-    def warning(self) -> bool:
-        return self.used >= self.limit * WARNING_FRACTION
-
-
-def _pool_usage(settings: dict[str, Any], start_ms: int) -> dict[str, PoolUsage]:
+def _used(start_ms: int) -> int:
     conn = get_connection()
     try:
-        counts = window_usage(conn, start_ms, settings["method"])
+        return window_usage(conn, start_ms)
     finally:
         conn.close()
-    local, external, api = (counts.get(source, 0) for source in ("local", "external", "api"))
-    used = {
-        "combined": local + external + api,
-        "local": local,
-        "api": external + api,
-    }
-    return {
-        pool: PoolUsage(pool = pool, used = used[pool], limit = limit)
-        for pool, limit in _pools(settings).items()
-    }
 
 
-def _overrides() -> dict[str, Any]:
-    value = get_app_setting(OVERRIDES_KEY, {})
-    return value if isinstance(value, dict) else {}
-
-
-def _override_state(overrides: dict[str, Any], pool: str, start_ms: int) -> Optional[str]:
-    entry = overrides.get(pool)
+def _override_state(start_ms: int) -> Optional[str]:
+    entry = get_app_setting(OVERRIDE_KEY, {})
     if isinstance(entry, dict) and entry.get("periodStart") == start_ms:
         state = entry.get("state")
         return state if state in ("granted", "used") else None
     return None
 
 
+def _set_override(start_ms: int, state: str) -> None:
+    upsert_app_settings({OVERRIDE_KEY: {"periodStart": start_ms, "state": state}}, read_back = False)
+
+
 def status() -> dict[str, Any]:
     settings = load_settings()
     start_ms, end_ms = period_window(settings["period"], settings["timezone"])
-    pools = []
-    if settings["enabled"]:
-        overrides = _overrides()
-        for usage in _pool_usage(settings, start_ms).values():
-            override = _override_state(overrides, usage.pool, start_ms)
-            pools.append(
-                {
-                    "pool": usage.pool,
-                    "used": usage.used,
-                    "limit": usage.limit,
-                    "reached": usage.reached,
-                    "warning": usage.warning,
-                    "override": override,
-                }
-            )
+    used = _used(start_ms) if settings["enabled"] else 0
     return {
-        "settings": public_settings(settings),
+        "settings": settings,
         "periodStart": start_ms,
         "resetsAt": end_ms,
-        "pools": pools,
+        "used": used,
+        "reached": settings["enabled"] and used >= settings["limit"],
+        "warning": settings["enabled"] and used >= settings["limit"] * WARNING_FRACTION,
+        "override": _override_state(start_ms) if settings["enabled"] else None,
     }
 
 
@@ -226,56 +129,74 @@ def _require_usage_accounting() -> None:
         )
 
 
-def update_settings(
-    patch: dict[str, Any], *, password: Optional[str], new_password: Optional[str]
-) -> dict[str, Any]:
+def update_settings(patch: dict[str, Any]) -> dict[str, Any]:
     with _override_lock:
-        current = load_settings()
-        stored_hash = current.get("passwordHash")
-        if stored_hash and not (password and verify_password(password, stored_hash)):
-            raise TokenLimitPasswordError()
-        merged = _clean_settings({**current, **patch, "passwordHash": stored_hash})
+        merged = _clean_settings({**load_settings(), **patch})
         if merged["enabled"]:
             _require_usage_accounting()
-        if new_password is not None:
-            merged["passwordHash"] = hash_password(new_password) if new_password else None
         upsert_app_settings({SETTINGS_KEY: merged}, read_back = False)
     return status()
 
 
-def grant_override(pool: str, *, password: Optional[str] = None) -> dict[str, Any]:
+def grant_override() -> dict[str, Any]:
     with _override_lock:
         settings = load_settings()
-        stored_hash = settings.get("passwordHash")
-        if stored_hash and not (password and verify_password(password, stored_hash)):
-            raise TokenLimitPasswordError()
         if not settings["enabled"]:
             raise HTTPException(status_code = 409, detail = "The token limit is off.")
         _require_usage_accounting()
         start_ms, _end_ms = period_window(settings["period"], settings["timezone"])
-        usage = _pool_usage(settings, start_ms).get(pool)
-        if usage is None:
-            raise HTTPException(status_code = 400, detail = f"Unknown token limit pool: {pool}")
-        if not usage.reached:
+        if _used(start_ms) < settings["limit"]:
             raise HTTPException(status_code = 409, detail = "This limit has not been reached.")
-        overrides = _overrides()
-        if _override_state(overrides, pool, start_ms) is not None:
+        if _override_state(start_ms) is not None:
             raise HTTPException(
                 status_code = 409,
                 detail = "The one-time override for this period was already used.",
             )
-        overrides[pool] = {"periodStart": start_ms, "state": "granted"}
-        upsert_app_settings({OVERRIDES_KEY: overrides}, read_back = False)
+        _set_override(start_ms, "granted")
     return status()
 
 
-def restore_override(pool: str, start_ms: int) -> None:
+def restore_override(start_ms: int) -> None:
     """Gives back an override whose request was refused before it generated anything."""
     with _override_lock:
-        overrides = _overrides()
-        if _override_state(overrides, pool, start_ms) == "used":
-            overrides[pool] = {"periodStart": start_ms, "state": "granted"}
-            upsert_app_settings({OVERRIDES_KEY: overrides}, read_back = False)
+        if _override_state(start_ms) == "used":
+            _set_override(start_ms, "granted")
+
+
+def enforce() -> Optional[int]:
+    """Returns the period start when this request spent the one-time override."""
+    settings = load_settings()
+    if not settings["enabled"]:
+        return None
+    _require_usage_accounting()
+    start_ms, end_ms = period_window(settings["period"], settings["timezone"])
+    used = _used(start_ms)
+    if used < settings["limit"]:
+        return None
+    with _override_lock:
+        if _override_state(start_ms) == "granted":
+            _set_override(start_ms, "used")
+            return start_ms
+    period = {"day": "daily", "week": "weekly", "month": "monthly"}[settings["period"]]
+    resets = datetime.fromtimestamp(end_ms / 1000, _zone(settings["timezone"]))
+    raise HTTPException(
+        status_code = 429,
+        detail = (
+            f"You have reached your {period} token limit ({used:,} of {settings['limit']:,} "
+            f"tokens). It resets {resets:%Y-%m-%d %H:%M}."
+        ),
+        headers = {
+            "X-Unsloth-Token-Limit": "reached",
+            "Retry-After": str(max(1, (end_ms - int(time.time() * 1000)) // 1000)),
+        },
+    )
+
+
+async def refund_if_unused(claim: dict, *, failed: bool) -> None:
+    # A 503 no-model refusal generated nothing, but a 502 can follow output, and a success through
+    # a path the monitor does not see must never refund. A monitored cancel / fail counts.
+    if (failed or claim.get("failed")) and claim.get("spent") and not claim.get("generated"):
+        await asyncio.to_thread(restore_override, claim["spent"])
 
 
 class OverrideRefundMiddleware:
@@ -289,6 +210,7 @@ class OverrideRefundMiddleware:
             await self.app(scope, receive, send)
             return
         from core.inference.api_monitor import override_claim_scope
+        from core.inference.llama_keepwarm import _RESPONSE_FAILED_SCOPE_KEY
 
         status = None
 
@@ -303,53 +225,9 @@ class OverrideRefundMiddleware:
                 await self.app(scope, receive, send_status)
             finally:
                 # A 200 stream can still fail in band (flagged for the keep-warm middleware).
-                from core.inference.llama_keepwarm import _RESPONSE_FAILED_SCOPE_KEY
                 await refund_if_unused(
                     claim,
                     failed = status is None
                     or status >= 400
                     or bool(scope.get(_RESPONSE_FAILED_SCOPE_KEY)),
                 )
-
-
-async def refund_if_unused(claim: dict, *, failed: bool) -> None:
-    # Both: a 503 no-model refusal generated nothing, but a 502 can follow output, and a success
-    # through a path the monitor does not see must never refund. A monitored cancel / fail counts.
-    if (failed or claim.get("failed")) and claim.get("spent") and not claim.get("generated"):
-        import asyncio
-        await asyncio.to_thread(restore_override, *claim["spent"])
-
-
-def _period_label(period: str) -> str:
-    return {"day": "daily", "week": "weekly", "month": "monthly"}.get(period, period)
-
-
-def enforce(*, api: bool) -> Optional[tuple[str, int]]:
-    """Returns (pool, periodStart) when this request spent the one-time override."""
-    settings = load_settings()
-    if not settings["enabled"]:
-        return None
-    _require_usage_accounting()
-    start_ms, end_ms = period_window(settings["period"], settings["timezone"])
-    pool = request_pool(settings, api = api)
-    usage = _pool_usage(settings, start_ms)[pool]
-    if not usage.reached:
-        return None
-    with _override_lock:
-        overrides = _overrides()
-        state = _override_state(overrides, pool, start_ms)
-        if state == "granted":
-            overrides[pool] = {"periodStart": start_ms, "state": "used"}
-            upsert_app_settings({OVERRIDES_KEY: overrides}, read_back = False)
-            return pool, start_ms
-    scope = {"local": "local model ", "api": "API "}.get(pool, "")
-    retry_after = max(1, (end_ms - int(time.time() * 1000)) // 1000)
-    raise HTTPException(
-        status_code = 429,
-        detail = (
-            f"You have reached your {_period_label(settings['period'])} {scope}token limit "
-            f"({usage.used:,} of {usage.limit:,} tokens). It resets "
-            f"{datetime.fromtimestamp(end_ms / 1000, _zone(settings['timezone'])):%Y-%m-%d %H:%M}."
-        ),
-        headers = {"X-Unsloth-Token-Limit": pool, "Retry-After": str(retry_after)},
-    )

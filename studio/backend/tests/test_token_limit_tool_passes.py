@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -83,212 +84,97 @@ def test_a_shared_preview_reply_gets_a_stateless_receipt():
     )
     clean = _sanitize_preview_payload(payload, is_lora = False)
     assert clean.temporary_chat is True
-    assert (clean.thread_id, clean.temporary_message_id, clean.temporary_parent_id) == (None,) * 3
+    assert (clean.thread_id, clean.temporary_message_id) == (None, None)
 
 
-def test_an_interrupted_temporary_reply_settles_an_estimate():
+def _usage(
+    prompt = None,
+    completion = None,
+    total = None,
+):
+    return (
+        "usage",
+        {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total},
+    )
+
+
+@pytest.mark.parametrize(
+    "temporary, prompt, steps, status, expected",
+    [
+        # Stopped before any usage report: estimate both sides from text length.
+        (True, 400, [("reply", 80)], "cancelled", (100, 20, 120)),
+        (False, 40, [("reply", 40)], "cancelled", (10, 10, 20)),
+        # The display buffer is capped; the estimate is not.
+        (True, 0, [("reply", 12_000)] * 4, "cancelled", (0, 12_000, 12_000)),
+        # Generated text the reply buffer never shows still counts.
+        (True, 0, [("reasoning", 400)], "cancelled", (0, 100, 100)),
+        (False, 0, [_usage(10), ("thinking", 400)], "cancelled", (10, 100, 110)),
+        (False, 0, [("tool_args", 4000)], "cancelled", (0, 1000, 1000)),
+        (False, 0, [("tool_args", 4000), ("flush", 0)], "cancelled", (0, 1000, 1000)),
+        # Anthropic reports input at message_start: keep it, estimate the missing output.
+        (False, 4000, [_usage(10), ("reply", 400)], "cancelled", (10, 100, 110)),
+        # Only output after the last report is added; a finished stream's report stands.
+        (
+            False,
+            0,
+            [("reply", 40), _usage(90, 10, 100), ("reply", 400)],
+            "cancelled",
+            (90, 110, 200),
+        ),
+        (False, 0, [("reply", 400), _usage(90, 7, 97)], "completed", (90, 7, 97)),
+        # A reported zero is real (max_tokens 0 scoring), not missing usage.
+        (False, 4, [("reply", 17), _usage(1, 0, 1)], "completed", (1, 0, 1)),
+    ],
+)
+def test_a_receipt_settles_reported_and_estimated_usage(
+    monkeypatch, temporary, prompt, steps, status, expected
+):
     from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
 
     receipts = []
     monitor = ApiMonitor()
     monitor.set_terminal_callback(receipts.append)
-    with temporary_usage_scope(TemporaryUsage("thread", "external", "message")):
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    with temporary_usage_scope(TemporaryUsage("thread", "message") if temporary else None):
         entry = monitor.start(
             endpoint = "/v1/chat/completions",
             method = "POST",
             model = "m",
-            prompt = "p" * 400,
+            prompt = "p" * prompt,
             subject = "owner",
+            via_api_key = not temporary,
         )
-    monitor.append_reply(entry, "r" * 80)
-    monitor.finish(entry, "cancelled")
+    for kind, value in steps:
+        if kind == "reply":
+            monitor.append_reply(entry, "r" * value)
+        elif kind == "usage":
+            monitor.set_usage(entry, **value)
+        elif kind == "reasoning":
+            chunk = {"choices": [{"index": 0, "delta": {"reasoning_content": "t" * value}}]}
+            inference_route._monitor_openai_chunk(entry, chunk, None)
+        elif kind == "thinking":
+            delta = {"type": "thinking_delta", "thinking": "t" * value}
+            inference_route._monitor_anthropic_payload(
+                entry, {"type": "content_block_delta", "delta": delta}
+            )
+        elif kind == "tool_args":
+            monitor.accumulate_openai_tool_call(
+                entry,
+                choice_index = 0,
+                tool_index = 0,
+                call_id = "c",
+                name_fragment = None,
+                arguments_fragment = "a" * value,
+            )
+        else:
+            inference_route._flush_monitor_stream_tool_calls(entry)
+    monitor.finish(entry, status)
     [receipt] = receipts
-    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (
-        100,
-        20,
-        120,
-    )
+    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == expected
 
 
-def test_a_long_interrupted_temporary_reply_is_estimated_in_full():
-    from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
-
-    receipts = []
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(receipts.append)
-    with temporary_usage_scope(TemporaryUsage("thread", "external", "message")):
-        entry = monitor.start(
-            endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "", subject = "o"
-        )
-    for _ in range(4):
-        monitor.append_reply(entry, "r" * 12_000)
-    monitor.finish(entry, "cancelled")
-    [receipt] = receipts
-    assert receipt.completion_tokens == 12_000
-
-
-def test_closing_a_temporary_stream_closes_the_stream_it_wraps():
-    import asyncio
-
-    from core.inference.api_monitor import TemporaryUsage
-
-    events = []
-
-    async def inner():
-        try:
-            yield b"one"
-            yield b"two"
-        finally:
-            events.append("inner closed")
-
-    async def run():
-        outer = inference_route._scoped_stream(inner(), TemporaryUsage("t", "local"))
-        assert await outer.__anext__() == b"one"
-        await outer.aclose()
-        events.append("outer closed")
-
-    asyncio.run(run())
-    assert events == ["inner closed", "outer closed"]
-
-
-def test_a_cancelled_api_key_stream_settles_an_estimate():
-    receipts = []
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(receipts.append)
-    entry = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "p" * 40,
-        subject = "owner",
-        via_api_key = True,
-    )
-    monitor.append_reply(entry, "r" * 40)
-    monitor.finish(entry, "cancelled")
-    [receipt] = receipts
-    assert (receipt.prompt_tokens, receipt.completion_tokens) == (10, 10)
-
-
-def test_reasoning_counts_toward_an_interrupted_estimate():
-    from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
-
-    receipts = []
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(receipts.append)
-    with temporary_usage_scope(TemporaryUsage("thread", "local", "message")):
-        entry = monitor.start(
-            endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "", subject = "o"
-        )
-    monitor_before = inference_route.api_monitor
-    inference_route.api_monitor = monitor
-    try:
-        chunk = {"choices": [{"index": 0, "delta": {"reasoning_content": "t" * 400}}]}
-        inference_route._monitor_openai_chunk(entry, chunk, None)
-    finally:
-        inference_route.api_monitor = monitor_before
-    monitor.finish(entry, "cancelled")
-    [receipt] = receipts
-    assert receipt.completion_tokens == 100
-    assert monitor.get(entry)["reply"] == ""
-
-
-def test_reported_input_keeps_its_count_while_missing_output_is_estimated():
-    receipts = []
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(receipts.append)
-    entry = monitor.start(
-        endpoint = "/v1/messages",
-        method = "POST",
-        model = "m",
-        prompt = "p" * 4000,
-        subject = "owner",
-        via_api_key = True,
-    )
-    monitor.set_usage(entry, prompt_tokens = 10)
-    monitor.append_reply(entry, "r" * 400)
-    monitor.finish(entry, "cancelled")
-    [receipt] = receipts
-    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (
-        10,
-        100,
-        110,
-    )
-
-
-def test_output_after_the_last_usage_report_is_still_charged():
-    receipts = []
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(receipts.append)
-    entry = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "",
-        subject = "o",
-        via_api_key = True,
-    )
-    monitor.append_reply(entry, "a" * 40)
-    monitor.set_usage(entry, prompt_tokens = 90, completion_tokens = 10, total_tokens = 100)
-    monitor.append_reply(entry, "b" * 400)
-    monitor.finish(entry, "cancelled")
-    [receipt] = receipts
-    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (
-        90,
-        110,
-        200,
-    )
-
-
-def test_a_finished_stream_adds_nothing_to_its_reported_usage():
-    receipts = []
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(receipts.append)
-    entry = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "",
-        subject = "o",
-        via_api_key = True,
-    )
-    monitor.append_reply(entry, "a" * 400)
-    monitor.set_usage(entry, prompt_tokens = 90, completion_tokens = 7, total_tokens = 97)
-    monitor.finish(entry)
-    [receipt] = receipts
-    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (90, 7, 97)
-
-
-def test_anthropic_thinking_counts_toward_an_interrupted_estimate():
-    receipts = []
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(receipts.append)
-    entry = monitor.start(
-        endpoint = "/v1/messages",
-        method = "POST",
-        model = "m",
-        prompt = "",
-        subject = "o",
-        via_api_key = True,
-    )
-    monitor.set_usage(entry, prompt_tokens = 10)
-    monitor_before = inference_route.api_monitor
-    inference_route.api_monitor = monitor
-    try:
-        inference_route._monitor_anthropic_payload(
-            entry,
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": "t" * 400},
-            },
-        )
-    finally:
-        inference_route.api_monitor = monitor_before
-    monitor.finish(entry, "cancelled")
-    [receipt] = receipts
-    assert (receipt.prompt_tokens, receipt.completion_tokens) == (10, 100)
-
-
-def test_cancelling_a_temporary_stream_cancels_the_stream_it_wraps():
+@pytest.mark.parametrize("cancel", [False, True])
+def test_a_temporary_stream_closes_or_cancels_the_stream_it_wraps(cancel):
     import asyncio
 
     from core.inference.api_monitor import TemporaryUsage
@@ -302,20 +188,21 @@ def test_cancelling_a_temporary_stream_cancels_the_stream_it_wraps():
         except asyncio.CancelledError:
             events.append("inner cancelled")
             raise
-        except GeneratorExit:
-            events.append("inner closed without cancellation")
-            raise
+        finally:
+            events.append("inner closed")
 
     async def run():
-        outer = inference_route._scoped_stream(inner(), TemporaryUsage("t", "local"))
+        outer = inference_route._scoped_stream(inner(), TemporaryUsage("t"))
         assert await outer.__anext__() == b"one"
-        try:
-            await outer.athrow(asyncio.CancelledError())
-        except asyncio.CancelledError:
-            pass
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await outer.athrow(asyncio.CancelledError())
+        else:
+            await outer.aclose()
 
     asyncio.run(run())
-    assert events == ["inner cancelled"]
+    # A cancellation reaches the inner stream's cancel handler (slot release, receipt).
+    assert events == (["inner cancelled", "inner closed"] if cancel else ["inner closed"])
 
 
 def test_every_gguf_reasoning_branch_counts_its_length():
@@ -329,43 +216,6 @@ def test_every_gguf_reasoning_branch_counts_its_length():
     )
     assert len(branches) >= 11
     assert all("output_chars" in args for _, args in branches), branches
-
-
-def _api_key_entry(monitor):
-    return monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "m",
-        prompt = "",
-        subject = "o",
-        via_api_key = True,
-    )
-
-
-def test_streamed_tool_arguments_count_in_full_and_once():
-    for flush in (False, True):
-        receipts = []
-        monitor = ApiMonitor()
-        monitor.set_terminal_callback(receipts.append)
-        entry = _api_key_entry(monitor)
-        monitor.accumulate_openai_tool_call(
-            entry,
-            choice_index = 0,
-            tool_index = 0,
-            call_id = "c",
-            name_fragment = None,
-            arguments_fragment = "a" * 4000,
-        )
-        if flush:
-            monitor_before = inference_route.api_monitor
-            inference_route.api_monitor = monitor
-            try:
-                inference_route._flush_monitor_stream_tool_calls(entry)
-            finally:
-                inference_route.api_monitor = monitor_before
-        monitor.finish(entry, "cancelled")
-        [receipt] = receipts
-        assert receipt.completion_tokens == 1000, flush
 
 
 def test_streamed_tool_argument_frames_count_toward_a_stopped_estimate(monkeypatch):
@@ -413,87 +263,38 @@ def test_streamed_tool_argument_frames_count_toward_a_stopped_estimate(monkeypat
     assert monitor._find_locked(entry["id"]).reply_chars == 400
 
 
-def test_responses_tool_arguments_count_as_they_stream_and_once():
+@pytest.mark.parametrize("healed", [False, True])
+def test_responses_tool_arguments_count_once(monkeypatch, healed):
     from types import SimpleNamespace
 
     from models.inference import ChatCompletionRequest, ResponsesRequest
 
     monitor = ApiMonitor()
-    entry = _api_key_entry(monitor)
-    monitor_before = inference_route.api_monitor
-    inference_route.api_monitor = monitor
-    try:
-        translator = inference_route._ResponsesStreamTranslator(
-            payload = ResponsesRequest(model = "m", input = "hi"),
-            chat_req = ChatCompletionRequest(model = "m", messages = [{"role": "user", "content": "hi"}]),
-            request = SimpleNamespace(state = SimpleNamespace()),
-            monitor_id = entry,
-            resp_id = "resp",
-            created_at = 0,
-            model = "m",
-            context_length = None,
-            parse_think_markers = False,
-            healer = None,
-        )
-        chunk = {
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "type": "function",
-                                "function": {"name": "edit", "arguments": "a" * 4000},
-                            }
-                        ]
-                    },
-                }
-            ]
-        }
-        list(translator.feed(chunk))
-        streamed = monitor._find_locked(entry).reply_chars
-        list(translator.finish())
-        finished = monitor._find_locked(entry).reply_chars
-    finally:
-        inference_route.api_monitor = monitor_before
-    assert streamed == 4004
-    assert finished == streamed
-
-
-def test_a_healed_responses_tool_call_counts_when_emitted():
-    from types import SimpleNamespace
-
-    from models.inference import ChatCompletionRequest, ResponsesRequest
-
-    monitor = ApiMonitor()
-    entry = _api_key_entry(monitor)
-    monitor_before = inference_route.api_monitor
-    inference_route.api_monitor = monitor
-    try:
-        translator = inference_route._ResponsesStreamTranslator(
-            payload = ResponsesRequest(model = "m", input = "hi"),
-            chat_req = ChatCompletionRequest(model = "m", messages = [{"role": "user", "content": "hi"}]),
-            request = SimpleNamespace(state = SimpleNamespace()),
-            monitor_id = entry,
-            resp_id = "resp",
-            created_at = 0,
-            model = "m",
-            context_length = None,
-            parse_think_markers = False,
-            healer = None,
-        )
-        translator._healed_event_sse(
-            [("call", {"id": "h1", "function": {"name": "edit", "arguments": "a" * 400}})]
-        )
-        healed = monitor._find_locked(entry).reply_chars
-        list(translator.finish())
-        finished = monitor._find_locked(entry).reply_chars
-    finally:
-        inference_route.api_monitor = monitor_before
-    assert healed == 404
-    assert finished == healed
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry = monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "m", prompt = "", via_api_key = True
+    )
+    translator = inference_route._ResponsesStreamTranslator(
+        payload = ResponsesRequest(model = "m", input = "hi"),
+        chat_req = ChatCompletionRequest(model = "m", messages = [{"role": "user", "content": "hi"}]),
+        request = SimpleNamespace(state = SimpleNamespace()),
+        monitor_id = entry,
+        resp_id = "resp",
+        created_at = 0,
+        model = "m",
+        context_length = None,
+        parse_think_markers = False,
+        healer = None,
+    )
+    call = {"id": "c1", "type": "function", "function": {"name": "edit", "arguments": "a" * 400}}
+    if healed:
+        translator._healed_event_sse([("call", call)])
+    else:
+        delta = {"tool_calls": [{"index": 0, **call}]}
+        list(translator.feed({"choices": [{"index": 0, "delta": delta}]}))
+    streamed = monitor._find_locked(entry).reply_chars
+    list(translator.finish())
+    assert streamed == monitor._find_locked(entry).reply_chars == 404
 
 
 def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed():
@@ -528,26 +329,6 @@ def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
     monitor.finish(entry, "cancelled")
     [receipt] = receipts
     assert receipt.prompt_tokens == 10_000
-
-
-def test_a_reported_zero_completion_is_not_replaced_by_an_estimate():
-    receipts = []
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(receipts.append)
-    entry = monitor.start(
-        endpoint = "/v1/completions",
-        method = "POST",
-        model = "m",
-        prompt = "p" * 4,
-        subject = "owner",
-        via_api_key = True,
-    )
-    # max_tokens 0 scoring: the preview carries choice headings, but nothing was generated.
-    monitor.append_reply(entry, "Choice 1\nChoice 2")
-    monitor.set_usage(entry, prompt_tokens = 1, completion_tokens = 0, total_tokens = 1)
-    monitor.finish(entry)
-    [receipt] = receipts
-    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (1, 0, 1)
 
 
 def test_a_temporary_chatgpt_subscription_stream_settles_a_receipt(monkeypatch):
@@ -633,7 +414,7 @@ def test_a_temporary_chatgpt_subscription_stream_settles_a_receipt(monkeypatch):
     )
 
     async def run():
-        with temporary_usage_scope(TemporaryUsage("thread", "external")):
+        with temporary_usage_scope(TemporaryUsage("thread")):
             response = await inference_route._proxy_to_external_provider(
                 payload, _Request(), "owner"
             )

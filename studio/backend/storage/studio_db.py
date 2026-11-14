@@ -4955,23 +4955,10 @@ def fork_chat_thread(
         conn.executemany(
             """INSERT OR REPLACE INTO token_usage_ledger
                 (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens,
-                 total_tokens, context_tokens, parent_message_id)
-                SELECT ?, ?, created_at, 'inherited', prompt_tokens, completion_tokens,
-                       total_tokens, context_tokens,
-                       CASE WHEN ? IS NULL THEN NULL ELSE COALESCE((
-                           SELECT parent_id FROM chat_messages WHERE id = ?
-                       ), '') END
+                 total_tokens)
+                SELECT ?, ?, created_at, 'inherited', prompt_tokens, completion_tokens, total_tokens
                 FROM token_usage_ledger WHERE message_id = ?""",
-            [
-                (
-                    id_map[row["id"]],
-                    new_thread_id,
-                    id_map.get(parents[row["id"]]),
-                    id_map.get(parents[row["id"]]),
-                    row["id"],
-                )
-                for row in ancestry
-            ],
+            [(id_map[row["id"]], new_thread_id, row["id"]) for row in ancestry],
         )
         conn.execute(
             "UPDATE token_usage_ledger SET source = 'inherited' WHERE thread_id = ?",

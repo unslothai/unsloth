@@ -365,11 +365,11 @@ async def create_chat_generation_run(
 
     # A retried POST for a run that already exists is not a new request.
     if await asyncio.to_thread(db.get_run_state, payload.runId) is None:
-        await _enforce_token_limit(request, external = False)
+        await _enforce_token_limit(request)
         # The 202 below precedes inference, so the worker's outcome decides the refund, not this response.
         spent = getattr(getattr(request, "state", None), "token_limit_override", None)
         if spent:
-            sanitized[db.TOKEN_LIMIT_OVERRIDE_FIELD] = list(spent)
+            sanitized[db.TOKEN_LIMIT_OVERRIDE_FIELD] = spent
     sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
     if timezone_headers := _timezone_headers(request):
         sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers

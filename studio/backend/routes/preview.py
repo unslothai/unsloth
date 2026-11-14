@@ -131,7 +131,6 @@ def _sanitize_preview_payload(
             # Stateless: its receipt is the only record the token allowance can charge.
             "temporary_chat": True,
             "temporary_message_id": None,
-            "temporary_parent_id": None,
             "rag_scope": None,
             "openai_code_exec_container_id": None,
             "anthropic_code_exec_container_id": None,
