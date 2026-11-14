@@ -7638,6 +7638,12 @@ def _monitor_openai_chunk(
             choice_index = idx
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
+        if not streaming and isinstance(message, dict):
+            # A whole response's thinking never reaches the reply preview: count it for estimates.
+            reasoning = message.get("reasoning_content")
+            api_monitor.count_output(
+                monitor_id, len(reasoning) if isinstance(reasoning, str) else 0
+            )
         raw_content = delta.get("content") if isinstance(delta, dict) else None
         if isinstance(delta, dict) and (
             delta.get("reasoning_content")

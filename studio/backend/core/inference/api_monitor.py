@@ -643,6 +643,11 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
                 return
+            # Generated output, counted in full before the preview's call and size caps apply.
+            for fragment in (name_fragment, arguments_fragment):
+                text = _stream_tool_fragment(fragment, serialize_json = True)
+                entry.reply_chars += len(text or "")
+            _note_generated(entry)
             same_choice = [
                 state
                 for state in entry.openai_stream_tool_calls
@@ -702,11 +707,6 @@ class ApiMonitor:
             elif call_id is not None and state.call_id is None:
                 state.call_id = call_id
             entry.openai_stream_last_tool_indexes[choice_index] = tool_index
-            # Generated output, counted in full here: the preview below is capped per field.
-            for fragment in (name_fragment, arguments_fragment):
-                text = _stream_tool_fragment(fragment, serialize_json = True)
-                entry.reply_chars += len(text or "")
-            _note_generated(entry)
             pending_chars = sum(
                 len(candidate.name) + len(candidate.arguments)
                 for candidate in entry.openai_stream_tool_calls

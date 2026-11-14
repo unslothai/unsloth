@@ -96,6 +96,9 @@ def _usage(
         # Generated text the reply buffer never shows still counts.
         (True, 0, [("reasoning", 400)], "cancelled", (0, 100, 100)),
         (True, 0, [("hidden", 400)], "cancelled", (0, 100, 100)),
+        (False, 0, [("message_reasoning", 400)], "completed", (0, 100, 100)),
+        # Calls past the preview's call cap are still generated output.
+        (False, 0, [("tool_call", (i, 40)) for i in range(70)], "cancelled", (0, 700, 700)),
         # A tool loop's earlier passes reported after a later one was interrupted mid-stream.
         (
             True,
@@ -166,6 +169,21 @@ def test_a_receipt_settles_reported_and_estimated_usage(
             inference_route._monitor_usage(entry, value)
         elif kind == "hidden":
             monitor.count_output(entry, value)
+        elif kind == "message_reasoning":
+            message = {"role": "assistant", "content": "", "reasoning_content": "t" * value}
+            inference_route._monitor_openai_chunk(
+                entry, {"choices": [{"index": 0, "message": message}]}
+            )
+        elif kind == "tool_call":
+            index, chars = value
+            monitor.accumulate_openai_tool_call(
+                entry,
+                choice_index = 0,
+                tool_index = index,
+                call_id = f"c{index}",
+                name_fragment = None,
+                arguments_fragment = "a" * chars,
+            )
         elif kind == "reasoning":
             chunk = {"choices": [{"index": 0, "delta": {"reasoning_content": "t" * value}}]}
             inference_route._monitor_openai_chunk(entry, chunk, None)
