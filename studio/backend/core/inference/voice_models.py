@@ -464,6 +464,26 @@ _PICKLE_BUILTINS = {
 }
 
 
+def _pickle_type_allowed(found: type) -> bool:
+    """Estimators, arrays, scalars and sparse matrices only. NumPy and SciPy also ship classes that
+    open files when constructed (numpy.memmap, scipy.io.FortranFile): a pickle must not reach them."""
+    home = str(getattr(found, "__module__", "") or "")
+    top = home.split(".")[0]
+    if top == "sklearn":
+        return True
+    if top == "scipy":
+        return home.startswith("scipy.sparse")
+    if top != "numpy":
+        return False
+    import numpy as np
+
+    return (
+        found in (np.ndarray, np.dtype)
+        or issubclass(found, np.generic)
+        or issubclass(found, np.dtype)
+    )
+
+
 class _SklearnUnpickler(pickle.Unpickler):
     def find_class(self, module: str, name: str):
         if (module, name) in _PICKLE_CALLABLES:
@@ -475,8 +495,7 @@ class _SklearnUnpickler(pickle.Unpickler):
         # Dotted names walk attributes ("subprocess.Popen") and re-exports are not the package's own: both refused.
         if "." not in name and module.split(".")[0] in _PICKLE_PACKAGES:
             found = super().find_class(module, name)
-            home = str(getattr(found, "__module__", "") or "").split(".")[0]
-            if isinstance(found, type) and home in _PICKLE_PACKAGES:
+            if isinstance(found, type) and _pickle_type_allowed(found):
                 return found
         raise pickle.UnpicklingError(
             f"voice model pickle refers to {module}.{name}, which is not allowed"

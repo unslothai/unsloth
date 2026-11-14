@@ -37,7 +37,7 @@ from core.inference.llama_server_args import (
 from loggers import get_logger
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
-from utils.account_context import is_owner_context
+from utils.account_context import current_account_id, is_owner_context
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatForkActiveGenerationError,
@@ -1012,14 +1012,14 @@ async def delete_threads(
     # Archives and uploads are keyed by thread id; drop them so each deleted chat does not leak a scope.
     await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
     await run_in_threadpool(chat_originals.sweep)
-    await run_in_threadpool(_remove_voice_log_rows, payload.ids)
+    await run_in_threadpool(_remove_voice_log_rows, payload.ids, current_account_id())
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
-def _remove_voice_log_rows(thread_ids) -> None:
+def _remove_voice_log_rows(thread_ids, account: str) -> None:
     try:
         from core.inference import voice_log
-        voice_log.delete_thread_rows(thread_ids)
+        voice_log.delete_thread_rows(thread_ids, account)
     except Exception:  # noqa: BLE001 - deletion must still complete
         logger.warning(
             "Could not remove the voice decision log rows for %s", thread_ids, exc_info = True
@@ -1584,7 +1584,7 @@ async def delete_project(
     # The project's chats go with it, so their archives and documents have to as well.
     await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
     await run_in_threadpool(chat_originals.sweep)
-    await run_in_threadpool(_remove_voice_log_rows, member_ids)
+    await run_in_threadpool(_remove_voice_log_rows, member_ids, current_account_id())
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -2061,7 +2061,9 @@ async def clear_history(
         _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
     await run_in_threadpool(chat_originals.sweep)
-    await run_in_threadpool(_remove_voice_log_rows, list(dict.fromkeys(thread_ids + cleared)))
+    await run_in_threadpool(
+        _remove_voice_log_rows, list(dict.fromkeys(thread_ids + cleared)), current_account_id()
+    )
     # delete_files off by default, as in DELETE /threads: the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
     # Reap uses the original clear's snapshot so a replay can't reach newer chats' images.

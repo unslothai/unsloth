@@ -590,3 +590,18 @@ def test_voice_pickles_refuse_a_dotted_or_foreign_global(tmp_path, module, name)
     (tmp_path / "model.pkl").write_bytes(_global_call(module, name, "true"))
     with pytest.raises(pickle.UnpicklingError, match = "not allowed"):
         vm._TfidfClassifier(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "module,name",
+    [("numpy", "memmap"), ("scipy.io", "FortranFile"), ("numpy.lib.npyio", "NpzFile")],
+)
+def test_voice_pickles_refuse_classes_that_open_files(tmp_path, module, name):
+    import pickle
+
+    target = tmp_path / "victim.txt"
+    target.write_text("keep me", encoding = "utf-8")
+    (tmp_path / "model.pkl").write_bytes(_global_call(module, name, str(target)))
+    with pytest.raises(pickle.UnpicklingError, match = "not allowed"):
+        vm._TfidfClassifier(tmp_path)
+    assert target.read_text(encoding = "utf-8") == "keep me"

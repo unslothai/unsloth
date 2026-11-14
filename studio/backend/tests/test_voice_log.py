@@ -170,6 +170,18 @@ def test_clear_and_thread_delete(tmp_path):
     assert vl.stats()["rows"] == 0
 
 
+def test_a_chat_delete_drops_only_the_callers_rows():
+    from utils.account_context import OWNER_ACCOUNT_ID
+
+    alice = vl.append("judge", {"text": "alice"}, "sent", 0.9, 1.0, thread_id = "t1", account = "alice")
+    bob = vl.append("judge", {"text": "bob"}, "sent", 0.9, 1.0, thread_id = "t1", account = "bob")
+    legacy = vl.append("judge", {"text": "old"}, "sent", 0.9, 1.0, thread_id = "t1")
+    assert vl.delete_thread_rows(["t1"], "bob") == 1
+    assert {r["id"] for r in vl.read_rows()} == {alice, legacy}
+    assert vl.delete_thread_rows(["t1"], OWNER_ACCOUNT_ID) == 1
+    assert {r["id"] for r in vl.read_rows()} == {alice}
+
+
 def test_an_outcome_for_a_deleted_chat_is_not_written():
     """An outcome that loses the race with its chat's delete leaves nothing behind."""
     row_id = _judge("secret words", 0.9, thread_id = "chat-1")
@@ -177,3 +189,12 @@ def test_an_outcome_for_a_deleted_chat_is_not_written():
 
     assert vl.set_outcome(row_id, "continued", {"text": "secret words"}) is False
     assert not vl.outcomes_path().exists() or "secret words" not in vl.outcomes_path().read_text()
+
+
+def test_the_chat_delete_route_scopes_the_log_to_the_caller():
+    import inspect
+
+    from routes import chat_history
+    assert "_remove_voice_log_rows, payload.ids, current_account_id()" in inspect.getsource(
+        chat_history.delete_threads
+    )
