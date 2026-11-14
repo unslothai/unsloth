@@ -3499,7 +3499,12 @@ def _should_inject_bootstrap(request: Request) -> bool:
         return False
     if _IS_COLAB and _is_colab_notebook_request(request):
         return True
-    return _is_local_bootstrap_request(request)
+    if not _is_local_bootstrap_request(request):
+        return False
+    # A loopback port is not an identity: keep the password from another OS user's connection.
+    from utils.loopback_peer import peer_is_another_local_user
+
+    return not peer_is_another_local_user(request)
 
 
 _IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
