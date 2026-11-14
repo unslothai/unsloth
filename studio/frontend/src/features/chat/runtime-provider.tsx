@@ -2524,6 +2524,12 @@ function useStudioRuntimeAdapters(
       const remoteId = aui.threadListItem().getState().remoteId;
       if (!remoteId) return;
       const generation = beginSavedHistoryReconciliation(remoteId);
+      let idsAtRead: Set<string> | undefined;
+      try {
+        idsAtRead = new Set(aui.thread().export().messages.map((item) => item.message.id));
+      } catch {
+        idsAtRead = undefined;
+      }
       void readStoredChatMessages(remoteId)
         .then(({ messages, fromBackend }) => {
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
@@ -2538,6 +2544,7 @@ function useStudioRuntimeAdapters(
               editingMessageId:
                 useChatRuntimeStore.getState().editingMessageId ?? null,
               toThreadMessage,
+              idsAtRead,
             });
           }
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {

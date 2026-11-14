@@ -5,6 +5,7 @@ import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/rea
 
 import type { MessageRecord } from "../types";
 import { restoredAssistantStatus } from "./continuation";
+import { resolveSavedBranchHead } from "./message-order";
 import {
   generationNeedsRecovery,
   generationRawContent,
@@ -129,11 +130,14 @@ export function appendExternalStoredTurns(
   exported: ExportedMessageRepository,
   storedMessages: readonly MessageRecord[],
   toThreadMessage: (record: MessageRecord) => ThreadMessage,
+  idsAtRead?: ReadonlySet<string>,
 ): ExportedMessageRepository | null {
   if (exported.messages.some((item) => item.message.status?.type === "running")) {
     return null;
   }
   const known = new Set(exported.messages.map((item) => item.message.id));
+  // A local delete raced the read, so the snapshot still holds the removed rows.
+  if (idsAtRead && [...idsAtRead].some((id) => !known.has(id))) return null;
   // In-flight runs are added like a reload adds them; generation recovery then streams them.
   const pending = storedMessages
     .filter((message) => !known.has(message.id))
@@ -152,18 +156,16 @@ export function appendExternalStoredTurns(
   }
   if (appended.length === 0) return null;
 
-  let headId = exported.headId ?? null;
-  for (;;) {
-    const children = appended.filter((item) => item.parentId === headId);
-    if (children.length === 0) break;
-    headId = children[children.length - 1].message.id;
-  }
+  // Same leaf policy as the history loader; a head on another branch stays put.
+  const leaf = resolveSavedBranchHead([...storedMessages], exported.headId);
+  const headId = leaf && known.has(leaf) ? leaf : (exported.headId ?? null);
   return { ...exported, headId, messages: [...exported.messages, ...appended] };
 }
 
 type ThreadImportExport = {
   export: () => ExportedMessageRepository;
   import: (data: ExportedMessageRepository) => void;
+  getState?: () => { messages: readonly { composer?: { isEditing?: boolean } }[] };
 };
 
 type ReconcileView = {
@@ -178,6 +180,7 @@ export function reconcileOrdinarySavedMessagesInView(
   options: {
     editingMessageId: string | null;
     toThreadMessage: (record: MessageRecord) => ThreadMessage;
+    idsAtRead?: ReadonlySet<string>;
   },
 ): boolean {
   if (view.threadListItem().getState().remoteId !== threadId) {
@@ -185,6 +188,10 @@ export function reconcileOrdinarySavedMessagesInView(
   }
   try {
     const thread = view.thread();
+    // An import resets an open prompt-edit composer and loses its draft.
+    if (thread.getState?.().messages.some((message) => message.composer?.isEditing)) {
+      return false;
+    }
     const exported = thread.export();
     const { messages, changed } = reconcileOrdinarySavedMessagesInExport(
       exported,
@@ -192,10 +199,14 @@ export function reconcileOrdinarySavedMessagesInView(
       options,
     );
     const patched = { ...exported, messages };
-    // An import would drop an open edit composer.
     const extended =
       options.editingMessageId === null
-        ? appendExternalStoredTurns(patched, storedMessages, options.toThreadMessage)
+        ? appendExternalStoredTurns(
+            patched,
+            storedMessages,
+            options.toThreadMessage,
+            options.idsAtRead,
+          )
         : null;
     if (!changed && !extended) {
       return false;

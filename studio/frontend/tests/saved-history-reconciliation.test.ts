@@ -301,7 +301,7 @@ test("an assistant reply still streaming elsewhere is added so recovery can foll
   };
   const next = appendExternalStoredTurns(
     openView() as never,
-    [stored("u2", "user", "a1", 3), streaming],
+    [stored("u1", "user", null, 1), stored("a1", "assistant", "u1", 2), stored("u2", "user", "a1", 3), streaming],
     toRuntime,
   );
   assert.deepEqual(next?.messages.map((item) => item.message.id), ["u1", "a1", "u2", "a2"]);
@@ -352,4 +352,51 @@ test("switching threads reconciles only the view that owns the new active thread
   set("thread-2");
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(recovered, ["thread-2", "thread-1"]);
+});
+
+test("the head follows the newest saved leaf, as the history loader does", () => {
+  const next = appendExternalStoredTurns(
+    openView() as never,
+    [
+      stored("u1", "user", null, 1),
+      stored("a1", "assistant", "u1", 2),
+      stored("u2", "user", "a1", 3),
+      stored("u2-edit", "user", "a1", 5),
+      stored("a2-edit", "assistant", "u2-edit", 6),
+      stored("a2-retry", "assistant", "u2", 7),
+    ],
+    toRuntime,
+  );
+  assert.equal(next?.headId, "a2-retry");
+});
+
+test("a read that raced a local delete appends nothing", () => {
+  const idsAtRead = new Set(["u1", "a1", "a1-deleted"]);
+  assert.equal(
+    appendExternalStoredTurns(openView() as never, [stored("a1-deleted", "assistant", "u1", 3)], toRuntime, idsAtRead),
+    null,
+  );
+  assert.ok(
+    appendExternalStoredTurns(openView() as never, [stored("u2", "user", "a1", 3)], toRuntime, new Set(["u1", "a1"])),
+  );
+});
+
+test("an open prompt-edit composer blocks the import", () => {
+  let imported = false;
+  const view = {
+    threadListItem: () => ({ getState: () => ({ remoteId: "thread-1" }) }),
+    thread: () => ({
+      export: () => openView() as never,
+      import: () => { imported = true; },
+      getState: () => ({ messages: [{ composer: { isEditing: true } }, { composer: { isEditing: false } }] }),
+    }),
+  };
+  const changed = reconcileOrdinarySavedMessagesInView(
+    view,
+    "thread-1",
+    [stored("u2", "user", "a1", 3)] as never,
+    { editingMessageId: null, toThreadMessage: toRuntime },
+  );
+  assert.equal(changed, false);
+  assert.equal(imported, false);
 });
