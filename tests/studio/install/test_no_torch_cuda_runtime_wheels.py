@@ -273,3 +273,56 @@ def test_uv_off_path_is_still_used(tmp_path, monkeypatch):
     )
     assert ip._install_cuda_runtime_wheels(("nvidia-cuda-runtime",))
     assert calls[0][:3] == [str(uv), "pip", "install"]
+
+
+def _tiny_wheel(directory):
+    import zipfile
+
+    wheel = directory / "unsloth_uv_probe-1.0-py3-none-any.whl"
+    dist = "unsloth_uv_probe-1.0.dist-info"
+    files = {
+        "unsloth_uv_probe.py": "OK = True\n",
+        f"{dist}/METADATA": "Metadata-Version: 2.1\nName: unsloth-uv-probe\nVersion: 1.0\n",
+        f"{dist}/WHEEL": "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    with zipfile.ZipFile(wheel, "w") as zf:
+        for name, text in files.items():
+            zf.writestr(name, text)
+        zf.writestr(f"{dist}/RECORD", "".join(f"{n},,\n" for n in [*files, f"{dist}/RECORD"]))
+    return wheel
+
+
+def test_a_pipless_uv_venv_with_uv_off_path_gets_the_wheels(tmp_path):
+    # The real setup: a `uv venv` (no pip), PATH without uv, uv where the installers put it.
+    import os
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("needs uv")
+    venv = tmp_path / "venv"
+    subprocess.run([uv, "venv", str(venv), "--python", sys.executable], check = True)
+    py = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents = True)
+    shutil.copy2(uv, home / ".local" / "bin" / pathlib.Path(uv).name)
+    system_dirs = [
+        os.environ.get("SystemRoot", ""),
+        os.path.join(os.environ.get("SystemRoot", ""), "System32"),
+    ]
+    env = dict(
+        os.environ,
+        PATH = os.pathsep.join([str(py.parent), *(d for d in system_dirs if os.name == "nt")]),
+        HOME = str(home),
+        USERPROFILE = str(home),
+        UV_CACHE_DIR = str(tmp_path / "uv-cache"),
+        UV_OFFLINE = "1",
+    )
+    code = (
+        f"import sys; sys.path.insert(0, {str(REPO_ROOT / 'studio')!r}); "
+        "import install_llama_prebuilt as ip; "
+        f"sys.exit(0 if ip._install_cuda_runtime_wheels(({str(_tiny_wheel(tmp_path))!r},)) else 1)"
+    )
+    assert subprocess.run([str(py), "-c", code], env = env, timeout = 300).returncode == 0
+    assert subprocess.run([str(py), "-c", "import unsloth_uv_probe"], env = env).returncode == 0
