@@ -1104,7 +1104,6 @@ class LlamaCppPathResponse(BaseModel):
 
 
 class OfflineDocsPayload(BaseModel):
-    # Omitted fields stay unchanged; an explicit null path forgets the folder.
     path: Optional[str] = Field(default = None, max_length = MAX_OFFLINE_DOCS_PATH_LENGTH)
     auto_update: Optional[bool] = None
 

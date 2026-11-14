@@ -610,7 +610,7 @@ def _start_helper_precache_if_enabled() -> None:
 
 
 def _start_offline_docs_refresh_if_due() -> None:
-    """Refresh the owner's offline Unsloth docs once per new release; even the DB check stays off the startup path."""
+    """Offline docs refresh, DB check included, off the startup path."""
     import threading
 
     def _refresh():

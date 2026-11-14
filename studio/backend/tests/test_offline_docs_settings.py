@@ -69,7 +69,6 @@ def test_fetch_ignores_other_hosts():
 
 
 def test_fetch_refuses_partial_documents(monkeypatch):
-    # A self-linking part and a part count over the cap must never be saved as complete.
     loop = f"# Docs\n[Next Page]({docs.DOCS_URL}/1)"
     with pytest.raises(ValueError, match = "pagination"):
         docs.fetch_docs_text(_client({docs.DOCS_URL: loop, f"{docs.DOCS_URL}/1": loop}))
@@ -153,7 +152,6 @@ def test_refresh_is_due_once_per_build(store, tmp_path, monkeypatch):
     monkeypatch.setattr(docs, "_current_release", lambda: "2026.11.1")
     assert docs.offline_docs_refresh_due() is True
 
-    # Docker images and source checkouts report only "dev" or a branch: the package version decides.
     monkeypatch.setattr(docs, "_current_release", lambda: "dev")
     monkeypatch.setattr(docs, "_package_version", lambda: "2026.10.1")
     docs.refresh_offline_docs(fetch = lambda: "# docs\n")

@@ -153,7 +153,6 @@ def offline_docs_status() -> dict[str, Any]:
 
 
 def fetch_docs_text(client: Any = None) -> str:
-    """Every part of ``llms-full.txt``, following each part's trailing Next Page link, joined in order."""
     import httpx
 
     own_client = client is None
@@ -226,7 +225,6 @@ def _error_text(exc: Exception) -> str:
 def refresh_offline_docs(
     *, fetch: Callable[[], str] = fetch_docs_text, today: Callable[[], date] = date.today
 ) -> dict[str, Any]:
-    """Download the docs into the configured folder now; a failure keeps the previous copy and records the error."""
     if not _refresh_lock.acquire(blocking = False):
         raise OfflineDocsBusyError("The offline docs are already being updated.")
     try:
