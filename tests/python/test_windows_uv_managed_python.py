@@ -68,14 +68,16 @@ def _fake_python(tmp_path: Path) -> Path:
         exe = tmp_path / "python.cmd"
         exe.write_text(
             '@type "%FAKE_PY_FACTS_FILE%"\r\n'
-            "@if defined FAKE_PY_STDERR echo %FAKE_PY_STDERR% 1>&2\r\n",
+            "@if defined FAKE_PY_STDERR echo %FAKE_PY_STDERR% 1>&2\r\n"
+            "@if defined FAKE_PY_EXIT exit /b %FAKE_PY_EXIT%\r\n",
             encoding = "utf-8",
         )
     else:
         exe = tmp_path / "python"
         exe.write_text(
             '#!/bin/sh\ncat "$FAKE_PY_FACTS_FILE"\n'
-            'if [ -n "$FAKE_PY_STDERR" ]; then printf "%s\\n" "$FAKE_PY_STDERR" >&2; fi\n',
+            'if [ -n "$FAKE_PY_STDERR" ]; then printf "%s\\n" "$FAKE_PY_STDERR" >&2; fi\n'
+            'exit "${FAKE_PY_EXIT:-0}"\n',
             encoding = "utf-8",
         )
         exe.chmod(0o755)
@@ -120,6 +122,8 @@ def _resolve(
     skip: list[str] | None = None,
     install_exit: int = 0,
     stderr: str = "",
+    py_stderr: str | None = None,
+    py_exit: int = 0,
 ):
     (tmp_path / "uv.ps1").write_text(FAKE_UV, encoding = "utf-8")
     log = tmp_path / "uv.log"
@@ -154,7 +158,8 @@ if ($r) {{ $r | ConvertTo-Json -Compress }} else {{ 'null' }}
             "FAKE_PY": str(fake_py),
             "FAKE_PY_FACTS_FILE": str(tmp_path / "facts.txt"),
             "FAKE_UV_STDERR": stderr,
-            "FAKE_PY_STDERR": stderr,
+            "FAKE_PY_STDERR": stderr if py_stderr is None else py_stderr,
+            "FAKE_PY_EXIT": str(py_exit),
             "PROBE_PYTHON": sys.executable,
         },
     )
@@ -1288,3 +1293,107 @@ if ($result) {{
     if accepted and initial in ("damaged", "unreadable", "file"):
         assert Path(r["Path"]).parent != root
         assert re.fullmatch(re.escape(name) + r"-[0-9a-f]{32}", Path(r["Path"]).parent.name)
+
+
+def _policy_text(shell: str, code: int = 4551) -> str:
+    return _pwsh(shell, f"([System.ComponentModel.Win32Exception]::new({code})).Message.Trim()", {})
+
+
+# #17735: python.exe starts, but Windows refuses _socket.pyd; Python reports only the
+# formatted system message, in the user's language.
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("code, blocked", [(4551, True), (1260, True), (None, False)])
+def test_a_refused_extension_module_is_policy_evidence(shell, code, blocked):
+    reason = _policy_text(shell, code) if code else "The specified module could not be found."
+    script = f"""
+$ErrorActionPreference = 'Stop'
+{_function('Test-ApplicationControlBlock')}
+{_function('Invoke-PythonSelectionProbe')}
+$r = Invoke-PythonSelectionProbe -Executable $env:PROBE_PYTHON -Arguments @('-c',
+    "import os, sys; print('DLL load failed while importing _socket: ' + os.environ['PROBE_REASON'], file=sys.stderr); sys.exit(3)")
+@{{ Blocked = $r.Blocked; Code = $r.Code }} | ConvertTo-Json -Compress
+"""
+    r = json.loads(_pwsh(shell, script, {"PROBE_PYTHON": sys.executable, "PROBE_REASON": reason}))
+    assert r == {"Blocked": blocked, "Code": 3}
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("policy", [True, False])
+def test_uv_python_with_a_refused_extension_is_not_selected(shell, tmp_path, policy):
+    reason = _policy_text(shell) if policy else "The specified module could not be found."
+    result, _, fake_py = _resolve(
+        shell,
+        tmp_path,
+        facts = {X64: "3.13.17 win-amd64 0"},
+        py_stderr = f"DLL load failed while importing _socket: {reason}",
+        py_exit = 3,
+    )
+    # Only a policy refusal changes the choice; any other extension failure keeps uv's Python.
+    assert (result is None) if policy else (result["Path"] == fake_py)
+    assert "'_socket'" in _function("Resolve-UvManagedPython")
+
+
+VENV_SITE = _between(
+    '    if (-not (Test-Path -LiteralPath $VenvPython)) {\n        step "venv"',
+    "    # Mark the managed venv before probing",
+)
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "launcher_blocked, signed, expected, creates",
+    [
+        (False, True, "managed", ["uv"]),
+        (True, True, "signed-managed", ["uv", "venv"]),
+        (True, False, "managed", ["uv"]),
+    ],
+)
+def test_a_refused_venv_launcher_rebuilds_on_signed_python(
+    shell, tmp_path, launcher_blocked, signed, expected, creates
+):
+    venv = tmp_path / "unsloth_studio"
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$VenvDir = $env:TEST_VENV
+$VenvPython = Join-Path $VenvDir 'Scripts\\python.exe'
+$PythonPatchRequest = ''
+$script:UvExe = 'uv'
+$script:Creates = @()
+$script:SignedCalls = 0
+$DetectedPython = @{{ Version = '3.13'; Full = '3.13.18'; Path = 'C:\\pbs\\python.exe'; Arch = 'x86_64' }}
+function step {{ param($Name, $Message) }}
+function substep {{ param($Message, $Color) }}
+function Write-StudioLine {{ param($Message, $ForegroundColor) }}
+function Exit-InstallFailure {{ param($Message, $Code) return 'failed' }}
+function Invoke-InstallCommand {{
+    param([ScriptBlock]$Command, [string]$Label)
+    $script:Creates += $(if ("$Command" -match '-m venv') {{ 'venv' }} else {{ 'uv' }})
+    [IO.Directory]::CreateDirectory((Join-Path $VenvDir 'Scripts')) | Out-Null
+    [IO.File]::WriteAllText($VenvPython, $script:Creates[-1])
+    return 0
+}}
+function Invoke-PythonSelectionProbe {{
+    param($Executable, $Arguments)
+    return @{{ Success = -not ${str(launcher_blocked).lower()}; Blocked = ${str(launcher_blocked).lower()} }}
+}}
+function Resolve-SignedManagedPython {{
+    param($Minor, $Patch, $Arch, [switch]$CacheOnly)
+    if ($CacheOnly) {{ throw 'a refused launcher is policy evidence' }}
+    $script:SignedCalls++
+    if (${str(signed).lower()}) {{ return @{{ Version = '3.13'; Full = '3.13.17'; Path = 'C:\\signed\\python.exe'; Arch = $Arch; Source = 'signed-managed' }} }}
+}}
+function Run {{
+{VENV_SITE}
+    return $DetectedPython
+}}
+$r = Run
+@{{ Source = $(if ($r.Source) {{ $r.Source }} else {{ 'managed' }}); Creates = @($script:Creates); SignedCalls = $script:SignedCalls; Launcher = [IO.File]::ReadAllText($VenvPython) }} | ConvertTo-Json -Compress
+"""
+    r = json.loads(_pwsh(shell, script, {"TEST_VENV": str(venv)}))
+    assert r["Source"] == expected
+    assert r["Creates"] == creates
+    assert r["SignedCalls"] == (1 if launcher_blocked else 0)
+    assert r["Launcher"] == creates[-1]

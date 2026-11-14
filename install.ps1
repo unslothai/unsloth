@@ -6650,10 +6650,17 @@ exit 0
         if (-not $ok -and $diagnostic -match '(?i)\b(?:os error|WinError)\s+(?:4551|1260)\b') {
             $blocked = $true
         }
+        # A blocked extension module surfaces only as ImportError text, in the user's language.
+        if (-not $ok -and -not $blocked) {
+            foreach ($policyCode in @(4551, 1260)) {
+                $policyText = ([System.ComponentModel.Win32Exception]::new($policyCode)).Message.Trim()
+                if ($policyText -and $diagnostic.Contains($policyText)) { $blocked = $true }
+            }
+        }
         # Native stderr remains an ErrorRecord after 2>&1 in both supported shells.
         # Keep it for diagnostics, never as an interpreter path or version response.
         $stdout = @($output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
-        return @{ Success = $ok; Blocked = $blocked; Output = $stdout; Diagnostic = $diagnostic }
+        return @{ Success = $ok; Blocked = $blocked; Code = $code; Output = $stdout; Diagnostic = $diagnostic }
     }
 
     # Official CPython NuGet distributions: https://docs.python.org/3.13/using/windows.html#the-nuget-org-packages
@@ -6845,10 +6852,12 @@ exit 0
             }
             $exe = "$($find.Output | Select-Object -Last 1)".Trim()
             if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+            # The stdlib extensions too: python.exe can start while Windows blocks _socket.pyd (#17735).
+            # Exit 3 = an extension failed to load, which only a policy block turns into a refusal.
             $probe = Invoke-PythonSelectionProbe -Executable $exe -Arguments @('-S', '-I', '-c',
-                "import sys, sysconfig; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))))")
+                "import sys, sysconfig; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))), flush=True); M = ('_socket', '_ssl', '_ctypes', '_sqlite3', 'select', '_overlapped', '_asyncio', '_hashlib', '_queue', '_multiprocessing', '_uuid', '_lzma', '_bz2', '_decimal', '_elementtree', 'pyexpat', 'unicodedata', '_zoneinfo'); exec('b = 0\nfor m in M:\n try: __import__(m)\n except ImportError as x: b = 3; print(x, file=sys.stderr)\nsys.exit(b)')")
             if ($probe.Blocked) { $script:PythonPolicyBlocked = $true }
-            if (-not $probe.Success) {
+            if ($probe.Blocked -or (-not $probe.Success -and $probe.Code -ne 3)) {
                 if ($probe.Diagnostic) { Write-StudioLine "        Python probe failed: $(Redact-InstallOutput $probe.Diagnostic)" -ForegroundColor Yellow }
                 return $null
             }
@@ -7683,6 +7692,19 @@ exit 0
             $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $DetectedPython.Path -I -m venv --without-pip $VenvDir }
         } else {
             $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
+            # The venv's own python.exe is a separate unsigned launcher Windows can refuse while the
+            # base interpreter runs, as the desktop's "os error 4551" in #17735.
+            if ($venvExit -eq 0 -and (Invoke-PythonSelectionProbe -Executable $VenvPython -Arguments @('-I', '-S', '-c', 'pass')).Blocked) {
+                $script:PythonPolicyBlocked = $true
+                $signedPython = Resolve-SignedManagedPython -Minor $DetectedPython.Version -Patch $PythonPatchRequest -Arch $DetectedPython.Arch
+                if ($signedPython) {
+                    substep "Windows blocked the environment's Python launcher; rebuilding it on signed Python $($signedPython.Full)." "Yellow"
+                    # Only uv's output: the directory was absent or empty before uv venv ran.
+                    Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
+                    $DetectedPython = $signedPython
+                    $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $DetectedPython.Path -I -m venv --without-pip $VenvDir }
+                }
+            }
         }
         if ($venvExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
