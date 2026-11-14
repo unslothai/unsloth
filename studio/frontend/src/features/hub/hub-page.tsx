@@ -2,6 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PipelineType } from "@huggingface/hub";
+import { annotateInventoryRows } from "./lib/model-annotations";
+import { useModelAnnotationsStore } from "./stores/model-annotations-store";
+import { ModelAnnotationTools } from "./catalog/model-annotation-editor";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { matchesHubAudioTask } from "@/lib/hub-audio-task";
 import { useHfEndpoint, useHubSource } from "@/lib/hf-endpoint";
@@ -1030,8 +1033,8 @@ export function ModelsPage() {
   });
 
   const {
-    cachedRows: effectiveCachedRows,
-    localRows: effectiveLocalRows,
+    cachedRows: rawCachedRows,
+    localRows: rawLocalRows,
     availableSet,
     partialSet,
     downloadingSet,
@@ -1044,6 +1047,25 @@ export function ModelsPage() {
     kind: isDatasetMode ? "datasets" : "models",
     includeUnslothModels: true,
   });
+
+  // Presentation details belong only to model On Device rows. Keep original
+  // identifiers and capability metadata intact for every inventory action.
+  const annotations = useModelAnnotationsStore((state) => state.annotations);
+  const annotationEnabled = !isDiscoverTab && !isDatasetMode;
+  const effectiveCachedRows = useMemo(
+    () =>
+      annotationEnabled
+        ? annotateInventoryRows(rawCachedRows, annotations)
+        : rawCachedRows,
+    [annotationEnabled, rawCachedRows, annotations],
+  );
+  const effectiveLocalRows = useMemo(
+    () =>
+      annotationEnabled
+        ? annotateInventoryRows(rawLocalRows, annotations)
+        : rawLocalRows,
+    [annotationEnabled, rawLocalRows, annotations],
+  );
 
   const reloadReadySent = useRef(false);
   useEffect(() => {
@@ -2185,16 +2207,19 @@ export function ModelsPage() {
               onRun={handleRunNpu}
             />
           ) : (
-            <ModelsCatalog
-              state={catalogState}
-              pagination={catalogPagination}
-              handlers={catalogHandlers}
-              header={catalogHeader}
-              downloadedHeader={downloadedHeader}
-              resetScrollKey={filterResetSignature}
-              discoverView={allModelsView}
-              inventorySort={inventorySort}
-            />
+            <>
+              <ModelAnnotationTools enabled={annotationEnabled} />
+              <ModelsCatalog
+                state={catalogState}
+                pagination={catalogPagination}
+                handlers={catalogHandlers}
+                header={catalogHeader}
+                downloadedHeader={downloadedHeader}
+                resetScrollKey={filterResetSignature}
+                discoverView={allModelsView}
+                inventorySort={inventorySort}
+              />
+            </>
           )}
         </div>
 
