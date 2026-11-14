@@ -6,13 +6,14 @@ import { Button } from "@/components/ui/button";
 import type { TranscriptProgress } from "./transcript-stream";
 import "./transcription-progress.css";
 
-// audio.cpp reports no progress numbers, so the server says which step it is on instead.
+// Engines without a processed-audio counter report their current phase instead.
 const PHASE_LABELS: Record<NonNullable<TranscriptProgress["phase"]>, string> = {
   loading: "Loading the model…",
   downloading_aligner: "Downloading the timing aligner…",
   transcribing: "Transcribing…",
 };
 
+/** Show elapsed time and measured audio progress when the transcription engine provides it. */
 export function TranscriptionProgress({
   startedAt,
   finishedAt,
@@ -38,6 +39,17 @@ export function TranscriptionProgress({
   );
   const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   const running = finishedAt === null;
+  const processed = progress?.processed_seconds;
+  const duration = progress?.duration;
+  // Some engines emit only phases or text; never infer progress from those updates.
+  const percent =
+    typeof processed === "number" &&
+    Number.isFinite(processed) &&
+    typeof duration === "number" &&
+    Number.isFinite(duration) &&
+    duration > 0
+      ? Math.floor(Math.max(0, Math.min(1, processed / duration)) * 100)
+      : null;
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-3 text-ui-13 text-muted-foreground">
@@ -64,6 +76,7 @@ export function TranscriptionProgress({
                 ? PHASE_LABELS[progress.phase]
                 : "Transcribing…"
             : "Elapsed"}
+          {running && !stopping && percent !== null && ` ${percent}%`}
         </span>
         <span className="font-mono tabular-nums" aria-label={`Elapsed time ${elapsed}`}>
           {elapsed}
