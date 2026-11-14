@@ -212,6 +212,18 @@ def test_a_voice_load_keeps_its_slot_with_multi_model_off(backends, monkeypatch)
     assert _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)) is None
 
 
+def test_a_voice_load_never_replaces_a_managed_engine_chat(backends, monkeypatch):
+    _, extra = backends
+    managed = FakeOrchestrator("org/V")
+    managed._managed_engine = object()
+    monkeypatch.setattr(orchestrator, "_inference_backend", managed)
+    with pytest.raises(HTTPException) as excinfo:
+        _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True))
+    assert excinfo.value.status_code == 409 and managed._managed_engine is not None
+    assert _selected(LoadRequest(model_path = "org/C-GGUF", alongside = True)) is None
+    assert model_slots.slots == [extra]
+
+
 def test_only_voice_models_may_load_as_the_voice(monkeypatch):
     import core.inference.audio_cpp_models as audio_cpp_models
 
@@ -516,6 +528,31 @@ def test_a_short_fit_evicts_the_least_recently_used_slot_and_names_it(backends, 
     assert [s.llama.model_identifier for s in model_slots.slots] == ["org/B-GGUF", "org/C-GGUF"]
     assert not older.llama.is_active
     assert model_slots.slots[-1].request.model_path == "org/C-GGUF"
+
+
+def test_a_voice_never_unloads_a_kept_chat_to_make_room(backends, monkeypatch):
+    import core.inference.audio_cpp_models as audio_cpp_models
+
+    _, extra = backends
+    extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0"), 5.0
+    older = _slot("org/D-GGUF", "Q4_K_M", last_used = 1.0)
+    model_slots.slots.append(older)
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "resolve",
+        lambda path, *a, **k: SimpleNamespace(task = "tts", unsupported = None)
+        if path.startswith("audio-cpp/")
+        else None,
+    )
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    request = LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)
+    try:
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    except HTTPException as exc:
+        assert exc.status_code == 409
+    assert older in model_slots.slots and older.llama.is_active
+    assert extra in model_slots.slots
+    assert model_slots.eviction_victims(None, 5000, voices_only = True) == []
 
 
 def test_a_load_cancelled_after_a_short_fit_evicts_nothing(backends, monkeypatch):

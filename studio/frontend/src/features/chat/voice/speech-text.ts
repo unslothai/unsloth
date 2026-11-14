@@ -80,3 +80,15 @@ export function splitIntoSentences(text: string): string[] {
   if (lead) out.push(lead);
   return out;
 }
+
+/**
+ * Sentences of a reply still streaming that can no longer change. The last part may still grow
+ * ("Dr." before "Dr. Smith", "3." before "3.5"), and whether it joins the one before turns on
+ * its first two characters, so it stays partial until endStream.
+ */
+export function splitStreaming(text: string): { complete: string[]; partial: string } {
+  const parts = splitIntoSentences(text);
+  const tail = parts[parts.length - 1] ?? "";
+  const settled = Math.max(0, parts.length - (tail.length >= 2 ? 1 : 2));
+  return { complete: parts.slice(0, settled), partial: parts.slice(settled).join(" ") };
+}

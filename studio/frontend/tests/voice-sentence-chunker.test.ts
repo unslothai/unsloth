@@ -3,11 +3,13 @@
 
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
   splitIntoSentences,
   stripForSpeech,
+  splitStreaming,
 } from "../src/features/chat/voice/speech-text.ts";
 
 test("splits on sentence punctuation", () => {
@@ -84,3 +86,28 @@ test("a Unicode minus before a number survives as a minus", () => {
   assert.equal(stripForSpeech("The result is −2."), "The result is -2.");
   assert.equal(stripForSpeech("Paris — the capital."), "Paris the capital.");
 });
+
+test("a streamed reply never queues a sentence the finished text splits differently", () => {
+  const replies = [
+    "Dr. Smith went home. He slept.",
+    "The price is 3.5 dollars. That is cheap.",
+    "Ask J. Smith about it. Then call me.",
+    "Pick option A. Then wait.",
+    "We met in the U.S. last year. It rained!",
+    "Wait... what? Yes.",
+  ];
+  for (const reply of replies) {
+    const final = splitIntoSentences(reply);
+    for (let i = 1; i <= reply.length; i++) {
+      const { complete } = splitStreaming(reply.slice(0, i));
+      assert.deepEqual(complete, final.slice(0, complete.length), `${reply} @ ${i}`);
+    }
+  }
+});
+
+test("the paused player does not resume itself when the next clip is scheduled", () => {
+  const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
+  const schedule = player.slice(player.indexOf("const schedule = useCallback("));
+  assert.match(schedule.slice(0, 600), /if \(ctx\.state !== "running" && !pausedRef\.current\) void ctx\.resume\(\)/);
+});
+

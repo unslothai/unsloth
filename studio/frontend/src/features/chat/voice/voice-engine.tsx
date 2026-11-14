@@ -385,7 +385,10 @@ export const VoiceEngine: FC = () => {
 
     const text = latestAssistantText();
     if (!text) {
-      resumeListen();
+      // A run with no answer text (reasoning only, an error) still closes the stream it opened:
+      // playback end resumes listening and sends queued utterances.
+      if (streamBegun) endStreamRef.current("");
+      else resumeListen();
       return;
     }
     if (streamBegun) {

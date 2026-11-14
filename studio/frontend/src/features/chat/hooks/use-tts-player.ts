@@ -5,19 +5,9 @@ import { generateStudioTtsAudio } from "@/features/chat/adapters/studio-speech-s
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { splitIntoSentences, stripForSpeech } from "../voice/speech-text";
+import { splitIntoSentences, splitStreaming, stripForSpeech } from "../voice/speech-text";
 import { getVoicePlayContext } from "../voice/voice-loop-bridge";
 import { voiceTtsCanClone } from "../voice/voice-models";
-
-export function splitStreaming(text: string): {
-  complete: string[];
-  partial: string;
-} {
-  const parts = splitIntoSentences(text);
-  if (parts.length === 0) return { complete: [], partial: "" };
-  if (/[.!?]["')\]]?\s*$/.test(text)) return { complete: parts, partial: "" };
-  return { complete: parts.slice(0, -1), partial: parts[parts.length - 1] ?? "" };
-}
 
 export const voiceOutputLevel = { current: 0 };
 
@@ -163,7 +153,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       const ctx = getPlayCtx();
       if (!ctx) return;
       // WebKit parks the context when another surface takes audio; start() on a parked context is silent.
-      if (ctx.state !== "running") void ctx.resume().catch(() => {});
+      // A barge-in pause stays: resumePlayback() lifts it.
+      if (ctx.state !== "running" && !pausedRef.current) void ctx.resume().catch(() => {});
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
