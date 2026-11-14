@@ -54,10 +54,12 @@ const GPU_ON_OLD_NVIDIA_REASON: &str =
 // #17722: an Arc Pro B70 that also ran llama-server generated 3-4x slower while the window drew
 // through the DMA-BUF renderer; the CPU path (the Off setting) gave the speed back.
 const INTEL_XE_REASON: &str =
-    "Intel xe GPU with no other GPU (the window would draw on the GPU that runs models)";
+    "discrete Intel xe GPU with no other GPU (the window would draw on the GPU that runs models)";
 const DRM_CLASS_DIR: &str = "/sys/class/drm";
 const INTEL_PCI_VENDOR: &str = "0x8086";
 const INTEL_XE_DRIVER: &str = "xe";
+// Integrated Intel graphics on every xe generation; Arc cards sit behind a PCIe bridge.
+const INTEL_IGPU_PCI_SLOT: &str = "0000:00:02.0";
 const GPU_UNSAFE_REASON: &str = "GPU rendering crashed at launch on this host before";
 const NVIDIA_WAYLAND_GPU_REASON: &str = "NVIDIA driver loaded (Wayland session, WebKitGTK 2.54.2+)";
 const FORCE_DMABUF_REASON: &str = "DMA-BUF renderer requested by the environment (Wayland session)";
@@ -73,7 +75,7 @@ const NVIDIA_X11_BLANK_WITHOUT_COMPOSITING: (u32, u32, u32) = (2, 54, 0);
 pub struct GpuInputs {
     pub setting: GpuRendering,
     pub unsafe_flag: bool,
-    /// Every GPU is Intel and one runs on the xe driver (see `intel_xe_only_host`).
+    /// Every GPU is a discrete Intel card on the xe driver (see `intel_xe_only_host`).
     pub intel_xe_only: bool,
 }
 
@@ -535,14 +537,14 @@ fn driver_branch(text: &str) -> Option<u32> {
     })
 }
 
-/// Whether every GPU under `drm_dir` is Intel and at least one runs on the xe driver (Arc B-series
-/// and newer). Such a host has no other GPU to run a model on. Cards that name no PCI vendor
-/// (simpledrm, vkms) are skipped; an unreadable folder reads as false.
+/// Whether `drm_dir` holds at least one GPU and every GPU is a discrete Intel card on the xe driver
+/// (Arc B-series and newer), the only shape #17722 measured. Integrated xe (Lunar Lake and later)
+/// keeps Auto unchanged. Cards that name no PCI vendor (simpledrm, vkms) are skipped.
 fn intel_xe_only_host(drm_dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(drm_dir) else {
         return false;
     };
-    let mut xe = false;
+    let mut found = false;
     for entry in entries.flatten() {
         // `card0`, not its connectors (`card0-DP-1`) or `renderD128`.
         let name = entry.file_name();
@@ -557,15 +559,23 @@ fn intel_xe_only_host(drm_dir: &std::path::Path) -> bool {
         let Ok(vendor) = std::fs::read_to_string(device.join("vendor")) else {
             continue;
         };
-        if !vendor.trim().eq_ignore_ascii_case(INTEL_PCI_VENDOR) {
+        let xe = std::fs::read_link(device.join("driver"))
+            .ok()
+            .is_some_and(|driver| {
+                driver
+                    .file_name()
+                    .is_some_and(|name| name == INTEL_XE_DRIVER)
+            });
+        let integrated = std::fs::canonicalize(&device).map_or(true, |path| {
+            path.file_name()
+                .is_some_and(|slot| slot == INTEL_IGPU_PCI_SLOT)
+        });
+        if !vendor.trim().eq_ignore_ascii_case(INTEL_PCI_VENDOR) || !xe || integrated {
             return false;
         }
-        xe |= std::fs::read_link(device.join("driver"))
-            .ok()
-            .and_then(|driver| driver.file_name().map(|name| name == INTEL_XE_DRIVER))
-            .unwrap_or(false);
+        found = true;
     }
-    xe
+    found
 }
 
 fn gles_is_usable() -> bool {
@@ -1990,18 +2000,21 @@ mod tests {
         }
     }
 
-    /// A fake /sys/class/drm: one `(card, vendor, driver)` per entry, plus a connector folder.
-    fn drm_dir(cards: &[(&str, Option<&str>, &str)]) -> tempfile::TempDir {
+    /// A fake /sys/class/drm: one `(card, PCI slot, vendor, driver)` per entry, plus a connector.
+    fn drm_dir(cards: &[(&str, &str, Option<&str>, &str)]) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
-        for (card, vendor, driver) in cards {
+        for (card, slot, vendor, driver) in cards {
+            let pci = root.path().join("pci").join(card).join(slot);
+            std::fs::create_dir_all(&pci).unwrap();
+            std::fs::create_dir_all(root.path().join(card)).unwrap();
             let device = root.path().join(card).join("device");
-            std::fs::create_dir_all(&device).unwrap();
+            std::os::unix::fs::symlink(&pci, &device).unwrap();
             if let Some(vendor) = vendor {
                 std::fs::write(device.join("vendor"), format!("{vendor}\n")).unwrap();
             }
             std::os::unix::fs::symlink(
                 format!("../../../bus/pci/drivers/{driver}"),
-                device.join("driver"),
+                pci.join("driver"),
             )
             .unwrap();
             std::fs::create_dir_all(root.path().join(format!("{card}-DP-1"))).unwrap();
@@ -2011,28 +2024,47 @@ mod tests {
     }
 
     #[test]
-    fn only_an_all_intel_host_with_an_xe_card_counts_as_intel_xe_only() {
-        let host = |cards: &[(&str, Option<&str>, &str)]| intel_xe_only_host(drm_dir(cards).path());
-        assert!(host(&[("card0", Some("0x8086"), "xe")]));
+    fn only_a_host_of_discrete_intel_xe_cards_counts_as_intel_xe_only() {
+        let host =
+            |cards: &[(&str, &str, Option<&str>, &str)]| intel_xe_only_host(drm_dir(cards).path());
+        const IGPU: &str = "0000:00:02.0";
+        const ARC: &str = "0000:03:00.0";
+        // The reporter's host: one Arc Pro B70.
+        assert!(host(&[("card0", ARC, Some("0x8086"), "xe")]));
         assert!(host(&[
-            ("card1", Some("0x8086"), "xe"),
-            ("card0", Some("0x8086"), "i915")
+            ("card0", ARC, Some("0x8086"), "xe"),
+            ("card1", "0000:07:00.0", Some("0x8086"), "xe")
         ]));
         // simpledrm names no PCI vendor.
         assert!(host(&[
-            ("card0", None, "simple-framebuffer"),
-            ("card1", Some("0x8086"), "xe")
+            ("card0", "simple-framebuffer.0", None, "simple-framebuffer"),
+            ("card1", ARC, Some("0x8086"), "xe")
         ]));
-        assert!(!host(&[("card0", Some("0x8086"), "i915")]));
+        // Integrated xe (Lunar Lake, Panther Lake), alone or beside an Arc card.
+        assert!(!host(&[("card0", IGPU, Some("0x8086"), "xe")]));
         assert!(!host(&[
-            ("card0", Some("0x8086"), "xe"),
-            ("card1", Some("0x10de"), "nvidia")
+            ("card0", IGPU, Some("0x8086"), "xe"),
+            ("card1", ARC, Some("0x8086"), "xe")
         ]));
         assert!(!host(&[
-            ("card0", Some("0x8086"), "xe"),
-            ("card1", Some("0x1002"), "amdgpu")
+            ("card0", IGPU, Some("0x8086"), "i915"),
+            ("card1", ARC, Some("0x8086"), "xe")
         ]));
-        assert!(!host(&[("card0", Some("0x1002"), "amdgpu")]));
+        assert!(!host(&[("card0", ARC, Some("0x8086"), "i915")]));
+        assert!(!host(&[
+            ("card0", ARC, Some("0x8086"), "xe"),
+            ("card1", "0000:01:00.0", Some("0x10de"), "nvidia")
+        ]));
+        assert!(!host(&[
+            ("card0", ARC, Some("0x8086"), "xe"),
+            ("card1", "0000:01:00.0", Some("0x1002"), "amdgpu")
+        ]));
+        assert!(!host(&[(
+            "card0",
+            "0000:01:00.0",
+            Some("0x1002"),
+            "amdgpu"
+        )]));
         assert!(!host(&[]));
         assert!(!intel_xe_only_host(std::path::Path::new(
             "/nonexistent/drm"
