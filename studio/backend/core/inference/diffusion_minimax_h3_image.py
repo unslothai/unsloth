@@ -2721,18 +2721,48 @@ def install_checkpoint_attention(
     except Exception as exc:  # noqa: BLE001 - native attention stays
         engaged = None
         log.warning("diffusion.minimax_h3_image: INT8 attention unavailable (%s)", exc)
-    if not engaged or "sage" not in str(engaged):
+    blocks = {id(m) for b in getattr(transformer, "transformer_blocks", ()) for m in b.modules()}
+    block_modules = [m for m in modules if id(m) in blocks]
+    sage_on = bool(engaged) and "sage" in str(engaged)
+    if not sage_on:
         restore()
         setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
-        return None
     forced = (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
         "1",
         "on",
         "true",
         "yes",
     )
-    race = None if forced else race_checkpoint_attention(transformer, saved, dtype)
-    if race is not None and not race["keep"]:
+    # The INT8 kernel takes the DiT blocks only when >2% faster than the race winner; its block race also times
+    # SageAttention vs native, so SageAttention's own race runs only when the kernel neither won nor timed the blocks
+    kernel_blocks, race = _race_int8_kernel(
+        transformer,
+        block_modules,
+        saved,
+        dev,
+        dtype,
+        (None if not forced else True) if sage_on else False,
+        forced,
+        log,
+    )
+    if race is None and sage_on and not forced and not kernel_blocks:
+        race = race_checkpoint_attention(transformer, saved, dtype)
+    sage_kept = sage_on and (forced or race is None or race["keep"])
+    if kernel_blocks:
+        from .diffusion_int8_attention import BACKEND as INT8_KERNEL
+
+        restore()
+        setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
+        setattr(pipe, ATTENTION_SAVED_ATTR, (saved, tag))
+        log.info(
+            "diffusion.minimax_h3_image: INT8 attention (%s) on %d DiT blocks, as the checkpoint declares",
+            INT8_KERNEL,
+            kernel_blocks,
+        )
+        return INT8_KERNEL
+    if not sage_on:
+        return None
+    if not sage_kept:
         restore()
         setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
         log.info(
@@ -2744,25 +2774,49 @@ def install_checkpoint_attention(
             race["native"],
         )
         return None
-    blocks = {id(m) for b in getattr(transformer, "transformer_blocks", ()) for m in b.modules()}
     restore(only = [m for m in modules if id(m) not in blocks])
     setattr(pipe, ATTENTION_SAVED_ATTR, (saved, tag))
     log.info(
         "diffusion.minimax_h3_image: INT8 attention (%s) on %d DiT blocks, as the checkpoint declares",
         engaged,
-        sum(1 for m in modules if id(m) in blocks),
+        len(block_modules),
     )
     return engaged
 
 
 # Rows of the race's packed sequence: a 2048x2048 canvas (64 x 64 latent patches) plus a prompt.
 _RACE_ROWS = (4096, 300)
+_KERNEL_RACE_IMAGES = (4096, 1024)
+_KERNEL_LARGE_ROWS = 2560
+_RACE_ROUNDS = 7
+ATTENTION_RACE_ATTR = "_unsloth_h3_attention_race"
 
 
-def race_checkpoint_attention(transformer: Any, saved: dict, dtype: Any) -> Optional[dict]:
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def _paired_ratio(times: list, first: int, second: int) -> float:
+    """Median over the rounds of variant ``first``'s time over variant ``second``'s in the same round: a card whose
+    clock moves while it is timed moves both alike, so the decision does not depend on which variant ran first."""
+    return _median([a / b for a, b in zip(times[first], times[second]) if b > 0] or [float("inf")])
+
+
+def race_checkpoint_attention(
+    transformer: Any,
+    saved: dict,
+    dtype: Any,
+    *,
+    kernel: bool = False,
+) -> Optional[dict]:
     """Time one resident DiT block's attention module with the engaged INT8 backend against the backend it had
     (which keeps Studio's strided layout and fused q/k norm + RoPE); ``keep`` when INT8 is more than 2% faster.
-    None when no block's attention is on the card (nothing to time: the caller keeps the INT8 route)."""
+    None when no block's attention is on the card (nothing to time: the caller keeps the INT8 route).
+
+    ``kernel`` adds Studio's INT8 attention kernel on the backend the block had: ``kernel`` maps each image row
+    count of ``_KERNEL_RACE_IMAGES`` to the [native, engaged, kernel] medians in ms and ``paired`` to the per-round
+    [engaged / native, kernel / native, kernel / engaged] median ratios the decisions use."""
     import torch
 
     attn = None
@@ -2776,44 +2830,212 @@ def race_checkpoint_attention(transformer: Any, saved: dict, dtype: Any) -> Opti
     rope = getattr(transformer, "rope", None)
     if attn is None or norm is None or rope is None:
         return None
-    engaged = attn.processor._attention_backend
+    proc = attn.processor
+    engaged = proc._attention_backend
     native = saved[attn]
+    kernel = kernel and hasattr(type(proc), "_unsloth_int8")
+    routed = (getattr(proc, "_unsloth_int8", False), getattr(proc, "_unsloth_int8_min_tokens", 0))
     device = next(attn.parameters()).device
     width = int(norm.normalized_shape[0])
-    image, text = _RACE_ROWS
-    side = int(math.isqrt(image))
+    text = _RACE_ROWS[1]
+
+    def timed(image: int, variants: tuple) -> list:
+        side = int(math.isqrt(image))
+        g = torch.Generator(device = "cpu").manual_seed(7)
+        x = torch.randn(1, image + text, width, generator = g).to(device = device, dtype = dtype)
+        idx = torch.arange(image)
+        pos = torch.zeros(image + text, 3, dtype = torch.float64)
+        pos[text:, 1] = (idx // side).double()
+        pos[text:, 2] = (idx % side).double()
+        pos[:text, 0] = torch.arange(text).double()
+        rotary = rope(pos.to(device))
+
+        def select(variant: tuple) -> None:
+            proc._attention_backend = variant[0]
+            if kernel:
+                proc._unsloth_int8, proc._unsloth_int8_min_tokens = variant[1], 0
+
+        def once() -> float:
+            a = torch.cuda.Event(enable_timing = True)
+            b = torch.cuda.Event(enable_timing = True)
+            a.record()
+            attn(x, rotary, None)
+            b.record()
+            b.synchronize()
+            return a.elapsed_time(b)
+
+        times: list = [[] for _ in variants]
+        for variant in variants:
+            select(variant)
+            for _ in range(2):
+                attn(x, rotary, None)
+        # interleaved, alternate rounds reversed: a card changing clock mid-timing (A100, L4) skews every variant alike
+        order = list(range(len(variants)))
+        for r in range(_RACE_ROUNDS):
+            for i in order if r % 2 == 0 else order[::-1]:
+                select(variants[i])
+                times[i].append(once())
+        return times
+
+    variants = ((native, False), (engaged, False)) + (((native, True),) if kernel else ())
     try:
         with torch.no_grad(), torch.cuda.device(device):
-            g = torch.Generator(device = "cpu").manual_seed(7)
-            x = torch.randn(1, image + text, width, generator = g).to(device = device, dtype = dtype)
-            idx = torch.arange(image)
-            pos = torch.zeros(image + text, 3, dtype = torch.float64)
-            pos[text:, 1] = (idx // side).double()
-            pos[text:, 2] = (idx % side).double()
-            pos[:text, 0] = torch.arange(text).double()
-            rotary = rope(pos.to(device))
-            ms = []
-            for backend in (native, engaged):
-                attn.processor._attention_backend = backend
-                for _ in range(2):
-                    attn(x, rotary, None)
-                times = []
-                for _ in range(5):
-                    a = torch.cuda.Event(enable_timing = True)
-                    b = torch.cuda.Event(enable_timing = True)
-                    a.record()
-                    attn(x, rotary, None)
-                    b.record()
-                    b.synchronize()
-                    times.append(a.elapsed_time(b))
-                ms.append(sorted(times)[len(times) // 2])
+            rows = {
+                image: timed(image, variants)
+                for image in (_KERNEL_RACE_IMAGES if kernel else _RACE_ROWS[:1])
+            }
     except torch.OutOfMemoryError:
         raise
     except Exception:  # noqa: BLE001 - untimed: the caller keeps the INT8 route it already engaged
         return None
     finally:
-        attn.processor._attention_backend = engaged
-    return {"keep": ms[1] < 0.98 * ms[0], "ms": ms, "native": str(native)}
+        proc._attention_backend = engaged
+        if kernel:
+            proc._unsloth_int8, proc._unsloth_int8_min_tokens = routed
+    large = rows[_RACE_ROWS[0]]
+    found = {
+        "keep": _paired_ratio(large, 1, 0) < 0.98,
+        "ms": [_median(t) for t in large[:2]],
+        "native": str(native),
+    }
+    if kernel:
+        found["kernel"] = {n: [_median(t) for t in times] for n, times in rows.items()}
+        found["paired"] = {
+            n: [_paired_ratio(times, 1, 0), _paired_ratio(times, 2, 0), _paired_ratio(times, 2, 1)]
+            for n, times in rows.items()
+        }
+    return found
+
+
+def _race_int8_kernel(
+    transformer: Any,
+    block_modules: list,
+    saved: dict,
+    dev: Any,
+    dtype: Any,
+    sage: Optional[bool],
+    forced: bool,
+    log: Any,
+) -> tuple:
+    """Route the DiT blocks to Studio's INT8 attention kernel when it matches fp32 attention on this card and is more
+    than 2% faster than what they would run (SageAttention or their native backend) on a resident block.
+    ``sage``: True when SageAttention runs them (pinned), False when it does not, None when it is engaged but still
+    has to win its race against the native backend: the block race times it too and decides that as well.
+    ``forced`` (the env switch pinned SageAttention) leaves the kernel alone unless the kernel's own switch forces it.
+    Returns (blocks routed, 0 keeps the incumbent; the block race's result or None when no block race ran)."""
+    import torch
+
+    from . import diffusion_int8_attention as int8_attention
+
+    setting = int8_attention.mode()
+    if not block_modules or setting == "off" or (forced and setting != "force"):
+        return 0, None
+    started = time.perf_counter()
+    record: dict = {"mode": setting, "incumbent": "sage" if sage else "native"}
+    setattr(transformer, ATTENTION_RACE_ATTR, record)
+    race = None
+    try:
+        ready = int8_attention.install_int8_attention(
+            transformer, device = dev, dtype = dtype, modules = block_modules, force = True, logger = log
+        )
+        record["checked_s"] = round(time.perf_counter() - started, 3)
+        if not ready or setting == "force":
+            record["blocks"] = ready
+            return ready, None
+        for m in block_modules:
+            m.processor._unsloth_int8 = False
+        race = race_checkpoint_attention(transformer, saved, dtype, kernel = True)
+        if race is None or "kernel" not in race:
+            # no block on the card to time (a streamed DiT): the attention-only race on synthetic q, k, v decides
+            race = None
+            routed = int8_attention.install_int8_attention(
+                transformer,
+                device = dev,
+                dtype = dtype,
+                modules = block_modules,
+                incumbent = _sage_incumbent(block_modules[0])
+                if sage is not False
+                else int8_attention._sdpa_incumbent(saved.get(block_modules[0])),
+                logger = log,
+            )
+            record.update(blocks = routed, timed = "attention")
+            return routed, None
+        if sage is None:
+            sage = bool(race["keep"])
+            record["incumbent"] = "sage" if sage else "native"
+        rows = race["kernel"]
+        paired = race.get("paired") or {
+            n: [r[1] / r[0], r[2] / r[0], r[2] / r[1]] for n, r in rows.items()
+        }
+        large, small = (rows[n] for n in _KERNEL_RACE_IMAGES)
+        margin = int8_attention.RACE_MARGIN
+        wins = paired[_KERNEL_RACE_IMAGES[0]][2 if sage else 1] < margin
+        short = paired[_KERNEL_RACE_IMAGES[1]]
+        # short sequences fall back to the native backend, so the kernel must beat it and SageAttention there
+        everywhere = wins and short[1] < margin and (not sage or short[2] < margin)
+        record.update(
+            timed = "block",
+            ms = {str(n): [round(v, 3) for v in rows[n]] for n in rows},
+            blocks = len(block_modules) if wins else 0,
+        )
+        log.info(
+            "diffusion.minimax_h3_image: INT8 attention kernel race on a DiT block: %.2f ms against %.2f ms with %s "
+            "(%d + %d rows), %.2f ms against %.2f ms (%d + %d rows): %s",
+            large[2],
+            large[1 if sage else 0],
+            "SageAttention" if sage else race["native"],
+            _KERNEL_RACE_IMAGES[0],
+            _RACE_ROWS[1],
+            small[2],
+            small[0],
+            _KERNEL_RACE_IMAGES[1],
+            _RACE_ROWS[1],
+            "engaged" if wins else "kept off",
+        )
+        if not wins:
+            return 0, race
+        for m in block_modules:
+            m.processor._unsloth_int8 = True
+            m.processor._unsloth_int8_min_tokens = 0 if everywhere else _KERNEL_LARGE_ROWS
+        record["min_tokens"] = 0 if everywhere else _KERNEL_LARGE_ROWS
+        return len(block_modules), race
+    except Exception as exc:  # noqa: BLE001 - the incumbent stays
+        for m in block_modules:
+            if hasattr(type(m.processor), "_unsloth_int8"):
+                m.processor._unsloth_int8 = False
+        if isinstance(exc, torch.OutOfMemoryError):
+            raise
+        record.update(blocks = 0, error = repr(exc)[:200])
+        log.info("diffusion.minimax_h3_image: INT8 attention kernel skipped (%s)", exc)
+        return 0, race if race is not None and "keep" in race else None
+    finally:
+        record["seconds"] = round(time.perf_counter() - started, 3)
+
+
+def _sage_incumbent(attn: Any) -> tuple:
+    """(name, callable(q, k, v)) making the SageAttention call the strided processor makes."""
+    from .video_minimax_h3_attn import h3_processor_base
+
+    backend = attn.processor._attention_backend
+    dispatch = getattr(
+        sys.modules.get(h3_processor_base(attn).__module__), "dispatch_attention_fn", None
+    )
+    if not callable(dispatch):
+        raise RuntimeError("no attention dispatcher to time SageAttention with")
+
+    def sage(q: Any, k: Any, v: Any) -> Any:
+        return dispatch(
+            q,
+            k,
+            v,
+            attn_mask = None,
+            dropout_p = 0.0,
+            is_causal = False,
+            backend = backend,
+            parallel_config = None,
+        )
+
+    return str(getattr(backend, "value", backend)), sage
 
 
 def remove_checkpoint_attention(pipe: Any) -> int:
@@ -2822,6 +3044,9 @@ def remove_checkpoint_attention(pipe: Any) -> int:
     if not entry:
         return 0
     from .diffusion_attention import ATTENTION_BACKEND_ATTR
+    from .diffusion_int8_attention import remove_int8_attention
+
+    remove_int8_attention(getattr(pipe, "transformer", None))
 
     saved, tag = entry
     for m, backend in saved.items():
