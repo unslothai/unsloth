@@ -26989,12 +26989,16 @@ async def vad_detect(
         if size > MAX_CLIP_BYTES:
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
         chunks.append(chunk)
+    sidecar = get_audio_cpp_vad_sidecar()
+    before = sidecar.loaded_model
     try:
-        result = await asyncio.to_thread(
-            get_audio_cpp_vad_sidecar().detect, b"".join(chunks), model
-        )
+        result = await asyncio.to_thread(sidecar.detect, b"".join(chunks), model)
     except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
         raise _vad_http_error(exc)
+    # A detect that loaded the detector owns it as a load would; one that only used it claims nothing.
+    loaded = result.get("model")
+    if loaded and loaded != before and sidecar.loaded_model == loaded:
+        account_access.note_resident_account("vad", loaded)
     return JSONResponse(content = result)
 
 

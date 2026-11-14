@@ -676,6 +676,16 @@ def _placement(checkpoint) -> tuple[str, str | None]:
     llama.cpp on the "cpu". Raises when neither can serve it."""
     need = _footprint_mib(checkpoint)
     free = _free_mib() if need is not None else None
+    outgoing = _loaded
+    if (
+        free is not None
+        and outgoing is not None
+        and outgoing != checkpoint
+        and _is_mlx(checkpoint)
+        and _is_mlx(outgoing)
+    ):
+        # The MLX load evicts the current decision model first, so its memory counts as free.
+        free += _footprint_mib(outgoing) or 0
     if need is not None and free is not None and need + _BESIDE_HEADROOM_MIB <= free:
         return "beside", None
     if _is_native(checkpoint):
@@ -1881,6 +1891,9 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
     if not native and (reason := clef_unsupported_reason()) is not None:
         raise Unavailable(400, "api_usage_error", reason)
     if (_is_native(checkpoint) and not _native_gpu()) or not _training_active():
+        return
+    # Already serving it off the GPU (placed on the CPU beside a chat model): training does not touch it.
+    if _loaded == checkpoint and _agent is not None and not _holds_gpu():
         return
     # Clef has no CPU fallback: it waits for the GPU instead of taking it from the run.
     # Only a resident on the GPU: a llama.cpp server on CPU keeps serving during the run.

@@ -324,6 +324,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     }
     let noiseFloor = 0;
     let noiseFrames = 0;
+    let prerollVoicedMs = 0;
     const bargeGate = createBargeGate(
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
     );
@@ -978,7 +979,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             chunks.push(frame);
             chunkVoiced.push(loud);
             chunkNotSilent.push(level >= Math.max(SILENCE_RMS_MIN, noiseFloor * SILENCE_OVER_FLOOR));
-            if (loud) voicedMs += frameMs;
+            // Counted only once live speech follows: echo left after the reply must not become a turn.
+            if (loud) prerollVoicedMs += frameMs;
           }
           chunks.push(new Float32Array(input));
           if (
@@ -1004,9 +1006,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           chunkVoiced.push(speech);
           chunkNotSilent.push(notSilent);
           if (notSilent) lastVoiceAt = now;
-          if (speech || (voicedMs > 0 && !heardSpeech)) {
-            if (speech) voicedMs += frameMs;
+          if (speech) {
+            voicedMs += frameMs;
             if (!heardSpeech) {
+              voicedMs += prerollVoicedMs;
+              prerollVoicedMs = 0;
               heardSpeech = true;
               utteranceInFlight = true;
               noteSpeechStart();
