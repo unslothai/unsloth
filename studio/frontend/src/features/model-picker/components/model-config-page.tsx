@@ -243,7 +243,6 @@ import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import {
   isNpuModelId,
-  NPU_DEFAULT_CONTEXT_LENGTH,
   useNpuDisplayName,
 } from "../../npu";
 import {

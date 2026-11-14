@@ -54,10 +54,12 @@ test("NPU search finds a model by its old id, its tag and its repo", () => {
     new URL("../src/features/npu/api.ts", import.meta.url),
     {
       "@/features/auth": { authFetch: async () => new Response(null) },
+      "@/features/auth/api": { authFetch: async () => new Response(null) },
       "@/lib/format-fastapi-error": formatFastApiError,
       "@/lib/sse-json-events": sseJsonEvents,
       "./display-name": displayName,
     },
+    { relativePassthrough: true },
   );
   const row = {
     ...qwen,
