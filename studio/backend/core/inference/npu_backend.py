@@ -775,10 +775,10 @@ class LemonadeNpuBackend:
                 ctx = plan.context_length
                 replaced = True
                 self._raise_if_load_cancelled(model_id)
-                # Held to the context this load resolved, which only the load knows under Auto.
-                flm_args = clamp_prefill_chunk(flm_args, ctx)
                 json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False}
                 if flm_args:
+                    # lemond gets the chunk held to the context this load resolved (only the load
+                    # knows it under Auto); the resident keeps the one asked for, as settings saved it.
                     json_body["flm_args"] = clamp_prefill_chunk(
                         merge_flm_args(self._saved_flm_args(server, model.id), flm_args), ctx
                     )

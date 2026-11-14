@@ -187,7 +187,8 @@ def test_the_load_holds_the_prefill_chunk_to_the_context_it_resolves(backend):
     npu, server = backend
     npu.load(_VISION.id, 4096, flm_args = "--prefill-chunk-len 100000")
     assert server.bodies[-1]["flm_args"] == "--prefill-chunk-len 4096"
-    assert npu._loaded.flm_args == "--prefill-chunk-len 4096"
+    # The resident keeps the chunk asked for, so settings read back what was saved.
+    assert npu._loaded.flm_args == "--prefill-chunk-len 100000"
 
 
 def test_a_saved_flag_survives_a_load_with_an_unsloth_studio_setting(backend):
@@ -336,10 +337,12 @@ def test_the_route_leaves_the_prefill_chunk_to_the_load(monkeypatch):
 
 
 def test_a_chunk_the_resident_holds_to_its_context_is_already_loaded(monkeypatch):
-    # The resident runs at 8192, so asking for 16384 again is the load it already is.
-    npu = _route_npu(_TEXT, resident_flm_args = "--prefill-chunk-len 8192")
-    assert _load(monkeypatch, npu, npu_prefill_chunk_len = 16384).status == "already_loaded"
-    assert _load(monkeypatch, npu, npu_prefill_chunk_len = 4096).status == "loaded"
+    # The resident runs at 8192, so any chunk past it is the load it already is.
+    for resident in ("--prefill-chunk-len 8192", "--prefill-chunk-len 16384"):
+        npu = _route_npu(_TEXT, resident_flm_args = resident)
+        assert _load(monkeypatch, npu, npu_prefill_chunk_len = 16384).status == "already_loaded"
+        assert _load(monkeypatch, npu, npu_prefill_chunk_len = 12000).status == "already_loaded"
+        assert _load(monkeypatch, npu, npu_prefill_chunk_len = 4096).status == "loaded"
 
 
 def test_image_pre_resize_reaches_vision_models_only(monkeypatch):

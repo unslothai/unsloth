@@ -18984,11 +18984,11 @@ async def _load_npu_model(
         and not request.force_reload
         # Exact: Auto after a pin, or a pin after Auto, is a different load.
         and requested_ctx == resident.requested_context_length
-        # What the resident would run this request's settings with, held to its context as a load would.
+        # Both held to the resident's context, as a load would: a chunk past it runs the same.
         and clamp_prefill_chunk(
             _npu_flm_args(request, resident.model, requested_ctx), resident.context_length
         )
-        == resident.flm_args
+        == clamp_prefill_chunk(resident.flm_args, resident.context_length)
     ):
         account_access.join_resident("chat")
         return _npu_load_response(resident, "already_loaded", resident.flm_args)
