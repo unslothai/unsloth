@@ -345,6 +345,32 @@ def test_a_lifecycle_cancel_before_a_run_starts_refunds_its_override():
     assert not _refused()
 
 
+def test_a_queued_cancel_and_its_waiting_worker_refund_the_override_once():
+    import threading
+
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    _reach_cap()
+    token_limit.grant_override()
+    _durable_run(token_limit.enforce())
+    cancelled = threading.Event()
+
+    class _Activity:
+        async def start(self, cancel_event):
+            # While this worker waits for admission: Stop refunds, and a new request spends it.
+            runs.request_cancel("run")
+            assert not _refused()
+            cancel_event.set()
+
+        def finish(self):
+            pass
+
+    app = SimpleNamespace(state = SimpleNamespace(bind_host = "127.0.0.1"))
+    asyncio.run(ChatGenerationSupervisor(app)._produce("run", cancelled, _Activity()))
+    # The worker unwinding afterwards must not hand the newer request's override back.
+    assert _refused()
+
+
 def test_cancelling_a_queued_run_refunds_its_override():
     _reach_cap()
     token_limit.grant_override()

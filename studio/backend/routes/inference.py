@@ -7203,6 +7203,7 @@ def _monitor_usage(
     *,
     timings: Optional[dict] = None,
     stop_reason: Optional[str] = None,
+    reported_chars: Optional[int] = None,
 ):
     # Only a suppressed row relays: a call with its own row must not clobber the wrapper's.
     if not monitor_id and isinstance(timings, dict) and timings:
@@ -7243,6 +7244,7 @@ def _monitor_usage(
             ),
             total_tokens = usage.get("total_tokens"),
             context_length = context_length,
+            reported_chars = reported_chars,
         )
     tok_per_sec = prompt_tok_per_sec = prompt_ms = decode_ms = None
     if isinstance(timings, dict):
@@ -35084,6 +35086,8 @@ async def produce_openai_chat_completions(
             gen = None
             _sf_next_task = None
             _sf_streamed_calls: set = set()
+            _sf_seen_stats = None
+            _sf_reported_chars = 0
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -35177,6 +35181,10 @@ async def produce_openai_chat_completions(
                     approval_flush_pending = False
                     # Done; drop the reference so the finally-block drain no-ops.
                     _sf_next_task = None
+                    if _sf_stats_holder.get("stats") is not _sf_seen_stats:
+                        # A pass ended: its stats cover the output streamed so far.
+                        _sf_seen_stats = _sf_stats_holder.get("stats")
+                        _sf_reported_chars = api_monitor.reply_chars(monitor_id)
                     if event is _sf_tool_sentinel:
                         break
                     if isinstance(event, GenStreamError):
@@ -35318,6 +35326,8 @@ async def produce_openai_chat_completions(
                         monitor_id,
                         _stats.get("usage"),
                         timings = _stats.get("timings"),
+                        # Interrupted mid-pass: the stats cover only the earlier passes.
+                        reported_chars = _sf_reported_chars if cancel_event.is_set() else None,
                     )
                 if cancel_event.is_set():
                     mark_current_response_failed()

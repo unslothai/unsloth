@@ -684,18 +684,35 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | N
         conn.close()
 
 
-def spent_token_override(run_id: str) -> int | None:
-    """The period start of the one-time token override this run's admission spent, if any."""
+def _take_token_override_locked(conn: sqlite3.Connection, run_id: str) -> int | None:
+    row = conn.execute(
+        "SELECT request_json FROM chat_generation_runs WHERE id=?", (run_id,)
+    ).fetchone()
+    payload = _loads(row["request_json"], {}) if row else {}
+    spent = payload.pop(TOKEN_LIMIT_OVERRIDE_FIELD, None) if isinstance(payload, dict) else None
+    if not isinstance(spent, int):
+        return None
+    conn.execute(
+        "UPDATE chat_generation_runs SET request_json=? WHERE id=?",
+        (json.dumps(payload, sort_keys = True, separators = (",", ":"), ensure_ascii = False), run_id),
+    )
+    return spent
+
+
+def take_token_override(run_id: str) -> int | None:
+    """Removes and returns the override this run's admission spent, so exactly one settler (its
+    cancel or its worker) can refund it."""
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT json_extract(request_json, ?) FROM chat_generation_runs WHERE id=?",
-            (f"$.{TOKEN_LIMIT_OVERRIDE_FIELD}", run_id),
-        ).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        spent = _take_token_override_locked(conn, run_id)
+        conn.commit()
+        return spent
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
-    spent = row[0] if row else None
-    return spent if isinstance(spent, int) else None
 
 
 def get_run_state(run_id: str) -> dict[str, Any] | None:
@@ -941,10 +958,10 @@ def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, A
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
         ).fetchone()
+        # A queued run generated nothing; taken in this transaction so its worker cannot also refund.
+        spent = _take_token_override_locked(conn, run_id) if status == "queued" else None
         _commit(conn, notify = True)
-        spent = _loads(row["request_json"], {}).get(TOKEN_LIMIT_OVERRIDE_FIELD)
-        if status == "queued" and isinstance(spent, int):
-            # Never reaches a worker: nothing was generated, so give the override back.
+        if spent is not None:
             from core.inference.token_limit import restore_override
             restore_override(spent)
         return _run_from_row(updated_row)

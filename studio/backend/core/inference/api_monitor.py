@@ -796,6 +796,11 @@ class ApiMonitor:
                 entry.first_decode_monotonic = now
             entry.running_phase = "token_generation" if decoded else None
 
+    def reply_chars(self, entry_id: Optional[str]) -> int:
+        with self._lock:
+            entry = self._find_locked(entry_id) if entry_id else None
+            return entry.reply_chars if entry is not None else 0
+
     def count_output(self, entry_id: Optional[str], chars: int) -> None:
         """Generated text the reply buffer never shows (non-streaming reasoning), for estimates."""
         if not entry_id or chars <= 0:
@@ -882,7 +887,10 @@ class ApiMonitor:
         completion_tokens: Optional[int] = None,
         total_tokens: Optional[int] = None,
         context_length: Optional[int] = None,
+        reported_chars: Optional[int] = None,
     ) -> None:
+        """``reported_chars``: output the counts cover when it is less than what streamed (a
+        tool loop's earlier passes, reported after a later pass was interrupted)."""
         if not entry_id:
             return
         # Coerce first: snapshot() does math on these arbitrary payload values.
@@ -898,7 +906,11 @@ class ApiMonitor:
                 entry.prompt_tokens = prompt_tokens
             if completion_tokens is not None:
                 entry.completion_tokens = completion_tokens
-                entry.reported_reply_chars = entry.reply_chars
+                entry.reported_reply_chars = (
+                    entry.reply_chars
+                    if reported_chars is None
+                    else min(reported_chars, entry.reply_chars)
+                )
             # Input-only usage (Anthropic's message_start) is not output: the refund must survive it.
             if completion_tokens:
                 _note_generated(entry)

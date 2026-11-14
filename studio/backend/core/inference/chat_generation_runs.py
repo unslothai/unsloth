@@ -636,17 +636,15 @@ class ChatGenerationSupervisor:
         from core.inference.token_limit import refund_if_unused
 
         # The 202 that queued this run preceded inference, so this run's outcome decides the refund.
-        # Loaded first: a Stop between mark_running and the run load exits before the payload is read.
-        claim = {
-            "spent": await asyncio.to_thread(db.spent_token_override, run_id),
-            "generated": False,
-        }
+        claim = {"spent": None, "generated": False}
         with track_first_token_wait() as first_token_wait, override_claim_scope(claim):
             try:
                 await self._produce_run(run_id, cancel_event, activity, first_token_wait)
             finally:
-                if claim.get("owned"):
-                    await refund_if_unused(claim, failed = not claim.get("completed"))
+                if claim.get("owned") and not claim.get("completed") and not claim.get("generated"):
+                    # Taken atomically, so a racing cancel and this worker never both refund it.
+                    claim["spent"] = await asyncio.to_thread(db.take_token_override, run_id)
+                    await refund_if_unused(claim, failed = True)
 
     async def _produce_run(
         self,

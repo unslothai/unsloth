@@ -76,10 +76,11 @@ def _usage(
     prompt = None,
     completion = None,
     total = None,
+    **extra,
 ):
     return (
         "usage",
-        {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total},
+        {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total, **extra},
     )
 
 
@@ -95,6 +96,14 @@ def _usage(
         # Generated text the reply buffer never shows still counts.
         (True, 0, [("reasoning", 400)], "cancelled", (0, 100, 100)),
         (True, 0, [("hidden", 400)], "cancelled", (0, 100, 100)),
+        # A tool loop's earlier passes reported after a later one was interrupted mid-stream.
+        (
+            True,
+            0,
+            [("reply", 40), ("reply", 400), _usage(90, 10, 100, reported_chars = 40)],
+            "cancelled",
+            (90, 110, 200),
+        ),
         # An adapter's all-zero placeholder (no stats yet) is not a report.
         (
             False,
@@ -277,6 +286,8 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     import inspect
 
     source = inspect.getsource(inference_route)
+    # An interrupted safetensors tool stream reports its earlier passes against their watermark.
+    assert "reported_chars = _sf_reported_chars if cancel_event.is_set() else None" in source
     # Non-streaming reasoning never reaches the reply preview, so it is counted beside it.
     assert 'sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies)' in source
     assert '_sf_streamed_calls.add(event.get("tool_call_id"))' in source
