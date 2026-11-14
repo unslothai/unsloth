@@ -348,6 +348,36 @@ def _is_block_list(container, no_split):
     return True
 
 
+def _frozen_table_params(model) -> set:
+    """Frozen tensors named by a model's `_no_placement_params` (Qwen4Exp's PLE n-gram table, DeepSeek-V4.1's engram
+    tables when loaded as parameters). Same rule as loader_utils.no_placement_matcher (not imported here: it pulls in
+    the whole package): a dotted name matches by suffix, a bare one only a direct tensor of a `_no_split_modules`
+    module."""
+    out = set()
+    for owner in model.modules():
+        names = getattr(type(owner), "_no_placement_params", None)
+        if not names or not hasattr(owner, "config"):
+            continue
+        dotted = [n for n in names if "." in n]
+        bare = {n for n in names if "." not in n}
+        no_split = set(getattr(owner, "_no_split_modules", None) or [])
+        roots = (
+            {path for path, m in owner.named_modules() if type(m).__name__ in no_split}
+            if bare
+            else set()
+        )
+        for name, p in owner.named_parameters():
+            if p.requires_grad:
+                continue
+            base = name.replace(".base_layer.", ".")
+            owner_path, _, leaf = base.rpartition(".")
+            if any(base == n or base.endswith("." + n) for n in dotted) or (
+                leaf in bare and owner_path in roots
+            ):
+                out.add(p)
+    return out
+
+
 def find_shard_units(model, ignored_params = ()) -> list:
     """Repeated decoder / vision / audio blocks in module order: every child of the outermost
     nn.ModuleLists of blocks (model.layers, language_model.layers, vision_tower.*.layers, ...); never a
@@ -1730,6 +1760,17 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     ignored_params = set(config.ignored_params or ())
     if layout.replicate_frozen and _supports_ignored_params(fully_shard):
         ignored_params.update(p for p in model.parameters() if not p.requires_grad)
+    tables = _frozen_table_params(model)
+    if tables:
+        # A frozen lookup table (UNSLOTH_FROZEN_TABLE=gpu) stays whole on every rank in every layout: sharding it
+        # would all-gather the whole table each step. Disk / ram tables hold no parameter and never get here.
+        if not _supports_ignored_params(fully_shard):
+            raise RuntimeError(
+                "Unsloth: native FSDP2 keeps frozen lookup tables (_no_placement_params) out of sharding with "
+                f"fully_shard(ignored_params) (torch 2.7+); this is torch {torch.__version__}. Load with "
+                "UNSLOTH_FROZEN_TABLE=disk (or ram) instead."
+            )
+        ignored_params.update(tables)
     units = (
         list(config.units) if config.units is not None else find_shard_units(model, ignored_params)
     )
@@ -1780,6 +1821,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 "Upgrade torch, or load the model in 4-bit or 16-bit."
             )
         ignored.update(int8)
+        ignored.update(
+            tables
+        )  # frozen lookup tables: whole on every rank, never sharded / gathered / reduced
         if config.ignored_params:
             ignored.update(config.ignored_params)
         replicated = set(ignored)
@@ -1991,6 +2035,45 @@ def native_clip_grad_norm_(
     return total
 
 
+def _frozen_table_modules(model):
+    """(name, module) of every bound parameter-free frozen lookup table (unsloth_zoo UnslothFrozenTableEmbedding:
+    UNSLOTH_FROZEN_TABLE=ram / disk)."""
+    return [
+        (name, m)
+        for name, m in model.named_modules()
+        if type(m).__name__ == "UnslothFrozenTableEmbedding"
+        and getattr(m, "frozen_table_store", None) is not None
+    ]
+
+
+def _no_table_export(destination, prefix, keep_vars):
+    return None
+
+
+@contextlib.contextmanager
+def frozen_tables_hidden(model):
+    """While collecting a state dict with torch.distributed.checkpoint.state_dict: a frozen table exports zero-copy
+    views of its checkpoint files under the checkpoint's names, which are not attributes of its module, so
+    get_model_state_dict (which resolves every key to an attribute) raises, and a DCP save would write the whole table.
+    Inside, the tables export nothing; full_frozen_table_state adds them back where a full save needs them."""
+    tables = [m for _, m in _frozen_table_modules(model)]
+    for m in tables:
+        m.__dict__["_save_to_state_dict"] = _no_table_export
+    try:
+        yield tables
+    finally:
+        for m in tables:
+            m.__dict__.pop("_save_to_state_dict", None)
+
+
+def full_frozen_table_state(model):
+    """The frozen tables' exported views (no copy) under the model's state dict names, for a full save."""
+    out = {}
+    for name, m in _frozen_table_modules(model):
+        m._save_to_state_dict(out, f"{name}." if name else "", False)
+    return out
+
+
 def native_full_state_dict(
     model,
     trainable_only = False,
@@ -2008,7 +2091,12 @@ def native_full_state_dict(
         cpu_offload = cpu_offload and writer_rank == 0,
         ignore_frozen_params = bool(trainable_only),
     )
-    state = get_model_state_dict(model, options = options)
+    with frozen_tables_hidden(model):
+        state = get_model_state_dict(model, options = options)
+    if not trainable_only and options.full_state_dict:
+        state.update(
+            full_frozen_table_state(model)
+        )  # read from its own files on the writer: never gathered
     return state if writer_rank == 0 else _gather_to_writer(state, writer_rank)
 
 
@@ -2909,7 +2997,8 @@ def _native_load_hf_sharded(root, checkpoint):
 
             reader = reader_cls(checkpoint, thread_count = max(1, min(4, os.cpu_count() or 1)))
             metadata = reader.read_metadata().state_dict_metadata
-            state = get_model_state_dict(root, options = StateDictOptions(full_state_dict = False))
+            with frozen_tables_hidden(root):  # read from their own files, never loaded through DCP
+                state = get_model_state_dict(root, options = StateDictOptions(full_state_dict = False))
             state = _match_hf_state(root, state, metadata)
     except Exception:
         state = None

@@ -887,6 +887,12 @@ def fsdp2_export_on_writer(
 
 _DCP_DEPTH = [0]
 _ADAPTER_ONLY = [0]
+_MODEL_STATE_FUNCTIONS = (
+    "get_model_state_dict",
+    "set_model_state_dict",
+    "get_state_dict",
+    "set_state_dict",
+)
 _DCP_FUNCTIONS = (
     "get_model_state_dict",
     "set_model_state_dict",
@@ -996,8 +1002,7 @@ def install_dcp_bnb_state_dict():
     Linear4bit._save_to_state_dict = _save_to_state_dict
 
     def _wrap(fn, name):
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
+        def _body(*args, **kwargs):
             adapter_only = _drops_frozen_weights(kwargs)
             full_4bit = not adapter_only and _has_sharded_4bit(args, kwargs)
             if not (adapter_only or full_4bit):
@@ -1016,6 +1021,17 @@ def install_dcp_bnb_state_dict():
                 state_dict = out[0] if name == "get_state_dict" else out
                 _add_quant_state_entries(model, state_dict, kwargs.get("options", None))
             return out
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            model = args[0] if args else kwargs.get("model")
+            if name in _MODEL_STATE_FUNCTIONS and isinstance(model, torch.nn.Module):
+                # Frozen lookup tables (UNSLOTH_FROZEN_TABLE=ram / disk) are read from their own checkpoint files:
+                # never in a DCP state dict (saved or loaded), and their names are no module attributes.
+                from .fsdp2_native import frozen_tables_hidden
+                with frozen_tables_hidden(model):
+                    return _body(*args, **kwargs)
+            return _body(*args, **kwargs)
 
         wrapper._unsloth_fsdp2_patched = True
         return wrapper
