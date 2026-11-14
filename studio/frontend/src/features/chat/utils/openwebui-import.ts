@@ -226,7 +226,6 @@ export function reasoningText(source: unknown): string {
 }
 
 const BUILTIN_TOOL_NAMES: Record<string, string> = { shell: "code_execution" };
-// Executed by the client, so neither hosted nor answered on its own (same set as chat-import).
 const CLIENT_RUN_CALLS = new Set([
   "function_call",
   "custom_tool_call",
