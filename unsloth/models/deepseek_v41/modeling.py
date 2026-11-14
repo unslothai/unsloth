@@ -733,7 +733,9 @@ class _TensorTableStore:
         self,
         ids,
         dtype = None,
+        host_ids = None,
     ):
+        # host_ids: unsloth_zoo's host copy of ids for file-backed stores; rows held in memory gather on their device
         idx = ids.to(self.weight.device).long()
         values = F.embedding(idx, self.weight)
         if self.scale is not None and values.dtype == getattr(torch, "float8_e4m3fn", None):
