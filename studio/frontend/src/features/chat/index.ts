@@ -625,11 +625,22 @@ export {
   useChatProjects,
 } from "./hooks/use-chat-projects";
 export { subscribeDictationLevel } from "./adapters/dictation-level";
+export { prewarmPcmCapture } from "./adapters/pcm-capture";
+export {
+  appendTranscriptText,
+  joinTranscriptParts,
+} from "./adapters/dictation-text";
+export {
+  microphoneErrorMessage,
+  openMicrophone,
+  stopMediaStream,
+} from "./adapters/microphone";
 export {
   dictationFailed,
   dictationProducedClip,
   dictationProducedTranscript,
 } from "./adapters/dictation-outcome";
+export type { StudioDictationSession } from "./adapters/studio-web-speech-dictation-adapter";
 export {
   StudioDictationAdapter,
   cancelActiveStudioDictation,
@@ -643,6 +654,7 @@ export {
   SttModelNotDownloadedError,
   cancelSttDownload,
   fetchSttStatus,
+  keepSttModelAlive,
   loadSttModel,
   startSttDownload,
   sttEngineFor,

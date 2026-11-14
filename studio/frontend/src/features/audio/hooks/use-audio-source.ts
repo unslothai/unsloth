@@ -6,6 +6,7 @@ import {
   createAudioRecorder,
 } from "@/features/chat/adapters/pcm-recorder";
 import { isMissingDeviceError } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { ensureMicrophonePermission } from "@/features/microphone";
 import { loadUploadLimitSettings } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { isTauri } from "@/lib/api-base";
@@ -61,6 +62,14 @@ function errorText(error: unknown, fallback: string): string {
 }
 
 async function openMicrophone(deviceId: string): Promise<MediaStream> {
+  // The desktop app answers WebView2 from its own consent dialog; without this
+  // the native gate would refuse a first recording that never asked.
+  if (!(await ensureMicrophonePermission("audio"))) {
+    throw new DOMException(
+      "Microphone access was not granted.",
+      "NotAllowedError",
+    );
+  }
   try {
     return await navigator.mediaDevices.getUserMedia({
       audio: micAudioConstraints(deviceId),

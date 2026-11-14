@@ -26218,6 +26218,23 @@ async def stt_download_cancel(
     return JSONResponse(content = status)
 
 
+def _prefer_downloaded_stt_engine(engine: str, model: Optional[str]) -> str:
+    """A curated Whisper snapshot may be installed for Transformers while the
+    GGUF sidecar is available but has no file for it. Prefer the format that is
+    actually on disk instead of 409ing the load."""
+    if engine != "gguf" or not model:
+        return engine
+    from core.inference import stt_ggml_sidecar, stt_sidecar
+
+    if model not in stt_ggml_sidecar.GGML_STT_MODELS:
+        return engine
+    if stt_ggml_sidecar._cached_model_path(model) is None and stt_sidecar.is_model_downloaded(
+        model
+    ):
+        return "transformers"
+    return engine
+
+
 @studio_router.post("/audio/stt/load")
 async def stt_load(
     payload: SttLoadRequest,
@@ -26242,6 +26259,7 @@ async def stt_load(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    engine = _prefer_downloaded_stt_engine(engine, payload.model)
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
         payload.engine,
@@ -26369,6 +26387,50 @@ async def stt_unload(
     held = [name for name, model_id in before.items() if model_id is not None]
     released = not held or any(_stt_resident_model(name) is None for name in held)
     return JSONResponse(content = {"loaded_model": None, "device": None, "released": released})
+
+
+@studio_router.post("/audio/stt/keepalive")
+async def stt_keep_alive(
+    engine: Optional[str] = None,
+    model: Optional[str] = None,
+    keep_alive_seconds: Optional[float] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Push the idle unload back for a dictation model that is already loaded.
+
+    Voice typing heartbeats this while it is enabled, so a press after a pause
+    starts recording at once instead of waiting out a reload. It never loads
+    anything: an evicted model stays evicted and the next real press owns the
+    load, which is what keeps a background timer from pinning VRAM the user is
+    not using. Only a timer is touched, so this deliberately does not queue
+    behind inference.
+    """
+    from core.inference import stt_registry
+
+    if keep_alive_seconds is not None:
+        # A timer is derived from this value; a NaN/infinite or negative one
+        # either raises in the scheduler or pins the model indefinitely.
+        if not math.isfinite(keep_alive_seconds) or keep_alive_seconds < 0:
+            raise HTTPException(
+                status_code = 422,
+                detail = "keep_alive_seconds must be a finite non-negative number.",
+            )
+        keep_alive_seconds = min(keep_alive_seconds, 86_400.0)
+        await asyncio.to_thread(stt_registry.set_keep_alive_seconds, keep_alive_seconds)
+    target = _resolve_serving_stt_engine(engine) if engine is not None else None
+    result = await asyncio.to_thread(stt_registry.keep_alive, target, model)
+    if model and not result.get("held"):
+        # A curated Whisper snapshot may be resident on Transformers while the
+        # caller asked for GGUF (or vice versa); hold whichever engine actually
+        # owns the model so the next press is warm.
+        for candidate in ("transformers", "gguf"):
+            if candidate == target:
+                continue
+            alternative = await asyncio.to_thread(stt_registry.keep_alive, candidate, model)
+            if alternative.get("held"):
+                result = alternative
+                break
+    return JSONResponse(content = result)
 
 
 async def _transcribe_audio_bytes(
@@ -26618,6 +26680,7 @@ async def transcribe_audio_raw(
     device: Optional[Literal["auto", "cpu", "gpu"]] = None,
     current_subject: str = Depends(get_current_subject),
     stream: bool = False,
+    save: bool = True,
     title: str = Query("Recording", max_length = 255),
     context_length: Annotated[int, BeforeValidator(_parse_stt_context_length_query)] = 0,
 ):
@@ -26640,12 +26703,13 @@ async def transcribe_audio_raw(
                     language,
                     fast,
                     engine,
-                    None,
+                    request,
                     device,
                     on_progress,
                     context_length = context_length,
                 ),
                 title,
+                save = save,
             ),
             media_type = "application/x-ndjson",
             headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},

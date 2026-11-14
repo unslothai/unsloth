@@ -3,6 +3,7 @@
 
 import {
   StudioDictationAdapter,
+  appendTranscriptText,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
 } from "@/features/chat";
@@ -796,8 +797,7 @@ function useCommentDictation(draft: string, onDraft: (value: string) => void) {
       return;
     }
     let base = draft;
-    const joined = (text: string) =>
-      base && text && !base.endsWith(" ") ? `${base} ${text}` : base + text;
+    const joined = (text: string) => appendTranscriptText(base, text);
     try {
       const next = new StudioDictationAdapter({ chatId: null }).listen();
       session.current = next;

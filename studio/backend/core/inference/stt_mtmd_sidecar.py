@@ -54,6 +54,8 @@ from core.inference.stt_sidecar import (
     _prepare_stt_cache_for_http,
     _read_revision_record,
     _remember_completed_download,
+    _MAX_AUDIO_SECONDS,
+    _stt_quiet_window_end,
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
@@ -100,6 +102,11 @@ _TRANSCRIBE_PROMPT = "Transcribe the audio."
 # Generous cap; it only stops a looping model before the request timeout.
 _TRANSCRIPT_TOKENS_PER_SECOND = 30
 _MIN_TRANSCRIPT_TOKENS = 512
+# A whole 30-minute upload cannot go in one request: the server runs a 4096-token context
+# (see load()) and Qwen3-ASR spends about 13 tokens on each second of audio, so a single
+# request only holds a few minutes. Long audio is cut into these windows instead, and 60s
+# keeps the prompt (about 800 tokens) and the output budget (1800) together inside 4096.
+_MTMD_WINDOW_SECONDS = 60
 # Output allowance is reserved alongside the measured audio/prompt tokens in Auto mode.
 _MAX_TRANSCRIPT_TOKENS = 16384
 _AUTO_CONTEXT_MIN = 4096
@@ -127,12 +134,80 @@ def _auto_context_length(input_tokens: int, output_tokens: int) -> int:
     return max(_AUTO_CONTEXT_MIN, ((required + 4095) // 4096) * 4096)
 
 
+def _window_pcm(decoded_audio) -> list:
+    """Cut decoded audio into context-sized windows, preferring a nearby pause."""
+    window = _MTMD_WINDOW_SECONDS * _TARGET_SAMPLE_RATE
+    windows = []
+    start = 0
+    while start < len(decoded_audio):
+        end = min(start + window, len(decoded_audio))
+        quiet = _stt_quiet_window_end(decoded_audio, start, window)
+        if quiet is not None and quiet > start:
+            end = quiet
+        windows.append(decoded_audio[start:end])
+        start = end
+    return windows
+
+
+def _joined_progress(on_progress, done: list):
+    """Report a window's partial text on top of the windows already transcribed."""
+
+    def report(update):
+        finished = " ".join(part for part in done if part)
+        text = update.get("text") or ""
+        on_progress({"text": f"{finished} {text}".strip()})
+
+    return report
+
+
 def _transcript_token_budget(audio_seconds: Optional[float]) -> int:
     """Output cap for a clip. A fixed one silently truncated long audio."""
     if not audio_seconds or audio_seconds <= 0:
         return _MIN_TRANSCRIPT_TOKENS
     scaled = int(audio_seconds * _TRANSCRIPT_TOKENS_PER_SECOND)
     return max(_MIN_TRANSCRIPT_TOKENS, min(scaled, _MAX_TRANSCRIPT_TOKENS))
+
+
+def _already_pcm16_wav(audio: bytes) -> Optional[float]:
+    """Length in seconds when ``audio`` is already 16 kHz mono 16-bit PCM WAV.
+
+    That is exactly what the recorder encodes, and decoding then re-encoding it
+    through PyAV was pure per-dictation overhead. The header is checked strictly,
+    so anything unusual still takes the decoder.
+    """
+    if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        return None
+    view = memoryview(audio)
+    fmt: Optional[tuple[int, int, int, int]] = None
+    data_len: Optional[int] = None
+    offset = 12
+    while offset + 8 <= len(audio):
+        chunk_id = bytes(view[offset : offset + 4])
+        chunk_len = int.from_bytes(view[offset + 4 : offset + 8], "little")
+        start = offset + 8
+        end = start + chunk_len
+        if end > len(audio):
+            return None
+        if chunk_id == b"fmt ":
+            if chunk_len < 16:
+                return None
+            fmt = (
+                int.from_bytes(view[start : start + 2], "little"),
+                int.from_bytes(view[start + 2 : start + 4], "little"),
+                int.from_bytes(view[start + 4 : start + 8], "little"),
+                int.from_bytes(view[start + 14 : start + 16], "little"),
+            )
+        elif chunk_id == b"data":
+            data_len = chunk_len
+            break
+        # Chunks are word aligned.
+        offset = end + (chunk_len & 1)
+    if fmt != (1, 1, _TARGET_SAMPLE_RATE, 16) or not data_len:
+        return None
+    seconds = data_len / (2 * _TARGET_SAMPLE_RATE)
+    if seconds > _MAX_AUDIO_SECONDS:
+        return None
+    return seconds
 
 
 _SERVER_START_TIMEOUT_SECONDS = 180.0
@@ -768,6 +843,20 @@ class MtmdSttSidecar:
             self._idle_timer.cancel()
             self._idle_timer = None
 
+    def keep_alive(self) -> bool:
+        """Push the idle unload back for a server that is already resident.
+
+        Voice typing heartbeats this while it is enabled so the first press after a
+        pause does not pay for a load. A model that has already gone is reported,
+        never reloaded: the heartbeat must stay cheap enough to run in the
+        background, and the next real press owns the load.
+        """
+        with self._lock:
+            if not self._process_alive():
+                return False
+            self._schedule_idle_unload_locked()
+            return True
+
     def _schedule_idle_unload_locked(self) -> None:
         self._cancel_idle_unload_locked()
         if self._keep_alive_seconds <= 0 or self._active_requests:
@@ -1073,13 +1162,15 @@ class MtmdSttSidecar:
                 # Explicit so the voice model cannot inherit a chat-sized cache.
                 "--ctx-size",
                 str(context_size),
-                # keep off the accelerator during training so a dictation load cannot reclaim VRAM training just freed
-                "-ngl",
-                "0" if training else "99",
+                # Keeps the KV cache and the attention buffers small enough that the weights fit, which is what lets
+                # llama.cpp's auto-fit choose a layer count instead of a hybrid that thrashes.
+                "-fa",
+                "on",
             ]
             if training:
-                # -ngl 0 does not cover the projector; clip.cpp offloads it separately.
-                cmd.append("--no-mmproj-offload")
+                # -ngl 0 covers the main model only. clip.cpp offloads the projector on its own flag, which is what the
+                # chat backend's _cmd_has_gpu_companion() treats as a GPU companion whatever --gpu-layers says.
+                cmd.extend(["-ngl", "0", "--no-mmproj-offload"])
             sock.close()
             # Refuse to spawn once shutdown has begun; no shutdown step stops this sidecar.
             if is_process_shutting_down():
@@ -1220,19 +1311,77 @@ class MtmdSttSidecar:
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         # No training guard: load() already pins the server to CPU while training runs.
         self._ensure_model_downloaded(model_id)
-        decoded_audio = _decode_audio_bounded(audio, cancel_event)
+        # The recorder already hands over exactly this format, so skip the PyAV
+        # round trip instead of decoding and re-encoding every dictation.
+        wav_seconds = _already_pcm16_wav(audio)
+        if wav_seconds is not None and wav_seconds <= _MTMD_WINDOW_SECONDS:
+            windows = [(audio, wav_seconds)]
+        else:
+            # Audio longer than one context-sized window is cut below, which needs the
+            # samples. Decoding a long recorder WAV again is nothing next to transcribing it.
+            decoded_audio = _decode_audio_bounded(audio, cancel_event)
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            # llama-server aborts (mtmd GGML_ASSERT) on a one-sample clip.
+            if len(decoded_audio) < _TARGET_SAMPLE_RATE // 1000:
+                raise SttAudioDecodeError("Audio is too short (min 1 ms).")
+            if len(decoded_audio) > _MTMD_WINDOW_SECONDS * _TARGET_SAMPLE_RATE:
+                windows = [
+                    (_pcm_to_wav_bytes(window), len(window) / _TARGET_SAMPLE_RATE)
+                    for window in _window_pcm(decoded_audio)
+                ]
+            else:
+                windows = [
+                    (
+                        _pcm_to_wav_bytes(decoded_audio),
+                        len(decoded_audio) / _TARGET_SAMPLE_RATE,
+                    )
+                ]
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        # llama-server aborts (mtmd GGML_ASSERT) on a one-sample clip.
-        if len(decoded_audio) < _TARGET_SAMPLE_RATE // 1000:
-            raise SttAudioDecodeError("Audio is too short (min 1 ms).")
-        wav_bytes = _pcm_to_wav_bytes(decoded_audio)
-        audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         self.load(
             model_id,
             request_cancel_event = cancel_event,
             **({"context_length": context_length} if context_length is not None else {}),
         )
+        parts: list[str] = []
+        for wav_bytes, audio_seconds in windows:
+            # A single request reports its own text; a window reports on top of the
+            # windows already transcribed.
+            progress = on_progress
+            if on_progress is not None and len(windows) > 1:
+                progress = _joined_progress(on_progress, parts)
+            parts.append(
+                self._transcribe_window(
+                    model_id,
+                    wav_bytes,
+                    audio_seconds,
+                    language,
+                    cancel_event,
+                    progress,
+                    context_length,
+                    prompt,
+                )
+            )
+        return {
+            "text": " ".join(part for part in parts if part),
+            "language": normalize_whisper_language(language),
+            "duration": sum(seconds for _, seconds in windows),
+            "model": model_id,
+        }
+
+    def _transcribe_window(
+        self,
+        model_id: str,
+        wav_bytes: bytes,
+        audio_seconds: Optional[float],
+        language: Optional[str],
+        cancel_event: Optional[threading.Event],
+        on_progress,
+        context_length: Optional[int],
+        prompt: Optional[str],
+    ) -> str:
+        """Transcribe one window of WAV bytes on the loaded server."""
         with self._lock:
             port = self._port
             api_key = self._api_key
@@ -1311,12 +1460,7 @@ class MtmdSttSidecar:
             with self._lock:
                 self._active_requests -= 1
                 self._schedule_idle_unload_locked()
-        return {
-            "text": text,
-            "language": normalize_whisper_language(language),
-            "duration": audio_seconds,
-            "model": model_id,
-        }
+        return text
 
     def _check_request_server(self, model_id: str, generation: int) -> None:
         if (

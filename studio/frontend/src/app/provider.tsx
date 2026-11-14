@@ -27,12 +27,13 @@ import { routeNeedsHardware } from "@/config/hardware-verdict";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/resync-inference-status-lazy";
 import { DeepLinkHandler } from "@/features/deep-links";
-import { receiveSharedRunConfigUrls } from "@/features/model-picker/sharing/receive-link";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
 } from "@/features/hub/download-manager";
 import { LoadedModelsIndicator } from "@/features/loaded-models";
+import { MicrophonePermissionDialog } from "@/features/microphone";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker/sharing/receive-link";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
@@ -51,6 +52,7 @@ import {
 import { notifyRendererReady } from "@/features/settings/api/gpu-rendering";
 import { usePalette, useTheme } from "@/features/settings/stores/theme-store";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
+import { useVoiceTyping } from "@/features/voice-typing";
 import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
@@ -64,7 +66,6 @@ import {
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
 import { installDismissClickStreakGuard } from "@/lib/dismiss-click-streak";
 import { useDocumentFlag } from "@/lib/document-flag";
-import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
   COMPOSER_CLEARANCE_VAR,
@@ -72,14 +73,9 @@ import {
   getToastOffsets,
   insetPastChatSettings,
 } from "@/lib/toast-offset";
+import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
-import { setDesktopShellReady } from "./desktop-shell-ready";
-import {
-  measureThinScrollbar,
-  watchLowDeviceScale,
-  watchThreadScrollbarGutter,
-} from "./low-device-scale";
 import { MotionConfig } from "motion/react";
 import {
   type CSSProperties,
@@ -91,6 +87,12 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { setDesktopShellReady } from "./desktop-shell-ready";
+import {
+  measureThinScrollbar,
+  watchLowDeviceScale,
+  watchThreadScrollbarGutter,
+} from "./low-device-scale";
 import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import {
   type LogicalWindowSize,
@@ -719,6 +721,9 @@ function DesktopChromeVarsEffect({
 }
 
 function TauriWrapper({ children }: { children: ReactNode }) {
+  // System-wide voice typing stays armed for the whole desktop session, including
+  // while the window is hidden in the tray.
+  useVoiceTyping();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const blockingScreenRef = useSurfaceRef<HTMLDivElement>(MODAL_SURFACE);
   const {
@@ -1242,6 +1247,7 @@ export function AppProvider({ children }: AppProviderProps) {
         <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />
         <TauriWrapper>{children}</TauriWrapper>
         <SttDownloadPrompt />
+        <MicrophonePermissionDialog />
         <Toaster
           position="top-right"
           visibleToasts={2}
