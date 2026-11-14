@@ -154,6 +154,51 @@ class _Head(torch.nn.Module):
         return self.head
 
 
+class _ProbeTokenizer:
+    def __init__(self, offset = 0):
+        self.offset = offset
+
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+    ):
+        del add_special_tokens
+        return {"input_ids": [ord(char) + self.offset for char in text]}
+
+
+def test_gkd_tokenizer_probe_detects_same_width_different_token_ids():
+    student = _TinyLM(128, 8, 0.0, 1)
+    teacher = _TinyLM(128, 8, 0.0, 2)
+    trainer = types.SimpleNamespace(processing_class = _ProbeTokenizer())
+    teacher._saved_temp_tokenizer = _ProbeTokenizer(offset = 1)
+    assert rl._unsloth_gkd_tokenizers_compatible(trainer, student, teacher) is False
+    teacher._saved_temp_tokenizer = _ProbeTokenizer()
+    assert rl._unsloth_gkd_tokenizers_compatible(trainer, student, teacher) is True
+
+
+def test_gkd_tokenizer_probe_is_unknown_when_teacher_has_no_tokenizer():
+    student = _TinyLM(128, 8, 0.0, 1)
+    teacher = _TinyLM(128, 8, 0.0, 2)
+    trainer = types.SimpleNamespace(processing_class = _ProbeTokenizer())
+    assert rl._unsloth_gkd_tokenizers_compatible(trainer, student, teacher) is None
+
+
+def test_same_width_tokenizer_mismatch_falls_back():
+    student = _TinyLM(128, 8, 0.0, 1)
+    teacher = _TinyLM(128, 8, 0.0, 2)
+    teacher._saved_temp_tokenizer = _ProbeTokenizer(offset = 1)
+    trainer = _trainer(0.5, student, teacher)
+    trainer.processing_class = _ProbeTokenizer()
+    assert (
+        rl._unsloth_gkd_chunked_loss(
+            trainer, student, _inputs(128), None, {"shift": "shift", "num_items_in_batch": False}
+        )
+        is None
+    )
+    assert trainer._unsloth_gkd_chunked_fallbacks == {"tokenizer mismatch": 1}
+
+
 def test_dense_head_guard():
     assert rl._unsloth_gkd_dense_head(_Head(torch.nn.Linear(8, 32, bias = False))) is not None
     assert rl._unsloth_gkd_dense_head(_Head(torch.nn.Embedding(32, 8))) is None
@@ -373,11 +418,15 @@ def test_generated_items_are_self_contained():
         "_unsloth_gkd_jsd_supported",
         "_unsloth_gkd_note_fallback",
         "_unsloth_gkd_chunk_size",
+        "_unsloth_gkd_tokenizer",
+        "_unsloth_gkd_probe_ids",
+        "_unsloth_gkd_tokenizers_compatible",
         "_unsloth_grpo_returns_hidden_states",
         "_unsloth_grpo_hidden_states_signal",
         "_unsloth_get_model_config",
     ):
         assert f"def {name}(" in pre, name
+    assert "_UNSLOTH_GKD_TOKENIZER_PROBES = (" in pre
     assert "from unsloth_zoo.rl_replacements import distillation_chunked_jsd" in pre
     assert rl.gkd_trainer_compute_loss in rl.RL_FUNCTIONS["gkd_trainer"]
 
