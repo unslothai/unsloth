@@ -1293,6 +1293,78 @@ exit 1
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_tree_changed_while_the_launch_help_runs_is_not_admitted_on_the_launch_answer() {
+        use std::fs;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("launch-capability-stale");
+        remove_managed_capability_cache();
+        let fake = fake_cli(
+            "launch-capability-stale",
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
+if [ "$1" = "-h" ]; then
+  i=0
+  while [ ! -f "$0.release" ]; do
+    i=$((i + 1))
+    if [ "$i" -gt 100 ]; then exit 42; fi
+    sleep 0.1
+  done
+  exit 0
+fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  if [ -f "$0.broken" ]; then
+    printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":false,"studio_install_reason":"studio_install_incomplete","version":"2026.8.4"}'
+  else
+    printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  fi
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+        let calls = bin.with_extension("calls");
+        let read_calls = || fs::read_to_string(&calls).unwrap_or_default();
+        let capability_calls = || {
+            read_calls()
+                .matches("studio desktop-capabilities --json\n")
+                .count()
+        };
+
+        install_launch_cli_probe_like_setup(bin.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while capability_calls() == 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(capability_calls(), 1, "{}", read_calls());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // An update changes the tree after the preflight fingerprints it, before `-h` finishes.
+        let change_tree_then_release_help = async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            fs::write(fake.dir.join("uv.lock"), "changed").unwrap();
+            fs::write(bin.with_extension("broken"), "").unwrap();
+            fs::write(bin.with_extension("release"), "").unwrap();
+        };
+        let (probe, ()) = tokio::join!(
+            probe_managed_bin(bin.clone()),
+            change_tree_then_release_help
+        );
+        match probe {
+            ManagedProbe::Stale { reason, .. } => {
+                assert_eq!(reason, "studio_install_incomplete", "{}", read_calls())
+            }
+            other => panic!("expected Stale for the changed tree, got {other:?}"),
+        }
+        assert_eq!(read_calls().matches("-h\n").count(), 1, "{}", read_calls());
+        assert_eq!(capability_calls(), 2, "{}", read_calls());
+
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_preflight_waits_for_a_launch_probe_holding_the_runtime_launch_guard() {
         let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
         let _cache_home = ManagedCapabilityCacheHome::new("launch-guard");
