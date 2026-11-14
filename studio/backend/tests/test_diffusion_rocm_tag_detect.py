@@ -57,6 +57,19 @@ def test_fused_flux_rope_switch_is_on_for_a_tag_only_rocm_wheel(amd_sdk_wheel):
     assert rf._switch_on(rf.FUSED_ROPE_ENV) is True
 
 
+def test_vae_canvas_graph_replicas_see_a_tag_only_rocm_wheel(amd_sdk_wheel):
+    from core.inference import diffusion_vae_canvas as vc
+    assert vc._is_rocm() is True
+
+
+def test_vae_canvas_rocm_check_does_not_fall_back_on_a_cuda_build(monkeypatch):
+    from core.inference import diffusion_vae_canvas as vc
+
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.11.0+cu130", raising = False)
+    assert vc._is_rocm() is False
+
+
 def test_render_thread_stays_off_on_a_tag_only_rocm_wheel(amd_sdk_wheel):
     from core.inference import diffusion_render_thread as rt
     assert rt.enabled() is False

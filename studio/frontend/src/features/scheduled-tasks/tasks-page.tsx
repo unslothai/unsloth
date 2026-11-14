@@ -513,7 +513,7 @@ export function TasksPage() {
                     title={t("scheduledTasks.filter")}
                     className={cn(ROW_BUTTON, shown.length < STATUSES.length && "text-foreground")}
                   >
-                    <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+                    <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5 -translate-y-[0.5px]" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent

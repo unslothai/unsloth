@@ -94,9 +94,14 @@ import {
   OPENCODE_PLANS,
   isDecisionConnection,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  newConnectionRequestType,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   getProviderModelCapabilities,
   learnCatalogModelCapabilities,
+  NEW_MODEL_CHECK_INTERVALS,
+  isNewModelCheckInterval,
+  newModelCheckOf,
+  type NewModelCheckInterval,
   providerModelSupportsStudioTools,
   setProviderModelCapabilities,
   removeExternalProviderApiKey,
@@ -110,17 +115,35 @@ import {
   useExternalProvidersStore,
 } from "./stores/external-providers-store";
 import {
-  mergeLearnedModelCapabilities,
+  autoTickLimit,
+  autoTicksNewlyListedModels,
+  codexCapabilitiesWithPlanModels,
+  MAX_AUTO_TICKED_MODELS,
   pruneProviderModelIds,
+  refreshModelsDevCatalog,
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
+  withNewlyListedModels,
+  withNewlyOfferedCodexModels,
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
+import { SettingsRow } from "@/features/settings/components/settings-row";
+import {
+  learnModelDisplayNames,
+  providerModelDisplayName,
+  useModelDisplayNamesVersion,
+} from "./model-display-names";
 
 const PROVIDER_FORM_EASE: [number, number, number, number] = [
   0.165, 0.84, 0.44, 1,
 ];
 const PROVIDER_FORM_DURATION = 0.2;
+const NEW_MODEL_CHECK_LABELS: Record<NewModelCheckInterval, string> = {
+  launch: "Every launch",
+  daily: "Daily",
+  weekly: "Weekly",
+  off: "Off",
+};
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found. Add a valid API key for this connection.";
 const HIDDEN_PROVIDER_TYPES = new Set(["qwen", "opencode_go"]);
@@ -144,6 +167,12 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
 
 function hasPublicModelCatalog(providerType: string | null | undefined): boolean {
   return providerType === "openrouter";
+}
+
+/** Once a provider has listed its models, the registry's suggestions only order that list. */
+export function liveModelSeeds(seeds: string[], live: string[]): string[] {
+  if (live.length === 0) return seeds;
+  return seeds.filter((id) => live.includes(id));
 }
 
 export function withSavedModelIds(catalog: string[], saved: string[]): string[] {
@@ -212,11 +241,31 @@ function shouldShowProviderApiType(providerType: string): boolean {
   return providerType === LEGACY_CUSTOM_PROVIDER_TYPE;
 }
 
-function formatModelSummary(models: string[]): string {
+function ModelOptionLabel({
+  providerType,
+  modelId,
+}: {
+  providerType: string;
+  modelId: string;
+}) {
+  const name = providerModelDisplayName(providerType, modelId);
+  return (
+    <span className="min-w-0 break-all text-sm leading-tight">
+      {name}
+      {name === modelId ? null : (
+        <span className="ml-2 text-xs text-muted-foreground">{modelId}</span>
+      )}
+    </span>
+  );
+}
+
+function formatModelSummary(providerType: string, models: string[]): string {
   if (models.length === 0) {
     return "No models enabled";
   }
-  const visible = models.slice(0, 4);
+  const visible = models
+    .slice(0, 4)
+    .map((model) => providerModelDisplayName(providerType, model));
   const remaining = models.length - visible.length;
   return `${visible.join(", ")}${remaining > 0 ? ` +${remaining}` : ""}`;
 }
@@ -229,50 +278,23 @@ interface ChatProvidersSettingsProps {
   onOpenProviderConsumed?: () => void;
 }
 
-export function codexCapabilitiesWithPlanModels(
-  entry: ProviderRegistryEntry | undefined,
-  listed: CodexSubscriptionModels | null,
-  stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
-): Record<string, { vision?: boolean; studio_tools?: boolean }> | null {
-  if (!listed || listed.source !== "subscription") return null;
-  // Without the registry row every model reads as unlisted and persisted capabilities go wrong.
-  if (!entry) return null;
-  const registryCapabilities = entry.model_capabilities ?? {};
-  // Keyed by provider type, so merge into what is learned or a second connection drops the first's.
-  const capabilities = mergeLearnedModelCapabilities(
-    stored,
-    registryCapabilities,
-    entry?.supports_studio_tools,
-  );
-  for (const model of listed.known ?? listed.models) {
-    // Only the plan describes unlisted slugs; mirror the backend bool(vision) gate as false, not null.
-    if (!(model.id in registryCapabilities)) {
-      capabilities[model.id] = {
-        ...capabilities[model.id],
-        vision: model.vision === true,
-      };
-    }
-  }
-  return capabilities;
-}
-
+export { codexCapabilitiesWithPlanModels };
 
 export function resolveCodexPickerModels(
-  curated: string[],
   savedModels: string[],
   listed: CodexSubscriptionModels | null,
 ): { catalog: string[]; selected: string[] } {
-  // Only the plan's own catalog can retire a slug; the curated fallback seed must not drop one.
+  // Only the plan's own catalog can retire a slug; without it the saved models stand.
   const planListed = listed?.source === "subscription" && listed.models.length > 0;
   if (!planListed) {
-    const catalog = [...new Set([...curated, ...savedModels])];
-    const offered = new Set(catalog);
-    return { catalog, selected: savedModels.filter((model) => offered.has(model)) };
+    const catalog = [...new Set(savedModels)];
+    return { catalog, selected: catalog };
   }
   const offeredIds = listed.models.map((model) => model.id);
   // "Hide" retires from the picker, not from use; only slugs the plan no longer returns retire.
   const known = new Set((listed.known ?? listed.models).map((model) => model.id));
-  const selected = savedModels.filter((model) => known.has(model));
+  const selected =
+    savedModels.length > 0 ? savedModels.filter((model) => known.has(model)) : offeredIds;
   const catalog = [...new Set([...offeredIds, ...selected])];
   return { catalog, selected };
 }
@@ -285,7 +307,10 @@ export function ChatProvidersSettings({
   onOpenProviderConsumed,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
+  // Re-render when a listing learns model names.
+  useModelDisplayNamesVersion();
   const seededProviderTypeRef = useRef<string | null>(null);
+  const seededModelsRef = useRef<string[]>([]);
   // One object per automatic load: a reopened form reuses the key, never the request.
   const autoLoadedCatalogRef = useRef<{ key: string } | null>(null);
   // One-shot latch; user navigation sets it too so a slow first sync cannot pull them into the form.
@@ -342,6 +367,8 @@ export function ChatProvidersSettings({
   const setConnectionsEnabled = useExternalProvidersStore(
     (s) => s.setConnectionsEnabled,
   );
+  const [newModelCheckDraft, setNewModelCheckDraft] =
+    useState<NewModelCheckInterval>("daily");
   const isCustomProvider = isCustomProviderType(providerType);
   const decisionsOnly = isDecisionConnection({
     providerType,
@@ -497,10 +524,12 @@ export function ChatProvidersSettings({
     if (!query) {
       return availableModels;
     }
-    return availableModels.filter((model) =>
-      model.toLowerCase().includes(query),
+    return availableModels.filter(
+      (model) =>
+        model.toLowerCase().includes(query) ||
+        providerModelDisplayName(providerType, model).toLowerCase().includes(query),
     );
-  }, [availableModels, modelSearchQuery]);
+  }, [availableModels, modelSearchQuery, providerType]);
   const availableModelsLabel = modelSearchQuery.trim()
     ? `${filteredAvailableModels.length} of ${availableModels.length} models`
     : `${availableModels.length} models`;
@@ -530,6 +559,26 @@ export function ChatProvidersSettings({
   }, [autoLoadCatalogKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    let active = true;
+    void refreshModelsDevCatalog()
+      .then(async (refreshed) => {
+        if (!refreshed) return;
+        const registryRows = await listProviderRegistry();
+        if (active) setRegistry(registryRows.filter((entry) => !entry.hidden));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const entry = registryByType.get(providerType);
+    // A refreshed registry replaces only a list still showing its suggestions.
+    if (entry && availableModels === seededModelsRef.current) seedModels(entry);
+  }, [registryByType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
@@ -546,15 +595,8 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed defaults for curated providers and OpenRouter; others stay empty until "Load available models".
-    const seedDefaults =
-      entry.model_list_mode === "curated" || hasPublicModelCatalog(providerType);
-    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
-    setSelectedModelIds(
-      isDecisionConnection({ providerType })
-        ? entry.default_models.slice(0, 1)
-        : [],
-    );
+    seedModels(entry);
+    setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
@@ -639,6 +681,11 @@ export function ChatProvidersSettings({
     };
   }, [onProvidersChange]);
 
+  function seedModels(entry: ProviderRegistryEntry) {
+    seededModelsRef.current = [...entry.default_models];
+    setAvailableModels(seededModelsRef.current);
+  }
+
   function resetForm() {
     // Every form transition retires the in-flight Codex request; its shared spinner blocks the next form.
     codexCatalogRequestRef.current += 1;
@@ -661,23 +708,20 @@ export function ChatProvidersSettings({
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
     setAutoReloadModels(false);
+    setNewModelCheckDraft("daily");
     setSharedDraft(false);
     modelFieldsAtOpenRef.current = null;
   }
 
-  function openAddProvider() {
+  function openAddProvider(presetType?: string) {
     resetForm();
-    const entry = providerType ? registryByType.get(providerType) : null;
-    if (
-      entry &&
-      (entry.model_list_mode === "curated" ||
-        hasPublicModelCatalog(providerType))
-    ) {
-      setAvailableModels([...entry.default_models]);
+    const type = presetType ?? providerType;
+    if (presetType) {
+      setProviderType(presetType);
+      setCustomProviderName(customProviderDisplayName(presetType));
     }
-    if (entry && isDecisionConnection({ providerType: entry.provider_type })) {
-      setSelectedModelIds(entry.default_models.slice(0, 1));
-    }
+    const entry = type ? registryByType.get(type) : null;
+    if (entry) seedModels(entry);
     autoOpenedAddFormRef.current = true;
     setPage("form");
   }
@@ -831,10 +875,13 @@ export function ChatProvidersSettings({
       if (silent && autoLoadedCatalogRef.current !== autoLoad) return;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
+      learnModelDisplayNames(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
-        : (registryByType.get(providerType)?.default_models ?? []);
-      // Defaults first so curated picks show when /models omits them.
+        : liveModelSeeds(
+            registryByType.get(providerType)?.default_models ?? [],
+            models.map((model) => model.id.trim()),
+          );
       const modelIds = pruneProviderModelIds(providerType, [
         ...new Set(
           [
@@ -864,13 +911,43 @@ export function ChatProvidersSettings({
         );
       }
       if (editingProviderId) {
-        onProvidersChange(
-          providersRef.current.map((provider) =>
-            provider.id === editingProviderId
-              ? { ...provider, availableModels: modelIds }
-              : provider,
-          ),
+        const record = providersRef.current.find(
+          (provider) => provider.id === editingProviderId,
         );
+        // Only the saved key and endpoint list the saved connection.
+        const listedSavedConnection =
+          silent || (!apiKey.trim() && baseUrlDraft.trim() === (record?.baseUrl ?? ""));
+        const fresh =
+          record &&
+          listedSavedConnection &&
+          autoTicksNewlyListedModels(record) &&
+          newModelCheckOf(record) !== "off"
+            ? withNewlyListedModels(record.models, record.availableModels ?? [], modelIds, {
+                maxAdded: autoTickLimit(record.id, MAX_AUTO_TICKED_MODELS),
+              })
+            : null;
+        if (fresh && fresh.added.length > 0) {
+          const { added } = fresh;
+          setSelectedModelIds((prev) => [...new Set([...prev, ...added])]);
+        }
+        const persisted =
+          fresh !== null &&
+          (await updateProviderConfig(editingProviderId, {
+            models: fresh.models,
+            availableModels: fresh.availableModels,
+          }).then(
+            () => true,
+            () => false,
+          ));
+        const next = providersRef.current.map((provider) =>
+          provider.id !== editingProviderId
+            ? provider
+            : persisted && fresh
+              ? { ...provider, models: fresh.models, availableModels: fresh.availableModels }
+              : { ...provider, availableModels: modelIds },
+        );
+        providersRef.current = next;
+        onProvidersChange(next);
       }
       if (!silent) setModelSearchQuery("");
     } catch (error) {
@@ -892,19 +969,10 @@ export function ChatProvidersSettings({
 
     setMutatingProvider(true);
     try {
-      const models = pruneProviderModelIds(
-        providerType,
-        selectedModelIds.length > 0 ? selectedModelIds : entry.default_models,
-      );
-      const available = pruneProviderModelIds(providerType, [
-        ...new Set([...availableModels, ...entry.default_models]),
-      ]);
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName: entry.display_name,
         baseUrl: null,
-        models,
-        availableModels: available,
       });
       const provider: ExternalProviderConfig = {
         id: created.id,
@@ -912,8 +980,8 @@ export function ChatProvidersSettings({
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         ...connectionApiFields(created.api_type),
-        models,
-        availableModels: available,
+        models: [],
+        availableModels: [],
         hasApiKey: created.has_api_key,
         authKind: created.auth_kind,
         authStatus: created.auth_status,
@@ -931,8 +999,6 @@ export function ChatProvidersSettings({
       providersRef.current = nextProviders;
       onProvidersChange(nextProviders);
       void refreshProviderModelCatalogs([provider]);
-      setSelectedModelIds(models);
-      setAvailableModels(available);
       setEditingProviderId(created.id);
       return created.id;
     } finally {
@@ -1061,6 +1127,7 @@ export function ChatProvidersSettings({
         authStatus: created.auth_status,
         autoReloadModels:
           uiProviderType === "llama_cpp" ? autoReloadModels : undefined,
+        newModelCheck: newModelCheckDraft,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
@@ -1247,6 +1314,7 @@ export function ChatProvidersSettings({
         shared: updated.shared === true,
         autoReloadModels:
           existing.providerType === "llama_cpp" ? autoReloadModels : undefined,
+        newModelCheck: newModelCheckDraft,
         isReasoningModel: supportsProviderReasoningToggle(
           existing.providerType,
         )
@@ -1281,13 +1349,12 @@ export function ChatProvidersSettings({
     refresh = false,
   ): Promise<boolean> {
     const request = ++codexCatalogRequestRef.current;
-    const curated = registryByType.get("openai_codex")?.default_models ?? [];
     let listed: CodexSubscriptionModels | null = null;
     if (authStatus === "connected") {
       try {
         listed = await fetchCodexSubscriptionModels(providerId, { refresh });
       } catch {
-        // Keep the curated seed: the form must still open when upstream is unreachable.
+        // The form must still open when upstream is unreachable.
       }
     }
     if (request !== codexCatalogRequestRef.current) {
@@ -1300,6 +1367,9 @@ export function ChatProvidersSettings({
       getProviderModelCapabilities("openai_codex"),
     );
     if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
+    if (listed?.source === "subscription") {
+      learnModelDisplayNames("openai_codex", listed.known ?? listed.models);
+    }
     if (listed?.source === "reauthorization_required") {
       void syncExternalProvidersFromBackend(providersRef.current)
         .then((synced) => {
@@ -1308,21 +1378,51 @@ export function ChatProvidersSettings({
         })
         .catch(() => undefined);
     }
-    const picker = resolveCodexPickerModels(curated, savedModels, listed);
+    const picker = resolveCodexPickerModels(savedModels, listed);
     if (refresh && listed?.source !== "subscription") {
-      // A curated fallback is not the account's catalog, so it retires nothing.
       setAvailableModels((previous) => [...new Set([...picker.catalog, ...previous])]);
       setManualModelIds("");
       return true;
     }
     setAvailableModels(picker.catalog);
+    const record = providersRef.current.find((provider) => provider.id === providerId);
+    const fresh =
+      record && newModelCheckOf(record) !== "off"
+      ? withNewlyOfferedCodexModels(
+          record.models,
+          record.availableModels ?? [],
+          listed,
+          autoTickLimit(record.id),
+        )
+      : null;
+    const added = fresh?.added ?? [];
     if (refresh) {
       const offered = new Set(picker.catalog);
-      setSelectedModelIds((previous) => previous.filter((id) => offered.has(id)));
+      setSelectedModelIds((previous) => [
+        ...new Set([...previous.filter((id) => offered.has(id)), ...added]),
+      ]);
     } else {
-      setSelectedModelIds(picker.selected);
+      setSelectedModelIds([...new Set([...picker.selected, ...added])]);
     }
     setManualModelIds("");
+    if (fresh) {
+      const { models, availableModels } = fresh;
+      await updateProviderConfig(providerId, { models, availableModels });
+      const saved = providersRef.current.map((provider) =>
+        provider.id === providerId ? { ...provider, models, availableModels } : provider,
+      );
+      providersRef.current = saved;
+      onProvidersChange(saved);
+    } else if (!refresh && savedModels.length === 0 && picker.selected.length > 0) {
+      const models = pruneProviderModelIds("openai_codex", picker.selected);
+      const availableModels = pruneProviderModelIds("openai_codex", picker.catalog);
+      await updateProviderConfig(providerId, { models, availableModels });
+      const saved = providersRef.current.map((provider) =>
+        provider.id === providerId ? { ...provider, models, availableModels } : provider,
+      );
+      providersRef.current = saved;
+      onProvidersChange(saved);
+    }
     return true;
   }
 
@@ -1350,6 +1450,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
     setAutoReloadModels(provider.autoReloadModels === true);
+    setNewModelCheckDraft(newModelCheckOf(provider));
     setSharedDraft(provider.shared === true);
     modelFieldsAtOpenRef.current = null;
     setApiType(
@@ -1390,7 +1491,10 @@ export function ChatProvidersSettings({
       setManualModelIds(provider.models.join("\n"));
       return;
     }
-    if (supportsRemoteModelCatalog(provider.providerType)) {
+    if (
+      supportsRemoteModelCatalog(provider.providerType) ||
+      isDecisionConnection({ providerType: provider.providerType })
+    ) {
       const cachedCatalog = provider.availableModels ?? [];
       const catalogModels = pruneProviderModelIds(provider.providerType, [
         ...new Set(
@@ -1427,8 +1531,11 @@ export function ChatProvidersSettings({
       setSelectedModelIds(inDefaults);
       setManualModelIds(custom.join("\n"));
     } else {
-      const shortlist = entry?.default_models ?? [];
       const cachedCatalog = provider.availableModels ?? [];
+      const shortlist = liveModelSeeds(
+        entry?.default_models ?? [],
+        cachedCatalog,
+      );
       const mergedModels = pruneProviderModelIds(provider.providerType, [
         ...new Set(
           [...shortlist, ...cachedCatalog, ...provider.models]
@@ -1453,6 +1560,14 @@ export function ChatProvidersSettings({
     }
     if (!providersReady) return;
     if (openedProviderRef.current === openProviderId) return;
+    const newType = newConnectionRequestType(openProviderId);
+    if (newType !== null) {
+      if (newType && registry.length === 0) return;
+      openedProviderRef.current = openProviderId;
+      openAddProvider(registryByType.has(newType) ? newType : undefined);
+      onOpenProviderConsumed?.();
+      return;
+    }
     const provider = providers.find(
       (candidate) => candidate.id === openProviderId,
     );
@@ -1462,7 +1577,7 @@ export function ChatProvidersSettings({
     onOpenProviderConsumed?.();
     // editProvider is redeclared each render; the latch above is what fires this once per id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openProviderId, providers, providersReady, onOpenProviderConsumed]);
+  }, [openProviderId, providers, providersReady, onOpenProviderConsumed, registry]);
 
   async function deleteProvider(providerId: string) {
     setMutatingProvider(true);
@@ -1583,7 +1698,7 @@ export function ChatProvidersSettings({
         <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
           <section className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
             <div className="divide-y divide-border/60">
-              <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+              <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <Label
                     htmlFor="provider-preset"
@@ -1665,7 +1780,7 @@ export function ChatProvidersSettings({
               </div>
 
               {isOpenCodeProviderType(providerType) ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label htmlFor="provider-opencode-plan" className="text-sm font-medium">
                       Plan
@@ -1694,7 +1809,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {showApiKeyField ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-api-key"
@@ -1763,7 +1878,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {isCustomProvider ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-custom-name"
                     className="text-sm font-medium"
@@ -1784,7 +1899,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {shouldShowProviderApiType(providerType) ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label htmlFor="provider-api-type" className="text-sm font-medium">
                       API type
@@ -1816,7 +1931,7 @@ export function ChatProvidersSettings({
               ) : null}
               {isCustomProvider &&
               selectedProviderContract?.base_url_editable !== false ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-base-url"
@@ -1842,7 +1957,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {supportsMaxOutputTokens ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-max-output-tokens"
@@ -1887,7 +2002,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {providerType !== "openai_codex" ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-extra-headers"
@@ -1907,11 +2022,9 @@ export function ChatProvidersSettings({
                     id="provider-extra-headers"
                     value={extraHeadersDraft}
                     onChange={(event) => setExtraHeadersDraft(event.target.value)}
-                    placeholder={
-                      'X-LiteLLM-Session-Id: unsloth-{{CHAT_SESSION_ID}}'
-                    }
+                    placeholder={"X-Title: Unsloth\nX-Session-Id: {{CHAT_SESSION_ID}}"}
                     aria-describedby="provider-extra-headers-help"
-                    className="min-h-20 font-mono text-sm"
+                    className="min-h-20 font-mono text-xs md:text-xs"
                   />
                 </div>
               ) : null}
@@ -1942,6 +2055,49 @@ export function ChatProvidersSettings({
                   />
                 </div>
               ) : null}
+              {providerType === "openai_codex" ||
+              autoTicksNewlyListedModels({ providerType }) ? (
+                <div className="flex items-start justify-between gap-4 px-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-new-model-check"
+                      className="text-sm font-medium"
+                    >
+                      Check for new models
+                    </Label>
+                    <p
+                      id="provider-new-model-check-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      {newModelCheckDraft === "off"
+                        ? "Models the provider adds stay unticked until you tick them."
+                        : "Models the provider adds are ticked for you. Ones you untick stay off. Saved in this browser."}
+                    </p>
+                  </div>
+                  <Select
+                    value={newModelCheckDraft}
+                    onValueChange={(value) => {
+                      if (isNewModelCheckInterval(value)) setNewModelCheckDraft(value);
+                    }}
+                  >
+                    <SelectTrigger
+                      id="provider-new-model-check"
+                      className="mt-[var(--ui-title-cap-inset)] w-36 shrink-0"
+                      aria-describedby="provider-new-model-check-help"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {NEW_MODEL_CHECK_INTERVALS.map((interval) => (
+                        <SelectItem key={interval} value={interval}>
+                          {NEW_MODEL_CHECK_LABELS[interval]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+
               {showShareToggle ? (
                 <div className="flex items-start justify-between gap-4 px-4 py-3">
                   <div className="space-y-1">
@@ -1972,7 +2128,7 @@ export function ChatProvidersSettings({
               ) : null}
               {showCustomReasoning ? (
                 <>
-                  <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                     <div className="flex min-w-0 flex-col gap-0.5">
                       <Label htmlFor="provider-reasoning-support" className="text-sm font-medium">
                         Reasoning support
@@ -1995,7 +2151,7 @@ export function ChatProvidersSettings({
                     </label>
                   </div>
                   {reasoningConfig?.enabled ? (
-                    <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                    <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <Label htmlFor="provider-reasoning-style" className="text-sm font-medium">
                           Reasoning parameter style
@@ -2037,7 +2193,7 @@ export function ChatProvidersSettings({
                 </>
               ) : null}
               {showReasoningToggle ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-is-reasoning"
                     className="text-sm font-medium"
@@ -2059,17 +2215,6 @@ export function ChatProvidersSettings({
                   </label>
                 </div>
               ) : null}
-              {runsStudioToolsLocally ? (
-                <div className="px-4 py-3">
-                  <p className="text-xs text-muted-foreground">
-                    Models on this connection can use Unsloth&apos;s Search, Tools,
-                    MCP and Docs. Those run on this machine, and their
-                    results are sent back to the provider as part of the next
-                    message. Code and terminal calls still ask before anything
-                    risky runs.
-                  </p>
-                </div>
-              ) : null}
             </div>
           </section>
 
@@ -2084,7 +2229,7 @@ export function ChatProvidersSettings({
                 // the loading flag and re-enable Save mid-sync.
                 const request = ++codexCatalogRequestRef.current;
                 const changedProviderId = editingProviderId;
-                // Save is gated on this, or pre-authorization seed slugs get saved and fail.
+                // Save is gated on this, so nothing is saved before the plan's list is read.
                 setModelsLoading(true);
                 let owned = true;
                 try {
@@ -2191,7 +2336,7 @@ export function ChatProvidersSettings({
                       />
                     </div>
                   </div>
-                ) : isCuratedModelList ? (
+                ) : isCuratedModelList && (availableModels.length > 0 || modelIdsEditable) ? (
                   <div className="space-y-3 px-4 py-4">
                     <p className="text-xs leading-relaxed text-muted-foreground">
                       Select from suggestions below or enter exact model IDs.
@@ -2255,11 +2400,10 @@ export function ChatProvidersSettings({
                                   onCheckedChange={() => toggleModel(model)}
                                   onClick={(event) => event.stopPropagation()}
                                 />
-                                <span
-                                  className="min-w-0 break-all text-sm leading-tight"
-                                >
-                                  {model}
-                                </span>
+                                <ModelOptionLabel
+                                  providerType={providerType}
+                                  modelId={model}
+                                />
                               </li>
                             ))
                           )}
@@ -2344,11 +2488,10 @@ export function ChatProvidersSettings({
                                   onCheckedChange={() => toggleModel(model)}
                                   onClick={(event) => event.stopPropagation()}
                                 />
-                                <span
-                                  className="min-w-0 break-all text-sm leading-tight"
-                                >
-                                  {model}
-                                </span>
+                                <ModelOptionLabel
+                                  providerType={providerType}
+                                  modelId={model}
+                                />
                               </li>
                             ))
                           )}
@@ -2385,11 +2528,17 @@ export function ChatProvidersSettings({
             </AnimatePresence>
           </section>
 
-          {/* -mb-3 trims the settings pane's p-6 so the gap below the buttons matches the gap-3 above. */}
-          <div className="-mb-3 flex flex-wrap items-center justify-end gap-3">
+          {/* -mb-3 trims the settings pane's p-6 so the gap below the last row matches the gap-3 above. */}
+          <div
+            className={cn(
+              "flex flex-wrap items-center justify-end gap-3",
+              !runsStudioToolsLocally && "-mb-3",
+            )}
+          >
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
+                variant="primary"
                 size="sm"
                 disabled={
                   registryLoading ||
@@ -2415,6 +2564,14 @@ export function ChatProvidersSettings({
               </Button>
             </div>
           </div>
+          {runsStudioToolsLocally ? (
+            <p className="-mb-1 px-1 pt-1.5 text-xs leading-snug text-muted-foreground">
+              Models on this connection can use Unsloth&apos;s Search, Tools, MCP and
+              Docs. Those run on this machine, and their results are sent back to the
+              provider as part of the next message. Code and terminal calls still ask
+              before anything risky runs.
+            </p>
+          ) : null}
         </div>
       </div>
     );
@@ -2429,28 +2586,17 @@ export function ChatProvidersSettings({
         </p>
       </header>
 
-      <div className="flex w-full max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
-        <div className="flex items-center gap-2">
-          <Label
-            htmlFor="chat-connections-enabled"
-            className="cursor-pointer text-xs text-muted-foreground"
-          >
-            Enable connections
-          </Label>
+      <div className="max-w-[calc(760px*var(--ui-space-scale,1))]">
+        <SettingsRow
+          label="Enable connections"
+          description="When off, all connections are disabled."
+        >
           <Switch
-            id="chat-connections-enabled"
             checked={connectionsEnabled}
             onCheckedChange={setConnectionsEnabled}
             aria-label="Enable connections"
-            aria-describedby="chat-connections-description"
           />
-        </div>
-        <p
-          id="chat-connections-description"
-          className="max-w-md text-ui-11 leading-snug text-muted-foreground/65 sm:text-right"
-        >
-          When off, all connections are disabled.
-        </p>
+        </SettingsRow>
       </div>
 
       <section className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2">
@@ -2459,7 +2605,7 @@ export function ChatProvidersSettings({
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground/90">
               {providers.length} connections · {totalModels} models
             </span>
-            <Button variant="dark" size="sm" onClick={openAddProvider}>
+            <Button variant="dark" size="sm" onClick={() => openAddProvider()}>
               <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add connection
             </Button>
@@ -2484,7 +2630,7 @@ export function ChatProvidersSettings({
                 const providerLabel =
                   registryEntry?.display_name ??
                   customProviderDisplayName(provider.providerType);
-                const modelSummary = formatModelSummary(provider.models);
+                const modelSummary = formatModelSummary(provider.providerType, provider.models);
                 return (
                   <div
                     key={provider.id}

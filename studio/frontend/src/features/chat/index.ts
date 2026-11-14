@@ -46,6 +46,7 @@ export {
 export type {
   ApiMonitorEntry,
   BackendModelDetails,
+  EngramTableDetail,
   GgufVariantDetail,
   GgufVariantsResponse,
   InferenceStatusResponse,
@@ -94,6 +95,7 @@ export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/part
 export type { PlacementPool } from "./lib/partial-offload";
 export {
   betweenToolRounds,
+  runningReplyTail,
   formatLiveDecode,
   formatPrefillDetails,
   formatPrefillTimeLeft,
@@ -340,6 +342,7 @@ export {
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";
+export { providerModelDisplayName, useModelDisplayNamesVersion } from "./model-display-names";
 export { ModelLoadDescription } from "./components/model-load-status";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
@@ -680,10 +683,12 @@ export {
   effectiveSendShortcut,
   followUpSubmitIntent,
   imeKeydownBlocksComposerSubmit,
+  parkedSendSteer,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
+  type ParkedSendSteerState,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
 

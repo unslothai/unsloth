@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { readGenerationProgress } from "./lib/generation-progress";
+import { NewChatNonceContext } from "./query-draft";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { isMcpToolOnly, mcpImageMappingsEnabled } from "./api/mcp-image";
@@ -1412,6 +1413,27 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
           ...(m.metadata?.scheduledTask ? { scheduledTask: m.metadata.scheduledTask } : {}),
           ...(typeof m.metadata?.revision === "number" ? { revision: m.metadata.revision } : {}),
         },
+      },
+    };
+  }
+  if (m.role === "system") {
+    const textPart = {
+      type: "text" as const,
+      text: content
+        .filter(
+          (part): part is Extract<typeof part, { type: "text" }> =>
+            part.type === "text",
+        )
+        .map((part) => part.text)
+        .join("\n"),
+    };
+    return {
+      id: m.id,
+      createdAt: new Date(m.createdAt),
+      role: "system" as const,
+      content: [textPart],
+      metadata: {
+        custom: (m.metadata as Record<string, unknown>) ?? {},
       },
     };
   }
@@ -4519,7 +4541,9 @@ export function ChatRuntimeProvider({
         )}
         {/* The view stays mounted (only CSS-hidden) while off-route so the run stays attached and the
             stream alive; unmounting aborts generation. */}
-        {children}
+        <NewChatNonceContext.Provider value={initialThreadId ? null : newThreadNonce ?? null}>
+          {children}
+        </NewChatNonceContext.Provider>
         </ComparePaneContext.Provider>
       </ToolPaneScopeContext.Provider>
       </ChatProjectScopeContext.Provider>

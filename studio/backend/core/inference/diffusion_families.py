@@ -370,8 +370,8 @@ _QWENIMAGE_TE_INT8_SKIP = (6, 6)
 _GATED_AUTO_PREFER = AutoPrefer(
     floor = (10, 0), schemes = ("int8", "fp8", "nvfp4", "mxfp8"), gated = True
 )
-# AUTO keeps bf16 while it fits for these (measured with both sides compiled: INT8 was at most ~5% faster and failed
-# the default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
+# Image AUTO rule: INT8, else FP8, else bf16, unless INT8 is BOTH over LPIPS 0.10 vs bf16 AND under ~10% faster;
+# only then ``auto_bf16_when_resident`` (INT8 still when bf16 would offload). These two: <=5% faster, LPIPS 0.146 / 0.291.
 _LUMINA2_BF16_WHEN_RESIDENT = (
     "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
@@ -382,11 +382,24 @@ _HIDREAM_BF16_WHEN_RESIDENT = (
 ANIMA_BF16_WHEN_RESIDENT = (
     "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled"
 )
-# Small DiTs (<= ~6B) stay bf16 while it fits: quantising moves detail (L4 vs bf16 LPIPS: FP8 FLUX.2-klein-4B 0.065,
-# Z-Image-Turbo 0.103; FLUX.3-klein INT8 0.027). INT8 still when bf16 would offload; such loads compile from render 1.
+# Small-DiT rule (bf16 while it fits): unused, every small DiT measured 1.39-1.56x faster under INT8 at LPIPS <= 0.083
+# (RTX PRO 6000, 1024^2, compiled). Kept for a family that fails both bars.
 SMALL_DIT_BF16_WHEN_RESIDENT = (
     "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
     "0.103 on Z-Image-Turbo)"
+)
+# Turing AUTO int8: the image rule vs fp16 AUTO, plus never offload a formerly resident model unless faster (Colab T4).
+_FLUX2_KLEIN_TURING_AUTO_INT8 = (
+    "T4: 9.71 -> 8.42 s/image against fp16 (1.15x), same placement and 13.4 GB peak, LPIPS 0.049"
+)
+_ZIMAGE_TURING_AUTO_INT8 = "T4: 29.4 -> 24.5 s/image against the streamed fp16 build (1.20x); resident int8 at 15.1 GB peak, LPIPS 0.076"
+_FLUX3_KLEIN_TURING_AUTO_INT8 = (
+    "T4: 42.6 -> 37.7 s/image against the fp16 build (1.13x), partly offloaded -> resident at 13.6 GB peak, "
+    "LPIPS 0.011 (4 prompts)"
+)
+_FLUX3_KLEIN_BASE_TURING_AUTO_INT8 = (
+    "T4: 270.9 -> 224.4 s/image against the streamed fp16 build (1.21x); resident int8 at 12.0 GB peak (LPIPS 0.023 "
+    "on an RTX PRO 6000)"
 )
 # Bases of a small-DiT family that are not small: FLUX.2 klein 9B / base 9B (18.2 GB bf16 transformer, unmeasured)
 # keep the quantized auto default. Upstream ids; mirrors fold back through ``canonical_base``.
@@ -441,6 +454,7 @@ _KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
+MINIMAX_H3_IMAGE_FAMILY_NAME = "minimax-h3-image"
 ANIMA_FAMILY_NAME = "anima"
 # MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
 _MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
@@ -502,6 +516,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         checkpoint_variants = ("flux1-schnell", "flux1-krea-dev", "flux1-dev"),
+        # Only schnell lacks guidance_in; either base config on the other variant's file drops or misses it.
+        transformer_config_variants = tuple(
+            (f"{prefix}-{model}", (("guidance_embeds", guided),))
+            for model, guided in (("schnell", False), ("krea-dev", True), ("dev", True))
+            for prefix in ("flux.1", "flux1", "flux-1", "flux")
+        ),
         filter_reduction_configs_archs = _FLUX1_REDUCTION_RACE_ARCHS,
         cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
@@ -562,7 +582,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            turing_auto_int8 = _FLUX2_KLEIN_TURING_AUTO_INT8,
             # LPIPS vs fp16 (4B, T4 W8A8, 16 renders): plain 0.103 -> ConvRot 0.037; A100 0.092 -> 0.034.
             int8_convrot = ConvRotSpec(
                 group = 256,
@@ -662,7 +682,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            turing_auto_int8 = _FLUX3_KLEIN_BASE_TURING_AUTO_INT8,
             int8_convrot = ConvRotSpec(group = 256, suffixes = _FLUX3_CONVROT_SUFFIXES, default_on = True),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
@@ -722,7 +742,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            turing_auto_int8 = _FLUX3_KLEIN_TURING_AUTO_INT8,
             int8_convrot = ConvRotSpec(
                 group = 256,
                 suffixes = _FLUX3_CONVROT_SUFFIXES,
@@ -1191,7 +1211,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 default_on = True,
             ),
             auto_prefer = _GATED_AUTO_PREFER,
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            turing_auto_int8 = _ZIMAGE_TURING_AUTO_INT8,
             preview_factors = "zimage",
         ),
         # B200 too: 1 of 4 fresh servers picked R0_BLOCK 1024 (others 4096) and rendered other latents.
@@ -1440,8 +1460,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
             # NVFP4 scored LPIPS 0.383 vs bf16 (INT8-ConvRot 0.058); as FLUX.3, a passing gate record lifts it.
             scheme_deny = frozenset({"nvfp4"}),
-            # Small-DiT rule: bf16 while it fits, INT8-ConvRot (LPIPS 0.058) when bf16 would offload.
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
             preview_factors = "flux2",
         ),
         pipeline_class = "MOSSImagePipeline",
@@ -1481,6 +1500,43 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
         sd_cpp_arch_marker = "MOSS-Image",
         sd_cpp_scheduler = "simple",
+    ),
+    # MiniMax-H3-Image: 33B H3 DiT without audio plus per-step PDD heads, conditioned by Qwen3-VL-32B. diffusers has
+    # no class yet, so diffusion_minimax_h3_image loads, converts, quantizes and places it itself.
+    DiffusionFamily(
+        name = MINIMAX_H3_IMAGE_FAMILY_NAME,
+        label = "MiniMax-H3-Image",
+        pipeline_class = "MiniMaxH3ImagePipeline",
+        transformer_class = "MiniMaxH3ImageTransformer2DModel",
+        base_repo = "MiniMaxAI/MiniMax-H3-Image",
+        aliases = ("minimax_h3_image", "minimaxh3image", "h3-image", "h3_image"),
+        uses_negative_prompt = False,
+        uses_guidance = False,
+        # Text-to-image that also takes 1-16 reference images (<Picture N>); edits go through the same call.
+        reference = True,
+        reference_edit = True,
+        max_condition_images = 16,
+        dimension_multiple = 32,
+        max_output_side = 6272,
+        max_output_pixels = 20 * 1024 * 1024,
+        prompt_hint = (
+            "MiniMax-H3-Image follows long, complete descriptions of the whole image. For edits, refer to the inputs"
+            " as <Picture 1>, <Picture 2> and say what to keep and what to change."
+        ),
+        # The in-tree loader reads the native shards; no single-file / GGUF denoiser load.
+        pipeline_only = True,
+        gguf_loadable = False,
+        supports_torch_compile = False,
+        # No te_quant_auto: the in-tree loader picks the hosted int8 Qwen3-VL itself when the encoder is unset.
+        # Hosted pre-quantized DiTs: the loader checks the file exists and quantizes on the fly otherwise.
+        prequant_repos = (
+            ("int8", "unsloth/MiniMax-H3-Image-FP8"),
+            ("fp8", "unsloth/MiniMax-H3-Image-FP8"),
+        ),
+        prequant_filenames = (
+            ("int8", "MiniMax-H3-Image-INT8-ConvRot.safetensors"),
+            ("fp8", "MiniMax-H3-Image-FP8.safetensors"),
+        ),
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
@@ -2255,6 +2311,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
+    ("minimax-h3-image", 6, 1.0),
+    ("minimax_h3_image", 6, 1.0),
+    ("minimaxh3image", 6, 1.0),
+    ("h3-image", 6, 1.0),
     # MOSS-Image: the SFT and Base t2i templates both run 25 steps at CFG 2.5.
     ("moss-image", 25, 2.5),
     ("moss_image", 25, 2.5),
@@ -2791,6 +2851,8 @@ _PIPELINE_PROBE_FILES: dict[str, str] = {
 # In-tree pipelines: (diffusers VAE module, transformers floor, family label).
 _IN_TREE_PIPELINES: dict[str, tuple[str, str, str]] = {
     "MOSSImagePipeline": ("models/autoencoders/autoencoder_kl_flux2.py", "5.3.0", "MOSS-Image"),
+    # Transformer and VAE vendored (vendor/diffusers_minimax_h3_image) when diffusers lacks them; Qwen3-VL needs 4.57.
+    "MiniMaxH3ImagePipeline": ("models/attention_dispatch.py", "4.57.0", "MiniMax-H3-Image"),
 }
 
 
@@ -2815,11 +2877,27 @@ def in_tree_pipeline_refusal(pipeline_class: str, family_name: str) -> Optional[
     if installed is None:
         return f"'{family_name}' ({label}) needs transformers >= {min_transformers}, which is not installed."
     if not _installed_at_least(installed, min_transformers):
+        encoder = (
+            "Qwen3.5 text encoder (transformers.Qwen3_5Model)"
+            if pipeline_class == "MOSSImagePipeline"
+            else "Qwen3-VL text encoder (transformers.Qwen3VLForConditionalGeneration)"
+        )
         return (
-            f"'{family_name}' ({label}) needs transformers >= {min_transformers} for its Qwen3.5 text encoder "
-            f"(transformers.Qwen3_5Model), but this environment has transformers {installed}. Update Unsloth Studio "
+            f"'{family_name}' ({label}) needs transformers >= {min_transformers} for its {encoder}, but this "
+            f"environment has transformers {installed}. Update Unsloth Studio "
             f"(or run: pip install -U 'transformers>={min_transformers}') and restart it."
         )
+    if pipeline_class == "MiniMaxH3ImagePipeline":
+        import sys
+
+        if sys.version_info < (3, 10):
+            return f"'{family_name}' ({label}) needs Python 3.10 or newer. Update Unsloth Studio and restart it."
+        if _diffusers_package_has_file(vae_file) is False:
+            return (
+                f"'{family_name}' ({label}) needs a diffusers with the attention dispatcher (0.35 or newer). "
+                f"{DIFFUSERS_UPDATE_REMEDY}"
+            )
+        return None
     if _diffusers_package_has_file(vae_file) is False:
         return (
             f"'{family_name}' ({label}) needs a diffusers with the FLUX.2 VAE (AutoencoderKLFlux2). "

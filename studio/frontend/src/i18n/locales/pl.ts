@@ -1038,6 +1038,7 @@ export const pl = {
       showLess: "Pokaż mniej",
       settings: "Ustawienia",
       api: "API",
+      apiMonitor: "Monitor API",
       lightMode: "Tryb jasny",
       darkMode: "Tryb ciemny",
       guidedTour: "Przewodnik",
@@ -3522,11 +3523,11 @@ export const pl = {
         "Pokazuj pod odpowiedzią, kiedy się zakończyła.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message znacznik czasu godzina data odpowiedź wiadomość",
-      showGenerationDetails: "Szczegółowe informacje o szybkości i ładowaniu",
+      showGenerationDetails: "Szczegółowe informacje o szybkości",
       showGenerationDetailsDescription:
-        "Dodaje do odczytów na żywo szybkość czytania promptu, liczbę tokenów i akceptację szkiców oraz pokazuje, gdzie załadowano warstwy modelu.",
+        "Dodaje do odczytów na żywo szybkość czytania promptu, liczbę tokenów i akceptację szkiców.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts szczegóły statystyki szybkość warstwy eksperci",
+        "verbose developer stats speed tok/s prefill decode szczegóły statystyki szybkość",
       generationStatsUpdates: "Statystyki szybkości i kontekstu",
       generationStatsUpdatesDescription:
         "Tryb Na bieżąco liczy tokeny na sekundę i użycie kontekstu podczas strumieniowania odpowiedzi. Po zakończeniu aktualizuje je, gdy każda odpowiedź się skończy.",

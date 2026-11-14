@@ -26,6 +26,8 @@ _TORCHAO_INTMM_MODULES = (
 _TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named the old home
 _TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
 _TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
+# "0": copy a transposed int8 weight row-major before cuBLASLt, as torchao does (see _make_safe_int_mm)
+_TORCHAO_INT_MM_TRANSPOSED_ENV = "UNSLOTH_TORCHAO_INT_MM_TRANSPOSED"
 
 # The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
 _TORCHAO_SAFE_INT_MM_MARKERS = (
@@ -52,12 +54,21 @@ def _is_fake_tensor(x):
         return False
 
 
+def _is_rocm_torch(torch) -> bool:
+    from .rocm_bf16 import is_rocm_torch
+    return is_rocm_torch(torch)
+
+
 def _make_safe_int_mm(mod, original):
     """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
     import torch
 
     out_dtype = mod.out_dtype
     dynamo_is_compiling = mod.dynamo_is_compiling
+    # ROCm (hipBLASLt) keeps torchao's row-major copy; the TN layout below is only checked on cuBLASLt.
+    keep_transposed = os.environ.get(
+        _TORCHAO_INT_MM_TRANSPOSED_ENV, "1"
+    ).strip() != "0" and not _is_rocm_torch(torch)
 
     @functools.wraps(original)
     def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
@@ -82,8 +93,10 @@ def _make_safe_int_mm(mod, original):
                 input.device.type
             )
 
-        if not mat2.is_contiguous():  # silently gives incorrect result without this
-            mat2 = mat2.contiguous()
+        # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads
+        # past the end of ``input`` when M is not a 64-multiple (illegal address), and copies the weight every call.
+        if not mat2.is_contiguous() and not (keep_transposed and mat2.t().is_contiguous()):
+            mat2 = mat2.contiguous()  # silently gives incorrect result without this
         if (not input.is_contiguous()) and (input.shape[0] % 8 != 0):
             input = input.contiguous()
         try:
@@ -199,9 +212,14 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
 
 
 def install_torchao_int_mm_patch():
-    """Every diffusion, video and diffusion-training entry point calls this, so it also carries the peft LoRA guard (independent of the switch)."""
+    """Also installs the peft LoRA guard and the Triton prefetch fix, independent of this switch."""
     try:
         install_peft_torchao_dispatch_guard()
+    except Exception:
+        pass
+    try:
+        from .diffusion_triton_prefetch import install_triton_prefetch_fix
+        install_triton_prefetch_fix()
     except Exception:
         pass
     if os.environ.get(_TORCHAO_INT_MM_ENV, "1").strip() == "0":

@@ -165,10 +165,7 @@ async def video_download_plan(
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -320,10 +317,7 @@ async def load_video_model_gated(
         await asyncio.to_thread(account_access.require_media_references, request)
     account_access.require_idle_other_accounts()
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}

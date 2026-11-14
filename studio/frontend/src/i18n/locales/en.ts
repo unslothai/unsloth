@@ -937,6 +937,7 @@ export const en = {
       showLess: "Show less",
       settings: "Settings",
       api: "API",
+      apiMonitor: "API Monitor",
       lightMode: "Light Mode",
       darkMode: "Dark Mode",
       guidedTour: "Guided Tour",
@@ -3287,11 +3288,11 @@ export const en = {
       showReplyTimesDescription: "Show when each reply finished, below the reply.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Detailed speed and loading info",
+      showGenerationDetails: "Detailed speed info",
       showGenerationDetailsDescription:
-        "Adds prompt-reading speed, token counts and draft acceptance to the live readouts, and shows where a model's layers loaded.",
+        "Adds prompt-reading speed, token counts and draft acceptance to the live readouts.",
       showGenerationDetailsKeywords:
-        "generation details verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "generation details verbose developer stats speed tok/s prefill decode",
       generationStatsUpdates: "Speed and context stats",
       generationStatsUpdatesDescription:
         "Realtime counts tokens per second and context usage while a reply streams. When done updates them as each reply finishes.",
@@ -3665,7 +3666,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth via the OpenAI- and Anthropic-compatible API.",
+      description: "Access Unsloth through an API compatible with OpenAI and Anthropic.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",

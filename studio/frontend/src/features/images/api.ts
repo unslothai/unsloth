@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
+import { dropVramBudgetRetry, loadVramBudgetSettings, settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
@@ -445,20 +447,48 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
   return parseJson(await authFetch("/api/inference/images/generate-progress"));
 }
 
+/** The budget edit never reached the server, so nothing may load on the old one. */
+export class VramBudgetSaveError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Failed to save VRAM budget");
+    this.name = "VramBudgetSaveError";
+  }
+}
+
+/** Settles a slider edit first: the backend snapshots the budget for a load and its download plan. */
+export async function withSettledVramBudget<T>(run: () => Promise<T>): Promise<T> {
+  const budgetSave = settleVramBudgetSave();
+  if (!budgetSave) return run();
+  setVramBudgetLocked(true);
+  try {
+    await budgetSave.catch((error: unknown) => {
+      // Dropped and repainted together, so the slider never shows a value no load will use.
+      dropVramBudgetRetry();
+      void loadVramBudgetSettings({ force: true });
+      throw new VramBudgetSaveError(error);
+    });
+    return await run();
+  } finally {
+    setVramBudgetLocked(false);
+  }
+}
+
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
   // This POST only starts the load, so the notice settles from load-progress, not the response.
-  return withBackgroundLoadNotice(
-    "image",
-    body.model_path,
-    async () =>
-      parseLoadJson<DiffusionStatus>(
-        await authFetch("/api/inference/images/load", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(withAllowOversizedLoad(body)),
-        }),
-      ),
-    async (signal) => (await getDiffusionLoadProgress(signal)).phase,
+  return withSettledVramBudget(() =>
+    withBackgroundLoadNotice(
+      "image",
+      body.model_path,
+      async () =>
+        parseLoadJson<DiffusionStatus>(
+          await authFetch("/api/inference/images/load", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(withAllowOversizedLoad(body)),
+          }),
+        ),
+      async (signal) => (await getDiffusionLoadProgress(signal)).phase,
+    ),
   );
 }
 

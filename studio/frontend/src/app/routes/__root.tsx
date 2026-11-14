@@ -88,7 +88,7 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   type ComponentType,
   lazy,
-
+  memo,
   type ReactNode,
   Suspense,
   useCallback,
@@ -227,6 +227,24 @@ function ChatPage(props: ChatPageProps) {
     </Suspense>
   );
 }
+
+// The layout re-renders on its own state (the Settings flag gating every route shortcut, a route
+// change): without these, each of those re-rendered the sidebar, the navbar and the whole chat
+// page with it. A component that takes no props is one element, made once: React skips a subtree
+// whose element is the one it rendered last. Neither form adds a fiber level, so the useId paths
+// the reload snapshot relies on are unchanged.
+const appSidebar = <AppSidebar />;
+const navbar = <Navbar />;
+const commandPalette = <CommandPalette />;
+const hfTokenWarningDialog = <HfTokenWarningDialog />;
+const remoteCodeConsentDialog = <RemoteCodeConsentDialog />;
+const downloadApprovalDialog = <DownloadApprovalDialog />;
+const transformersUpgradeDialog = <TransformersUpgradeDialog />;
+const managedEngineOfferDialog = <ManagedEngineOfferDialog />;
+const llmCompressorConsentDialog = <LlmCompressorConsentDialog />;
+const stopRunningChatsDialog = <StopRunningChatsDialog />;
+const imageViewer = <ImageViewer />;
+const ChatPageSlot = memo(ChatPage);
 
 const ImagesPage = lazy(() =>
   import("@/features/images").then((m) => ({ default: m.ImagesPage })),
@@ -702,15 +720,15 @@ function RootLayout() {
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
-      <HfTokenWarningDialog />
-      <RemoteCodeConsentDialog />
-      <DownloadApprovalDialog />
-      <TransformersUpgradeDialog />
-      <ManagedEngineOfferDialog />
-      <LlmCompressorConsentDialog />
-      <StopRunningChatsDialog />
-      <ImageViewer />
-      {!hideNavbar && <CommandPalette />}
+      {hfTokenWarningDialog}
+      {remoteCodeConsentDialog}
+      {downloadApprovalDialog}
+      {transformersUpgradeDialog}
+      {managedEngineOfferDialog}
+      {llmCompressorConsentDialog}
+      {stopRunningChatsDialog}
+      {imageViewer}
+      {!hideNavbar && commandPalette}
       {hideNavbar ? (
         <main className="h-dvh flex-1 overflow-y-auto pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
@@ -729,7 +747,7 @@ function RootLayout() {
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
-          <AppSidebar />
+          {appSidebar}
           <SidebarEdgeTrigger />
           {windowsWallpaperPage && (
             <div
@@ -749,7 +767,7 @@ function RootLayout() {
                   : "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto"
             }
           >
-            <Navbar />
+            {navbar}
             <div
               ref={findScopeRef}
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
@@ -766,7 +784,7 @@ function RootLayout() {
                   }
                   inert={!isChatRoute || undefined}
                 >
-                  <ChatPage search={chatSearch} active={isChatRoute} />
+                  <ChatPageSlot search={chatSearch} active={isChatRoute} />
                 </div>
               )}
               {shouldMountImages && (

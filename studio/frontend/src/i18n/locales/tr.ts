@@ -1027,6 +1027,7 @@ export const tr = {
       showLess: "Daha az göster",
       settings: "Ayarlar",
       api: "API",
+      apiMonitor: "API İzleyicisi",
       lightMode: "Açık Mod",
       darkMode: "Koyu Mod",
       guidedTour: "Rehberli Tur",
@@ -3484,11 +3485,11 @@ export const tr = {
         "Her yanıtın ne zaman tamamlandığını yanıtın altında gösterin.",
       showReplyTimesKeywords:
         "zaman damgası zaman saat tarih ne zaman bitti geldi yanıt cevap mesaj timestamp",
-      showGenerationDetails: "Ayrıntılı hız ve yükleme bilgisi",
+      showGenerationDetails: "Ayrıntılı hız bilgisi",
       showGenerationDetailsDescription:
-        "Canlı göstergelere istem okuma hızını, token sayılarını ve taslak kabulünü ekler ve modelin katmanlarının nereye yüklendiğini gösterir.",
+        "Canlı göstergelere istem okuma hızını, token sayılarını ve taslak kabulünü ekler.",
       showGenerationDetailsKeywords:
-        "ayrıntılı geliştirici istatistik hız tok/s prefill decode katmanlar aktarım offload vram uzmanlar experts",
+        "ayrıntılı geliştirici istatistik hız tok/s prefill decode",
       generationStatsUpdates: "Hız ve bağlam istatistikleri",
       generationStatsUpdatesDescription:
         "Gerçek zamanlı, bir yanıt akarken saniye başına token ve bağlam kullanımını sayar. Bitince, her yanıt tamamlandığında bunları günceller.",

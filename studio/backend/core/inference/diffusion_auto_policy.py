@@ -56,6 +56,8 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     # FLUX.3 Image Klein: 5.55B DiT (11.1 GB bf16) + Qwen3-VL-4B (8.9 GB) + the FLUX.2 VAE (stored fp32, 0.17 GB
     # bf16). From the black-forest-labs/flux-3-image-klein component folders; the base shares the architecture.
     "flux.3-klein": (11.1, 8.9, 0.2),
+    # MiniMax-H3-Image: its loader plans placement itself; this row only sizes the hosted pre-quantized DiT.
+    "minimax-h3-image": (66.2, 66.7, 2.3),
     "flux.3-klein-base": (11.1, 8.9, 0.2),
     "flux.2-dev": (64.5, 48.0, 0.4),
     "qwen-image": (40.9, 16.6, 0.3),
