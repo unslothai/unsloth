@@ -270,7 +270,7 @@ test("a research run keeps its own Stop while voice mode is on", () => {
 test("a voice turn with local tools on goes as its transcript, so the tools still run", () => {
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(engine, /const toolsOn =\s*rt\.supportsTools &&\s*\(rt\.toolsEnabled \|\| codeToolsOn\(rt\) \|\| rt\.mcpEnabledForChat \|\| rt\.ragEnabled \|\| rt\.deepResearchEnabled\);/);
-  assert.match(engine, /!visual && !toolsOn && voiceHearsAudio\(rt,/);
+  assert.match(engine, /!toolsOn &&\s*!\(attachedAudio && speaksWithChatModel\(\)\) &&\s*voiceHearsAudio\(rt,/);
 });
 
 test("a noise word continuing a held turn is kept, and an edit claimed mid-judgment is never auto-sent", () => {
@@ -278,4 +278,14 @@ test("a noise word continuing a held turn is kept, and an edit claimed mid-judgm
   assert.match(loop, /\(await turnUnfinished\(transcript\)\);\s*\/\/[^\n]*\n\s*editing = editing \|\| !heldEdit\.autoSend\(\);/);
   assert.match(loop, /unfinished &&\s*!editing &&\s*performance\.now\(\)/);
   assert.match(loop, /if \(editing \|\| !heldEdit\.autoSend\(\)\) \{\s*voiceTrace\("hold\.userEditAppend"/);
+});
+
+test("a spoken reply's delayed clip close yields to a newer run", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /const gen = streamGenRef\.current;\s*setTimeout\(\(\) => \{[\s\S]{0,200}if \(gen === streamGenRef\.current && voiceModeRef\.current === "active"\) endClipsRef\.current\(\);/);
+});
+
+test("a recorded question beside an attached audio file goes as its transcript to a speaking model", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /const attachedAudio = composer\s*\.getState\(\)\s*\.attachments\.some\(\(a\) => a\.type === "audio" \|\| \/\^audio\\\/\/\.test\(a\.contentType \?\? ""\)\);/);
 });

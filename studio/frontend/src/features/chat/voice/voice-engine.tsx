@@ -418,13 +418,20 @@ export const VoiceEngine: FC = () => {
     const visual = composer
       .getState()
       .attachments.some((a) => a.type === "image" || /^(image|video)\//.test(a.contentType ?? ""));
+    // A spoken reply answers one clip: beside an attached audio file the question goes as its transcript.
+    const attachedAudio = composer
+      .getState()
+      .attachments.some((a) => a.type === "audio" || /^audio\//.test(a.contentType ?? ""));
     const rt = useChatRuntimeStore.getState();
     // The audio-input route skips Studio's tool loop, so with tools on the turn goes as its transcript.
     const toolsOn =
       rt.supportsTools &&
       (rt.toolsEnabled || codeToolsOn(rt) || rt.mcpEnabledForChat || rt.ragEnabled || rt.deepResearchEnabled);
     const turnAudio =
-      !visual && !toolsOn && voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)
+      !visual &&
+      !toolsOn &&
+      !(attachedAudio && speaksWithChatModel()) &&
+      voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)
         ? taken
         : null;
     // Cover the tail clip (isPlaying) too, not just an active streaming session (isSpeaking).
@@ -1225,7 +1232,11 @@ export const VoiceEngine: FC = () => {
       const endMsgs = auiRef.current.thread().getState().messages;
       const endTail = endMsgs.length ? endMsgs[endMsgs.length - 1] : null;
       spokenReplyRef.current = endTail?.role === "assistant" ? { id: endTail.id, text } : null;
-      setTimeout(() => endClipsRef.current(), 150);
+      const gen = streamGenRef.current;
+      setTimeout(() => {
+        // A Regenerate inside the beat owns the stream now: finalizing it would drop the new reply's clips.
+        if (gen === streamGenRef.current && voiceModeRef.current === "active") endClipsRef.current();
+      }, 150);
       return;
     }
     if (!text) {
