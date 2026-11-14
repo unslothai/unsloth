@@ -847,7 +847,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             silence.reset(now);
             return;
           }
-          if (!silence.due(now) || !reacquireBackoff.allow(now)) return;
+          // Backoff first: due() fires once, so asking it while the backoff refuses would end recovery for good.
+          if (!reacquireBackoff.allow(now) || !silence.due(now)) return;
           handle.reacquire("silent");
         }, 250);
 
