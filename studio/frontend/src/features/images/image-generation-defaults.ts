@@ -107,6 +107,20 @@ export function defaultsFor(repoId: string): {
     : DEFAULT_GEN;
 }
 
+// Families whose model card names a native output size: picking one sets it (the reference recipe renders
+// MiniMax-H3-Image at 2048x2048 by default).
+const DEFAULT_SIZES: ReadonlyArray<{ match: string; width: number; height: number }> = [
+  { match: "minimax-h3-image", width: 2048, height: 2048 },
+];
+
+/** The text-to-image size a pick of this key starts at, or null to keep the current size. */
+export function defaultSizeFor(repoId: string): { width: number; height: number } | null {
+  const fold = (text: string) => text.replace(/[-_.\s]+/g, "-");
+  const id = repoId.toLowerCase();
+  const hit = DEFAULT_SIZES.find((entry) => id.includes(entry.match) || fold(id).includes(fold(entry.match)));
+  return hit ? { width: hit.width, height: hit.height } : null;
+}
+
 // Families whose explicit choice outranks the name: FLUX.3 base and distilled share names (BFL's ComfyUI base
 // files are flux3_image_klein_*.safetensors), and the backend refuses a checkpoint of the other variant.
 const FAMILY_NAMES_THE_VARIANT = new Set(["flux.3-klein", "flux.3-klein-base"]);

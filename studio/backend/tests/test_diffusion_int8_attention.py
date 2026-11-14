@@ -816,7 +816,10 @@ def _h3_inputs(
 
 @pytest.fixture
 def _active_backend():
-    from diffusers.models.attention_dispatch import _AttentionBackendRegistry
+    # Skip, not error, where diffusers is missing (the backend CPU job), as _h3() does for the test body.
+    _AttentionBackendRegistry = pytest.importorskip(
+        "diffusers.models.attention_dispatch"
+    )._AttentionBackendRegistry
 
     active = _AttentionBackendRegistry._active_backend
     yield
