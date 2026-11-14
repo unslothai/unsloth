@@ -5,6 +5,7 @@ import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron
 import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
+  repinExportedGgufAfterDelete,
 } from "./reconcile-gguf-pins";
 import { loadPickerGgufVariants } from "./gguf-discovery";
 import { firstIndexByKey } from "./option-index";
@@ -27,7 +28,6 @@ import {
   deleteFineTunedModel,
   listGgufVariants,
   listRecommendedFolders,
-  listLoras,
   revealFineTunedModel,
 } from "@/features/chat";
 import {
@@ -9107,21 +9107,6 @@ function FineTunedRows({
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
-  const replacePinned = usePinnedModelsStore((s) => s.replacePinned);
-  // A GGUF export's id is its first file, so deleting a variant can change or end it.
-  const repinExportedGguf = async (oldId: string) => {
-    const folder = oldId.slice(0, Math.max(oldId.lastIndexOf("/"), oldId.lastIndexOf("\\")));
-    const { loras } = await listLoras();
-    const next = loras.find(
-      (lora) =>
-        lora.source === "exported" &&
-        lora.export_type === "gguf" &&
-        (lora.adapter_path.startsWith(`${folder}/`) ||
-          lora.adapter_path.startsWith(`${folder}\\`)),
-    );
-    if (!next) unpinRepo(oldId);
-    else replacePinned(pinKey(oldId), pinKey(next.adapter_path));
-  };
   return (
     <>
       {adapters.map((adapter) => {
@@ -9334,9 +9319,7 @@ function FineTunedRows({
                           exportType: "gguf",
                           ggufVariant: quant,
                         });
-                        if (pinnedKeys.includes(pinKey(adapter.id))) {
-                          await repinExportedGguf(adapter.id).catch(() => unpinRepo(adapter.id));
-                        }
+                        await repinExportedGgufAfterDelete(adapter.id);
                         onModelsChange?.({
                           id: adapter.id,
                           ggufVariant: quant,

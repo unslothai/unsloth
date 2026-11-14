@@ -346,7 +346,7 @@ test("a quant still resolving never overrides a newer pick", () => {
   );
   assert.match(
     picker,
-    /await rowQuants\(target\);\s+if \(pickSeq\.current !== seq\) \{\s+return;/,
+    /await rowQuants\(target\);\s+if \(pickSeq\.current !== seq \|\| resolveGen\.current !== gen\) \{\s+return;/,
   );
   assert.match(
     picker,
@@ -990,9 +990,15 @@ test("an interrupted quant counts as a variant, so the row names no quant", () =
     picker,
     /const manyQuants = onDisk\.length \+ partials\.length > 1;/,
   );
-  assert.match(picker, /const soleQuant = manyQuants \? null : wholeQuant;/);
+  assert.match(
+    picker,
+    /const soleQuant = row\.favoriteQuant \?\? \(manyQuants \? null : wholeQuant\);/,
+  );
   // A click folds both open, as for two whole quants.
-  assert.match(picker, /if \(variantCount\(row\) > 1\) \{\s+setFoldedQuants/);
+  assert.match(
+    picker,
+    /if \(!row\.favoriteQuant && variantCount\(row\) > 1\) \{\s+setFoldedQuants/,
+  );
 });
 
 test("an audio pick opens the Audio page instead of loading into Chat", () => {
@@ -1301,5 +1307,135 @@ test("an audio pick hands the Audio page the inventory's audio type", () => {
   assert.match(
     picker,
     /audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask, audioType \}\)/,
+  );
+});
+
+test("Favorites lists each pinned quant of a repo as its own row, as the header picker did", async () => {
+  const { expandQuantFavorites, favoritePinKey } = await import(
+    "../src/components/assistant-ui/composer-model-picker/picker-model.ts"
+  );
+  const repo = {
+    key: "gguf:unsloth/Test-GGUF",
+    id: "unsloth/Test-GGUF",
+    label: "Test-GGUF",
+    tab: "device",
+    kind: "gguf" as const,
+    loaded: true,
+    loadedQuant: "Q8_0",
+  };
+  const other = {
+    ...repo,
+    key: "gguf:org/Other",
+    id: "org/Other",
+    loaded: false,
+  };
+  const ext = {
+    ...repo,
+    key: "ext:x",
+    id: "ext::p::m",
+    kind: "external" as const,
+  };
+  const pinned = [
+    "unsloth/Test-GGUF::Q4_K_M",
+    "unsloth/test-gguf::Q8_0",
+    "org/Other",
+  ];
+  const rows = expandQuantFavorites([repo, other, ext], pinned);
+  assert.deepEqual(
+    rows.map((r) => [r.key, r.favoriteQuant, r.loaded]),
+    [
+      ["gguf:unsloth/Test-GGUF::Q4_K_M", "Q4_K_M", false],
+      ["gguf:unsloth/Test-GGUF::Q8_0", "Q8_0", true],
+      ["gguf:org/Other", undefined, false],
+      ["ext:x", undefined, true],
+    ],
+  );
+  // A bare repo pin beside quant pins keeps its own row too.
+  assert.equal(
+    expandQuantFavorites(
+      [repo],
+      ["unsloth/Test-GGUF", "unsloth/Test-GGUF::Q8_0"],
+    ).length,
+    2,
+  );
+  assert.equal(
+    favoritePinKey(pinned, "unsloth/Test-GGUF", "q8_0"),
+    "unsloth/test-gguf::Q8_0",
+  );
+  assert.equal(
+    favoritePinKey(pinned, "unsloth/Test-GGUF"),
+    "unsloth/Test-GGUF::Q4_K_M",
+  );
+  assert.equal(favoritePinKey(pinned, "unsloth/Test-GGUF", "IQ1_M"), null);
+});
+
+test("a pinned quant loads that quant, never the repo's default", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /\(favorite && list\.find\(\(v\) => v\.quant\.toLowerCase\(\) === favorite\)\) \|\|\s*chooseQuant\(/,
+  );
+  assert.match(picker, /return expandQuantFavorites\(found, pinned\)\.sort\(/);
+  assert.match(
+    picker,
+    /return favoritePinKey\(pinned, row\.id, row\.favoriteQuant\);/,
+  );
+  // Unstarring a quant row drops only that quant's pin.
+  assert.match(
+    picker,
+    /const pinnedKey = row\.favoriteQuant \? favoriteKeyOf\(row\) : null;/,
+  );
+});
+
+test("closing, a tab change or unmount abandons a quant still resolving, but not an NPU download", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /useEffect\(\(\) => \{\s*resolveGen\.current \+= 1;\s*offerAbort\.current\?\.abort\(\);/,
+  );
+  assert.match(
+    picker,
+    /\(\) => \(\) => \{\s*resolveGen\.current \+= 1;\s*offerAbort\.current\?\.abort\(\);/,
+  );
+  assert.match(
+    picker,
+    /if \(pickSeq\.current !== seq \|\| resolveGen\.current !== gen\) \{\s*return;\s*\}\s*if \(row\.kind === "cached"\)/,
+  );
+  // The NPU download's load still keys on pickSeq alone.
+  assert.match(
+    picker,
+    /done &&\s*pickSeq\.current === seq &&\s*now\.params\.checkpoint === before/,
+  );
+});
+
+test("deleting an exported GGUF quant moves its favorite to a surviving file, in both pickers", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /ggufVariant: variant\.quant,\s*\}\);\s*await repinExportedGgufAfterDelete\(row\.id\);/,
+  );
+  const header = readSrc(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  assert.match(header, /await repinExportedGgufAfterDelete\(adapter\.id\);/);
+});
+
+test("an open on-device quant list asks the Hub for updates, as the header picker's expanded row did", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /expandQuantizations !== foldedQuants\.has\(row\.key\) &&\s*updatesReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
+  );
+  assert.match(
+    picker,
+    /const \{ quants \} = await rowQuants\(\{\s*\.\.\.target,\s*remote: true,\s*everyQuant: true,\s*\}\);/,
   );
 });

@@ -293,6 +293,62 @@ export function pinCoversId(pinned: readonly string[], id: string): boolean {
   });
 }
 
+/** Favorites lists each pinned quant of a repo as its own row, as the header picker did. */
+export function expandQuantFavorites<
+  T extends PickerRow & {
+    favoriteQuant?: string;
+    loadedQuant?: string | null;
+  },
+>(rows: readonly T[], pinned: readonly string[]): T[] {
+  return rows.flatMap((row) => {
+    if (row.kind === "external") {
+      return [row];
+    }
+    const base = norm(row.id);
+    let whole = false;
+    const quants: string[] = [];
+    for (const key of pinned) {
+      const k = norm(key);
+      if (k === base) {
+        whole = true;
+      } else if (k.startsWith(`${base}::`)) {
+        quants.push(key.slice(key.indexOf("::") + 2));
+      }
+    }
+    if (quants.length === 0) {
+      return [row];
+    }
+    const perQuant = quants.map((quant) => ({
+      ...row,
+      key: `${row.key}::${quant}`,
+      favoriteQuant: quant,
+      loaded:
+        row.loaded === true &&
+        (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
+    }));
+    return whole ? [row, ...perQuant] : perQuant;
+  });
+}
+
+/** The pin a Favorites row stands for: its own quant's key, else the repo's first. */
+export function favoritePinKey(
+  pinned: readonly string[],
+  id: string,
+  quant?: string,
+): string | null {
+  const base = norm(id);
+  if (quant) {
+    const want = `${base}::${norm(quant)}`;
+    return pinned.find((key) => norm(key) === want) ?? null;
+  }
+  return (
+    pinned.find((key) => {
+      const k = norm(key);
+      return k === base || k.startsWith(`${base}::`);
+    }) ?? null
+  );
+}
+
 const CHAT_TASKS = new Set([
   "text-generation",
   "text2text-generation",
