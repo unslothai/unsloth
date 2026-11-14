@@ -91,8 +91,18 @@ function wrap(marker: string, inner: string): string {
   const [lead, body, trail] = edges(inner);
   if (!body.replace(MARKS, "")) return inner;
   const parts = body.split(PARAGRAPH);
-  if (parts.length > 1) return `${lead}${parts.map((part, i) => (i % 2 ? part : wrap(marker, part))).join("")}${trail}`;
-  return `${lead}${marker}${body}${marker}${trail}`;
+  if (parts.length === 1) return `${lead}${marker}${body}${marker}${trail}`;
+  // A split can cut a fence; close it at each piece's end and reopen it in the next.
+  let open = false;
+  const pieces = parts.map((part, i) => {
+    const reopen = open ? FENCE_OPEN : "";
+    const o = part.lastIndexOf(FENCE_OPEN);
+    const c = part.lastIndexOf(FENCE_CLOSE);
+    if (o !== c) open = o > c;
+    const piece = `${reopen}${part}${open ? FENCE_CLOSE : ""}`;
+    return i % 2 ? piece : wrap(marker, piece);
+  });
+  return `${lead}${pieces.join("")}${trail}`;
 }
 
 function safeHref(raw: string): string | null {
@@ -184,8 +194,7 @@ function table(node: PasteNode, ctx: Ctx): string {
     let c = 0;
     for (const cell of elements(row).filter((child) => /^T[DH]$/i.test(child.nodeName))) {
       while (rows[r][c] !== undefined) c++;
-      const raw = clean(children(cell, ctx)).replace(new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}]`, "g"), "");
-      const text = flatten(raw).replace(/\|/g, "\\|");
+      const text = flatten(clean(children(cell, ctx)).replaceAll(INDENT, "")).replace(/\|/g, "\\|");
       const cols = span(cell, "colspan", 1000);
       const down = span(cell, "rowspan", physical.length - r);
       for (let dr = 0; dr < down; dr++)

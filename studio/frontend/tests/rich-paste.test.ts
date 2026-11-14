@@ -264,3 +264,30 @@ test("emphasis closes and reopens around preserved paragraph breaks", () => {
   const body = el("body", el("div", { style: "white-space:pre-wrap" }, el("b", "first\n\nsecond"), " tail"));
   assert.equal(htmlNodeToMarkdown(body), "**first**\n\n**second** tail");
 });
+
+test("splitting emphasis across a preserved blank-line run leaks no marker", () => {
+  const body = el("body", el("b", { style: "white-space:pre-line" }, "first\n\n\nsecond"));
+  assert.equal(htmlNodeToMarkdown(body), "**first**\n\n\n**second**");
+});
+
+test("a non-breaking space in inline code inside a table cell is kept", () => {
+  const body = el("body", el("table", el("tr", el("th", "k")), el("tr", el("td", el("code", "ord(' ')")))));
+  assert.equal(htmlNodeToMarkdown(body), "| k |\n| --- |\n| `ord(' ')` |");
+});
+
+test("random nested markup never leaks internal markers", () => {
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const pick = <T>(items: T[]) => items[Math.floor(rnd() * items.length)];
+  const atoms = ["a", " ", "  ", "\n", "\n\n", "\n\n\n", "\t", " ", "    x", "`", "|", "*"];
+  const styles = ["", "white-space:pre-wrap", "white-space:pre-line", "white-space:normal", "font-weight:700", "font-style:italic"];
+  const tags = ["b", "i", "s", "span", "p", "div", "code", "a", "br", "ul", "li", "table", "tr", "td", "caption", "pre", "blockquote", "h2"];
+  const gen = (depth: number): Child =>
+    depth <= 0 || rnd() < 0.3
+      ? Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => pick(atoms)).join("")
+      : el(pick(tags), { style: pick(styles), href: "https://x.com" }, ...Array.from({ length: Math.floor(rnd() * 4) }, () => gen(depth - 1)));
+  for (let i = 0; i < 3000; i++) {
+    const out = htmlNodeToMarkdown(el("body", gen(5)));
+    assert.doesNotMatch(out, /[\u0001-\u0003]/);
+  }
+});
