@@ -188,6 +188,7 @@ import {
   beginSavedHistoryReconciliation,
   isSavedHistoryReconciliationSuperseded,
   reconcileOrdinarySavedMessagesInView,
+  subscribeThreadSwitchRecovery,
 } from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
@@ -2560,14 +2561,15 @@ function useStudioRuntimeAdapters(
       recoverCurrentThread,
       { wakeKey: () => aui.threadListItem().getState().remoteId },
     );
-    let switchTimer: ReturnType<typeof setTimeout> | undefined;
-    const unsubscribeSwitch = useChatRuntimeStore.subscribe((state, prev) => {
-      if (!state.activeThreadId || state.activeThreadId === prev.activeThreadId) return;
-      clearTimeout(switchTimer);
-      switchTimer = setTimeout(recoverCurrentThread, 0);
-    });
+    const unsubscribeSwitch = subscribeThreadSwitchRecovery(
+      useChatRuntimeStore,
+      (threadId) => {
+        const item = aui.threadListItem().getState();
+        return item.remoteId === threadId || item.id === threadId;
+      },
+      recoverCurrentThread,
+    );
     return () => {
-      clearTimeout(switchTimer);
       unsubscribeSwitch();
       unsubscribeWake();
     };

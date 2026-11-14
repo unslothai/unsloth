@@ -125,15 +125,6 @@ export function reconcileOrdinarySavedMessagesInExport(
   return { messages, changed };
 }
 
-function isStillStreaming(stored: MessageRecord): boolean {
-  const meta = (stored.metadata ?? {}) as Record<string, unknown>;
-  const runId = meta.generationRunId;
-  return (
-    typeof runId === "string" &&
-    (isLiveGenerationRun(runId) || generationNeedsRecovery(meta))
-  );
-}
-
 export function appendExternalStoredTurns(
   exported: ExportedMessageRepository,
   storedMessages: readonly MessageRecord[],
@@ -143,8 +134,9 @@ export function appendExternalStoredTurns(
     return null;
   }
   const known = new Set(exported.messages.map((item) => item.message.id));
+  // In-flight runs are added like a reload adds them; generation recovery then streams them.
   const pending = storedMessages
-    .filter((message) => !known.has(message.id) && !isStillStreaming(message))
+    .filter((message) => !known.has(message.id))
     .sort((a, b) => a.createdAt - b.createdAt);
   const appended: ExportedMessageRepository["messages"][number][] = [];
   let progressed = true;
@@ -185,7 +177,7 @@ export function reconcileOrdinarySavedMessagesInView(
   storedMessages: readonly MessageRecord[],
   options: {
     editingMessageId: string | null;
-    toThreadMessage?: (record: MessageRecord) => ThreadMessage;
+    toThreadMessage: (record: MessageRecord) => ThreadMessage;
   },
 ): boolean {
   if (view.threadListItem().getState().remoteId !== threadId) {
@@ -200,9 +192,11 @@ export function reconcileOrdinarySavedMessagesInView(
       options,
     );
     const patched = { ...exported, messages };
-    const extended = options.toThreadMessage
-      ? appendExternalStoredTurns(patched, storedMessages, options.toThreadMessage)
-      : null;
+    // An import would drop an open edit composer.
+    const extended =
+      options.editingMessageId === null
+        ? appendExternalStoredTurns(patched, storedMessages, options.toThreadMessage)
+        : null;
     if (!changed && !extended) {
       return false;
     }
@@ -211,4 +205,30 @@ export function reconcileOrdinarySavedMessagesInView(
   } catch {
     return false;
   }
+}
+
+/** Reconciles when this view's thread becomes the active one; other mounted views stay idle. */
+export function subscribeThreadSwitchRecovery(
+  store: {
+    subscribe: (
+      listener: (
+        state: { activeThreadId: string | null },
+        prev: { activeThreadId: string | null },
+      ) => void,
+    ) => () => void;
+  },
+  ownsThread: (threadId: string) => boolean,
+  recover: () => void,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const unsubscribe = store.subscribe((state, prev) => {
+    const next = state.activeThreadId;
+    if (!next || next === prev.activeThreadId || !ownsThread(next)) return;
+    clearTimeout(timer);
+    timer = setTimeout(recover, 0);
+  });
+  return () => {
+    clearTimeout(timer);
+    unsubscribe();
+  };
 }

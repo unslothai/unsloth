@@ -123,7 +123,7 @@ test("reconcileOrdinarySavedMessagesInView imports without writing storage", () 
     view,
     "thread-1",
     [storedAssistant("assistant-1", "New saved checkpoint")],
-    { editingMessageId: null },
+    { editingMessageId: null, toThreadMessage: () => assert.fail("nothing to append") },
   );
   assert.equal(changed, true);
   assert.equal(imported, true);
@@ -179,6 +179,7 @@ test("recoverCurrentThread reconciles ordinary saved messages", () => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
       calls.add(node.expression.text);
       if (node.expression.text === "reconcileOrdinarySavedMessagesInView") {
+        assert.match(node.getText(), /toThreadMessage/, "reconcile must be able to append external turns");
         for (let p = node.parent; p; p = p.parent) {
           if (ts.isIfStatement(p) && p.expression.getText() === "fromBackend") {
             reconcileGuarded = true;
@@ -197,6 +198,11 @@ test("recoverCurrentThread reconciles ordinary saved messages", () => {
     assert.ok(calls.has(name), `${name} not called from recoverCurrentThread`);
   }
   assert.ok(reconcileGuarded, "reconciliation must skip legacy fallback reads");
+  assert.match(
+    readFileSync(source, "utf8"),
+    /subscribeThreadSwitchRecovery\([\s\S]*?recoverCurrentThread,\s*\)/,
+    "a thread switch must reconcile the view",
+  );
 });
 
 const userRuntime = (id: string, text: string) =>
@@ -221,7 +227,7 @@ const stored = (id: string, role: "user" | "assistant", parentId: string | null,
 const toRuntime = (record: { id: string; role: string }) =>
   (record.role === "user" ? userRuntime(record.id, record.id) : assistantRuntime(record.id, record.id)) as never;
 
-const { appendExternalStoredTurns } = await import(
+const { appendExternalStoredTurns, subscribeThreadSwitchRecovery } = await import(
   "../src/features/chat/utils/saved-history-reconciliation.ts"
 );
 
@@ -276,7 +282,7 @@ test("the open view imports external turns on reconcile", () => {
   let imported: { headId?: string | null; messages: unknown[] } | null = null;
   const view = {
     threadListItem: () => ({ getState: () => ({ remoteId: "thread-1" }) }),
-    thread: () => ({ export: () => openView() as never, import: (data: never) => { imported = data; } }),
+    thread: () => ({ export: () => openView() as never, import: (data: { headId?: string | null; messages: unknown[] }) => { imported = data; } }),
   };
   const changed = reconcileOrdinarySavedMessagesInView(
     view,
@@ -286,4 +292,64 @@ test("the open view imports external turns on reconcile", () => {
   );
   assert.equal(changed, true);
   assert.equal(imported!.headId, "u2");
+});
+
+test("an assistant reply still streaming elsewhere is added so recovery can follow it", () => {
+  const streaming = {
+    ...stored("a2", "assistant", "u2", 4),
+    metadata: { generationRunId: "run-phone", generationStatus: "running" },
+  };
+  const next = appendExternalStoredTurns(
+    openView() as never,
+    [stored("u2", "user", "a1", 3), streaming],
+    toRuntime,
+  );
+  assert.deepEqual(next?.messages.map((item) => item.message.id), ["u1", "a1", "u2", "a2"]);
+  assert.equal(next?.headId, "a2");
+});
+
+test("an open edit is not interrupted by external turns", () => {
+  let imported = false;
+  const view = {
+    threadListItem: () => ({ getState: () => ({ remoteId: "thread-1" }) }),
+    thread: () => ({ export: () => openView() as never, import: () => { imported = true; } }),
+  };
+  const changed = reconcileOrdinarySavedMessagesInView(
+    view,
+    "thread-1",
+    [stored("u2", "user", "a1", 3)] as never,
+    { editingMessageId: "u1", toThreadMessage: toRuntime },
+  );
+  assert.equal(changed, false);
+  assert.equal(imported, false);
+});
+
+test("switching threads reconciles only the view that owns the new active thread", async () => {
+  type State = { activeThreadId: string | null };
+  const listeners = new Set<(state: State, prev: State) => void>();
+  let state: State = { activeThreadId: "thread-1" };
+  const store = {
+    subscribe: (listener: (state: State, prev: State) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  const set = (activeThreadId: string | null) => {
+    const prev = state;
+    state = { activeThreadId };
+    for (const listener of listeners) listener(state, prev);
+  };
+  const recovered: string[] = [];
+  const stops = ["thread-1", "thread-2"].map((own) =>
+    subscribeThreadSwitchRecovery(store, (id) => id === own, () => recovered.push(own)),
+  );
+  set("thread-2");
+  set(null);
+  set("thread-1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(recovered, ["thread-2", "thread-1"]);
+  for (const stop of stops) stop();
+  set("thread-2");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(recovered, ["thread-2", "thread-1"]);
 });
