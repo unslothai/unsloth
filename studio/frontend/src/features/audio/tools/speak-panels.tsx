@@ -86,7 +86,7 @@ const speakVoicePanel: AudioToolPanel<SpeakVoiceValue> = {
           family={ctx.audioFamily}
         />
       ) : (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           The model's own voice, shaped by a voice description when you give
           one.
         </p>
@@ -101,9 +101,9 @@ const vibeVoiceDialoguePanel: AudioToolPanel<null> = {
     const text = core?.text.trim() ?? "";
     const script = formatVibeVoiceScript(text);
     return (
-      <div className="grid gap-1.5">
+      <div className="grid gap-2">
         <span className="text-ui-13 font-medium text-foreground">Dialogue</span>
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           This model reads a script with one line per speaker, such as “Speaker
           1: Hello.” Plain text is read by Speaker 1.
         </p>
@@ -124,7 +124,7 @@ const DEFAULT_LANGUAGE = "__default__";
 const supertonicLanguagePanel: AudioToolPanel<string> = {
   ...supertonicLanguageLogic,
   Component: ({ value, onChange, disabled }) => (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <FieldLabel
         className="text-ui-13 font-medium text-foreground"
         htmlFor="supertonic-language"
@@ -150,7 +150,7 @@ const supertonicLanguagePanel: AudioToolPanel<string> = {
           ))}
         </SelectContent>
       </Select>
-      <p className="text-ui-11p5 leading-snug text-muted-foreground">
+      <p className="text-ui-12 leading-normal text-muted-foreground">
         The language of the text, so it is pronounced right.
       </p>
     </div>

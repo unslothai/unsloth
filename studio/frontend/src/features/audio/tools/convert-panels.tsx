@@ -50,7 +50,7 @@ function PanelSection({
       <div className="grid gap-0.5">
         <h3 className="text-ui-13 font-medium text-foreground">{title}</h3>
         {hint ? (
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {hint}
           </p>
         ) : null}
@@ -102,7 +102,7 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
         hint={singing ? "Singing uses the V1 singing engine." : undefined}
       >
         {singing ? null : (
-          <div className="grid gap-1.5">
+          <div className="grid gap-2">
             <FieldLabel
               htmlFor="convert-seed-vc-engine"
               className="text-ui-13 font-medium text-foreground"
@@ -196,7 +196,7 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
             onChange={(steps) => onChange({ ...value, steps })}
           />
           {v2 ? (
-            <div className="grid gap-1.5">
+            <div className="grid gap-2">
               <FieldLabel
                 htmlFor="convert-seed-vc-anonymize"
                 className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
@@ -211,7 +211,7 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
                   }
                 />
               </FieldLabel>
-              <p className="text-ui-11p5 leading-snug text-muted-foreground">
+              <p className="text-ui-12 leading-normal text-muted-foreground">
                 Makes the voice hard to recognise instead of copying the target.
               </p>
             </div>

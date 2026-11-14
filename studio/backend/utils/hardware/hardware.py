@@ -3633,6 +3633,8 @@ _ROCM_WIN_COUNTER_SPACING = 4.0
 _ROCM_WIN_COUNTER_MAX_AGE_S = 10.0
 # Empty combined reading (localized names, hung PowerShell): each counter runs its own call until this retry.
 _ROCM_WIN_COUNTER_EMPTY_RETRY_S = 60.0
+# -f formats with the host culture: de-DE prints 12,5, which float() rejects.
+_ROCM_WIN_INVARIANT_COOKED = "$_.CookedValue.ToString([cultureinfo]::InvariantCulture)"
 _ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
     ("vram", "Dedicated Usage"): (
         "D",
@@ -3647,7 +3649,7 @@ _ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
     ("util", "3D"): (
         "U",
         "\\GPU Engine(*engtype_3D*)\\Utilization Percentage",
-        "$_.CookedValue",
+        _ROCM_WIN_INVARIANT_COOKED,
     ),
 }
 
@@ -3753,8 +3755,8 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
         ps = (
             "$s=(Get-Counter '\\GPU Engine(*engtype_3D*)\\Utilization Percentage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
-            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
-            "else{'__NONE__'}"
+            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,"
+            f"{_ROCM_WIN_INVARIANT_COOKED}}}}}else{{'__NONE__'}}"
         )
         stdout = _rocm_windows_counter_stdout(("util", "3D"), ps)
         if stdout is None:
@@ -6221,20 +6223,19 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
     except Exception as e:
         # A 5.x-only config cannot be parsed by the default transformers; that is expected (the worker reloads under the sidecar), so only warn for the default tier.
         tier = "default"
+        needed = None
         try:
-            from utils.transformers_version import get_transformers_tier
+            from utils.transformers_version import _tier_version, get_transformers_tier
             tier = get_transformers_tier(model_name)
+            needed = _tier_version(tier)
         except Exception:
             pass
         if tier != "default":
-            _tier_version = {"457": "4.57.6", "510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(
-                tier, "5.x"
-            )
             logger.info(
                 "Config for '%s' not parseable by the default transformers; "
                 "needs transformers %s and will be loaded with that sidecar in the worker",
                 model_name,
-                _tier_version,
+                needed or "5.x",
             )
         else:
             logger.warning("Could not load config for '%s': %s", model_name, e)

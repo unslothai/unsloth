@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -46,7 +56,7 @@ function RuleSelect({
           ["ask", t(isDefault ? "browser.agentSettings.askNewSites" : "browser.agentSettings.requiresApproval")],
           ["block", t("browser.agentSettings.blocked")],
         ]
-      : column === "actions" || column === "unlabelled"
+      : column === "actions" || column === "unlabelled" || column === "scripts"
         ? [
             ["ask", t("browser.agentSettings.requiresApproval")],
             ["allow", t("browser.agentSettings.alwaysAllow")],
@@ -72,8 +82,29 @@ function RuleSelect({
   );
 }
 
-// 2x2, not auto-fit: auto-fit left the fourth choice alone on its own row.
-const CHOICES = "grid grid-cols-1 gap-x-4 gap-y-3 @[30rem]/perms:grid-cols-2";
+/** Asked before scripts run unprompted on every site: Run scripts set to Always allow, or the Default row's Scripts rule. */
+function ConfirmAllScripts({ open, onConfirm, onCancel }: { open: boolean; onConfirm: () => void; onCancel: () => void }) {
+  const t = useT();
+  return (
+    <AlertDialog open={open} onOpenChange={(next) => !next && onCancel()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("browser.agentSettings.scriptsConfirmTitle")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("browser.agentSettings.scriptsConfirmDescription")}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("browser.agentSettings.cancel")}</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={onConfirm}>
+            {t("browser.agentSettings.scriptsConfirmAction")}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// Fixed columns, not auto-fit: auto-fit left a choice alone on its own row at odd widths.
+const CHOICES = "grid grid-cols-1 gap-x-4 gap-y-3 @[30rem]/perms:grid-cols-2 @[44rem]/perms:grid-cols-3";
 
 function PermissionsTable() {
   const t = useT();
@@ -81,12 +112,14 @@ function PermissionsTable() {
   const { setDefaultRule, setSiteRule } = useBrowserAgentStore.getState();
   const [draft, setDraft] = useState<string | null>(null);
   const [invalid, setInvalid] = useState(false);
+  const [confirmDefaultScripts, setConfirmDefaultScripts] = useState(false);
   const sites = Object.keys(permissions.sites).sort();
   const columns: Array<[Column, string]> = [
     ["browsing", t("browser.agentSettings.browsing")],
     ["actions", t("browser.agentSettings.actions")],
     ["downloads", t("browser.agentSettings.downloads")],
     ["unlabelled", t("browser.agentSettings.unlabelled")],
+    ["scripts", t("browser.agentSettings.scriptsColumn")],
   ];
 
   const add = () => {
@@ -128,11 +161,11 @@ function PermissionsTable() {
               value={rule[column]}
               isDefault={site === null}
               label={`${title}: ${name}`}
-              onChange={(value) =>
-                site === null
-                  ? setDefaultRule({ [column]: value } as Partial<SiteRule>)
-                  : setSiteRule(site, { ...rule, [column]: value } as SiteRule)
-              }
+              onChange={(value) => {
+                if (site !== null) setSiteRule(site, { ...rule, [column]: value } as SiteRule);
+                else if (column === "scripts" && value === "allow") setConfirmDefaultScripts(true);
+                else setDefaultRule({ [column]: value } as Partial<SiteRule>);
+              }}
             />
           </div>
         ))}
@@ -190,6 +223,14 @@ function PermissionsTable() {
       <p className="mt-2 text-xs text-muted-foreground">
         {invalid ? t("browser.agentSettings.siteInvalid") : t("browser.agentSettings.permissionsNote")}
       </p>
+      <ConfirmAllScripts
+        open={confirmDefaultScripts}
+        onConfirm={() => {
+          setDefaultRule({ scripts: "allow" });
+          setConfirmDefaultScripts(false);
+        }}
+        onCancel={() => setConfirmDefaultScripts(false)}
+      />
     </SettingsSection>
   );
 }
@@ -202,6 +243,7 @@ export function BrowserAgentSettings() {
   const scriptAccess = useBrowserAgentStore((state) => state.scriptAccess);
   const showCursor = useBrowserAgentStore((state) => state.showCursor);
   const { setEnabled, setHistoryAccess, setScriptAccess, setShowCursor } = useBrowserAgentStore.getState();
+  const [confirmScripts, setConfirmScripts] = useState(false);
   return (
     <>
       <SettingsSection
@@ -229,16 +271,31 @@ export function BrowserAgentSettings() {
             </SelectContent>
           </Select>
         </SettingsRow>
-        <SettingsRow label={t("browser.agentSettings.scripts")} description={t("browser.agentSettings.scriptsDescription")}>
-          <Select value={scriptAccess} onValueChange={(value) => setScriptAccess(value as ScriptAccess)}>
+        <SettingsRow
+          label={t("browser.agentSettings.scripts")}
+          description={t(scriptAccess === "allow" ? "browser.agentSettings.scriptsAllowDescription" : "browser.agentSettings.scriptsDescription")}
+        >
+          <Select
+            value={scriptAccess}
+            onValueChange={(value) => (value === "allow" ? setConfirmScripts(true) : setScriptAccess(value as ScriptAccess))}
+          >
             <SelectTrigger className="w-40" aria-label={t("browser.agentSettings.scripts")}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ask">{t("browser.agentSettings.askEveryTime")}</SelectItem>
+              <SelectItem value="allow">{t("browser.agentSettings.alwaysAllow")}</SelectItem>
               <SelectItem value="never">{t("browser.agentSettings.never")}</SelectItem>
             </SelectContent>
           </Select>
+          <ConfirmAllScripts
+            open={confirmScripts}
+            onConfirm={() => {
+              setScriptAccess("allow");
+              setConfirmScripts(false);
+            }}
+            onCancel={() => setConfirmScripts(false)}
+          />
         </SettingsRow>
         <SettingsRow label={t("browser.agentSettings.cursor")} description={t("browser.agentSettings.cursorDescription")}>
           <Switch aria-label={t("browser.agentSettings.cursor")} checked={showCursor} onCheckedChange={setShowCursor} />

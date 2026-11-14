@@ -2492,6 +2492,7 @@ fn main() {
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .manage(native_file_dialogs::NativeSaveRegistry::default())
         .manage(browser_webview::new_browser_views())
+        .manage(browser_webview::new_browser_capture_rules())
         .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(|invoke| {
             if invoke.message.webview().label() != "main" || invoke.message.webview().window().label() != "main" {
@@ -2513,6 +2514,7 @@ fn main() {
             browser_webview::browser_view_eval,
             browser_webview::browser_view_close,
             browser_webview::browser_view_clear_data,
+            browser_webview::browser_capture_rules_set,
             browser_webview::browser_view_mute,
             browser_webview::browser_view_layered,
             browser_webview::browser_view_input,
