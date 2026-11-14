@@ -54,3 +54,24 @@ test("a voice turn with attachments goes through the composer, and the run waits
 test("only the same request again counts as impatience", () => {
   assert.match(engine, /const sameAsk = isSameAsk\(lastUserPrompt\(\), text\);/);
 });
+
+test("a fragment held from a barge-in keeps listening as that barge-in, so its flush timeout runs", () => {
+  assert.match(loop, /let bargedIn = heldTurn !== null && heldFromBarge;/);
+  assert.match(loop, /heldFromBarge = bargedIn;/);
+});
+
+test("the barge-in preroll is not trimmed while the detector is asked", () => {
+  assert.match(loop, /if \(!bargeConfirming\) while \(preroll\.length \* frameMs > BARGE_PREROLL_MS\) preroll\.shift\(\);/);
+});
+
+test("a barge-in pause latches even before the first clip is queued", () => {
+  const player = readSrc("features/chat/hooks/use-tts-player.ts");
+  const pause = player.slice(player.indexOf("const pausePlayback = useCallback("));
+  assert.doesNotMatch(pause.slice(0, 400), /clipsRef\.current\.size === 0/);
+});
+
+test("the re-arm clears only the transcript the loop wrote, never a typed draft", () => {
+  assert.match(engine, /if \(voiceWroteBox\(fresh\.getState\(\)\.text\) && !isComposerHeldForEdit\(\)\) fresh\.setText\(""\);/);
+  assert.equal((loop.match(/for \(const cb of speechCallbacks\)/g) ?? []).length, 1);
+  assert.match(loop, /voiceBoxText = shown\(transcript\);/);
+});

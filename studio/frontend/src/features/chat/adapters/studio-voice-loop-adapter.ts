@@ -138,6 +138,12 @@ let heldTurn: { text: string; at: number } | null = null;
 // The fragment cut into the reply: the next session keeps listening as that barge-in,
 // not as the paused reply's barge gate, which never records and never times out.
 let heldFromBarge = false;
+// The last transcript this loop put in the composer: the re-arm clears only that, never a typed draft.
+let voiceBoxText = "";
+
+export function voiceWroteBox(text: string): boolean {
+  return text.trim() !== "" && text.trim() === voiceBoxText.trim();
+}
 // Bumped by clearHeldTurn (voice off, thread switch, stop, typed send): a transcript still
 // in STT or the turn judge when it runs belongs to the cleared turn and must not be held.
 let heldEpoch = 0;
@@ -321,7 +327,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       return parked && transcript ? `${parked} ${transcript}` : parked || transcript;
     };
     const emitSpeech = (transcript: string, isFinal: boolean) => {
-      for (const cb of speechCallbacks) cb({ transcript: shown(transcript), isFinal });
+      voiceBoxText = shown(transcript);
+      for (const cb of speechCallbacks) cb({ transcript: voiceBoxText, isFinal });
     };
 
     const session: DictationAdapter.Session = {
@@ -347,11 +354,13 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         speechCallbacks.add(cb);
         // Each emitted transcript is the whole turn, so parked turns and the held fragment go through it (pre-filling doubled it).
         const lead = shown(heldTurn?.text ?? "");
-        if (lead) cb({ transcript: lead, isFinal: false });
+        if (lead) {
+          voiceBoxText = lead;
+          cb({ transcript: lead, isFinal: false });
+        }
         return () => speechCallbacks.delete(cb);
       },
     };
-
     if (liveSession) {
       voiceTrace("session.supersede", {});
       liveSession.cancel();
@@ -827,7 +836,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // While the reply plays only a barge-in is listened for: nothing is recorded and the no-speech clock waits.
           if (!bargedIn && isVoicePlaybackActive()) {
             preroll.push(new Float32Array(input));
-            while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
+            // While the detector is asked, keep every frame: the probe's audio opens the utterance.
+            if (!bargeConfirming) while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
             startedAt = now;
             lastVoiceAt = now;
             const cut =stepBargeGate(bargeGate, rms, frameMs);

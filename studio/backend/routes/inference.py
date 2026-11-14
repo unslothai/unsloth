@@ -18308,6 +18308,12 @@ async def load_model_gated(
                             ) and not request.force_alongside:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
+                            if request.voice:
+                                # The voice retries on the CPU on this 409; the Always refusal it would get reads as a policy error.
+                                raise HTTPException(
+                                    status_code = 409,
+                                    detail = "Not enough memory to keep the voice loaded next to the chat model.",
+                                ) from exc
                             if measured and not account_access.managed_account():
                                 # Its Always copy already says nothing is unloaded to make room.
                                 # No kind: it names the model to unload, and this message names none.

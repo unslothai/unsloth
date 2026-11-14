@@ -746,6 +746,26 @@ def test_a_host_ram_spill_loads_beside_the_others_under_always(backends, monkeyp
     assert seen[-1].force_alongside and extra.llama.is_active
 
 
+def test_a_voice_short_on_memory_under_always_gets_the_cpu_retry_409(backends, monkeypatch):
+    import core.inference.audio_cpp_models as audio_cpp_models
+
+    _, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "always")
+    monkeypatch.setattr(
+        audio_cpp_models,
+        "resolve",
+        lambda path, *a, **k: SimpleNamespace(task = "tts", unsupported = None)
+        if path.startswith("audio-cpp/")
+        else None,
+    )
+    _gated_load_fakes(monkeypatch, short_fits = [1])
+    request = LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert excinfo.value.status_code == 409 and "enough memory" in excinfo.value.detail
+    assert extra.llama.is_active
+
+
 def test_a_capped_context_is_taken_only_once_nothing_is_left_to_evict(backends, monkeypatch):
     _, extra = backends
     extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
