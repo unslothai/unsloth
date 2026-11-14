@@ -134,14 +134,6 @@ def _auto_context_length(input_tokens: int, output_tokens: int) -> int:
     return max(_AUTO_CONTEXT_MIN, ((required + 4095) // 4096) * 4096)
 
 
-def _transcript_token_budget(audio_seconds: Optional[float]) -> int:
-    """Output cap for a clip. A fixed one silently truncated long audio."""
-    if not audio_seconds or audio_seconds <= 0:
-        return _MIN_TRANSCRIPT_TOKENS
-    scaled = int(audio_seconds * _TRANSCRIPT_TOKENS_PER_SECOND)
-    return max(_MIN_TRANSCRIPT_TOKENS, min(scaled, _MAX_TRANSCRIPT_TOKENS))
-
-
 def _window_pcm(decoded_audio) -> list:
     """Cut decoded audio into context-sized windows, preferring a nearby pause."""
     window = _MTMD_WINDOW_SECONDS * _TARGET_SAMPLE_RATE
@@ -1368,6 +1360,7 @@ class MtmdSttSidecar:
                     cancel_event,
                     progress,
                     context_length,
+                    prompt,
                 )
             )
         return {
@@ -1386,6 +1379,7 @@ class MtmdSttSidecar:
         cancel_event: Optional[threading.Event],
         on_progress,
         context_length: Optional[int],
+        prompt: Optional[str],
     ) -> str:
         """Transcribe one window of WAV bytes on the loaded server."""
         with self._lock:
