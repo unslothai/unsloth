@@ -106,6 +106,8 @@ export interface SystemInfoResponse {
   gpu: SystemGpuInfo;
   /** Differs from `gpu` when llama.cpp uses Vulkan. */
   inference_gpu?: SystemGpuInfo;
+  /** null where no counter reports the NPU (Linux, no supported NPU). */
+  npu_load_percent?: number | null;
   ml_packages: {
     torch?: string;
     transformers?: string;

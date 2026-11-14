@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import math
 import os
 import tempfile
@@ -514,6 +515,65 @@ def fit_h3_reference_image(image: Any, *, width: int, height: int, policy: str) 
         H3_CANVAS_MULTIPLE, round(v * scale / H3_CANVAS_MULTIPLE) * H3_CANVAS_MULTIPLE
     )
     return image.resize((snap(source_w), snap(source_h)), Image.LANCZOS)
+
+
+@functools.lru_cache(maxsize = None)
+def _h3_sized_reference_setup_class(base: type) -> type:
+    """Ref2VA setup step that leaves the request's image references at their size."""
+
+    class StudioSizedRef2VASetupStep(base):
+        def __call__(self, components: Any, state: Any) -> Any:
+            # Only the request's own PIL images skip the rescale; arrays and tensors keep Diffusers' sizing.
+            own = {
+                id(ref.image)
+                for ref in (state.get("references") or ())
+                if getattr(ref, "kind", None) == "image"
+            }
+            processor = components.image_processor
+            stock_resize = processor.resize
+            shadowed = vars(processor).get("resize")
+            processor.resize = lambda image, *a, **k: (
+                image if id(image) in own else stock_resize(image, *a, **k)
+            )
+            try:
+                return super().__call__(components, state)
+            finally:
+                if shadowed is None:
+                    del processor.resize
+                else:
+                    processor.resize = shadowed
+
+    StudioSizedRef2VASetupStep.__qualname__ = StudioSizedRef2VASetupStep.__name__
+    return StudioSizedRef2VASetupStep
+
+
+def keep_h3_reference_image_sizes(pipe: Any) -> int:
+    """Make the Ref2VA setup step take image references at their passed size.
+
+    Diffusers rescales every image reference (upscaling too) to ``reference_image_short_edge``
+    (2048). One config value cannot fit references of different sizes, so the step is swapped
+    for a subclass that skips the rescale. Idempotent; returns how many steps are switched.
+    """
+    try:
+        from diffusers.modular_pipelines.minimax_h3.before_encoder import (
+            MiniMaxH3Ref2VASetupStep,
+        )
+    except ImportError:
+        return 0
+    sized = _h3_sized_reference_setup_class(MiniMaxH3Ref2VASetupStep)
+    # pipe.blocks is a deep copy; the pipeline runs pipe._blocks.
+    stack, seen, found = [getattr(pipe, "_blocks", None)], set(), 0
+    while stack:
+        block = stack.pop()
+        if block is None or id(block) in seen:
+            continue
+        seen.add(id(block))
+        if isinstance(block, MiniMaxH3Ref2VASetupStep):
+            if not isinstance(block, sized):
+                block.__class__ = sized
+            found += 1
+        stack.extend((getattr(block, "sub_blocks", None) or {}).values())
+    return found
 
 
 def h3_reference_frame_size(source_w: int, source_h: int) -> tuple[int, int]:

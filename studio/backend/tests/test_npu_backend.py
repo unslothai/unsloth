@@ -172,6 +172,30 @@ def test_catalog_keeps_flm_chat_models_only(npu):
     assert by_id["qwen3-0.6b-FLM"].model_path == "lemonade:qwen3-0.6b-FLM"
 
 
+def test_catalog_rows_name_their_model_card_repo(npu):
+    npu.enable()
+    (npu._flm_binary().parent / "model_list.json").write_text(
+        json.dumps(
+            {
+                "model_path": "models",
+                "models": {
+                    "qwen3": {
+                        "0.6b": {
+                            "name": "Qwen3-0.6B-NPU2",
+                            "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2/resolve/v2",
+                        }
+                    }
+                },
+            }
+        )
+    )
+    by_id = {model.id: model.to_json() for model in npu.catalog()}
+    assert by_id["qwen3-0.6b-FLM"]["hf_repo"] == "FastFlowLM/Qwen3-0.6B-NPU2"
+    assert by_id["qwen3-0.6b-FLM"]["hf_revision"] == "v2"
+    assert by_id["gemma3-4b-FLM"]["hf_repo"] is None
+    assert by_id["gemma3-4b-FLM"]["hf_revision"] is None
+
+
 def test_download_relays_progress_then_completes(npu):
     npu.enable()
     events = list(npu.download("qwen3-0.6b-FLM"))
