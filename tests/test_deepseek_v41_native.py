@@ -737,6 +737,54 @@ def test_sparse_attention_engages_the_torch_reference_without_unsloth_zoo_kernel
     assert dsv41.DSV41_STATS["sparse_attn_torch"] == before + 6  # one call per layer
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA")
+def test_window_only_layers_take_the_hd512_kernel_and_compressed_layers_the_window_kernel(
+    monkeypatch,
+):
+    """head_dim 512 (the release's), bf16 on CUDA: window-only layers (empty compressed set) dispatch to Unsloth's
+    hd512 kernel, compressing layers to a window kernel (gather / triton); logits match the concatenated path."""
+    zoo = pytest.importorskip("unsloth_zoo.sparse_attention")
+    if "hd512" not in getattr(zoo, "SPARSE_ATTN_STATS", {}):
+        pytest.skip("this unsloth_zoo has no hd512 window dispatch")
+    from unsloth_zoo.sparse_mqa_kernel import window_hd512_supported
+
+    probe = torch.empty(1, 1, 1, 512, device = "cuda", dtype = torch.bfloat16)
+    if not window_hd512_supported(probe, probe[:, :, 0]):
+        pytest.skip("hd512 window kernel unsupported on this GPU")
+    monkeypatch.delenv("UNSLOTH_SPARSE_ATTN_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_DSV41_SPARSE_ATTN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DSV41_SPARSE_ATTN_WINDOW", raising = False)
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN", None)
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN_WINDOW", None)
+    model = _tiny_model(head_dim = 512).to("cuda", torch.bfloat16).eval()
+    assert dsv41._SPARSE_ATTN_WINDOW is zoo.sparse_attn_window
+    calls = []
+    real = dsv41.sparse_attn_window
+
+    def spy(q, window_kv, compress_kv, compress_idxs, sink, scale, window):
+        before = dict(zoo.SPARSE_ATTN_STATS)
+        out = real(q, window_kv, compress_kv, compress_idxs, sink, scale, window)
+        used = {k for k, v in zoo.SPARSE_ATTN_STATS.items() if v != before.get(k, 0)}
+        calls.append((compress_idxs.shape[-1], used))
+        return out
+
+    monkeypatch.setattr(dsv41, "sparse_attn_window", spy)
+    ids = torch.randint(0, 512, (1, 24), device = "cuda")
+    with torch.no_grad():
+        got = model(input_ids = ids).logits.float()
+    ratios = model.config.text_config.compress_ratios[: model.config.text_config.num_hidden_layers]
+    assert len(calls) == len(ratios)
+    for (k, used), ratio in zip(calls, ratios):
+        if ratio == 0:
+            assert k == 0 and used == {"hd512"}, (ratio, k, used)
+        else:
+            assert k > 0 and used and used <= {"gather", "triton"}, (ratio, k, used)
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN_WINDOW", None)
+    with torch.no_grad():
+        want = model(input_ids = ids).logits.float()
+    assert ((got - want).norm() / want.norm()).item() < 2e-2
+
+
 def test_an_unsloth_zoo_without_the_window_entry_keeps_the_concatenated_path(monkeypatch):
     import sys
     import types
