@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-# Keep runnable in lightweight environments lacking optional logging deps.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -27,12 +26,7 @@ import storage.studio_db as studio_db
 
 @pytest.fixture(autouse = True)
 def _denylist_inert(monkeypatch):
-    # These tests exercise allowlist containment and the file-vs-directory guard,
-    # not the system-directory denylist (which has its own suite in
-    # test_browse_denylist.py). On macOS tmp_path resolves under /private/var, a
-    # denied prefix, so _resolve_browse_target would 403 the fixture dirs before
-    # the containment logic runs. Keep the denylist inert here so these
-    # assertions hold on every platform.
+    # Keep the denylist inert: macOS tmp_path is under denied /private/var.
     monkeypatch.setattr(studio_db, "is_denied_system_path", lambda _p: False)
 
 
@@ -95,3 +89,29 @@ def test_resolve_browse_target_allows_backslash_in_posix_segment(tmp_path):
     resolved = models_route._resolve_browse_target(str(target), [allowed])
 
     assert resolved == target.resolve()
+
+
+def test_resolve_browse_target_accepts_a_path_spelled_through_a_symlinked_root(tmp_path):
+    real = tmp_path / "real"
+    (real / "models").mkdir(parents = True)
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory = True)
+
+    resolved = models_route._resolve_browse_target(str(linked / "models"), [real.resolve()])
+
+    assert resolved == (real / "models").resolve()
+
+
+def test_resolve_browse_target_symlinked_root_spelling_cannot_escape(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (real / "out").symlink_to(outside, target_is_directory = True)
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory = True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        models_route._resolve_browse_target(str(linked / "out"), [real.resolve()])
+
+    assert exc_info.value.status_code == 403

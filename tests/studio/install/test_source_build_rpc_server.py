@@ -53,7 +53,7 @@ def _source_build_block(text: str) -> str:
 
 
 def _ps1_step_f(text: str) -> str:
-    start = text.index("# -- Step F: Build the RPC server")
+    start = text.index("# -- Step G: Build the RPC server")
     end = text.index("# Swap temp build dir into final location", start)
     return text[start:end]
 
@@ -369,7 +369,7 @@ class TestSetupPs1:
     def test_step_f_follows_the_visual_server(self):
         text = _ps1()
         assert text.index("--target llama-diffusion-gemma-visual-server") < text.index(
-            "# -- Step F: Build the RPC server"
+            "# -- Step G: Build the RPC server"
         )
 
     def test_required_targets_are_exactly_as_before(self):

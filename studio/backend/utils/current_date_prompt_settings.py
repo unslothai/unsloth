@@ -122,6 +122,10 @@ _PROBE_SPECIAL_TOKENS = {
     f"{name}_token": f"UNSLOTH_DATE_PROBE_{name.upper()}"
     for name in ("bos", "eos", "pad", "unk", "sep", "cls", "mask")
 }
+# Names the probe passes itself; a caller's template kwarg of the same name would collide.
+PROBE_RENDER_KEYS = frozenset(
+    {"messages", "tools", "documents", "add_generation_prompt", *_PROBE_SPECIAL_TOKENS}
+)
 # a catalog a tool request's branch can render, for probing the template it selects.
 PROBE_TOOLS = [
     {
@@ -156,8 +160,7 @@ def _render_probe(
         separators = None,
         sort_keys = False,
     ):
-        # Transformers replaces Jinja's HTML-safe filter, so templates render ordinary JSON rather
-        # than escaping <, >, &, and apostrophes. The probe must compare the same bytes.
+        # Transformers disables HTML escaping, so the probe must match the same bytes.
         return json.dumps(
             value,
             ensure_ascii = ensure_ascii,
@@ -173,8 +176,7 @@ def _render_probe(
             next(parser.stream)
             return parser.parse_statements(["name:endgeneration"], drop_needle = True)
 
-    # Match the syntax accepted by transformers' chat-template renderer. The generation block only
-    # marks assistant-token spans there, so it is a transparent wrapper for this text-only probe.
+    # Match transformers' chat-template syntax; a generation block is transparent in this text-only probe.
     env = ImmutableSandboxedEnvironment(
         trim_blocks = True,
         lstrip_blocks = True,
@@ -206,12 +208,7 @@ def template_system_turn(
     tools: bool = False,
     controls: tuple = (),
 ) -> tuple[bool, str | None]:
-    """How a system turn the chat did not send renders in this template on ``today``.
-
-    Whether one renders at all, and the default system prompt it has to carry so the prompt reads as
-    the template's own render: "" when there is none, None when no system turn reproduces it (the
-    template rewrites what it is given). A template the probe cannot render takes one carrying nothing.
-    """
+    """Default is empty when the template has none or the probe cannot render; None when no system turn reproduces it."""
     if not chat_template:
         return True, ""
     catalog = PROBE_TOOLS if tools else None
@@ -251,8 +248,7 @@ def template_system_turn(
         if fixed and _is_whitespace_normalized_substring(bare[fixed:], without_system[fixed:]):
             return True, ""
         if len(bare) <= len(without_system) or not bare.startswith(head) or not bare.endswith(tail):
-            # The explicit-system branch changes more than inserting the supplied text. Treat its
-            # native default as non-replayable instead of silently replacing it with the date.
+            # Replaying it would silently replace the native default with the date, so the branch is non-replayable.
             return True, None
         default = bare[len(head) : len(bare) - len(tail)]
         try:

@@ -16,6 +16,7 @@ import {
   toolApprovalScope,
   toolResultParams,
 } from "../src/features/chat/mcp-apps/mcp-ui.ts";
+import { stripBase64Runs } from "../src/features/chat/utils/chat-search-text.ts";
 import { splitMcpToolName } from "../src/features/chat/utils/mcp-tool-name.ts";
 
 const read = (path: string) =>
@@ -30,9 +31,7 @@ test("the envelope comes off an MCP result and leaves the model text", () => {
       `cpu 12%${MARKER}{"resourceUri":"ui://a/b","structuredContent":{"cpu":12}}`,
       "cpu 12%",
     ],
-    // Stops at its own line, so a trailing image envelope survives.
     [`shot${MARKER}{"resourceUri":"ui://a/b"}${images}`, `shot${images}`],
-    // The last marker wins over an earlier literal mention.
     [
       `see __MCP_UI__: docs${MARKER}{"resourceUri":"ui://a/b"}`,
       "see __MCP_UI__: docs",
@@ -91,7 +90,6 @@ test("the model and exports never see the envelope or the wrapper", () => {
     adapter,
     /isMcpUiToolResult\(result, tc\.toolName \?\? ""\) \|\|/,
   );
-  // The image guard must refuse a widget result, or the widget would be dropped.
   assert.match(
     adapter,
     /v\.sessionId === undefined &&\s*v\.ui === undefined &&/,
@@ -173,8 +171,9 @@ test("the search index keeps a widget's shown text, not its seed", () => {
   const searchableText = new Function(
     "splitMcpImages",
     "isMcpUiToolResult",
+    "stripBase64Runs",
     `${js}; return searchableText;`,
-  )(splitMcpImages, isMcpUiToolResult) as (
+  )(splitMcpImages, isMcpUiToolResult, stripBase64Runs) as (
     value: unknown,
     depth?: number,
     toolName?: string,

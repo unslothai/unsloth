@@ -146,7 +146,7 @@ def test_owner_reads_status_and_it_is_cached_until_refresh(host, posix):
         assert body["terminal"]["limitations"] == ["network_not_confined"]
         assert body["windows"] is None
         client.get("/sandbox")
-        assert calls["snapshot"] == 2  # python + terminal, once
+        assert calls["snapshot"] == 2
         client.get("/sandbox", params = {"refresh": "true"})
         assert calls["snapshot"] == 4
 
@@ -374,7 +374,6 @@ def test_a_loopback_peer_relaying_a_remote_browser_is_not_local():
         )
 
     assert client_ip.is_direct_local_request(request("127.0.0.1")) is True
-    # A reverse proxy or tunnel on this machine: the peer is loopback, the browser is not.
     for headers in ({"x-forwarded-for": "203.0.113.7"}, {"cf-connecting-ip": "203.0.113.7"}):
         assert client_ip.is_direct_local_request(request("127.0.0.1", **headers)) is False
     assert client_ip.is_direct_local_request(request("127.0.0.1", "studio.example.com")) is False
@@ -397,7 +396,7 @@ def test_a_status_built_before_a_save_is_not_cached(host, windows, monkeypatch):
 
     def build_then_save(force):
         status = real_build(force)
-        settings._forget_sandbox_status()  # a PUT landed while this status was being built
+        settings._forget_sandbox_status()
         return status
 
     monkeypatch.setattr(settings, "_build_sandbox_status", build_then_save)

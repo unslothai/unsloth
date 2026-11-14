@@ -6,17 +6,14 @@ import type { TransformersUpgradeInfo } from "../types";
 
 interface ConfirmArgs {
   modelName: string;
-  /** validate's transformers_upgrade payload; null/undefined skips the dialog. */
+  /** null/undefined skips the dialog. */
   upgrade: TransformersUpgradeInfo | null | undefined;
-  /** When no release is installable, offer continuing into the caller's custom-code gate. */
   trustRemoteCodeFallback?: boolean;
-  /** The caller already confirmed the swap's "stop N chats" prompt: carry it into
-   *  the install, which otherwise 409s on those same chats with no way forward. */
+  /** Carry the user's "stop N chats" answer, or the install 409s on those chats. */
   forceCancelActive?: boolean;
 }
 
-/** Pause a load needing a newer transformers on the consent dialog and run the install.
- *  Resolves true when the load can continue; false on cancel or not-installable with no fallback. */
+/** False on cancel, or when nothing is installable and there is no fallback. */
 export async function confirmTransformersUpgradeIfNeeded({
   modelName,
   upgrade,

@@ -24,6 +24,14 @@ def _trainer_after_trl_init(config):
     return self
 
 
+def test_single_expert_jamba_turns_the_aux_loss_off():
+    # AI21-Jamba-Reasoning-3B: num_experts = 1 builds JambaMLP in every layer, so router_logits is () and
+    # load_balancing_loss_func raised IndexError at the first SFT step.
+    config = transformers.JambaConfig(num_experts = 1, num_experts_per_tok = 1)
+    trainer = _trainer_after_trl_init(config)
+    assert trainer.aux_loss_enabled is False and config.output_router_logits is False
+
+
 def test_dense_granite_hybrid_turns_the_aux_loss_off():
     config = transformers.GraniteMoeHybridConfig(num_local_experts = 0, num_experts_per_tok = 0)
     trainer = _trainer_after_trl_init(config)
@@ -36,8 +44,9 @@ def test_dense_granite_hybrid_turns_the_aux_loss_off():
         lambda: transformers.GraniteMoeHybridConfig(num_local_experts = 4, num_experts_per_tok = 2),
         lambda: transformers.Qwen3MoeConfig(),
         lambda: transformers.MixtralConfig(),
+        lambda: transformers.JambaConfig(num_experts = 16, num_experts_per_tok = 2),
     ],
-    ids = ["granite_hybrid_moe", "qwen3_moe", "mixtral"],
+    ids = ["granite_hybrid_moe", "qwen3_moe", "mixtral", "jamba_moe"],
 )
 def test_real_moe_keeps_the_aux_loss(config):
     config = config()

@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Masked terminal password prompt for the first-exposure password change.
-
-Mirror of ``studio/backend/auth/terminal_prompt.py`` -- keep the two in sync.
-The CLI parent cannot import the backend package outside the studio venv, so the
-reader is duplicated here (like the auth mirroring in ``commands/studio.py``).
-
-Input echoes one ``*`` per character (unlike ``getpass``). All output goes to
-stderr so redirected stdout stays clean.
-"""
+"""Masked password prompt, mirror of studio/backend/auth/terminal_prompt.py (keep in sync)."""
 
 from __future__ import annotations
 
@@ -17,8 +9,7 @@ import os
 import sys
 from typing import Callable, TextIO
 
-# Keep in sync with studio/backend/models/auth.py ChangePasswordRequest and auth/storage.py.
-# The bound is `new_password` min_length.
+# Keep in sync with ChangePasswordRequest new_password min_length (studio/backend/models/auth.py) and auth/storage.py.
 MIN_PASSWORD_LENGTH = 8
 
 # Mirror of studio/backend/auth/terminal_prompt.py; keep the name in sync.
@@ -39,12 +30,8 @@ class PromptUnattended(Exception):
 
 
 def _wait_for_first_key(timeout: float) -> bool:
-    """Whether a keystroke arrived within ``timeout`` seconds.
-
-    Requires cbreak mode already set: canonical mode holds input until a newline,
-    so the fd would not become readable on the first character. True on any doubt
-    (the blocking behaviour).
-    """
+    """Whether a keystroke arrived within timeout seconds; needs cbreak mode already set, since
+    canonical mode holds input until a newline. True on any doubt (blocking)."""
     if os.name == "nt":
         import time
 
@@ -125,19 +112,15 @@ def _read_masked_posix(
     chars: list[str] = []
     try:
         with _RestoreTtyOnSignals(fd, old_attrs):
-            # cbreak + ISIG off (mirrors terminal_prompt.py): with ISIG on, Ctrl-Z suspends mid-read and leaves
-            # the shell no-echo.
+            # ISIG off (mirrors terminal_prompt.py): Ctrl-Z would suspend mid-read and leave no-echo.
             tty.setcbreak(fd)
             new_attrs = termios.tcgetattr(fd)
             new_attrs[3] &= ~termios.ISIG
             termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
-            # FIRST keystroke only: a detached pty is a terminal nobody will type
-            # into, and blocking there means the socket never binds.
+            # First keystroke only: a detached pty would block forever and the socket never binds.
             if first_key_timeout is not None and not _wait_for_first_key(first_key_timeout):
                 raise PromptUnattended
-            # os.read + incremental decoder with errors="replace": text-mode read(1) can raise or yield a lone
-            # surrogate that later crashes pbkdf2.
-            # It raises UnicodeDecodeError.
+            # os.read with incremental decoder, errors=replace: text-mode read(1) can raise or yield a lone surrogate that crashes pbkdf2.
             decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
             submitted = False
             while not submitted:
@@ -300,8 +283,7 @@ def resolve_supplied_password(cli_value: "str | None", out: TextIO | None = None
 
 
 def validate_new_password(candidate: str, verify_current: Callable[[str], bool]) -> "str | None":
-    """Error message if ``candidate`` is unacceptable (too short or equal to the
-    current password), else None. Same policy as the interactive loop."""
+    """Error if candidate is short, has spaces, or repeats the current password; else None."""
     if len(candidate) < MIN_PASSWORD_LENGTH:
         return f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
     if any(ch.isspace() for ch in candidate):

@@ -5,7 +5,7 @@ import { createPanelWidthStore } from "./use-panel-width.ts";
 
 /** The previous fixed 17rem, at a 16px root font size. */
 export const CHAT_SETTINGS_WIDTH_DEFAULT = 272;
-/** Below this the sliders and their value pills start colliding. */
+/** Below this the sliders and their value pills collide. */
 export const CHAT_SETTINGS_WIDTH_MIN = 248;
 export const CHAT_SETTINGS_WIDTH_MAX = 560;
 

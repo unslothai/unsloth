@@ -15,7 +15,7 @@ export const UNIFIED_MEMORY_LOAD_TITLE = "Not enough memory to load this model";
 export const LOAD_ANYWAY_LABEL = "Load anyway";
 export const LOAD_ANYWAY_CONFIRM_TITLE = "Load this model anyway?";
 export const LOAD_ANYWAY_WARNING =
-  "Studio estimated that this model's weights do not fit the memory this device can safely give it after reserving room for the operating system. The check is an estimate and can be wrong, but loading past it can fail, use up all memory, make the computer swap heavily or stop responding, or stop Studio outright. Save your work in other applications first.";
+  "Unsloth estimated that this model's weights do not fit the memory this device can safely give it after reserving room for the operating system. The check is an estimate and can be wrong, but loading past it can fail, use up all memory, make the computer swap heavily or stop responding, or stop Unsloth outright. Save your work in other applications first.";
 
 export function readAllowOversizedLoad(): boolean {
   try {

@@ -47,6 +47,14 @@ const params = (key: string, value: string) =>
 const args = (list: unknown) => query("llamaExtraArgs", list);
 const valid = (config: object) => ({ kind: "valid", value: { config } });
 
+test("GPU layer keywords round-trip through shared settings", () => {
+  for (const flag of ["-ngl", "--gpu-layers", "--n-gpu-layers"]) {
+    for (const value of ["auto", "all"]) {
+      roundTrips({ config: { llamaExtraArgs: [flag, value] } });
+    }
+  }
+});
+
 function rejects(query: string) {
   for (const prefix of prefixes) {
     const result = parseRunConfigLink(`${prefix}${query}`);
@@ -83,6 +91,7 @@ const fullConfig: Omit<
   cacheRam: -1,
   tensorParallel: true,
   disableVision: false,
+  engramPrecision: "Q8_0",
   llamaExtraArgs: [
     "--rope-scaling",
     "yarn",

@@ -4,7 +4,7 @@
 /** desktop web pages use per-tab native views for bot checks. macOS puts each page under the app's webview, so
  *  overlays draw over the live page; elsewhere native views cover the DOM, so overlays use snapshots. */
 
-import { useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
@@ -19,8 +19,15 @@ import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } f
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
+import {
+  FLOATING_ATTRIBUTE,
+  FLOATING_MOVE_EVENT,
+  FLOATING_PRESS_EVENT,
+  FLOATING_SCALE_VAR,
+  floatingNativeZoom,
+} from "./floating-events";
 import { outsideThread } from "./outside-thread";
-import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import { callNative as call, localOriginGranted, nativeClearing, onNativeViewsClosed, setLocalViewCloser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
@@ -45,7 +52,9 @@ type NativeEvent =
   | { kind: "url"; tabId: string; url: string }
   | { kind: "history"; tabId: string; canGoBack: boolean; canGoForward: boolean; icon: string | null }
   | { kind: "newTab"; tabId: string; url: string }
+  | { kind: "refused"; tabId: string; url: string }
   | { kind: "external"; tabId: string; url: string }
+  | { kind: "failed"; tabId: string; error: string }
   | {
       kind: "download";
       tabId: string;
@@ -96,6 +105,13 @@ function error(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+function nativeErrorText(message: string): string {
+  if (/public web/i.test(message)) return t("browser.native.blocked");
+  if (/local addresses/i.test(message)) return t("browser.native.blockedLocal");
+  if (/Unsloth's own/i.test(message)) return t("browser.native.studioAddress");
+  return message;
+}
+
 // The view's history closes with it: keep the page it reached as a tab entry, for Back.
 function keepReachedPage(tabId: string): void {
   const store = useBrowserStore.getState();
@@ -104,6 +120,13 @@ function keepReachedPage(tabId: string): void {
   if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
   store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: false });
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
+}
+
+// A view pruned while its tab is still on the granted origin keeps the grant, to reopen.
+function onLocalOrigin(tabId: string): boolean {
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  const entry = tab && currentEntry(tab);
+  return entry?.kind === "web" && localOriginGranted(tabId, entry.url);
 }
 
 function closeView(tabId: string): void {
@@ -119,8 +142,10 @@ function closeView(tabId: string): void {
   recency = recency.filter((id) => id !== tabId);
   if (parkedView === tabId) parkedView = null;
   background = background.filter((id) => id !== tabId);
-  void call("browser_view_close", { tabId }).catch(() => undefined);
+  void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
 }
+
+setLocalViewCloser(closeView);
 
 let listening = false;
 
@@ -145,6 +170,14 @@ const loadingPages = new Set<string>();
 function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web" }>): void {
   const fresh = pageEntries.get(tabId) !== entry;
   pageEntries.set(tabId, entry);
+  const store = useBrowserStore.getState();
+  const tab = store.tabs.find((candidate) => candidate.id === tabId);
+  if (tab && tab.chat !== store.chat) {
+    // Off-screen chat: a self-navigation keeps the page's own flag, not the shown chat's incognito.
+    const own = entry.temporary === true;
+    temporaryPages.set(tabId, fresh ? own : (temporaryPages.get(tabId) ?? own));
+    return;
+  }
   const kept = fresh ? entry.temporary === true : loadingPages.has(tabId) && temporaryPages.get(tabId) === true;
   temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || kept);
 }
@@ -206,6 +239,13 @@ function onNativeEvent(event: NativeEvent): void {
     return;
   }
   if (!tab) return;
+  if (event.kind === "failed") {
+    // It never reached a page: what `pages` holds is the view it replaced.
+    pages.delete(tab.id);
+    closeView(tab.id);
+    store.updateTab(tab.id, { loading: false, nativeError: event.error });
+    return;
+  }
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
@@ -256,21 +296,15 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        // A page at work in a chat off screen opens its popups there, not over this chat's tabs.
-        if (tab.chat !== store.chat) store.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
-        else store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+        openPopup(tab, event.url);
       } else {
-        prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
-          label: t("browser.native.open"),
-          onClick: () => {
-            const now = useBrowserStore.getState();
-            if (tab.chat !== now.chat) now.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
-            else now.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
-          },
-        });
+        promptPopup(tab, event.url);
       }
       break;
     }
+    case "refused":
+      promptPopup(tab, event.url);
+      break;
     case "external":
       prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
         label: t("browser.native.open"),
@@ -278,6 +312,23 @@ function onNativeEvent(event: NativeEvent): void {
       });
       break;
   }
+}
+
+// A page at work in a chat off screen opens its popups there, not over this chat's tabs.
+function openPopup(tab: BrowserTab, url: string): void {
+  const store = useBrowserStore.getState();
+  if (tab.chat !== store.chat) {
+    // The opener's temporary flag, not the shown chat's: a temporary page's popups stay out of history.
+    const temporary = pageTemporary(tab.id, currentEntry(tab));
+    store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true, temporary });
+  } else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
+}
+
+function promptPopup(tab: BrowserTab, url: string): void {
+  prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url }), {
+    label: t("browser.native.open"),
+    onClick: () => openPopup(tab, url),
+  });
 }
 
 /** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
@@ -314,8 +365,7 @@ function prompt(message: string, action: { label: string; onClick: () => void })
   toast(message, { id: PROMPT_ID, action });
 }
 
-/** Keyed by the entry the view holds, not the tab's current one, which may not have loaded yet.
- *  Web addresses only: a blob: or data: page goes with the view that made it. */
+/** Keyed by the entry the view holds; blob: and data: pages are not remembered. */
 function remember(tabId: string, url: string): void {
   const entry = views.get(tabId);
   if (entry !== undefined && /^https?:/i.test(url)) resume.set(tabId, { entry, url });
@@ -325,8 +375,6 @@ function shownUrl(tab: BrowserTab): string {
   return tab.displayUrl ?? currentEntryUrl(tab);
 }
 
-/** Once the view moves off the address the tab was opened for, opening that address again
- *  opens it rather than focusing this tab. */
 function leftOpenedPage(tab: BrowserTab, url: string): { openKey?: null } {
   return tab.openKey?.startsWith("url:") && tab.openKey !== `url:${url}` ? { openKey: null } : {};
 }
@@ -513,14 +561,23 @@ function lendKeys(blocked: boolean): void {
 const HOLE_ATTRIBUTE = "data-native-hole";
 const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
 let holed: HTMLElement[] = [];
+// In the floating window a fixed background misses the page: cut in the node's own box, backgrounds only.
+const LOCAL_ATTRIBUTE = "data-native-hole-local";
+let local: HTMLElement[] = [];
+// The wallpaper is no ancestor of the page, so it is masked instead.
+const MASK_ATTRIBUTE = "data-native-hole-mask";
+let masked: HTMLElement[] = [];
 let holeSignature = "";
 let holeTab: string | null = null;
 let holeBounds: Bounds | null = null;
-// The panel around the page. A split drag pins the page at its old width, so while the panel
-// shrinks the page view overflows the handle. Resizing the view every frame would relayout the page
-// every frame, which the pin is there to avoid; on a layered page the app draws over it instead,
-// by cutting the hole no wider than the panel.
+// A split drag pins the page at its old width, so as the panel shrinks the view overflows the
+// handle; resizing it every frame would relayout the page, so on a layered page the app draws over
+// it, cutting the hole no wider than the panel.
 let holeClip: DOMRect | null = null;
+
+function paints(computed: CSSStyleDeclaration): boolean {
+  return computed.backgroundImage !== "none" || opaque(computed.backgroundColor);
+}
 
 function opaque(color: string): boolean {
   if (color === "transparent") return false;
@@ -535,17 +592,54 @@ function openHole(tabId: string, bounds: Bounds): void {
   if (!markHole() && moved) placeHole();
 }
 
-// Per holed node, not the root: the vars don't inherit, so a move restyles only those nodes.
-// Under the desktop app's interface zoom (the webview's page zoom), WebKit scales a fixed
-// background's lengths by the zoom once more than the layout they were read from: undone here, or
-// a zoomed-out app covers the right and bottom of the page.
+// Set per holed node, not the root, since the vars do not inherit; under the app's interface zoom
+// WebKit scales fixed-background lengths by that zoom again, so it is undone here or a zoomed-out
+// app covers the right and bottom of the page.
 function placeHole(): void {
   if (!holeBounds) return;
   const zoom = getAppliedInterfaceZoom() || 1;
   const left = holeClip ? Math.max(holeBounds.x, holeClip.left) : holeBounds.x;
   const right = holeClip ? Math.min(holeBounds.x + holeBounds.width, holeClip.right) : holeBounds.x + holeBounds.width;
-  const values = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height].map((value) => value / zoom);
-  for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
+  const rect = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height];
+  const values = rect.map((value) => value / zoom);
+  for (const node of holed) {
+    if (local.includes(node)) continue;
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
+    cutAt(node, "background", values[0], values[1], values[2], values[3]);
+  }
+  // No zoom correction: neither a mask nor a box-local cut is a fixed background.
+  for (const node of [...local, ...masked]) {
+    const box = node.getBoundingClientRect();
+    // Untrimmed: a node that grows later (the chat as its panel floats) kept the old edge.
+    const x = rect[0] - box.left;
+    const y = rect[1] - box.top;
+    const [width, height] = [rect[2], rect[3]];
+    const cut = [x, y, width, height];
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${cut[index]}px`));
+    cutAt(node, local.includes(node) ? "background" : "mask", x, y, width, height);
+  }
+}
+
+const CUT_PROPERTIES = [
+  "background-position",
+  "background-size",
+  "mask-position",
+  "mask-size",
+  "-webkit-mask-position",
+  "-webkit-mask-size",
+] as const;
+
+/** Also as lengths: WebKit doesn't repaint a background or mask when only registered vars change. */
+function cutAt(node: HTMLElement, kind: "background" | "mask", x: number, y: number, width: number, height: number): void {
+  const right = x + width;
+  const bottom = y + height;
+  const position = `0 0, 0 ${bottom}px, 0 ${y}px, ${right}px ${y}px`;
+  const size = `100% ${Math.max(0, y)}px, 100% max(0px, calc(100% - ${bottom}px)), ${Math.max(0, x)}px ${height}px, max(0px, calc(100% - ${right}px)) ${height}px`;
+  const prefixes = kind === "background" ? ["background"] : ["mask", "-webkit-mask"];
+  for (const prefix of prefixes) {
+    node.style.setProperty(`${prefix}-position`, position, "important");
+    node.style.setProperty(`${prefix}-size`, size, "important");
+  }
 }
 
 /** Re-reads background colors when the chain, its classes or the theme change; true if it did. */
@@ -557,30 +651,63 @@ function markHole(): boolean {
   // Theme: html classes, palette and inline color vars, minus our own.
   const root = document.documentElement;
   const theme = (root.style.cssText ?? "").replace(/--native-hole-[^;]*;?/g, "");
-  const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}`;
-  if (signature === holeSignature && holed.every((node) => node.isConnected)) return false;
+  // Ancestors only, no document scan: this runs on every recheck.
+  const layers = chain
+    .filter((node) => node.hasAttribute?.("data-wallpaper-workspace") || node.hasAttribute?.("data-chat-content-root"))
+    .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));
+  layers.push(...floatingUnderlay(chain));
+  const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}|${layers.length}`;
+  // A node can start painting later with no class change (just floated): uncut, the page stayed white.
+  const missed = chain.some((node) => !node.hasAttribute?.(HOLE_ATTRIBUTE) && paints(getComputedStyle(node)));
+  if (signature === holeSignature && !missed && [...holed, ...masked].every((node) => node.isConnected)) return false;
   unmarkHole();
   holeSignature = signature;
+  const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
   const colors = chain.map((node) => getComputedStyle(node));
   chain.forEach((node, index) => {
     const computed = colors[index];
-    if (computed.backgroundImage === "none" && !opaque(computed.backgroundColor)) return;
+    if (!paints(computed)) return;
     node.style.setProperty("--native-hole-bg", computed.backgroundColor);
     holed.push(node);
+    if (index <= floating) local.push(node);
   });
+  masked = layers;
   placeHole();
   for (const node of holed) node.setAttribute(HOLE_ATTRIBUTE, "");
+  for (const node of local) node.setAttribute(LOCAL_ATTRIBUTE, "");
+  for (const node of masked) node.setAttribute(MASK_ATTRIBUTE, "");
   // Mid theme switch everything can read transparent: retry next sync.
   if (holed.length === 0) holeSignature = "";
   return true;
 }
 
+/** The chat under a floating page is no ancestor of it, so its boxes are masked too. */
+function floatingUnderlay(chain: HTMLElement[]): HTMLElement[] {
+  const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
+  if (floating < 0) return [];
+  const under: HTMLElement[] = [];
+  for (const node of chain.slice(floating)) {
+    if (node.hasAttribute("data-chat-content-root")) break;
+    for (const sibling of node.parentElement?.children ?? []) {
+      if (sibling !== node && sibling instanceof HTMLElement && !sibling.classList.contains("chat-wallpaper")) under.push(sibling);
+    }
+  }
+  return under;
+}
+
 function unmarkHole(): void {
   for (const node of holed) {
     node.removeAttribute(HOLE_ATTRIBUTE);
-    for (const name of ["--native-hole-bg", ...HOLE_VARS]) node.style.removeProperty(name);
+    for (const name of ["--native-hole-bg", ...HOLE_VARS, ...CUT_PROPERTIES]) node.style.removeProperty(name);
   }
   holed = [];
+  for (const node of local) node.removeAttribute(LOCAL_ATTRIBUTE);
+  local = [];
+  for (const node of masked) {
+    node.removeAttribute(MASK_ATTRIBUTE);
+    for (const name of [...HOLE_VARS, ...CUT_PROPERTIES]) node.style.removeProperty(name);
+  }
+  masked = [];
   holeSignature = "";
 }
 
@@ -601,7 +728,9 @@ function panelArea(element: HTMLElement): HTMLElement | null {
 
 /** Re-cuts the hole when the panel's edges move; cheap, so it runs every frame of a drag. */
 function clipHole(element: HTMLElement | null): void {
-  const area = element && layered ? panelArea(element)?.getBoundingClientRect() ?? null : null;
+  // Docked only: in a floating window this chopped the cut at a stale panel edge.
+  const docked = element && layered && !element.closest?.(`[${FLOATING_ATTRIBUTE}]`);
+  const area = docked ? panelArea(element)?.getBoundingClientRect() ?? null : null;
   const same = area && holeClip ? area.left === holeClip.left && area.right === holeClip.right : area === holeClip;
   if (same) return;
   holeClip = area;
@@ -651,6 +780,12 @@ function insetToasts(rect: DOMRect | null): void {
   else style.removeProperty(BROWSER_PAGE_INSET_VAR);
 }
 
+function floatingScale(tabId: string): number {
+  const surface = placeholder(tabId)?.closest?.<HTMLElement>(`[${FLOATING_ATTRIBUTE}]`);
+  const scale = Number.parseFloat(surface?.style?.getPropertyValue?.(FLOATING_SCALE_VAR) ?? "");
+  return scale > 0 && scale <= 1 ? scale : 1;
+}
+
 function desiredView(): Desired {
   const page = pageRect();
   if (layered) {
@@ -665,7 +800,7 @@ function desiredView(): Desired {
     tabId: tab.id,
     url: entry.url,
     entry: entryKey(entry),
-    zoom: tab.zoom,
+    zoom: floatingNativeZoom(tab.zoom, floatingScale(tab.id)),
     bounds: {
       x: Math.round(rect.left),
       y: Math.round(rect.top),
@@ -674,7 +809,12 @@ function desiredView(): Desired {
       viewportWidth: window.innerWidth,
     },
   };
-  return !layered && coveredNow(rect) ? { ...shown, covered: true } : shown;
+  const covered = movingWindow() || (!layered && coveredNow(rect));
+  return covered ? { ...shown, covered: true } : shown;
+}
+
+function movingWindow(): boolean {
+  return document.querySelector?.("[data-floating-gesture]") != null;
 }
 
 function pageRect(): { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }>; rect: DOMRect } | null {
@@ -790,6 +930,7 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
   try {
     if (views.has(tabId)) {
       await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
     } else {
       const bounds = viewBounds.get(tabId) ??
         shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
@@ -935,7 +1076,138 @@ export function refreshCoveredPage(tabId: string): void {
   });
 }
 
+// The page's picture while its floating window moves: a child, as the placeholder's background is the cut's fill.
+let dragShot: {
+  tabId: string;
+  url: string;
+  image: HTMLImageElement;
+  size: Bounds | null;
+  layoutWidth: number;
+  shown: boolean;
+} | null = null;
+let dragShotTicket = 0;
+
+async function captureForDrag(tabId: string): Promise<void> {
+  const ticket = ++dragShotTicket;
+  const size = shownBounds;
+  const layoutWidth = placeholder(tabId)?.clientWidth ?? 0;
+  const png = await call<ArrayBuffer>("browser_capture", { tabId }).catch(() => null);
+  if (!png?.byteLength) return;
+  const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  const image = new Image();
+  image.src = url;
+  if (!(await image.decode().then(() => true, () => false)) || ticket !== dragShotTicket) {
+    URL.revokeObjectURL(url);
+    return;
+  }
+  // Swapped in place: removing the old one first left the window empty.
+  const wasShown = dragShot?.tabId === tabId && dragShot.shown;
+  clearDragShot();
+  dragShot = { tabId, url, image, size, layoutWidth, shown: false };
+  if (wasShown || parkedView === tabId) showDragShot();
+}
+
+// The box is fractional, so its rounded size moves by a pixel with the window.
+function sameSize(a: Bounds | null, b: Bounds | null): boolean {
+  return !!a && !!b && Math.abs(a.width - b.width) <= 2 && Math.abs(a.height - b.height) <= 2;
+}
+
+function showDragShot(): void {
+  const page = dragShot ? placeholder(dragShot.tabId) : null;
+  // Taken at another size (before it floated): stretched, it flickered.
+  if (!dragShot || !page || dragShot.shown || !sameSize(dragShot.size, shownBounds)) return;
+  // The decoded image, not a CSS background: WebKit re-decoded that while the window moved.
+  Object.assign(dragShot.image.style, {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    // Its own proportions: scales with the window like the page, cropped, never stretched.
+    width: dragShot.layoutWidth ? `${dragShot.layoutWidth}px` : "100%",
+    height: "auto",
+    pointerEvents: "none",
+  });
+  page.style.position = "relative";
+  page.style.overflow = "hidden";
+  page.appendChild(dragShot.image);
+  dragShot.shown = true;
+}
+
+function hideDragShot(): void {
+  if (!dragShot?.shown) return;
+  const page = dragShot.image.parentElement;
+  dragShot.image.remove();
+  page?.style.removeProperty("position");
+  page?.style.removeProperty("overflow");
+  dragShot.shown = false;
+}
+
+function clearDragShot(): void {
+  if (!dragShot) return;
+  hideDragShot();
+  URL.revokeObjectURL(dragShot.url);
+  dragShot = null;
+}
+
+function floats(element: HTMLElement): boolean {
+  return element.closest?.(`[${FLOATING_ATTRIBUTE}]`) != null;
+}
+
+/** Kept marked, so the app isn't restyled (a flash). */
+function shutHole(): void {
+  if (holeBounds && (holeBounds.width > 0 || holeBounds.height > 0)) {
+    holeBounds = { ...holeBounds, width: 0, height: 0 };
+    placeHole();
+  }
+}
+
+function coverForDrag(tabId: string): void {
+  shutHole();
+  if (dragShot?.tabId === tabId) showDragShot();
+}
+
+// A dropped page redraws a moment after it lands (its off-window tiles may be gone): the picture stays till then.
+const DROP_HOLD_MS = 400;
+let dropTimer = 0;
+
+function clearDragShotAfterDrop(): void {
+  window.clearTimeout(dropTimer);
+  dropTimer = window.setTimeout(() => {
+    if (parkedView !== null || movingWindow()) return;
+    hideDragShot();
+    // No hover capture comes before the next drag, and a page that just floated has none at its size.
+    const page = shownView ? placeholder(shownView) : null;
+    if (shownView && page && floats(page)) void captureForDrag(shownView);
+  }, DROP_HOLD_MS);
+}
+
+// Started outside the apply pump: applyView waits for it, or it could undo a quick drop's restore.
+let parking: { tabId: string; done: Promise<void> } | null = null;
+
+function parkForDrag(tabId: string): Promise<void> {
+  if (parkedView === tabId) return Promise.resolve();
+  if (parking?.tabId === tabId) return parking.done;
+  coverForDrag(tabId);
+  const done = call("browser_view_show", { tabId, bounds: shownBounds, parked: true }).then(
+    () => {
+      parkedView = tabId;
+      setShownView(null);
+      if (dragShot?.tabId === tabId) showDragShot();
+      else void captureForDrag(tabId);
+    },
+    () => undefined,
+  ).finally(() => {
+    if (parking?.done === done) parking = null;
+  });
+  parking = { tabId, done };
+  return done;
+}
+
 async function applyView(desired: Desired): Promise<void> {
+  if (parking) await parking.done;
+  if (desired && "covered" in desired && movingWindow() && parkable(desired.tabId)) {
+    await parkForDrag(desired.tabId);
+    return;
+  }
   if (!desired || "covered" in desired) {
     closeHole();
     // keep the snapshot if an overlay reopens during capture.
@@ -961,17 +1233,36 @@ async function applyView(desired: Desired): Promise<void> {
   const started = generation;
   const stale = () => {
     if (started === generation) return false;
-    void call("browser_view_close", { tabId }).catch(() => undefined);
+    void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
     return true;
   };
   try {
     openedTabs.add(tabId);
+    // Zoomed while hidden, so the page isn't seen at the old scale (on top: parked here; layered: cut shut).
+    const rezoom = existed && loaded === entry && (zooms.get(tabId) ?? 1) !== zoom;
+    const resized = JSON.stringify(bounds) !== JSON.stringify(shownBounds);
+    if (rezoom && !layered && shownView === tabId && resized) {
+      await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
+      if (stale()) return;
+      parkedView = tabId;
+    }
+    if (rezoom && parkedView === tabId) {
+      zooms.set(tabId, zoom);
+      await call("browser_view_zoom", { tabId, zoom });
+      if (stale()) return;
+    }
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
     parkedView = null;
     staleSnapshot = null;
     coverFails = 0;
     clearSnapshot();
+    clearDragShotAfterDrop();
+    if (layered && existed && loaded === entry && (zooms.get(tabId) ?? 1) !== zoom) {
+      zooms.set(tabId, zoom);
+      await call("browser_view_zoom", { tabId, zoom });
+      if (stale()) return;
+    }
     // After the move, so hole and page update together.
     if (layered) openHole(tabId, bounds);
     shownBounds = bounds;
@@ -980,6 +1271,7 @@ async function applyView(desired: Desired): Promise<void> {
     // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
       await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
       if (stale()) return;
     }
     views.set(tabId, entry);
@@ -992,14 +1284,13 @@ async function applyView(desired: Desired): Promise<void> {
     if (stale()) return;
     useBrowserStore.getState().updateTab(tabId, {
       loading: false,
-      nativeError: /public web/i.test(error(cause)) ? t("browser.native.blocked") : error(cause),
+      nativeError: nativeErrorText(error(cause)),
     });
   }
   recency = [...recency.filter((id) => id !== tabId), tabId];
 }
 
-// One call in flight, across mounts; meanwhile only the newest state waits, so a drag can't queue
-// a backlog of stale bounds for the native view to replay.
+// One call in flight; only the newest state waits, so a drag cannot queue stale bounds.
 let running = false;
 let pending: { desired: Desired } | null = null;
 
@@ -1060,10 +1351,18 @@ export function startNativeViews(): () => void {
   const sync = () => {
     frame = 0;
     if (layered === null) return;
+    if (parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
     markHole();
     const desired = desiredView();
+    if (desired && movingWindow() && desired.tabId === shownView) coverForDrag(desired.tabId);
     pruneViews(desired?.tabId ?? null);
     const element = desired ? placeholder(desired.tabId) : null;
+    // Docked <-> floating: the old cut showed the page through the chat until it moved.
+    if (layered !== null && element && resized && element !== resized && desired?.tabId === shownView && floats(element) !== floats(resized)) {
+      if (layered) shutHole();
+      // The chat's panels animate and the window's backgrounds paint late: re-cut every frame.
+      motionUntil = performance.now() + MOTION_MS;
+    }
     if (element !== resized) {
       if (resized) resizeObserver.unobserve(resized);
       if (resizedArea) areaObserver.unobserve(resizedArea);
@@ -1073,6 +1372,8 @@ export function startNativeViews(): () => void {
       resized = element;
     }
     clipHole(element);
+    // Boxes under the cut resize on their own (the chat as its panel floats).
+    placeHole();
     if (performance.now() < motionUntil) schedule();
     const key = JSON.stringify([epoch, coverRetry, desired]);
     if (key === sent) return;
@@ -1109,6 +1410,23 @@ export function startNativeViews(): () => void {
   document.addEventListener("pointerover", reachedPage, true);
   // A dragged or resized panel ends where the pointer lets go.
   document.addEventListener("pointerup", schedule, true);
+  // A layered page follows the floating window; one on top waits for the drop (see sync).
+  const floatingMoved = () => {
+    // In the move's own frame (a sync is a frame late); on top of the app nothing syncs mid-gesture.
+    if (shownView && movingWindow()) {
+      const tabId = shownView;
+      coverForDrag(tabId);
+      // Outside apply: forgotten, or a gesture ending where it started never shows the page again.
+      sent = "";
+      if (!layered && parkable(tabId)) void parkForDrag(tabId);
+    }
+    if (layered || !document.querySelector("[data-floating-gesture]")) schedule();
+  };
+  window.addEventListener(FLOATING_MOVE_EVENT, floatingMoved);
+  const floatingPressed = () => {
+    if (layered !== null && shownView) void captureForDrag(shownView);
+  };
+  window.addEventListener(FLOATING_PRESS_EVENT, floatingPressed);
   const interval = window.setInterval(schedule, RECHECK_MS);
   void askLayered().then(schedule);
   schedule();
@@ -1124,6 +1442,8 @@ export function startNativeViews(): () => void {
     for (const type of MOTION_EVENTS) document.removeEventListener(type, moved, true);
     document.removeEventListener("pointerover", reachedPage, true);
     document.removeEventListener("pointerup", schedule, true);
+    window.removeEventListener(FLOATING_MOVE_EVENT, floatingMoved);
+    window.removeEventListener(FLOATING_PRESS_EVENT, floatingPressed);
     window.clearInterval(interval);
     panelUp = false;
     tooltipHold = 0;
@@ -1134,6 +1454,7 @@ export function startNativeViews(): () => void {
     parkedView = null;
     setShownView(null);
     clearSnapshot();
+    clearDragShot();
     closeHole();
     sendInput(NO_INPUT);
     insetToasts(null);

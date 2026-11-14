@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FastAPI round-trip tests for the OpenAI-compatible POST /v1/audio/transcriptions.
-
-The sidecar call (_transcribe_audio_result) is faked, so these cover multipart wiring,
-model-id mapping, response formats and error propagation without whisper or a GPU."""
+"""Round-trip tests for POST /v1/audio/transcriptions with _transcribe_audio_result faked; no GPU."""
 
 from __future__ import annotations
 
@@ -73,7 +70,6 @@ def _post(
 
 
 def test_json_response_is_text_only(monkeypatch):
-    # OpenAI's json shape carries only the text; the sidecar's extra fields stay internal.
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli)
     assert resp.status_code == 200
@@ -115,7 +111,6 @@ def test_unknown_response_format_is_400(monkeypatch):
 
 
 def test_missing_file_is_rejected(monkeypatch):
-    # install_api_error_handlers maps validation errors to a 400 OpenAI envelope on /v1.
     cli, calls = _make_client(monkeypatch)
     resp = cli.post("/v1/audio/transcriptions", data = {"model": "whisper-1"})
     assert resp.status_code == 400
@@ -123,8 +118,7 @@ def test_missing_file_is_rejected(monkeypatch):
 
 
 def test_sidecar_errors_keep_their_status(monkeypatch):
-    # The shared error mapping (SttModelIdError -> 422, empty audio -> 400, ...) sits inside
-    # _transcribe_audio_result; the route must not swallow or rewrap what it raises.
+    # Error mapping lives in _transcribe_audio_result; the route must not swallow or rewrap it.
     async def _bad_model(raw):
         raise HTTPException(status_code = 422, detail = "Unknown STT model id.")
 
@@ -135,11 +129,7 @@ def test_sidecar_errors_keep_their_status(monkeypatch):
 
 
 def test_an_mtmd_only_model_forces_its_engine():
-    """Qwen3-ASR only runs on the mtmd sidecar.
-
-    The route passed no engine, so _resolve_stt_engine defaulted to Transformers and the
-    Whisper sidecar rejected the model.
-    """
+    """Qwen3-ASR runs only on the mtmd sidecar, so its engine is forced, not defaulted to Transformers."""
     from routes.inference import _stt_engine_for_model
 
     assert _stt_engine_for_model("qwen3-asr-0.6b") == "mtmd"
@@ -191,11 +181,7 @@ def test_verbose_json_carries_language_and_duration(monkeypatch):
 
 
 def test_verbose_json_without_a_language_is_refused_before_any_work(monkeypatch):
-    """OpenAI types language as a required string and the sidecar only echoes back the
-    language it was given, so an auto-detect request has nothing truthful to report.
-
-    Naming a language nobody detected would label a Japanese clip "en", so this refuses.
-    It refuses before the sidecar runs, so no GPU is burnt and no row is opened."""
+    """Refuse verbose_json without a language: naming one nobody detected would mislabel the clip."""
     cli, calls = _make_client(monkeypatch)
     api_monitor.clear()
     resp = _post(cli, data = {"response_format": "verbose_json"})
@@ -206,7 +192,6 @@ def test_verbose_json_without_a_language_is_refused_before_any_work(monkeypatch)
 
 
 def test_verbose_json_works_when_the_caller_supplies_a_language(monkeypatch):
-    # Echoing a language the caller named is correct, so this half of verbose_json works.
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli, data = {"response_format": "verbose_json", "language": "en"})
     assert resp.status_code == 200
@@ -214,9 +199,7 @@ def test_verbose_json_works_when_the_caller_supplies_a_language(monkeypatch):
 
 
 def test_verbose_json_never_emits_a_null_duration(monkeypatch):
-    """A clip that decodes to no samples has no duration; OpenAI requires a number.
-
-    Unlike the language this is not a guess: such a clip really is zero seconds."""
+    """A clip with no samples has zero seconds, not an unknown duration; OpenAI requires a number."""
 
     async def _empty(raw):
         return {"text": "", "language": "en", "duration": None, "model": "small"}
@@ -227,7 +210,6 @@ def test_verbose_json_never_emits_a_null_duration(monkeypatch):
 
 
 def test_timestamp_granularities_are_refused_not_dropped(monkeypatch):
-    # Returning 200 with neither words nor segments looks like the audio simply had none.
     cli, calls = _make_client(monkeypatch)
     resp = _post(
         cli,
@@ -264,7 +246,6 @@ def test_verbose_json_validates_against_the_openai_client_model(monkeypatch, res
 
 
 def test_subtitle_formats_are_still_400(monkeypatch):
-    # srt/vtt need per-segment timing the sidecar does not report yet.
     cli, calls = _make_client(monkeypatch)
     for fmt in ("srt", "vtt"):
         assert _post(cli, data = {"response_format": fmt}).status_code == 400
@@ -321,9 +302,7 @@ def test_client_abort_records_a_cancelled_row(monkeypatch):
     ],
 )
 def test_a_dict_detail_never_strands_the_row(monkeypatch, detail):
-    """Only openai_error_body's shape nests the message. For any other dict the handler
-    called .get() on a non-dict and raised AttributeError out of the context manager,
-    which skipped finish() and left the row at "running" forever."""
+    """Dict details outside openai_error_body must not raise past finish() and strand the row."""
 
     async def _boom(raw):
         raise HTTPException(status_code = 400, detail = detail)
@@ -356,7 +335,6 @@ def test_a_baseexception_still_closes_the_row(monkeypatch, exc):
 
 
 def test_a_real_cancellederror_records_a_cancelled_row(monkeypatch):
-    # The 499 arm covers the disconnect watchers; this is the plain asyncio cancel.
     async def _cancelled(raw):
         raise asyncio.CancelledError()
 
@@ -370,7 +348,6 @@ def test_a_real_cancellederror_records_a_cancelled_row(monkeypatch):
 
 
 def test_a_non_http_failure_records_a_friendly_error_row(monkeypatch):
-    # Every other error test raises HTTPException; this is the catch-all arm.
     async def _boom(raw):
         raise RuntimeError("sidecar exploded")
 
@@ -385,7 +362,6 @@ def test_a_non_http_failure_records_a_friendly_error_row(monkeypatch):
 
 
 def test_the_monitor_label_never_carries_a_local_path(monkeypatch):
-    # Sidecar ids are curated or owner/model today; the row still goes over the tunnel.
     async def _pathy(raw):
         return {
             "text": "t",
@@ -403,8 +379,7 @@ def test_the_monitor_label_never_carries_a_local_path(monkeypatch):
 
 
 def test_skip_api_monitor_suppresses_the_row(monkeypatch):
-    """Internal workflows set the flag; the media routes must honour it like the
-    text routes do, or an internal step shows up as user API traffic."""
+    """Media routes must honour the flag too, or internal steps show up as user API traffic."""
     cli, calls = _make_client(monkeypatch)
 
     @cli.app.middleware("http")
@@ -726,8 +701,7 @@ def test_external_client_sends_openai_compatible_multipart(monkeypatch):
 
 
 def test_verbose_json_is_forwarded_to_the_provider_verbatim(monkeypatch):
-    """The proxied arm returns the provider's own verbose_json, segments and all, so
-    the format has to reach it and the body must come back untouched."""
+    """Proxied arm returns provider verbose_json untouched, so the format must be forwarded."""
     cli, sidecar_calls = _make_client(monkeypatch)
     provider_body = (
         b'{"task":"transcribe","language":"en","duration":1.5,'
@@ -751,7 +725,6 @@ def test_verbose_json_is_forwarded_to_the_provider_verbatim(monkeypatch):
     )
     assert resp.status_code == 200
     assert sidecar_calls[-1]["response_format"] == "verbose_json"
-    # The monitor preview reads the body without consuming it.
     assert resp.json()["segments"] == [{"id": 0, "text": "remote words"}]
     assert api_monitor.snapshot(include_details = False)[0]["reply_preview"] == "remote words"
 
@@ -792,7 +765,6 @@ def test_external_transcription_reply_preview_for_plain_text(monkeypatch):
 
 
 def test_external_transcription_failure_records_an_error_row(monkeypatch):
-    # A disabled connection is rejected before the proxy call; the row still closes.
     cli, sidecar_calls = _make_client(monkeypatch)
     _install_external(monkeypatch, enabled = False)
     api_monitor.clear()
@@ -808,8 +780,6 @@ def test_external_transcription_failure_records_an_error_row(monkeypatch):
 
 
 def test_external_reply_preview_handles_an_uppercase_json_media_type(monkeypatch):
-    # Content-Type is case-insensitive, so Application/JSON is still a JSON envelope and
-    # the row should show the transcript, not the whole {"text": ...} wrapper.
     cli, sidecar_calls = _make_client(monkeypatch)
     _install_external(monkeypatch, media_type = "Application/JSON")
     api_monitor.clear()
@@ -822,8 +792,7 @@ def test_external_reply_preview_handles_an_uppercase_json_media_type(monkeypatch
 
 
 def test_timestamp_granularities_reach_a_capable_provider(monkeypatch):
-    # The sidecar cannot produce timings, but a saved connection may, so the proxied arm
-    # forwards the parameter instead of dropping it.
+    # A saved connection may produce timings, so the proxied arm forwards the parameter.
     cli, sidecar_calls = _make_client(monkeypatch)
     _client_args, transcription_calls, _creds = _install_external(monkeypatch)
     resp = _post(
@@ -883,9 +852,7 @@ def test_the_provider_client_sends_granularities_as_a_repeated_field(monkeypatch
     ],
 )
 def test_a_sidecar_failure_does_not_leak_the_requested_path(monkeypatch, requested, expected):
-    """The relabel only lands on success, so a sidecar failure kept the raw client string
-    on the terminal row. Windows and UNC forms are covered because os.path.basename alone
-    would not split either one on a Linux host."""
+    """A failed sidecar kept the raw path on the row; Windows and UNC forms need more than basename."""
 
     async def _boom(raw):
         raise HTTPException(status_code = 409, detail = "Model is busy.")
@@ -897,13 +864,11 @@ def test_a_sidecar_failure_does_not_leak_the_requested_path(monkeypatch, request
     assert row["status"] == "error"
     assert row["model"] == expected
     assert "/" not in row["model"] and "\\" not in row["model"]
-    # The redaction is for the monitor label only; the engine still gets what was asked for.
     assert calls[0]["model"] == requested
 
 
 def test_the_proxied_row_never_carries_a_local_path(monkeypatch):
-    """The proxied arm never relabels at all, so whatever it opens with is what the row
-    keeps for its whole life, success included."""
+    """The proxied arm never relabels; the row keeps its opening value, success included."""
     cli, _sidecar_calls = _make_client(monkeypatch)
     _client_args, transcription_calls, _creds = _install_external(monkeypatch)
     api_monitor.clear()
@@ -911,7 +876,6 @@ def test_the_proxied_row_never_carries_a_local_path(monkeypatch):
     assert resp.status_code == 200
     row = api_monitor.snapshot(include_details = False)[0]
     assert row["model"] == "whisper-v3"
-    # Only the label is redacted; the provider is still asked for what the client sent.
     assert transcription_calls[-1]["model"] == "/home/ana/models/whisper-v3"
 
 

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// An approval the backend is no longer holding is not a failed post. Both used to arrive at the
-// card as one bare throw out of parseJsonOrThrow, so an expired request rendered "Could not send
-// your decision. Try again." next to re-enabled buttons: advice that can never work, since the
-// slot is gone and every retry 404s until tool_end clears the card. The 404 now carries a type.
+// An expired approval 404s on every retry, so it must not render as a retryable failed post.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -17,6 +14,7 @@ type Module = {
     sessionId: string,
     approvalId: string,
     decision: "allow" | "deny",
+    fullAccess?: boolean,
   ) => Promise<boolean>;
   ToolApprovalGoneError: new (message?: string) => Error;
 };
@@ -32,7 +30,7 @@ function jsonResponse(status: number, body: unknown) {
   };
 }
 
-function harness(response: ReturnType<typeof jsonResponse>) {
+function harness(response: ReturnType<typeof jsonResponse>, epoch = { value: 0 }) {
   const requests: { url: string; init?: RequestInit }[] = [];
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
@@ -43,6 +41,7 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         {},
       ),
       "@/features/auth": {
+        getAuthSessionEpoch: () => epoch.value,
         authFetch: async (url: string, init?: RequestInit) => {
           requests.push({ url, init });
           return response;
@@ -58,7 +57,9 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
+      "../lib/load-request": {},
       "./generation-length.ts": {},
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },
@@ -116,9 +117,7 @@ test("a matched decision still resolves true", async () => {
   assert.match(requests[0]!.url, /tool-confirm/);
 });
 
-// ── The card's own wiring, pinned at the source ──────────────────────────────
-// The component is not mounted here (no DOM in this suite), so these read the source. Both are
-// one-token regressions that a type check cannot catch and that would silently restore the bug.
+// No DOM in this suite, so these read the source.
 
 const CONTROLS = await import("node:fs").then((fs) =>
   fs.readFileSync(
@@ -141,7 +140,7 @@ test("the gone case gets its own copy and does not tell the user to retry", () =
 
 test("a decision that is gone disables the buttons instead of inviting another 404", () => {
   const disabled = CONTROLS.match(/disabled=\{pending !== null[^}]*\}/g) ?? [];
-  assert.equal(disabled.length, 3, "all three buttons carry a disabled expression");
+  assert.equal(disabled.length, 4, "approval buttons and the Full Access shortcut share the gone gate");
   for (const expr of disabled) {
     assert.match(
       expr,
@@ -152,8 +151,7 @@ test("a decision that is gone disables the buttons instead of inviting another 4
 });
 
 test("Always allow records its session grant only after the backend takes the decision", () => {
-  // The regression: allowToolAlways ran in the onClick, before the post. A press that visibly
-  // failed still auto-approved this tool for every later call in the session.
+  // allowToolAlways must run after a successful post, not in the onClick.
   assert.doesNotMatch(
     CONTROLS,
     /onClick=\{\(\) => \{\s*if \(autoAllowKey\) allowToolAlways/,
@@ -165,4 +163,25 @@ test("Always allow records its session grant only after the backend takes the de
     /onClick=\{\(\) => void resolve\("allow", true\)\}/,
     "Always allow must route through resolve so the grant follows the backend's answer",
   );
+});
+
+
+test("Full Access needs an explicit server acknowledgment, including on an older backend", async () => {
+  for (const body of [{ resolved: true }, { resolved: false, full_access_granted: true }]) {
+    const { module } = harness(jsonResponse(200, body));
+    assert.equal(await module.resolveToolConfirmation("sess", "a1", "allow", true), false);
+  }
+  const { module, requests } = harness(jsonResponse(200, { resolved: true, full_access_granted: true }));
+  assert.equal(await module.resolveToolConfirmation("sess", "a1", "allow", true), true);
+  assert.deepEqual(JSON.parse(String(requests[0]!.init!.body)), {
+    session_id: "sess", approval_id: "a1", decision: "allow", permission_mode: "full",
+  });
+});
+
+test("a Full Access acknowledgment cannot cross an authentication session change", async () => {
+  const epoch = { value: 0 };
+  const response = jsonResponse(200, { resolved: true, full_access_granted: true });
+  response.json = async () => { epoch.value += 1; return { resolved: true, full_access_granted: true }; };
+  const { module } = harness(response, epoch);
+  assert.equal(await module.resolveToolConfirmation("sess", "a1", "allow", true), false);
 });

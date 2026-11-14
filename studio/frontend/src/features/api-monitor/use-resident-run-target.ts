@@ -29,6 +29,50 @@ export function monitorSelection(activeModel: string | null | undefined): {
     : { id: activeModel, ggufVariant: null };
 }
 
+/** The resident's file-picker grant, expired or not, while it is the model the monitor reports. */
+export function useResidentFileGrant(
+  activeModel: string | null | undefined,
+): ResidentRunTarget | null {
+  const { checkpoint, isGguf } = useActiveModelConfig();
+  const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const isDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
+  const loadId = useChatRuntimeStore((s) => s.activeLoadId);
+  const nativePathToken = useChatRuntimeStore((s) => s.activeNativePathToken);
+  const nativePathExpiresAtMs = useChatRuntimeStore(
+    (s) => s.activeNativePathExpiresAtMs,
+  );
+  return useMemo(() => {
+    const { id } = monitorSelection(activeModel);
+    if (
+      !nativePathToken ||
+      !id ||
+      checkpoint == null ||
+      publicModelId(checkpoint) !== id
+    ) {
+      return null;
+    }
+    return {
+      checkpoint,
+      ggufVariant,
+      isGguf,
+      isLora: false,
+      isDiffusion,
+      loadId,
+      nativePathToken,
+      nativePathExpiresAtMs,
+    };
+  }, [
+    activeModel,
+    checkpoint,
+    isGguf,
+    ggufVariant,
+    isDiffusion,
+    loadId,
+    nativePathToken,
+    nativePathExpiresAtMs,
+  ]);
+}
+
 /** The resident as Chat's runtime holds it, or null when that is not the model the monitor reports. */
 export function useResidentRunTarget(
   activeModel: string | null | undefined,

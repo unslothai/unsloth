@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Two values the Estimated Memory Usage row has to resolve the way the launch does,
-// because both are absent from the per-model record in the ordinary case rather than
-// in an edge one: the GPU memory mode (only "manual" is ever persisted per model) and
-// the VRAM budget fraction (read asynchronously, and null on an older backend). Read
-// as "unset means the default" they price a different launch than the one the Load
-// button starts. Asserted against the source, the idiom tensor-parallel-row-gating
-// already uses for logic that lives inside the component.
+// GPU memory mode and VRAM budget are usually absent and must resolve as the launch does.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -22,8 +16,7 @@ const NORMALIZE_CONFIG = readSrc("features/model-picker/model-config/per-model-c
 const BUDGET_SETTINGS = readText("../../backend/utils/vram_budget_settings.py");
 
 test("only Manual is persisted per model, so an absent mode is not Auto", () => {
-  // The premise of the whole fix. If this stopped holding, reading the absence as
-  // Auto would be right and the resolution below would be the wrong thing to keep.
+  // Only manual is persisted per model.
   assert.match(NORMALIZE_CONFIG, /if \(partial\.gpuMemoryMode === "manual"\)/);
 });
 
@@ -54,9 +47,6 @@ test("the estimate request sends the resolved mode, not the raw record", () => {
 });
 
 test("the two verdicts drawn from the mode read the resolved one too", () => {
-  // A Manual placement with fixed layers is launched verbatim, so the VRAM budget
-  // must not be applied to it, and its context comes from the resident load rather
-  // than the control. Both branches turn on the mode.
   assert.match(CONFIG_PAGE, /runtimeGpuMemoryMode !== "manual" \|\|/);
   assert.match(CONFIG_PAGE, /runtimeGpuMemoryMode === "manual" &&/);
   assert.doesNotMatch(CONFIG_PAGE, /\(runtimeConfig\.gpuMemoryMode \?\? "auto"\)/);

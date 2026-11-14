@@ -69,12 +69,10 @@ def test_gemma3n_audio_soft_token_is_audio_vlm():
 
 
 def test_gemma4_pipe_audio_token_is_audio_vlm():
-    # Gemma 4 uses <|audio|> (and <|image|>) instead of *_soft_token.
     assert _classify(["<bos>", "<|image|>", "<|audio|>"]) == "audio_vlm"
 
 
 def test_csm_uppercase_audio_not_classified_as_audio_vlm():
-    # csm uses uppercase <|AUDIO|> + <|audio_eos|>; must stay csm, not audio_vlm.
     tokens = ["<|AUDIO|>", "<|audio_eos|>"]
     assert _classify(tokens) == "csm"
 
@@ -91,11 +89,7 @@ def test_non_audio_tokens_classify_none():
 
 
 def test_orpheus_snac_codebook_beats_a_stray_audio_marker():
-    """Orpheus ships 28k <custom_token_N> SNAC codes AND a lone <|audio|>.
-
-    audio_vlm was tested first and won, so a TTS model came back as audio-INPUT:
-    is_audio stayed False and the Audio page refused it.
-    """
+    """SNAC codebook tokens must outrank a lone <|audio|> marker, or TTS is misread as audio input."""
     tokens = ["<|audio|>"] + [f"<custom_token_{i}>" for i in range(28683)]
     assert _classify(tokens) == "snac"
     assert is_audio_input_type(_classify(tokens)) is False
@@ -153,14 +147,12 @@ def _detect_checked(
 
 
 def test_a_gated_repo_is_not_reported_as_definitively_non_audio(monkeypatch):
-    # 401 on every tokenizer_config path: nothing was read, so None means unknown.
     audio_type, definitive = _detect_checked(monkeypatch, [_Resp(401), _Resp(401)])
     assert audio_type is None
     assert definitive is False
 
 
 def test_a_readable_repo_without_audio_tokens_is_definitive(monkeypatch):
-    # 200 with a plain tokenizer, then a 404 for the LLM/ variant: a real negative.
     plain = {"added_tokens_decoder": {"0": {"content": "<bos>"}}}
     audio_type, definitive = _detect_checked(monkeypatch, [_Resp(200, plain), _Resp(404)])
     assert audio_type is None
@@ -177,17 +169,10 @@ def test_a_detected_codec_is_definitive(monkeypatch):
 
 
 def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
-    """A filesystem path is not a repo id, so the Hub URL would be nonsense.
-
-    /loras hits this for every adapter directory without its own tokenizer, and a transient
-    failure is never cached, so it paid two 15s timeouts per checkpoint on every scan while
-    blocking the event loop that called it.
-    """
+    """Local paths must never reach the Hub fetch, which would stall each adapter directory on timeouts."""
     from utils.models import model_config
 
-    # Recorded rather than raised: the fetch loop catches every exception and treats it as
-    # a transient failure, so a raising stub would be swallowed and the test would pass
-    # against the unfixed code.
+    # Recorded, not raised: the fetch loop swallows exceptions as transient failures.
     fetched = []
 
     import requests
@@ -200,14 +185,12 @@ def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
     result, definitive = model_config._detect_audio_from_tokenizer(str(adapter))
     assert fetched == [], fetched
     assert result is None
-    # Nothing was read, so the answer is not definitive and must not be cached.
     assert definitive is False
 
 
 def test_an_offline_miss_is_not_reprobed_on_every_poll(monkeypatch, tmp_path):
-    """/loras probes every checkpoint and its base. Neither answers offline, and a
-    non-definitive result is never cached, so the walk repeated on every poll: with 50
-    checkpoints that measured 6ms -> 26ms per call, on the event loop."""
+    """/loras probes each checkpoint and its base, and neither answers offline; a non-definitive
+    result is never cached, so the walk repeated on every poll on the event loop."""
     from utils.models import model_config
 
     monkeypatch.setattr(model_config, "_audio_detection_cache", {})
@@ -227,8 +210,7 @@ def test_an_offline_miss_is_not_reprobed_on_every_poll(monkeypatch, tmp_path):
 
 
 def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
-    """Bounded, not permanent: the base may be downloaded, or a training run may finish
-    writing the tokenizer it was missing, and neither restarts Unsloth."""
+    """Bounded, not permanent: a later download or finished training run can add the tokenizer."""
     from utils.models import model_config
 
     monkeypatch.setattr(model_config, "_audio_detection_cache", {})
@@ -245,7 +227,6 @@ def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
     assert model_config.detect_audio_type_checked("org/m", local_files_only = True)[0] is None
     clock[0] += model_config._AUDIO_OFFLINE_MISS_TTL_S + 1
     assert model_config.detect_audio_type_checked("org/m", local_files_only = True) == ("snac", True)
-    # Definitive now, so it is in the real cache and the miss entry is gone.
     assert model_config._audio_offline_miss_cache == {}
 
 
@@ -269,15 +250,12 @@ def test_an_online_transient_failure_still_retries_immediately(monkeypatch):
 
 
 def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
-    """The marker list is what lets a large text tokenizer_config be settled without
-    parsing it. It cannot be derived from the patterns, which are lambdas, so a codec
-    added there without a marker here would silently stop being detected."""
+    """The marker list lets a large text tokenizer_config skip parsing; markers cannot be derived
+    from the lambda patterns, so a codec needs a marker or goes undetected."""
     from utils.audio_tokens import AUDIO_TOKEN_MARKERS, may_hold_audio_tokens
 
-    # Fails when a codec is added, which is the point: add its marker too.
     assert set(AUDIO_TOKEN_PATTERNS) == {"csm", "whisper", "bicodec", "dac", "snac", "audio_vlm"}
 
-    # Whatever each pattern matches, the marker scan must let it through to the parse.
     samples = {
         "csm": ["<|AUDIO|>", "<|audio_eos|>"],
         "whisper": ["<|startoftranscript|>"],
@@ -291,7 +269,6 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
         assert may_hold_audio_tokens(json.dumps(tokens)), audio_type
     assert may_hold_audio_tokens(json.dumps(["<|image|>", "<|audio|>"]))
 
-    # And an ordinary text tokenizer is settled without a parse.
     assert not may_hold_audio_tokens(
         json.dumps([f"<|extra_token_{i}|>" for i in range(500)] + ["<bos>", "<eos>"])
     )
@@ -299,8 +276,7 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
 
 
 def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):
-    """The saving, pinned: an ordinary checkpoint's tokenizer_config is read but never
-    handed to json.loads, which was the bulk of a cold /loras scan."""
+    """Ordinary tokenizer_configs are never json.loads-parsed, the bulk of a cold /loras scan."""
     import json as json_module
 
     from utils.models import model_config
@@ -327,15 +303,13 @@ def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):
     )
 
     assert result is None
-    # Read successfully, so "not audio" is a definitive answer, not an unknown.
     assert definitive is True
     assert parsed == [], parsed
 
 
 def test_a_half_written_tokenizer_stays_unknown(tmp_path):
-    """The skip-the-parse path must not turn a training run's part-written tokenizer into
-    a definitive "not audio", which would be cached for the life of the process. It stays
-    unknown, exactly as it did when json.loads raised on the truncated text."""
+    """The skip-the-parse path must not cache a part-written tokenizer as a definitive 'not audio'
+    for the process; it stays unknown."""
     from utils.models import model_config
 
     checkpoint = tmp_path / "mid_write"
@@ -382,11 +356,7 @@ def _detect_against_cache(
     responses = None,
     **kwargs,
 ):
-    """Drive the probe against a cached snapshot, recording the Hub reads it still makes.
-
-    Returns ``(result, file_reads, document_reads)``. ``listed`` is what the repo document
-    says the repo holds; None stands for no document being available.
-    """
+    """Returns (result, file_reads, document_reads); listed=None means the repo document is unavailable."""
     import types as _types
 
     from utils.models import model_config as mc
@@ -431,11 +401,7 @@ def _tokenizer(marker):
 def test_the_current_snapshot_answers_without_fetching_the_file(
     monkeypatch, tmp_path, marker, expected
 ):
-    """Every tokenizer path this repo has was read from disk, so a fetch would re-read it.
-
-    The repo document is still read -- that is what says which paths the repo has. What the
-    snapshot saves is fetching the files themselves.
-    """
+    """The repo document is still read; the snapshot only saves fetching the tokenizer files."""
     repo_dir, _ = _cached_snapshot(
         tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer(marker)}
     )
@@ -484,9 +450,8 @@ def test_a_snapshot_that_is_not_the_current_commit_still_asks_the_hub(monkeypatc
 
 
 def test_an_older_snapshot_beside_the_current_one_cannot_answer_negatively(monkeypatch, tmp_path):
-    """Either may be read first, but only the current commit may answer negatively: the
-    older one predates the markers, and a negative here is cached for the process. A
-    positive match from any snapshot still stands, as it did before."""
+    """Only the current commit may answer negatively, since an older snapshot predates the markers
+    and a negative is cached; any positive still stands."""
     repo_dir, _ = _cached_snapshot(
         tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}, sha = "old"
     )
@@ -572,10 +537,7 @@ def test_a_tokenizer_that_is_unreadable_still_asks_the_hub(monkeypatch, tmp_path
 
 
 def test_a_document_that_lists_no_files_cannot_answer_negatively(monkeypatch, tmp_path):
-    """The negative rests on having read every tokenizer path the repo lists. A document
-    that lists none satisfies that vacuously while proving nothing, and the answer here is
-    cached for the life of the process -- so the markers in LLM/tokenizer_config.json
-    would be missed for good. Nothing is answerable from it, so it answers nothing."""
+    """A repo document listing no files must not answer negatively; the result is cached for the process."""
     repo_dir, _ = _cached_snapshot(
         tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}
     )
@@ -593,8 +555,7 @@ def test_a_document_that_lists_no_files_cannot_answer_negatively(monkeypatch, tm
 
 
 def test_a_document_without_siblings_at_all_cannot_answer_negatively(monkeypatch, tmp_path):
-    """``siblings`` is optional on the hub's model, so absent is a shape a response takes
-    and not only an empty list."""
+    """A missing siblings key is a valid hub response shape, distinct from an empty list."""
     import types as _types
 
     from utils.models import model_config as mc
@@ -613,11 +574,7 @@ def test_a_document_without_siblings_at_all_cannot_answer_negatively(monkeypatch
 
 
 def test_a_marker_written_as_an_escape_is_still_found(monkeypatch, tmp_path):
-    """The raw scan that decides whether a file is worth parsing reads the text, so a
-    content written as a JSON escape does not match it. Go's encoding/json escapes < and >
-    that way by default, so it is a shape real tooling uploads. The Hub fallback decodes
-    before it looks; standing in for it has to classify what it would have classified, or
-    the miss becomes a definitive negative cached for the life of the process."""
+    """Markers written as JSON unicode escapes must still be found, or a miss gets cached as negative."""
     from utils.models.model_config import _may_hold_audio_tokens
 
     escaped = (
@@ -632,3 +589,226 @@ def test_a_marker_written_as_an_escape_is_still_found(monkeypatch, tmp_path):
 
     assert (audio_type, definitive) == ("audio_vlm", True)
     assert reads == [], "and the snapshot still answers it without a fetch"
+
+
+_LFM3_OMNI_TOKENIZER_CONFIG = {
+    "backend": "tokenizers",
+    "image_token": "<|image|>",
+    "processor_class": "Lfm3OmniProcessor",
+    "tokenizer_class": "TokenizersBackend",
+    "video_token": "<|video|>",
+}
+_LFM3_OMNI_PROCESSOR_CONFIG = {
+    "audio_token": "<|audio|>",
+    "audio_out_token": "<|audio_out|>",
+    "image_processor": {"image_processor_type": "Lfm3OmniImageProcessor"},
+    "image_token": "<|image|>",
+    "processor_class": "Lfm3OmniProcessor",
+}
+_LFM3_AUDIO_PROCESSOR_CONFIG = {
+    "audio_out_token": "<|audio_out|>",
+    "audio_token": "<|audio|>",
+    "feature_extractor": {"feature_extractor_type": "Lfm3AudioFeatureExtractor"},
+    "processor_class": "Lfm3AudioProcessor",
+}
+
+
+def test_a_processor_audio_token_is_audio_vlm():
+    from utils.audio_tokens import classify_audio_tokens
+
+    assert classify_audio_tokens(_LFM3_OMNI_TOKENIZER_CONFIG) is None
+    assert classify_audio_tokens(_LFM3_OMNI_PROCESSOR_CONFIG) == "audio_vlm"
+    # Only the markers the tokenizer patterns already accept: Qwen2-Audio's <|AUDIO|> stays unrouted.
+    assert (
+        classify_audio_tokens(
+            {
+                "audio_token": "<|AUDIO|>",
+                "image_processor": {"image_processor_type": "Lfm3ImageProcessor"},
+            }
+        )
+        is None
+    )
+    assert classify_audio_tokens({"audio_token": None}) is None
+
+
+def test_a_local_lfm3_omni_checkpoint_takes_audio_input(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "lfm3_omni"}))
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps(_LFM3_OMNI_TOKENIZER_CONFIG))
+    (tmp_path / "processor_config.json").write_text(json.dumps(_LFM3_OMNI_PROCESSOR_CONFIG))
+
+    audio_type, definitive = detect_audio_type_checked(str(tmp_path))
+    assert (audio_type, definitive) == ("audio_vlm", True)
+    assert is_audio_input_type(audio_type)
+
+
+def test_lfm3_omni_on_the_hub_is_audio_vlm(monkeypatch):
+    audio_type, definitive = _detect_checked(
+        monkeypatch,
+        [
+            _Resp(200, _LFM3_OMNI_TOKENIZER_CONFIG),
+            _Resp(404),
+            _Resp(200, _LFM3_OMNI_PROCESSOR_CONFIG),
+        ],
+        model = "LiquidAI/LFM3-Omni-2B",
+    )
+    assert (audio_type, definitive) == ("audio_vlm", True)
+
+
+def test_an_audio_feature_extractor_processor_is_audio_vlm():
+    from utils.audio_tokens import classify_audio_tokens
+    assert classify_audio_tokens(_LFM3_AUDIO_PROCESSOR_CONFIG) == "audio_vlm"
+
+
+def test_an_audio_token_with_no_input_processor_is_not_audio_vlm():
+    from utils.audio_tokens import classify_audio_tokens
+    bare = {k: v for k, v in _LFM3_AUDIO_PROCESSOR_CONFIG.items() if k != "feature_extractor"}
+    assert classify_audio_tokens(bare) is None
+
+
+def test_lfm3_audio_on_the_hub_is_audio_vlm(monkeypatch):
+    audio_type, definitive = _detect_checked(
+        monkeypatch,
+        [
+            _Resp(200, _LFM3_OMNI_TOKENIZER_CONFIG),
+            _Resp(404),
+            _Resp(200, _LFM3_AUDIO_PROCESSOR_CONFIG),
+        ],
+        model = "LiquidAI/LFM3-Audio-2B",
+    )
+    assert (audio_type, definitive) == ("audio_vlm", True)
+
+
+# Gemma 4's transformers 5 tokenizer_config: no added_tokens_decoder, a named audio_token. Every size
+# carries it; only E2B/E4B/12B have an audio encoder.
+_V5_AUDIO_TOKENIZER = {"audio_token": "<|audio|>", "image_token": "<|image|>"}
+_WITH_ENCODER = {"model_type": "gemma4", "audio_config": {"model_type": "gemma4_audio"}}
+_WITHOUT_ENCODER = {"model_type": "gemma4", "audio_config": None}
+
+
+def _escaped(tok_config):
+    return json.dumps(tok_config).replace("<", chr(92) + "u003c").replace(">", chr(92) + "u003e")
+
+
+@pytest.mark.parametrize(
+    "tok_config, model_config, expected",
+    [
+        (_V5_AUDIO_TOKENIZER, _WITH_ENCODER, ("audio_vlm", True)),
+        (_V5_AUDIO_TOKENIZER, _WITHOUT_ENCODER, (None, True)),
+        (_V5_AUDIO_TOKENIZER, None, (None, False)),
+        ({"image_token": "<|image|>"}, _WITH_ENCODER, (None, True)),
+        (
+            {**_V5_AUDIO_TOKENIZER, "added_tokens_decoder": {"0": {"content": "<|bicodec_x|>"}}},
+            _WITH_ENCODER,
+            ("bicodec", True),
+        ),
+    ],
+)
+def test_a_declared_audio_token_needs_an_audio_encoder(tok_config, model_config, expected):
+    from utils.models.model_config import _classify_audio_tokenizer
+    assert _classify_audio_tokenizer(tok_config, lambda: model_config) == expected
+
+
+@pytest.mark.parametrize(
+    "tokenizer_text", [json.dumps(_V5_AUDIO_TOKENIZER), _escaped(_V5_AUDIO_TOKENIZER)]
+)
+@pytest.mark.parametrize(
+    "model_config, expected", [(_WITH_ENCODER, "audio_vlm"), (_WITHOUT_ENCODER, None)]
+)
+def test_a_cached_gemma4_snapshot_is_typed_by_its_audio_encoder(
+    monkeypatch, tmp_path, tokenizer_text, model_config, expected
+):
+    repo_dir, _ = _cached_snapshot(
+        tmp_path,
+        "acme/tts-model",
+        {"tokenizer_config.json": tokenizer_text, "config.json": json.dumps(model_config)},
+    )
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(monkeypatch, repo_dir)
+
+    assert (audio_type, definitive, reads) == (expected, True, [])
+
+
+@pytest.mark.parametrize(
+    "tokenizer_text", [json.dumps(_V5_AUDIO_TOKENIZER), _escaped(_V5_AUDIO_TOKENIZER)]
+)
+@pytest.mark.parametrize("config_text", ["{half", None])
+def test_a_cached_config_it_cannot_read_leaves_the_hub_to_answer(
+    monkeypatch, tmp_path, tokenizer_text, config_text
+):
+    # None: a tokenizer-only download, whose snapshot never fetched config.json.
+    files = {"tokenizer_config.json": tokenizer_text}
+    if config_text is not None:
+        files["config.json"] = config_text
+    repo_dir, _ = _cached_snapshot(tmp_path, "acme/tts-model", files)
+
+    (audio_type, _definitive), reads, _documents = _detect_against_cache(
+        monkeypatch,
+        repo_dir,
+        listed = ("tokenizer_config.json", "config.json"),
+        responses = [_Resp(200, _V5_AUDIO_TOKENIZER), _Resp(200, _WITH_ENCODER)],
+    )
+
+    assert audio_type == "audio_vlm"
+    assert reads[-1].endswith("/config.json")
+
+
+def test_a_cached_adapter_repo_answers_without_the_hub(monkeypatch, tmp_path):
+    # An adapter repo never ships config.json, so its absence is not a partial download.
+    repo_dir, _ = _cached_snapshot(
+        tmp_path,
+        "acme/tts-model",
+        {"tokenizer_config.json": json.dumps(_V5_AUDIO_TOKENIZER), "adapter_config.json": "{}"},
+    )
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(
+        monkeypatch, repo_dir, listed = ("tokenizer_config.json", "adapter_config.json")
+    )
+
+    assert (audio_type, definitive, reads) == (None, True, [])
+
+
+def test_a_local_folder_without_a_config_is_definitively_not_audio(tmp_path):
+    from utils.models import model_config
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps(_V5_AUDIO_TOKENIZER))
+
+    assert model_config._detect_audio_from_tokenizer(str(tmp_path), local_files_only = True) == (
+        None,
+        True,
+    )
+
+
+@pytest.mark.parametrize(
+    "config_response, expected",
+    [
+        (_Resp(200, _WITH_ENCODER), ("audio_vlm", True)),
+        (_Resp(200, _WITHOUT_ENCODER), (None, True)),
+        (_Resp(404), (None, True)),
+        (_Resp(503), (None, False)),
+    ],
+)
+def test_the_hub_config_decides_a_declared_audio_token(monkeypatch, config_response, expected):
+    responses = [_Resp(200, _V5_AUDIO_TOKENIZER), config_response, _Resp(404)]
+    assert _detect_checked(monkeypatch, responses) == expected
+
+
+def test_an_unread_encoder_config_stays_unknown_past_a_readable_processor(monkeypatch):
+    # Gemma 4's processor_config carries no top-level audio_token, so it must not settle the answer.
+    responses = [
+        _Resp(200, _V5_AUDIO_TOKENIZER),
+        _Resp(503),
+        _Resp(404),
+        _Resp(200, {"feature_extractor": {}}),
+    ]
+    assert _detect_checked(monkeypatch, responses) == (None, False)
+
+
+def test_a_local_folder_with_an_escaped_audio_token_reads_its_encoder(tmp_path):
+    from utils.models import model_config
+
+    (tmp_path / "tokenizer_config.json").write_text(_escaped(_V5_AUDIO_TOKENIZER))
+    (tmp_path / "config.json").write_text(json.dumps(_WITH_ENCODER))
+
+    assert model_config._detect_audio_from_tokenizer(str(tmp_path), local_files_only = True) == (
+        "audio_vlm",
+        True,
+    )

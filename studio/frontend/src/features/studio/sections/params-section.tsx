@@ -175,7 +175,7 @@ export function ParamsSection({
                   {useEpochs
                     ? t("studio.params.epochs")
                     : t("studio.params.maxSteps")}
-                  <Tooltip>
+                  <Tooltip disableHoverableContent={false}>
                     <TooltipTrigger asChild={true}>
                       <button
                         type="button"
@@ -255,7 +255,7 @@ export function ParamsSection({
                     max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                     step={1}
                     // Same floor: a step count needs more room at 16px.
-                    className="w-14 pointer-coarse:w-20 shrink-0 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
+                    className="w-14 pointer-coarse:w-20 shrink-0 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-full px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </div>
               </div>
@@ -279,7 +279,7 @@ export function ParamsSection({
             <div className="flex flex-col gap-2">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 {t("studio.params.contextLength")}
-                <Tooltip>
+                <Tooltip disableHoverableContent={false}>
                   <TooltipTrigger asChild={true}>
                     <button
                       type="button"
@@ -361,7 +361,7 @@ export function ParamsSection({
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.params.learningRate")}
-              <Tooltip>
+              <Tooltip disableHoverableContent={false}>
                 <TooltipTrigger asChild={true}>
                   <button
                     type="button"

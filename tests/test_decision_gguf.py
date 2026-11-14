@@ -337,11 +337,20 @@ def test_converter_without_decision_support_stages_the_pinned_tag(tmp_path, monk
     monkeypatch.setattr(decision_gguf, "_llama_cpp_folder", lambda: old)
     import unsloth_zoo.llama_cpp as zoo
 
+    releases = [{"tag_name": "b11946-mix-a54b8dd"}, {"tag_name": "b11443-mix-d65395f"}]
+    monkeypatch.setattr(zoo, "_FORK_RELEASE_TAGS", {})
+    monkeypatch.setattr(
+        zoo,
+        "_requests_get_with_retries",
+        lambda *a, **k: types.SimpleNamespace(json = lambda: releases),
+    )
     asked = []
     monkeypatch.setattr(
-        zoo, "_stage_converter_sources", lambda tag, *a, **k: asked.append(tag) or good
+        zoo,
+        "_stage_converter_sources",
+        lambda tag, *a, **k: asked.append(tag) or (good if "-mix-" in str(tag) else None),
     )
-    assert decision_gguf._converter_dir() == good and asked == ["b11443"]
+    assert decision_gguf._converter_dir() == good and asked == ["b11443-mix-d65395f"]
     monkeypatch.setattr(zoo, "_stage_converter_sources", lambda tag, *a, **k: None)
     with pytest.raises(RuntimeError, match = "b11443"):
         decision_gguf._converter_dir()

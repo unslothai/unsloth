@@ -6,14 +6,7 @@ export type ModelVisionCapability = {
   isGguf?: boolean;
 };
 
-/**
- * Whether a selected model is authoritatively known to be text-only.
- *
- * A GGUF repo's catalog row can predate the variant metadata request and report
- * `isVision: false` even though the selected quant has an mmproj companion.
- * Prefer the variant-level hint when present; otherwise treat GGUF capability
- * as unknown rather than warning from stale catalog metadata.
- */
+/** GGUF catalog rows can report `isVision: false` before variant metadata; prefer the variant hint. */
 export function isKnownTextOnlySelection(
   selection: ModelVisionCapability,
   catalogModel?: ModelVisionCapability,
@@ -28,7 +21,6 @@ export function isKnownTextOnlySelection(
 }
 
 
-/** Preserve missing or malformed backend capability metadata as unknown. */
 export function normalizeGgufVisionCapability(
   value: unknown,
 ): boolean | undefined {

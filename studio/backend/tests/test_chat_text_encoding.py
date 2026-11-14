@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Model text stays intact when it carries non-ASCII.
-
-``open()`` and ``Path.read_text()`` fall back to ``locale.getencoding()`` when
-no ``encoding`` is passed. On Windows that is the ANSI codepage, not UTF-8, so
-a chat template or model config holding ``ä ö ü → 世`` mojibakes or raises
-``UnicodeDecodeError``. These files are UTF-8, so the reads must say so.
-
-Each fixture writes raw UTF-8 (``ensure_ascii = False``), matching what
-Hugging Face actually ships, rather than ASCII ``\\uXXXX`` escapes.
-"""
+"""Reads must pass encoding utf-8, since the Windows locale codepage mojibakes non-ASCII model text."""
 
 from __future__ import annotations
 
@@ -97,10 +88,7 @@ def test_remote_code_scan_reads_non_ascii_sources(tmp_path: Path) -> None:
 
 
 def test_model_config_reads_do_not_rely_on_the_locale_encoding(tmp_path: Path) -> None:
-    """The reads above pass anywhere the locale is already UTF-8, which hides
-    the Windows bug on Linux and macOS. ``-X warn_default_encoding`` makes
-    CPython flag any text I/O that falls back to the locale, so this fails on
-    every platform if an ``encoding`` argument goes missing again."""
+    """Uses -X warn_default_encoding so a missing encoding= fails on every platform, not only Windows."""
     # The readers swallow exceptions, so record the warnings instead of raising.
     script = textwrap.dedent(
         f"""
@@ -140,8 +128,7 @@ def test_model_config_reads_do_not_rely_on_the_locale_encoding(tmp_path: Path) -
 
 
 def test_utf8_child_env_round_trips_non_ascii(tmp_path: Path) -> None:
-    """A Python child encodes stdout with its locale unless told otherwise, so
-    reading its pipe as utf-8 needs the child told to emit utf-8."""
+    """Python children encode stdout with the locale, so utf8_child_env must force utf-8."""
     from utils.child_stdio import utf8_child_env
 
     payload = "Grüße über Öl → 世界"
@@ -166,8 +153,7 @@ def test_utf8_child_env_round_trips_non_ascii(tmp_path: Path) -> None:
 
 
 def test_python_children_are_told_to_emit_utf8() -> None:
-    """Any child we decode as utf-8 must also be told to write utf-8, or a
-    cp1252 console silently mangles what it prints."""
+    """A child decoded as utf-8 must also write utf-8, or a cp1252 console mangles it."""
     import ast
 
     offenders: list[str] = []

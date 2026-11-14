@@ -58,7 +58,6 @@ test("messages are written in one batch, so a failure cannot leave a truncated c
   const body = persistBody();
   assert.match(body, /await syncStoredChatMessages\(threadId, records, \{ pruneMissing: false \}\);/);
   assert.doesNotMatch(body, /saveStoredChatMessage\(/);
-  // The row comes first, since the batch needs it.
   assert.ok(body.indexOf("await ensureThreadRecord(") < body.indexOf("await syncStoredChatMessages("));
 });
 
@@ -67,7 +66,6 @@ test("the saved chat keeps the model it started on, not the one loaded at save t
     provider.indexOf("export async function ensureThreadRecord({"),
     provider.indexOf("/** Parents before children"),
   );
-  // Both early returns for a temporary thread keep what it was started with.
   assert.equal(ensure.match(/markThreadIncognito\(threadId\);\s*temporaryThreadCreation\.set\(threadId, creation\);/g)?.length, 2);
   const body = persistBody();
   assert.match(body, /const creation = temporaryThreadCreation\.get\(threadId\);/);

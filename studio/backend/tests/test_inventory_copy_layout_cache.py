@@ -178,7 +178,6 @@ def test_the_snapshot_probe_is_bounded(tmp_path, monkeypatch):
 
 
 def test_only_the_snapshot_that_is_classified_is_probed(tmp_path):
-    # The row is classified from the newer, empty revision, so it stays hidden.
     repo = _copy_layout(tmp_path)
     newer = repo / "snapshots" / ("f" * 40)
     newer.mkdir()

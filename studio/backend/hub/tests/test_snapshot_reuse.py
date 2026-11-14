@@ -248,7 +248,6 @@ def test_a_copy_cut_short_by_a_cancel_is_removed_by_the_next_reuse(tmp_path):
 
 
 def test_a_retry_does_not_preflight_files_an_earlier_attempt_already_placed(tmp_path, monkeypatch):
-    # Preflight must not count a file an earlier cancelled attempt already placed.
     from huggingface_hub import constants
 
     from hub.workers import hf_download
@@ -747,7 +746,7 @@ def test_hard_linked_revisions_are_counted_once_in_cache_usage(tmp_path):
     assert repo_unique_size_bytes(repo) == len(gguf) + len(b"v1") + len(b"v2")
 
     (new / "model-Q4_K_M.gguf").unlink()
-    (new / "model-Q4_K_M.gguf").write_bytes(gguf)  # a real second copy still counts twice
+    (new / "model-Q4_K_M.gguf").write_bytes(gguf)
     (repo,) = scan_cache_dir(tmp_path / "hub").repos
     assert _repo_gguf_size_bytes(repo) == 2 * len(gguf)
     assert repo_unique_size_bytes(repo) == 2 * len(gguf) + len(b"v1") + len(b"v2")
@@ -758,7 +757,7 @@ def test_a_plan_asks_the_hub_about_at_most_a_few_old_commits(tmp_path):
     for i in range(6):
         snap = repo_dir / "snapshots" / (f"{i:x}" * 40)[:40]
         snap.mkdir(parents = True)
-        (snap / "w.safetensors").write_bytes(_blob(70 + i, 1024))  # same size, new bytes each time
+        (snap / "w.safetensors").write_bytes(_blob(70 + i, 1024))
         os.utime(snap, (1_000 + i, 1_000 + i))
     asked = []
 
@@ -784,7 +783,7 @@ def test_a_partial_is_only_removed_while_holding_the_blob_lock(tmp_path):
     lock = tmp_path / "hub" / ".locks" / repo_dir.name / f"{digest}.lock"
     lock.parent.mkdir(parents = True)
 
-    with FileLock(str(lock)):  # a peer's download in progress
+    with FileLock(str(lock)):
         snapshot_reuse._drop_superseded_partial(repo_dir, digest, frozenset())
         assert partial.exists()
     snapshot_reuse._drop_superseded_partial(repo_dir, digest, frozenset())
@@ -806,3 +805,51 @@ def test_companion_cleanup_counts_hard_linked_revisions_once(tmp_path):
 
     (repo,) = scan_cache_dir(tmp_path / "hub").repos
     assert _repo_blob_bytes(repo) == len(weights)
+
+
+def test_estimate_reads_the_digest_cache_once_and_selects_the_same_copies(tmp_path, monkeypatch):
+    """A plan's estimate loop parses the persisted digest cache once, not once per candidate."""
+    third = "3" * 40
+    current = {f"part-{i}.safetensors": _blob(100 + i, 2048) for i in range(6)}
+    current["config.json"] = b'{"hidden_size": 8}\n'
+    changed = {name: _blob(200 + i, len(data)) for i, (name, data) in enumerate(current.items())}
+    # OLD holds changed bytes for every file; the third snapshot holds the current bytes for half.
+    repo_dir = _copy_layout(tmp_path, changed)
+    _copy_layout(
+        tmp_path,
+        {name: data for i, (name, data) in enumerate(current.items()) if i % 2 == 0},
+        commit = third,
+    )
+    expected = {
+        name: (len(data), _git_sha1(data) if name.endswith(".json") else _sha256(data))
+        for name, data in current.items()
+    }
+    hashed_matches, _ = snapshot_reuse.find_reusable_copies(repo_dir, NEW, expected)
+
+    def reference() -> dict:
+        snapshots = snapshot_reuse._other_snapshots(repo_dir, NEW)
+        out = {}
+        for path, (size, digest) in expected.items():
+            for candidate in snapshot_reuse._candidates(snapshots, path, size):
+                local, _ = snapshot_reuse.cached_file_digest(
+                    candidate, snapshot_reuse.digest_kind(digest), compute = False
+                )
+                if local == digest:
+                    out[path] = candidate
+                    break
+        return out
+
+    real_read = snapshot_reuse._read_digest_cache
+    reads = []
+
+    def counting_read(cache_path):
+        reads.append(cache_path)
+        return real_read(cache_path)
+
+    monkeypatch.setattr(snapshot_reuse, "_read_digest_cache", counting_read)
+    estimate = snapshot_reuse.find_reusable_copies(repo_dir, NEW, expected, allow_hashing = False)
+
+    assert estimate == (hashed_matches, 0)
+    assert set(hashed_matches) == {n for i, n in enumerate(current) if i % 2 == 0}
+    assert len(reads) == 1
+    assert estimate[0] == reference()

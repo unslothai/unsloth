@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Optional GPU consumers must stay cold through normal backend startup.
-
-MLX repair remains deferred until after the coordinated warm, and linked-folder lifecycle
-management remains active. The RAG embedder is different: startup must never warm it. A linked
-folder sync with real queued ingestion may activate embeddings through the ordinary operation.
-"""
+"""Startup must never warm the RAG embedder, and MLX repair waits until after the coordinated warm."""
 
 from __future__ import annotations
 
@@ -96,9 +91,8 @@ def test_post_warm_work_has_no_rag_warm_kill_switch_branch():
 
 
 def test_post_warm_thread_is_started_by_the_lifespan():
-    """The lifespan must still put the thread up, now through a helper. The old inline Thread
-    was untracked, so a shutdown landing while it was parked in the warm join could not stop
-    it and a second lifespan stacked another. Follow the indirection, not the inline form."""
+    """The lifespan must start the post-warm thread through a helper: an inline untracked Thread
+    could not be stopped at shutdown, and a second lifespan stacked another."""
     referenced = _names_called(_lifespan_body())
     assert "_start_post_warm_thread" in referenced or (
         "_post_warm_background_work" in referenced
@@ -119,6 +113,12 @@ def test_post_warm_thread_is_started_by_the_lifespan():
 
 def test_post_warm_runs_repair_and_linked_folder_lifecycle(monkeypatch):
     import main as main_mod
+
+    monkeypatch.setattr(
+        main_mod,
+        "_startup_ml_warmup_features",
+        frozenset({"hardware", "text", "datasets", "media", "quantization"}),
+    )
     import utils.mlx_repair as mlx_mod
 
     order: list[str] = []
@@ -139,6 +139,12 @@ def test_post_warm_runs_repair_and_linked_folder_lifecycle(monkeypatch):
 
 def test_a_failing_mlx_probe_does_not_strand_linked_folder_startup(monkeypatch):
     import main as main_mod
+
+    monkeypatch.setattr(
+        main_mod,
+        "_startup_ml_warmup_features",
+        frozenset({"hardware", "text", "datasets", "media", "quantization"}),
+    )
     import utils.mlx_repair as mlx_mod
 
     ran: list[str] = []

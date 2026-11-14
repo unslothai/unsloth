@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Local GGUF, MLX and managed vLLM auto-compaction. On or off; how it compacts is the server's call.
- *
- *  Studio used to offer the policy as a setting, but the choice needed the reader to know what a
- *  checkpoint epoch and a rolling window were before it meant anything, and both sides of it were
- *  already the server's to configure. It now always follows the server, which is what the setting
- *  shipped as anyway (UNSLOTH_CONTEXT_POLICY, default "checkpoint"). */
+/**
+ * Local GGUF, MLX, NPU and managed engine auto-compaction is on or off only; the server chooses how it
+ * compacts (UNSLOTH_CONTEXT_POLICY, default "checkpoint").
+ */
 
 export const DEFAULT_AUTO_COMPACT_ENABLED = true;
 
@@ -14,6 +12,7 @@ export function ggufCompactionRequestFields(options: {
   isGguf: boolean;
   isMlx?: boolean;
   isManagedEngine?: boolean;
+  isNpu?: boolean;
   autoCompactEnabled: boolean;
   // /compact: asked for by the user, so it applies with auto-compaction off too
   compactNow?: boolean;
@@ -21,7 +20,14 @@ export function ggufCompactionRequestFields(options: {
   context_overflow?: "error" | "truncate_oldest";
   compact_context?: true;
 } {
-  if (!options.isGguf && !options.isMlx && !options.isManagedEngine) return {};
+  if (
+    !options.isGguf &&
+    !options.isMlx &&
+    !options.isManagedEngine &&
+    !options.isNpu
+  ) {
+    return {};
+  }
   if (options.compactNow) {
     return { context_overflow: "truncate_oldest", compact_context: true };
   }

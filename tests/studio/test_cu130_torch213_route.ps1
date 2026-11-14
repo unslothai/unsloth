@@ -205,7 +205,8 @@ try {
 
     Write-Host "=== setup.ps1 triton-windows pairing ==="
     Check "torch 2.11 keeps triton-windows <3.7" ((Get-TritonWindowsSpec -TorchVersion "2.11.0+cu130") -eq "triton-windows<3.7")
-    Check "torch 2.12 keeps triton-windows <3.7" ((Get-TritonWindowsSpec -TorchVersion "2.12.1+cu130") -eq "triton-windows<3.7")
+    Check "torch 2.12 pairs triton-windows 3.7 (it pins triton 3.7)" ((Get-TritonWindowsSpec -TorchVersion "2.12.1+cu130") -eq "triton-windows>=3.7,<3.8")
+    Check "torch 2.12.0 pairs triton-windows 3.7.0 (it pins triton 3.7.0)" ((Get-TritonWindowsSpec -TorchVersion "2.12.0+cu130") -eq "triton-windows>=3.7,<3.7.1")
     Check "torch 2.13 pairs triton-windows 3.7" ((Get-TritonWindowsSpec -TorchVersion "2.13.0+cu130") -eq "triton-windows>=3.7,<3.8")
     Check "torch 2.14 pairs triton-windows 3.8" ((Get-TritonWindowsSpec -TorchVersion "2.14.0+cu130") -eq "triton-windows>=3.8,<3.9")
     Check "unknown torch keeps <3.7" ((Get-TritonWindowsSpec -TorchVersion "") -eq "triton-windows<3.7")

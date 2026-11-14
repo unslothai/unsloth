@@ -46,7 +46,6 @@ test("a record with batch fields is stamped v2 so a v1 client cannot rewrite the
   store.clear();
   assert.ok(savePerModelConfig(MODEL, "Q4_K_M", config(4096, 1024)));
   assert.equal(storedVersion(), 2);
-  // and this client still reads its own v2 record back
   const { config: read, remembered } = resolveInitialConfig(MODEL, "Q4_K_M");
   assert.ok(remembered);
   assert.equal(read.nBatch, 4096);

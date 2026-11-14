@@ -6,6 +6,13 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
+test("Settings > Browser > Browser use links to its docs page in a new tab", () => {
+  const settings = readSrc("features/settings/tabs/browser-agent-settings.tsx");
+  assert.match(settings, /BROWSER_USE_DOCS_URL = "https:\/\/unsloth\.ai\/docs\/basics\/browser-use"/);
+  const tab = readSrc("features/settings/tabs/browser-tab.tsx");
+  assert.match(tab, /href=\{BROWSER_USE_DOCS_URL\}\s+target="_blank"\s+rel="noopener noreferrer"/);
+});
+
 test("the browser suggests the docs at unsloth.ai/docs, separate from the home page", () => {
   const page = readSrc("features/browser/new-tab-page.tsx");
   assert.doesNotMatch(page, /url: "https:\/\/docs\.unsloth\.ai"/);
@@ -17,4 +24,10 @@ test("the browser suggests the docs at unsloth.ai/docs, separate from the home p
   );
   assert.doesNotMatch(page, /hosts\.has\(hostOf\(/);
   assert.match(page, /hideSuggestion\(siteKey\(site\.url\)\)/);
+});
+
+test("a link to a local address never opens in the panel, which only shows local pages typed there", () => {
+  const index = readSrc("features/browser/index.ts");
+  const body = index.slice(index.indexOf("export function openUrlInBrowser("), index.indexOf("export function openUrlInBrowserPanel("));
+  assert.match(body, /if \(isLoopbackUrl\(url\)\) return false;\s+useBrowserStore\.getState\(\)\.openUrl\(url\);/);
 });

@@ -2,15 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The per-chunk autosave must not write back a message the server owns.
- *
- * Every field it would send was just read from the backend, which then refuses the edit. One
- * measured 43.6 s generation: 265 PUTs, 256 rejected 409, plus 353 whole-thread GETs from the
- * `ensureStoredChatThread` inside `saveStoredChatMessage`.
- *
- * A source guard, because the call site is an inline closure with no seam to stub. It pins
- * ORDERING rather than spelling: a rename keeps working, moving the save above the guard does
- * not.
+ * The per-chunk autosave must not write back a message the server owns (the backend 409s).
+ * Source guard pinning ordering, since the call site is an inline closure with no seam.
  */
 
 import assert from "node:assert/strict";
@@ -31,7 +24,6 @@ const PROVIDER = path.join(
 
 const source = readFileSync(PROVIDER, "utf8");
 
-/** The history adapter's append path, which is the one that autosaves per chunk. */
 function appendWindow(): string {
   const anchor = source.indexOf("const preserveServerManaged =");
   assert.notEqual(

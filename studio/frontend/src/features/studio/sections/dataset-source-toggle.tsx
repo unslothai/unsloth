@@ -50,7 +50,6 @@ export function DatasetSourceToggle({
   );
 }
 
-/** Store-connected variant for the Dataset section header. */
 export function DatasetSourceToggleAction() {
   const {
     datasetSource,

@@ -7,7 +7,7 @@ import * as lifecycle from "../src/lib/llama-job-lifecycle.ts";
 import type * as HookModule from "../src/hooks/use-llama-update-check.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-const { offerKey } = loadWithStubs<typeof HookModule>(
+const { offerKey, offerKeyMatches } = loadWithStubs<typeof HookModule>(
   new URL("../src/hooks/use-llama-update-check.ts", import.meta.url),
   {
     react: {},
@@ -66,4 +66,33 @@ test("without an audio.cpp offer the key matches keys stored before audio joined
     JSON.stringify({ llama: ["b1", "b2"], whisper: null, migration: null }),
   );
   assert.equal(offerKey(status({ ...none })), offerKey(status(null)));
+});
+
+test("a new whisper.cpp release does not change the suppression key", () => {
+  const withWhisper = {
+    ...status(null),
+    whisper: { ...none, update_available: true, installed_tag: "v1.9.5-unsloth.4", latest_tag: "v1.9.5-unsloth.5" },
+  } as unknown as HookModule.LlamaUpdateStatus;
+  assert.equal(offerKey(withWhisper), offerKey(status(null)));
+});
+
+test("a suppression stored with the whisper.cpp release still matches the same offer", () => {
+  const withWhisper = {
+    ...status(null),
+    whisper: { ...none, update_available: true, installed_tag: "v1.9.5-unsloth.4", latest_tag: "v1.9.5-unsloth.5" },
+  } as unknown as HookModule.LlamaUpdateStatus;
+  const stored = JSON.stringify({
+    llama: ["b1", "b2"],
+    whisper: ["v1.9.5-unsloth.4", "v1.9.5-unsloth.5"],
+    migration: null,
+  });
+  assert.equal(offerKeyMatches(stored, withWhisper), true);
+  assert.equal(offerKeyMatches(offerKey(withWhisper), withWhisper), true);
+  const newerWhisper = {
+    ...withWhisper,
+    whisper: { ...withWhisper.whisper, latest_tag: "v1.9.5-unsloth.6" },
+  } as unknown as HookModule.LlamaUpdateStatus;
+  assert.equal(offerKeyMatches(stored, newerWhisper), true);
+  const newerLlama = { ...withWhisper, llama: { ...withWhisper.llama, latest_tag: "b3" } };
+  assert.equal(offerKeyMatches(stored, newerLlama), false);
 });

@@ -230,8 +230,7 @@ test("Cancel closes without invoking Apply while Apply performs both actions", (
 });
 
 test("a crop larger than the model can use is exported at a size it can", () => {
-  // Measured in real engines, an unbounded PNG export of a 12MP photo reaches ~52 MiB and a
-  // 24MP one 36-105 MiB, all past the 32 MiB cap this module enforces.
+  // Unbounded PNG exports of 12-24MP photos exceed the 32 MiB cap.
   assert.deepEqual(referenceCropExportSize({ width: 5712, height: 4284 }), {
     width: 2730,
     height: 2048,
@@ -240,12 +239,10 @@ test("a crop larger than the model can use is exported at a size it can", () => 
     width: 2730,
     height: 2048,
   });
-  // The long edge is capped too, for aspects whose short edge already fits.
   assert.deepEqual(referenceCropExportSize({ width: 8192, height: 2000 }), {
     width: 4096,
     height: 1000,
   });
-  // Anything already within the bounds is untouched, including both exact edges.
   assert.deepEqual(referenceCropExportSize({ width: 40, height: 50 }), {
     width: 40,
     height: 50,
@@ -277,7 +274,6 @@ test("the raster is drawn at the reduced size, from the full selected source rec
 
   assert.equal(canvas.width, 2730);
   assert.equal(canvas.height, 2048);
-  // Source rect unchanged, destination reduced: the downscale crops nothing away, and the
-  // stored crop stays in source pixels for the editor to restore.
+  // The stored crop stays in source pixels for the editor to restore.
   assert.deepEqual(calls, [[source, 100, 200, 5712, 4284, 0, 0, 2730, 2048]]);
 });

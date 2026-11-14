@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A whisper.cpp build that starts but cannot infer must stop reporting as available.
-
-Reported on Windows with ROCm on gfx1200: rocBLAS was missing its TensileLibrary, so
-whisper-server started, answered GET /, and died on the first inference. The binary and
-every linked library were present, so slim_runtime_intact() was satisfied, is_available()
-said yes, and _resolve_serving_stt_engine never fell back. Every recording returned 501
-while the UI showed the model loaded. Only an actual inference can distinguish this case.
-"""
+"""A whisper.cpp build can start yet fail every inference, so availability needs a real inference."""
 
 from __future__ import annotations
 
@@ -54,7 +47,6 @@ def test_the_serving_engine_then_falls_back_to_transformers(monkeypatch):
 
     assert inference_routes._resolve_serving_stt_engine("gguf") == "gguf"
     stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
-    # The fallback exists to avoid 501-ing on every recording; this is that case.
     assert inference_routes._resolve_serving_stt_engine("gguf") == "transformers"
 
 
@@ -64,7 +56,6 @@ def test_a_cancelled_transcription_does_not_disable_the_engine():
     cancel_event = threading.Event()
     cancel_event.set()
 
-    # Mirrors the guard at the call site rather than driving a live server.
     if cancel_event is None or not cancel_event.is_set():
         stt_ggml_sidecar.note_runtime_inference_failure("should not happen")
     assert stt_ggml_sidecar.runtime_inference_failure() is None
@@ -94,11 +85,7 @@ def test_an_amd_box_does_not_report_its_dictation_device_as_cuda(monkeypatch):
 
 
 def test_the_fallback_fetches_the_transformers_snapshot_it_needs(monkeypatch):
-    """The GGUF pick downloaded one .bin, so Transformers has no snapshot to serve.
-
-    Without this the fallback swaps a 501 for a 409 "not downloaded" on every retry while
-    the Audio page still shows the selection as ready.
-    """
+    """The fallback must fetch the Transformers snapshot, or retries swap a 501 for a 409 not-downloaded."""
     from core.inference import stt_sidecar
     from routes import inference as inference_routes
 
@@ -107,7 +94,6 @@ def test_the_fallback_fetches_the_transformers_snapshot_it_needs(monkeypatch):
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
     started = _shared_setup_1(monkeypatch, stt_sidecar)
 
-    # A healthy runtime serves the GGUF itself, so nothing is fetched.
     inference_routes._prepare_runtime_fallback_checkpoint("gguf", "gguf", "small")
     assert started == []
 
@@ -141,8 +127,7 @@ def test_a_plain_transformers_pick_is_left_alone(monkeypatch):
     inference_routes._prepare_runtime_fallback_checkpoint("mtmd", "mtmd", "small")
     assert started == []
 
-    # And a download that cannot start (another model is in flight) is not fatal: the
-    # caller still reports "not downloaded" rather than a 500.
+    # A download that cannot start is not fatal: report "not downloaded", not a 500.
     def refuse(
         model,
         token = None,

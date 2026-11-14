@@ -232,3 +232,27 @@ def test_a_v091_runtime_gets_only_legacy_names(hub, monkeypatch, tmp_path, famil
         assert canonical not in out, (values, out)
         if values:
             assert out[old] == 1.5
+
+
+from test_audio_cpp_convert_requests import _backend, _convert, started  # noqa: E402, F401
+
+
+@pytest.mark.parametrize(
+    "family, embedded, values, wire, value",
+    [
+        ("seed_vc", SEED_VC_NEW, {"length_adjust": 1.5}, "duration_scale", "1.5"),
+        ("seed_vc", SEED_VC_NEW, {"duration_scale": 1.5}, "duration_scale", "1.5"),
+        ("seed_vc", SEED_VC_OLD, {"duration_scale": 1.5}, "length_adjust", "1.5"),
+        ("chatterbox", CHATTERBOX_NEW, {"flow_guidance_scale": 1.0}, "s3gen_cfg_rate", "1"),
+        ("chatterbox", CHATTERBOX_NEW, {"s3gen_cfg_rate": 1.0}, "s3gen_cfg_rate", "1"),
+    ],
+)
+def test_generation_keeps_a_renamed_option_under_either_name(
+    hub, monkeypatch, tmp_path, started, family, embedded, values, wire, value
+):
+    model = _resolve(hub, monkeypatch, tmp_path, family, embedded, runtime = embedded)
+    backend = _backend(model, started)
+    request = _convert(backend, options = {**values, "bogus": 1})
+    assert request["options"][wire] == value
+    # A genuinely unsupported option is still dropped and reported.
+    assert backend.last_generation_stats["ignored_options"] == ["bogus"]

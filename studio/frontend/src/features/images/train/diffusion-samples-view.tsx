@@ -42,7 +42,7 @@ function SampleImage({
   }, [jobId, image.path]);
   return (
     <figure className="flex min-w-0 flex-col gap-1">
-      <div className="aspect-square w-full overflow-hidden rounded-md bg-muted">
+      <div className="aspect-square w-full overflow-hidden rounded-lg bg-muted">
         {src ? (
           <img
             src={src}
@@ -98,9 +98,9 @@ export function DiffusionSamples({
             key={r.step}
             type="button"
             onClick={() => setPicked({ jobId, step: r.step })}
-            className={`rounded px-2 py-0.5 text-ui-11 tabular-nums ${
+            className={`rounded-full px-2 py-0.5 text-ui-11 tabular-nums ${
               r.step === current.step
-                ? "bg-primary text-primary-foreground"
+                ? "bg-action text-background"
                 : "bg-muted text-muted-foreground hover:text-foreground"
             }`}
           >

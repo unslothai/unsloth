@@ -598,10 +598,13 @@ def main() -> None:
         created = _request(base, "POST", "/session", capabilities, timeout = 60)
         session_id = str(created["value"]["sessionId"])
 
+        # The splash can finish before the session attaches, so the app shell counts as rendered too;
+        # the handoff wait below still has to see the splash gone.
         _wait_for(
             base,
             session_id,
-            "return document.body && document.body.innerText.includes('Starting Unsloth')",
+            "return !!document.body && (document.body.innerText.includes('Starting Unsloth')"
+            " || !!document.querySelector('[data-testid^=\"nav-row-\"]'))",
             "the packaged frontend to render",
         )
         _wait_for(

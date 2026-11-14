@@ -6,6 +6,10 @@ import { isAudioCppFolderId } from "../../audio/audio-cpp-catalog";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
+  DEFAULT_STT_CONTEXT_LENGTH,
+  normalizeSttContextLength,
+} from "./stt-context";
+import {
   DEFAULT_STT_MODEL,
   type DefaultSttModel,
   STT_MODELS,
@@ -14,17 +18,17 @@ import {
   type SttModel,
   migrateVoiceSettings,
 } from "./stt-model-catalog";
+import { syncSttDevicePreference } from "../api/stt-device";
 
 export * from "./stt-model-catalog";
+export * from "./stt-context";
 
-// Voice preferences in localStorage. Adapters read them at call time so
-// changes apply without reloading the chat runtime.
+// Adapters read these at call time, so changes apply without reloading the chat runtime.
 
 export interface RecentDictation {
   id: string;
   text: string;
   at: number;
-  /** Chat the dictation was spoken into, when one was open at the time. */
   chatId?: string;
 }
 
@@ -59,11 +63,8 @@ export function getSttModelRepo(model: SttModel): string {
   return STT_MODEL_REPOS[model as DefaultSttModel] ?? normalizeSttModel(model);
 }
 
-// Curated models are multilingual except the ones STT_MODEL_LANGUAGES limits.
-// Custom `.en` checkpoints are treated as English-only so a later language
-// change falls back safely.
+// Custom `.en` checkpoints are treated as English-only.
 
-/** Whether a model can honor the selected dictation language. */
 export function isSttModelLanguageCompatible(
   model: SttModel,
   language: string,
@@ -81,8 +82,10 @@ export function isSttModelLanguageCompatible(
 
 export type DictationEngine = "browser" | "model" | "custom";
 
-/** Mirrors the backend's `SttLoadRequest.device`. "gpu" is not offered in the
- * UI: it differs from "auto" only where it cannot be honoured anyway. */
+/** "model" attaches a clip for an audio-input model, else falls back to "asr". */
+export type MicTarget = "asr" | "model";
+
+/** Mirrors the backend `SttLoadRequest.device`; "gpu" is not offered since it adds nothing. */
 export type SttDevice = "auto" | "cpu";
 
 export const DEFAULT_STT_DEVICE: SttDevice = "auto";
@@ -93,11 +96,7 @@ function normalizeSttDevice(value: unknown): SttDevice {
 
 export type TtsEngine = "system" | "studio" | "custom";
 
-/**
- * Whether a model id is curated. Whisper ids run GGML through whisper.cpp,
- * mtmd ids run through llama.cpp, audiocpp ids run through audio.cpp, and
- * custom repos are safetensors on Transformers.
- */
+/** Custom repos run safetensors on Transformers. */
 export function isCuratedSttModel(model: SttModel): boolean {
   return (STT_MODELS as readonly string[]).includes(model.trim());
 }
@@ -111,6 +110,9 @@ export interface VoiceSettingsState {
   dictationEngine: DictationEngine;
   setDictationEngine: (value: DictationEngine) => void;
 
+  micTarget: MicTarget;
+  setMicTarget: (value: MicTarget) => void;
+
   /** STT model used when dictationEngine is "model". */
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
@@ -122,6 +124,10 @@ export interface VoiceSettingsState {
   /** "cpu" keeps the model in system RAM; loads and transcriptions apply the current value. */
   sttDevice: SttDevice;
   setSttDevice: (value: SttDevice) => void;
+
+  /** Qwen3-ASR context: zero fits each recording; a positive value is a fixed limit. */
+  sttContextLength: number;
+  setSttContextLength: (value: number) => void;
 
   sttProviderId: string;
   setSttProviderId: (value: string) => void;
@@ -136,17 +142,14 @@ export interface VoiceSettingsState {
   dictionary: string[];
   addDictionaryEntry: (value: string) => void;
   updateDictionaryEntry: (index: number, value: string) => void;
-  /** Trim the entry; drop it when it was left empty. Call on input blur. */
   commitDictionaryEntry: (index: number) => void;
   removeDictionaryEntry: (index: number) => void;
 
-  /** Final transcripts, newest first, so text can be recovered. */
   recentDictations: RecentDictation[];
   addRecentDictation: (text: string, chatId?: string) => void;
   removeRecentDictation: (id: string) => void;
   clearRecentDictations: () => void;
 
-  /** Show the read-aloud button on assistant responses. */
   ttsEnabled: boolean;
   setTtsEnabled: (value: boolean) => void;
 
@@ -159,13 +162,11 @@ export interface VoiceSettingsState {
   ttsEngine: TtsEngine;
   setTtsEngine: (value: TtsEngine) => void;
 
-  /** Saved connection id used by the "custom" engine. */
   ttsProviderId: string;
   setTtsProviderId: (value: string) => void;
-  /** Model id sent to the custom endpoint (e.g. "kokoro"). */
   ttsProviderModel: string;
   setTtsProviderModel: (value: string) => void;
-  /** Voice name sent to the custom endpoint; blank input defaults to alloy. */
+  /** Blank defaults to alloy. */
   ttsProviderVoice: string;
   setTtsProviderVoice: (value: string) => void;
 
@@ -185,10 +186,7 @@ export interface VoiceSettingsState {
   setTtsVolume: (value: number) => void;
 }
 
-/**
- * localStorage wrapper that keeps the full dictation history until the browser's
- * quota is hit, then drops the oldest entries instead of losing the whole save.
- */
+/** On quota errors drop the oldest dictations instead of losing the whole save. */
 const quotaSafeLocalStorage = {
   getItem: (key: string) => localStorage.getItem(key),
   removeItem: (key: string) => localStorage.removeItem(key),
@@ -208,8 +206,7 @@ const quotaSafeLocalStorage = {
     const state = parsed.state;
     const recents = state?.recentDictations;
     if (!state || !Array.isArray(recents)) return;
-    // Halve the history until the save fits, down to an empty history, so even
-    // a small history shrinks when another store already consumed the quota.
+    // Halve down to empty, since another store may already have consumed the quota.
     let keep = Math.min(QUOTA_TRIM_KEEP, recents.length);
     for (;;) {
       keep = keep >= recents.length ? Math.floor(recents.length / 2) : keep;
@@ -235,6 +232,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       dictationEngine: isTauri ? "model" : "browser",
       setDictationEngine: (dictationEngine) => set({ dictationEngine }),
 
+      micTarget: "asr",
+      setMicTarget: (micTarget) => set({ micTarget }),
+
       sttModel: DEFAULT_STT_MODEL,
       setSttModel: (value) =>
         set((state) => {
@@ -255,7 +255,16 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setSttGgufVariant: (sttGgufVariant) => set({ sttGgufVariant }),
 
       sttDevice: DEFAULT_STT_DEVICE,
-      setSttDevice: (value) => set({ sttDevice: normalizeSttDevice(value) }),
+      setSttDevice: (value) => {
+        const sttDevice = normalizeSttDevice(value);
+        set({ sttDevice });
+        // Server default for cold /v1/audio/transcriptions loads (#15280).
+        syncSttDevicePreference(sttDevice);
+      },
+
+      sttContextLength: DEFAULT_STT_CONTEXT_LENGTH,
+      setSttContextLength: (value) =>
+        set({ sttContextLength: normalizeSttContextLength(value) }),
 
       sttProviderId: "",
       setSttProviderId: (sttProviderId) => set({ sttProviderId }),
@@ -289,7 +298,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           }
           return { dictionary: [...state.dictionary, trimmed] };
         }),
-      // Keep the raw value so the input edits freely; commitDictionaryEntry finalizes on blur.
+      // Raw value while editing; commitDictionaryEntry finalizes on blur.
       updateDictionaryEntry: (index, value) =>
         set((state) => {
           const dictionary = [...state.dictionary];
@@ -378,8 +387,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       merge: (persisted, current) => {
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
         const dictationLanguage = asString(saved?.dictationLanguage, "auto");
-        // "gguf" was a short-lived separate engine choice; both local
-        // backends now live under "model".
+        // "gguf" was a short-lived separate engine; both local backends now live under "model".
         const savedEngine = saved?.dictationEngine as string | undefined;
         const dictationEngine: DictationEngine =
           savedEngine === "custom"
@@ -398,12 +406,14 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ...current,
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
+          micTarget: saved?.micTarget === "model" ? "model" : "asr",
           sttModel,
           sttGgufVariant:
             sttModel === savedSttModel
               ? asString(saved?.sttGgufVariant, "")
               : "",
           sttDevice: normalizeSttDevice(saved?.sttDevice),
+          sttContextLength: normalizeSttContextLength(saved?.sttContextLength),
           sttProviderId: asString(saved?.sttProviderId, ""),
           sttProviderModel: asString(saved?.sttProviderModel, ""),
           dictationLanguage,
@@ -434,6 +444,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     },
   ),
 );
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useVoiceSettingsStore.persist.getOptions().name) {
+      void useVoiceSettingsStore.persist.rehydrate();
+    }
+  });
+}
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" && value ? value : fallback;
@@ -483,7 +500,6 @@ function clampNumber(
   return Math.min(max, Math.max(min, value));
 }
 
-/** Resolve the "auto" language setting to a concrete BCP 47 tag. */
 export function resolveDictationLanguage(setting?: string): string {
   const value = setting ?? useVoiceSettingsStore.getState().dictationLanguage;
   if (value && value !== "auto") return value;
@@ -492,10 +508,8 @@ export function resolveDictationLanguage(setting?: string): string {
     : "en-US";
 }
 
-// Whisper's language codes: transformers `LANGUAGES` keys plus the backend's
-// BCP-47 aliases (stt_sidecar.py `_WHISPER_LANGUAGE_ALIASES`). Keep in sync with
-// `_known_whisper_languages()`; Auto only resolves to a code in this set, so a
-// UI locale Whisper cannot honor stays on auto-detect.
+// transformers `LANGUAGES` plus stt_sidecar.py `_WHISPER_LANGUAGE_ALIASES`. Keep in sync with
+// `_known_whisper_languages()`.
 const WHISPER_DICTATION_LANGUAGES = new Set([
   "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs",
   "ca", "cmn", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa",
@@ -508,14 +522,8 @@ const WHISPER_DICTATION_LANGUAGES = new Set([
   "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh",
 ]);
 
-/**
- * Resolve Auto for the model STT engine (the browser engine resolves it via
- * `resolveDictationLanguage`). Only the literal "auto" resolves to a concrete
- * locale; an explicit or malformed setting passes through unchanged. Gated so
- * Auto only becomes a language the model AND Whisper can honor, else it stays
- * auto-detect rather than forcing a locale Whisper cannot handle (e.g. Irish)
- * or 422ing every dictation.
- */
+/** Only literal "auto" resolves, and only to a language both the model and Whisper honor;
+ * otherwise it stays auto-detect rather than 422ing every dictation. */
 export function resolveModelDictationLanguage(
   model: SttModel,
   requested: string,
@@ -537,10 +545,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/**
- * Rewrite dictionary phrases in a transcript to their exact stored form,
- * matching case-insensitively on word boundaries ("jane doe" -> "Jane Doe").
- */
+/** Case-insensitive, word-bounded ("jane doe" -> "Jane Doe"). */
 export function applyDictationDictionary(
   transcript: string,
   dictionary?: string[],
@@ -551,17 +556,14 @@ export function applyDictationDictionary(
   for (const entry of entries) {
     const trimmed = entry.trim();
     if (!trimmed) continue;
-    // Whitespace-tolerant pattern so "jane   doe" still matches.
     const pattern = trimmed.split(/\s+/).map(escapeRegExp).join("\\s+");
     try {
-      // Capture the leading boundary instead of using a lookbehind, which
-      // engines that support dictation but not lookbehind (Safari < 16.4)
-      // cannot compile; the catch below would otherwise skip every entry.
+      // Capture the boundary instead of a lookbehind, which Safari < 16.4 cannot compile.
       const regex = new RegExp(
         `(^|[^\\p{L}\\p{N}])(${pattern})(?![\\p{L}\\p{N}])`,
         "giu",
       );
-      // Re-emit the boundary; callback form avoids $-pattern expansion.
+      // Callback form avoids $-pattern expansion.
       result = result.replace(regex, (_match, prefix) => `${prefix}${trimmed}`);
     } catch {
       // Skip entries that produce an invalid pattern.
@@ -570,7 +572,6 @@ export function applyDictationDictionary(
   return result;
 }
 
-/** Record a finished dictation so it can be recovered from settings. */
 export function recordRecentDictation(text: string, chatId?: string): void {
   useVoiceSettingsStore.getState().addRecentDictation(text, chatId);
 }

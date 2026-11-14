@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Probe two candidate levers from the optimization research, on the real GGUF path:
-
-  * `coordinate_descent_tuning` (Inductor) -- lossless extra kernel autotuning.
-  * FirstBlockCache (diffusers `apply_first_block_cache`) -- step-skip cache, lossy,
-    evaluated at a low (8) step count where its ceiling is lower.
-
-Each config is a fresh pipeline load (so Inductor config / compile artifacts don't
-cross-contaminate). Reports latency + PSNR vs the eager reference. Run on one CUDA GPU.
-"""
+"""Probes coordinate_descent_tuning (lossless) and FirstBlockCache (lossy, 8 steps) vs eager PSNR."""
 
 from __future__ import annotations
 
@@ -89,7 +81,6 @@ def main(argv = None) -> int:
         cdt = False,
         fbc = None,
     ):
-        # reset inductor config between runs
         import torch._inductor.config as ic
 
         ic.coordinate_descent_tuning = False
@@ -100,9 +91,9 @@ def main(argv = None) -> int:
             apply_first_block_cache(pipe.transformer, FirstBlockCacheConfig(threshold = fbc))
         if compile:
             compile_blocks(pipe, cdt = cdt)
-            _gen(pipe, steps, seed, res)  # warmup / compilation
+            _gen(pipe, steps, seed, res)
         else:
-            _gen(pipe, steps, seed, res)  # allocator warmup
+            _gen(pipe, steps, seed, res)
         img, dt = _gen(pipe, steps, seed, res)
         del pipe
         torch.cuda.empty_cache()

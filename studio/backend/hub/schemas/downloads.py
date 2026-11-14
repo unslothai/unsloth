@@ -24,6 +24,13 @@ class DownloadModelRequest(BaseModel):
         None,
         description = "Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
     )
+    engram_precision: Optional[str] = Field(
+        None,
+        max_length = 32,
+        pattern = r"^[A-Za-z0-9_]*$",
+        description = "With gguf_variant: fetch the repo's standalone Engram table of this "
+        "precision in place of the quant's own table shard (see LoadRequest.engram_precision).",
+    )
     use_xet: bool = Field(
         True,
         description = "Legacy transport flag, superseded by transport_mode. Kept so an older "
@@ -93,10 +100,7 @@ class DownloadStartResponse(BaseModel):
     generation: int
     # The transport the job is really on, which can differ from the one the client asked for.
     transport: Optional[str] = None
-    # Set only when an adopted job had fallen back from Xet to HTTP: stopping it still writes the
-    # original marker, so it is a restart, not a resume.
-    # Set only on a job that fell back from Xet to HTTP mid-flight: cancelling it still writes the original
-    # transport's marker, so the partial is restart-only even though the worker is on resumable HTTP.
+    # Set when a job fell back from Xet to HTTP: cancelling leaves a restart-only partial.
     cancel_transport: Optional[str] = None
 
 
@@ -128,6 +132,13 @@ class ActiveDownload(BaseModel):
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
     )
+    engram_precision: Optional[str] = Field(
+        None,
+        description = (
+            "The standalone Engram table this GGUF job fetches in place of the quant's own; "
+            "null when it fetches the quant's own"
+        ),
+    )
 
 
 class ActiveDownloadsResponse(BaseModel):
@@ -144,9 +155,10 @@ class TransportCapabilities(BaseModel):
     xet: TransportCapability
     auto_resolves_to: Literal["xet", "http"] = "xet"
     auto_reason: Optional[str] = None
-    # False when the installed huggingface_hub refetches an interrupted file from zero, so no transport
-    # can offer a byte-resume and the UI must not label one.
+    # False when huggingface_hub refetches interrupted files from zero; no transport can byte-resume, so the UI must not label one.
     partials_resumable: bool = True
+    # A download speed limit puts every download that fits under the HTTPS ceiling on HTTP.
+    speed_limited: bool = False
 
 
 class TransportStatusResponse(BaseModel):
@@ -156,9 +168,9 @@ class TransportStatusResponse(BaseModel):
 
 
 class DownloadProgressResponse(BaseModel):
+    progress_scope: Optional[Literal["active_files"]] = None
     downloaded_bytes: int
-    # Finalized-blob bytes only: registry-loss completion fallbacks key off this, so a partial is not
-    # mistaken for a finished download.
+    # Finalized-blob bytes only, so a partial is not mistaken for finished.
     completed_bytes: int = 0
     complete_on_disk: bool = Field(
         False,
@@ -169,8 +181,7 @@ class DownloadProgressResponse(BaseModel):
     expected_bytes: int
     progress: float
     cache_path: Optional[str] = None
-    # Opaque stand-in for ``cache_path``. A redacted reading is an empty string, never null,
-    # so the discriminator above survives.
+    # Redacted reading is "", never null, so the discriminator survives.
     cache_ref: Optional[str] = None
     cache_measured: bool = Field(
         True,

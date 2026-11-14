@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Each mode advertises only checkpoints it can execute, while the curated STT
-// set still covers every dictation sidecar id.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -19,8 +16,7 @@ const taskFor = (repoId: string): AudioTask | null =>
   (groupForRepoId(repoId, AUDIO_CATALOG)?.task as AudioTask | undefined) ??
   null;
 
-// Mirrors audioModelsForTask in src/features/audio/catalog.ts, which cannot be
-// imported here: it resolves through the "@/" alias.
+// Mirrors audioModelsForTask in catalog.ts, which uses the "@/" alias and cannot be imported.
 const modelsForTask = (task: AudioTask) => {
   const all = catalogToModelOptions(AUDIO_CATALOG);
   const matches = (id: string) => taskFor(id) === task;
@@ -30,7 +26,6 @@ const modelsForTask = (task: AudioTask) => {
 test("Transcribe offers only STT, with Qwen3-ASR above the fold", () => {
   const rows = modelsForTask("stt");
   assert.ok(rows.every((id) => taskFor(id) === "stt"));
-  // The regression: both unslothai models sat at 8 and 9 behind every TTS row.
   const qwen = rows.filter((id) => id.startsWith("unslothai/Qwen3-ASR"));
   assert.equal(qwen.length, 2);
   for (const id of qwen) assert.ok(rows.indexOf(id) < 3, `${id} buried`);
@@ -62,8 +57,6 @@ test("the two modes partition every curated model", () => {
 });
 
 test("the curated STT rows cover every dictation sidecar model", () => {
-  // GGML_STT_REPOS / STT_MODEL_REPOS carry tiny and base too; the picker used to
-  // stop at small, so two supported sizes were unreachable from this page.
   const stt = modelsForTask("stt").filter((id) => taskFor(id) === "stt");
   for (const size of ["tiny", "base", "small", "large-v3", "large-v3-turbo"]) {
     assert.ok(
@@ -74,8 +67,7 @@ test("the curated STT rows cover every dictation sidecar model", () => {
 });
 
 test("a TTS group's GGUF sibling is what resolves for a safetensors pick", () => {
-  // On a Mac the safetensors build loads through MLX, which has no TTS decoder,
-  // so the page swaps in the GGUF build rather than letting generation 501.
+  // On Mac, safetensors loads through MLX, which has no TTS decoder, so the GGUF build is swapped in.
   const ggufSibling = (repoId: string) => {
     const group = groupForRepoId(repoId, AUDIO_CATALOG);
     if (!group || group.task !== "tts") return null;
@@ -86,10 +78,7 @@ test("a TTS group's GGUF sibling is what resolves for a safetensors pick", () =>
     ggufSibling("unsloth/orpheus-3b-0.1-ft"),
     "unsloth/orpheus-3b-0.1-ft-GGUF",
   );
-  // Already GGUF: nothing to swap.
   assert.equal(ggufSibling("unsloth/orpheus-3b-0.1-ft-GGUF"), null);
-  // No GGUF published, so the pick stands and the 501 explains why.
   assert.equal(ggufSibling("unsloth/csm-1b"), null);
-  // STT never swaps: it runs on the sidecar, not the main slot.
   assert.equal(ggufSibling("unsloth/whisper-small"), null);
 });

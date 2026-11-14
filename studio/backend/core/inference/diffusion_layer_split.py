@@ -1,30 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One denoiser split across several CUDA cards by contiguous ranges of its repeated blocks (layer split).
-
-For a DiT that does not fit one selected card: each repeated block lives whole on one card, everything else of the
-denoiser (embedders, modulation, final norm and projection) stays on the primary. Blocks run one after another, so
-this buys memory, not speed; the weights never move after placement and only activations cross a card boundary.
-
-The boundary is a same-named subclass of each block's class whose ``__call__`` moves tensor arguments to the block's
-card before ``nn.Module.__call__`` runs. It runs outside ``_compiled_call_impl``, so a regional compile only ever sees
-tensors on the block's own card (no graph break; the shared block code compiles once per card). Tensors computed once
-per forward on the primary (rotary tables, modulation, masks) are copied once per card per forward, not per block.
-
-Outputs: in lazy mode a block's outputs move only where the next block of its list sits on another card, and home at
-the end of the list. That is only correct when the denoiser's loop does no tensor op of its own between blocks, so it
-is limited to the classes below and to calls without a residual input (ControlNet, VACE hints); every other call is
-eager: outputs return to the primary after every off-primary block. Both are exact copies, so the image matches a
-one-card run bit for bit.
-
-Every route reads where the block's weights and the denoiser's own weights are NOW, per call, so a later ``.to()`` of
-the pipeline or of the denoiser (eviction to the CPU, a move onto one card) keeps the forward on one device, as the
-component boundary does.
-
-Kill switch ``UNSLOTH_DIFFUSION_LAYER_SPLIT=0`` (never split a denoiser; the planner offloads as before); ``force``
-splits across the selected cards even when one card would hold the denoiser (for proving bit-identity).
-"""
+"""Splits repeated denoiser blocks over CUDA cards for memory, not speed; lazy output hand-off only
+for listed classes without residual inputs, else eager; UNSLOTH_DIFFUSION_LAYER_SPLIT=0 disables."""
 
 from __future__ import annotations
 
@@ -287,12 +265,10 @@ def plan_layer_split(
     budgets_mib: Mapping[Any, int],
     strategy: str = "fill",
 ) -> LayerSplitPlan:
-    """Contiguous block ranges over ``cards`` (primary first; added if missing), in forward order.
-
-    ``budgets_mib``: denoiser weights each card may take (keys: ordinal or device string); the primary's budget also
-    pays for the non-block modules. ``fill`` packs each card up to its budget before the next (fewest cards, one
-    crossing per used card); ``balance`` spreads the blocks in proportion to the budgets. Raises
-    :class:`LayerSplitError` when the blocks do not fit."""
+    """Contiguous block ranges in forward order over cards, primary first; budgets_mib (ordinal or
+    device keys) caps each card's denoiser weights, primary also paying non-block modules; fill
+    packs cards to budget in turn, balance splits by budget; raises LayerSplitError if blocks do
+    not fit."""
     primary_dev = _cuda(primary)
     order = [primary_dev]
     for c in cards:
@@ -751,10 +727,9 @@ def place_layer_split(
     assignment: Optional[Mapping[str, Any]] = None,
     logger: Any = None,
 ) -> dict[str, Any]:
-    """Split ``pipe.<attr>`` across ``cards`` (see :func:`plan_layer_split`), or by an explicit block -> card
-    ``assignment`` (see :func:`assigned_plan`), and place it. Other components are left where they are. Returns the placement summary also shown by ``placement_status``. Raises :class:`LayerSplitError`
-    (nothing moved) when the split is refused or does not fit; on a failure while moving, the boundary is removed and
-    the error re-raised, and the caller re-places the pipeline."""
+    """Split pipe.<attr> across cards or an explicit assignment, leaving other components put, and
+    return the placement summary; raises LayerSplitError with nothing moved if refused; a failure
+    mid-move removes the boundary and re-raises for the caller to re-place."""
     torch = _torch()
     from . import diffusion_multigpu as mg
 

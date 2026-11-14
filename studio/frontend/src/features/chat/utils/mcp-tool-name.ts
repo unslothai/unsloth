@@ -3,7 +3,6 @@
 
 const MCP_TOOL_PREFIX = "mcp__";
 
-/** Whether a tool call came from an MCP server, by the id the backend stamps. */
 export function isMcpToolName(toolName: string | undefined): boolean {
   return typeof toolName === "string" && toolName.startsWith(MCP_TOOL_PREFIX);
 }
@@ -17,7 +16,6 @@ function provenanceString(
   return typeof value === "string" && value ? value : undefined;
 }
 
-/** The server display name stamped into tool-call provenance by the backend. */
 export function mcpServerFromProvenance(provenance: unknown): string | undefined {
   return provenanceString(provenance, "mcp_server");
 }
@@ -27,7 +25,6 @@ export function mcpToolFromProvenance(provenance: unknown): string | undefined {
   return provenanceString(provenance, "mcp_tool");
 }
 
-/** "GitHub · create_issue" for mcp__<serverId>__<tool>, else null. Falls back to the raw parts. */
 export function formatMcpToolName(
   toolName: string,
   mcpServer?: string,
@@ -39,7 +36,6 @@ export function formatMcpToolName(
     : null;
 }
 
-/** mcp__<serverId>__<tool> split into its parts, else null. */
 export function splitMcpToolName(
   toolName: string,
 ): { serverId: string; tool: string } | null {

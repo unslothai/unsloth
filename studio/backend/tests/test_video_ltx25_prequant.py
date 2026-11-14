@@ -341,13 +341,18 @@ def test_auto_seeds_int8_where_bf16_fits_like_comfyui(
     )
 
 
-def test_only_ltx25_int8_skips_the_resident_bf16_rule(fam):
+def test_only_the_measured_int8_skips_the_resident_bf16_rule(fam):
     import core.inference.video as vid
 
     assert fam.profile.auto_prequant_when_resident == frozenset({"int8"})
     assert not vid._auto_seed_yields_to_resident_bf16("int8", "auto", fam)
     assert vid._auto_seed_yields_to_resident_bf16("fp8", "auto", fam)
-    for repo in ("Lightricks/LTX-2", "Wan-AI/Wan2.2-TI2V-5B-Diffusers"):
+    for repo in ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI/Wan2.2-T2V-A14B-Diffusers"):
+        wan = detect_video_family(repo)
+        assert wan.profile.auto_prequant_when_resident == frozenset({"int8"})
+        assert not vid._auto_seed_yields_to_resident_bf16("int8", "auto", wan)
+        assert vid._auto_seed_yields_to_resident_bf16("fp8", "auto", wan)
+    for repo in ("Lightricks/LTX-2", "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"):
         other = detect_video_family(repo)
         assert other.name != fam.name
         assert vid._auto_seed_yields_to_resident_bf16("int8", "auto", other)
