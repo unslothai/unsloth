@@ -153,6 +153,7 @@ import {
   withNewlyOfferedCodexModels,
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
+import { parseAutoCompactTokens } from "./utils/auto-compaction";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 import {
   learnModelDisplayNames,
@@ -386,6 +387,7 @@ export function ChatProvidersSettings({
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
+  const [autoCompactTokensDraft, setAutoCompactTokensDraft] = useState("");
   const [extraHeadersDraft, setExtraHeadersDraft] = useState("");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
@@ -449,6 +451,9 @@ export function ChatProvidersSettings({
     providerType,
     editingProviderId ? editingBackendProviderType : null,
   ) && !decisionsOnly;
+  // ChatGPT sign-in runs through the Codex route, which has no compaction of its own.
+  const supportsAutoCompactTokens =
+    Boolean(providerType) && providerType !== "openai_codex" && !decisionsOnly;
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
   // Legacy OpenAI rows also appear as Custom in the UI, but must not gain this opt-in.
   const isCustomReasoningConnection =
@@ -718,6 +723,7 @@ export function ChatProvidersSettings({
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
+    setAutoCompactTokensDraft("");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
@@ -825,6 +831,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
+    setAutoCompactTokensDraft("");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
@@ -1308,6 +1315,9 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
+      const autoCompactTokens = supportsAutoCompactTokens
+        ? parseAutoCompactTokens(autoCompactTokensDraft)
+        : undefined;
       const extraHeaders = parseExtraHeadersDraft(extraHeadersDraft);
       const created = await createProviderConfig({
         providerType: backendProviderType,
@@ -1319,6 +1329,7 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
+        autoCompactTokens: autoCompactTokens ?? undefined,
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1348,6 +1359,7 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
+        autoCompactTokens: created.auto_compact_tokens ?? undefined,
         extraHeaders: created.extra_headers ?? extraHeaders,
         reasoningConfig: created.provider_type === "custom"
           ? normalizeCustomReasoningConfig(created.reasoning_config)
@@ -1490,6 +1502,9 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
+      const autoCompactTokens = supportsAutoCompactTokens
+        ? parseAutoCompactTokens(autoCompactTokensDraft)
+        : undefined;
       const extraHeaders = parseExtraHeadersDraft(extraHeadersDraft);
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
@@ -1501,6 +1516,7 @@ export function ChatProvidersSettings({
         models: keepSavedModels ? undefined : modelsToSave,
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
+        autoCompactTokens,
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1537,6 +1553,7 @@ export function ChatProvidersSettings({
           ? (updated.available_models?.length ? updated.available_models : existing.availableModels)
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
+        autoCompactTokens: updated.auto_compact_tokens ?? undefined,
         extraHeaders: updated.extra_headers ?? extraHeaders,
         reasoningConfig: updated.provider_type === "custom"
           ? normalizeCustomReasoningConfig(updated.reasoning_config)
@@ -1720,6 +1737,9 @@ export function ChatProvidersSettings({
             provider.maxOutputTokens,
             getExternalMinOutputTokens(provider.providerType),
           ).toString(),
+    );
+    setAutoCompactTokensDraft(
+      provider.autoCompactTokens == null ? "" : provider.autoCompactTokens.toString(),
     );
     setExtraHeadersDraft(extraHeadersToDraft(provider.extraHeaders));
     setEditingBackendProviderType(provider.backendProviderType ?? null);
@@ -2299,6 +2319,54 @@ export function ChatProvidersSettings({
               ) : null}
             </div>
           </section>
+
+          {supportsAutoCompactTokens ? (
+            <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <Label
+                  htmlFor="provider-auto-compact-tokens"
+                  className="text-sm font-medium"
+                >
+                  Auto-compact after
+                </Label>
+                <p
+                  id="provider-auto-compact-tokens-help"
+                  className="text-xs leading-snug text-muted-foreground"
+                >
+                  Tokens before older messages are summarized. Blank uses 75% of
+                  the model's context window
+                  {providerType === "anthropic" || providerType === "openai"
+                    ? ", up to 200,000"
+                    : ""}
+                  .
+                </p>
+              </div>
+              <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
+                <Input
+                  id="provider-auto-compact-tokens"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={autoCompactTokensDraft}
+                  onChange={(event) =>
+                    setAutoCompactTokensDraft(event.target.value)
+                  }
+                  placeholder="Default"
+                  aria-describedby="provider-auto-compact-tokens-help provider-auto-compact-tokens-note"
+                  className="h-9 text-sm"
+                />
+                <p
+                  id="provider-auto-compact-tokens-note"
+                  className="text-xs leading-snug text-muted-foreground"
+                >
+                  {providerType === "anthropic"
+                    ? "At least 50,000 for Claude. Capped at the model's context window."
+                    : "Capped at the model's context window."}
+                </p>
+              </div>
+            </div>
+          ) : null}
 
           <Collapsible
             open={advancedOpen}

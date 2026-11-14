@@ -6,6 +6,7 @@ import test from "node:test";
 import { matchesFormatFilter } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import type * as NpuApi from "../src/features/npu/api.ts";
 import * as runtimeVersions from "../src/features/npu/runtime-versions.ts";
+import * as displayName from "../src/features/npu/display-name.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import * as sseJsonEvents from "../src/lib/sse-json-events.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -22,6 +23,7 @@ function client(response: () => Response) {
         },
       },
       "@/lib/format-fastapi-error": formatFastApiError,
+      "./display-name": displayName,
       "@/lib/sse-json-events": sseJsonEvents,
       "./runtime-versions": runtimeVersions,
     },
@@ -193,6 +195,37 @@ test("a download waiting for the backend says it is reconnecting", () => {
   assert.equal(api.npuDownloadLabel(null, true), "Reconnecting");
 });
 
+test("a rehash and Lemonade's last step get their own labels, not a frozen percent", () => {
+  const { api } = client(() => Response.json({}));
+  assert.equal(api.npuDownloadLabel(40, false, "verifying"), "Verifying 40%");
+  assert.equal(api.npuDownloadLabel(99, false, "finishing"), "Finishing");
+  assert.equal(api.npuDownloadLabel(99, true, "finishing"), "Reconnecting 99%");
+});
+
+test("a cancelled download rejects with NpuDownloadCancelled", async () => {
+  const c = client(() =>
+    sse([
+      'data: {"event":"progress","percent":10}\n\n',
+      'data: {"event":"cancelled","model":"qwen3-0.6b-FLM"}\n\n',
+    ]),
+  );
+  await assert.rejects(
+    c.api.downloadNpuModel("qwen3-0.6b-FLM", () => {}),
+    (error: unknown) => error instanceof c.api.NpuDownloadCancelled,
+  );
+});
+
+test("cancel posts to the pull's cancel route and a pull already over is fine", async () => {
+  const c = client(() => new Response(null, { status: 404 }));
+  await c.api.cancelNpuModelDownload("qwen3 4b");
+  assert.equal(c.requests[0].path, "/api/npu/models/qwen3%204b/download/cancel");
+  assert.equal(c.requests[0].init?.method, "POST");
+  const failing = client(() =>
+    Response.json({ detail: "nope" }, { status: 500 }),
+  );
+  await assert.rejects(failing.api.cancelNpuModelDownload("qwen3-4b-FLM"), /nope/);
+});
+
 test("the picker's NPU format holds no Hub repo", () => {
   for (const [id, gguf] of [
     ["unsloth/Qwen3-0.6B-GGUF", true],
@@ -245,6 +278,61 @@ test("NPU capability tags and context label", () => {
   assert.equal(api.npuContextLabel(10000), "10,000 context");
   assert.equal(api.npuContextLabel(null), null);
   assert.equal(api.npuContextLabel(0), null);
+});
+
+test("Storage deletes an NPU folder by its checkpoint, which the backend resolves", async () => {
+  const { api, requests } = client(() =>
+    Response.json({ status: "deleted", model: "qwen3-0.6b-FLM" }),
+  );
+  assert.equal(
+    await api.deleteNpuModelByCheckpoint("qwen3:0.6b"),
+    "qwen3-0.6b-FLM",
+  );
+  assert.deepEqual(
+    requests.map((request) => [request.path, request.init?.method]),
+    [["/api/npu/checkpoints/qwen3%3A0.6b", "DELETE"]],
+  );
+});
+
+test("a refused Storage delete surfaces the backend's reason", async () => {
+  const { api } = client(() =>
+    Response.json(
+      { detail: "Lemonade has no FastFlowLM model for gone:1b." },
+      { status: 409 },
+    ),
+  );
+  await assert.rejects(
+    api.deleteNpuModelByCheckpoint("gone:1b"),
+    /no FastFlowLM model for gone:1b/,
+  );
+});
+
+test("a model larger than the NPU memory window gets a warning naming both figures", () => {
+  const { api } = client(() => Response.json({}));
+  const model = (
+    fits_memory: boolean | null | undefined,
+    memory_needed_gb: number | null = 19,
+  ) =>
+    ({ fits_memory, memory_needed_gb }) as Parameters<
+      typeof api.npuMemoryWarning
+    >[0];
+  assert.equal(
+    api.npuMemoryWarning(model(false), { memory_window_gb: 15.6 }),
+    "Needs about 19 GB of NPU memory; this PC can give the NPU about 16 GB.",
+  );
+  assert.equal(api.npuMemoryTag(model(false)), "May not fit NPU memory");
+  // Flagged with a figure missing still warns, without inventing a number.
+  assert.match(
+    api.npuMemoryWarning(model(false, null), { memory_window_gb: 16 }) ?? "",
+    /may need more NPU memory/,
+  );
+  for (const fits of [true, null, undefined]) {
+    assert.equal(
+      api.npuMemoryWarning(model(fits), { memory_window_gb: 16 }),
+      null,
+    );
+    assert.equal(api.npuMemoryTag(model(fits)), null);
+  }
 });
 
 // model_info.json's oids are per-file blob hashes, not a commit, so a branch-pinned card can drift.

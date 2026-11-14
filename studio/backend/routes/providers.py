@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -44,7 +44,11 @@ from core.inference.providers import (
     validate_provider_base_url,
 )
 from core.inference.pricing import pricing_snapshot
-from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_provider import (
+    _CATALOG_WINDOW_PROVIDERS,
+    _SERVED_WINDOW_PROVIDERS,
+    ExternalProviderClient,
+)
 
 from core.inference import openai_codex_auth, openai_codex_client
 from core.inference.provider_model_capabilities import (
@@ -214,6 +218,7 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         models = row.get("models") or [],
         available_models = row.get("available_models") or [],
         max_output_tokens = row.get("max_output_tokens"),
+        auto_compact_tokens = row.get("auto_compact_tokens"),
         shared = bool(row.get("shared")),
         shared_by_owner = bool(row.get("shared_by_owner")),
         created_at = row["created_at"],
@@ -428,6 +433,7 @@ async def create_provider_config(
             reasoning_config = payload.reasoning_config,
             extra_headers = payload.extra_headers,
             shared = payload.shared,
+            auto_compact_tokens = payload.auto_compact_tokens,
         )
         try:
             if api_key:
@@ -528,6 +534,7 @@ async def update_provider_config(
         "models",
         "available_models",
         "max_output_tokens",
+        "auto_compact_tokens",
         "api_type",
         "reasoning_config",
         "extra_headers",
@@ -566,6 +573,8 @@ async def update_provider_config(
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
+        if "auto_compact_tokens" in payload.model_fields_set:
+            metadata_updates["auto_compact_tokens"] = payload.auto_compact_tokens
         if reasoning_config_requested:
             metadata_updates["reasoning_config"] = (
                 payload.reasoning_config.model_dump()
@@ -583,6 +592,7 @@ async def update_provider_config(
         models = existing.get("models") or [],
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
+        auto_compact_tokens = existing.get("auto_compact_tokens"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
         extra_headers = existing.get("extra_headers") or {},
@@ -609,6 +619,7 @@ async def update_provider_config(
             # Explicit null clears nullable overrides; elsewhere it means "not sent".
             if written is None and field not in {
                 "max_output_tokens",
+                "auto_compact_tokens",
                 "reasoning_config",
                 "extra_headers",
             }:
@@ -1248,6 +1259,19 @@ def cached_catalog_models() -> dict[str, list[str]]:
     return (_model_catalog_cache or {}).get("models") or {}
 
 
+def cached_catalog_model_context(namespace: str, model: str) -> int | None:
+    global _model_catalog_cache
+    if _model_catalog_cache is None:
+        _model_catalog_cache = _read_model_catalog_file()
+    bucket = ((_model_catalog_cache or {}).get("providers") or {}).get(namespace) or {}
+    entry = bucket.get(model.strip().lower()) if isinstance(bucket, dict) else None
+    entry = entry if isinstance(entry, dict) else {}
+    limits = [
+        v for v in (entry.get("input_tokens"), entry.get("context")) if isinstance(v, int) and v > 0
+    ]
+    return min(limits, default = None)
+
+
 def cached_catalog_model_inputs(namespace: str, model: str) -> list[str] | None:
     global _model_catalog_cache
     if _model_catalog_cache is None:
@@ -1384,11 +1408,49 @@ def _model_capability_names(model: dict) -> Optional[list[str]]:
     return [name for name in values if isinstance(name, str) and name]
 
 
+async def _catalog_window(row: dict, model: str, request: Optional[Request]) -> Optional[int]:
+    # A hosted listing needs the key: same gate as the chat path (UI session or the `unsloth start` key).
+    from routes.inference import _request_may_use_saved_provider_key
+    from routes.provider_credentials import provider_config_guard
+
+    if request is None or not _request_may_use_saved_provider_key(request):
+        return None
+    async with provider_config_guard(row["id"], shared_by_owner = bool(row.get("shared_by_owner"))):
+        api_key = await asyncio.to_thread(credential_secrets.get_provider_api_key, row["id"])
+        if not api_key:
+            return None
+        headers = row.get("extra_headers")
+        try:
+            client = await asyncio.to_thread(
+                ExternalProviderClient,
+                provider_type = row["provider_type"],
+                base_url = row["base_url"],
+                api_key = api_key,
+                api_type = row.get("api_type", "chat_completions"),
+                **({"extra_headers": headers} if headers else {}),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+    return await client.catalog_context_window(model)
+
+
 @router.post("/{provider_id}/served-window")
-async def load_served_window(provider_id: str, model: str):
+async def load_served_window(
+    provider_id: str,
+    model: str,
+    request: Request = None,
+):
     row = providers_db.get_provider(provider_id)
     if row is None or not row["is_enabled"] or model not in (row.get("models") or []):
         raise HTTPException(status_code = 404, detail = "Connection model not found")
+    if row["provider_type"] in _CATALOG_WINDOW_PROVIDERS:
+        listed = await _catalog_window(row, model, request)
+        return {
+            "context_length": listed or cached_catalog_model_context(row["provider_type"], model)
+        }
+    if row["provider_type"] not in _SERVED_WINDOW_PROVIDERS:
+        # A hosted provider whose listing has no window (OpenAI): the daily models.dev catalog.
+        return {"context_length": cached_catalog_model_context(row["provider_type"], model)}
     try:
         # The saved key and headers stay with the chat path; a keyed server just reports nothing.
         client = await asyncio.to_thread(

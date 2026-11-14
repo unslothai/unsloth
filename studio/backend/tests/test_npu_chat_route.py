@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -112,6 +113,9 @@ def _script(prompt: str) -> str:
             + _chunk({}, "tool_calls", _USAGE)
             + "data: [DONE]\n\n"
         )
+    if "LOADFAIL" in prompt:
+        error = {"code": 500, "message": "Failed to load qwen3:0.6b model!", "type": "server_error"}
+        return "data: " + json.dumps({"error": error}) + "\n\n"
     if "FAULT" in prompt:
         return (
             _chunk({"content": "par"})
@@ -156,6 +160,10 @@ def _script(prompt: str) -> str:
     )
 
 
+# What lemond prints while a LOADFAIL request fails; set by the test that needs it.
+_on_load_failure = None
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -170,6 +178,8 @@ class _Handler(BaseHTTPRequestHandler):
         prompt = json.dumps(body.get("messages"))
         if "SLOW" in prompt:
             time.sleep(20)
+        if "LOADFAIL" in prompt and _on_load_failure is not None:
+            _on_load_failure()
         data = _script(prompt).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -182,9 +192,17 @@ class _FakeNpu:
     def __init__(self, upstream) -> None:
         self._upstream = upstream
         self.is_loaded = True
+        self.marks = 0
 
     def upstream(self):
         return self._upstream
+
+    def output_mark(self, upstream) -> int:
+        self.marks += 1
+        return 0
+
+    def explain_failure(self, mark: int, message: str) -> str:
+        return message
 
 
 @pytest.fixture
@@ -207,7 +225,8 @@ def flm(monkeypatch):
             supports_reasoning = caps.get("reasoning", False),
             context_length = 8192,
         )
-        monkeypatch.setattr(nb, "get_npu_backend", lambda: _FakeNpu(upstream))
+        fake = _FakeNpu(upstream)
+        monkeypatch.setattr(nb, "get_npu_backend", lambda: fake)
         return httpd.recorded
 
     yield install
@@ -559,6 +578,62 @@ def test_a_bare_error_line_becomes_an_error(flm):
     assert errors and "qds_device" in errors[0]["error"]["message"]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_failed_npu_chat_names_the_reason_lemonade_printed(flm, monkeypatch, tmp_path, stream):
+    from core.inference.lemonade_server import LemonadeServer
+
+    flm()
+    upstream = nb.get_npu_backend().upstream()
+    server = LemonadeServer(
+        tmp_path / "lemond",
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+    )
+    server._drain(
+        SimpleNamespace(stdout = ["2026-11-11 04:19:00.000 [Info] (Server) started on port 1\n"])
+    )
+    backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    server.api_key = upstream.api_key
+    backend._server = server
+    monkeypatch.setattr(backend, "upstream", lambda: upstream)
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: backend)
+    reason = "FLM NPU validation failed: insufficient NPU memory for ctx_size=32768"
+    lines = [
+        "2026-11-11 04:20:01.100 [Info] (FastFlowLM) Loading model: qwen3-0.6b-FLM",
+        f"2026-11-11 04:20:01.123 [Error] (Router) Backend load failed: {reason}",
+    ]
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_on_load_failure",
+        lambda: server._drain(SimpleNamespace(stdout = [line + "\n" for line in lines])),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        nb,
+        "_events",
+        SimpleNamespace(
+            warning = lambda message, **fields: warnings.append(
+                "\n".join([message, *fields["lemonade_output"]])
+            )
+        ),
+    )
+
+    status, body = _call(stream = stream, messages = [{"role": "user", "content": "LOADFAIL"}])
+
+    if stream:
+        message = next(chunk for chunk in _data(body) if "error" in chunk)["error"]["message"]
+    else:
+        assert status == 500
+        message = body["error"]["message"]
+    assert message.startswith("Failed to load qwen3:0.6b model!")
+    assert reason in message
+    logged = "\n".join(warnings)
+    assert f"Backend load failed: {reason}" in logged
+    assert "started on port" not in logged
+    assert "LOADFAIL" not in logged
+
+
 @pytest.mark.parametrize(
     "fields, message",
     [
@@ -612,6 +687,29 @@ def test_what_fastflowlm_would_drop_is_refused(flm, fields, message):
     assert caught.value.status_code == 400
     assert message in json.dumps(caught.value.detail)
     assert recorded == []
+    # A refused request opens no output window, which would mark a running load's as shared.
+    assert nb.get_npu_backend().marks == 0
+
+
+def test_a_request_the_proxy_refuses_opens_no_output_window(flm, monkeypatch):
+    # The proxy's own preflight (an MCP image, a video, the confirm gate) can still refuse.
+    import routes.inference as ri
+
+    flm()
+
+    async def refuse(*args, **kwargs):
+        raise HTTPException(status_code = 400, detail = "refused in preflight")
+
+    monkeypatch.setattr(ri, "_proxy_to_external_provider", refuse)
+    with pytest.raises(HTTPException, match = "refused in preflight"):
+        _call(stream = False)
+    assert nb.get_npu_backend().marks == 0
+
+
+def test_a_reply_opens_one_output_window(flm):
+    flm()
+    _call(stream = False)
+    assert nb.get_npu_backend().marks == 1
 
 
 def test_a_saved_connection_cannot_name_the_managed_type():
@@ -1152,7 +1250,7 @@ def test_a_dropped_progress_stream_does_not_stop_the_download(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             yield {"event": "progress", "percent": 40}
             assert release.wait(10)
             yield {"event": "complete", "model": model_id, "percent": 100}
@@ -1180,7 +1278,7 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             started.append(model_id)
             assert release.wait(10)
             yield {"event": "complete", "model": model_id, "percent": 100}
@@ -1192,6 +1290,27 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     release.set()
     assert [event["event"] for event in second.follow()] == ["complete"]
     assert started == ["gemma3-4b-FLM"]
+
+
+def test_cancel_stops_the_running_pull_and_tells_its_followers(monkeypatch):
+    from routes import npu as npu_routes
+
+    class _Npu:
+        def download(self, model_id, cancel):
+            yield {"event": "progress", "percent": 20}
+            assert cancel.wait(10)
+            raise npu_routes.NpuDownloadCancelled(f"Downloading {model_id} was cancelled.")
+
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(npu_routes.cancel_npu_download("qwen3-4b-FLM"))
+    assert missing.value.status_code == 404
+
+    job = npu_routes._start_download(_Npu(), "qwen3-4b-FLM")
+    _wait_for(lambda: len(job.events) == 1)
+    answer = asyncio.run(npu_routes.cancel_npu_download("qwen3-4b-FLM"))
+    assert answer == {"status": "cancelling", "model": "qwen3-4b-FLM"}
+    assert [event["event"] for event in job.follow()] == ["progress", "cancelled"]
+    _wait_for(lambda: "qwen3-4b-FLM" not in npu_routes._downloads)
 
 
 def _wait_for(condition) -> None:
@@ -1207,7 +1326,7 @@ def test_running_downloads_are_listed_until_they_end(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             yield {"event": "progress", "percent": 12}
             yield {"event": "progress", "bytes_downloaded": 5}
             assert release.wait(10)
@@ -1230,7 +1349,7 @@ def test_following_a_download_never_starts_one(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             started.append(model_id)
             yield {"event": "progress", "percent": 30}
             assert release.wait(10)
@@ -1268,7 +1387,7 @@ def test_a_failed_download_is_logged(monkeypatch):
     )
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             yield {"event": "progress", "percent": 37}
             raise nb.NpuError(f"Downloading {model_id} failed: connection reset")
 

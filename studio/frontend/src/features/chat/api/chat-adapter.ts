@@ -366,8 +366,11 @@ import {
 } from "../utils/image-input-support";
 import {
   appendCompactionMarker,
+  COMPACTION_NOTICE_LABEL,
+  COMPACTION_NOTICE_TEXT,
   type CompactionMarker,
   compactionAnchorToolCallId,
+  compactionNoticeKind,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -2762,6 +2765,9 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxAnePrefillRequested",
   "mlxFastVerify",
   "loadedMlxFastVerifyRequested",
+  "npuPowerMode",
+  "npuPrefillChunkLen",
+  "npuImgPreResize",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadedMlxPleOffloadRequested",
@@ -5645,10 +5651,12 @@ export function createOpenAIStreamAdapter(
       const isManagedEngineForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
       const isNpuForCompaction = isNpuModelId(params.checkpoint);
+      const isCloudForCompaction = isExternalModelId(params.checkpoint);
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&
-        (isGgufForCompaction || isMlxForCompaction || isNpuForCompaction);
+        (isGgufForCompaction || isMlxForCompaction || isNpuForCompaction ||
+          isCloudForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -6927,6 +6935,8 @@ export function createOpenAIStreamAdapter(
                   externalProvider.providerType,
                   externalModelId,
                 )?.contextLength,
+                autoCompactTokens: externalProvider.autoCompactTokens,
+                compactNow,
               }),
               // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
@@ -7328,18 +7338,33 @@ export function createOpenAIStreamAdapter(
                   rollingContextNoticeThreads.add(resolvedThreadId);
                   // Once per thread per page load; the durable record is the notice on the turn that compacted.
                   const archived = contextTruncation?.archived_messages ?? 0;
-                  toast.info("This conversation was compacted", {
-                    description: archived
-                      ? "It got long, so older turns were removed from the model's " +
-                        "context. They are saved and searchable, and relevant parts are " +
-                        "brought back automatically."
-                      : contextTruncation?.summarized
-                        ? "The full conversation is still visible and saved. " +
-                          "The provider summarized older turns so the chat can continue."
-                        : "The full conversation is still visible and saved. " +
-                          "Unsloth removed complete older turns from this request so the chat can continue.",
-                    duration: 8000,
-                  });
+                  const noticeKind = compactionNoticeKind(chunk.context_truncated);
+                  if (noticeKind === "compacted" || noticeKind === "summarized-by-provider") {
+                    toast.info("This conversation was compacted", {
+                      description: archived
+                        ? "It got long, so older turns were removed from the model's " +
+                          "context. They are saved and searchable, and relevant parts are " +
+                          "brought back automatically."
+                        : contextTruncation?.summarized
+                          ? "The full conversation is still visible and saved. " +
+                            "The provider summarized older turns so the chat can continue."
+                          : "The full conversation is still visible and saved. " +
+                            "Unsloth removed complete older turns from this request so the chat can continue.",
+                      duration: 8000,
+                    });
+                  } else {
+                    // A cloud chat: say whether history was summarized or had to be dropped.
+                    const dropped = noticeKind !== "summarized";
+                    (dropped ? toast.warning : toast.info)(
+                      COMPACTION_NOTICE_LABEL[noticeKind],
+                      {
+                        description:
+                          `${COMPACTION_NOTICE_TEXT[noticeKind]} ` +
+                          "The full conversation is still visible and saved.",
+                        duration: 8000,
+                      },
+                    );
+                  }
                 }
                 continue;
               }
@@ -8891,8 +8916,9 @@ export function createOpenAIStreamAdapter(
           )
         ) {
           toast.info("This chat was not compacted", {
-            description:
-              "Compaction needs the conversation archive and the default checkpoint policy.",
+            description: isCloudForCompaction
+              ? "There was nothing before your latest message to summarize."
+              : "Compaction needs the conversation archive and the default checkpoint policy.",
           });
         }
         const finalTiming = withPriorTiming(

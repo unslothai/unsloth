@@ -95,7 +95,9 @@ import {
   type NpuModel,
   type NpuPickerSource,
   NpuSetupNotice,
+  npuDisplayName,
   npuDownloadLabel,
+  npuMemoryTag,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -570,7 +572,7 @@ function npuFooterHint(
   return count ? `${count} available` : "";
 }
 
-function ListLabel({
+export function ListLabel({
   children,
   icon,
   action,
@@ -1216,7 +1218,7 @@ function ConnectedGroupHeading({
   );
 }
 
-function ModelRow({
+export function ModelRow({
   label,
   meta,
   selected,
@@ -7687,9 +7689,12 @@ export function HubModelPicker({
     const downloading = model.id in npuCatalog.downloads;
     const progress = npuCatalog.downloads[model.id];
     const reconnecting = model.id in npuCatalog.reconnecting;
+    const name = npuDisplayName(model);
+    const phase = npuCatalog.phases[model.id];
     const details = [
       "NPU",
       npuSizeLabel(model.size_gb),
+      npuMemoryTag(model),
       npuResumeLabel(model),
     ].filter(Boolean);
     const meta = {
@@ -7700,10 +7705,10 @@ export function HubModelPicker({
     const pick = () => onSelect(model.model_path, meta);
     const row = (
       <ModelRow
-        label={model.id}
+        label={name}
         meta={
           downloading
-            ? `NPU · ${npuDownloadLabel(progress, reconnecting)}`
+            ? `NPU · ${npuDownloadLabel(progress, reconnecting, phase)}`
             : details.join(" · ")
         }
         selected={isSelected}
@@ -7721,6 +7726,7 @@ export function HubModelPicker({
         onClick={() => {
           if (downloading) return;
           if (model.downloaded) {
+            npuCatalog.warnMemory(model);
             pick();
             return;
           }
@@ -7738,11 +7744,15 @@ export function HubModelPicker({
         className={onDevice ? downloadedRowButtonClassName : undefined}
       />
     );
-    const configMeta = { ...meta, contextLength: model.max_context_length };
+    const configMeta = {
+      ...meta,
+      contextLength: model.max_context_length,
+      isVision: model.supports_vision,
+    };
     const settings =
       onConfigure && model.downloaded && !downloading ? (
         <ModelLoadSettingsAction
-          ariaLabel={`Inference settings for ${model.id}`}
+          ariaLabel={`Inference settings for ${name}`}
           onConfigure={() => onConfigure(model.model_path, configMeta)}
           savedFor={modelConfigTarget(model.model_path, configMeta)}
         />
@@ -7758,10 +7768,10 @@ export function HubModelPicker({
           {settings}
           {onDevice && (
             <ModelDeleteAction
-              ariaLabel={`Delete ${model.id}`}
-              title={`Delete ${model.id}?`}
+              ariaLabel={`Delete ${name}`}
+              title={`Delete ${name}?`}
               description="This removes the model's NPU files from this device."
-              successMessage={`Deleted ${model.id}`}
+              successMessage={`Deleted ${name}`}
               disabled={isLoaded}
               onConfirm={() => npuCatalog.remove(model)}
             />
