@@ -386,6 +386,7 @@ class TextEncoderReleaser:
                 if not self._prepared:
                     self._prepare()
             except Exception as exc:  # noqa: BLE001 - releasing is an optimisation: stay resident
+                self._finalizer()
                 self._note("warning", "diffusion.text_encoder_release: kept resident: %s", exc)
                 self._slots = {}
                 self._from_source = {}
