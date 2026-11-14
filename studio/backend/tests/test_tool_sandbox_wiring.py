@@ -2216,6 +2216,25 @@ def test_a_note_named_with_this_processes_pid_is_still_read(tmp_path):
     assert not list(prefix.glob(".unsloth-installing-*"))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "flock")
+def test_an_unheld_note_on_nfs_reads_as_dead(tmp_path):
+    """NFS emulates flock with record locks: an exclusive one on a read-only descriptor fails EBADF."""
+    note = tmp_path / ".unsloth-installing-1-ab"
+    note.write_text("")
+    code = (
+        "import errno, fcntl, os, sys, types; sys.path.insert(0, %r); import sitecustomize as s\n"
+        "def flock(fd, op):\n"
+        "    if op & fcntl.LOCK_EX and fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:\n"
+        "        raise OSError(errno.EBADF, 'Bad file descriptor')\n"
+        "    fcntl.flock(fd, op)\n"
+        "nfs = types.SimpleNamespace(flock = flock, LOCK_EX = fcntl.LOCK_EX, LOCK_SH = fcntl.LOCK_SH, LOCK_NB = fcntl.LOCK_NB)\n"
+        "s._fcntl = lambda: nfs; print(s._alive(%r))"
+    ) % (tools._SANDBOX_SITE_DIR, str(note))
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH", "PYTHON"))}
+    out = subprocess.run([sys.executable, "-c", code], env = env, capture_output = True, text = True)
+    assert out.stdout.strip() == "False", out.stderr
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason = "flock liveness is POSIX only")
 def test_each_prune_pass_rereads_live_notes(tmp_path):
     """An interpreter started before another pip: its exit-time pass still sees that pip's live note."""

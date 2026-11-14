@@ -1260,7 +1260,8 @@ def _alive(path):
     except OSError:
         return False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Shared: NFS emulates flock with record locks, and an exclusive one needs a writable descriptor.
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
     except OSError:
         return True
     finally:
