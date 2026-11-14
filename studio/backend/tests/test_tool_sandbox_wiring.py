@@ -2250,6 +2250,21 @@ def test_a_preloaded_namespace_gets_a_path_line_editable_portion(tmp_path):
     assert out.stdout.strip() == str(root / "unsloth_preloaded_ns" / "child.py"), out.stderr
 
 
+def test_notes_without_flock_are_written_in_place_and_removed(tmp_path):
+    """Windows has no flock: notes go straight to their name (no .tmp left behind) and _release drops them."""
+    code = (
+        "import sys; sys.path.insert(0, %r); import sitecustomize as s; s._fcntl = lambda: None\n"
+        "p = sys.argv[1]; fd = s._write_held(p, ['x\\n']); import os; print(fd, os.path.exists(p), os.listdir(os.path.dirname(p)))\n"
+        "s._release(fd, p); print(os.listdir(os.path.dirname(p)))"
+    ) % tools._SANDBOX_SITE_DIR
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH", "PYTHON"))}
+    note = tmp_path / ".unsloth-installing-1-x"
+    out = subprocess.run(
+        [sys.executable, "-S", "-c", code, str(note)], env = env, capture_output = True, text = True
+    )
+    assert out.stdout.splitlines() == ["None True ['.unsloth-installing-1-x']", "[]"], out.stderr
+
+
 def test_an_unfinished_install_retires_nothing(tmp_path):
     """A RECORD without pip's INSTALLER row is a wheel's own copy from an install that died halfway."""
     site_dir = tmp_path / "prefix" / "lib" / "site-packages"

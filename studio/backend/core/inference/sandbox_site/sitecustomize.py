@@ -1200,6 +1200,11 @@ def _fcntl():
 def _write_held(path, lines):
     # Written and locked under a temporary name, then renamed: no other process ever sees it unlocked.
     fcntl = _fcntl()
+    if fcntl is None:
+        # Windows: an open CRT handle blocks the rename, and there is no flock to hold anyway.
+        with open(path, "w", encoding = "utf-8") as f:
+            f.writelines(lines)
+        return None
     temp = f"{path}.tmp"
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
@@ -1219,7 +1224,7 @@ def _release(fd, path):
         os.remove(path)
     except OSError:
         pass
-    if fd in _held:
+    if fd is not None and fd in _held:
         _held.remove(fd)
         os.close(fd)
 
@@ -1554,22 +1559,22 @@ def _track_wheel(entry):
     def wrapped(*args, **kwargs):
         before = _dist_stamps()
         prefix = os.environ["PIP_PREFIX"]
-        pending, held = os.path.join(prefix, f"{_PENDING}{_RUN_ID}"), None
+        pending, held, written = os.path.join(prefix, f"{_PENDING}{_RUN_ID}"), None, False
         try:
             # Only into an existing prefix: nothing to protect before the first install, and the path remap
             # would move a write under a missing folder into the CWD.
             if before and os.path.isdir(prefix):
                 rows = [f"{os.path.abspath(e)}\t{n}\t{v}\n" for (e, n), v in before.items()]
-                held = _write_held(pending, rows)
+                held, written = _write_held(pending, rows), True
         except OSError:
-            held = None
+            pass
         try:
             return entry(*args, **kwargs)
         except BaseException:
             _failed_wheels.append({k: v for k, v in _dist_stamps().items() if before.get(k) != v})
             raise
         finally:
-            if held is not None:
+            if written:
                 _release(held, pending)
 
     return wrapped
