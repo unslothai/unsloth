@@ -49,7 +49,7 @@ import {
   voiceToUnload,
 } from "@/features/chat/voice/voice-ownership";
 import { LibraryAttachmentTargetContext } from "@/features/library";
-import { isChatModelVoice } from "@/features/chat/voice/voice-models";
+import { isChatModelVoice, VOICE_DEFAULT_TTS_MODEL } from "@/features/chat/voice/voice-models";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -172,7 +172,7 @@ import {
   SaveTemporaryChatMenu,
   TemporaryChatSaveBridge,
 } from "./components/temporary-chat-save";
-import { useT } from "@/i18n";
+import { translate, useT } from "@/i18n";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
@@ -3184,10 +3184,18 @@ export function ChatPage({
     if (voiceLoadRef.current) return voiceLoadRef.current;
     const run = (async () => {
       const store = useChatRuntimeStore.getState();
-      const id = store.selectedVoiceModelId;
+      let id = store.selectedVoiceModelId;
       const epoch = voiceEpochRef.current;
       try {
         const { loadVoice, servedVoice, unloadVoice, voiceServing } = await loadVoiceMode();
+        if (isChatModelVoice(id) && !(await voiceServing(id))) {
+          // A chat model that cannot speak would park every turn behind a voice that never loads.
+          if (!store.params.checkpoint || useChatRuntimeStore.getState().modelLoading) return false;
+          if (epoch !== voiceEpochRef.current) return false;
+          id = VOICE_DEFAULT_TTS_MODEL;
+          store.setSelectedVoiceModelId(id);
+          toast.info(translate("voicePanel.chatModelCannotSpeak"));
+        }
         if (await voiceServing(id)) {
           if (epoch !== voiceEpochRef.current) return false;
           const release = releaseBeforeBorrow(loadedVoiceRef.current, id);
@@ -3264,6 +3272,10 @@ export function ChatPage({
   }, []);
 
   const hasChatCheckpoint = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
+  // The chat model's own voice follows the chat model: a switch or finished load re-checks that it speaks.
+  const voiceFollowsChat = useChatRuntimeStore((s) =>
+    isChatModelVoice(s.selectedVoiceModelId) ? `${s.params.checkpoint}|${s.modelLoading}` : "",
+  );
   useEffect(() => {
     if (voiceMode !== "active" || !hasChatCheckpoint) return;
     if (loadedVoiceRef.current?.id !== selectedVoiceModelId) {
@@ -3273,7 +3285,7 @@ export function ChatPage({
     void (voiceLoadRef.current ?? Promise.resolve(true)).then(() =>
       epoch === voiceEpochRef.current ? ensureVoiceSlotLoaded() : false,
     );
-  }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, ensureVoiceSlotLoaded]);
+  }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, voiceFollowsChat, ensureVoiceSlotLoaded]);
 
   const prevVoiceModeRef = useRef(voiceMode);
   useEffect(() => {

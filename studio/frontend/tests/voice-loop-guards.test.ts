@@ -197,3 +197,14 @@ test("Escape on the orb hides it without reaching the composer's cancel", () => 
   assert.match(orb, /e\.stopPropagation\(\);\s*setVoiceOrbCollapsed\(true\);/);
   assert.match(orb, /window\.addEventListener\("keydown", onKeyDown, true\);/);
 });
+
+test("a saved chat-model voice that cannot speak hands over to the default voice", () => {
+  const page = readSrc("features/chat/chat-page.tsx");
+  assert.match(page, /if \(isChatModelVoice\(id\) && !\(await voiceServing\(id\)\)\) \{[\s\S]{0,400}id = VOICE_DEFAULT_TTS_MODEL;\s*store\.setSelectedVoiceModelId\(id\);/);
+  assert.match(page, /\[voiceMode, selectedVoiceModelId, hasChatCheckpoint, voiceFollowsChat, ensureVoiceSlotLoaded\]/);
+});
+
+test("native spoken replies are held back only while the voice loop runs", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /voiceModeOn: getVoiceMode\(\) === "active",/);
+});

@@ -7029,7 +7029,7 @@ export function createOpenAIStreamAdapter(
             ...(wantsSpokenReply({
               speaks: Boolean(activeModel?.speaks),
               turnHasAudio: Boolean(turnAudioBase64),
-              voiceModeOn: getVoiceMode() !== "off",
+              voiceModeOn: getVoiceMode() === "active",
               selectedVoiceModelId:
                 useChatRuntimeStore.getState().selectedVoiceModelId,
             })
