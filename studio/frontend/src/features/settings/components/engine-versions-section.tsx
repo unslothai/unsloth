@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useIsAccountOwner } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
-import { useNpuStatus } from "@/features/npu";
+import { npuEngineVersions, useNpuStatus } from "@/features/npu";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   type ComponentOffer,
@@ -36,7 +36,23 @@ export function EngineVersionsSection() {
   const [checking, setChecking] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
   const [npuStatus] = useNpuStatus();
-  const npuVersions = npuStatus?.versions;
+  const npu = npuEngineVersions(npuStatus);
+  const npuRows: EngineRow[] = npu
+    ? [
+        {
+          key: "fastflowlm",
+          labelKey: "settings.about.fastflowlmVersion",
+          installed: npu.fastflowlm,
+          offer: null,
+        },
+        {
+          key: "lemonade",
+          labelKey: "settings.about.lemonadeVersion",
+          installed: npu.lemonade,
+          offer: null,
+        },
+      ]
+    : [];
 
   // The binary's own build string names the variant the release tag leaves out.
   const rows: EngineRow[] = [
@@ -64,26 +80,13 @@ export function EngineVersionsSection() {
       installed: hw.mlx,
       offer: null,
     },
-    {
-      key: "fastflowlm",
-      labelKey: "settings.about.fastflowlmVersion",
-      installed: versionTag(npuVersions?.fastflowlm),
-      offer: null,
-    },
-    {
-      key: "lemonade",
-      labelKey: "settings.about.lemonadeVersion",
-      installed: versionTag(npuVersions?.lemonade),
-      offer: null,
-    },
+    ...npuRows,
   ];
-  // whisper.cpp only reports once the backend knows it; MLX and the NPU runtimes only where installed. An empty row reads as missing.
+  // whisper.cpp only reports once the backend knows it, MLX only where installed; an empty row reads as missing.
   const visibleRows = rows.filter(
     (row) =>
       (row.key !== "whisper" || row.offer != null) &&
-      (row.key !== "mlx" || row.installed != null) &&
-      ((row.key !== "fastflowlm" && row.key !== "lemonade") ||
-        row.installed != null),
+      (row.key !== "mlx" || row.installed != null),
   );
   const job = status?.job;
   const offered = status != null && llamaUpdateOffered(status);
@@ -200,8 +203,4 @@ export function EngineVersionsSection() {
       ) : null}
     </SettingsSection>
   );
-}
-
-function versionTag(version: string | null | undefined): string | null {
-  return version ? `v${version.replace(/^v/, "")}` : null;
 }

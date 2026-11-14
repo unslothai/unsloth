@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
+import { npuVersionTag } from "./runtime-versions";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
 
@@ -88,7 +89,8 @@ export function npuRuntimeLabel(
     ["FastFlowLM", versions?.fastflowlm],
     ["Lemonade", versions?.lemonade],
   ] as const) {
-    if (version) parts.push(`${name} v${version.replace(/^v/, "")}`);
+    const tag = npuVersionTag(version);
+    if (tag) parts.push(`${name} ${tag}`);
   }
   return parts.length > 0 ? parts.join(" · ") : null;
 }
