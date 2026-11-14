@@ -16,9 +16,10 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useEffect, useRef, useState } from "react";
-import type { ModelConfig } from "../../types";
+import type { ModelConfig, ModelGeneration } from "../../types";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -38,6 +39,7 @@ export function ModelConfigDialog({
   onUpdate,
 }: ModelConfigDialogProps): ReactElement {
   const isLinkedToLocal = localProviderNames.has(config.provider);
+  const isImage = config.generation === "image";
   const [optionalOpen, setOptionalOpen] = useState(false);
   const modelId = `${config.id}-model`;
   const providerId = `${config.id}-provider`;
@@ -45,6 +47,9 @@ export function ModelConfigDialog({
   const topPId = `${config.id}-top-p`;
   const maxTokensId = `${config.id}-max-tokens`;
   const timeoutId = `${config.id}-timeout`;
+  const sizeId = `${config.id}-image-size`;
+  const stepsId = `${config.id}-image-steps`;
+  const guidanceId = `${config.id}-image-guidance`;
   const extraBodyId = `${config.id}-inference-extra-body`;
   const skipHealthCheckId = `${config.id}-skip-health-check`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
@@ -97,6 +102,23 @@ export function ModelConfigDialog({
           Choose the provider connection, enter the exact model ID, then save
           any generation defaults you want to reuse.
         </p>
+      </div>
+      <div className="grid gap-1.5">
+        <FieldLabel
+          label="Generates"
+          hint="Text presets serve AI text steps; image presets serve AI image steps."
+        />
+        <Tabs
+          value={isImage ? "image" : "text"}
+          onValueChange={(value) =>
+            updateField("generation", value as ModelGeneration)
+          }
+        >
+          <TabsList className="w-full">
+            <TabsTrigger value="text">Text</TabsTrigger>
+            <TabsTrigger value="image">Image</TabsTrigger>
+          </TabsList>
+        </Tabs>
       </div>
       <div className="grid gap-1.5">
         <FieldLabel
@@ -156,7 +178,11 @@ export function ModelConfigDialog({
               : "The exact model name sent to the connection."
           }
         />
-        {isLinkedToLocal ? (
+        {isLinkedToLocal && isImage ? (
+          <p className="rounded-lg border border-border/60 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
+            Uses the image model loaded on the Images page.
+          </p>
+        ) : isLinkedToLocal ? (
           <LocalRecipeModelSelector
             inputId={modelId}
             value={
@@ -175,7 +201,7 @@ export function ModelConfigDialog({
           <Input
             id={modelId}
             className="nodrag"
-            placeholder="gpt-4o-mini"
+            placeholder={isImage ? "gpt-image-1" : "gpt-4o-mini"}
             value={config.model}
             onChange={(event) =>
               onUpdate({
@@ -186,7 +212,7 @@ export function ModelConfigDialog({
             }
           />
         )}
-        {isLinkedToLocal ? (
+        {isLinkedToLocal && !isImage ? (
           <p className="text-xs text-muted-foreground">
             Recipes will load this model automatically. GGUF quantization is
             saved with the preset.
@@ -203,51 +229,104 @@ export function ModelConfigDialog({
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-1.5">
-            <FieldLabel
-              label="Temperature"
-              htmlFor={tempId}
-              hint="Higher values make responses more varied."
-            />
-            <Input
-              id={tempId}
-              className="nodrag"
-              value={config.inference_temperature ?? ""}
-              onChange={(event) =>
-                updateField("inference_temperature", event.target.value)
-              }
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <FieldLabel
-              label="Top-p"
-              htmlFor={topPId}
-              hint="Use this to limit how broad token selection can be."
-            />
-            <Input
-              id={topPId}
-              className="nodrag"
-              value={config.inference_top_p ?? ""}
-              onChange={(event) =>
-                updateField("inference_top_p", event.target.value)
-              }
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <FieldLabel
-              label="Max tokens"
-              htmlFor={maxTokensId}
-              hint="Maximum length of the model response."
-            />
-            <Input
-              id={maxTokensId}
-              className="nodrag"
-              value={config.inference_max_tokens ?? ""}
-              onChange={(event) =>
-                updateField("inference_max_tokens", event.target.value)
-              }
-            />
-          </div>
+          {isImage ? (
+            <>
+              <div className="grid gap-1.5">
+                <FieldLabel
+                  label="Size"
+                  htmlFor={sizeId}
+                  hint="Width x height. Leave blank for the model's default."
+                />
+                <Input
+                  id={sizeId}
+                  className="nodrag"
+                  placeholder="1024x1024"
+                  value={config.image_size ?? ""}
+                  onChange={(event) =>
+                    updateField("image_size", event.target.value)
+                  }
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <FieldLabel
+                  label="Steps"
+                  htmlFor={stepsId}
+                  hint="Denoising steps. Leave blank for the model's default."
+                />
+                <Input
+                  id={stepsId}
+                  className="nodrag"
+                  value={config.image_steps ?? ""}
+                  onChange={(event) =>
+                    updateField("image_steps", event.target.value)
+                  }
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <FieldLabel
+                  label="Guidance"
+                  htmlFor={guidanceId}
+                  hint="How closely to follow the prompt. Leave blank for the model's default."
+                />
+                <Input
+                  id={guidanceId}
+                  className="nodrag"
+                  value={config.image_guidance ?? ""}
+                  onChange={(event) =>
+                    updateField("image_guidance", event.target.value)
+                  }
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="grid gap-1.5">
+                <FieldLabel
+                  label="Temperature"
+                  htmlFor={tempId}
+                  hint="Higher values make responses more varied."
+                />
+                <Input
+                  id={tempId}
+                  className="nodrag"
+                  value={config.inference_temperature ?? ""}
+                  onChange={(event) =>
+                    updateField("inference_temperature", event.target.value)
+                  }
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <FieldLabel
+                  label="Top-p"
+                  htmlFor={topPId}
+                  hint="Use this to limit how broad token selection can be."
+                />
+                <Input
+                  id={topPId}
+                  className="nodrag"
+                  value={config.inference_top_p ?? ""}
+                  onChange={(event) =>
+                    updateField("inference_top_p", event.target.value)
+                  }
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <FieldLabel
+                  label="Max tokens"
+                  htmlFor={maxTokensId}
+                  hint="Maximum length of the model response."
+                />
+                <Input
+                  id={maxTokensId}
+                  className="nodrag"
+                  value={config.inference_max_tokens ?? ""}
+                  onChange={(event) =>
+                    updateField("inference_max_tokens", event.target.value)
+                  }
+                />
+              </div>
+            </>
+          )}
           <div className="grid gap-1.5">
             <FieldLabel
               label="Timeout (seconds)"

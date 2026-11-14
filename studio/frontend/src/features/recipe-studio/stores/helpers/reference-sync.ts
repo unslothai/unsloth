@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type {
+  ImageConfig,
   LlmConfig,
   ModelConfig,
   NodeConfig,
@@ -35,6 +36,12 @@ function updateTemplateFields(
       // biome-ignore lint/style/useNamingConvention: api schema
       output_format: nextOutput,
     };
+  }
+  if (config.kind === "image") {
+    const nextPrompt = updater(config.prompt);
+    return nextPrompt === config.prompt
+      ? config
+      : { ...config, prompt: nextPrompt };
   }
   if (config.kind === "expression") {
     const nextExpr = updater(config.expr);
@@ -84,6 +91,10 @@ export function applyRenameToConfig(
   }
   if (config.kind === "llm" && config.model_alias === from) {
     const base = next as LlmConfig;
+    next = { ...base, model_alias: to };
+  }
+  if (config.kind === "image" && config.model_alias === from) {
+    const base = next as ImageConfig;
     next = { ...base, model_alias: to };
   }
   if (config.kind === "llm" && config.tool_alias === from) {
@@ -149,6 +160,10 @@ export function applyRemovalToConfig(
   }
   if (config.kind === "llm" && config.model_alias === ref) {
     const base = next as LlmConfig;
+    next = { ...base, model_alias: "" };
+  }
+  if (config.kind === "image" && config.model_alias === ref) {
+    const base = next as ImageConfig;
     next = { ...base, model_alias: "" };
   }
   if (config.kind === "llm" && config.tool_alias === ref) {

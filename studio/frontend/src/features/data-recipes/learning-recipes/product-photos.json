@@ -1,0 +1,149 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "Local Model",
+        "endpoint": "",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {},
+        "is_local": true
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "image_model",
+        "model": "local",
+        "provider": "Local Model",
+        "inference_parameters": {
+          "generation_type": "image"
+        }
+      }
+    ],
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "sampler",
+        "name": "subject",
+        "drop": false,
+        "sampler_type": "category",
+        "params": {
+          "values": [
+            "ceramic mug",
+            "desk lamp",
+            "leather backpack",
+            "running shoe",
+            "wrist watch",
+            "glass bottle"
+          ]
+        }
+      },
+      {
+        "column_type": "sampler",
+        "name": "style",
+        "drop": false,
+        "sampler_type": "category",
+        "params": {
+          "values": [
+            "minimalist",
+            "vintage",
+            "colorful",
+            "matte black"
+          ]
+        }
+      },
+      {
+        "column_type": "image",
+        "name": "photo",
+        "drop": false,
+        "model_alias": "image_model",
+        "prompt": "A {{ style }} product photo of a {{ subject }}, studio lighting, white background"
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 4,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "note_1",
+        "x": 0,
+        "y": -460,
+        "width": 360,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "#### Image block\nEach row gets one image from the **AI image** block. Its prompt fills in other fields, like `{{ subject }}`.\n\n##### Setup:\n\n1. Load any image model on the **Images** page\n2. Run a preview\n\nThe image model preset uses whichever image model is loaded, with that model's own default steps and guidance. Set size, steps or guidance on the preset only to override them.\n\nA full run saves the images in an `images/` folder next to the dataset, and the download includes them.",
+        "note_color": "#FAE8FF",
+        "note_opacity": "35"
+      },
+      {
+        "id": "subject",
+        "x": 0,
+        "y": -40,
+        "width": 360
+      },
+      {
+        "id": "style",
+        "x": 0,
+        "y": 200,
+        "width": 360
+      },
+      {
+        "id": "Local Model",
+        "x": 440,
+        "y": -460,
+        "width": 380
+      },
+      {
+        "id": "image_model",
+        "x": 440,
+        "y": -260,
+        "width": 380
+      },
+      {
+        "id": "photo",
+        "x": 440,
+        "y": 200,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "subject",
+        "to": "photo",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "style",
+        "to": "photo",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "image_model",
+        "to": "photo",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "Local Model",
+        "to": "image_model",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "semantic-in"
+      }
+    ],
+    "layout_direction": "LR"
+  }
+}

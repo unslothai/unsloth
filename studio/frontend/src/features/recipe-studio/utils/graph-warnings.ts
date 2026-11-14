@@ -41,6 +41,14 @@ function checkLlmModelAlias(allConfigs: NodeConfig[]): GraphWarning[] {
         severity: "error",
       });
     }
+    if (config.kind === "image" && !config.model_alias.trim()) {
+      warnings.push({
+        nodeId: config.id,
+        nodeName: config.name,
+        message: "Needs an image model preset.",
+        severity: "error",
+      });
+    }
   }
   return warnings;
 }

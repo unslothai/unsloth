@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import io
 import math
 from decimal import Decimal
@@ -170,3 +171,87 @@ def to_preview_jsonable_row(row: Any) -> Any:
     if not isinstance(row, dict):
         return to_preview_jsonable(row)
     return {str(key): to_preview_jsonable(value) for key, value in row.items()}
+
+
+_IMAGE_THUMBNAIL_SIZE = (384, 384)
+_GENERATED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def image_column_names(recipe: Any) -> list[str]:
+    """Only these columns' cells are read as generated images."""
+    columns = recipe.get("columns") if isinstance(recipe, dict) else None
+    return [
+        column["name"]
+        for column in (columns if isinstance(columns, list) else [])
+        if isinstance(column, dict)
+        and column.get("column_type") == "image"
+        and isinstance(column.get("name"), str)
+    ]
+
+
+def _open_generated_image(item: str, dataset_dir: Path | None) -> Any | None:
+    relative = Path(item)
+    if (
+        dataset_dir is not None
+        and relative.suffix.lower() in _GENERATED_IMAGE_SUFFIXES
+        and not relative.is_absolute()
+        and not relative.drive
+    ):
+        # A full run's images/<column>/<file>; nothing outside images/ is read.
+        root = dataset_dir.resolve()
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root / "images"):
+            return None
+        from fastapi import HTTPException
+        from core.training.account_jobs import account_path
+
+        try:
+            account_path(str(target))
+            raw_bytes = target.read_bytes()
+        except (HTTPException, OSError, RuntimeError, ValueError, TypeError):
+            return None
+    else:
+        try:
+            raw_bytes = base64.b64decode(item, validate = True)
+        except (binascii.Error, ValueError):
+            return None
+    try:
+        return _open_pil_image_from_bytes(raw_bytes)
+    except Exception:  # A bomb, truncated file or non-image stays as text.
+        return None
+
+
+def image_cell_to_preview(value: Any, *, dataset_dir: Path | None = None) -> Any:
+    """A generated image cell (base64 strings or images/ paths) as one thumbnail; unreadable cells pass through."""
+    items = value if isinstance(value, list) else [value]
+    items = [item for item in items if isinstance(item, str) and item]
+    if not items:
+        return value
+    image = _open_generated_image(items[0], dataset_dir)
+    if image is None:
+        return value
+    image.thumbnail(_IMAGE_THUMBNAIL_SIZE)
+    payload = _pil_to_preview_payload(image)
+    if len(items) > 1:
+        payload["count"] = len(items)
+    return payload
+
+
+def render_image_columns(
+    rows: list[Any],
+    columns: list[str],
+    *,
+    dataset_dir: Path | None = None,
+) -> list[Any]:
+    """Copies of *rows* with thumbnails in *columns*; the rows themselves keep the original cells."""
+    if not columns:
+        return rows
+    return [
+        {
+            key: image_cell_to_preview(value, dataset_dir = dataset_dir) if key in columns else value
+            for key, value in row.items()
+        }
+        if isinstance(row, dict)
+        else row
+        for row in rows
+    ]

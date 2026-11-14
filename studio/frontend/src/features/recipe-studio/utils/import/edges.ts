@@ -67,7 +67,7 @@ export function buildEdges(
         ? getDefaultDataSourceHandle(layoutDirection)
         : getDefaultSemanticSourceHandle(layoutDirection);
     const semanticTargetDefault =
-      target?.kind === "llm"
+      (target?.kind === "llm" || target?.kind === "image")
         ? getDefaultDataTargetHandle(layoutDirection)
         : getDefaultSemanticTargetHandle(layoutDirection);
     let sourceHandle = getDefaultDataSourceHandle(layoutDirection);
@@ -128,6 +128,14 @@ export function buildEdges(
     if (config.kind === "expression") {
       for (const ref of extractRefs(config.expr)) {
         addEdgeByName(ref, config.name);
+      }
+    }
+    if (config.kind === "image") {
+      for (const ref of extractRefs(config.prompt)) {
+        addEdgeByName(ref, config.name);
+      }
+      if (config.model_alias) {
+        addEdgeByName(config.model_alias, config.name);
       }
     }
     if (

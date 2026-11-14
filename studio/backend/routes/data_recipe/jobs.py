@@ -201,19 +201,56 @@ def _resolve_local_v1_endpoint(request: Request) -> str:
 
 def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
     """Return model_aliases actually referenced by an LLM column. Narrows the "Chat model loaded" gate
-    so orphan model_config nodes don't block unrelated runs. The ``llm-`` prefix matches
-    ``service.py::_recipe_has_llm_columns`` and covers all LLM column types."""
+    so orphan model_config nodes don't block unrelated runs."""
+    return _used_model_aliases(recipe, lambda column_type: column_type.startswith("llm-"))
+
+
+def _used_image_model_aliases(recipe: dict[str, Any]) -> set[str]:
+    return _used_model_aliases(recipe, lambda column_type: column_type == "image")
+
+
+def _used_model_aliases(recipe: dict[str, Any], matches: Any) -> set[str]:
     aliases: set[str] = set()
     for column in recipe.get("columns", []):
         if not isinstance(column, dict):
             continue
         column_type = column.get("column_type")
-        if not isinstance(column_type, str) or not column_type.startswith("llm-"):
+        if not isinstance(column_type, str) or not matches(column_type):
             continue
         alias = column.get("model_alias")
         if isinstance(alias, str) and alias:
             aliases.add(alias)
     return aliases
+
+
+def _is_image_model_config(model_config: dict[str, Any]) -> bool:
+    params = model_config.get("inference_parameters")
+    return isinstance(params, dict) and params.get("generation_type") == "image"
+
+
+def _loaded_local_image_model() -> str | None:
+    """The name /v1/images/generations serves with the loaded image model, or None."""
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
+
+    status = get_active_diffusion_engine().status()
+    if not status.get("loaded"):
+        return None
+    # With media auto-switch off the request's model is informational.
+    if not get_media_auto_switch_enabled():
+        return str(status.get("repo_id") or status.get("display_repo_id") or "local-image-model")
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_auto_switch import resident_request_name
+
+    name = resident_request_name(status, owner = DIFFUSION)
+    if name is None:
+        # Any other name would make the switch replace the loaded model or refuse every row.
+        raise ValueError(
+            "Media auto-switch can't keep the loaded image model, since it isn't in the model list. "
+            "Load one from the Images page list, or turn off media auto-switch in Settings, then "
+            "run the recipe."
+        )
+    return name
 
 
 def _used_local_model_selections(
@@ -370,13 +407,35 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
+# Data Designer waits 60s by default; a FLUX image can take minutes.
+_LOCAL_IMAGE_TIMEOUT_S = 600
+
+
+def _point_image_model_config_at_studio(
+    model_config: dict[str, Any],
+    params: dict[str, Any],
+    extra_body: dict[str, Any],
+    image_model: str | None,
+) -> None:
+    from core.data_recipe.service import DIFFUSION_ROUTE_KEY
+
+    if image_model:
+        # Auto-switch, when on, 404s an unknown name.
+        model_config["model"] = image_model
+    model_config[DIFFUSION_ROUTE_KEY] = True
+    # Keyless callers get a 403 for the default url format.
+    extra_body["response_format"] = "b64_json"
+    params["extra_body"] = extra_body
+    params.setdefault("timeout", _LOCAL_IMAGE_TIMEOUT_S)
+
+
 def _inject_local_providers(
     recipe: dict[str, Any],
     request: Request,
     expect_gen: Optional[str] = None,
 ) -> Optional[int]:
     """Points is_local providers at this server and mints a short-lived sk-unsloth-* key; returns
-    its row id (caller revokes on completion) or None if no local provider."""
+    its row id (caller revokes on completion) or None if no LLM or image column uses a local provider."""
     providers = recipe.get("model_providers")
     if not providers:
         return None
@@ -397,19 +456,40 @@ def _inject_local_providers(
 
     # Orphan model_config nodes never reach /v1, so they must not block runs.
     local_names = {providers[i].get("name") for i in local_indices if providers[i].get("name")}
-    used_aliases = _used_llm_model_aliases(recipe)
-    referenced_providers = {
-        mc.get("provider")
-        for mc in recipe.get("model_configs", [])
-        if (isinstance(mc, dict) and mc.get("provider") and mc.get("alias") in used_aliases)
-    }
+
+    def _references_local(aliases: set[str]) -> bool:
+        return any(
+            isinstance(mc, dict)
+            and mc.get("provider") in local_names
+            and mc.get("alias") in aliases
+            for mc in recipe.get("model_configs", [])
+        )
+
+    uses_local_chat = _references_local(_used_llm_model_aliases(recipe))
+    uses_local_image = _references_local(_used_image_model_aliases(recipe))
+
+    # Point-in-time checks; /v1 still returns a clear error if a model changes later.
+    image_model: str | None = None
+    if uses_local_image:
+        image_model = _loaded_local_image_model()
+        if image_model is None:
+            raise ValueError(
+                "No image model loaded. Load one on the Images page, then run the recipe."
+            )
+    if uses_local_chat:
+        try:
+            _ensure_selected_local_model_loaded(recipe, local_names)
+        except ValueError as exc:
+            if not uses_local_image:
+                raise
+            raise ValueError(
+                f"{exc} This recipe needs a chat model and an image model at the same time: set "
+                "Keep multiple models loaded to When they fit in Settings, then load both."
+            ) from exc
 
     token = ""
     internal_key_id: Optional[int] = None
-    if local_names & referenced_providers:
-        # Point-in-time check; /v1 still returns a clear 400 if the model changes later.
-        _ensure_selected_local_model_loaded(recipe, local_names)
-
+    if uses_local_chat or uses_local_image:
         from auth import storage
 
         # Internal key, hidden from the user's list; revoked when the job ends.
@@ -438,7 +518,6 @@ def _inject_local_providers(
             continue
         if mc.get("provider") in local_names:
             mc["skip_health_check"] = True
-            # Disable thinking: <think> doubles tokens and breaks data_designer's json-fence regex.
             params = mc.get("inference_parameters")
             if not isinstance(params, dict):
                 params = {}
@@ -446,6 +525,10 @@ def _inject_local_providers(
             extra_body = params.get("extra_body")
             if not isinstance(extra_body, dict):
                 extra_body = {}
+            if _is_image_model_config(mc):
+                _point_image_model_config_at_studio(mc, params, extra_body, image_model)
+                continue
+            # Disable thinking: <think> doubles tokens and breaks data_designer's json-fence regex.
             tpl_kwargs = extra_body.get("chat_template_kwargs")
             if not isinstance(tpl_kwargs, dict):
                 tpl_kwargs = {}
@@ -681,6 +764,7 @@ def _build_in_memory_job_dataset_download(
                     job_id,
                     limit = _IN_MEMORY_DOWNLOAD_PAGE_SIZE,
                     offset = offset,
+                    raw = True,
                 )
                 if result is None:
                     raise HTTPException(status_code = 404, detail = "dataset not ready")

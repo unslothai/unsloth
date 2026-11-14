@@ -29,7 +29,7 @@ from typing import Any
 
 import multiprocessing as mp
 
-from ..jsonable import to_preview_jsonable_row
+from ..jsonable import image_column_names, render_image_columns, to_preview_jsonable_row
 from .constants import (
     EVENT_JOB_CANCELLING,
     EVENT_JOB_CANCELLED,
@@ -236,17 +236,17 @@ class JobManager:
         live window is no longer than the run.
         """
         validate_recipe_access(recipe)
-        llm_columns = recipe.get("columns") or []
-        llm_column_count = 0
-        if isinstance(llm_columns, list):
-            for column in llm_columns:
+        model_columns = recipe.get("columns") or []
+        model_column_count = 0
+        if isinstance(model_columns, list):
+            for column in model_columns:
                 if not isinstance(column, dict):
                     continue
                 column_type = str(column.get("column_type") or "").strip().lower()
-                if column_type.startswith("llm"):
-                    llm_column_count += 1
-        if llm_column_count <= 0:
-            llm_column_count = 1
+                if column_type.startswith("llm") or column_type == "image":
+                    model_column_count += 1
+        if model_column_count <= 0:
+            model_column_count = 1
 
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
@@ -254,9 +254,10 @@ class JobManager:
 
             job_id = uuid.uuid4().hex
             self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
-            self._job.progress_columns_total = llm_column_count
+            self._job.progress_columns_total = model_column_count
             self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
             self._job.internal_api_key_id = internal_api_key_id
+            self._job.image_columns = image_column_names(recipe)
             self._events.clear()
             self._seq = 0
 
@@ -408,19 +409,21 @@ class JobManager:
         *,
         limit: int,
         offset: int = 0,
+        raw: bool = False,
     ) -> dict[str, Any] | None:
-        """Load dataset page (offset + limit) and include total rows."""
+        """Load dataset page (offset + limit) and include total rows. Image cells are thumbnails unless *raw*."""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
             in_memory_dataset = self._job.dataset
             artifact_path = self._job.artifact_path
             job_status = self._job.status
+            image_columns = [] if raw else list(self._job.image_columns)
 
         if in_memory_dataset is not None:
             total = len(in_memory_dataset)
             rows = in_memory_dataset[offset : offset + limit]
-            return {"dataset": rows, "total": total}
+            return {"dataset": render_image_columns(rows, image_columns), "total": total}
         if not artifact_path:
             if job_status in {"completed", "error", "cancelled"}:
                 return {"error": "artifact path missing"}
@@ -435,11 +438,16 @@ class JobManager:
                 return None
             if job_status not in {"completed", "error", "cancelled"}:
                 # DuckDB opens with FILE_SHARE_DELETE; pyarrow would block the merge rmtree on Windows.
-                return self._load_dataset_page_with_duckdb(
+                page = self._load_dataset_page_with_duckdb(
                     parquet_dir = parquet_dir, limit = limit, offset = offset
                 )
-
-            return self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
+            else:
+                page = self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
+            if page is not None:
+                page["dataset"] = render_image_columns(
+                    page["dataset"], image_columns, dataset_dir = base_dataset_path
+                )
+            return page
         except Exception as exc:
             return {"error": f"dataset load failed: {exc}"}
 
@@ -684,6 +692,12 @@ class JobManager:
                 self._job.artifact_path = event.get("artifact_path")
                 self._job.execution_type = event.get("execution_type")
                 self._job.dataset = event.get("dataset")
+                # Subscribers get thumbnails; the job keeps the original cells for the download.
+                if isinstance(self._job.dataset, list):
+                    event = {
+                        **event,
+                        "dataset": render_image_columns(self._job.dataset, self._job.image_columns),
+                    }
                 self._job.processor_artifacts = event.get("processor_artifacts")
                 if self._job.progress.total and self._job.progress.total > 0:
                     self._job.progress.done = self._job.progress.total

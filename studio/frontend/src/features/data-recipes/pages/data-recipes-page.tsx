@@ -31,6 +31,7 @@ import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toastError } from "@/shared/toast";
 import { Album02Icon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
+  AiImageIcon,
   BookOpen01Icon,
   CodeIcon,
   CookBookIcon,
@@ -195,6 +196,22 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "rgb(251 113 133 / 0.45)",
     ],
     learningRecipeId: "books-and-documents",
+  },
+  {
+    title: "Product Photos",
+    description:
+      "One generated product photo per row from a local image model, with sampled subjects and styles.",
+    icon: AiImageIcon,
+    difficulty: "Starter",
+    learningBadges: ["AI Image", "Category", "Prompting"],
+    surfaceClassName:
+      "from-fuchsia-500/15 via-pink-500/5 to-transparent dark:from-fuchsia-400/20 dark:via-pink-400/10 dark:to-fuchsia-950/16",
+    shineColor: [
+      "rgb(217 70 239 / 0.45)",
+      "rgb(236 72 153 / 0.4)",
+      "rgb(232 121 249 / 0.45)",
+    ],
+    learningRecipeId: "product-photos",
   },
 ];
 

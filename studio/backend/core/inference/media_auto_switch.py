@@ -91,6 +91,32 @@ def resident_answers_media_request(
     return pick is not None and satisfied_by(resident, name, pick)
 
 
+def resident_request_name(resident: dict[str, Any], *, owner: str) -> Optional[str]:
+    """A name an auto-switch request can send to be served by the resident as loaded, or None."""
+    repo_id = str(resident.get("repo_id") or "").strip()
+    if not resident.get("loaded") or not repo_id:
+        return None
+    task = IMAGE_TASK if owner == DIFFUSION else VIDEO_TASK
+    # A model loaded from a folder reports its path, which no name resolves to; its catalog ids do.
+    bases = [repo_id] + [
+        model_id
+        for model_id in available_media_model_ids(task)
+        if (pick := resolve_local_media_model(model_id, task = task)) is not None
+        and same_identity(pick.model_path, repo_id)
+    ]
+    # A bare GGUF id means the preferred quant, so name the resident build first.
+    suffixes = [
+        str(value).strip()
+        for value in (resident.get("gguf_filename"), resident.get("gguf_variant"))
+        if str(value or "").strip()
+    ]
+    for base in dict.fromkeys(bases):
+        for name in [f"{base}:{suffix}" for suffix in suffixes] + [base]:
+            if resident_answers_media_request(resident, name, owner = owner):
+                return name
+    return None
+
+
 def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
     """The downloaded model *name* refers to. A retired FLUX.3 full copy that is not downloaded itself answers with
     what replaced it when that is downloaded: the base it copies, which Studio stages in that base's -FP8 mirror."""
@@ -555,5 +581,6 @@ __all__ = [
     "invalidate_index",
     "maybe_auto_switch_media_model",
     "resident_answers_media_request",
+    "resident_request_name",
     "resolve_local_media_model",
 ]

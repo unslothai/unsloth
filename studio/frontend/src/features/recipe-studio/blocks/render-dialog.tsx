@@ -5,6 +5,7 @@ import type { ReactElement } from "react";
 import type { NodeConfig, SamplerConfig } from "../types";
 import { getBlockDefinitionForConfig } from "./definitions";
 import { ExpressionDialog } from "../dialogs/expression/expression-dialog";
+import { ImageDialog } from "../dialogs/image/image-dialog";
 import { LlmDialog } from "../dialogs/llm/llm-dialog";
 import { ModelConfigDialog } from "../dialogs/models/model-config-dialog";
 import { ModelProviderDialog } from "../dialogs/models/model-provider-dialog";
@@ -121,6 +122,10 @@ export function renderBlockDialog(
     case "expression":
       return config.kind === "expression" ? (
         <ExpressionDialog config={config} onUpdate={update} />
+      ) : null;
+    case "image":
+      return config.kind === "image" ? (
+        <ImageDialog config={config} onUpdate={update} />
       ) : null;
     case "validator":
       return config.kind === "validator" ? (

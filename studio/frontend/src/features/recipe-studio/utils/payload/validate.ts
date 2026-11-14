@@ -88,6 +88,36 @@ export function validateModelAliasLinks(
   }
 }
 
+/** An LLM step on an image preset would get text from the chat model, and the reverse fails. */
+export function validateModelAliasKinds(
+  configs: Record<string, NodeConfig>,
+  modelConfigConfigs: ModelConfig[],
+  errors: string[],
+): void {
+  const imagePresets = new Set(
+    modelConfigConfigs
+      .filter((config) => config.generation === "image")
+      .map((config) => config.name),
+  );
+  for (const config of Object.values(configs)) {
+    if (config.kind === "llm" && imagePresets.has(config.model_alias)) {
+      errors.push(
+        `LLM ${config.name}: ${config.model_alias} is an image model preset; pick a text one.`,
+      );
+    }
+    if (
+      config.kind === "image" &&
+      config.model_alias &&
+      modelConfigConfigs.some((preset) => preset.name === config.model_alias) &&
+      !imagePresets.has(config.model_alias)
+    ) {
+      errors.push(
+        `Image ${config.name}: ${config.model_alias} is a text model preset; pick an image one.`,
+      );
+    }
+  }
+}
+
 export function validateModelConfigProviders(
   modelConfigConfigs: ModelConfig[],
   modelAliases: Set<string>,
@@ -107,7 +137,7 @@ export function validateModelConfigProviders(
       errors.push(`Model config ${alias}: model is required.`);
       continue;
     }
-    if (isLocal && isUsed && !model) {
+    if (isLocal && isUsed && !model && config.generation !== "image") {
       errors.push(`Model config ${alias}: choose a local model.`);
     }
     if (!isLocal && isUsed && !model) {

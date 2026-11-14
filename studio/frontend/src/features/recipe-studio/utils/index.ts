@@ -3,6 +3,7 @@
 
 export {
   makeExpressionConfig,
+  makeImageConfig,
   makeLlmConfig,
   makeMarkdownNoteConfig,
   makeModelConfig,
@@ -20,6 +21,8 @@ export {
 export {
   isCategoryConfig,
   isExpressionConfig,
+  isImageConfig,
+  isImageModelConfig,
   isLlmConfig,
   isSamplerConfig,
   isSubcategoryConfig,

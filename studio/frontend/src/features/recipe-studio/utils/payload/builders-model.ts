@@ -69,10 +69,50 @@ function assignFiniteNumber(
   }
 }
 
+const IMAGE_SIZE_PATTERN = /^\d+x\d+$/;
+
+// Data Designer passes image options through extra_body; Studio reads size, steps and guidance.
+function buildImageInferenceParameters(
+  config: ModelConfig,
+  errors: string[],
+): Record<string, unknown> {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  const inference: Record<string, unknown> = { generation_type: "image" };
+  assignFiniteNumber(
+    inference,
+    "timeout",
+    config.inference_timeout,
+    Math.trunc,
+  );
+  const imageOptions: Record<string, unknown> = {};
+  const size = config.image_size?.trim();
+  if (size) {
+    if (!IMAGE_SIZE_PATTERN.test(size)) {
+      errors.push(`Model ${config.name}: image size must look like 1024x1024.`);
+    }
+    imageOptions.size = size;
+  }
+  assignFiniteNumber(imageOptions, "steps", config.image_steps, Math.trunc);
+  assignFiniteNumber(imageOptions, "guidance", config.image_guidance);
+  const extraBody = parseJsonObject(
+    config.inference_extra_body,
+    `Model ${config.name} inference extra_body`,
+    errors,
+  );
+  const merged = { ...imageOptions, ...(extraBody ?? {}) };
+  if (Object.keys(merged).length > 0) {
+    inference.extra_body = merged;
+  }
+  return inference;
+}
+
 function buildInferenceParameters(
   config: ModelConfig,
   errors: string[],
 ): Record<string, unknown> {
+  if (config.generation === "image") {
+    return buildImageInferenceParameters(config, errors);
+  }
   const inference: Record<string, unknown> = {};
   assignFiniteNumber(inference, "temperature", config.inference_temperature);
   assignFiniteNumber(inference, "top_p", config.inference_top_p);
@@ -103,9 +143,15 @@ export function buildModelConfig(
   const inference = buildInferenceParameters(config, errors);
   const ggufVariant = config.gguf_variant?.trim();
 
+  // A local image preset runs whichever image model is loaded; the server fills in its name.
+  const model =
+    config.generation === "image" && !config.model.trim()
+      ? "local"
+      : config.model;
+
   return {
     alias: config.name,
-    model: config.model,
+    model,
     // biome-ignore lint/style/useNamingConvention: api schema
     gguf_variant: ggufVariant || undefined,
     provider: config.provider || undefined,

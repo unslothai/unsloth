@@ -21,6 +21,7 @@ import {
   VALIDATOR_SQL_CODE_LANGS,
 } from "../validators/code-lang";
 import {
+  isModelStep,
   isSemanticRelation,
   isTextFormatValidator,
   isTextFormatValidatorTarget,
@@ -107,7 +108,7 @@ function getSingleRefRelation(
   if (source.kind === "model_provider" && target.kind === "model_config") {
     return "provider";
   }
-  if (source.kind === "model_config" && target.kind === "llm") {
+  if (source.kind === "model_config" && isModelStep(target)) {
     return "model_alias";
   }
   if (source.kind === "tool_config" && target.kind === "llm") {
@@ -176,7 +177,7 @@ function isModelSemanticRelation(
 ): boolean {
   return (
     (source.kind === "model_provider" && target.kind === "model_config") ||
-    (source.kind === "model_config" && target.kind === "llm") ||
+    (source.kind === "model_config" && isModelStep(target)) ||
     (source.kind === "tool_config" && target.kind === "llm")
   );
 }
@@ -259,7 +260,7 @@ function chooseModelSemanticHandles(
   }
 
   const sourceCandidates =
-    source.kind === "model_config" && target.kind === "llm"
+    source.kind === "model_config" && isModelStep(target)
       ? layoutDirection === "TB"
         ? [HANDLE_IDS.semanticOut]
         : [HANDLE_IDS.semanticOutBottom]
@@ -431,7 +432,7 @@ export function applyRecipeConnection(
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
-  if (source.kind === "model_config" && target.kind === "llm") {
+  if (source.kind === "model_config" && isModelStep(target)) {
     const next = { ...target, model_alias: source.name };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
@@ -496,6 +497,22 @@ export function applyRecipeConnection(
     const next = {
       ...target,
       expr: buildTemplateWithRef(target.expr ?? "", ref),
+    };
+    return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
+  }
+  if (
+    target.kind === "image" &&
+    !semanticRelation &&
+    source.kind !== "seed" &&
+    source.kind !== "model_provider" &&
+    source.kind !== "model_config" &&
+    source.kind !== "tool_config" &&
+    source.kind !== "validator"
+  ) {
+    const ref = `{{ ${source.name} }}`;
+    const next = {
+      ...target,
+      prompt: buildTemplateWithRef(target.prompt, ref),
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }

@@ -32,6 +32,16 @@ export function nodeDataFromConfig(
       layoutDirection,
     };
   }
+  if (config.kind === "image") {
+    return {
+      title: "Image",
+      kind: "image",
+      subtype: "Generated image",
+      blockType: "image",
+      name: config.name,
+      layoutDirection,
+    };
+  }
   if (config.kind === "validator") {
     const isOxc = config.validator_type === "oxc";
     const isJson = config.validator_type === "json";
@@ -102,7 +112,8 @@ export function nodeDataFromConfig(
   }
   if (config.kind === "model_config") {
     return {
-      title: "Model preset",
+      title:
+        config.generation === "image" ? "Image model preset" : "Model preset",
       kind: "model_config",
       subtype: config.model || "Model",
       blockType: "model_config",
