@@ -51,5 +51,10 @@ test("the picker reads one fit per variant, companions included", () => {
     PICKERS.slice(at, at + 400),
     /ggufVariantFitSizeBytes\(variant\)|classifyGgufFitWithLookupTables\(getGgufFit, variant\)|classifyVariantFitOnCard\(getGgufFit, variant, cardGb\)/,
   );
-  assert.equal(PICKERS.match(/getVariantFit\(v\)/g)?.length, 2);
+  // The row reads it once; the shared order (variant-order.ts) takes the same function.
+  assert.equal(PICKERS.match(/getVariantFit\(v\)/g)?.length, 1);
+  assert.match(
+    PICKERS,
+    /orderGgufVariantsForPicker\(\s*variantGroups,\s*getVariantFit,/,
+  );
 });

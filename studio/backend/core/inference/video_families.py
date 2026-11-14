@@ -754,6 +754,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         label = "Wan2.2 TI2V 5B",
         profile = FamilyProfile(
             scheme_deny = _NVFP4_GATE_FAILED,
+            # Image AUTO rule: INT8 1.18x faster than bf16 (RTX PRO 6000, both resident, compiled), so INT8.
+            auto_prequant_when_resident = frozenset({"int8"}),
             untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
             preview_factors = "wan22_5b",
             auto_static_skip = (
@@ -814,6 +816,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
                 gated = True,
                 backend = "flashinfer",
             ),
+            # Same rule: INT8 1.12x faster than bf16 (peak 52.4 vs 80.5 GB), so INT8 even when bf16 is resident.
+            auto_prequant_when_resident = frozenset({"int8"}),
             untiled_vae = _WAN21_VAE_UNTILED,
         ),
         comfy_flow_shift = 5.0,  # ComfyUI ModelSamplingSD3 5 (T2V-A14B template)

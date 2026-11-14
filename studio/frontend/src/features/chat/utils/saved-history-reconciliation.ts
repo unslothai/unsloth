@@ -5,6 +5,7 @@ import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/rea
 
 import type { MessageRecord } from "../types";
 import { restoredAssistantStatus } from "./continuation";
+import { resolveSavedBranchHead } from "./message-order";
 import {
   generationNeedsRecovery,
   generationRawContent,
@@ -125,9 +126,46 @@ export function reconcileOrdinarySavedMessagesInExport(
   return { messages, changed };
 }
 
+export function appendExternalStoredTurns(
+  exported: ExportedMessageRepository,
+  storedMessages: readonly MessageRecord[],
+  toThreadMessage: (record: MessageRecord) => ThreadMessage,
+  idsAtRead?: ReadonlySet<string>,
+): ExportedMessageRepository | null {
+  if (exported.messages.some((item) => item.message.status?.type === "running")) {
+    return null;
+  }
+  const known = new Set(exported.messages.map((item) => item.message.id));
+  // A local delete raced the read, so the snapshot still holds the removed rows.
+  if (idsAtRead && [...idsAtRead].some((id) => !known.has(id))) return null;
+  // In-flight runs are added like a reload adds them; generation recovery then streams them.
+  const pending = storedMessages
+    .filter((message) => !known.has(message.id))
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const appended: ExportedMessageRepository["messages"][number][] = [];
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const message of pending) {
+      if (known.has(message.id)) continue;
+      if (!message.parentId || !known.has(message.parentId)) continue;
+      known.add(message.id);
+      appended.push({ parentId: message.parentId, message: toThreadMessage(message) });
+      progressed = true;
+    }
+  }
+  if (appended.length === 0) return null;
+
+  // Same leaf policy as the history loader; a head on another branch stays put.
+  const leaf = resolveSavedBranchHead([...storedMessages], exported.headId);
+  const headId = leaf && known.has(leaf) ? leaf : (exported.headId ?? null);
+  return { ...exported, headId, messages: [...exported.messages, ...appended] };
+}
+
 type ThreadImportExport = {
   export: () => ExportedMessageRepository;
   import: (data: ExportedMessageRepository) => void;
+  getState?: () => { messages: readonly { composer?: { isEditing?: boolean } }[] };
 };
 
 type ReconcileView = {
@@ -139,25 +177,69 @@ export function reconcileOrdinarySavedMessagesInView(
   view: ReconcileView,
   threadId: string,
   storedMessages: readonly MessageRecord[],
-  options: { editingMessageId: string | null },
+  options: {
+    editingMessageId: string | null;
+    toThreadMessage: (record: MessageRecord) => ThreadMessage;
+    idsAtRead?: ReadonlySet<string>;
+  },
 ): boolean {
   if (view.threadListItem().getState().remoteId !== threadId) {
     return false;
   }
   try {
     const thread = view.thread();
+    // An import resets an open prompt-edit composer and loses its draft.
+    if (thread.getState?.().messages.some((message) => message.composer?.isEditing)) {
+      return false;
+    }
     const exported = thread.export();
     const { messages, changed } = reconcileOrdinarySavedMessagesInExport(
       exported,
       storedMessages,
       options,
     );
-    if (!changed) {
+    const patched = { ...exported, messages };
+    const extended =
+      options.editingMessageId === null
+        ? appendExternalStoredTurns(
+            patched,
+            storedMessages,
+            options.toThreadMessage,
+            options.idsAtRead,
+          )
+        : null;
+    if (!changed && !extended) {
       return false;
     }
-    thread.import({ ...exported, messages });
+    thread.import(extended ?? patched);
     return true;
   } catch {
     return false;
   }
+}
+
+/** Reconciles when this view's thread becomes the active one; other mounted views stay idle. */
+export function subscribeThreadSwitchRecovery(
+  store: {
+    subscribe: (
+      listener: (
+        state: { activeThreadId: string | null },
+        prev: { activeThreadId: string | null },
+      ) => void,
+    ) => () => void;
+  },
+  ownsThread: (threadId: string) => boolean,
+  recover: () => void,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const unsubscribe = store.subscribe((state, prev) => {
+    const next = state.activeThreadId;
+    if (!next || next === prev.activeThreadId || !ownsThread(next)) return;
+    clearTimeout(timer);
+    timer = setTimeout(recover, 0);
+  });
+  return () => {
+    clearTimeout(timer);
+    unsubscribe();
+  };
 }

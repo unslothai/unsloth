@@ -56,6 +56,8 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  gpuLayersPatch,
+  moeCpuOffloadApplies,
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
@@ -223,6 +225,8 @@ import {
   isReasoningBudgetMessageValid,
   contextPinPatch,
   isServedByMlx,
+  NPU_POWER_MODES,
+  type NpuPowerMode,
   savedContextPin,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
@@ -235,9 +239,17 @@ import {
   savePerModelConfig,
   storedSpeculativeAuto,
   subscribeAdvancedSettingsOpen,
+  sameEngramPrecision,
 } from "../model-config/per-model-config";
+import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
-import { isNpuModelId, NPU_DEFAULT_CONTEXT_LENGTH } from "../../npu";
+import {
+  isNpuModelId,
+  refreshNpuModels,
+  useNpuCatalogStore,
+  useNpuDisplayName,
+  useNpuStatus,
+} from "../../npu";
 import {
   type RunConfigImport,
   SharedRunConfigControls,
@@ -257,7 +269,7 @@ import {
   type NumericValueInputHandle,
 } from "./numeric-value-input";
 
-const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
+const ROW_CLASS = "config-row flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
   "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
@@ -361,6 +373,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.cacheRam != null ||
     config.tensorParallel ||
     config.disableVision ||
+    config.engramPrecision != null ||
     config.chatTemplateOverride != null ||
     // Hidden flags change behaviour, so do not open collapsed claiming defaults.
     (config.llamaExtraArgs != null && config.llamaExtraArgs.length > 0) ||
@@ -388,6 +401,7 @@ function withoutUnsupportedDiffusionSettings(
     config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
     !config.disableVision &&
+    config.engramPrecision == null &&
     config.nBatch == null &&
     config.nUbatch == null &&
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
@@ -405,6 +419,7 @@ function withoutUnsupportedDiffusionSettings(
     reasoningBudgetMessage: "",
     tensorParallel: false,
     disableVision: false,
+    engramPrecision: null,
     nBatch: null,
     nUbatch: null,
     // The diffusion shim never passes llama-server flags but the load would record them.
@@ -495,6 +510,7 @@ function MaxSeqLengthSetting({
   pinned,
   fittedToMemory,
   windowUnknown,
+  unknownLabel = "—",
   hint,
 }: {
   value: number;
@@ -506,6 +522,7 @@ function MaxSeqLengthSetting({
   pinned?: boolean;
   fittedToMemory?: boolean;
   windowUnknown?: boolean;
+  unknownLabel?: string;
   hint?: string;
 }) {
   const label = isMlx ? "Context Length" : "Max Seq Length";
@@ -537,7 +554,7 @@ function MaxSeqLengthSetting({
           max={inputMax}
           step={MAX_SEQ_LENGTH_STEP}
           onChange={onChange}
-          displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}
+          displayValue={isMlx && windowUnknown && !dragging ? unknownLabel : undefined}
           derived={isMlx && !pinned && !dragging}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
@@ -700,7 +717,8 @@ function GpuMemorySettings({
   const gpuLayersMax = layerCount != null ? layerCount + 1 : 256;
   const nCpuMoe = config.nCpuMoe ?? 0;
   const moeLayersMax = moeLayerCount ?? 0;
-  const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
+  const showMoeSlider =
+    isManual && moeCpuOffloadApplies(gpuLayers) && moeLayersMax > 0;
   const selectedGpuIds = config.selectedGpuIds ?? null;
   const gpuContext = pinnableGpuContext(gpuDevices, isDiffusion);
   const pinnableDevices = gpuContext.devices ?? [];
@@ -841,9 +859,7 @@ function GpuMemorySettings({
             value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
             min={GPU_LAYERS_AUTO}
             max={gpuLayersMax}
-            onChange={(v) =>
-              update(v < 0 ? { gpuLayers: v, tensorSplit: null } : { gpuLayers: v })
-            }
+            onChange={(v) => update(gpuLayersPatch(v))}
             format={(v) => (v < 0 ? "Auto" : undefined)}
             info={
               <>
@@ -1393,6 +1409,139 @@ function MlxSpeculativeRows({
   );
 }
 
+const NPU_DEFAULT_CHOICE = "default";
+const NPU_DEFAULT_LABEL = "Default";
+const NPU_POWER_MODE_LABELS: Record<NpuPowerMode, string> = {
+  powersaver: "Power saver",
+  balanced: "Balanced",
+  performance: "Performance",
+  turbo: "Turbo",
+};
+// FastFlowLM's pre-resize levels 0 to NPU_IMG_PRE_RESIZE_MAX, by the height an image is scaled to.
+const NPU_IMG_PRE_RESIZE_LABELS = ["Original size", "480p", "720p", "1080p", "1440p"];
+
+function NpuAdvancedSettings({
+  config,
+  update,
+  contextLength,
+  showImagePreResize,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  contextLength: number;
+  showImagePreResize: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-5">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Power Mode</span>
+          <InfoHint>
+            How hard FastFlowLM drives the NPU. Turbo answers fastest and draws
+            the most power, Power saver the least. Default keeps FastFlowLM&apos;s
+            own. Changing it reloads the model.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.npuPowerMode ?? NPU_DEFAULT_CHOICE}
+          onValueChange={(v) =>
+            update({ npuPowerMode: v === NPU_DEFAULT_CHOICE ? null : (v as NpuPowerMode) })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            aria-label="NPU power mode"
+            className={SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value={NPU_DEFAULT_CHOICE}>{NPU_DEFAULT_LABEL}</SelectItem>
+            {NPU_POWER_MODES.map((mode) => (
+              <SelectItem key={mode} value={mode}>
+                {NPU_POWER_MODE_LABELS[mode]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Prefill Chunk Length</span>
+          <InfoHint>
+            Prompt tokens FastFlowLM reads per step. Leave blank for its
+            default. Never more than the context length.
+          </InfoHint>
+        </div>
+        <input
+          type="number"
+          min={1}
+          max={contextLength}
+          step={1}
+          value={config.npuPrefillChunkLen ?? ""}
+          placeholder={NPU_DEFAULT_LABEL}
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw === "") {
+              update({ npuPrefillChunkLen: null });
+              return;
+            }
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed)) {
+              update({ npuPrefillChunkLen: Math.max(1, Math.min(contextLength, parsed)) });
+            }
+          }}
+          aria-label="NPU prefill chunk length"
+          className={NUMBER_INPUT_CLASS}
+        />
+      </div>
+      {/* Stays visible while set so it can be cleared. */}
+      {(showImagePreResize || config.npuImgPreResize != null) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Image Pre-resize</span>
+            <InfoHint>
+              The height FastFlowLM scales an image to before reading it.
+              Smaller answers sooner; Original size keeps every detail. Default
+              keeps FastFlowLM&apos;s own.
+            </InfoHint>
+          </div>
+          <Select
+            value={
+              config.npuImgPreResize == null
+                ? NPU_DEFAULT_CHOICE
+                : String(config.npuImgPreResize)
+            }
+            onValueChange={(v) =>
+              update({ npuImgPreResize: v === NPU_DEFAULT_CHOICE ? null : Number(v) })
+            }
+          >
+            <SelectTrigger
+              animateRadius={false}
+              icon={ChevronDownStandardIcon}
+              iconClassName="size-3.5"
+              aria-label="NPU image pre-resize"
+              className={SELECT_TRIGGER_CLASS}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+              <SelectItem value={NPU_DEFAULT_CHOICE}>{NPU_DEFAULT_LABEL}</SelectItem>
+              {NPU_IMG_PRE_RESIZE_LABELS.map((label, level) => (
+                <SelectItem key={label} value={String(level)}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MlxAdvancedSettings({
   config,
   update,
@@ -1623,6 +1772,154 @@ function LoadModeRow({
   );
 }
 
+/** The repo, quant and token the Engram row lists tables for. */
+type EngramTableSource = {
+  repoId: string;
+  ggufVariant: string;
+  hfToken: string | null;
+};
+
+type EngramTableListing = {
+  tables: EngramTableDetail[];
+  own: string;
+  ready: string[];
+  quantDownloaded: boolean;
+  supported: boolean | null;
+};
+
+function formatTableSize(bytes: number): string {
+  return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+/** Tables the repo publishes for this quant, or null when it publishes none (the row then hides). */
+function useEngramTables(source: EngramTableSource | null): EngramTableListing | null {
+  const [listing, setListing] = useState<EngramTableListing | null>(null);
+  const repoId = source?.repoId ?? null;
+  const ggufVariant = source?.ggufVariant ?? null;
+  const hfToken = source?.hfToken ?? null;
+  useEffect(() => {
+    setListing(null);
+    if (!repoId || !ggufVariant) return;
+    const controller = new AbortController();
+    // Not preferLocalCache: a cache-only answer has no Hub listing, so it cannot name the tables.
+    listGgufVariants(repoId, hfToken || undefined, { signal: controller.signal })
+      .then((response) => {
+        if (controller.signal.aborted) return;
+        const tables = response.engram_tables ?? [];
+        const variant = response.variants.find(
+          (v) => v.quant.toLowerCase() === ggufVariant.toLowerCase(),
+        );
+        const own = variant?.engram_precision ?? null;
+        if (tables.length === 0 || !variant || !own) return;
+        setListing({
+          tables,
+          own,
+          ready: variant.engram_ready ?? [],
+          quantDownloaded: variant.downloaded === true,
+          supported: response.engram_supported ?? null,
+        });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [repoId, ggufVariant, hfToken]);
+  return listing;
+}
+
+function EngramTableRow({
+  config,
+  update,
+  source,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  source: EngramTableSource | null;
+}) {
+  const noteId = useId();
+  const listing = useEngramTables(source);
+  if (!listing) return null;
+  const { tables, own, ready, quantDownloaded, supported } = listing;
+  const chosen = config.engramPrecision ?? null;
+  // The quant's own precision is the default, stored as null.
+  const selected =
+    chosen && !sameEngramPrecision(chosen, own)
+      ? (tables.find((t) => sameEngramPrecision(t.precision, chosen))?.precision ?? chosen)
+      : own;
+  const swapped = !sameEngramPrecision(selected, own);
+  const table = tables.find((t) => sameEngramPrecision(t.precision, selected));
+  const ownTable = tables.find((t) => sameEngramPrecision(t.precision, own));
+  const ownReady = ready.some((p) => sameEngramPrecision(p, own));
+  let note: string | null = null;
+  if (supported === false) {
+    note = swapped
+      ? "This llama.cpp build cannot load a separate table, so the next load fails. Update llama.cpp, or pick the built-in table."
+      : "Swapping the table needs a newer llama.cpp. Update it to choose another precision.";
+  } else if (swapped && table && !table.downloaded) {
+    note = `The next load downloads the ${table.precision} table (${formatTableSize(table.size_bytes)}).`;
+    if (!ownReady && ownTable) {
+      note += ` The built-in ${own} table (${formatTableSize(ownTable.size_bytes)}) is not needed.`;
+    }
+  } else if (!swapped && quantDownloaded && !ownReady && ownTable) {
+    // On disk with another table in place of its own.
+    note = `The next load downloads the built-in ${own} table (${formatTableSize(ownTable.size_bytes)}).`;
+  }
+  return (
+    <div className="space-y-1">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Engram Table</span>
+          <InfoHint>
+            Precision of the model's n-gram lookup table. A higher precision
+            stays closer to the original model and takes more disk; a lower
+            one saves disk. The table is read from disk as needed, so it uses
+            little RAM or VRAM. Built-in is the table this quant ships with.
+            Another choice is downloaded once, and the built-in table is then
+            not needed.
+          </InfoHint>
+        </div>
+        <Select
+          value={selected}
+          disabled={supported === false && !swapped}
+          onValueChange={(v) =>
+            update({ engramPrecision: sameEngramPrecision(v, own) ? null : v })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={SELECT_TRIGGER_CLASS}
+            aria-describedby={note ? noteId : undefined}
+          >
+            <SelectValue>{selected}</SelectValue>
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            {tables.map((t) => {
+              const builtIn = sameEngramPrecision(t.precision, own);
+              const downloaded = !builtIn && t.downloaded;
+              return (
+                <SelectItem key={t.precision} value={t.precision}>
+                  <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                    <span>{t.precision}</span>
+                    <span className="text-ui-12 tabular-nums text-muted-foreground">
+                      {formatTableSize(t.size_bytes)}
+                      {builtIn ? " · built-in" : downloaded ? " · downloaded" : ""}
+                    </span>
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+      </div>
+      {note && (
+        <p id={noteId} className="text-ui-11 text-muted-foreground">
+          {note}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -1639,9 +1936,11 @@ function GgufAdvancedSettings({
   onExtraArgsLoadableChange,
   draftKey,
   focusParallelSlots,
+  engramSource,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
+  engramSource: EngramTableSource | null;
   showDraftTokens: boolean;
   showSpecDraftCacheDtype: boolean;
   speculativeFallback: string;
@@ -1740,6 +2039,9 @@ function GgufAdvancedSettings({
             onCheckedChange={(checked) => update({ disableVision: !checked })}
           />
         </div>
+      )}
+      {!isDiffusion && (
+        <EngramTableRow config={config} update={update} source={engramSource} />
       )}
       </AdvancedGroup>
       )}
@@ -2368,11 +2670,25 @@ export function ModelConfigPage({
   const loadedDefaultChatTemplate = useChatRuntimeStore(
     (s) => s.defaultChatTemplate,
   );
+  const npuContextFit = useChatRuntimeStore((s) => s.loadedNpuContextFit);
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.maxContextLength,
   );
   const configId = target.configId ?? target.id;
   const targetIsNpu = isNpuModelId(target.id);
+  const npuName = useNpuDisplayName(targetIsNpu ? target.id : null);
+  const npuCatalogVision = useNpuCatalogStore(
+    (s) => s.models?.some((m) => m.model_path === target.id && m.supports_vision) ?? false,
+  );
+  // List the catalog here too: a chat opened straight onto an NPU model needs its vision flag.
+  const npuCatalogListed = useNpuCatalogStore((s) => s.models != null);
+  const [npuStatus] = useNpuStatus(targetIsNpu && !npuCatalogListed);
+  useEffect(() => {
+    // Listing starts lemond, so only on a validated runtime.
+    if (targetIsNpu && !npuCatalogListed && npuStatus?.ready === true) {
+      void refreshNpuModels();
+    }
+  }, [targetIsNpu, npuCatalogListed, npuStatus?.ready]);
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(configId, target.ggufVariant);
@@ -2549,6 +2865,12 @@ export function ModelConfigPage({
   const [initialMlxOffload] = useState(
     () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
   );
+  const [initialNpuFlm] = useState(
+    () =>
+      configState.npuPowerMode != null ||
+      configState.npuPrefillChunkLen != null ||
+      configState.npuImgPreResize != null,
+  );
   // Applicability stays live, unlike the snapshot above: MLX can become available after mount,
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
@@ -2556,6 +2878,7 @@ export function ModelConfigPage({
   const autoOpenForMlxAnePrefill = servedByMlx && initialMlxAnePrefill;
   const autoOpenForMlxFastVerify = servedByMlx && initialMlxFastVerify;
   const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
+  const autoOpenForNpuFlm = targetIsNpu && initialNpuFlm;
   // Opened to change one field: show its section for this visit, leaving the saved switch alone.
   const [revealForFocus, setRevealForFocus] = useState(focusField != null);
   const showAdvanced =
@@ -2566,7 +2889,8 @@ export function ModelConfigPage({
         autoOpenForMlxInt8Prefill ||
         autoOpenForMlxAnePrefill ||
         autoOpenForMlxFastVerify ||
-        autoOpenForMlxOffload));
+        autoOpenForMlxOffload ||
+        autoOpenForNpuFlm));
   const toggleAdvanced = (open: boolean) => {
     setRevealForFocus(false);
     saveAdvancedSettingsOpen(open);
@@ -3031,11 +3355,17 @@ export function ModelConfigPage({
   const contextAtDefault = !target.isGguf
     ? savedContextPin(config) == null
     : config.customContextLength == null;
+  // Normalized as the set store compares: a loaded config spells its defaults out
+  // (`speculativeType: "auto"`, `gpuLayers: -1`), which read raw made Default look edited.
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(
-      { ...config, customContextLength: null },
-      DEFAULT_PER_MODEL_CONFIG,
+      normalizePerModelConfig(
+        storedSpeculativeAuto({ ...config, customContextLength: null }, targetIsMlx),
+      ),
+      normalizePerModelConfig(
+        storedSpeculativeAuto(DEFAULT_PER_MODEL_CONFIG, targetIsMlx),
+      ),
     );
   const nativeMaxSeqLength =
     floorMaxSeqLength(
@@ -3164,10 +3494,9 @@ export function ModelConfigPage({
     mlxFittedWindow,
     mlxProspectiveWindow,
   );
-  const npuServedWindow = targetIsNpu
-    ? ((isActiveModel ? servedWindow(loadedContextLength) : null) ??
-      Math.min(NPU_DEFAULT_CONTEXT_LENGTH, nativeMaxSeqLength))
-    : null;
+  // Auto is sized to free RAM at load time, so only a resident model knows its window.
+  const npuServedWindow =
+    targetIsNpu && isActiveModel ? servedWindow(loadedContextLength) : null;
   const maxSeqLengthValue =
     servedWindow(savedContextPin(config)) ??
     mlxServedWindow ??
@@ -3465,13 +3794,20 @@ export function ModelConfigPage({
       pendingPatch.customContextLength = committedContext;
     }
     if (committedMaxSeqLength != null) {
-      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));
+      Object.assign(
+        pendingPatch,
+        contextPinPatch(committedMaxSeqLength, pinsContextLength, config.npuPrefillChunkLen),
+      );
     }
     if (committedGpuLayers != null) {
       pendingPatch.gpuLayers = committedGpuLayers;
     }
     if (committedMoeLayers != null) {
       pendingPatch.nCpuMoe = committedMoeLayers;
+    }
+    if (committedGpuLayers === 0) {
+      // Typed after the MoE input in the same click: 0 layers still zeroes the hidden count.
+      pendingPatch.nCpuMoe = 0;
     }
     const hasPending =
       committedContext != null ||
@@ -3916,7 +4252,7 @@ export function ModelConfigPage({
     >
       {variant === "page" && showHeader && (
         // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
-        <div className="flex items-center gap-2.5 pb-5">
+        <div data-config-header="" className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
@@ -3932,17 +4268,11 @@ export function ModelConfigPage({
             </button>
           )}
           <div className="min-w-0 flex-1">
-            <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+            <div data-config-eyebrow="" className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
-              {target.displayName}
-            </div>
-            <div
-              className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground"
-              aria-live="polite"
-            >
-              {saveStatus || "\u00a0"}
+            <div data-config-title="" className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
+              {npuName ?? target.displayName}
             </div>
           </div>
         </div>
@@ -4083,6 +4413,11 @@ export function ModelConfigPage({
                 draftKey={draftKey}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
                 focusParallelSlots={focusField === "parallelSlots"}
+                engramSource={
+                  target.ggufVariant
+                    ? { repoId: target.id, ggufVariant: target.ggufVariant, hfToken: hfToken || null }
+                    : null
+                }
               />
             )}
           </>
@@ -4104,56 +4439,70 @@ export function ModelConfigPage({
                 mlxServedWindow == null &&
                 npuServedWindow == null
               }
+              unknownLabel={targetIsNpu ? "Auto" : undefined}
               hint={
                 targetIsNpu
-                  ? `Context the NPU loads the model with. Default ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if lower.`
+                  ? "Context the NPU loads the model with. Auto fits it to the RAM free at load time, up to 65,536 tokens or the model's limit."
                   : undefined
               }
               onChange={(value) =>
-                update(contextPinPatch(value, pinsContextLength))
+                update(contextPinPatch(value, pinsContextLength, config.npuPrefillChunkLen))
               }
             />
-            {!targetIsNpu && (
-              <>
-                <AdvancedSettingsToggle
-                  checked={showAdvanced}
-                  onCheckedChange={toggleAdvanced}
+            {targetIsNpu &&
+              isActiveModel &&
+              npuContextFit != null &&
+              maxSeqLengthValue > npuContextFit && (
+                <p className="text-ui-11 text-amber-500">
+                  This window exceeds the free-memory estimate at load time
+                  ({npuContextFit.toLocaleString()} tokens).
+                </p>
+              )}
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
+            {showAdvanced &&
+              (targetIsNpu ? (
+                <NpuAdvancedSettings
+                  config={config}
+                  update={update}
+                  contextLength={maxSeqLengthValue}
+                  showImagePreResize={target.meta.isVision === true || npuCatalogVision}
                 />
-                {showAdvanced && (
-                  <MlxAdvancedSettings
-                    config={config}
-                    update={update}
-                    outcome={mlxKvQuantOutcome}
-                    servedByMlx={servedByMlx}
-                    int8PrefillAvailable={int8PrefillAvailable}
-                    onInt8PrefillChange={(checked) =>
-                      checked
-                        ? setInt8PrefillConfirmOpen(true)
-                        : update({ mlxInt8Prefill: false })
-                    }
-                    anePrefillAvailable={anePrefillAvailable}
-                    onAnePrefillChange={(checked) =>
-                      checked
-                        ? setAnePrefillConfirmOpen(true)
-                        : update({ mlxAnePrefill: false })
-                    }
-                    fastVerifyAvailable={fastVerifyAvailable}
-                    onFastVerifyChange={(checked) =>
-                      checked
-                        ? setFastVerifyConfirmOpen(true)
-                        : update({ mlxFastVerify: false })
-                    }
-                    offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
-                    offloadDecided={mlxOffloadDecidedNow}
-                    offloadNotes={mlxOffloadNotes}
-                    speculativeFallback={speculativeFallback}
-                    modelPath={target.id}
-                    onEditTemplate={() => setTemplateOpen(true)}
-                    templateOutcome={chatTemplateOutcome}
-                  />
-                )}
-              </>
-            )}
+              ) : (
+                <MlxAdvancedSettings
+                  config={config}
+                  update={update}
+                  outcome={mlxKvQuantOutcome}
+                  servedByMlx={servedByMlx}
+                  int8PrefillAvailable={int8PrefillAvailable}
+                  onInt8PrefillChange={(checked) =>
+                    checked
+                      ? setInt8PrefillConfirmOpen(true)
+                      : update({ mlxInt8Prefill: false })
+                  }
+                  anePrefillAvailable={anePrefillAvailable}
+                  onAnePrefillChange={(checked) =>
+                    checked
+                      ? setAnePrefillConfirmOpen(true)
+                      : update({ mlxAnePrefill: false })
+                  }
+                  fastVerifyAvailable={fastVerifyAvailable}
+                  onFastVerifyChange={(checked) =>
+                    checked
+                      ? setFastVerifyConfirmOpen(true)
+                      : update({ mlxFastVerify: false })
+                  }
+                  offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
+                  offloadDecided={mlxOffloadDecidedNow}
+                  offloadNotes={mlxOffloadNotes}
+                  speculativeFallback={speculativeFallback}
+                  modelPath={target.id}
+                  onEditTemplate={() => setTemplateOpen(true)}
+                  templateOutcome={chatTemplateOutcome}
+                />
+              ))}
           </>
         )}
       </div>
@@ -4161,12 +4510,13 @@ export function ModelConfigPage({
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
       <div
+        data-pinned-footer={variant === "page" || undefined}
         className={cn(
           "mt-5",
           // Sticky offsets start inside the scroller's 18px padding: -bottom-4.5 reaches the panel edge,
           // and the negative margins cover that padding with the panel's fill.
           variant === "page" &&
-            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4.5 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
+            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-[var(--run-settings-pad-l,calc(var(--spacing)*7))] -mr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] bg-popover pb-4.5 pl-[var(--run-settings-pad-l,calc(var(--spacing)*7))] pr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] dark:bg-sidebar",
         )}
       >
       {/* pt-4.25 plus the 1px rule: 18px above the picker, as below the buttons. */}
@@ -4191,12 +4541,13 @@ export function ModelConfigPage({
         <div
           className={cn(
             "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2",
-            naming && (variant === "sidebar" ? "hidden" : "invisible"),
+            // The sidebar's name box takes this row; the page keeps it, its checkbox disabled meanwhile.
+            naming && variant === "sidebar" && "hidden",
           )}
         >
           <Checkbox
             id={alwaysLoadId}
-            className="size-3.5 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
+            className="size-[calc(13px*var(--ui-space-scale,1))] rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
             aria-label="Always load with these settings"
             aria-describedby={saveStatusId}
             checked={selectedSet !== null && selectedSet === pinnedSet}
@@ -4235,6 +4586,7 @@ export function ModelConfigPage({
             variant="dark"
             type="button"
             size="sm"
+            className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/85"
             disabled={
               sharedVariantUnresolved ||
               ((config.engine ?? "auto") !== "auto" && !engineReady) ||
