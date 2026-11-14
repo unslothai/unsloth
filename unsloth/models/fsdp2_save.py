@@ -336,6 +336,9 @@ def fsdp2_gathered(
     they then go, with a CPU copy of their QuantState, to the CPU right after each one is gathered, so
     rank 0 never holds the whole quantized base on its accelerator. A merge brings them back one layer
     at a time (`merge_4bit_lora_layer_by_layer`)."""
+    from .frozen_table_provenance import install as _install_table_provenance
+
+    _install_table_provenance()  # adapter saves write frozen_tables.json when the model has frozen tables
     if _ACTIVE:
         yield _ACTIVE[-1]
         return

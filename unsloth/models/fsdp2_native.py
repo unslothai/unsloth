@@ -1644,6 +1644,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     leftovers). Pass the outermost module the loop calls (the PeftModel for LoRA). Idempotent."""
     if getattr(model, _NATIVE_FLAG, False):
         return model
+    from .frozen_table_provenance import install as _install_table_provenance
+
+    _install_table_provenance()  # adapter saves write frozen_tables.json when the model has frozen tables
     _refuse_block_swap(model)
     FSDPModule, MixedPrecisionPolicy, fully_shard = _fsdp_api()
     if isinstance(model, FSDPModule):

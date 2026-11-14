@@ -515,6 +515,11 @@ def worker_case(
             if writer:
                 model.save_pretrained(save_dir)
         dist.barrier()
+    record = os.path.join(save_dir, "frozen_tables.json")
+    if os.path.exists(record):
+        import json
+        with open(record) as f:
+            rec["provenance"] = json.load(f)
     saved = os.path.join(save_dir, "adapter_model.safetensors")
     if os.path.exists(saved):
         from safetensors import safe_open
@@ -569,6 +574,18 @@ def violations(results, mode, table_mode, path):
     """Every broken property, as strings (empty = all hold)."""
     out = []
     table = reference_table(path)
+    if table_mode in ("disk", "ram"):
+        # The adapter leaves the table out: rank 0 writes frozen_tables.json next to it, naming exactly the
+        # checkpoint's table tensors (every stage's under pipeline parallelism).
+        record = results[0].get("provenance")
+        if not record:
+            out.append("rank 0: no frozen_tables.json next to the adapter")
+        else:
+            names = {t["name"] for p in record["tables"].values() for t in p["tensors"]}
+            if names != set(table_files(path)):
+                out.append(
+                    f"rank 0: frozen_tables.json lists {sorted(names)[:3]}, not the checkpoint's table"
+                )
     for res in results:
         r = res["rank"]
         if res["table_keys_materialized"] and table_mode in ("disk", "ram"):

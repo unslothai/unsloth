@@ -2485,6 +2485,9 @@ def save_tp_adapter(model, save_directory, **kwargs):
             f"mesh has {mesh.size()} of {dist.get_world_size()} ranks (data parallel > 1 is outside v1). "
             "Gather with tp_full_state_dict and write from one rank yourself."
         )
+    from .frozen_table_provenance import install as _install_table_provenance
+
+    _install_table_provenance()  # the adapter gets frozen_tables.json when the model has frozen tables
     state = _peft_state_dict(model, **kwargs)
     rank = dist.get_rank() if dist.is_initialized() else 0
     kwargs.setdefault("is_main_process", rank == 0)

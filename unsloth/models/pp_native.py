@@ -2322,6 +2322,15 @@ class PipelineParallel:
         """Write the standard 1-GPU PEFT adapter from pp rank 0 (collective over the pp ranks)."""
         import torch.distributed as dist
 
+        from . import frozen_table_provenance as provenance
+
+        provenance.install()
+        # Each stage holds its own frozen tables: the file next to the adapter lists every stage's.
+        tables = provenance.table_provenance(self.model)
+        if self.num_stages > 1:
+            parts = [None] * self.num_stages
+            dist.all_gather_object(parts, tables, group = self.group)
+            tables = provenance.merge_provenance(parts)
         merged = self.adapter_state_dict(**kwargs)
         if merged is not None:
             import peft.peft_model as peft_model
@@ -2344,6 +2353,8 @@ class PipelineParallel:
                 peft_model.PeftModel.save_pretrained(self.model, save_directory, **kwargs)
             finally:
                 peft_model.get_peft_model_state_dict = selection
+            if kwargs.get("is_main_process", True):
+                provenance.write_provenance(save_directory, tables)
         if self.composed:
             dist.barrier()
         elif self.num_stages > 1:
