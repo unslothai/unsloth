@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 
-import { holdsModelsInVram, npuCard, shortCardName, vramCards } from "../src/components/monitor-cards.ts";
+import { holdsModelsInVram, npuActive, npuCard, shortCardName, vramCards } from "../src/components/monitor-cards.ts";
 import type { LoadedModelEntry } from "../src/features/loaded-models/loaded-models-sources.ts";
 import type { NpuStatus } from "../src/features/npu/api.ts";
 import type { GpuDevice } from "../src/hooks/use-system.ts";
@@ -91,6 +91,7 @@ test("card rows use the visible ordinal the detail rows use", () => {
 // A Ryzen AI 9 HX 370 laptop as /api/npu/status reports it on Windows.
 const hx370 = {
   supported: true,
+  ready: true,
   hardware: { present: true, supported: true, family: "XDNA2", name: "AMD Ryzen AI 9 HX 370 NPU",
     driver: "installed", driver_version: "32.0.203.280" },
 } as NpuStatus;
@@ -104,6 +105,13 @@ test("no supported NPU, no card: this PC's absent XDNA 1 entry included", () => 
   const ghost = { supported: false, hardware: { present: true, supported: false, family: "XDNA1",
     name: "NPU Compute Accelerator Device", driver: "installed", driver_version: "32.0.20102.3930" } } as NpuStatus;
   assert.equal(npuCard(ghost, [npuRow()], 10), null);
+});
+
+test("a supported NPU without FastFlowLM installed shows no card", () => {
+  assert.equal(npuCard({ ...hx370, ready: false }, [npuRow()], 10), null);
+  assert.equal(npuActive({ ...hx370, ready: false }), false);
+  assert.equal(npuActive(hx370), true);
+  assert.equal(npuActive(null), false);
 });
 
 test("the NPU card names the device, its driver, and the model resident in system RAM", () => {

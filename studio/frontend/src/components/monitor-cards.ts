@@ -77,13 +77,20 @@ export interface NpuCard {
 }
 
 /** null hides the card. The NPU's model lives in system RAM. */
+/** An AMD NPU with FastFlowLM installed; every NPU surface stays hidden otherwise, NVIDIA included. */
+export function npuActive(
+  status: Pick<NpuStatus, "hardware" | "ready"> | null | undefined,
+): boolean {
+  return Boolean(status?.hardware?.supported && status.ready);
+}
+
 export function npuCard(
-  status: Pick<NpuStatus, "hardware"> | null,
+  status: Pick<NpuStatus, "hardware" | "ready"> | null,
   entries: readonly LoadedModelEntry[],
   loadPercent: number | null | undefined,
 ): NpuCard | null {
-  const hardware = status?.hardware;
-  if (!hardware?.supported) return null;
+  if (!npuActive(status)) return null;
+  const hardware = status!.hardware;
   // describeInferenceStatus leads an NPU row's detail with its runtime.
   const row = entries.find(
     (entry) => !entry.loading && entry.detail.split(" · ")[0] === "NPU",

@@ -79,6 +79,7 @@ import { inferenceGpuDisjoint, poolSplit } from "@/components/monitor-share";
 import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
 import {
   holdsModelsInVram,
+  npuActive,
   npuCard,
   vramCards,
 } from "@/components/monitor-cards";
@@ -327,7 +328,7 @@ export function ResourcesTab() {
   } = useMonitorOverlayStore();
   const wantsModels = showUnslothShare || showModelBreakdown;
   const [npuStatus] = useNpuStatus();
-  const wantsModelRows = wantsModels || Boolean(npuStatus?.hardware.supported);
+  const wantsModelRows = wantsModels || npuActive(npuStatus);
   const { polledEntries: loadedModels } = useLoadedModels(
     wantsModelRows,
     wantsModelRows,

@@ -13,7 +13,7 @@ import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attribut
 
 import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
 import { monitorRefreshMs } from "./monitor-refresh";
-import { holdsModelsInVram, npuCard, vramCards } from "./monitor-cards";
+import { holdsModelsInVram, npuActive, npuCard, vramCards } from "./monitor-cards";
 import {
   formatGiB,
   MeterRow,
@@ -384,7 +384,7 @@ function FloatingMonitorPanel({
             : { width: width ?? undefined }
         }
       >
-        {(wantsModels || npuStatus?.hardware.supported) && !suppressed && (
+        {(wantsModels || npuActive(npuStatus)) && !suppressed && (
           <Suspense fallback={null}>
             <MonitorLoadedModels onEntries={setLoadedModels} />
           </Suspense>

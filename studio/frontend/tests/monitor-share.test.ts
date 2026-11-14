@@ -56,7 +56,7 @@ test("both toggles are off by default and only poll loaded models when one is on
   );
   assert.match(
     readSrc("features/settings/tabs/resources-tab.tsx"),
-    /const wantsModelRows = wantsModels \|\| Boolean\(npuStatus\?\.hardware\.supported\);/,
+    /const wantsModelRows = wantsModels \|\| npuActive\(npuStatus\);/,
   );
   // Floating monitor: mounted only while a toggle is on, and lazy (a static import breaks the startup chunking).
   const monitor = readSrc("components/floating-monitor.tsx");
@@ -64,7 +64,7 @@ test("both toggles are off by default and only poll loaded models when one is on
   // Not while suppressed beside Run settings: nothing shows it.
   assert.match(
     monitor,
-    /\{\(wantsModels \|\| npuStatus\?\.hardware\.supported\) && !suppressed && \(\s*<Suspense/,
+    /\{\(wantsModels \|\| npuActive\(npuStatus\)\) && !suppressed && \(\s*<Suspense/,
   );
 });
 
