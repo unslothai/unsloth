@@ -1056,6 +1056,27 @@ def _quoted_redirection_indexes(
     )
 
 
+def _fd_dup_amp_indexes(text: str, tokens: "list[str]") -> "frozenset[int]":
+    """`&` tokens of a written `>&` / `<&`: shlex splits `2>&1`, but only a contiguous unquoted `>&` duplicates."""
+    states = _shell_quote_states(text)
+    runs: "list[bool]" = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] in ";&|()" and not states[i]:
+            j = i
+            while j < n and text[j] in ";&|()" and not states[j]:
+                j += 1
+            runs.append(text[i:j] == "&" and i > 0 and text[i - 1] in "<>" and not states[i - 1])
+            i = j
+        else:
+            i += 1
+    punct = [k for k, token in enumerate(tokens) if token and not set(token) - set(";&|()")]
+    if len(punct) != len(runs):
+        # Cannot align the text with the tokens: every `&` stays a separator.
+        return frozenset()
+    return frozenset(k for k, dup in zip(punct, runs) if dup)
+
+
 def _unquoted_expansion_indexes(
     text: str, tokens: "list[str]", punctuation: str
 ) -> "frozenset[int]":
@@ -7841,6 +7862,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             False  # a bare `2>` precedes its target, ahead of a pending command string
         )
         dup_target_pending = False  # the fd / file after a split `>&` belongs to the redirection
+        fd_dup_amps: "frozenset[int] | None" = None
         pending_quoted_redirs: "frozenset[int] | None" = None
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
@@ -7862,16 +7884,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if dup_target_pending:
                 dup_target_pending = False
                 continue
-            # shlex splits `2>&1` into `2>`, `&`, `1`; bash needs `>&` contiguous, so this `&` is no separator.
             if token == "&" and _tok_idx:
-                prev_redir = _REDIRECTION_RE.match(tokens[_tok_idx - 1])
-                if prev_redir and prev_redir.end() == len(tokens[_tok_idx - 1]):
-                    if pending_quoted_redirs is None:
-                        pending_quoted_redirs = _quoted_redirection_indexes(text, tokens, ";&|()")
-                    if _tok_idx - 1 not in pending_quoted_redirs:
-                        dup_target_pending = True
-                        redir_target_pending = False
-                        continue
+                if fd_dup_amps is None:
+                    fd_dup_amps = _fd_dup_amp_indexes(text, tokens)
+                if _tok_idx in fd_dup_amps:
+                    dup_target_pending = True
+                    redir_target_pending = False
+                    continue
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
@@ -8322,6 +8341,14 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 and not git_submodule_action
             ):
                 git_submodule_action = base
+            elif current_command == "script" and _REDIRECTION_RE.match(token):
+                # `script 2>err log -qc CMD`: a redirection is not the log file operand.
+                if pending_quoted_redirs is None:
+                    pending_quoted_redirs = _quoted_redirection_indexes(text, tokens, ";&|()")
+                if _tok_idx in pending_quoted_redirs:
+                    script_operand_seen = True
+                else:
+                    redir_target_pending = _REDIRECTION_RE.match(token).end() == len(token)
             elif current_command == "script" and not script_operand_seen:
                 # util-linux permutes argv, so options after the log file still count.
                 script_operand_seen = True
