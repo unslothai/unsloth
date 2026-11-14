@@ -1126,7 +1126,11 @@ class DeepseekV41DecoderLayer(GradientCheckpointingLayer):
         residual = x
         attn_pre, attn_post, attn_comb = self.attn_hc(x)
         h = self.input_layernorm(hc_pre(x, pre_mix))
-        h = self.self_attn(h, positions, shared)
+        # The attention reads / writes the plain dict inside: the group state object only has to survive the decoder
+        # layer boundary (FSDP2 / accelerate rebuild dict arguments there), and torch.compile traces a dict input of
+        # the compiled attention exactly as before.
+        state = shared._d if hasattr(shared, "_d") else shared
+        h = self.self_attn(h, positions, state)
         x = hc_post(h, residual, attn_post, attn_comb)
         residual = x
         ffn_pre, ffn_post, ffn_comb = self.ffn_hc(x)
