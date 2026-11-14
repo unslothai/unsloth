@@ -95,3 +95,8 @@ test("the coalesced run waits for a phrase still being heard", () => {
   const wait = fire.indexOf("(rt.voiceHearing || rt.voiceTranscribing) && attempt < VOICE_COALESCE_MAX_RETRIES");
   assert.ok(wait > 0 && wait < fire.indexOf("t.startRun("));
 });
+
+test("an empty continuation keeps the held phrase", () => {
+  assert.match(loop, /if \(transcript\) heldTurn = null;\s*if \(transcript\) \{\s*const total = transcript\.length;/);
+  assert.doesNotMatch(loop, /\n\s*heldTurn = null;\s*if \(transcript\) \{\s*const total/);
+});

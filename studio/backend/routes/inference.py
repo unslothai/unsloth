@@ -18775,7 +18775,12 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
                 "Load the chat model with the default engine to use Voice.",
             )
         return None
-    occupied = _llama_cpp_backend.is_active or getattr(orchestrator, "active_model_name", None)
+    occupied = (
+        _llama_cpp_backend.is_active
+        or getattr(orchestrator, "active_model_name", None)
+        # An NPU chat holds the primary seat too: loading there would unload it.
+        or _resident_npu_model() is not None
+    )
     if not occupied or await asyncio.to_thread(_loaded_satisfies, requested):
         return None
     slot = _ExtraSlot(
