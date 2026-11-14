@@ -120,7 +120,13 @@ def test_a_download_resolves_the_repo_with_the_callers_token(monkeypatch):
         "_download_missing",
         staticmethod(lambda e, token: seen.append(("download", token))),
     )
+    monkeypatch.setattr(acm, "forget", lambda identifier = None: seen.append(("forget", identifier)))
     monkeypatch.setattr(vad.AudioCppVadSidecar, "__init__", lambda self: None)
     sidecar = vad.AudioCppVadSidecar()
     assert sidecar.download("org/private-vad-GGUF", "hf_secret") == "org/private-vad-GGUF"
-    assert seen == [("resolve", "hf_secret"), ("download", "hf_secret")]
+    # The memoized "not downloaded" answer is dropped, so the load right after finds the files.
+    assert seen == [
+        ("resolve", "hf_secret"),
+        ("download", "hf_secret"),
+        ("forget", "org/private-vad-GGUF"),
+    ]

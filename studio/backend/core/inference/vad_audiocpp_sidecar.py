@@ -215,6 +215,10 @@ class AudioCppVadSidecar:
         # A private or gated repo needs the caller's token for the lookup too, not only the download.
         entry = resolve_vad_model(model, network = True, hf_token = hf_token)
         audio_cpp_backend.AudioCppBackend._download_missing(entry, hf_token)
+        # The cache-only lookup the failed load made is memoized as missing; the retry must see the download.
+        from core.inference import audio_cpp_models
+
+        audio_cpp_models.forget(entry.id)
         return entry.id
 
     def detect(
