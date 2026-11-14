@@ -231,6 +231,11 @@ const EMPTY_CATALOG_HINTS: Record<string, { title: string; description: string }
       description:
         "Ensure llama-server is running with models loaded, then reload — or enter model IDs manually below.",
     },
+    sglang: {
+      title: "No SGLang models found.",
+      description:
+        "Ensure the SGLang server is running, then reload — or enter model IDs manually below.",
+    },
     vllm: {
       title: "No vLLM models found.",
       description:
@@ -261,6 +266,7 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
     providerType === "ollama" ||
     providerType === "llama_cpp" ||
     providerType === "vllm" ||
+    providerType === "sglang" ||
     providerType === LEGACY_CUSTOM_PROVIDER_TYPE
   );
 }

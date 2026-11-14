@@ -4,7 +4,11 @@
 import { Input } from "@/components/ui/input";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import {
+  ArrowDown01Icon,
+  PlusSignIcon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import { SettingsSection } from "@/features/settings/components/settings-section";
@@ -76,12 +80,13 @@ export function buildConnectionGallery(
       name: preset.displayName as string,
     }),
   );
+  // Custom leads: it is the one most self-hosted setups end up using.
   const local: ConnectionGalleryItem[] = [
-    ...presets.filter((item) => !isCloudPresetProviderType(item.providerType)),
     {
       providerType: LEGACY_CUSTOM_PROVIDER_TYPE,
       name: CUSTOM_PROVIDER_DISPLAY_NAME,
     },
+    ...presets.filter((item) => !isCloudPresetProviderType(item.providerType)),
   ];
   const chat = registry.filter(
     (entry) =>
@@ -143,14 +148,20 @@ export function ConnectionGallery({
       title="Add a connection"
       description="Paste a key or point at your own server."
       action={
-        <Input
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search providers"
-          aria-label="Search providers"
-          className="h-8 w-44 bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0 max-sm:w-32"
-        />
+        <div className="relative w-60 max-sm:w-40">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search providers"
+            aria-label="Search providers"
+            className="h-control pl-9"
+          />
+        </div>
       }
     >
       {groups.length === 0 ? (
@@ -209,7 +220,8 @@ export function ConnectionGallery({
                               title={item.name}
                               name={
                                 item.providerType ===
-                                LEGACY_CUSTOM_PROVIDER_TYPE
+                                  LEGACY_CUSTOM_PROVIDER_TYPE ||
+                                item.providerType === "sglang"
                                   ? undefined
                                   : item.name
                               }

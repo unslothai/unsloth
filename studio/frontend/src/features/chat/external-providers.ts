@@ -456,6 +456,13 @@ export const CUSTOM_PROVIDER_PRESETS = [
     baseUrlPlaceholder: "https://my-vllm-server.com/v1",
     modelIdsPlaceholder: "openai/gpt-oss-20b\nQwen/Qwen3-14B",
   },
+  // An OpenAI-compatible server like any custom one; the preset only fills in its defaults.
+  {
+    providerType: "sglang",
+    displayName: "SGLang",
+    baseUrlPlaceholder: "http://localhost:30000/v1",
+    modelIdsPlaceholder: "openai/gpt-oss-20b\nQwen/Qwen3-14B",
+  },
   {
     providerType: "ollama",
     displayName: "Ollama",
@@ -566,6 +573,7 @@ const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
   LEGACY_CUSTOM_PROVIDER_TYPE,
   "ollama",
   "vllm",
+  "sglang",
   "llama_cpp",
 ]);
 
