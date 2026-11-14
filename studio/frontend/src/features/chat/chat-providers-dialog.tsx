@@ -154,7 +154,6 @@ import {
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 import { parseAutoCompactTokens } from "./utils/auto-compaction";
-import { SettingsRow } from "@/features/settings/components/settings-row";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 import {
   learnModelDisplayNames,
@@ -2034,7 +2033,7 @@ export function ChatProvidersSettings({
                     Connection
                   </Label>
                   <p className="text-xs leading-snug text-muted-foreground">
-                    OpenAI, Anthropic, or a compatible local endpoint.
+                    A provider or your own server.
                   </p>
                 </div>
                 <Select
@@ -2127,7 +2126,7 @@ export function ChatProvidersSettings({
                     <p className="text-xs leading-snug text-muted-foreground">
                       {editingProviderHasSavedKey
                         ? "Saved securely. Leave blank to keep it."
-                        : "Saved securely after you connect."}
+                        : "Saved securely."}
                     </p>
                     {apiKeyUrl ? (
                       <button
@@ -2237,7 +2236,7 @@ export function ChatProvidersSettings({
                       API type
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
-                      Choose the endpoint your enabled models support.
+                      The endpoint your models support.
                     </p>
                   </div>
                   <Select
@@ -2332,8 +2331,7 @@ export function ChatProvidersSettings({
                   id="provider-auto-compact-tokens-help"
                   className="text-xs leading-snug text-muted-foreground"
                 >
-                  Summarize older messages once a chat reaches this many
-                  tokens. Blank uses the default.
+                  Tokens before older messages are summarized.
                 </p>
               </div>
               <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
@@ -2356,8 +2354,8 @@ export function ChatProvidersSettings({
                   className="text-xs leading-snug text-muted-foreground"
                 >
                   {providerType === "anthropic"
-                    ? "Claude compacts no earlier than 50,000 tokens. A value past the model's context window is lowered to it."
-                    : "A value past the model's context window is lowered to it."}
+                    ? "At least 50,000 for Claude. Capped at the model's context window."
+                    : "Capped at the model's context window."}
                 </p>
               </div>
             </div>
@@ -2391,9 +2389,8 @@ export function ChatProvidersSettings({
                       id="provider-max-output-tokens-help"
                       className="text-xs leading-snug text-muted-foreground"
                     >
-                      Caps Max Tokens for this connection. Never raises it past a
-                      model's documented limit. Leave blank to use that limit, or
-                      32,768 for a model without one.
+                      Caps Max Tokens for this connection. Blank uses the model's
+                      limit, or 32,768 without one.
                     </p>
                   </div>
                   <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
@@ -2416,8 +2413,7 @@ export function ChatProvidersSettings({
                       id="provider-max-output-tokens-warning"
                       className="text-xs leading-snug text-amber-700 dark:text-amber-400"
                     >
-                      If the upstream provider does not support this value,
-                      requests may fail.
+                      Requests may fail if the provider rejects this value.
                     </p>
                   </div>
                 </div>
@@ -2436,8 +2432,7 @@ export function ChatProvidersSettings({
                       id="provider-extra-headers-help"
                       className="text-xs leading-snug text-muted-foreground"
                     >
-                      One header per line, as Name: value. Use {"{{CHAT_SESSION_ID}}"} for
-                      the open chat. Sent on every request to this connection.
+                      One per line, as Name: value. {"{{CHAT_SESSION_ID}}"} is the open chat.
                     </p>
                   </div>
                   <Textarea
@@ -2492,8 +2487,8 @@ export function ChatProvidersSettings({
                       className="text-xs text-muted-foreground"
                     >
                       {newModelCheckDraft === "off"
-                        ? "Models the provider adds stay unticked until you tick them."
-                        : "Models the provider adds are ticked for you. Ones you untick stay off. Saved in this browser."}
+                        ? "New models stay unticked."
+                        : "New models are ticked for you. Saved in this browser."}
                     </p>
                   </div>
                   <Select
@@ -2528,7 +2523,7 @@ export function ChatProvidersSettings({
                         Reasoning support
                       </Label>
                       <p id="provider-reasoning-support-help" className="text-xs leading-snug text-muted-foreground">
-                        Opt in only if this endpoint accepts reasoning controls. Otherwise no reasoning fields are sent.
+                        Turn on only if this endpoint accepts reasoning controls.
                       </p>
                     </div>
                     <label htmlFor="provider-reasoning-support" className="flex cursor-pointer items-center gap-2 text-sm">
@@ -2551,7 +2546,7 @@ export function ChatProvidersSettings({
                           Reasoning parameter style
                         </Label>
                         <p className="text-xs leading-snug text-muted-foreground">
-                          Choose the request format your endpoint supports.
+                          The request format your endpoint supports.
                         </p>
                       </div>
                       <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
@@ -2874,10 +2869,8 @@ export function ChatProvidersSettings({
           </div>
           {runsStudioToolsLocally ? (
             <p className="-mb-1 px-1 pt-1.5 text-xs leading-snug text-muted-foreground">
-              Models on this connection can use Unsloth&apos;s Search, Tools, MCP and
-              Docs. Those run on this machine, and their results are sent back to the
-              provider as part of the next message. Code and terminal calls still ask
-              before anything risky runs.
+              Search, Tools, MCP and Docs run on this machine and send their results to
+              the provider. Risky code and terminal calls still ask first.
             </p>
           ) : null}
         </div>
@@ -2900,25 +2893,27 @@ export function ChatProvidersSettings({
 
   return (
     <div ref={pageTopRef} className="settings-page min-h-0">
-      <header className="flex min-w-0 flex-col gap-1 pr-8">
-        <h1 className="text-xl font-semibold font-heading">Connections</h1>
-        <p className="text-xs text-muted-foreground">
-          Manage model connections for chat and the Decision API.
-        </p>
+      <header className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-wrap items-start justify-between gap-3 pe-10">
+        <div className="flex min-w-0 flex-col gap-1">
+          <h1 className="text-xl font-semibold font-heading">Connections</h1>
+          <p className="text-xs text-muted-foreground">
+            Use cloud providers and your own servers in chat.
+          </p>
+        </div>
+        {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
+        <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
+          <label className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
+            <span>Enable connections</span>
+            <Switch
+              className="scale-[0.88]"
+              checked={connectionsEnabled}
+              onCheckedChange={setConnectionsEnabled}
+              aria-label="Enable connections"
+              title="When off, all connections are disabled."
+            />
+          </label>
+        </div>
       </header>
-
-      <div className="max-w-[calc(760px*var(--ui-space-scale,1))]">
-        <SettingsRow
-          label="Enable connections"
-          description="When off, all connections are disabled."
-        >
-          <Switch
-            checked={connectionsEnabled}
-            onCheckedChange={setConnectionsEnabled}
-            aria-label="Enable connections"
-          />
-        </SettingsRow>
-      </div>
 
       <div className="max-w-[calc(760px*var(--ui-space-scale,1))]">
         <SettingsSection
@@ -3088,7 +3083,7 @@ export function ChatProvidersDialog({
         <DialogHeader className="sr-only">
           <DialogTitle>Connections</DialogTitle>
           <DialogDescription>
-            Manage model connections for chat.
+            Use cloud providers and your own servers in chat.
           </DialogDescription>
         </DialogHeader>
         <ChatProvidersSettings
