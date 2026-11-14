@@ -802,6 +802,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "config_python",
         "empty_cli_target",
         "pip_python_env",
+        "last_target_empty",
+        "cli_empties_env_target",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -866,6 +868,9 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         f" && env -u PYTHONPATH venv/bin/{show}",
         # An empty --target (an unset $DEST) chooses nothing, as pip tests it for truthiness.
         "empty_cli_target": f"{_PIP} --target= {wheel} && {show}",
+        # The last --target wins, and an empty one chooses nothing; a CLI value overrides PIP_TARGET too.
+        "last_target_empty": f"{_PIP} --target vendor --target= {wheel} && {show}",
+        "cli_empties_env_target": f"PIP_TARGET=vendor {_PIP} --target= {wheel} && {show}",
         # PIP_PYTHON re-runs pip in that interpreter even under --isolated.
         "pip_python_env": 'python -m venv venv && PIP_PYTHON="$PWD/venv/bin/python" PIP_CONFIG_FILE=/dev/null '
         f"python -m pip --isolated install -q --no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
@@ -944,6 +949,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "config_python": str(workdir / "venv"),
         "empty_cli_target": packages,
         "pip_python_env": str(workdir / "venv"),
+        "last_target_empty": packages,
+        "cli_empties_env_target": packages,
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1940,6 +1947,27 @@ def test_a_killed_reinstall_keeps_its_old_file_list(tmp_path):
     assert not (prefix / f".unsloth-old-files-{dead.pid}").exists()
 
 
+def test_a_planted_importlib_never_disables_the_metadata_hook(tmp_path):
+    """The shim's own helper imports come after the hook and from the stdlib: a chat importlib/ changes nothing."""
+    planted = tmp_path / "planted"
+    (planted / "importlib").mkdir(parents = True)
+    (planted / "importlib" / "__init__.py").write_text("raise RuntimeError('planted')\n")
+    code = (
+        "import socket\ns = socket.socket()\ns.settimeout(0.1)\n"
+        "try:\n    s.connect(('169.254.169.254', 80))\nexcept PermissionError:\n    print('blocked')\n"
+        "except OSError:\n    print('unblocked')"
+    )
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": os.pathsep.join([str(planted), tools._SANDBOX_SITE_DIR]),
+        "_UNSLOTH_SANDBOX_BLOCK_METADATA": "1",
+    }
+    out = subprocess.run(
+        [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
+    )
+    assert out.stdout.strip() == "blocked", out.stderr
+
+
 def test_malformed_cleanup_state_never_disables_the_metadata_hook(tmp_path):
     """A non-UTF-8 byte in the chat-writable bookkeeping must not stop the shim before the audit hook."""
     prefix = tmp_path / "prefix"
@@ -1961,6 +1989,29 @@ def test_malformed_cleanup_state_never_disables_the_metadata_hook(tmp_path):
         [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
     )
     assert out.stdout.strip() == "blocked", out.stderr
+
+
+def test_a_run_killed_between_wheels_keeps_its_file_lists(tmp_path):
+    """No pending note (killed between wheels): the dead run's inventory is still kept, not dropped."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    info = _dist(site_dir, "unsloth_between", "1.0", 2, module = "kept.py")
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    gone = os.path.normcase(str(site_dir / "gone.py"))
+    (prefix / f".unsloth-old-files-{dead.pid}").write_text(
+        f"{os.path.abspath(site_dir)}\t{info.name}\t{gone}\n"
+    )
+    code = "import sitecustomize as s; print(sorted(p for v in s._saved_inventory().values() for p in v))"
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": os.pathsep.join([tools._SANDBOX_SITE_DIR, str(site_dir)]),
+        "PIP_PREFIX": str(prefix),
+    }
+    out = subprocess.run(
+        [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
+    )
+    assert out.stdout.strip() == repr([gone]), out.stderr
 
 
 def test_an_unfinished_install_retires_nothing(tmp_path):

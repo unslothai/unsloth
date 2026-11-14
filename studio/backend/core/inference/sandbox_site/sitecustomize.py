@@ -10,6 +10,73 @@ import json
 import os
 import sys
 
+# First, ahead of everything below: no later failure in this file can leave the hook unregistered.
+# The static host check cannot see DNS aliases or redirects; every connect does see the final address.
+_METADATA_NAMES = frozenset(
+    (
+        "metadata",
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata.tencentyun.com",
+        "instance-data.ec2.internal",
+    )
+)
+_METADATA_ADDRS = frozenset(("fd00:ec2::254", "fd20:ce::254", "100.100.100.200", "100.100.100.110"))
+
+
+def _metadata_address(host):
+    import ipaddress
+
+    if not isinstance(host, str):
+        return False
+    host = host.split("%", 1)[0].rstrip(".").lower()
+    if host in _METADATA_NAMES:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.version == 6:
+        ip = ip.ipv4_mapped or ip.sixtofour or ip
+    if ip.version == 4 and ip in ipaddress.ip_network("169.254.0.0/16"):
+        return True
+    return ip.compressed in _METADATA_ADDRS
+
+
+def _resolves_to_metadata(host):
+    import ipaddress
+    import socket
+
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return False
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        return False
+    return any(_metadata_address(info[4][0]) for info in infos)
+
+
+def _metadata_connect_hook(event, args):
+    if event != "socket.connect":
+        return
+    address = args[1] if len(args) > 1 else None
+    if not (isinstance(address, tuple) and address and isinstance(address[0], str)):
+        return
+    # The event carries the caller's address, so a raw connect to a name is resolved here.
+    if _metadata_address(address[0]) or _resolves_to_metadata(address[0]):
+        raise PermissionError(f"Blocked: cloud-metadata host ({address[0]})")
+
+
+if os.environ.get("_UNSLOTH_SANDBOX_BLOCK_METADATA") == "1" and not getattr(
+    sys, "_unsloth_metadata_hook", False
+):
+    sys.addaudithook(_metadata_connect_hook)
+    sys._unsloth_metadata_hook = True
+
+
 # Prefixes remapped only when ABSENT (see _remap), so a real host mount is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # /tmp exists on the host; separate only to note that. The absence gate applies alike.
@@ -253,13 +320,11 @@ class _HostPackagesFinder:
         path = None,
         target = None,
     ):
-        import importlib.machinery
-
         if "." not in name:
             # Appended last, it would otherwise supply a stdlib name this platform lacks (msvcrt on Linux).
             if path is not None or name in self._skip or name in _stdlib_names():
                 return None
-            return importlib.machinery.PathFinder.find_spec(name, self._folders)
+            return _PathFinder.find_spec(name, self._folders)
         parent, _, _ = name.rpartition(".")
         module = sys.modules.get(parent)
         spec = getattr(module, "__spec__", None)
@@ -273,7 +338,7 @@ class _HostPackagesFinder:
         portions = [portion for portion in portions if os.path.isdir(portion)]
         if not portions:
             return None
-        found = importlib.machinery.PathFinder.find_spec(name, portions)
+        found = _PathFinder.find_spec(name, portions)
         if found is not None:
             # The portions extend_path / PEP 420 would have collected; a _NamespacePath drops them on sys.path changes.
             search = getattr(module, "__path__", None)
@@ -403,21 +468,26 @@ def _pip_options():
     return [arg for _, arg, option in _pip_words() if option]
 
 
-def _chooses_location(arg, operand = ""):
-    # Only with a value: pip tests the option for truthiness, so --target= (an empty $DEST) chooses nothing.
-    name, eq, value = arg.partition("=")
-    if name.startswith("--"):
-        if any(full.startswith(name) and len(name) >= n for full, n in _PIP_LOCATION_FLAGS):
-            return bool(value if eq else operand)
-        return False
-    # -t DIR, -tDIR, or clustered after no-operand flags (-qt DIR, -Ut).
-    if arg.startswith("-") and len(arg) > 1:
+def _cli_locations():
+    # {target|prefix|root|python: value} as pip ends up with it: the last occurrence wins, an empty one included
+    # (pip tests it for truthiness, so --target= after --target vendor chooses nothing).
+    found, argv = {}, sys.argv + [""]
+    for at, arg, option in _pip_words():
+        if not option:
+            continue
+        name, eq, value = arg.partition("=")
+        if name.startswith("--"):
+            for full, n in _PIP_LOCATION_FLAGS:
+                if full.startswith(name) and len(name) >= n:
+                    found[full[2:]] = value if eq else argv[at + 1]
+            continue
+        # -t DIR, -tDIR, or clustered after no-operand flags (-qt DIR, -Ut).
         for j, flag in enumerate(arg[1:], 1):
             if flag == "t":
-                return bool(arg[j + 1 :] or operand)
+                found["target"] = arg[j + 1 :] or argv[at + 1]
             if flag not in "qvUI":
-                return False
-    return False
+                break
+    return found
 
 
 def _cli_user():
@@ -494,7 +564,20 @@ def _stdlib_paths():
     ]
 
 
-def _config_chooses_location(isolated = False, use_user = True):
+_saved_path = sys.path[:]
+sys.path[:] = _stdlib_paths()
+try:
+    # The stdlib copy, never an importlib/ the chat put on PYTHONPATH (this runs before any import of it).
+    from importlib.machinery import PathFinder as _PathFinder
+finally:
+    sys.path[:] = _saved_path
+
+
+def _config_chooses_location(
+    isolated = False,
+    use_user = True,
+    skip = (),
+):
     # pip's config files can set install.target / prefix / root / user too; PIP_PREFIX would then conflict.
     # Same files as pip's Configuration.iter_config_files: --isolated or an existing PIP_CONFIG_FILE drops the user ones.
     env_file = os.environ.get("PIP_CONFIG_FILE")
@@ -560,7 +643,7 @@ def _config_chooses_location(isolated = False, use_user = True):
         return ""
 
     # python: pip re-runs itself in that interpreter, as --python does, which installs there.
-    if any(value(k).strip() for k in ("target", "prefix", "root", "python")):
+    if any(value(k).strip() for k in ("target", "prefix", "root", "python") if k not in skip):
         return True
     items = []
     for section in ("global", "install"):
@@ -644,20 +727,24 @@ def _route_pip(is_pip = None):
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             cli_user = _cli_user()
             options = _pip_options()
-            argv = sys.argv + [""]
-            placed = cli_user is True or any(
-                _chooses_location(arg, argv[at + 1]) for at, arg, option in _pip_words() if option
-            )
+            # A command-line value overrides the same option's variable and config entry.
+            cli = _cli_locations()
+            placed = cli_user is True or any(cli.values())
             # pip's main parser picks PIP_PYTHON up even under --isolated and re-runs pip in that interpreter.
-            placed = placed or bool(os.environ.get("PIP_PYTHON"))
+            placed = placed or ("python" not in cli and bool(os.environ.get("PIP_PYTHON")))
             # pip's own trigger is the raw word anywhere after the subcommand, even as an operand (--log --isolated).
             isolated = "--isolated" in options or "--isolated" in sys.argv[1:]
             if not isolated:
                 # --isolated makes pip ignore these, so then they choose nothing.
-                placed = placed or any(os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT"))
+                placed = placed or any(
+                    os.environ.get("PIP_" + k.upper()) for k in ("target", "root") if k not in cli
+                )
                 placed = placed or (cli_user is None and _user_site())
-                placed = placed or os.environ.get("PIP_PREFIX", prefix) not in ("", prefix)
-            placed = placed or (is_pip and _config_chooses_location(isolated, cli_user is None))
+                own = os.environ.get("PIP_PREFIX", prefix) not in ("", prefix)
+                placed = placed or ("prefix" not in cli and own)
+            placed = placed or (
+                is_pip and _config_chooses_location(isolated, cli_user is None, set(cli))
+            )
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
@@ -858,7 +945,8 @@ def _pkgutil_namespace(origin):
 # install lacks the new portion, and an editable fork's concrete module wins over Studio's copy (namespaces are
 # left to the normal aggregation, which the editable finders still join from their usual place).
 class _SessionPackagesFinder:
-    from importlib.machinery import PathFinder as _path_finder
+    _path_finder = _PathFinder
+
     def __init__(
         self,
         entries,
@@ -1067,22 +1155,21 @@ def _killed_installs():
                     f.writelines(lines)
             found.update(tuple(line.rstrip("\n").split("\t")) for line in lines)
             # The killed run's pre-install file lists, so a later reinstall still retires the old-only files.
-            # All of them: a reinstall that finished before the killed wheel also rewrote its RECORD.
-            inventory = os.path.join(prefix, f"{_SAVED}-{pid}")
-            if os.path.exists(inventory):
-                with open(inventory, encoding = "utf-8") as f:
-                    rows = f.readlines()
-                with open(os.path.join(prefix, _SAVED), "a", encoding = "utf-8") as f:
-                    f.writelines(rows)
             os.remove(path)
         except (OSError, ValueError):
             pass
+    # A dead run's pre-install file lists, whether it died inside a wheel or between two: kept for the next
+    # retirement (lists of untouched distributions only repeat what their RECORD still says).
     for name in os.listdir(prefix):
         pid = name[len(_SAVED) + 1 :] if name.startswith(_SAVED + "-") else ""
         if pid.isdigit() and int(pid) != os.getpid() and not _alive(int(pid)):
             try:
+                with open(os.path.join(prefix, name), encoding = "utf-8") as f:
+                    rows = f.readlines()
+                with open(os.path.join(prefix, _SAVED), "a", encoding = "utf-8") as f:
+                    f.writelines(rows)
                 os.remove(os.path.join(prefix, name))
-            except OSError:
+            except (OSError, ValueError):
                 pass
     return found
 
@@ -1367,7 +1454,7 @@ def _track_wheel(entry):
 class _PipStatusFinder:
     # Records what pip's main returns and which wheel failed, so a failed install retires nothing: its RECORD
     # alone cannot tell (a wheel may ship INSTALLER itself). Wraps attributes after pip's modules load.
-    from importlib.machinery import PathFinder as _path_finder
+    _path_finder = _PathFinder
 
     # cli: console scripts and python -m pip (pip >= 25.1); main: older pip. install_wheel: one wheel.
     _patches = {
@@ -1516,9 +1603,7 @@ class _HostWorkdirFinder:
     ):
         if path is not None or name not in self._names:
             return None
-        import importlib.machinery
-
-        spec = importlib.machinery.PathFinder.find_spec(name, [self._workdir])
+        spec = _PathFinder.find_spec(name, [self._workdir])
         if spec is not None and spec.origin and spec.origin.endswith(".py"):
             # A requested helper's own absolute imports come from the chat folder too, as before.
             try:
@@ -1546,69 +1631,3 @@ if (
     and not any(isinstance(f, _HostWorkdirFinder) for f in sys.meta_path)
 ):
     sys.meta_path.append(_HostWorkdirFinder(_host_workdir, _host_modules))
-
-
-# The static host check cannot see DNS aliases or redirects; every connect does see the final address.
-_METADATA_NAMES = frozenset(
-    (
-        "metadata",
-        "metadata.google.internal",
-        "metadata.goog",
-        "metadata.tencentyun.com",
-        "instance-data.ec2.internal",
-    )
-)
-_METADATA_ADDRS = frozenset(("fd00:ec2::254", "fd20:ce::254", "100.100.100.200", "100.100.100.110"))
-
-
-def _metadata_address(host):
-    import ipaddress
-
-    if not isinstance(host, str):
-        return False
-    host = host.split("%", 1)[0].rstrip(".").lower()
-    if host in _METADATA_NAMES:
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    if ip.version == 6:
-        ip = ip.ipv4_mapped or ip.sixtofour or ip
-    if ip.version == 4 and ip in ipaddress.ip_network("169.254.0.0/16"):
-        return True
-    return ip.compressed in _METADATA_ADDRS
-
-
-def _resolves_to_metadata(host):
-    import ipaddress
-    import socket
-
-    try:
-        ipaddress.ip_address(host.split("%", 1)[0])
-        return False
-    except ValueError:
-        pass
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (OSError, UnicodeError):
-        return False
-    return any(_metadata_address(info[4][0]) for info in infos)
-
-
-def _metadata_connect_hook(event, args):
-    if event != "socket.connect":
-        return
-    address = args[1] if len(args) > 1 else None
-    if not (isinstance(address, tuple) and address and isinstance(address[0], str)):
-        return
-    # The event carries the caller's address, so a raw connect to a name is resolved here.
-    if _metadata_address(address[0]) or _resolves_to_metadata(address[0]):
-        raise PermissionError(f"Blocked: cloud-metadata host ({address[0]})")
-
-
-if os.environ.get("_UNSLOTH_SANDBOX_BLOCK_METADATA") == "1" and not getattr(
-    sys, "_unsloth_metadata_hook", False
-):
-    sys.addaudithook(_metadata_connect_hook)
-    sys._unsloth_metadata_hook = True
