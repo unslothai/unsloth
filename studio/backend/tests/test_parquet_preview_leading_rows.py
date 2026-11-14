@@ -192,3 +192,44 @@ def test_parquet_preview_leaves_uncertain_inputs_to_the_whole_load(tmp_path, mon
         whole = _preview(path, monkeypatch, whole = True, split = split)
         leading = _preview(path, monkeypatch, whole = False, split = split)
         assert leading == whole, (path.name, split)
+
+
+def test_parquet_preview_of_a_folder_with_an_empty_shard_fails_like_the_full_load(
+    tmp_path, monkeypatch
+):
+    from datasets import load_dataset
+
+    shards = tmp_path / "with_empty_shard"
+    shards.mkdir()
+    pq.write_table(pa.table({"text": ["a", "b"]}), shards / "a.parquet")
+    pq.write_table(pa.table({"text": pa.array([], pa.string())}), shards / "b.parquet")
+    files = sorted(shards.glob("*.parquet"))
+    assert _LEADING_ROWS(files, 10) is None
+
+    with pytest.raises(Exception) as full:
+        load_dataset("parquet", data_files = [str(p) for p in files], split = "train")
+    whole = _preview(shards, monkeypatch, whole = True)
+    leading = _preview(shards, monkeypatch, whole = False)
+    assert leading[0] == "error", leading
+    assert leading == whole
+    assert leading[1] == type(full.value).__name__
+
+
+def test_parquet_preview_of_non_empty_shards_keeps_the_fast_path(tmp_path, monkeypatch):
+    calls = []
+    real = cache_safe.load_dataset_cache_safe
+
+    def counting(*args, **kwargs):
+        calls.append(kwargs.get("data_files"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cache_safe, "load_dataset_cache_safe", counting)
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    pq.write_table(pa.table({"text": ["a", "b"]}), shards / "a.parquet")
+    pq.write_table(pa.table({"text": ["c"]}), shards / "b.parquet")
+    dataset, total = local._load_local_preview_slice(
+        dataset_path = shards, train_split = "train", preview_size = 10
+    )
+    assert (total, dataset["text"]) == (3, ["a", "b", "c"])
+    assert calls == []

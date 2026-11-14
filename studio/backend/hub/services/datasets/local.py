@@ -303,7 +303,8 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
 
 def _parquet_preview_slice(files: list[Path], preview_size: int):
     """Leading ``preview_size`` rows + footer row count, typed as the datasets Parquet builder types them,
-    without the full load's cache write. ``None`` (full load decides) on differing schemas, no rows, or any error."""
+    without the full load's cache write. ``None`` (full load decides) on differing schemas, any error, or a zero-row
+    file (the full load refuses those, so the preview must not pass them)."""
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -313,6 +314,8 @@ def _parquet_preview_slice(files: list[Path], preview_size: int):
         schema, total_rows = None, 0
         for path in files:
             metadata = pq.read_metadata(path)
+            if metadata.num_rows == 0:
+                return None
             file_schema = metadata.schema.to_arrow_schema()
             if schema is None:
                 schema = file_schema
