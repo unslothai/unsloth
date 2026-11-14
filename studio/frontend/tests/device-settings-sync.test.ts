@@ -182,6 +182,98 @@ test("an edit not yet sent wins over the account's copy and is sent after load",
   assert.equal(readPending().chat, false);
 });
 
+test("pending edits sync after a temporary initial load failure", async () => {
+  freshBrowser();
+  setTimeFormat("12h");
+  markPending(["timeFormat"], true);
+  account = { ...empty, saved: true, timeFormat: "24h" };
+  const realFetch = globalThis.fetch;
+  let loads = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== "PUT" && ++loads === 1) throw new TypeError("network unavailable");
+    return realFetch(input, init);
+  }) as typeof fetch;
+  const stop = startClientPreferencesSync();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    assert.ok(loads >= 2);
+    assert.deepEqual(puts, [{ timeFormat: "12h" }]);
+    assert.equal(readPending().timeFormat, false);
+  } finally {
+    stop();
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("edits do not overwrite unseen account preferences while initial load fails", async () => {
+  freshBrowser();
+  account = { ...empty, saved: true, chat: { sendShortcut: "mod-enter" } };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== "PUT") throw new TypeError("network unavailable");
+    return realFetch(input, init);
+  }) as typeof fetch;
+  const stop = startClientPreferencesSync();
+  try {
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    useChatPreferencesStore.getState().setShowReplyTimes(true);
+    await settle();
+    assert.deepEqual(puts, []);
+    assert.equal(readPending().chat, true);
+  } finally {
+    stop();
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("edits during a failed load preserve the account's other settings after retry", async () => {
+  freshBrowser();
+  account = { ...empty, saved: true, chat: { sendShortcut: "mod-enter" } };
+  const realFetch = globalThis.fetch;
+  let loads = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== "PUT" && ++loads === 1) throw new TypeError("network unavailable");
+    return realFetch(input, init);
+  }) as typeof fetch;
+  const stop = startClientPreferencesSync();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    useChatPreferencesStore.getState().setShowReplyTimes(true);
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    assert.ok(loads >= 2);
+    assert.equal(puts.length, 1);
+    const chat = puts[0].chat as Record<string, unknown>;
+    assert.equal(chat.sendShortcut, "mod-enter");
+    assert.equal(chat.showReplyTimes, true);
+    assert.equal(readPending().chat, false);
+  } finally {
+    stop();
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a scheduled load retry stops when the account changes", async () => {
+  freshBrowser();
+  store.set(BROWSER_ACCOUNT_KEY, "account:u1:alice");
+  const realFetch = globalThis.fetch;
+  let loads = 0;
+  globalThis.fetch = (async () => {
+    loads++;
+    throw new TypeError("network unavailable");
+  }) as typeof fetch;
+  const stop = startClientPreferencesSync();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    store.set(BROWSER_ACCOUNT_KEY, "account:u2:bob");
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.equal(loads, 1);
+  } finally {
+    stop();
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("another tab switching accounts does not mark its cleanup as edits", async () => {
   freshBrowser();
   setTimeFormat("24h");
