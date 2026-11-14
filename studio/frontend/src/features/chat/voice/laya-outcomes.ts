@@ -35,10 +35,20 @@ export function sharesMostWords(earlier: string, later: string): boolean {
   return hit / a.size >= 0.6;
 }
 
-/** The same request again, adding no word of its own: "five minutes" for "ten minutes" is a correction. */
+const CORRECTION_CUE = /^\W*(?:no|nope|actually|instead|i mean|sorry|rather|wait)\b/i;
+
+/**
+ * The same request again: adds no word of its own ("five minutes" for "ten minutes"), keeps the
+ * order of the words it shares ("beta into alpha" reverses "alpha into beta") and opens with no
+ * correction cue ("No, ...", "Actually ...").
+ */
 export function isSameAsk(earlier: string, later: string): boolean {
+  if (CORRECTION_CUE.test(later)) return false;
   const before = contentWords(earlier);
-  return sharesMostWords(earlier, later) && [...contentWords(later)].every((w) => before.has(w));
+  const after = contentWords(later);
+  if (!sharesMostWords(earlier, later) || ![...after].every((w) => before.has(w))) return false;
+  const order = [...before].filter((w) => after.has(w));
+  return order.join(" ") === [...after].join(" ");
 }
 
 const HOLD_ON =

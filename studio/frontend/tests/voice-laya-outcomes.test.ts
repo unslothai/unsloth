@@ -61,3 +61,11 @@ test("a correction is not the same ask, an impatient re-ask is", () => {
   assert.equal(isSameAsk("Write a poem about dogs", "can you write a poem about dogs"), true);
   assert.equal(isSameAsk("what is the weather in Paris", "the weather in Paris?"), true);
 });
+
+test("a reversed or explicitly corrected request is not the same ask", () => {
+  assert.equal(isSameAsk("move alpha into beta", "No, move beta into alpha"), false);
+  assert.equal(isSameAsk("move alpha into beta", "move beta into alpha"), false);
+  assert.equal(isSameAsk("move alpha into beta", "actually move alpha into beta"), false);
+  assert.equal(isSameAsk("move alpha into beta", "can you move alpha into beta"), true);
+});
+

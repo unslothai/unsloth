@@ -35,3 +35,11 @@ test("a word is matched whole, not inside a longer one", () => {
   assert.equal(isReplyEcho("can help", reply), true);
   assert.equal(isReplyEcho("an help", reply), false);
 });
+
+test("an answer picked from the reply's closing question is the user's, not echo", () => {
+  const reply = "I can write it either way. Which language should I use, Python or JavaScript?";
+  assert.equal(isReplyEcho("Python", reply), false);
+  assert.equal(isReplyEcho("javascript please", reply), false);
+  assert.equal(isReplyEcho("I can write it either way", reply), true);
+  assert.equal(isReplyEcho("either way", "I can write it either way."), true);
+});
