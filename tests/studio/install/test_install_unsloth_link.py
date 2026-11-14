@@ -52,6 +52,13 @@ def _zip(members) -> bytes:
 GOOD = [(M.BINARY, b"#!/bin/sh\necho nodekey:abc\n", "file"), (M.LICENSE, b"BSD", "file")]
 
 
+def _archived(data: bytes) -> bytes:
+    try:
+        return package.archived_binary(TARGET, data)
+    except Exception:
+        return b""  # a malformed archive: refused before its executable matters
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     rel = tmp_path / "release"
@@ -70,12 +77,14 @@ def env(tmp_path, monkeypatch):
         name = "unsloth-link-linux-amd64.tar.gz",
         sha = None,
         size = None,
+        binary = None,
     ):
         (rel / name).write_bytes(data)
         asset = {
             "name": name,
             "sha256": sha or hashlib.sha256(data).hexdigest(),
             "size": size or len(data),
+            "binary_sha256": hashlib.sha256(binary or _archived(data)).hexdigest(),
         }
         return {
             "schema_version": 1,
@@ -248,17 +257,64 @@ def test_the_shipped_pins_cover_every_built_target():
     assert set(pins["assets"]) == set(package.TARGETS)
     for target, asset in pins["assets"].items():
         assert asset["name"] == package.asset_name(target)
+        assert len(asset["binary_sha256"]) == 64 and asset["binary_sha256"] != asset["sha256"]
 
 
-def test_a_pins_entry_with_a_path_is_refused(tmp_path):
-    bad = {
-        "schema_version": 1,
-        "assets": {TARGET: {"name": "../x.tar.gz", "sha256": "0" * 64, "size": 1}},
-    }
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"name": "../x.tar.gz", "sha256": "0" * 64, "size": 1, "binary_sha256": "0" * 64},
+        {"name": "x.tar.gz", "sha256": "0" * 64, "size": 1},
+    ],
+    ids = ["path", "no-binary-pin"],
+)
+def test_a_bad_pins_entry_is_refused(tmp_path, entry):
+    bad = {"schema_version": 1, "assets": {TARGET: entry}}
     path = tmp_path / "pins.json"
     path.write_text(json.dumps(bad))
     with pytest.raises(M.InstallError, match = "bad entry"):
         M.load_pins(path)
+
+
+def test_an_installed_executable_that_differs_from_its_pin_is_not_used(env):
+    pins = env.publish(_tar(GOOD))
+    binary = M.ensure(pins)
+    assert M.installed_binary(pins) == binary
+    binary.write_bytes(b"#!/bin/sh\necho nodekey:evil\n")  # marker kept, executable swapped
+    assert M.installed_binary(pins) is None
+    assert M.ensure(pins).read_bytes() == GOOD[0][1] and len(env.smoked) == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "symlinks need privileges on Windows")
+def test_a_symlinked_installed_executable_is_not_used(env, tmp_path):
+    pins = env.publish(_tar(GOOD))
+    binary = M.ensure(pins)
+    real = tmp_path / "elsewhere"
+    real.write_bytes(binary.read_bytes())
+    binary.unlink()
+    binary.symlink_to(real)
+    assert M.installed_binary(pins) is None
+
+
+def test_an_archive_whose_executable_differs_from_its_pin_is_not_run(env):
+    pins = env.publish(_tar(GOOD), binary = b"other")
+    with pytest.raises(M.InstallError, match = "does not match its pin"):
+        M.ensure(pins)
+    assert env.smoked == [] and M.installed_binary(pins) is None
+
+
+def test_the_installed_executable_is_hashed_once_per_process(env, monkeypatch):
+    pins = env.publish(_tar(GOOD))
+    binary = M.ensure(pins)
+    M._VERIFIED.clear()
+    opened = []
+    real_open = open
+    monkeypatch.setattr(
+        "builtins.open", lambda f, *a, **k: opened.append(str(f)) or real_open(f, *a, **k)
+    )
+    for _ in range(3):
+        assert M.installed_binary(pins) == binary
+    assert opened.count(str(binary)) == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "shell-script stand-in for the helper")
@@ -326,3 +382,18 @@ def test_package_archives_are_reproducible_and_install(tmp_path, env):
     data = (tmp_path / "a" / package.asset_name(TARGET)).read_bytes()
     pins = env.publish(data)
     assert M.ensure(pins).read_bytes().endswith(b"nodekey:linux-amd64\n")
+
+
+def test_update_pins_records_each_archived_executable(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(package.__file__).parent))
+    import update_pins
+
+    dist = tmp_path / "dist"
+    for target in package.TARGETS:
+        (dist / target).mkdir(parents = True)
+        (dist / target / package.binary_name(target)).write_bytes(target.encode())
+        (dist / target / package.LICENSE).write_text("BSD")
+    package.package(dist, tmp_path / "out")
+    assets = update_pins.collect(tmp_path / "out")
+    for target in package.TARGETS:
+        assert assets[target]["binary_sha256"] == hashlib.sha256(target.encode()).hexdigest()

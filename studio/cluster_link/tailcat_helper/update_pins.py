@@ -15,7 +15,7 @@ import json
 import sys
 from pathlib import Path
 
-from package import TARGETS, asset_name
+from package import TARGETS, archived_binary, asset_name
 
 PINS = Path(__file__).resolve().parents[2] / "unsloth_link_pins.json"
 REPO = "unslothai/unsloth"
@@ -40,7 +40,12 @@ def collect(folder: Path) -> dict:
             raise SystemExit(
                 f"{name}: sha256 {digest} does not match SHA256SUMS ({sums.get(name)})"
             )
-        assets[target] = {"name": name, "sha256": digest, "size": len(data)}
+        assets[target] = {
+            "name": name,
+            "sha256": digest,
+            "size": len(data),
+            "binary_sha256": hashlib.sha256(archived_binary(target, data)).hexdigest(),
+        }
     return assets
 
 
@@ -63,7 +68,8 @@ def main() -> int:
     pins = {
         "schema_version": 1,
         "comment": "Trust anchor for install_unsloth_link.py: sha256 and size of each release archive "
-        "built by .github/workflows/unsloth-link.yml. Regenerate with "
+        "built by .github/workflows/unsloth-link.yml, and the sha256 of the executable inside it. "
+        "Regenerate with "
         "studio/cluster_link/tailcat_helper/update_pins.py from the release's own assets.",
         "repo": args.repo,
         "tag": args.tag,

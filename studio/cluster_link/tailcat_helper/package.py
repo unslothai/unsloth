@@ -67,6 +67,15 @@ def _zip(src: Path, target: str) -> bytes:
     return out.getvalue()
 
 
+def archived_binary(target: str, data: bytes) -> bytes:
+    """The executable inside a release archive, whose sha256 the pins also carry."""
+    if target.startswith("windows"):
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            return zf.read(binary_name(target))
+    with tarfile.open(fileobj = io.BytesIO(data), mode = "r:gz") as tar:
+        return tar.extractfile(binary_name(target)).read()
+
+
 def package(dist: Path, out: Path) -> dict:
     out.mkdir(parents = True, exist_ok = True)
     sums = {}

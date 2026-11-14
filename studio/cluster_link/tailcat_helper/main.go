@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -72,9 +73,20 @@ func main() {
 	fs := flag.NewFlagSet("stdio", flag.ExitOnError)
 	url := fs.String("derpmap-url", "", "DERP map URL")
 	verbose := fs.Bool("verbose", false, "tailcat debug logs on stderr")
+	parent := fs.Int("parent-pid", 0, "exit once this process is no longer the parent")
 	fs.Parse(os.Args[2:])
 	setup(*url, *verbose)
 	h := &helper{clients: map[string]*client{}}
+	if *parent > 0 {
+		// A forked grandchild can keep stdin open after the parent dies: exit on reparenting too.
+		go func() {
+			for os.Getppid() == *parent {
+				time.Sleep(time.Second)
+			}
+			h.close()
+			os.Exit(0)
+		}()
+	}
 	out := json.NewEncoder(os.Stdout)
 	var outMu sync.Mutex
 	send := func(r response) {
@@ -426,6 +438,7 @@ type client struct {
 	keyPath string
 
 	mu       sync.Mutex
+	closed   bool
 	forwards map[uint16]net.Listener
 }
 
@@ -463,6 +476,9 @@ func (c *client) forward(port uint16) (int, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return 0, errors.New("forward was removed")
+	}
 	if ln := c.forwards[port]; ln != nil {
 		return ln.Addr().(*net.TCPAddr).Port, nil
 	}
@@ -506,6 +522,7 @@ func (c *client) unforward(port uint16) {
 
 func (c *client) close() {
 	c.mu.Lock()
+	c.closed = true
 	for p, ln := range c.forwards {
 		ln.Close()
 		delete(c.forwards, p)
@@ -579,6 +596,16 @@ func runGenkey(args []string) int {
 		fmt.Fprintln(os.Stderr, "genkey: --kind server|client and --path are required")
 		return 2
 	}
+	if !*force {
+		// A key left by an interrupted first run is kept: print its public key again.
+		if pk, err := readKey(*path); err == nil {
+			fmt.Println(pk.Private.Public().String())
+			return 0
+		} else if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintln(os.Stderr, "genkey:", err)
+			return 1
+		}
+	}
 	setup(*url, false)
 	priv := tailcat.NewPrivateKey()
 	if *kind == "client" {
@@ -603,26 +630,49 @@ func runGenkey(args []string) int {
 		fmt.Fprintln(os.Stderr, "genkey:", err)
 		return 1
 	}
-	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
-	if *force {
-		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-	}
-	f, err := os.OpenFile(*path, flags, 0o600)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "genkey:", err)
-		return 1
-	}
-	if _, err := f.Write(j); err != nil {
-		f.Close()
-		fmt.Fprintln(os.Stderr, "genkey:", err)
-		return 1
-	}
-	if err := f.Close(); err != nil {
+	if err := writeKey(*path, j, *force); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if pk, rerr := readKey(*path); rerr == nil {
+				fmt.Println(pk.Private.Public().String())
+				return 0
+			}
+		}
 		fmt.Fprintln(os.Stderr, "genkey:", err)
 		return 1
 	}
 	fmt.Println(priv.Private.Public().String())
 	return 0
+}
+
+// writeKey publishes a complete key (CreateTemp makes it 0600) or nothing; without force an existing key is never replaced.
+func writeKey(path string, data []byte, force bool) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if force {
+		return os.Rename(name, path)
+	}
+	if err := os.Link(name, path); err != nil {
+		if _, serr := os.Lstat(path); serr == nil {
+			return os.ErrExist
+		}
+		return os.Rename(name, path)
+	}
+	return nil
 }
 
 // Loopback DERP for tests (TS_DEBUG_TAILCAT_LOCAL_DERP=1), as in cmd/tailcat.

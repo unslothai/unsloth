@@ -4,7 +4,7 @@
 """Installs the pinned ``unsloth-link`` tailcat helper on first need.
 
 studio/unsloth_link_pins.json is the only trust anchor: an archive whose size or sha256 differs
-from its pin is never extracted or run."""
+from its pin is never extracted or run, and an installed executable whose sha256 differs is not used."""
 
 from __future__ import annotations
 
@@ -60,11 +60,14 @@ def load_pins(path: Path = PINS_PATH) -> dict:
         raise InstallError(f"{path.name}: unsupported pins file")
     for target, asset in pins["assets"].items():
         name, digest, size = asset.get("name"), asset.get("sha256"), asset.get("size")
+        exe = asset.get("binary_sha256")
         if (
             not isinstance(name, str)
             or Path(name).name != name
             or not isinstance(digest, str)
             or len(digest) != 64
+            or not isinstance(exe, str)
+            or len(exe) != 64
             or not isinstance(size, int)
             or size <= 0
         ):
@@ -92,8 +95,29 @@ def _pinned(pins: Optional[dict]) -> tuple:
     return pins, target, asset
 
 
+_VERIFIED: dict = {}  # (path, size, mtime_ns) -> sha256, so a lookup hashes the executable once
+
+
+def _binary_matches(binary: Path, digest: str) -> bool:
+    try:
+        st = binary.lstat()
+        if not stat.S_ISREG(st.st_mode):
+            return False
+        key = (str(binary), st.st_size, st.st_mtime_ns)
+        if key not in _VERIFIED:
+            h = hashlib.sha256()
+            with open(binary, "rb") as f:
+                while chunk := f.read(1 << 20):
+                    h.update(chunk)
+            _VERIFIED[key] = h.hexdigest()
+        return _VERIFIED[key] == digest
+    except OSError:
+        return False
+
+
 def installed_binary(pins: Optional[dict] = None) -> Optional[Path]:
-    """The verified install for the current pins, or None. Never downloads."""
+    """The verified install for the current pins (its executable hashed against the pin), or None.
+    Never downloads."""
     try:
         pins, target, asset = _pinned(pins)
     except (InstallError, OSError, ValueError):
@@ -107,7 +131,7 @@ def installed_binary(pins: Optional[dict] = None) -> Optional[Path]:
     if (
         marker.get("sha256") == asset["sha256"]
         and marker.get("target") == target
-        and binary.is_file()
+        and _binary_matches(binary, asset["binary_sha256"])
     ):
         return binary
     return None
@@ -231,6 +255,8 @@ def ensure(pins: Optional[dict] = None, log: Callable[[str], None] = lambda _msg
                 unpacked.mkdir()
                 _extract(archive, unpacked)
                 binary = unpacked / BINARY
+                if not _binary_matches(binary, asset["binary_sha256"]):
+                    raise InstallError(f"{BINARY} in {asset['name']} does not match its pin")
                 binary.chmod(0o755)
                 _smoke(binary)
                 (unpacked / MARKER).write_text(
