@@ -515,6 +515,27 @@ def test_default_on_is_cuda_only(monkeypatch, caplog):
     assert patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet())) is True
 
 
+def test_opt_in_records_the_device_outside_the_default_on_set(monkeypatch):
+    # The trainer reads this to drop the ">2x faster" claim on devices nobody measured.
+    monkeypatch.undo()  # the real device check
+    monkeypatch.setenv(ENV, "1")
+    cpu_model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(cpu_model) is True
+    assert packing_module.hybrid_packing_opt_in_device(cpu_model) == "cpu"
+    monkeypatch.setattr(torch.version, "hip", "6.4")
+    rocm_model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(rocm_model) is True
+    assert packing_module.hybrid_packing_opt_in_device(rocm_model) == "ROCm"
+
+
+def test_default_on_device_records_no_opt_in(monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+    model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    assert packing_module.hybrid_packing_opt_in_device(model) is None
+    assert packing_module.hybrid_packing_opt_in_device(object()) is None
+
+
 def test_default_on_is_cuda_only_for_kwargs_mixers(monkeypatch, caplog):
     # transformers 5.16+ kwargs-mode Qwen mixers leave gated_delta_modules; the default must still cover them.
     monkeypatch.undo()
