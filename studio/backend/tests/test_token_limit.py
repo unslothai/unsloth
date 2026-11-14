@@ -179,6 +179,72 @@ def test_a_refused_request_gives_its_override_back():
     assert token_limit.enforce(api = False) is not None
 
 
+def test_a_receipt_that_lands_after_the_save_merges_instead_of_charging_twice():
+    import hashlib
+    from types import SimpleNamespace
+
+    from storage.token_usage_ledger import record_temporary_usage
+
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "a1",
+            "threadId": "t1",
+            "role": "assistant",
+            "createdAt": now + 1,
+            "content": [{"type": "text", "text": "answer"}],
+            "metadata": {
+                "tokenUsageCharged": True,
+                "contextUsage": {"promptTokens": 90, "completionTokens": 10, "totalTokens": 100},
+            },
+        }
+    )
+    _enable(limit = 10_000)
+    assert _pools()["combined"]["used"] == 100
+    record_temporary_usage(
+        SimpleNamespace(
+            id = "receipt",
+            temporary_message_id = hashlib.sha256(b"t1\0a1").hexdigest(),
+            temporary_thread = hashlib.sha256(b"t1").hexdigest(),
+            created_at = now + 1,
+            temporary_source = "local",
+            prompt_tokens = 90,
+            completion_tokens = 10,
+            total_tokens = 100,
+            context_tokens = 100,
+            temporary_parent_id = None,
+        )
+    )
+    assert _pools()["combined"]["used"] == 100
+
+
+@pytest.mark.parametrize("status, refunded", [(400, True), (502, False)])
+def test_only_a_refusal_before_inference_refunds_the_override(status, refunded):
+    import asyncio
+
+    now = _now_ms()
+    _thread("t1", now)
+    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override("combined")
+
+    async def app(scope, receive, send):
+        scope.setdefault("state", {})["token_limit_override"] = token_limit.enforce(api = False)
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def ignore(message):
+        pass
+
+    asyncio.run(token_limit.OverrideRefundMiddleware(app)({"type": "http"}, None, ignore))
+    if refunded:
+        assert token_limit.enforce(api = False) is not None
+    else:
+        with pytest.raises(HTTPException):
+            token_limit.enforce(api = False)
+
+
 def test_a_reconciled_run_settles_its_output():
     from storage import chat_generation_runs_db as runs
 

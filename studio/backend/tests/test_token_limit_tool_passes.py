@@ -366,3 +366,48 @@ def test_streamed_tool_arguments_count_in_full_and_once():
         monitor.finish(entry, "cancelled")
         [receipt] = receipts
         assert receipt.completion_tokens == 1000, flush
+
+
+def test_streamed_tool_argument_frames_count_toward_a_stopped_estimate(monkeypatch):
+    class _Backend(FakeLlamaCppBackend):
+        supports_tools = True
+        context_length = 8192
+        base_url = "http://token-limit-tool-args"
+        effective_parallel_slots = 2
+
+        def count_chat_tokens(self, *args, **kwargs):
+            return 20
+
+        def _request_reasoning_kwargs(self, *args, **kwargs):
+            return {}
+
+        def generate_chat_completion_with_tools(self, **kwargs):
+            yield {"type": "tool_args", "tool_name": "render_html", "text": "h" * 300}
+            yield {"type": "tool_args", "tool_name": "render_html", "text": "h" * 100}
+            yield {"type": "tool_output", "tool_name": "render_html", "text": "o" * 9000}
+
+    monitor = ApiMonitor()
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
+
+    async def _select(payload, **_kwargs):
+        return [{"type": "function", "function": {"name": "render_html"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    app = FastAPI()
+    app.include_router(inference_route.router)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    response = TestClient(app).post(
+        "/chat/completions",
+        json = {
+            "messages": [{"role": "user", "content": "draw"}],
+            "stream": True,
+            "enable_tools": True,
+        },
+        headers = {"X-Unsloth-Events": "1"},
+    )
+    assert response.status_code == 200, response.text
+    [entry] = monitor.snapshot()
+    # The 400 generated argument characters count; the tool's own output does not.
+    assert monitor._find_locked(entry["id"]).reply_chars == 400

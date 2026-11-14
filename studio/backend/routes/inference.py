@@ -33267,6 +33267,13 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_TOOL_HEARTBEAT_SSE
                             continue
 
+                        if event["type"] == "tool_args":
+                            # Generated arguments (not tool stdout): count them for a stopped request.
+                            _args_text = event.get("text")
+                            api_monitor.mark_first_token(
+                                monitor_id,
+                                output_chars = len(_args_text) if isinstance(_args_text, str) else 0,
+                            )
                         if event["type"] in (
                             "tool_output",
                             "tool_args",
@@ -35183,6 +35190,13 @@ async def produce_openai_chat_completions(
                         yield _OPENAI_TOOL_HEARTBEAT_SSE
                         continue
 
+                    if event["type"] == "tool_args":
+                        # Generated arguments (not tool stdout): count them for a stopped request.
+                        _args_text = event.get("text")
+                        api_monitor.mark_first_token(
+                            monitor_id,
+                            output_chars = len(_args_text) if isinstance(_args_text, str) else 0,
+                        )
                     if event["type"] in ("tool_output", "tool_args", "tool_approved"):
                         # Live stdout/stderr, tool-call arguments as the model writes them, or an approval.
                         if _ui_events:

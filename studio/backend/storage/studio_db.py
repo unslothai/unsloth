@@ -4215,8 +4215,17 @@ def _verified_usage_marker(conn, thread_id: str, message: dict) -> dict:
     """tokenUsageCharged exempts a saved reply only when its temporary receipt exists; client
     metadata alone must never waive an allowance debit."""
     metadata = message.get("metadata")
-    if not isinstance(metadata, dict) or "tokenUsageCharged" not in metadata:
+    if not isinstance(metadata, dict) or not (
+        "tokenUsageCharged" in metadata or "tokenUsageTemporaryKey" in metadata
+    ):
         return message
+    clean = {
+        k: v
+        for k, v in metadata.items()
+        if k not in ("tokenUsageCharged", "tokenUsageTemporaryKey")
+    }
+    if "tokenUsageCharged" not in metadata:
+        return {**message, "metadata": clean}
     key = hashlib.sha256(f"{thread_id}\0{message['id']}".encode("utf-8")).hexdigest()
     try:
         receipt = conn.execute(
@@ -4225,11 +4234,9 @@ def _verified_usage_marker(conn, thread_id: str, message: dict) -> dict:
     except sqlite3.OperationalError:
         receipt = None
     if receipt is not None:
-        return message
-    return {
-        **message,
-        "metadata": {k: v for k, v in metadata.items() if k != "tokenUsageCharged"},
-    }
+        return {**message, "metadata": {**clean, "tokenUsageCharged": True}}
+    # Receipt not written yet: this row is charged, and the receipt merges into it on arrival.
+    return {**message, "metadata": {**clean, "tokenUsageTemporaryKey": key}}
 
 
 def insert_server_chat_message(

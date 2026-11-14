@@ -41,6 +41,7 @@ def _usage_columns(row: str) -> str:
         NULLIF({_count(row, "$.contextUsage.contextTokens")}, 0) AS context_tokens,
         CASE WHEN {usage_prompt} + {usage_completion} + {server_completion} + {server_prompt} > 0
              THEN 0 ELSE 1 END AS estimated,
+        json_extract({row}, '$.tokenUsageTemporaryKey') AS temporary_key,
         CASE WHEN json_extract({row}, '$.tokenUsageCharged') = 1 THEN 'inherited'
              WHEN COALESCE(json_extract({row}, '$.responseDetails.providerType'),
                            json_extract({row}, '$.tokenUsageProvider'), 'local')
@@ -54,12 +55,12 @@ def _ledger_insert(message: str, rows: str = "") -> str:
         INSERT INTO {LEDGER_TABLE}
             (message_id, thread_id, created_at, source,
              prompt_tokens, completion_tokens, total_tokens, context_tokens, parent_message_id,
-             estimated)
+             estimated, temporary_key)
         SELECT u.id, u.thread_id, u.created_at, u.source,
                u.prompt_tokens, u.completion_tokens,
                CASE WHEN u.reported_total > 0 THEN u.reported_total
                     ELSE u.prompt_tokens + u.completion_tokens END, u.context_tokens,
-               u.parent_message_id, u.estimated
+               u.parent_message_id, u.estimated, u.temporary_key
         FROM (
             SELECT {message}.id AS id, {message}.thread_id AS thread_id,
                    {message}.created_at AS created_at,
@@ -91,6 +92,7 @@ def _ledger_insert(message: str, rows: str = "") -> str:
                 WHEN estimated < excluded.estimated THEN total_tokens
                 ELSE MAX(total_tokens, excluded.total_tokens) END,
             estimated = MIN(estimated, excluded.estimated),
+            temporary_key = COALESCE(excluded.temporary_key, temporary_key),
             context_tokens = CASE WHEN EXISTS (
                 SELECT 1 FROM {LEDGER_TABLE} later
                 WHERE later.thread_id = {LEDGER_TABLE}.thread_id
@@ -123,7 +125,8 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
             total_tokens INTEGER NOT NULL,
             context_tokens INTEGER,
             parent_message_id TEXT,
-            estimated INTEGER NOT NULL DEFAULT 0
+            estimated INTEGER NOT NULL DEFAULT 0,
+            temporary_key TEXT
         ) WITHOUT ROWID
         """
     )
@@ -134,6 +137,7 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
             ("context_tokens", "INTEGER"),
             ("parent_message_id", "TEXT"),
             ("estimated", "INTEGER NOT NULL DEFAULT 0"),
+            ("temporary_key", "TEXT"),
         )
         if name not in columns
     }
@@ -141,6 +145,10 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN {name} {column_type}")
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{LEDGER_TABLE}_created_at ON {LEDGER_TABLE}(created_at)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{LEDGER_TABLE}_temporary_key "
+        f"ON {LEDGER_TABLE}(temporary_key) WHERE temporary_key IS NOT NULL"
     )
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{LEDGER_TABLE}_thread_created_at "
@@ -319,6 +327,22 @@ def record_temporary_usage(receipt) -> bool:
     from storage.studio_db import get_connection
     conn = get_connection()
     try:
+        key = receipt.temporary_message_id or receipt.id
+        saved = conn.execute(
+            f"SELECT message_id FROM {LEDGER_TABLE} WHERE temporary_key = ?", (key,)
+        ).fetchone()
+        if saved is not None:
+            # Saved before this receipt landed: its row already debits the reply, so merge.
+            conn.execute(
+                f"""UPDATE {LEDGER_TABLE} SET
+                        prompt_tokens = MAX(prompt_tokens, ?),
+                        completion_tokens = MAX(completion_tokens, ?),
+                        total_tokens = MAX(total_tokens, ?)
+                    WHERE message_id = ?""",
+                (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens, saved[0]),
+            )
+            conn.commit()
+            return True
         conn.execute(
             f"""INSERT INTO {LEDGER_TABLE}
                 (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens, total_tokens, context_tokens, parent_message_id)

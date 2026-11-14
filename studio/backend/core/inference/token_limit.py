@@ -279,7 +279,7 @@ def restore_override(pool: str, start_ms: int) -> None:
 
 
 class OverrideRefundMiddleware:
-    """Restores a spent override when its request ends in an error response, e.g. no model loaded."""
+    """Restores a spent override when its request is refused before inference, e.g. no model loaded."""
 
     def __init__(self, app):
         self.app = app
@@ -300,7 +300,9 @@ class OverrideRefundMiddleware:
             await self.app(scope, receive, send_status)
         finally:
             spent = (scope.get("state") or {}).get("token_limit_override")
-            if spent and (status is None or status >= 400):
+            # Only a 4xx refusal (no model, bad request) is known to precede inference; a 5xx or a
+            # crash can follow generated output, which must keep the override spent.
+            if spent and status is not None and 400 <= status < 500:
                 import asyncio
                 await asyncio.to_thread(restore_override, *spent)
 
