@@ -140,4 +140,5 @@ def test_shipped_pins_are_full_commits_and_digests(name):
 def test_shipped_q4nx_pin_predates_the_q4_1_repack():
     # d1d5232 repacked Q4_0/Q4_1 in an order FastFlowLM's aie2p engines misread; stay on dd0993c.
     assert qc.load_pins(name = "q4nx")["commit"].startswith("dd0993c")
-    assert qc.load_pins(name = "q4k")["commit"].startswith("d1d5232")
+    # Before 93b8398, stock qwen35 GGUFs went to the plain Qwen3 converter and the MTP block became an extra layer.
+    assert qc.load_pins(name = "q4k")["commit"].startswith("93b8398")

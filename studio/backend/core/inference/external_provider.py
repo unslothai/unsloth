@@ -2019,7 +2019,10 @@ class ExternalProviderClient:
         # Forward tools/tool_choice on every OAI-compat route; dropping them silently loses function calling.
         if tools:
             body["tools"] = tools
-        if tool_choice is not None:
+        # FastFlowLM turns a bare "none" into a decoding constraint, which turns NPU speculation off.
+        if tool_choice is not None and not (
+            self.provider_type == "lemonade" and tool_choice_disabled and not tools
+        ):
             body["tool_choice"] = tool_choice
         # JSON mode / guided decoding; dropping `response_format` silently turns output into free prose.
         if response_format is not None:
@@ -7444,6 +7447,7 @@ class ExternalProviderClient:
         language: Optional[str] = None,
         response_format: str = "json",
         timestamp_granularities: Optional[list[str]] = None,
+        prompt: Optional[str] = None,
     ) -> tuple[bytes, str]:
         """Post audio to an OpenAI-compatible transcription endpoint."""
         data = {
@@ -7452,6 +7456,8 @@ class ExternalProviderClient:
         }
         if language:
             data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
         if timestamp_granularities:
             # Repeated field, so httpx wants the list under the bracketed name OpenAI uses.
             data["timestamp_granularities[]"] = list(timestamp_granularities)
