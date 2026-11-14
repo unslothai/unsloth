@@ -279,8 +279,28 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
 
     assert duplicate_two.action == "duplicate"
     assert "already completed successfully" in completion_two.model_message()["content"]
+    assert "different tool" not in completion_two.model_message()["content"]
     assert controller.force_final_answer
     assert controller.active_tools() == []
+
+
+def test_repeat_after_the_rounds_end_in_the_same_batch_also_asks_for_the_answer():
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    for query in ("a", "b"):
+        controller.record_result(
+            controller.prepare_call(_call("web_search", {"query": query}, f"call_{query}")),
+            "ok",
+        )
+    controller.record_noop(controller.prepare_call(_call("web_search", {"query": "a"}, "call_a2")))
+
+    controller.record_noop(controller.prepare_call(_call("web_search", {"query": "a"}, "call_a3")))
+    later = controller.record_noop(
+        controller.prepare_call(_call("web_search", {"query": "b"}, "call_b2"))
+    )
+
+    assert controller.force_final_answer
+    assert "different tool" not in later.model_message()["content"]
+    assert "final answer now" in later.model_message()["content"]
 
 
 def test_deduplication_can_be_disabled():

@@ -1084,8 +1084,8 @@ def test_an_invalidation_mid_probe_discards_the_stale_answer(monkeypatch):
     monkeypatch.setattr(mtmd_mod, "_cached_model_paths", probe_then_invalidate)
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is False
     with mtmd_mod._downloaded_probe_lock:
-        assert (
-            "qwen3-asr-0.6b" not in mtmd_mod._downloaded_probe
+        assert not any(
+            key[0] == "qwen3-asr-0.6b" for key in mtmd_mod._downloaded_probe
         ), "a stale answer was written back over the invalidation"
 
     monkeypatch.setattr(mtmd_mod, "_cached_model_paths", lambda mid: ("m.gguf", "p.gguf"))
@@ -1107,7 +1107,9 @@ def test_the_entry_is_timestamped_after_the_probe(monkeypatch):
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
 
     with mtmd_mod._downloaded_probe_lock:
-        stored_at = mtmd_mod._downloaded_probe["qwen3-asr-0.6b"][0]
+        (stored_at, _) = next(
+            value for key, value in mtmd_mod._downloaded_probe.items() if key[0] == "qwen3-asr-0.6b"
+        )
     assert stored_at == 1001.5, "the entry was timestamped before the probe ran"
 
     clock["t"] += 0.75

@@ -18,6 +18,7 @@ export {
 export {
   hfModelFitsDevice,
   loadScopedGpu,
+  searchRowFitsDevice,
 } from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,
@@ -62,6 +63,7 @@ export {
   modelConfigTargetMatchesSelection,
   requestModelConfigHandoff,
   useModelConfigHandoffStore,
+  type ModelConfigFocus,
   type ModelConfigHandoffRequest,
 } from "./model-config/model-config-handoff";
 export {
@@ -95,3 +97,49 @@ export {
   SharedRunConfigLinkHandler,
   receiveSharedRunConfigUrls,
 } from "./sharing";
+export { useChatPickerInventory } from "./inventory/use-chat-picker-inventory";
+export { modelDisplayName } from "./model-config/model-identity";
+export { loraOptionLabel } from "./components/model-selector/row-meta";
+export { PillTabs } from "./components/model-selector/pill-tabs";
+export { usePinnedConnectedModelsStore } from "./components/model-selector/pinned-connected-models";
+export { isMediaCatalogRepo } from "./components/model-selector/model-catalog";
+export { ModelLoadSettingsAction } from "./components/model-selector/model-load-settings-action";
+export { ConnectedModelSettingsDialog } from "./components/model-selector/connected-model-settings-dialog";
+export { ConnectedModelInfoDialog } from "./components/model-selector/connected-model-info-dialog";
+export { missingExternalModel } from "./components/model-selector/missing-external-model";
+export {
+  type ModelLoadTimes,
+  loadStampId,
+  loadedAt,
+  useModelLoadTimes,
+} from "./components/model-selector/model-usage";
+export {
+  chatGgufFit,
+  estimateQuantBytes,
+  isRecommendableFormat,
+  paramsFromId,
+} from "./components/model-selector/recommended-fit";
+export {
+  isOverBudget,
+  VRAM_VERDICT,
+} from "./components/model-selector/fit-verdict";
+export type { PickerFitStatus } from "./components/model-selector/media-picker-fit";
+export { pinDropAnchor } from "./components/model-selector/pinned-models";
+export { usePinnedRowDrag } from "./components/model-selector/use-pinned-row-drag";
+export { describeVariantListingError } from "./components/model-selector/variant-listing-error";
+export { pickerOrderedGgufVariants } from "./components/model-selector/variant-order";
+export { ggufVariantPickerLabel } from "./components/model-selector/variant-presentation";
+export { connectedModelMarks } from "./components/model-selector/connected-model-meta";
+export { mediaPageForTask } from "./components/model-selector/pickers";
+export {
+  AUDIO_CATALOG,
+  artifactForRepoId,
+} from "./components/model-selector/model-catalog";
+export {
+  audioPickIsRoutable,
+  audioPipelineTagFor,
+  curatedAudioInventoryTask,
+  macMlxSttRowIsRunnable,
+  nativeAudioCheckpointIsLoadable,
+  taskForMediaPick,
+} from "./components/model-selector/audio-picker-policy";

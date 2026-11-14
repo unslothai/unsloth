@@ -59,6 +59,8 @@ export interface PerModelConfig {
   cacheRam?: number | null;
   tensorParallel: boolean;
   disableVision: boolean;
+  /** GGUF only: precision of the repo's standalone Engram table to load, or null for the quant's own. */
+  engramPrecision?: string | null;
   chatTemplateOverride: string | null;
   /** Appended after Unsloth's flags. `undefined`: never read, so a save keeps the server's (CLI-set)
     flags; `null`: cleared, sent as `[]`; a list: launch with it. */
@@ -104,6 +106,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   cacheRam: null,
   tensorParallel: false,
   disableVision: false,
+  engramPrecision: null,
   chatTemplateOverride: null,
 };
 
@@ -245,8 +248,10 @@ export function resumesThought(x: {
 export function loadedContextFields(resp: {
   is_gguf?: boolean;
   is_mlx?: boolean;
+  is_npu?: boolean;
   context_length?: number | null;
   native_context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
   context_unbounded_when_batched?: boolean;
@@ -261,6 +266,7 @@ export function loadedContextFields(resp: {
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
+  loadedNpuContextFit: number | null;
   loadedContextBudget: number | null;
 } {
   if (!resp) {
@@ -273,13 +279,20 @@ export function loadedContextFields(resp: {
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
+      loadedNpuContextFit: null,
       loadedContextBudget: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
   // Unknown, not a default: omitted when reading the window failed.
   const loaded = resp.context_length ?? null;
-  if (!isGguf && !resp.is_mlx && resp.native_context_length == null) {
+  // The NPU reports the ctx_size it loaded even when Lemonade gives no model limit.
+  if (
+    !isGguf &&
+    !resp.is_mlx &&
+    !resp.is_npu &&
+    resp.native_context_length == null
+  ) {
     return {
       loadedContextLength: null,
       maxContextLength: null,
@@ -289,6 +302,7 @@ export function loadedContextFields(resp: {
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
+      loadedNpuContextFit: null,
       loadedContextBudget: null,
     };
   }
@@ -306,6 +320,7 @@ export function loadedContextFields(resp: {
       ? false
       : (resp.context_unbounded_when_batched ?? false),
     loadedParallelSlots: resp.parallel_slots ?? null,
+    loadedNpuContextFit: resp.is_npu ? (resp.npu_context_fit ?? null) : null,
     loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
@@ -388,6 +403,26 @@ export const LOAD_MODES = [
 export const LOAD_MODE_DEFAULT = "auto";
 const VALID_LOAD_MODES = new Set<string>(LOAD_MODES);
 
+// Mirrors LoadRequest.engram_precision; the label is the repo's, matched case-insensitively.
+const ENGRAM_PRECISION_PATTERN = /^[A-Za-z0-9_]{1,32}$/;
+
+/** A stored Engram table precision, or null for the table the quant ships with. */
+export function normalizeEngramPrecision(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const precision = value.trim();
+  return ENGRAM_PRECISION_PATTERN.test(precision) ? precision : null;
+}
+
+/** Engram precisions compare like the backend: case-insensitively, blank as null. */
+export function sameEngramPrecision(a: unknown, b: unknown): boolean {
+  return (
+    (normalizeEngramPrecision(a)?.toUpperCase() ?? null) ===
+    (normalizeEngramPrecision(b)?.toUpperCase() ?? null)
+  );
+}
+
 // 0 disables; the ceiling is a sanity bound, not an upstream one.
 export const CTX_CHECKPOINTS_MIN = 0;
 export const CTX_CHECKPOINTS_MAX = 256;
@@ -411,9 +446,10 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair, v13 mlxAnePrefill, v14 mlxFastVerify. v8 is skipped: nightly builds stamped it for the reverted custom
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair, v13 mlxAnePrefill, v14 mlxFastVerify, v15 engramPrecision. v8 is skipped: nightly builds stamped it for the reverted custom
 // llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 14;
+const STORAGE_SCHEMA_VERSION = 15;
+const PRE_ENGRAM_SCHEMA_VERSION = 14;
 const PRE_MLX_FAST_VERIFY_SCHEMA_VERSION = 13;
 const PRE_MLX_ANE_PREFILL_SCHEMA_VERSION = 12;
 const PRE_MLX_OFFLOAD_SCHEMA_VERSION = 11;
@@ -482,6 +518,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "cacheRam",
   "tensorParallel",
   "disableVision",
+  "engramPrecision",
   "chatTemplateOverride",
   "llamaExtraArgs",
   "gpuMemoryMode",
@@ -1142,6 +1179,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.disableVision === "boolean"
         ? partial.disableVision
         : DEFAULT_PER_MODEL_CONFIG.disableVision,
+    engramPrecision: normalizeEngramPrecision(partial.engramPrecision),
     chatTemplateOverride:
       typeof partial.chatTemplateOverride === "string" &&
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
@@ -1177,8 +1215,11 @@ function storedSchemaVersion(normalized: PerModelConfig): number {
   const mode = normalized.speculativeType;
   // A kept Auto and the MLX-only modes are values an older client folds back to unset.
   const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
-  if (normalized.mlxFastVerify) {
+  if (normalized.engramPrecision != null) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.mlxFastVerify) {
+    return PRE_ENGRAM_SCHEMA_VERSION;
   }
   if (normalized.mlxAnePrefill) {
     return PRE_MLX_FAST_VERIFY_SCHEMA_VERSION;
@@ -1399,6 +1440,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     Boolean(config.disableVision) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.disableVision) &&
+    normalizeEngramPrecision(config.engramPrecision) === null &&
     (config.chatTemplateOverride ?? null) === null &&
     // Or an Extra Arguments-only change reads as default and is deleted.
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&

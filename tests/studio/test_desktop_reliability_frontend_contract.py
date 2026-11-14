@@ -752,8 +752,11 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "!size-[30px]" in new_chat_tokens, new_chat_tokens
     assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
     assert "text-muted-foreground" in new_chat_tokens, new_chat_tokens
+    # The model picker moved into the composer; New chat leads the header's model controls.
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
-    assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
+    controls = chat_page.index('data-chat-model-controls=""')
+    assert controls < new_chat_click < chat_page.index("<ChatModelNotice", new_chat_click)
+    assert "<ModelSelector" not in chat_page[controls:new_chat_click]
 
 
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():

@@ -4,9 +4,12 @@
 """MiniMax-H3 attention fast paths, each off with its env var set to 0: UNSLOTH_H3_STRIDED_ATTN
 (permuted SDPA views, no copies), UNSLOTH_H3_FUSED_QKV (one row-concatenated int8 to_qkv),
 UNSLOTH_H3_SHARED_QKV_QUANT (unfused Q / K / V on one rotation + act quant), UNSLOTH_H3_ATTN_ARCH
-(flash only on H3_FLASH_FASTER_ARCHS when flash SDPA is available); all but the last are bit-identical."""
+(flash only on H3_FLASH_FASTER_ARCHS when flash SDPA is available), UNSLOTH_H3_STRIDED_SAGE (a SageAttention
+backend runs inside the strided processor instead of the stock one); all but the arch pick are bit-identical."""
 
 from __future__ import annotations
+
+import contextlib
 
 import os
 from functools import lru_cache
@@ -17,12 +20,25 @@ STRIDED_ATTN_ENV = "UNSLOTH_H3_STRIDED_ATTN"
 FUSED_QKV_ENV = "UNSLOTH_H3_FUSED_QKV"
 SHARED_QKV_ENV = "UNSLOTH_H3_SHARED_QKV_QUANT"
 ATTN_ARCH_ENV = "UNSLOTH_H3_ATTN_ARCH"
+STRIDED_SAGE_ENV = "UNSLOTH_H3_STRIDED_SAGE"
 
 # Measured at H3's shape (torch 2.11): flash beats cuDNN on sm80 / sm89, ties or loses on sm120; unmeasured keep cuDNN.
 H3_FLASH_FASTER_ARCHS = frozenset({(8, 0), (8, 9)})
 
 _CUDNN = "_native_cudnn"
 _FLASH = "_native_flash"
+# Studio's guarded SageAttention backends (pip SageAttention 2, kernels-hub build): both take the NHD layout the
+# strided processor already holds, so they run there with the fused q/k norm + RoPE and the shared QKV quant.
+STRIDED_SAGE_BACKENDS = frozenset({"sage", "sage_hub"})
+
+
+def strided_install_backend(backend: Any) -> bool:
+    """Whether a load that engaged ``backend`` should install the strided processor: cuDNN / flash SDPA, or a Sage
+    backend unless UNSLOTH_H3_STRIDED_SAGE=0."""
+    value = _backend_value(backend)
+    if value in (_CUDNN, _FLASH):
+        return True
+    return value in STRIDED_SAGE_BACKENDS and _enabled(STRIDED_SAGE_ENV)
 
 
 def _enabled(env: str) -> bool:
@@ -72,7 +88,7 @@ def h3_attention_backend(
         return selected
     try:
         from .diffusion_attention import ATTN_AUTO, normalize_attention_backend
-        if normalize_attention_backend(requested) != ATTN_AUTO:
+        if normalize_attention_backend(requested) not in (ATTN_AUTO, "unsloth_int8"):
             return selected
     except Exception:  # noqa: BLE001 -- unparseable request: leave it alone
         return selected
@@ -116,6 +132,9 @@ def _strided_processor_for(base: Any) -> Any:
 
     from . import diffusion_int8_gemm as int8_gemm
 
+    # the stock processor's module: its dispatcher runs the Sage backends (the vendored H3-Image one imports diffusers')
+    base_module = sys.modules.get(base.__module__)
+
     def _fusable_norm(norm: Any) -> bool:
         return (
             isinstance(norm, torch.nn.RMSNorm)
@@ -137,6 +156,11 @@ def _strided_processor_for(base: Any) -> Any:
     class UnslothH3StridedAttnProcessor(MiniMaxH3AttnProcessor):
         _unsloth_qk_rope = False
         _unsloth_shared_qkv = False
+        # set from UNSLOTH_H3_STRIDED_SAGE at install: a sage backend runs here, not in the stock processor
+        _unsloth_sage = False
+        # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
+        _unsloth_int8 = False
+        _unsloth_int8_min_tokens = 0
 
         def __call__(
             self,
@@ -145,8 +169,17 @@ def _strided_processor_for(base: Any) -> Any:
             rotary_emb: Any = None,
             attention_mask: Any = None,
         ) -> Any:
-            kernel = kernels.get(_backend_value(self._attention_backend))
-            if kernel is None or attention_mask is not None or self._parallel_config is not None:
+            name = _backend_value(self._attention_backend)
+            kernel = kernels.get(name)
+            dispatch = None
+            if kernel is None and self._unsloth_sage and name in STRIDED_SAGE_BACKENDS:
+                dispatch = getattr(base_module, "dispatch_attention_fn", None)
+            sage = dispatch is not None
+            if (
+                (kernel is None and not sage and not self._unsloth_int8)
+                or attention_mask is not None
+                or self._parallel_config is not None
+            ):
                 return super().__call__(attn, hidden_states, rotary_emb, attention_mask)
             qkv = None
             if attn.fused_projections:
@@ -185,15 +218,42 @@ def _strided_processor_for(base: Any) -> Any:
                     query = _apply_rotary_emb(query, *rotary_emb)
                     key = _apply_rotary_emb(key, *rotary_emb)
 
-            with sdpa_kernel(kernel):
-                out = F.scaled_dot_product_attention(
-                    query.permute(0, 2, 1, 3),
-                    key.permute(0, 2, 1, 3),
-                    value.permute(0, 2, 1, 3),
+            if (
+                self._unsloth_int8
+                and query.shape[1] >= self._unsloth_int8_min_tokens
+                # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
+                and not (
+                    torch.is_grad_enabled()
+                    and (query.requires_grad or key.requires_grad or value.requires_grad)
+                )
+            ):
+                hidden_states = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
+                hidden_states = hidden_states.flatten(2, 3).type_as(query)
+            elif sage:
+                # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot
+                # take still run native there)
+                hidden_states = dispatch(
+                    query,
+                    key,
+                    value,
+                    attn_mask = None,
                     dropout_p = 0.0,
                     is_causal = False,
+                    backend = self._attention_backend,
+                    parallel_config = None,
                 )
-            hidden_states = out.permute(0, 2, 1, 3).flatten(2, 3).type_as(query)
+                hidden_states = hidden_states.flatten(2, 3).type_as(query)
+            else:
+                # an INT8 route over a default SDPA pick has no kernel to pin
+                with sdpa_kernel(kernel) if kernel is not None else contextlib.nullcontext():
+                    out = F.scaled_dot_product_attention(
+                        query.permute(0, 2, 1, 3),
+                        key.permute(0, 2, 1, 3),
+                        value.permute(0, 2, 1, 3),
+                        dropout_p = 0.0,
+                        is_causal = False,
+                    )
+                hidden_states = out.permute(0, 2, 1, 3).flatten(2, 3).type_as(query)
             hidden_states = attn.to_out[0](hidden_states)
             hidden_states = attn.to_out[1](hidden_states)
             return hidden_states
@@ -288,6 +348,7 @@ def install_strided_attention(
         new = cls()
         new._unsloth_qk_rope = qk_rope_on
         new._unsloth_shared_qkv = _enabled(SHARED_QKV_ENV)
+        new._unsloth_sage = _enabled(STRIDED_SAGE_ENV)
         new._attention_backend = getattr(old, "_attention_backend", None)
         new._parallel_config = getattr(old, "_parallel_config", None)
         module.set_processor(new)
@@ -306,6 +367,18 @@ def strided_attention_count(transformer: Any) -> int:
         except Exception:  # noqa: BLE001
             return 0
         count += isinstance(getattr(m, "processor", None), cls)
+    return count
+
+
+def strided_sage_count(transformer: Any) -> int:
+    """Engagement census: strided processors that run a Sage backend themselves."""
+    count = 0
+    for m in _h3_attention_modules(transformer):
+        proc = getattr(m, "processor", None)
+        count += bool(
+            getattr(proc, "_unsloth_sage", False)
+            and _backend_value(getattr(proc, "_attention_backend", None)) in STRIDED_SAGE_BACKENDS
+        )
     return count
 
 

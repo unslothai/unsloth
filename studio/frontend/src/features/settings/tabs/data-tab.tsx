@@ -3,6 +3,7 @@
 
 import { useIsAccountOwner } from "@/features/auth";
 import { Button } from "@/components/ui/button";
+import { ArrowRightIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -35,7 +36,7 @@ import {
   archiveAllChatItems,
   BulkExportItems,
   bulkExportConversationsByScope,
-  clearAllChats,
+  clearAllChatsWithToast,
   countAllChats,
   DeleteChatFilesSwitch,
   downloadArchivedChatExport,
@@ -46,7 +47,6 @@ import {
   fileImportSource,
   type ImportSource,
   notifyChatProjectsUpdated,
-  offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
   useChatSidebarItems,
@@ -584,60 +584,15 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const handleClear = async () => {
     setClearing(true);
     try {
-      const result = await clearAllChats({
-        deleteFiles: deleteFilesOnClear,
-      });
-      refreshLibraryStorage();
-      const clearedCount = result.deletedThreadIds.length;
-      // After a clear there is no row left to reach a kept sandbox from.
-      offerToDeleteKeptSandboxes(result.sandboxesKept);
-      const hasFailedStore =
-        result.backend === "failed" || result.legacy === "failed";
-      if (!hasFailedStore && result.failedThreadIds.length === 0) {
-        setCount(0);
+      const { result, remaining } = await clearAllChatsWithToast(
+        { deleteFiles: deleteFilesOnClear },
+        count,
+      );
+      setCount(remaining);
+      if (result) {
+        refreshLibraryStorage();
         setConfirmOpen(false);
-        toast.success(
-          clearedCount === 0
-            ? t("settings.chat.clearedAllChats")
-            : clearedCount === 1
-              ? t("settings.chat.clearedOneChat")
-              : t("settings.chat.clearedChatCount", { count: clearedCount }),
-        );
-        return;
       }
-
-      const fallbackRemaining =
-        result.failedThreadIds.length > 0
-          ? result.failedThreadIds.length
-          : (count ?? 0);
-      const remaining = await countAllChats().catch(() => fallbackRemaining);
-      setCount(remaining);
-      setConfirmOpen(false);
-      toast.warning(t("settings.chat.someChatsCouldNotBeCleared"), {
-        description:
-          result.failedThreadIds.length > 0
-            ? clearedCount === 1 && result.failedThreadIds.length === 1
-              ? t("settings.chat.oneChatClearedRemainOne")
-              : clearedCount === 1
-                ? t("settings.chat.oneChatClearedRemain", {
-                    remainingCount: result.failedThreadIds.length,
-                  })
-                : result.failedThreadIds.length === 1
-                  ? t("settings.chat.chatsClearedRemainOne", { clearedCount })
-                  : t("settings.chat.chatsClearedRemain", {
-                      clearedCount,
-                      remainingCount: result.failedThreadIds.length,
-                    })
-            : remaining === 1
-              ? t("settings.chat.storageClearFailedOne")
-              : t("settings.chat.storageClearFailed", { count: remaining }),
-      });
-    } catch (error) {
-      const remaining = await countAllChats().catch(() => count);
-      setCount(remaining);
-      toast.error(t("settings.chat.failedToClearChats"), {
-        description: error instanceof Error ? error.message : undefined,
-      });
     } finally {
       setClearing(false);
     }
@@ -815,6 +770,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           >
             <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
             {t("settings.data.manageFiles.action")}
+            <ArrowRightIcon data-icon="inline-end" strokeWidth={1.75} />
           </Button>
         </SettingsRow>
       </SettingsSection>

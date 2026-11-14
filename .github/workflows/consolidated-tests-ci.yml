@@ -1504,21 +1504,45 @@ jobs:
                       continue
                   for cls_name in class_names:
                       cls = getattr(pkg_mod, cls_name, None)
+                      optional_dep = None
                       if cls is None:
                           # Class is defined inside the package but not
                           # re-exported on the package init. Walk
                           # submodules to find it.
                           import pkgutil as _pku
+                          import re as _re
                           for sub in _pku.walk_packages(
                               pkg_mod.__path__, prefix=qual + "."
                           ):
                               try:
                                   sub_mod = importlib.import_module(sub.name)
+                              except ModuleNotFoundError as e:
+                                  # A submodule that needs an optional extra
+                                  # (TRL 1.18's async_grpo/openenv_harness.py
+                                  # imports `openenv`) is skipped like a
+                                  # package whose init needs one, but only
+                                  # when it is the file declaring the class.
+                                  missing_dep = (e.name or "").split(".")[0]
+                                  spec = importlib.util.find_spec(sub.name)
+                                  src = ""
+                                  if spec is not None and spec.origin:
+                                      src = pathlib.Path(spec.origin).read_text(encoding="utf-8")
+                                  if missing_dep and missing_dep != "trl" and _re.search(
+                                      rf"^class\s+{cls_name}\b", src, _re.M,
+                                  ):
+                                      optional_dep = (sub.name, missing_dep)
+                                  continue
                               except Exception:
                                   continue
                               cls = getattr(sub_mod, cls_name, None)
                               if cls is not None:
                                   break
+                      if cls is None and optional_dep is not None:
+                          print(
+                              f"  IMPORT-SKIP {optional_dep[0]}.{cls_name}: "
+                              f"needs the optional `{optional_dep[1]}`"
+                          )
+                          continue
                       if cls is None:
                           missing.append((pkg_name, cls_name))
                           continue
