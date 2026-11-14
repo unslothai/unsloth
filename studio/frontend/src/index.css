@@ -2246,7 +2246,7 @@ html[data-chat-font] .aui-root {
 	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[data-modal-lock-lower] .pointer-events-auto:not([data-radix-popper-content-wrapper] *) {
 		pointer-events: none !important;
 	}
-	/* The same for pointer-events-auto restorations in the page itself (toolbars, the Downloads card,
+	/* The same for pointer-events-auto restorations in the page itself (toolbars,
 	   floating monitors): with the body lock on, wheel over one scrolled what sits behind the modal.
 	   Left live: the top dialog (contained or portaled), every popper popup, the thread (its cover
 	   blocks it, and its many restorations would restyle on each toggle) and window chrome, toasts and
