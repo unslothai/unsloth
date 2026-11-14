@@ -16,6 +16,7 @@ from starlette.requests import Request
 import routes.inference as ri
 from core.inference import cloud_compaction
 from core.inference import external_provider as ep_mod
+from core.inference.providers import PROVIDER_REGISTRY
 from storage import studio_db
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -618,3 +619,61 @@ def test_a_reused_summary_still_recalls_for_the_newest_turn(rag_home, rag_conn, 
     assert "055 794 3321" in str(sent["messages"][-1]["content"])
     [truncation] = _truncations(chunks)
     assert truncation["recalled_chunks"] > 0
+
+
+# Every chat connection without server-side compaction: native Anthropic and OpenAI have their own
+# tests, the ChatGPT subscription needs a saved login, Lemonade is a managed engine.
+_SUMMARISED_PROVIDERS = sorted(
+    name
+    for name, info in PROVIDER_REGISTRY.items()
+    if not info.get("decisions_only")
+    and name not in {"anthropic", "openai", "openai_codex", "lemonade"}
+)
+
+
+@pytest.mark.parametrize("provider_type", _SUMMARISED_PROVIDERS)
+def test_every_connection_without_native_compaction_is_summarised(provider_type):
+    _, summaries, chats = _bodies(
+        _SummarisingHandler, provider_type = provider_type, **_SMALL_TRIGGER
+    )
+    assert summaries and _SUMMARY in _system_text(chats[-1])
+
+
+def test_claude_through_a_gateway_is_summarised_not_cut():
+    _, [_], [sent] = _bodies(
+        _SummarisingHandler,
+        provider_type = "openrouter",
+        model = "anthropic/claude-sonnet-4.6",
+        **_SMALL_TRIGGER,
+    )
+    assert _SUMMARY in _system_text(sent)
+
+
+def _serving(entry: dict):
+    class Serving(_SummarisingHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            payload = json.dumps({"object": "list", "data": [entry]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    return Serving
+
+
+@pytest.mark.parametrize(
+    "provider_type, entry",
+    [
+        # vLLM and SGLang list the engine's --max-model-len / --context-length.
+        ("vllm", {"id": "a-model", "max_model_len": 8_000}),
+        ("custom", {"id": "a-model", "max_model_len": 8_000, "owned_by": "sglang"}),
+        ("llama_cpp", {"id": "a-model", "owned_by": "llamacpp", "meta": {"n_ctx": 8_000}}),
+    ],
+)
+def test_a_self_hosted_server_without_a_catalogued_window_is_summarised(provider_type, entry):
+    ep_mod._served_windows.clear()
+    _, summaries, chats = _bodies(
+        _serving(entry), provider_type = provider_type, context_overflow = "truncate_oldest"
+    )
+    assert summaries and _SUMMARY in _system_text(chats[-1])
