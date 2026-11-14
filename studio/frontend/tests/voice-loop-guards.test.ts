@@ -150,3 +150,11 @@ test("Compare's read-only threads never mount the voice orb", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /\{voiceRequested && !hideComposer && \(\s*<Suspense fallback=\{null\}>\s*<VoiceOrb \/>/);
 });
+
+test("the mic re-arms for every reply stream, and a deleted saved voice falls back to the model's own", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /streamBegunRef\.current = true;\s*\/\/[^\n]*\n\s*setStreamSeq\(\(n\) => n \+ 1\);/);
+  assert.match(engine, /\}, \[isSpeaking, streamSeq\]\);/);
+  const player = readSrc("features/chat/hooks/use-tts-player.ts");
+  assert.match(player, /if \(\/saved voice no longer exists\/i\.test\([^)]*\)\) \{[\s\S]{0,200}useChatRuntimeStore\.getState\(\)\.setSelectedVoiceId\(""\);\s*url = await request\(\);/);
+});

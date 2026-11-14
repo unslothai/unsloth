@@ -137,10 +137,16 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         url = await request();
       } catch (error) {
         if (reqRef.current !== reqId) return null;
-        const ensure = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
-        if (!ensure || !(await ensure())) throw error;
-        if (reqRef.current !== reqId) return null;
-        url = await request();
+        if (/saved voice no longer exists/i.test(error instanceof Error ? error.message : "")) {
+          // Deleted on the Audio page: the pick is dropped so this and every later sentence use the model's voice.
+          useChatRuntimeStore.getState().setSelectedVoiceId("");
+          url = await request();
+        } else {
+          const ensure = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
+          if (!ensure || !(await ensure())) throw error;
+          if (reqRef.current !== reqId) return null;
+          url = await request();
+        }
       }
       if (reqRef.current !== reqId) return null;
       return await ctx.decodeAudioData(wavBytesFromDataUrl(url));

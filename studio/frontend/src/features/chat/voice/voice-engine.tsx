@@ -141,6 +141,7 @@ export const VoiceEngine: FC = () => {
   const speakRef = useRef(speak);
   speakRef.current = speak;
   const streamBegunRef = useRef(false);
+  const [streamSeq, setStreamSeq] = useState(0);
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const latestAssistantIsReasoning = useCallback((): boolean => {
@@ -392,6 +393,8 @@ export const VoiceEngine: FC = () => {
         if (composer.getState().dictation) composer.stopDictation();
         beginStreamRef.current();
         streamBegunRef.current = true;
+        // isSpeaking may already be true (a typed follow-up over a reply): the mic re-arms per stream, not per flip.
+        setStreamSeq((n) => n + 1);
         if (streamPollRef.current) clearInterval(streamPollRef.current);
         streamPollRef.current = setInterval(() => {
           feedTextRef.current(latestAssistantText());
@@ -444,7 +447,7 @@ export const VoiceEngine: FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isSpeaking]);
+  }, [isSpeaking, streamSeq]);
 
   // No session-end watcher: the adapter raises requestVoiceSubmit itself.
 
