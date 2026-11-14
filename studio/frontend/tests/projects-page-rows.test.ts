@@ -150,7 +150,7 @@ test("the reasoning header says Worked for", async () => {
 });
 
 test("a chat row carries its own actions, revealed by hovering it", async () => {
-  const start = PAGE.indexOf("{chats.map((chat) => {");
+  const start = PAGE.indexOf("const chatPinned = pinnedChatIdSet.has(chat.id);");
   assert.notEqual(start, -1, "the chat list moved");
   const row = PAGE.slice(start, PAGE.indexOf("</DropdownMenu>", start));
   assert.match(row, /className="group\/chat-row /);
@@ -211,7 +211,7 @@ test("the chat menu writes through the shared chat helpers", () => {
 });
 
 test("the chat menu carries the sidebar's items, without the move", () => {
-  const start = PAGE.indexOf("{chats.map((chat) => {");
+  const start = PAGE.indexOf("const chatPinned = pinnedChatIdSet.has(chat.id);");
   const menu = PAGE.slice(
     PAGE.indexOf("<DropdownMenuContent", start),
     PAGE.indexOf("</DropdownMenuContent>", start),

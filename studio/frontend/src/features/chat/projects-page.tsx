@@ -107,6 +107,12 @@ import {
   normalizeSectionName,
   useSidebarOrganizationStore,
 } from "./stores/sidebar-organization-store";
+import {
+  chatsInFolder,
+  childFolders,
+  type ProjectFolder,
+  useProjectFoldersStore,
+} from "./stores/project-folders-store";
 import { runChatImport } from "./utils/import-chats";
 
 const PROJECTS_PAGE_STEP = 12;
@@ -145,6 +151,53 @@ function formatUpdated(
     day: "numeric",
     year: then.getFullYear() === now.getFullYear() ? undefined : "numeric",
   });
+}
+
+type ProjectChatEntry =
+  | { kind: "folder"; folder: ProjectFolder; depth: number }
+  | { kind: "chat"; chat: SidebarItem; depth: number };
+
+/**
+ * Flattens a project's folder tree and chats into render order: each folder
+ * depth-first, with its open subfolders and chats nested beneath it, then the
+ * chats that sit at the project root. A collapsed folder hides its contents.
+ */
+function buildProjectChatEntries(
+  folders: readonly ProjectFolder[],
+  folderByChatId: Record<string, string>,
+  projectId: string,
+  chats: readonly SidebarItem[],
+  openFolderIds: ReadonlySet<string>,
+): ProjectChatEntry[] {
+  const chatIds = chats.map((chat) => chat.id);
+  const chatById = new Map(chats.map((chat) => [chat.id, chat]));
+  const entries: ProjectChatEntry[] = [];
+  const pushChats = (folderId: string | null, depth: number): void => {
+    for (const id of chatsInFolder(
+      folders,
+      folderByChatId,
+      chatIds,
+      projectId,
+      folderId,
+    )) {
+      const chat = chatById.get(id);
+      if (chat) {
+        entries.push({ kind: "chat", chat, depth });
+      }
+    }
+  };
+  const walkFolders = (parentId: string | null, depth: number): void => {
+    for (const folder of childFolders(folders, projectId, parentId)) {
+      entries.push({ kind: "folder", folder, depth });
+      if (openFolderIds.has(folder.id)) {
+        walkFolders(folder.id, depth + 1);
+        pushChats(folder.id, depth + 1);
+      }
+    }
+  };
+  walkFolders(null, 0);
+  pushChats(null, 0);
+  return entries;
 }
 
 export function ProjectsPage({
@@ -200,6 +253,17 @@ export function ProjectsPage({
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
   const [renamingChat, setRenamingChat] = useState<SidebarItem | null>(null);
   const [chatNameDraft, setChatNameDraft] = useState("");
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [folderNameDraft, setFolderNameDraft] = useState("");
+  const [openFolderIds, setOpenFolderIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const projectFolders = useProjectFoldersStore((s) => s.folders);
+  const folderByChatId = useProjectFoldersStore((s) => s.folderByChatId);
+  const createProjectFolder = useProjectFoldersStore((s) => s.createFolder);
+  const renameProjectFolder = useProjectFoldersStore((s) => s.renameFolder);
+  const deleteProjectFolder = useProjectFoldersStore((s) => s.deleteFolder);
+  const setChatProjectFolder = useProjectFoldersStore((s) => s.setChatFolder);
   const [deletingChat, setDeletingChat] = useState<SidebarItem | null>(null);
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
 
@@ -479,6 +543,136 @@ export function ProjectsPage({
         description: err instanceof Error ? err.message : undefined,
       });
     }
+  }
+
+  function toggleFolderOpen(folderId: string) {
+    setOpenFolderIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderId)) {
+        next.delete(folderId);
+      } else {
+        next.add(folderId);
+      }
+      return next;
+    });
+  }
+
+  function startFolderRename(folder: ProjectFolder) {
+    setFolderNameDraft(folder.name);
+    setRenamingFolderId(folder.id);
+  }
+
+  function newProjectFolderAt(projectId: string, parentId: string | null) {
+    const defaultName = t("projectsPage.newFolderName");
+    const id = createProjectFolder(projectId, parentId, defaultName);
+    if (!id) {
+      return;
+    }
+    if (parentId !== null) {
+      setOpenFolderIds((prev) => new Set(prev).add(parentId));
+    }
+    setFolderNameDraft(defaultName);
+    setRenamingFolderId(id);
+  }
+
+  function commitFolderRename() {
+    const id = renamingFolderId;
+    const name = folderNameDraft.trim();
+    setRenamingFolderId(null);
+    if (!id || !name) {
+      return;
+    }
+    renameProjectFolder(id, name);
+  }
+
+  function renderFolderRow(folder: ProjectFolder, depth: number) {
+    const open = openFolderIds.has(folder.id);
+    return (
+      <div
+        key={`folder-${folder.id}`}
+        style={{ marginInlineStart: `calc(${depth} * 1rem)` }}
+        className="group/folder-row flex items-center gap-2 rounded-full py-1.5 pl-5 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
+      >
+        <button
+          type="button"
+          onClick={() => toggleFolderOpen(folder.id)}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
+            strokeWidth={1.75}
+            className={cn(
+              "size-3 shrink-0 transition-transform",
+              !open && "-rotate-90",
+            )}
+          />
+          <HugeiconsIcon
+            icon={Folder02Icon}
+            strokeWidth={1.75}
+            className="size-4 shrink-0"
+          />
+          <span className="min-w-0 truncate">{folder.name}</span>
+        </button>
+        <div className="relative flex w-8 shrink-0 items-center justify-end">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                onClick={(e) => e.stopPropagation()}
+                aria-label={t("projectsPage.folderOptions")}
+                className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/folder-row:opacity-100 pointer-coarse:opacity-100 data-[state=open]:opacity-100"
+              >
+                <HugeiconsIcon
+                  icon={MoreHorizontalIcon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side="bottom"
+              align="end"
+              sideOffset={0}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 font-heading rounded-xl border-0"
+            >
+              <DropdownMenuItem
+                onSelect={() => newProjectFolderAt(folder.projectId, folder.id)}
+              >
+                <HugeiconsIcon
+                  icon={PlusSignIcon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+                <span>{t("projectsPage.newSubfolder")}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => startFolderRename(folder)}>
+                <HugeiconsIcon
+                  icon={Edit03Icon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+                <span>{t("common.rename")}</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() => deleteProjectFolder(folder.id)}
+              >
+                <HugeiconsIcon
+                  icon={TrashIcon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+                <span>{t("projectsPage.deleteFolder")}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    );
   }
 
   function activeThreadId(): string | undefined {
@@ -861,7 +1055,18 @@ export function ProjectsPage({
                   <p className="py-1 pl-5 text-sm text-muted-foreground">{t("projectsPage.noChats")}</p>
                 ) : (
                   <>
-                    {chats.map((chat) => {
+                    {buildProjectChatEntries(
+                      projectFolders,
+                      folderByChatId,
+                      project.id,
+                      chats,
+                      openFolderIds,
+                    ).map((entry) => {
+                      if (entry.kind === "folder") {
+                        return renderFolderRow(entry.folder, entry.depth);
+                      }
+                      const chat = entry.chat;
+                      const chatDepth = entry.depth;
                       const chatPinned = pinnedChatIdSet.has(chat.id);
                       const chatThreadIds = getSidebarItemThreadIds(chat);
                       const chatUnread = chatThreadIds.some((id) =>
@@ -870,6 +1075,9 @@ export function ProjectsPage({
                       return (
                       <div
                         key={chat.id}
+                        style={{
+                          marginInlineStart: `calc(${chatDepth} * 1rem)`,
+                        }}
                         className="group/chat-row flex items-center gap-3 rounded-full py-1.5 pl-5 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
                       >
                         <button
@@ -984,6 +1192,38 @@ export function ProjectsPage({
                                 </DropdownMenuSubContent>
                               </DropdownMenuSub>
                               <OpenChatFolderItem item={chat} />
+                              <DropdownMenuSub>
+                                <DropdownMenuSubTrigger>
+                                  <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                                  <span>{t("projectsPage.moveToFolder")}</span>
+                                </DropdownMenuSubTrigger>
+                                <DropdownMenuSubContent className="w-52">
+                                  {projectFolders.some((f) => f.projectId === project.id) ? (
+                                    <>
+                                      {projectFolders
+                                        .filter((f) => f.projectId === project.id)
+                                        .map((f) => (
+                                          <DropdownMenuItem
+                                            key={f.id}
+                                            onSelect={() => setChatProjectFolder(chat.id, f.id)}
+                                          >
+                                            <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
+                                            <span className="truncate">{f.name}</span>
+                                          </DropdownMenuItem>
+                                        ))}
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem onSelect={() => setChatProjectFolder(chat.id, null)}>
+                                        <span>{t("projectsPage.removeFromFolder")}</span>
+                                      </DropdownMenuItem>
+                                    </>
+                                  ) : (
+                                    <DropdownMenuItem onSelect={() => newProjectFolderAt(project.id, null)}>
+                                      <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
+                                      <span>{t("projectsPage.newFolder")}</span>
+                                    </DropdownMenuItem>
+                                  )}
+                                </DropdownMenuSubContent>
+                              </DropdownMenuSub>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
                                 <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
@@ -1015,6 +1255,14 @@ export function ProjectsPage({
                         {t("projectsPage.refreshChatsFailed")}
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => newProjectFolderAt(project.id, null)}
+                      className="flex items-center gap-2 self-start rounded-full py-1 pl-5 pr-5 text-left text-sm text-muted-foreground underline-offset-2 transition-colors hover:text-foreground"
+                    >
+                      <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+                      <span>{t("projectsPage.newFolder")}</span>
+                    </button>
                   </>
                 )}
               </div>
@@ -1087,6 +1335,53 @@ export function ProjectsPage({
                 !chatNameDraft.trim() ||
                 chatNameDraft.trim() === renamingChat?.title
               }
+            >
+              {t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={renamingFolderId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenamingFolderId(null);
+          }
+        }}
+      >
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("projectsPage.renameFolder")}</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={folderNameDraft}
+            onChange={(e) => setFolderNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitFolderRename();
+              }
+            }}
+            autoFocus
+            maxLength={60}
+            placeholder={t("projectsPage.folderName")}
+            aria-label={t("projectsPage.folderName")}
+            className="focus-visible:border-input focus-visible:ring-0"
+          />
+          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setRenamingFolderId(null)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="dark"
+              onClick={() => commitFolderRename()}
+              disabled={!folderNameDraft.trim()}
             >
               {t("common.save")}
             </Button>
