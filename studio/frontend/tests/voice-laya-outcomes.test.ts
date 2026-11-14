@@ -57,6 +57,7 @@ test("a queued interrupt cuts through a run parked on Allow/Deny; other verdicts
 
 test("a correction is not the same ask, an impatient re-ask is", () => {
   assert.equal(isSameAsk("Write a poem about dogs", "Write a poem about cats instead"), false);
-  assert.equal(isSameAsk("Write a poem about dogs", "can you write a poem about dogs please"), true);
+  assert.equal(isSameAsk("Set a timer for ten minutes", "No, set a timer for five minutes"), false);
+  assert.equal(isSameAsk("Write a poem about dogs", "can you write a poem about dogs"), true);
   assert.equal(isSameAsk("what is the weather in Paris", "the weather in Paris?"), true);
 });
