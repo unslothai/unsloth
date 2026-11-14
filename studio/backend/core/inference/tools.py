@@ -1056,12 +1056,27 @@ def _quoted_redirection_indexes(
     )
 
 
-def _split_redirect_punct_indexes(text: str, tokens: "list[str]") -> "frozenset[int]":
+def _is_bare_redirection(token: str) -> bool:
+    redir = _REDIRECTION_RE.match(token)
+    return bool(redir) and redir.end() == len(token)
+
+
+def _redirect_word_is_high_risk(word: str, depth: int) -> bool:
+    """A redirection target leaves argv, but bash still runs its substitutions (`> "`rm -rf x`"`)."""
+    if not any(mark in word for mark in ("$(", "`", "<(", ">(")):
+        return False
+    return depth >= 3 or _terminal_is_high_risk(word, depth + 1)
+
+
+def _split_redirect_punct_indexes(text: str, tokens: "list[str]") -> "frozenset[int] | None":
     """Punctuation tokens shlex split off a contiguous unquoted `>&`, `<&` or `>|` (`2>&1`, `>|log`)."""
     states = _shell_quote_states(text)
     runs: "list[bool]" = []
     i, n = 0, len(text)
     while i < n:
+        if text[i] == "#" and not states[i] and (not i or text[i - 1].isspace()):
+            # shlex drops the comment, so its punctuation has no token.
+            break
         if text[i] in ";&|()" and not states[i]:
             j = i
             while j < n and text[j] in ";&|()" and not states[j]:
@@ -1075,8 +1090,7 @@ def _split_redirect_punct_indexes(text: str, tokens: "list[str]") -> "frozenset[
             i += 1
     punct = [k for k, token in enumerate(tokens) if token and not set(token) - set(";&|()")]
     if len(punct) != len(runs):
-        # Cannot align the text with the tokens: every `&` stays a separator.
-        return frozenset()
+        return None
     return frozenset(k for k, dup in zip(punct, runs) if dup)
 
 
@@ -7888,10 +7902,15 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             coproc_kw = False
             if dup_target_pending:
                 dup_target_pending = False
+                if _redirect_word_is_high_risk(token, _depth):
+                    return True
                 continue
-            if token in ("&", "|") and _tok_idx:
+            if token in ("&", "|") and _tok_idx and _is_bare_redirection(tokens[_tok_idx - 1]):
                 if split_redirect_puncts is None:
                     split_redirect_puncts = _split_redirect_punct_indexes(text, tokens)
+                if split_redirect_puncts is None:
+                    # Text and tokens do not line up, so this may be `>&` or a separator: ask.
+                    return True
                 if _tok_idx in split_redirect_puncts:
                     dup_target_pending = True
                     redir_target_pending = False
@@ -7945,20 +7964,29 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             # `trap 2>log 'rm -rf x' EXIT`); a bare operator also takes the next word as its target.
             if redir_target_pending:
                 redir_target_pending = False
+                if _redirect_word_is_high_risk(token, _depth):
+                    return True
                 continue
-            if expect_command or prefix_pending:
+            redir = None
+            if expect_command:
                 redir = _REDIR_PREFIX_RE.match(token)
-                if redir:
-                    redir_target_pending = redir.end() == len(token)
-                    continue
-            elif command_arg_pending or shell_c_pending:
+            elif (
+                (prefix_pending and not wrapper_value_pending)
+                or command_arg_pending
+                or shell_c_pending
+            ):
+                # A quoted `'>log'` is a word (`exec -a '>log' git ...`), not a redirection.
                 redir = _REDIRECTION_RE.match(token)
                 if redir:
                     if pending_quoted_redirs is None:
                         pending_quoted_redirs = _quoted_redirection_indexes(text, tokens, ";&|()")
-                    if _tok_idx not in pending_quoted_redirs:
-                        redir_target_pending = redir.end() == len(token)
-                        continue
+                    if _tok_idx in pending_quoted_redirs:
+                        redir = None
+            if redir:
+                if _redirect_word_is_high_risk(token[redir.end() :], _depth):
+                    return True
+                redir_target_pending = redir.end() == len(token)
+                continue
             if exec_flag_pending and token == "--":
                 # Nothing after fd's `--` is an option.
                 exec_flag_pending = False
