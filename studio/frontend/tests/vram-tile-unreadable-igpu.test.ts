@@ -97,3 +97,12 @@ test("an unreadable APU measured as a dedicated carve-out stays VRAM", () => {
   assert.deepEqual(display.sharedDevices, []);
   assert.equal(display.usageDevices.length, 2);
 });
+
+test("an unreadable Strix Halo carve-out beside a card keeps its carve-out as VRAM", () => {
+  // Windows ROCm: 107.92 GiB pool of which 12.1 GiB is host-backed, so 95.82 GiB is the carve-out.
+  const halo: GpuDevice = { ...igpu, memory_total_gb: 107.92, shared_memory_host_backed_gb: 12.1 };
+  const card: GpuDevice = { ...r9700(0, 4), memory_total_gb: 24, vram_free_gb: 20 };
+  const display = gpuMemoryDisplay({ ...gpu, devices: [card, halo] });
+  assert.deepEqual(display.sharedDevices, []);
+  assert.equal(gpuMemoryTotalsGb(display.usageDevices).dedicated, 119.82);
+});

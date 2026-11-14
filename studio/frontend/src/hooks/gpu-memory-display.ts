@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { sharesHostMemoryDevice } from "./gpu-vram.ts";
+import { gpuMemoryTotalsGb, sharesHostMemoryDevice } from "./gpu-vram.ts";
 import type { GpuDevice, SystemGpuInfo } from "./use-system";
 
 export function hasSharedMemoryHeadroom(device: GpuDevice): boolean {
@@ -45,11 +45,12 @@ export function sharedMemoryDetail(
   return availableGb === null ? label : `${label}\n${estimate(availableGb)}`;
 }
 
-// A measured zero host-backed split is a dedicated carve-out (Linux ROCm APU), not shared RAM.
+// Only a mostly host-backed iGPU: a carve-out APU (dedicated >= shared, as carveOutVramGb judges it,
+// including a measured zero split) keeps its dedicated memory on the VRAM tile.
 function parkableSharedDevice(device: GpuDevice): boolean {
-  return (
-    sharesHostMemoryDevice(device) && device.shared_memory_host_backed_gb !== 0
-  );
+  if (!sharesHostMemoryDevice(device)) return false;
+  const { dedicated, shared } = gpuMemoryTotalsGb([device]);
+  return shared > 0 && dedicated < shared;
 }
 
 /** An unreadable shared iGPU beside cards that all report usage: shown as shared RAM, not as unknown VRAM used. */
