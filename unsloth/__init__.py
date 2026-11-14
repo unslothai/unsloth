@@ -11,6 +11,12 @@
 
 import os, importlib.util, platform, sys
 
+# Must precede optional upstream probes that can import torch.
+from ._ascend_compat import bootstrap_ascend_eager
+
+bootstrap_ascend_eager()
+del bootstrap_ascend_eager
+
 # Restored at the end of this file.
 from ._import_gc import raise_gc_threshold as _raise_gc_threshold
 
