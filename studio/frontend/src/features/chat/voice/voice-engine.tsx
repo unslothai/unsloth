@@ -159,6 +159,8 @@ export const VoiceEngine: FC = () => {
   const aui = useAui();
   const [voiceMode, setVoiceModeState] = useState(getVoiceMode());
   const voiceCoalesceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped per armed coalesced run: a start still settling after a newer utterance must not fire.
+  const coalesceSeqRef = useRef(0);
   const voiceModeRef = useRef(getVoiceMode());
   const isSpeakingRef = useRef(false);
   const isPlayingRef = useRef(false);
@@ -561,8 +563,10 @@ export const VoiceEngine: FC = () => {
       const turn = voiceNotesEpoch();
       const start = () => {
         if (voiceModeRef.current !== "active") return;
-        if (voiceNotesEpoch() !== turn) return;
+        if (voiceNotesEpoch() !== turn || coalesceSeqRef.current !== seq) return;
         if (useChatRuntimeStore.getState().activeThreadId !== threadId) return;
+        const now = t.getState();
+        if (now.isRunning || now.messages[now.messages.length - 1]?.id !== last.id) return;
         try {
           t.startRun({ parentId: last.id });
         } catch {
@@ -591,6 +595,7 @@ export const VoiceEngine: FC = () => {
       })();
     };
     if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
+    const seq = ++coalesceSeqRef.current;
     const holdOn = isHoldOn(said);
     if (holdOn) voiceTrace("engine.holdOn", { text: said });
     voiceCoalesceTimerRef.current = setTimeout(
@@ -731,8 +736,10 @@ export const VoiceEngine: FC = () => {
     void fillerVerdict.then((fromModel) => {
       // Voice off, a thread switch or a typed send since: the verdict is for a turn that's gone.
       if (notesEpoch !== voiceNotesEpoch()) return;
-      if (fromModel) fillerAnsweredRef.current = true;
-      if (fromModel && !auiRef.current.thread().getState().isRunning) applyFiller(fromModel);
+      // A decision landing after the run started is too late for the request's note: the quiet fallback covers the wait.
+      if (!fromModel || auiRef.current.thread().getState().isRunning) return;
+      fillerAnsweredRef.current = true;
+      applyFiller(fromModel);
     });
     const thread = auiRef.current.thread();
     if (early?.restarted) {

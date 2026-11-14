@@ -180,3 +180,14 @@ test("an empty continuation keeps the held phrase", () => {
 test("a refused mic retry does not spend the silence watchdog", () => {
   assert.match(loop, /if \(!reacquireBackoff\.allow\(now\) \|\| !silence\.due\(now\)\) return;/);
 });
+
+test("a coalesced start still settling after a newer utterance does not fire", () => {
+  const start = engine.slice(engine.indexOf("const start = () => {"));
+  assert.match(start.slice(0, 500), /coalesceSeqRef\.current !== seq/);
+  assert.match(start.slice(0, 600), /now\.isRunning \|\| now\.messages\[now\.messages\.length - 1\]\?\.id !== last\.id/);
+  assert.match(engine, /const seq = \+\+coalesceSeqRef\.current;/);
+});
+
+test("a filler decision that lands after the run started leaves the quiet fallback on", () => {
+  assert.match(engine, /if \(!fromModel \|\| auiRef\.current\.thread\(\)\.getState\(\)\.isRunning\) return;\s*fillerAnsweredRef\.current = true;/);
+});
