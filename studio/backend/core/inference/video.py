@@ -14956,6 +14956,7 @@ class VideoBackend:
         from .sd_cpp_args import (
             build_vid_gen_request,
             h3_reference_media_keys,
+            h3_server_output_format,
             h3_server_refs_enabled,
             sd_cli_frame_files,
         )
@@ -15047,6 +15048,11 @@ class VideoBackend:
                     slot.refs_unsupported = True
                     slot.release("this sd-server does not take reference video / audio")
                     return None
+                # Uncompressed AVI only from a server that lists it; older builds keep MJPG.
+                output_formats = getattr(server, "vid_gen_output_formats", None)
+                payload["output_format"] = h3_server_output_format(
+                    output_formats() if callable(output_formats) else ()
+                )
                 try:
                     data = server.vid_gen(payload, on_step = on_log, cancel_event = cancel)
                 except SdCppServerUnsupported as exc:
@@ -15128,6 +15134,7 @@ class VideoBackend:
             stage_h3_references,
             transcode_video_to_mp4,
         )
+        from .sd_cpp_args import sd_cpp_supports_ref_video_audio_index
 
         runtime = state.pipe
         render_flags = list(runtime.offload_flags)
@@ -15222,7 +15229,28 @@ class VideoBackend:
                 eta_seconds = (elapsed / max(1, done)) * max(0, total - done),
             )
 
-        tmp = tempfile.NamedTemporaryFile(suffix = ".webm", delete = False)
+        from .sd_cpp_args import (
+            h3_lossless_enabled,
+            h3_sd_cpp_sampler,
+            sd_cpp_supports_lossless_video,
+        )
+        from .video_families import video_generation_variant
+
+        # The reference recipe (res_multistep on the simple schedule); distilled / PDD files keep Euler.
+        h3_variant = video_generation_variant(
+            state.variant_id,
+            state.gguf_filename,
+            state.display_repo_id,
+            state.repo_id,
+            state.base_repo,
+            family = state.family.name,
+        )
+        sample_method, scheduler = h3_sd_cpp_sampler(h3_variant in ("pdd", "distilled"))
+        # sd-cli writes .avi results uncompressed when asked, so the x264 / AAC export is the only lossy step.
+        lossless_cli = h3_lossless_enabled() and sd_cpp_supports_lossless_video(
+            getattr(runtime.engine, "binary", None)
+        )
+        tmp = tempfile.NamedTemporaryFile(suffix = ".avi" if lossless_cli else ".webm", delete = False)
         tmp.close()
         output_path = Path(tmp.name)
         # Stage in-memory conditioning in sd-cli's temporary disk format.
@@ -15237,7 +15265,15 @@ class VideoBackend:
 
             init_img = stage(first_frame, "first")
             end_img = stage(last_frame, "last")
-            staged = stage_h3_references(references, Path(scratch))
+            # Builds with --ref-video-audio-index (sd-server: the ref_video_audio_indices feature, else sd-cli)
+            # accept a silent reference video before one with a soundtrack.
+            staged = stage_h3_references(
+                references,
+                Path(scratch),
+                explicit_pairing = sd_cpp_supports_ref_video_audio_index(
+                    getattr(runtime.engine, "binary", None)
+                ),
+            )
             # Take the reader claim, or an install sweep unlinks the CLI this runtime resolved at load.
             from .sd_cpp_backend import _tree_reader
 
@@ -15274,7 +15310,11 @@ class VideoBackend:
                             ref_videos = staged.videos,
                             ref_video_audios = staged.video_audios,
                             ref_audios = staged.audios,
+                            ref_video_audio_indices = staged.video_audio_indices,
                             flow_shift = flow_shift,
+                            sample_method = sample_method,
+                            scheduler = scheduler,
+                            lossless_output = lossless_cli,
                         )
                         generated = self._h3_native_server_render(
                             runtime,
