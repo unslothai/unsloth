@@ -7324,7 +7324,8 @@ _GIT_GLOBAL_VALUE_FLAGS = frozenset(
 )
 # Recursively screened; the hard-block only recurses for its own smaller set.
 _SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
-_SCRIPT_VALUE_FLAGS = frozenset({"-t", "-T", "-I", "-O", "-B", "-E", "-o", "-m"})
+# `script` short options taking a value (util-linux -TIOBEom, BSD -t), plus -c's command.
+_SCRIPT_VALUE_LETTERS = "cTIOBEomt"
 # Command-position substitutions ($(printf rm) -rf build) are unreadable; argument ones are not.
 _COMMAND_SUBST_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
@@ -7824,7 +7825,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         current_command = ""  # the resolved command whose flags / git subcommand we judge
         git_subcommand = ""  # the first positional after `git`
         shell_c_pending = False  # a shell `-c` precedes its inline payload
-        trap_handler_pending = False  # `trap` precedes its handler string
+        command_arg_pending = False  # the next word is a command string run later (trap, script -c)
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
         git_checkout_positionals = 0  # positionals seen after `git checkout`
@@ -7865,7 +7866,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_submodule_action = ""
                 awk_program_pending = False
                 shell_c_pending = False
-                trap_handler_pending = False
+                command_arg_pending = False
                 git_glob_pending = False
                 chdir_pending = False
                 continue
@@ -7973,18 +7974,22 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                                 return True
                         else:
                             shell_c_pending = True
-                # util-linux `script -c CMD`: getopt takes the rest of the cluster (-chalt) as CMD.
+                # getopt: the first value-taking letter owns the rest of the cluster (-chalt, -Tdoc/c.log).
                 if current_command == "script":
-                    payload = _short_flag_arg(token, "c")
+                    letter, payload = "", None
                     if flag == "--command":
-                        payload = token.split("=", 1)[1] if "=" in token else ""
-                    if payload == "":
-                        shell_c_pending = True
-                    elif payload is not None and (
-                        _depth >= 3 or _terminal_is_high_risk(payload, _depth + 1)
-                    ):
-                        return True
-                    if token in _SCRIPT_VALUE_FLAGS:
+                        letter, payload = "c", token.split("=", 1)[1] if "=" in token else ""
+                    elif not token.startswith("--"):
+                        for i, ch in enumerate(token[1:]):
+                            if ch in _SCRIPT_VALUE_LETTERS:
+                                letter, payload = ch, token[i + 2 :]
+                                break
+                    if letter == "c" and payload:
+                        if _depth >= 3 or _terminal_is_high_risk(payload, _depth + 1):
+                            return True
+                    elif letter == "c":
+                        command_arg_pending = True
+                    elif letter and not payload:
                         wrapper_value_pending = True
                 # env -S runs a string as a command; env -C chdirs (enabling relative sensitive reads).
                 if current_command == "env":
@@ -8086,9 +8091,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if current_command in _CMD_SHELLS and raw.lower() in ("/c", "/k"):
                 shell_c_pending = True
                 continue
-            # `trap ARG SIGNAL...` later runs ARG alone, not the signals or the commands after it.
-            if trap_handler_pending:
-                trap_handler_pending = False
+            # Screen that one word (`trap ARG SIGNAL...`, `script -c CMD log`), not the words after it.
+            if command_arg_pending:
+                command_arg_pending = False
                 if _depth >= 3 or _terminal_is_high_risk(token, _depth + 1):
                     return True
                 continue
@@ -8178,7 +8183,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     scan_forward = False
                 # Remember the resolved command so its own flags (python -c), git subcommand or chdir target are judged.
                 current_command = base
-                trap_handler_pending = base == "trap"
+                command_arg_pending = base == "trap"
                 if base in _CHDIR_COMMANDS:
                     chdir_pending = True
                 if base in _AWK_COMMANDS:
