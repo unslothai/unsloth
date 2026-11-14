@@ -44,6 +44,7 @@ from typing import (
 )
 import dataclasses
 import functools
+import inspect
 import json
 import re
 import httpx
@@ -31565,6 +31566,40 @@ async def _scoped_stream(iterator, temporary):
         await _close_openai_admitted_stream_iterator(iterator, cancelled = cancelled)
 
 
+def _meters_stateless_session(source):
+    """These routes carry no thread, so no saved message debits them: a session (non API key)
+    call settles its own temporary receipt. Each starts its monitor before returning a stream,
+    and an entry keeps the scope it started under."""
+
+    def decorate(route):
+        signature = inspect.signature(route)
+
+        @functools.wraps(route)
+        async def metered(*args, **kwargs):
+            arguments = signature.bind(*args, **kwargs).arguments
+            request = arguments.get("request")
+            temporary = (
+                None
+                if _request_used_api_key(request)
+                else TemporaryUsage(uuid.uuid4().hex, source(arguments))
+            )
+            with temporary_usage_scope(temporary):
+                return await route(*args, **kwargs)
+
+        return metered
+
+    return decorate
+
+
+def _local_source(arguments) -> str:
+    return "local"
+
+
+def _payload_source(arguments) -> str:
+    payload = arguments.get("payload")
+    return "external" if _connection_model_ref(getattr(payload, "model", None)) else "local"
+
+
 async def produce_openai_chat_completions(
     payload: ChatCompletionRequest,
     request: Request,
@@ -38511,6 +38546,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
 
 @router.post("/completions")
 @account_access.gpu_busy_route
+@_meters_stateless_session(_local_source)
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
     OpenAI-compatible text completions endpoint (non-chat).
@@ -39358,6 +39394,7 @@ def _embeddings_input_present(body: dict) -> bool:
 
 @router.post("/embeddings")
 @account_access.gpu_busy_route
+@_meters_stateless_session(_local_source)
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Unsloth's configured embedding model."""
@@ -41957,6 +41994,7 @@ async def _responses_stream(
 
 @router.post("/responses")
 @account_access.gpu_busy_route
+@_meters_stateless_session(_payload_source)
 async def openai_responses(
     payload: ResponsesRequest,
     request: Request,
@@ -44635,6 +44673,7 @@ async def _anthropic_in_process_messages(
 
 @router.post("/messages")
 @account_access.gpu_busy_route
+@_meters_stateless_session(_payload_source)
 async def anthropic_messages(
     payload: AnthropicMessagesRequest,
     request: Request,

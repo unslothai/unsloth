@@ -314,8 +314,8 @@ class OverrideRefundMiddleware:
 
 async def refund_if_unused(claim: dict, *, failed: bool) -> None:
     # Both: a 503 no-model refusal generated nothing, but a 502 can follow output, and a success
-    # through a path the monitor does not see must never refund.
-    if failed and claim.get("spent") and not claim.get("generated"):
+    # through a path the monitor does not see must never refund. A monitored cancel / fail counts.
+    if (failed or claim.get("failed")) and claim.get("spent") and not claim.get("generated"):
         import asyncio
         await asyncio.to_thread(restore_override, *claim["spent"])
 

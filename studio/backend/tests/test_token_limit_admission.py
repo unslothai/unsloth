@@ -362,3 +362,68 @@ def test_a_stateless_session_request_is_charged_without_opting_in(admission, mon
     stateless = {key: value for key, value in body.items() if key != "thread_id"}
     assert client.post("/v1/chat/completions", json = stateless).status_code == 200
     assert token_limit.status()["pools"][0]["used"] - before == 25
+
+
+@pytest.mark.parametrize(
+    "name", ["openai_completions", "openai_embeddings", "openai_responses", "anthropic_messages"]
+)
+def test_stateless_routes_are_metered(name):
+    import ast
+    import inspect as _inspect
+
+    tree = ast.parse(_inspect.getsource(inference))
+    route = next(
+        node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name
+    )
+    assert any(
+        isinstance(d, ast.Call) and getattr(d.func, "id", None) == "_meters_stateless_session"
+        for d in route.decorator_list
+    )
+
+
+@pytest.mark.parametrize("api_key", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_metered_session_route_is_charged(monkeypatch, stream, api_key):
+    from fastapi.responses import StreamingResponse
+    from fastapi import Request
+
+    from core.inference import token_limit
+    from core.inference.api_monitor import ApiMonitor
+    from storage.api_usage_db import record_api_usage
+
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(record_api_usage)
+    monkeypatch.setattr(inference, "api_monitor", monitor)
+    monkeypatch.setattr(inference, "_request_used_api_key", lambda request: api_key)
+
+    @inference._meters_stateless_session(inference._local_source)
+    async def route(request: Request):
+        entry = monitor.start(
+            endpoint = "/v1/completions", method = "POST", model = "m", prompt = "hi", subject = "owner"
+        )
+
+        def finish():
+            inference._monitor_usage(
+                entry, {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}
+            )
+            monitor.finish(entry)
+
+        if not stream:
+            finish()
+            return JSONResponse({})
+
+        async def body():
+            finish()
+            yield b"data: {}\n\n"
+
+        return StreamingResponse(body(), media_type = "text/event-stream")
+
+    app = FastAPI()
+    app.add_api_route("/v1/completions", route, methods = ["POST"])
+    token_limit.update_settings(
+        {"enabled": True, "limit": 10_000}, password = None, new_password = None
+    )
+    before = token_limit.status()["pools"][0]["used"]
+    assert TestClient(app).post("/v1/completions", json = {}).status_code == 200
+    # An API-key call is settled by the monitor itself (via_api_key), not this scope.
+    assert token_limit.status()["pools"][0]["used"] - before == (0 if api_key else 25)

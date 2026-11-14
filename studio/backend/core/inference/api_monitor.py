@@ -68,6 +68,12 @@ def _note_generated(entry) -> None:
         entry.override_claim["generated"] = True
 
 
+def _note_unsuccessful(entry) -> None:
+    # A 200 stream cancelled or failed mid-flight: the refund still needs nothing generated.
+    if entry.override_claim is not None:
+        entry.override_claim["failed"] = True
+
+
 @contextmanager
 def temporary_usage_scope(value: Optional[TemporaryUsage]):
     token = _temporary_usage.set(value)
@@ -944,6 +950,8 @@ class ApiMonitor:
             entry.openai_stream_last_tool_indexes.clear()
             entry.openai_stream_last_segment_was_tool = False
             self._settle_stop_reason_locked(entry, status == "completed")
+            if status != "completed":
+                _note_unsuccessful(entry)
             now = time.time()
             entry.status = status
             _advance_updated_at(entry, now)
@@ -993,6 +1001,7 @@ class ApiMonitor:
         entry.openai_stream_last_tool_indexes.clear()
         entry.openai_stream_last_segment_was_tool = False
         self._settle_stop_reason_locked(entry, False)
+        _note_unsuccessful(entry)
         now = time.time()
         entry.status = "error"
         entry.error = _trim(error, 1000)

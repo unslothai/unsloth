@@ -440,6 +440,44 @@ def test_a_failed_200_stream_that_generated_nothing_refunds_the_override():
     assert token_limit.enforce(api = False) is not None
 
 
+@pytest.mark.parametrize("output", [False, True])
+def test_a_cancelled_200_stream_refunds_only_when_nothing_was_generated(output):
+    import asyncio
+
+    from core.inference.api_monitor import ApiMonitor
+
+    now = _now_ms()
+    _thread("t1", now)
+    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override("combined")
+    monitor = ApiMonitor()
+
+    async def app(scope, receive, send):
+        from types import SimpleNamespace
+
+        from routes.inference import _enforce_token_limit
+
+        await _enforce_token_limit(SimpleNamespace(state = SimpleNamespace()), external = True)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        entry = monitor.start(
+            endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi"
+        )
+        if output:
+            monitor.append_reply(entry, "partial")
+        monitor.finish(entry, "cancelled")
+
+    async def ignore(message):
+        pass
+
+    asyncio.run(token_limit.OverrideRefundMiddleware(app)({"type": "http"}, None, ignore))
+    if output:
+        with pytest.raises(HTTPException):
+            token_limit.enforce(api = False)
+    else:
+        assert token_limit.enforce(api = False) is not None
+
+
 def test_a_reconciled_run_settles_its_output():
     from storage import chat_generation_runs_db as runs
 
