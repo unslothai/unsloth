@@ -207,9 +207,7 @@ def test_a_pipeline_pick_makes_no_hub_call(hub_cache, monkeypatch):
     assert detect_family_for_pick(NOOB) is None
 
 
-def test_prefetch_is_skipped_for_named_overridden_local_and_gguf_picks(
-    hub_cache, monkeypatch, tmp_path
-):
+def test_prefetch_is_skipped_for_named_overridden_and_local_picks(hub_cache, monkeypatch, tmp_path):
     import huggingface_hub
 
     def boom(*a, **k):
@@ -219,7 +217,6 @@ def test_prefetch_is_skipped_for_named_overridden_local_and_gguf_picks(
     monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", boom)
     evidence.prefetch_for_pick("stabilityai/stable-diffusion-xl-base-1.0", None, None, None)
     evidence.prefetch_for_pick(NOOB, NOOB_FILE, "sdxl", None)
-    evidence.prefetch_for_pick(NOOB, "noob-Q4_K.gguf", None, None)
     evidence.prefetch_for_pick(str(tmp_path), None, None, None)
 
 

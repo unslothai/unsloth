@@ -503,7 +503,10 @@ def prefetch_fix() -> bool:
         on = False
         try:
             import torch
-            if getattr(torch.version, "hip", None) is None:
+            from .rocm_bf16 import is_rocm_torch
+
+            # AMD SDK / Radeon wheels leave torch.version.hip unset, so read ROCm from the build tag too.
+            if not is_rocm_torch(torch):
                 from .diffusion_triton_prefetch import fix_triton_sm8x_8bit_prefetch
                 on = bool(fix_triton_sm8x_8bit_prefetch())
         except Exception:  # noqa: BLE001 -- the kernels compile as stock Triton would

@@ -22638,6 +22638,9 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     response = await _slot_status(current_subject)
     if isinstance(response, InferenceStatusResponse) and response.is_gguf:
         response.resident_mib, response.resident_on_gpu = _llama_resident()
+    elif isinstance(response, InferenceStatusResponse) and response.is_npu:
+        # Off Linux psutil finds lemond's children by reading every process: not on the loop.
+        response.resident_mib, response.resident_on_gpu = await asyncio.to_thread(_npu_resident_mib)
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
@@ -22678,6 +22681,43 @@ def _llama_resident() -> "tuple[Optional[int], Optional[bool]]":
 
         # No parsed buffers proves nothing (Vulkan, SYCL); only a CPU-only build is a CPU run.
         return mib, (False if _Llama._backend_lacks_gpu_lib() else None)
+    except Exception:  # noqa: BLE001 - optional decoration on a status read
+        return None, None
+
+
+def _npu_resident_mib() -> "tuple[Optional[int], Optional[bool]]":
+    """RSS of lemond's process tree, floored at the catalog size: NPU buffers can miss the working set."""
+    try:
+        from core.inference.npu_backend import peek_npu_backend
+
+        npu = peek_npu_backend()
+        resident = npu.resident() if npu is not None else None
+        if resident is None:
+            return None, None
+        measured = 0
+        pid = getattr(getattr(npu, "_server", None), "pid", None)
+        if isinstance(pid, int):
+            import psutil
+
+            from utils.process_tree import linux_descendant_pids
+
+            try:
+                root = psutil.Process(pid)
+                descendants = linux_descendant_pids(pid)
+                tree = root.children(recursive = True) if descendants is None else descendants
+            except psutil.Error:
+                root, tree = None, []
+            for proc in [root, *tree] if root is not None else []:
+                try:
+                    proc = psutil.Process(proc) if isinstance(proc, int) else proc
+                    measured += proc.memory_info().rss
+                except psutil.Error:
+                    continue
+        # Lemonade lists sizes in decimal GB.
+        size_gb = resident.model.size_gb
+        catalog = size_gb * 1000**3 if size_gb else 0
+        mib = int(max(measured, catalog) // (1024 * 1024))
+        return (mib, False) if mib > 0 else (None, None)
     except Exception:  # noqa: BLE001 - optional decoration on a status read
         return None, None
 
@@ -28997,6 +29037,76 @@ _EXTERNAL_COMPACTION_HEADROOM = 0.25
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
+def _extends_turn(old: Any, new: Any) -> bool:
+    """``new`` is ``old`` with text or parts appended, as the loop's ``_append_user_turn`` merges."""
+    if isinstance(old, str) and isinstance(new, str):
+        return new.startswith(old)
+    return isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old
+
+
+def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
+    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
+    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+    asked = next((m for m in reversed(branch or ()) if m.get("role") == "user"), None)
+    # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
+    start = next(
+        (
+            i
+            for i in range(len(messages) - 1, -1, -1)
+            if asked
+            and messages[i].get("role") == "user"
+            and _extends_turn(asked.get("content"), messages[i].get("content"))
+        ),
+        None,
+    )
+    if start is None:
+        return None
+    latest = next(
+        (i for i in range(len(messages) - 1, start, -1) if messages[i].get("role") == "assistant"),
+        len(messages),
+    )
+    return {id(messages[start])} | {id(m) for m in messages[latest:]}
+
+
+def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
+    """The cached checkpoint fit plus the loop's new turns, or None when ``messages`` diverged.
+
+    The loop may also replace the trailing user turn (a re-prompt merged into it); that edit is
+    carried onto the fitted copy, whose text may lead with an inline recall block."""
+    seen, fitted = state.get("input"), state.get("fitted")
+    if seen is None:
+        return None
+    n = len(seen)
+    if messages[:n] == seen:
+        return fitted + messages[n:]
+    if not (
+        n
+        and len(messages) >= n
+        and messages[: n - 1] == seen[:-1]
+        and seen[-1].get("role") == messages[n - 1].get("role") == "user"
+        and fitted
+        and fitted[-1].get("role") == "user"
+    ):
+        return None
+    old, new, kept = (
+        seen[-1].get("content"),
+        messages[n - 1].get("content"),
+        fitted[-1].get("content"),
+    )
+    if (
+        all(isinstance(x, str) for x in (old, new, kept))
+        and kept.endswith(old)
+        and new.startswith(old)
+    ):
+        last = {**fitted[-1], "content": kept + new[len(old) :]}
+    elif isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old:
+        parts = kept if isinstance(kept, list) else [{"type": "text", "text": kept or ""}]
+        last = {**fitted[-1], "content": parts + new[len(old) :]}
+    else:
+        last = messages[n - 1]
+    return fitted[:-1] + [last] + messages[n:]
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -29004,9 +29114,14 @@ def _fit_external_context(
     tools: Optional[list[dict]] = None,
     branch: Optional[list[dict]] = None,
     tool_loop: bool = False,
+    can_reset: bool = False,
+    first_pass: bool = True,
+    replays_manual: bool = False,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
-    queries the user's turn, not a controller re-prompt, and still filters on the loop's turns."""
+    queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
+    ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
+    replays a /compact epoch on a request that may not start one."""
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
         estimate_messages_tokens_conservative,
@@ -29017,11 +29132,13 @@ def _fit_external_context(
     from core.inference.llama_cpp import (
         _archive_and_recall,
         _boundary_metadata,
+        _can_reset_epoch,
         _compaction_fit_kwargs,
         _conversation_recall_reserve,
         _fit_with_instruction_pins,
         _keeps_compaction_boundary,
         _records_boundary,
+        _sticky_compaction_details,
         _sticky_compaction_state,
     )
 
@@ -29054,29 +29171,55 @@ def _fit_external_context(
             max_tokens = min(max_tokens, window - room - margin)
             # The largest context whose prompt_budget stays within room.
             context_length = min(context_length, room + max_tokens, room * 4 // 3)
-    if prompt_tokens <= prompt_budget(context_length, max_tokens):
-        return messages, None, max_tokens
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
     thread_id = payload.thread_id
-    # Recall below is inline and rolling (every evicting fit), so a checkpoint reset may not start.
-    sticky, sticky_is_checkpoint = _sticky_compaction_state(
-        thread_id,
-        messages,
-        context_policy = policy,
-        can_reset = False,
-        compaction_headroom_ratio = ratio,
-    )
+    # The caller vouches the model can receive search_conversation on a later turn, as GGUF does.
+    can_reset = can_reset and _can_reset_epoch(thread_id, True)
+    # A later tool-loop pass refits the first pass's result, so the boundary and /compact apply once.
+    force_reset = first_pass and can_reset and getattr(payload, "compact_context", None) is True
+    sticky, sticky_is_checkpoint = (None, None) if first_pass else (0, True)
+    sticky_manual = False
+    if (can_reset or replays_manual) and first_pass:
+        # Read before the fits check: a /compact epoch replays while the chat still fits.
+        sticky, sticky_is_checkpoint, sticky_manual = _sticky_compaction_details(
+            thread_id,
+            messages,
+            context_policy = policy,
+            can_reset = can_reset,
+            compaction_headroom_ratio = ratio,
+        )
+    if (
+        prompt_tokens <= prompt_budget(context_length, max_tokens)
+        and not force_reset
+        and not sticky_manual
+    ):
+        return messages, None, max_tokens
+    if not (can_reset or replays_manual) and first_pass:
+        # Recall below is inline and rolling (every evicting fit), so a checkpoint reset may not start.
+        sticky, sticky_is_checkpoint = _sticky_compaction_state(
+            thread_id,
+            messages,
+            context_policy = policy,
+            can_reset = False,
+            compaction_headroom_ratio = ratio,
+        )
+    # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
+    recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
+        anchor_ids = _active_turn_anchors(messages, branch) if can_reset or replays_manual else None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
         keeps_boundary = _keeps_compaction_boundary(thread_id),
-        recall_offered = False,
+        recall_offered = recall_offered,
         reserve_tokens = _conversation_recall_reserve(thread_id),
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
+        sticky_manual = sticky_manual,
+        force_reset = force_reset,
+        can_reset = can_reset,
         estimate_message = estimate_message_tokens_without_unpriced_media,
         **_compaction_fit_kwargs(policy, ratio),
     )
@@ -29096,6 +29239,7 @@ def _fit_external_context(
             query_messages = branch,
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
+            force_recall = not recall_offered or bool(truncation.get("checkpoint_started", True)),
             recall_done = not truncation.get("fits", True),
             recall_budget_tokens = retrieval_budget(
                 context_length,
@@ -29894,18 +30038,54 @@ async def _proxy_to_external_provider(
     _compaction_fallback = None
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
         _request_branch = chat_messages
+        _checkpoint_pass: dict = {}
+        _first_payload = payload
 
         # The loop passes this turn's catalogue: a withdrawn one (tool_choice "none", spent budget) costs nothing.
         async def _external_context_fitter(messages, tools = _external_fit_tools):
-            nonlocal _external_truncation
-            fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                _fit_external_context,
-                messages,
-                payload,
-                tools = tools,
-                branch = _request_branch,
-                tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
-            )
+            nonlocal _external_truncation, _first_payload
+            # After a checkpoint fit, later passes extend its result, as the GGUF loop does.
+            candidate = _extend_checkpoint_fit(_checkpoint_pass, messages)
+            later = candidate is not None
+
+            def fit(conversation, fit_payload, first_pass):
+                return _fit_external_context(
+                    conversation,
+                    fit_payload,
+                    tools = tools,
+                    branch = _request_branch,
+                    tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
+                    # The NPU has no compaction of its own, so /compact resets here as on GGUF.
+                    can_reset = managed is not None and not _tool_calls_are_disabled(payload),
+                    first_pass = first_pass,
+                    replays_manual = managed is not None,
+                )
+
+            refit = not later
+            if later:
+                fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                    fit, candidate, payload, False
+                )
+                refit = bool(
+                    truncation
+                    and (truncation.get("dropped_messages") or not truncation.get("fits"))
+                )
+                if refit:
+                    # Boundaries must count the full branch, so an overflow refits it without /compact.
+                    fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                        fit, messages, payload.model_copy(update = {"compact_context": None}), True
+                    )
+            else:
+                # /compact applies to the loop's first fit only, whether or not it evicted anything.
+                fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                    fit, messages, _first_payload, True
+                )
+                _first_payload = payload.model_copy(update = {"compact_context": None})
+            # A refit moves the boundary, so the next pass extends this result, not the stale one.
+            if (later and not refit) or (
+                refit and truncation and truncation.get("checkpoint") is True
+            ):
+                _checkpoint_pass.update(input = list(messages), fitted = fitted)
             _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
@@ -29935,6 +30115,10 @@ async def _proxy_to_external_provider(
             chat_messages,
             payload,
             tools = _external_fit_tools,
+            # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
+            can_reset = bool(managed is not None and managed.supports_tools)
+            and not _tool_calls_are_disabled(payload),
+            replays_manual = managed is not None,
         )
         try:
             _refuse_what_ollama_would_cut(
@@ -30322,6 +30506,7 @@ class _NpuStreamRelay:
         self.error: Optional[dict] = None
         self.completion_id: Optional[str] = None
         self.created: Optional[int] = None
+        self.context_truncated: Optional[dict] = None
 
     def _held_back(self, text: str) -> int:
         """Length of the longest tail of ``text`` that begins some stop sequence."""
@@ -30387,6 +30572,8 @@ class _NpuStreamRelay:
                 else {"message": str(chunk["error"])}
             )
             return [line]
+        if isinstance(chunk.get("context_truncated"), dict):
+            self.context_truncated = chunk["context_truncated"]
         self.completion_id = self.completion_id or chunk.get("id")
         self.created = self.created or chunk.get("created")
         if "model" in chunk:
@@ -30465,6 +30652,8 @@ class _NpuStreamRelay:
         }
         if self.usage is not None:
             body["usage"] = self.usage
+        if self.context_truncated is not None:
+            body["context_truncated"] = self.context_truncated
         return body
 
 
@@ -30562,6 +30751,15 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
     wants_stream = bool(payload.stream)
     relay = _NpuStreamRelay(upstream.public_model, _normalize_stop_sequences(payload.stop))
     update: dict = {"stream": True}
+    if upstream.context_length and _rolling_context_policy(payload) is not None:
+        # Lemonade does not compact, so fit the chat to the loaded window as managed engines do.
+        window = min(filter(None, (payload.context_window, upstream.context_length)))
+        threshold = min(
+            _EXTERNAL_COMPACTION_THRESHOLD_MAX,
+            int(window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+        )
+        update["context_window"] = window
+        update["compaction_threshold"] = min(payload.compaction_threshold or threshold, threshold)
     if _legacy_image_is_distinct(payload):
         # The proxy reads messages only, so splice a top-level image in as GGUF chat does.
         update["messages"] = [

@@ -6,12 +6,15 @@ export {
   NPU_MODEL_PREFIX,
   type NpuModel,
   type NpuStatus,
+  npuCapabilities,
+  npuContextLabel,
   npuDownloadLabel,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
 } from "./api";
 export { NpuRuntimeVersions, NpuSetupNotice } from "./npu-setup-notice";
+export { npuEngineVersions, npuVersionTag } from "./runtime-versions";
 export {
   type NpuCatalog,
   type NpuPickerSource,

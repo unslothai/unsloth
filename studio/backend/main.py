@@ -2605,9 +2605,17 @@ def studio_download_transport_capabilities(
     probe: bool = False, _current_subject: str = Depends(get_current_subject)
 ):
     # Sync def, so FastAPI runs this in the threadpool and an opted-in probe cannot block the loop.
-    from utils.download_speed_limit import get_download_speed_limit_mbps
+    from utils.download_speed_limit import (
+        DownloadSpeedLimitUnavailableError,
+        get_download_speed_limit_mbps,
+    )
+
     caps = asdict(get_download_transport_capabilities(probe = probe))
-    return {**caps, "speed_limited": get_download_speed_limit_mbps() is not None}
+    try:
+        speed_limited = get_download_speed_limit_mbps() is not None
+    except DownloadSpeedLimitUnavailableError:
+        speed_limited = True  # unknown policy: preflight as limited, the start itself refuses
+    return {**caps, "speed_limited": speed_limited}
 
 
 @app.post(
@@ -3049,6 +3057,7 @@ def get_system_info(
         export_capability,
         video_capability,
         cpu_frequency_mhz,
+        npu_load_percent,
     )
     from utils.hardware.hardware import _backend_label
 
@@ -3169,6 +3178,7 @@ def get_system_info(
         "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
+        "npu_load_percent": npu_load_percent(),
         "ml_packages": ml_packages,
         **export_capability(),
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
