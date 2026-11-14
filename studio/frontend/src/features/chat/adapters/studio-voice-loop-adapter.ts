@@ -662,6 +662,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         settleFinished(Boolean(transcript));
         let editing = !heldEdit.autoSend();
+        const spokenNow = transcript;
         if (transcript && heldTurn) {
           transcript = joinTurn(heldTurn.text, transcript);
           reportLayaOutcome(heldJudgeId, "continued", { text: transcript });
@@ -671,8 +672,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           Boolean(transcript) &&
           !editing &&
           (await turnUnfinished(transcript));
-        // The user may claim the held fragment while the judge decides: their edit is never auto-sent.
-        editing = editing || !heldEdit.autoSend();
+        // The user may claim the held fragment while the judge decides: their edit is never auto-sent,
+        // and the box already holds the fragment, so only the new words join it.
+        if (!editing && !heldEdit.autoSend()) {
+          editing = true;
+          transcript = spokenNow;
+        }
         if (epoch !== heldEpoch) {
           voiceTrace("stt.drop", { transcript, why: "cleared" });
           finish("stopped");

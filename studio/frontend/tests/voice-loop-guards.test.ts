@@ -258,7 +258,13 @@ test("a research run keeps its own Stop while voice mode is on", () => {
 
 test("a noise word continuing a held turn is kept, and an edit claimed mid-judgment is never auto-sent", () => {
   assert.match(loop, /const noise =\s*isSttNoise\(transcript\) && !heldTurn && !answersClosingQuestion\(transcript, getVoiceReplyText\(\)\);/);
-  assert.match(loop, /\(await turnUnfinished\(transcript\)\);\s*\/\/[^\n]*\n\s*editing = editing \|\| !heldEdit\.autoSend\(\);/);
+  assert.match(loop, /\(await turnUnfinished\(transcript\)\);[\s\S]{0,300}if \(!editing && !heldEdit\.autoSend\(\)\) \{\s*editing = true;\s*transcript = spokenNow;/);
+  assert.match(loop, /let editing = !heldEdit\.autoSend\(\);\s*const spokenNow = transcript;/);
   assert.match(loop, /unfinished &&\s*!editing &&\s*performance\.now\(\)/);
   assert.match(loop, /if \(editing \|\| !heldEdit\.autoSend\(\)\) \{\s*voiceTrace\("hold\.userEditAppend"/);
+});
+
+test("speech before the reply's first word is judged, not taken as a barge-in", () => {
+  assert.match(engine, /thread\.getState\(\)\.isRunning && \(latestAssistantIsReasoning\(\) \|\| replyNotStarted\(\)\)/);
+  assert.match(engine, /if \(!latestAssistantIsReasoning\(\) && !replyNotStarted\(\)\) return \{ verdict: "restart", kind: null \};/);
 });

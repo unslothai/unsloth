@@ -357,6 +357,14 @@ export const VoiceEngine: FC = () => {
     }
     return false;
   }, []);
+  // No answer text yet: prefill, or thinking with reasoning off. Speech then is judged like speech during reasoning.
+  const replyNotStarted = useCallback((): boolean => {
+    const messages = auiRef.current.thread().getState().messages;
+    const last = messages[messages.length - 1];
+    if (!last || last.role === "user") return true;
+    if (last.role !== "assistant") return false;
+    return !(last.content as Array<{ type: string; text?: string }>).some((p) => p.type === "text" && p.text);
+  }, []);
   const [isReasoning, setIsReasoning] = useState(false);
 
   const latestAssistantText = useCallback((): string => {
@@ -659,7 +667,7 @@ export const VoiceEngine: FC = () => {
       return;
     }
     // Speech during thinking is not always a barge-in: the interject model decides. Typed text is never held.
-    if (!typed && thread.getState().isRunning && latestAssistantIsReasoning()) {
+    if (!typed && thread.getState().isRunning && (latestAssistantIsReasoning() || replyNotStarted())) {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
       const fromThread = useChatRuntimeStore.getState().activeThreadId;
       const turn = voiceNotesEpoch();
@@ -740,7 +748,7 @@ export const VoiceEngine: FC = () => {
   async function askEarly(fragment: string): Promise<EarlyAnswer | null> {
     if (voiceModeRef.current !== "active") return null;
     if (!auiRef.current.thread().getState().isRunning) return null;
-    if (!latestAssistantIsReasoning()) return { verdict: "restart", kind: null };
+    if (!latestAssistantIsReasoning() && !replyNotStarted()) return { verdict: "restart", kind: null };
     const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
     const answer = await interjectAction(lastUserPrompt(), fragment, elapsedS);
     if (voiceModeRef.current !== "active" || !auiRef.current.thread().getState().isRunning) {
