@@ -151,6 +151,7 @@ def test_links_keep_their_addresses():
     paragraphs = "".join(f"<p>para {index}</p>" for index in range(90))
     body = (
         '<p><a href="https://example.com/x">Example</a> <a href="#fn1">note</a></p>'
+        '<p><a href="https://example.com/r">one</a> gap <a href="https://example.com/r">two</a></p>'
         f'{paragraphs}<table><tr>{columns}<th><a href="https://example.com/t">cell</a></th></tr></table>'
         f'{paragraphs}<p><a href="mailto:a@example.com">mail</a></p>'
     )
@@ -164,6 +165,8 @@ def test_links_keep_their_addresses():
         ]
     assert links == [
         ("https://example.com/x", "Example"),
+        ("https://example.com/r", "one"),
+        ("https://example.com/r", "two"),
         ("https://example.com/t", "cell"),
         ("mailto:a@example.com", "mail"),
     ]

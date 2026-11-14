@@ -65,8 +65,15 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
             ("http:", "https:", "mailto:")
         ):
             rect = pymupdf.Rect(position.rect) * matrix
-            if links and links[-1][:2] == (pages, position.href) and links[-1][2].y0 == rect.y0:
-                links[-1][2].include_rect(rect)
+            last = links[-1] if links else None
+            # One box per word: merge only touching boxes, so text between two anchors stays unlinked.
+            if (
+                last
+                and last[:2] == (pages, position.href)
+                and last[2].y0 == rect.y0
+                and abs(last[2].x1 - rect.x0) < 0.01
+            ):
+                last[2].include_rect(rect)
             else:
                 links.append((pages, position.href, rect))
 
