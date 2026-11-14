@@ -106,6 +106,7 @@ def _register_conversions():
         "deepseek_v41",
         "deepseek_v41_text",
         "DeepseekV41ForCausalLM",
+        "DeepseekV41TextForCausalLM",
         "DeepseekV41TextModel",
     ):
         register_checkpoint_conversion_mapping(key, list(rules), overwrite = True)
@@ -121,7 +122,7 @@ def register_deepseek_v41():
     from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
 
     from .configuration import DeepseekV41Config, DeepseekV41TextConfig
-    from .modeling import DeepseekV41ForCausalLM, DeepseekV41TextModel
+    from .modeling import DeepseekV41ForCausalLM, DeepseekV41TextForCausalLM, DeepseekV41TextModel
 
     if not _REGISTERED:
         for model_type, config_class in (
@@ -134,6 +135,8 @@ def register_deepseek_v41():
                 pass
         for auto, config_class, model_class in (
             (AutoModelForCausalLM, DeepseekV41Config, DeepseekV41ForCausalLM),
+            # a checkpoint saved from a model built on the flat text config
+            (AutoModelForCausalLM, DeepseekV41TextConfig, DeepseekV41TextForCausalLM),
             (AutoModel, DeepseekV41TextConfig, DeepseekV41TextModel),
         ):
             try:

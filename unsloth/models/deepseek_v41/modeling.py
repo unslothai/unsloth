@@ -71,6 +71,7 @@ __all__ = [
     "DeepseekV41PreTrainedModel",
     "DeepseekV41TextModel",
     "DeepseekV41ForCausalLM",
+    "DeepseekV41TextForCausalLM",
     "DeepseekV41DecoderLayer",
     "DeepseekV41Attention",
     "DeepseekV41Compressor",
@@ -1736,3 +1737,10 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
     @classmethod
     def _supports_default_dynamic_cache(cls):
         return False
+
+
+class DeepseekV41TextForCausalLM(DeepseekV41ForCausalLM):
+    """DeepseekV41ForCausalLM on a flat text config (``deepseek_v41_text``): what AutoModelForCausalLM builds for a
+    checkpoint saved from a model constructed on DeepseekV41TextConfig. Same modules and weight names."""
+
+    config_class = DeepseekV41TextConfig

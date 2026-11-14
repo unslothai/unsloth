@@ -857,3 +857,24 @@ def test_o_a_proj_swapped_for_a_plain_linear_stays_grouped():
         adapted = lora(input_ids = ids).logits
         merged = lora.merge_and_unload()(input_ids = ids).logits
     torch.testing.assert_close(adapted, merged, rtol = 1e-4, atol = 1e-4)
+
+
+def test_auto_classes_reload_a_flat_text_config_checkpoint(tmp_path):
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    register_deepseek_v41()
+    text = _tiny_config().text_config
+    model = dsv41.DeepseekV41ForCausalLM(text).float().eval()
+    model.bind_token_map([i % 97 for i in range(512)])
+    for rows, layer_id in zip(text.engram_num_embeddings, text.engram_layer_ids):
+        model.model.set_engram_table(layer_id, torch.randn(rows, text.engram_head_dim) * 0.5)
+    ids = torch.randint(0, 512, (1, 12))
+    with torch.no_grad():
+        before = model(input_ids = ids).logits
+    model.save_pretrained(tmp_path)
+    config = AutoConfig.from_pretrained(tmp_path)
+    assert isinstance(config, DeepseekV41TextConfig) and config.hidden_size == 64
+    loaded = AutoModelForCausalLM.from_pretrained(tmp_path, dtype = torch.float32).eval()
+    loaded.bind_token_map([i % 97 for i in range(512)])
+    with torch.no_grad():
+        assert torch.equal(loaded(input_ids = ids).logits, before)
