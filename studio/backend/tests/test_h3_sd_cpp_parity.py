@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """MiniMax-H3 on stable-diffusion.cpp: the reference sampler / schedule and the uncompressed result container."""
 
 import numpy as np
