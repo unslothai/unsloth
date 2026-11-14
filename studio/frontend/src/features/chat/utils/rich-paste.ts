@@ -9,7 +9,8 @@ export interface PasteNode {
   getAttribute?: (name: string) => string | null;
 }
 
-type Ctx = { pre: boolean; bold: boolean; italic: boolean };
+// white-space: collapse (normal/nowrap), line (pre-line: newlines only), pre (pre/pre-wrap/break-spaces).
+type Ctx = { space: "collapse" | "line" | "pre"; bold: boolean; italic: boolean };
 
 // Everything convert() can turn into Markdown, styled spans included.
 const STRUCTURE =
@@ -121,8 +122,9 @@ function list(node: PasteNode, ctx: Ctx, ordered: boolean): string {
       .split("\n")
       .filter((line) => {
         const keep = fenced || line.trim() !== "";
-        if (line.includes(FENCE_OPEN)) fenced = true;
-        if (line.includes(FENCE_CLOSE)) fenced = false;
+        const open = line.lastIndexOf(FENCE_OPEN);
+        const close = line.lastIndexOf(FENCE_CLOSE);
+        if (open !== close) fenced = open > close;
         return keep;
       });
     const [first = "", ...rest] = body;
@@ -179,15 +181,16 @@ function table(node: PasteNode, ctx: Ctx): string {
 function convert(node: PasteNode, parent: Ctx): string {
   if (node.nodeType === 3) {
     const text = node.textContent ?? "";
-    return parent.pre ? `${FENCE_OPEN}${text}${FENCE_CLOSE}` : text.replace(/[^\S\u00a0]+/g, " ");
+    if (parent.space === "pre") return `${FENCE_OPEN}${text}${FENCE_CLOSE}`;
+    return text.replace(parent.space === "line" ? /[^\S\n\u00a0]+/g : /[^\S\u00a0]+/g, " ");
   }
   if (node.nodeType !== 1) return "";
   const tag = node.nodeName.toUpperCase();
   if (SKIP.has(tag)) return "";
   const style = attr(node, "style").toLowerCase();
-  const space = [...style.matchAll(/white-space:\s*([\w-]+)/g)].at(-1)?.[1];
-  const pre = space === undefined ? parent.pre : /^(?:pre|break-spaces)/.test(space);
-  const ctx = pre === parent.pre ? parent : { ...parent, pre };
+  const declared = [...style.matchAll(/white-space:\s*([\w-]+)/g)].at(-1)?.[1];
+  const space = declared === undefined ? parent.space : declared === "pre-line" ? "line" : /^(?:pre|break-spaces)/.test(declared) ? "pre" : "collapse";
+  const ctx = space === parent.space ? parent : { ...parent, space };
   switch (tag) {
     case "BR":
       return "\n";
@@ -256,7 +259,7 @@ function convert(node: PasteNode, parent: Ctx): string {
 const FINAL = new RegExp(`${FENCE_OPEN}([\\s\\S]*?)${FENCE_CLOSE}|[${INDENT}\u00a0]|[${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
 
 export function htmlNodeToMarkdown(root: PasteNode): string {
-  return clean(convert(root, { pre: false, bold: false, italic: false })).replace(
+  return clean(convert(root, { space: "collapse", bold: false, italic: false })).replace(
     FINAL,
     (mark, fenced?: string) =>
       fenced !== undefined ? fenced.replaceAll(INDENT, " ") : mark === INDENT || mark === "\u00a0" ? " " : "",

@@ -218,3 +218,14 @@ test("a descendant that resets white-space collapses its own text again", () => 
   const body = el("body", el("div", { style: "white-space:pre-wrap" }, el("b", "Q"), ":\n", el("span", { style: "white-space: normal" }, "hello\n    world")));
   assert.equal(htmlNodeToMarkdown(body), "**Q**:\nhello world");
 });
+
+test("blank lines in a list item survive adjacent preformatted spans", () => {
+  const pre = { style: "white-space:pre-wrap" };
+  const body = el("body", el("ul", el("li", el("span", pre, "a\nb"), el("span", pre, "c\n\nd"))));
+  assert.equal(htmlNodeToMarkdown(body), "- a\n  bc\n\n  d");
+});
+
+test("pre-line keeps line breaks but collapses spaces", () => {
+  const body = el("body", el("div", { style: "white-space:pre-line" }, el("b", "Note"), el("br"), el("br"), "    run  fast\n  next"));
+  assert.equal(htmlNodeToMarkdown(body), "**Note**\n\nrun fast\nnext");
+});
