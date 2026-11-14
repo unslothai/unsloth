@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
 import { resumesThought } from "@/features/model-picker";
+import { isNpuModelId } from "@/features/npu";
 import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
@@ -196,13 +197,13 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       return;
     }
     // A cloud connection summarizes, which needs neither tools nor a resumable local model.
-    if (!isExternalModelId(runtime.params.checkpoint) && (!runtime.supportsTools || !resumesThought({
+    if (!isExternalModelId(runtime.params.checkpoint) && (!runtime.supportsTools || !(resumesThought({
       loadedIsGguf: runtime.loadedIsGguf,
       loadedIsMlx: runtime.loadedIsMlx,
       activeGgufVariant: runtime.activeGgufVariant,
       activeNativePathToken: runtime.activeNativePathToken,
       checkpoint: runtime.params.checkpoint,
-    }))) {
+    }) || isNpuModelId(runtime.params.checkpoint)))) {
       toast.info(t("chatMenu.compactUnsupported"));
       return;
     }

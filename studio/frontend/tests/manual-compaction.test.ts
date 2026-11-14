@@ -195,7 +195,7 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   const adapter = await readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     adapter,
-    /\(isGgufForCompaction \|\| isMlxForCompaction \|\| isCloudForCompaction\);/,
+    /\(isGgufForCompaction \|\| isMlxForCompaction \|\| isNpuForCompaction \|\|\s+isCloudForCompaction\);/,
   );
   assert.match(
     adapter,
@@ -335,6 +335,7 @@ function compactMenu(threadId: string) {
       });
       return supported;
     },
+    isNpuModelId: (value: string) => value.startsWith("lemonade:"),
     requestThreadCompaction,
     isExternalModelId: (id: string) => id.startsWith("external::"),
     hasPreStreamRunReservation,
@@ -399,6 +400,20 @@ test("the compact button requires tool capability for both local backends", () =
     assert.equal(takeThreadCompactionRequest(menu.menu.item.id), true);
     assert.deepEqual(menu.notices, ["chatMenu.compactUnsupported", "chatMenu.compactQueued"]);
   }
+});
+
+test("the compact button queues for a tool-capable NPU model", () => {
+  const menu = compactMenu("npu-chat");
+  menu.unsupported();
+  menu.runtime.loadedIsGguf = false;
+  menu.runtime.params.checkpoint = "lemonade:qwen3-0.6b-FLM";
+  menu.click();
+  assert.equal(takeThreadCompactionRequest("npu-chat"), true);
+  assert.deepEqual(menu.notices, ["chatMenu.compactQueued"]);
+  assert.match(
+    readSrc("components/assistant-ui/thread.tsx"),
+    /\}\) \|\| isNpuModelId\(runtime\.params\.checkpoint\)/,
+  );
 });
 
 test("the compact button waits for its accepted send's preflight to release", () => {

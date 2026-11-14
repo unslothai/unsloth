@@ -232,6 +232,7 @@ import {
 } from "@/features/library/chat-handoff-store";
 import { resumesThought } from "@/features/model-picker";
 import { CompactOnReturnChip } from "./compact-on-return-chip";
+import { isNpuModelId } from "@/features/npu";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -5791,15 +5792,17 @@ const Composer: FC<{
         if (
           !isExternalModelId(runtime.params.checkpoint) &&
           (!runtime.supportsTools ||
-          !resumesThought({
-            loadedIsGguf: runtime.loadedIsGguf,
-            loadedIsMlx: runtime.loadedIsMlx,
-            activeGgufVariant: runtime.activeGgufVariant,
-            activeNativePathToken: runtime.activeNativePathToken,
-            checkpoint: runtime.params.checkpoint,
-          }))
+            !(
+              resumesThought({
+                loadedIsGguf: runtime.loadedIsGguf,
+                loadedIsMlx: runtime.loadedIsMlx,
+                activeGgufVariant: runtime.activeGgufVariant,
+                activeNativePathToken: runtime.activeNativePathToken,
+                checkpoint: runtime.params.checkpoint,
+              }) || isNpuModelId(runtime.params.checkpoint)
+            ))
         ) {
-          toast.info("/compact works with GGUF and MLX models that support tools");
+          toast.info("/compact works with GGUF, MLX and NPU models that support tools");
           return;
         }
         requestThreadCompaction(referenceThreadId);

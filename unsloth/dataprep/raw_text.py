@@ -400,7 +400,7 @@ class TextPreprocessor:
         """Checks a dataset for min and max sequence lengths, character encoding issues, repeated
         content and empty chunks."""
         stats = {
-            "total_samples": len(dataset),
+            "total_samples": 0,
             "empty_samples": 0,
             "min_length": float("inf"),
             "max_length": 0,
@@ -434,6 +434,7 @@ class TextPreprocessor:
         seen_texts = set()
 
         for i, text in enumerate(texts):
+            stats["total_samples"] += 1
             if not text or len(text.strip()) == 0:
                 stats["empty_samples"] += 1
                 continue
