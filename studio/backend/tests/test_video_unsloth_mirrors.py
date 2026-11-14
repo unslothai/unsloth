@@ -1360,6 +1360,39 @@ def test_a_dead_partial_of_a_file_the_encoder_fallback_adds_is_not_progress(
     assert seen["with"] == seen["without"]
 
 
+def test_a_poll_never_sees_a_replan_before_its_partial_baseline(empty_cache, monkeypatch):
+    """load_progress reads lock-free, so when the encoder-fallback re-plan publishes the dense encoder, a dead partial
+    of it must already be in the baseline: a poll at that moment would otherwise count it as this load's bytes."""
+    monkeypatch.setattr(_HubRecorder, "hex_keys", True)
+    key = _lfs_key("text_encoder/model.safetensors")
+    for repo in (_WAN_UP, _WAN_MIRROR):
+        _blob(empty_cache, repo, f"{key}.0badf00d", b"d" * 5, incomplete = True)
+    dead = {str(p): 5 for p in empty_cache.glob(f"models--*/blobs/{key}.0badf00d.incomplete")}
+    polls = []
+
+    def publish(self, name, value):
+        object.__setattr__(self, name, value)
+        if name == "fetch_plan" and value:
+            baseline = self.incomplete_baseline
+            polls.append(
+                (
+                    video_mod.VideoBackend._planned_bytes(value, baseline),
+                    video_mod.VideoBackend._planned_bytes(value, {**baseline, **dead}),
+                )
+            )
+
+    monkeypatch.setattr(video_mod._VideoLoadingState, "__setattr__", publish)
+    seen = {}
+    _walk_a_load(
+        empty_cache,
+        monkeypatch,
+        te_fetch_falls_back = True,
+        on_assemble = lambda backend: seen.update(plan = backend._loading.fetch_plan),
+    )
+    assert dead and key in {etag for entry in seen["plan"].values() for _n, etag, _s in entry.files}
+    assert len(polls) >= 2 and all(counted == clean for counted, clean in polls), polls
+
+
 def test_load_pipeline_tops_up_through_the_plan():
     import inspect
 

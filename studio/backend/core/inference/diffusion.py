@@ -6075,7 +6075,6 @@ class DiffusionBackend:
                     # estimate: a total that came back without per-file sizes keeps the repo-level scan.
                     planned_total = sum(size for _r, _n, size in planned_files)
                     if planned_total and planned_total == expected:
-                        self._loading.planned_files = planned_files
                         self._loading.planned_blob_keys = _planned_blob_keys(
                             planned_files,
                             planned_keys,
@@ -6086,6 +6085,8 @@ class DiffusionBackend:
                         self._loading.incomplete_baseline = self._incomplete_blob_sizes(
                             {repo for repo, _n, _s in planned_files}
                         )
+                        # Last: load_progress reads lock-free and takes the planned path once this is set.
+                        self._loading.planned_files = planned_files
                     self._loading.expected_bytes = expected
                     if skip_transformer_weights:
                         # Claimed before a byte moves. File entry first: load_progress reads lock-free.

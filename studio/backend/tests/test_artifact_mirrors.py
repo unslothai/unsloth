@@ -845,6 +845,89 @@ def test_a_preallocated_partial_counts_only_its_written_bytes(monkeypatch, tmp_p
     assert 4096 <= progress["bytes_downloaded"] < 1 << 21
 
 
+def test_a_poll_never_sees_the_plan_before_its_partial_baseline(monkeypatch, tmp_path):
+    """load_progress reads lock-free: a poll that reads the plan fields the moment the worker publishes the plan, then
+    reads expected_bytes once the worker sets it, must not count a dead attempt's partial and latch finalizing."""
+    import copy
+
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion import _LoadingState
+
+    base, vae, key = (
+        "Qwen/Qwen-Image-2.1-Turbo",
+        "vae/diffusion_pytorch_model.safetensors",
+        "d4" * 32,
+    )
+    base_files = {"model_index.json": 7, vae: 10_000}
+    blobs = tmp_path / f"models--{_FP8_REPO.replace('/', '--')}" / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / f"{key}.0badf00d.incomplete").write_bytes(b"\1" * 9_999)  # a cancelled attempt's
+
+    def estimate(
+        *_a,
+        file_sizes_out = None,
+        fetch_repos_out = None,
+        file_keys_out = None,
+        **_k,
+    ):
+        file_sizes_out[base] = dict(base_files)
+        fetch_repos_out[base] = _FP8_REPO
+        file_keys_out[base] = {vae: key}
+        return sum(base_files.values()), list(base_files)
+
+    polls = []
+
+    def publish(self, name, value):
+        object.__setattr__(self, name, value)
+        if name == "planned_files" and value:
+            polls.append((value, self.incomplete_baseline, self.planned_blob_keys))
+
+    for name, value in {
+        "_te_prequant_plan_files": staticmethod(lambda *a, **k: {}),
+        "_pipeline_planned_denoiser_scheme": lambda self, *a, **k: None,
+        "_dit_prequant_plan_source": lambda self, *a, **k: None,
+        "declared_footprint_shortfall": lambda self, *a, **k: None,
+        "_estimate_download_bytes": staticmethod(estimate),
+        "_prefetch_files": lambda self, *a, **k: None,
+        "_cache_file_bytes": staticmethod(
+            lambda repo, f: 7 if (repo, f) == (_FP8_REPO, "model_index.json") else 0
+        ),
+        "_hub_cache_repo_dirs": staticmethod(
+            lambda repo: [tmp_path / f"models--{repo.replace('/', '--')}"]
+        ),
+    }.items():
+        monkeypatch.setattr(DiffusionBackend, name, value)
+    monkeypatch.setattr(dmod, "_assert_base_repo_accessible", lambda *a, **k: None)
+    monkeypatch.setattr(
+        dmod, "prefer_ungated_mirror", lambda b, *a, **k: _FP8_REPO if b == base else b
+    )
+    monkeypatch.setattr(dmod, "assert_flux2_pick_compatible", lambda *a, **k: None)
+    monkeypatch.setattr(dmod, "assert_pick_is_not_speech", lambda *a, **k: None)
+    monkeypatch.setattr(_LoadingState, "__setattr__", publish)
+    loaded = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "load_pipeline",
+        lambda self, **kw: loaded.append(copy.copy(self._loading)),
+    )
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(repo_id = base, base_repo = None)
+    backend._load_token = 7
+    backend._run_load(_load_token = 7, repo_id = base, model_kind = "pipeline")
+    assert loaded and loaded[0].expected_bytes == sum(base_files.values()) and len(polls) == 1
+    progress = DiffusionBackend._progress_from(
+        loaded[0], DiffusionBackend._planned_progress_bytes(*polls[0])
+    )
+    assert progress["phase"] == "downloading"
+    done = loaded[0]
+    assert (
+        DiffusionBackend._planned_progress_bytes(
+            done.planned_files, done.incomplete_baseline, done.planned_blob_keys
+        )
+        == 7
+    )
+
+
 def test_the_mirror_is_chosen_again_once_the_plan_widens_to_transformer_shards(monkeypatch):
     """FLUX.1-dev's companions are cached upstream but its transformer is not. An explicit transformer quant widens
     the plan to the dense shards after the companion-only mirror choice kept the gated upstream; the final list must

@@ -6455,8 +6455,9 @@ class VideoBackend:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
                     if hasattr(self._loading, "fetch_plan"):
-                        self._loading.fetch_plan = planned_files
+                        # Baseline first: load_progress reads lock-free and counts partials once a plan is set.
                         self._loading.incomplete_baseline = self._plan_partials(planned_files)
+                        self._loading.fetch_plan = planned_files
                     # The conditioner artifact comes from a THIRD repo, neither repo_id nor base_repo, so without this
                     # the delete-cached guard would let it be deleted out from under the in-flight fetch (or out from
                     # under the assembly, while the base snapshot that no longer carries a dense encoder is still coming
@@ -6589,11 +6590,11 @@ class VideoBackend:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
                             if hasattr(self._loading, "fetch_plan"):
-                                self._loading.fetch_plan = planned_files
                                 self._loading.incomplete_baseline = {
                                     **added,
                                     **self._loading.incomplete_baseline,
                                 }
+                                self._loading.fetch_plan = planned_files
             # Only a pre-cast checkpoint actually on disk earns the dense skip below.
             te_failed: dict = {}
             te_skipped = self._fetch_te_prequant(
@@ -6691,11 +6692,11 @@ class VideoBackend:
                     if self._load_token == token and self._loading is not None:
                         self._loading.expected_bytes = expected
                         if hasattr(self._loading, "fetch_plan"):
-                            self._loading.fetch_plan = planned_files
                             self._loading.incomplete_baseline = {
                                 **added,
                                 **self._loading.incomplete_baseline,
                             }
+                            self._loading.fetch_plan = planned_files
                 base_plan = planned_files.get(_FETCH_BASE)
             checkpoint_plan = planned_files.get(_FETCH_CHECKPOINT)
             if checkpoint_plan is not None:
