@@ -13,9 +13,15 @@ Q4NX_EXPORT_UNAVAILABLE_DETAIL = (
 
 
 def q4nx_export_allowed() -> bool:
-    """Never raises: a failed probe counts as no NPU."""
+    """Never raises: a failed probe counts as no NPU. A managed account is refused like a machine
+    without one, since /api/npu/status hides the NPU from it and this answer must not reveal it."""
     try:
+        from hub.services.models import account_access
+
+        if account_access.managed_account():
+            return False
         from core.inference.npu_backend import get_npu_backend
+
         status = get_npu_backend().status()
     except Exception:
         return False

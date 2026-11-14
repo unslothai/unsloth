@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A managed account converts to Q4NX only from GGUFs inside its own workspace."""
+"""Q4NX export: only the owner of a machine with an AMD NPU and FastFlowLM, and never another account's GGUF."""
 
 from __future__ import annotations
 
@@ -168,3 +168,37 @@ def test_a_failed_npu_probe_refuses_q4nx_export(monkeypatch):
     monkeypatch.undo()
     monkeypatch.setattr(npu_backend, "get_npu_backend", broken)
     assert gate.q4nx_export_allowed() is False
+
+
+def test_a_managed_account_is_refused_as_if_there_were_no_npu(monkeypatch):
+    from core.inference import npu_backend
+    from utils import q4nx_export_gate as gate
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        npu_backend,
+        "get_npu_backend",
+        lambda: type("B", (), {"status": lambda self: {"supported": True, "ready": True}})(),
+    )
+    real_to_thread = asyncio.to_thread
+    calls = []
+
+    async def to_thread(fn, *args, **kwargs):
+        if fn is export_routes.account_access.authorize_download:
+            return await real_to_thread(fn, *args, **kwargs)
+        calls.append(fn)
+        raise RuntimeError("stop before converting")
+
+    monkeypatch.setattr(export_routes.asyncio, "to_thread", to_thread)
+    monkeypatch.setattr(
+        export_routes.account_access, "authorize_download", lambda repo, repo_type, token: None
+    )
+    # Same answer as a machine without an NPU, so the status stays hidden from the account.
+    with pytest.raises(HTTPException) as exc:
+        _convert(ALICE, repo_id = "org/m-GGUF", filename = "m.Q4_1.gguf")
+    assert exc.value.status_code == 403
+    assert exc.value.detail == gate.Q4NX_EXPORT_UNAVAILABLE_DETAIL
+    with pytest.raises(HTTPException) as exc:
+        _convert(OWNER, repo_id = "org/m-GGUF", filename = "m.Q4_1.gguf")
+    assert exc.value.status_code == 400 and "stop before converting" in exc.value.detail
+    assert len(calls) == 1
