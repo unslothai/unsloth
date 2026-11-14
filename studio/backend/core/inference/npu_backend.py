@@ -76,6 +76,34 @@ _FLM_CONTEXT_LIMITS = {
     ),
 }
 _LEMOND_ERROR = re.compile(r"\[(?:Error|Fatal)\]\s*\([^)]*\)\s*(.+)")
+# FastFlowLM failures a user can act on, by what flm or lemond prints. First match wins.
+_FLM_ADVICE = (
+    # FastFlowLM#904 and flm's buffer.hpp. Ahead of the hardware context entry on purpose.
+    (
+        re.compile(
+            r"hw context instruction buffers"
+            r"|Failed to allocate (?:flm_rt::ext::bo|bytes of size)",
+            re.IGNORECASE,
+        ),
+        "The NPU ran out of memory. Windows gives the NPU about half of system RAM, so close "
+        "other apps, lower the context length or pick a smaller model.",
+    ),
+    (
+        re.compile(r"CREATE_HWCTX", re.IGNORECASE),
+        "The NPU could not open a hardware context. Close other apps using the NPU, and update "
+        "the AMD NPU driver if it keeps happening.",
+    ),
+    # FastFlowLM#685: weights from an older flm pass its file check, then crash the load.
+    (
+        re.compile(r"Local model \S+ version: \S+ < "),
+        "These model files are from an older FastFlowLM. Delete the model and download it again.",
+    ),
+    # FastFlowLM#973: STATUS_SYSTEM_INTEGRITY_POLICY_VIOLATION, also as lemond prints an exit code.
+    (
+        re.compile(r"0xC0E90002|-1058471934|\b3236495362\b", re.IGNORECASE),
+        "Windows Smart App Control or an App Control policy blocked FastFlowLM (flm.exe).",
+    ),
+)
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
@@ -264,8 +292,9 @@ def _already_said(message: str, reason: str) -> bool:
 
 def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], message: str) -> str:
     """``message`` plus the first error lemond printed in ``window`` that it does not already
-    say. Logs that output at warning, since lemond's lines are otherwise debug-only, and notes the
-    outcome in the Lemonade log. A window shared with another request gets no reason pinned on it."""
+    say, and what to do about a FastFlowLM failure it names. Logs that output at warning, since
+    lemond's lines are otherwise debug-only, and notes the outcome in the Lemonade log. A window
+    shared with another request gets no reason pinned on it."""
     lines = server.output_since(window.start) if server is not None and window is not None else []
     shared = window is not None and window.shared
     explained = message
@@ -275,6 +304,8 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
         if reason and not reason.endswith(":") and not _already_said(message, reason):
             explained = f"{message} ({reason[:300]})"
             break
+    seen = "\n".join([message] if shared else [message, *lines])
+    advice = next((text for pattern, text in _FLM_ADVICE if pattern.search(seen)), "")
     log_name = server.log_path.name if server is not None and server.log_path else None
     if server is not None:
         server.note(f"Request failed: {explained}")
@@ -287,8 +318,8 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
             overlapped_another_request = shared,
         )
     if explained == message and log_name:
-        return f"{message} (Lemonade's output is on the Logs page.)"
-    return explained
+        explained = f"{message} (Lemonade's output is on the Logs page.)"
+    return f"{explained} {advice}".rstrip()
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -835,16 +866,21 @@ class LemonadeNpuBackend:
                 self._raise_if_load_cancelled(model_id)
                 server.note(f"Loading {model.id} with a {ctx}-token context")
                 window = server.open_window()
-                response = server.request(
-                    "POST",
-                    "/v1/load",
-                    json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False},
-                    timeout = 900.0,
-                )
-                self._raise_if_load_cancelled(model_id)
-                if _failed(response):
-                    reason = _explain(server, window, _error_message(response))
-                    raise NpuError(f"Loading {model.id} failed: {reason}")
+                with server.backend_output(window):
+                    response = server.request(
+                        "POST",
+                        "/v1/load",
+                        json_body = {
+                            "model_name": model.id,
+                            "ctx_size": ctx,
+                            "save_options": False,
+                        },
+                        timeout = 900.0,
+                    )
+                    self._raise_if_load_cancelled(model_id)
+                    if _failed(response):
+                        reason = _explain(server, window, _error_message(response))
+                        raise NpuError(f"Loading {model.id} failed: {reason}")
                 resident_ctx = self._resident_context(server, model.id)
                 if resident_ctx is None:
                     raise NpuError(f"Lemonade did not report {model.id} as loaded on the NPU.")
