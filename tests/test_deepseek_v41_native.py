@@ -120,7 +120,7 @@ def test_sparse_attn_reference_matches_a_per_query_loop():
 
 
 def test_window_indices_follow_the_reference_prefill_rule():
-    got = dsv41._window_idxs_cpu(3, 5)
+    got = dsv41._window_idxs(3, 5)
     expected = torch.tensor(
         [[0, -1, -1], [0, 1, -1], [0, 1, 2], [1, 2, 3], [2, 3, 4]], dtype = torch.int32
     )
@@ -235,3 +235,60 @@ def test_packed_position_ids_are_refused():
     ids = torch.randint(0, 512, (1, 8))
     with pytest.raises(NotImplementedError, match = "packed"):
         model(input_ids = ids, position_ids = torch.tensor([[0, 1, 2, 3, 0, 1, 2, 3]]))
+
+
+def test_experts_fallback_matches_a_per_token_fp64_oracle():
+    config = _tiny_config(swiglu_limit = 0.5).text_config  # small limit: the clamps really fire
+    torch.manual_seed(0)
+    experts = dsv41._DeepseekV41Experts(config, 4)
+    torch.nn.init.normal_(experts.gate_up_proj, std = 0.5)
+    torch.nn.init.normal_(experts.down_proj, std = 0.5)
+    x = torch.randn(9, config.hidden_size)
+    idx = torch.randint(0, 3, (9, 2))  # expert 3 never hit: an empty group
+    w = torch.rand(9, 2)
+    before = dsv41.DSV41_STATS["experts_sorted_loop"]
+    got = experts(x, idx, w)
+    assert dsv41.DSV41_STATS["experts_sorted_loop"] == before + 1
+    want = torch.zeros(9, config.hidden_size, dtype = torch.float64)
+    for t in range(9):
+        for k in range(2):
+            e = int(idx[t, k])
+            gate, up = (experts.gate_up_proj[e].double() @ x[t].double()).chunk(2)
+            h = torch.nn.functional.silu(gate.clamp(max = 0.5)) * up.clamp(-0.5, 0.5)
+            want[t] += w[t, k].double() * (experts.down_proj[e].double() @ h)
+    torch.testing.assert_close(got.double(), want, rtol = 1e-4, atol = 1e-5)
+
+
+def test_sparse_attention_engages_the_torch_reference_without_unsloth_zoo_kernel(monkeypatch):
+    monkeypatch.setattr(dsv41, "_SPARSE_ATTN", None)
+    monkeypatch.setenv("UNSLOTH_DSV41_SPARSE_ATTN", "0")
+    model = _tiny_model()
+    before = dsv41.DSV41_STATS["sparse_attn_torch"]
+    model(input_ids = torch.randint(0, 512, (1, 12)))
+    assert dsv41.DSV41_STATS["sparse_attn_torch"] == before + 6  # one call per layer
+
+
+@pytest.mark.parametrize("skip_shared", [True, False])
+def test_shared_group_state_survives_accelerate_device_hooks(monkeypatch, skip_shared):
+    """device_map splits attach accelerate hooks that rebuild dict kwargs; KV / index sources write into `shared`
+    and later layers read it, so `shared` must be skipped by device placement. Flip: without the skip, readers
+    see an empty copy."""
+    accelerate_hooks = pytest.importorskip("accelerate.hooks")
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 16))
+    with torch.no_grad():
+        want = model(input_ids = ids).logits
+    skip = list(dsv41.DeepseekV41PreTrainedModel._skip_keys_device_placement)
+    if not skip_shared:
+        skip = [k for k in skip if k != "shared"]
+    for layer in model.model.layers:
+        accelerate_hooks.add_hook_to_module(
+            layer, accelerate_hooks.AlignDevicesHook(execution_device = "cpu", skip_keys = skip)
+        )
+    if skip_shared:
+        with torch.no_grad():
+            assert torch.equal(model(input_ids = ids).logits, want)
+    else:
+        with pytest.raises(KeyError):
+            with torch.no_grad():
+                model(input_ids = ids)

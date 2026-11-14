@@ -81,9 +81,18 @@ __all__ = [
     "DeepseekV41NgramHashState",
     "sparse_attn",
     "sparse_attn_reference",
+    "DSV41_STATS",
 ]
 
 ENGRAM_DEAD = -1
+
+# Engagement counters for tests (which path ran). Never touched while compiling (Dynamo would bake / retrace them).
+DSV41_STATS = {"sparse_attn_zoo": 0, "sparse_attn_torch": 0, "experts_sorted_loop": 0}
+
+
+def _count(key):
+    if not torch.compiler.is_compiling():
+        DSV41_STATS[key] += 1
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -119,10 +128,22 @@ def _resolve_sparse_attn():
 _SPARSE_ATTN = None
 
 
-def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale):
+def ensure_sparse_attn():
+    """Resolve the sparse attention implementation once, eagerly (model construction): an import or env read
+    inside a traced forward is a graph break."""
     global _SPARSE_ATTN
     if _SPARSE_ATTN is None:
         _SPARSE_ATTN = _resolve_sparse_attn()
+    return _SPARSE_ATTN
+
+
+def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale):
+    global _SPARSE_ATTN
+    if _SPARSE_ATTN is None:
+        if torch.compiler.is_compiling():
+            return sparse_attn_reference(q, kv, attn_sink, topk_idxs, softmax_scale)
+        _SPARSE_ATTN = _resolve_sparse_attn()
+    _count("sparse_attn_torch" if _SPARSE_ATTN is sparse_attn_reference else "sparse_attn_zoo")
     return _SPARSE_ATTN(q, kv, attn_sink, topk_idxs, softmax_scale)
 
 
@@ -148,7 +169,12 @@ class DeepseekV41RMSNorm(nn.Module):
         return (self.weight.float() * x).to(dtype)
 
 
-@lru_cache(maxsize = 32)
+@lru_cache(maxsize = 64)
+def _inv_freq_on(dim, base, original_seq_len, factor, beta_fast, beta_slow, device, inference):
+    # Keyed by inference mode too: a tensor made under inference_mode must not reach a training graph.
+    return _inv_freq(dim, base, original_seq_len, factor, beta_fast, beta_slow).to(device)
+
+
 def _inv_freq(dim, base, original_seq_len, factor, beta_fast, beta_slow):
     """model.py:368-389 frequencies (YaRN when original_seq_len > 0), as a CPU fp32 tensor."""
     freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype = torch.float32) / dim))
@@ -171,7 +197,7 @@ def _inv_freq(dim, base, original_seq_len, factor, beta_fast, beta_slow):
 
 def _rope_cos_sin(positions, inv_freq):
     """positions [s] or [b, s] (int) -> cos, sin [..., dim // 2] fp32 (torch.polar of model.py:388-389)."""
-    angles = positions.to(torch.float32).unsqueeze(-1) * inv_freq.to(positions.device)
+    angles = positions.to(torch.float32).unsqueeze(-1) * inv_freq
     return angles.cos(), angles.sin()
 
 
@@ -276,11 +302,15 @@ def hc_post(x, residual, post, comb):
 # ----------------------------------------------------------------------------------------------------------------
 # Attention: sliding window + compressed KV chosen by the indexer (model.py:409-792)
 # ----------------------------------------------------------------------------------------------------------------
-@lru_cache(maxsize = 16)
-def _window_idxs_cpu(window, seqlen):
-    """model.py:409-427 for start_pos == 0: row i lists max(0, i - window + 1) .. i, -1 past i."""
-    end = torch.arange(seqlen).unsqueeze(1)
-    idxs = (end - window + 1).clamp(0) + torch.arange(min(seqlen, window))
+def _window_idxs(
+    window,
+    seqlen,
+    device = None,
+):
+    """model.py:409-427 for start_pos == 0: row i lists max(0, i - window + 1) .. i, -1 past i. Built on the
+    operand's device: a few arange ops, no host copy."""
+    end = torch.arange(seqlen, device = device).unsqueeze(1)
+    idxs = (end - window + 1).clamp(0) + torch.arange(min(seqlen, window), device = device)
     return torch.where(idxs > end, -1, idxs).to(torch.int32)
 
 
@@ -377,7 +407,7 @@ class DeepseekV41Indexer(nn.Module):
                 )
             )
             shared["index_k"] = apply_rotary(k, ccos, csin)
-        index_k = shared["index_k"]
+        index_k = shared["index_k"].to(x.device)
         n_comp = index_k.shape[1]
         q = self.q_b_proj(qr).unflatten(-1, (self.n_heads, self.head_dim))
         q = apply_rotary(q, cos, sin)
@@ -394,7 +424,7 @@ class DeepseekV41Indexer(nn.Module):
                 score, compress_lens, self.candidate_topk_blocks, self.candidate_block_size
             )
         elif self.uses_candidates and shared.get("candidates") is not None:
-            score = score.masked_fill(~shared["candidates"], float("-inf"))
+            score = score.masked_fill(~shared["candidates"].to(x.device), float("-inf"))
         topk = min(self.index_topk, n_comp)
         idxs = score.topk(topk, dim = -1, sorted = False).indices.sort(dim = -1).values
         return torch.where(idxs < compress_lens, idxs + offset, -1).to(torch.int32)
@@ -416,6 +446,7 @@ class DeepseekV41Attention(nn.Module):
         self.window = config.sliding_window
         self.compress_ratio = config.compress_ratios[layer_idx]
         self.softmax_scale = self.head_dim**-0.5
+        ensure_sparse_attn()
         self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias = False)
         self.q_a_norm = DeepseekV41RMSNorm(config.q_lora_rank, config.rms_norm_eps)
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.n_heads * self.head_dim, bias = False)
@@ -456,15 +487,15 @@ class DeepseekV41Attention(nn.Module):
 
     def forward(self, x, positions, shared):
         bsz, seqlen, _ = x.shape
-        inv_freq = _inv_freq(*self._rope_key)
+        # torch.is_inference_mode_enabled() is untraceable; traced graphs never run under inference_mode
+        inference = False if torch.compiler.is_compiling() else torch.is_inference_mode_enabled()
+        inv_freq = _inv_freq_on(*self._rope_key, positions.device, inference)
         cos, sin = _rope_cos_sin(positions, inv_freq)
         qr = self.q_a_norm(self.q_a_proj(x))
         q = self.q_b_proj(qr).unflatten(-1, (self.n_heads, self.head_dim))
         q = apply_rotary(q, cos, sin)
         kv = apply_rotary(self.kv_norm(self.kv_proj(x)), cos, sin)
-        window_idxs = (
-            _window_idxs_cpu(self.window, seqlen).to(x.device).unsqueeze(0).expand(bsz, -1, -1)
-        )
+        window_idxs = _window_idxs(self.window, seqlen, x.device).unsqueeze(0).expand(bsz, -1, -1)
         if self.compress_ratio:
             ratio = self.compress_ratio
             n_comp = seqlen // ratio
@@ -480,10 +511,10 @@ class DeepseekV41Attention(nn.Module):
                 else:
                     idxs = self.indexer(x, qr, latent, shared, cos, sin, ccos, csin, seqlen)
                 shared["topk_idxs"] = idxs
-            idxs = shared["topk_idxs"]
+            idxs = shared["topk_idxs"].to(x.device)
             if latent is not None:
                 shared["compress_kv"] = apply_rotary(latent, ccos, csin)
-            compress_kv = shared["compress_kv"][:, :n_comp]
+            compress_kv = shared["compress_kv"][:, :n_comp].to(x.device)
             kv = torch.cat([kv, compress_kv.to(kv.dtype)], dim = 1)
             topk_idxs = torch.cat([window_idxs, idxs], dim = -1)
         else:
@@ -562,17 +593,27 @@ class _DeepseekV41Experts(nn.Module):
         return F.silu(gate) * up
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
-        final = torch.zeros_like(hidden_states, dtype = torch.float32)
-        with torch.no_grad():
-            counts = torch.bincount(top_k_index.flatten(), minlength = self.num_experts)
-            hit = (counts > 0).nonzero().flatten().tolist()
-        for expert_idx in hit:
-            token_idx, top_pos = torch.where(top_k_index == expert_idx)
-            current = hidden_states[token_idx]
-            gate_up = F.linear(current, self.gate_up_proj[expert_idx].to(current.dtype)).float()
-            act = self._apply_gate(gate_up).to(current.dtype)
-            out = F.linear(act, self.down_proj[expert_idx].to(current.dtype)).float()
-            final.index_add_(0, token_idx, out * top_k_weights[token_idx, top_pos, None].float())
+        """Eager fallback (transformers' / Unsloth's experts backends replace it when configured): routes sorted by
+        expert, counts by scatter_add_, one host read of the counts per layer to split the groups."""
+        _count("experts_sorted_loop")
+        n_tok, top_k = top_k_index.shape
+        flat = top_k_index.reshape(-1)
+        order = torch.argsort(flat, stable = True)
+        token_idx = order // top_k
+        weights = top_k_weights.reshape(-1)[order].float().unsqueeze(-1)
+        counts = torch.zeros(self.num_experts, dtype = torch.int64, device = flat.device)
+        counts.scatter_add_(0, flat, torch.ones_like(flat))
+        x = hidden_states[token_idx]
+        outs = []
+        for expert_idx, chunk in enumerate(torch.split(x, counts.tolist())):
+            gate_up = F.linear(chunk, self.gate_up_proj[expert_idx].to(chunk.dtype)).float()
+            act = self._apply_gate(gate_up).to(chunk.dtype)
+            outs.append(F.linear(act, self.down_proj[expert_idx].to(chunk.dtype)).float())
+        final = torch.zeros(
+            n_tok, hidden_states.shape[-1], dtype = torch.float32, device = hidden_states.device
+        )
+        if outs:
+            final.index_add_(0, token_idx, torch.cat(outs) * weights)
         return final.to(hidden_states.dtype)
 
 
@@ -867,7 +908,7 @@ class DeepseekV41Engram(nn.Module):
         token_mask = None,
     ):
         # the reference casts dequantized rows to bf16 before wkv (model.py:320); follow the stream's dtype
-        kv = self.wkv(rows.flatten(-2).to(x.dtype))
+        kv = self.wkv(rows.flatten(-2).to(device = x.device, dtype = x.dtype))
         key, value = kv.split([self.hc_mult * self.hidden_size, self.hidden_size], dim = -1)
         key = key.float().unflatten(-1, (self.hc_mult, self.hidden_size))
         weight = self.q_weight.float() * self.k_weight.float()
@@ -978,7 +1019,8 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["DeepseekV41DecoderLayer", "DeepseekV41EngramEmbedding"]
-    _skip_keys_device_placement = ["past_key_values"]
+    # accelerate's device hooks rebuild dict kwargs; the per-forward `shared` group state must stay one object
+    _skip_keys_device_placement = ["past_key_values", "shared"]
     _supports_flash_attn = False
     _supports_flash_attn_2 = False
     _supports_sdpa = False
@@ -1158,19 +1200,22 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         if position_ids is not None:
             pos = position_ids if position_ids.dim() == 2 else position_ids.view(1, -1)
             expected = torch.arange(seqlen, device = pos.device)
-            if seqlen > 1 and not bool((pos == expected).all()):
+            if (
+                seqlen > 1
+                and not torch.compiler.is_compiling()
+                and not bool((pos == expected).all())
+            ):
                 raise NotImplementedError(
                     "Unsloth: DeepSeek-V4.1 trains on one sequence per row (positions 0..S-1); packed or offset "
                     "position_ids are not supported (the compressor pools and the engram hashes run row-wide)."
                 )
         positions = torch.arange(seqlen, device = inputs_embeds.device)
-        token_mask = None
-        if (
-            attention_mask is not None
-            and attention_mask.dim() == 2
-            and not bool(attention_mask.all())
-        ):
-            token_mask = attention_mask.bool()
+        # all-True masks are a no-op in the hash / gate, so no host check of attention_mask.all() is needed
+        token_mask = (
+            attention_mask.bool()
+            if attention_mask is not None and attention_mask.dim() == 2
+            else None
+        )
         engram_rows = {}
         if self.ngram_hash is not None and input_ids is not None:
             self._maybe_autobind()
