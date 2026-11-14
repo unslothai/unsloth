@@ -55,10 +55,7 @@ function selectedFirst(c: Pick<AppearanceCustomization, (typeof FONT_FIELDS)[num
   return [...fonts.filter(inUse), ...fonts.filter((f) => !inUse(f))];
 }
 
-/**
- * Keeps font selections and imported fonts consistent: a selection naming one of `importedNames`
- * that `keep` can supply is put back, and one whose font is still missing after the cap is reset.
- */
+/** A selection of an `importedNames` font comes back from `keep` if it can, else resets after the cap. */
 function reconcileFonts(
   customization: AppearanceCustomization,
   importedNames: Set<string>,
@@ -106,10 +103,7 @@ function mergeFonts(themeFonts: ImportedFont[], currentFonts: ImportedFont[]): I
 const glassKey = ({ material, strength, lens, menus }: GlassSettings) =>
   JSON.stringify([material, strength.light, strength.dark, lens, menus]);
 
-/**
- * What applying a parsed theme would do, without touching the app. The parser fills every look
- * field, so a section the theme leaves out resets to its defaults. Personal fields stay as they are.
- */
+/** Pure: the parser fills every look field, so a section the theme omits resets to defaults. */
 export function planThemeApply(
   current: AppearanceSnapshot,
   theme: AppearanceTheme,
@@ -161,10 +155,7 @@ export function planThemeApply(
   };
 }
 
-/**
- * What Undo writes: each value the theme set goes back to `before`, unless it changed again since
- * the theme was applied, so later edits (and personal settings) survive an Undo.
- */
+/** Each value the theme set goes back to `before` unless it changed since Apply. */
 export function planUndo(
   before: AppearanceSnapshot,
   applied: ThemeApplyPlan,
@@ -222,8 +213,7 @@ export function planUndo(
     dark: revert(before.glass.strength.dark, applied.glass.strength.dark, now.glass.strength.dark),
   };
   const reverted = sanitizeCustomization(customization);
-  // Every imported name seen, so a restored selection whose font was since deleted is cleared.
-  // A family that was local (not imported) before Apply stays selectable after Undo.
+  // Clears restored selections whose font was deleted since, except families local before Apply.
   const localBefore = localFamilies(before.customization);
   const knownNames = new Set(
     [before, applied, now].flatMap((s) => s.customization.importedFonts.map((font) => font.name))

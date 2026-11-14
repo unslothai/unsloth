@@ -36,7 +36,6 @@ export function sameBackground(
     JSON.stringify(now.adjustments) === JSON.stringify(applied.adjustments));
 }
 
-/** Reads the live appearance. Does not write anything. */
 export function readAppearanceSnapshot(): AppearanceSnapshot {
   const { material, style, strength, lens, menus } = useMaterialStore.getState();
   const background = useBackgroundStore.getState().value;
@@ -50,10 +49,7 @@ export function readAppearanceSnapshot(): AppearanceSnapshot {
   };
 }
 
-/**
- * Writes palette, customization and glass in one pass; the background is separate. Theme mode and
- * interface scale are never touched.
- */
+/** Background is separate; theme mode and interface scale are never touched. */
 export function applyAppearanceSnapshot(next: AppearanceTarget): void {
   useAppearanceCustomStore.getState().replaceAll(next.customization);
   setPalette(next.palette);
@@ -78,10 +74,7 @@ export function restoreBackground(prev: AppearanceSnapshot["background"]): Promi
   return finishBackgroundUpload(beginBackgroundUpload(), { ...prev.adjustments, blob: prev.blob });
 }
 
-/**
- * The theme with only the embedded fonts the browser can load, as the font picker requires; a
- * selection of a dropped font goes back to the default. Also returns the dropped names.
- */
+/** Keeps only embedded fonts the browser can load (as the font picker requires); returns the dropped names. */
 export async function withLoadableFonts(theme: AppearanceTheme): Promise<[AppearanceTheme, string[]]> {
   if (!theme.fonts?.length) return [theme, []];
   const loads = await Promise.all(
