@@ -609,6 +609,20 @@ def _start_helper_precache_if_enabled() -> None:
     threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
 
 
+def _start_offline_docs_refresh_if_due() -> None:
+    """Offline docs refresh, DB check included, off the startup path."""
+    import threading
+
+    def _refresh():
+        try:
+            from utils.offline_docs_settings import refresh_offline_docs_if_due
+            refresh_offline_docs_if_due()
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _refresh, daemon = True, name = "offline-docs-refresh").start()
+
+
 def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
     """Run llama.cpp probes off the startup path; GitHub freshness checks and macOS Gatekeeper stall
     them."""
@@ -1048,6 +1062,7 @@ async def lifespan(app: FastAPI):
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
+    _start_offline_docs_refresh_if_due()
 
     from core.inference.audio_inputs import start_sweeper as _start_audio_input_sweeper
 
@@ -3530,13 +3545,17 @@ def _is_direct_loopback_frontend_request(scope) -> bool:
 
 def _is_remote_frontend_request(scope, app_state) -> bool:
     """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, one
-    of the sockets the runtime LAN listener bound (both keyed on the connection, not a client header), or a
-    direct unproxied browser on the loopback listener."""
+    of the sockets the runtime LAN listener bound (both keyed on the connection, not a client header), a
+    direct unproxied browser on the loopback listener, or a local reverse proxy for a hostname the user
+    allowlisted in ``UNSLOTH_STUDIO_PROXY_HOSTS``."""
     from lan_access import request_on_lan_listener
+    from utils.client_ip import request_via_trusted_proxy
+
     return (
         _is_live_cloudflare_frontend_request(scope, app_state)
         or request_on_lan_listener(scope)
         or _is_direct_loopback_frontend_request(scope)
+        or request_via_trusted_proxy(scope)
     )
 
 

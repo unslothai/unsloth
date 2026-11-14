@@ -1171,14 +1171,24 @@ def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
     return str(name or "")
 
 
-def _noop_result(reason: NoopReason, tool_name: str) -> str:
+def _noop_result(
+    reason: NoopReason,
+    tool_name: str,
+    *,
+    final: bool = False,
+) -> str:
     if reason == "duplicate":
+        follow_up = (
+            "Provide the final answer now without calling more tools."
+            if final
+            else "Answer from the results you have; call a different tool only if it would "
+            "return information you do not have yet."
+        )
         return (
             f"One earlier request to call tool '{tool_name}' in this batch was "
             "not executed because an identical call had already completed "
             "successfully and nothing has changed since, so its result above still holds. "
-            "Do not repeat the same tool call. Answer from the results you have; call a "
-            "different tool only if it would return information you do not have yet."
+            f"Do not repeat the same tool call. {follow_up}"
         )
     if reason == "render_html_repeat":
         return (
@@ -1494,6 +1504,7 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
+        result = decision.noop_result
         if decision.action == "duplicate":
             duplicate_count = self._duplicate_noop_counts.get(decision.key, 0) + 1
             self._duplicate_noop_counts[decision.key] = duplicate_count
@@ -1501,9 +1512,12 @@ class ToolLoopController:
                 self._force_final_answer = True
         elif decision.action in ("disabled", "render_html_repeat"):
             self._force_final_answer = True
+        # Any repeat once the rounds have ended, so a later call in the same batch cannot offer a tool again.
+        if decision.action == "duplicate" and self._force_final_answer:
+            result = _noop_result("duplicate", decision.tool_name, final = True)
         return ToolCallCompletion(
             decision = decision,
-            result = decision.noop_result,
+            result = result,
             is_error = False,
             executed = False,
         )

@@ -468,7 +468,13 @@ with sync_playwright() as p:
         try:
             wait_until(
                 lambda: not popover.is_visible()
-                or _count(popover.locator('button[aria-label^="Inference settings for" i]')) > 0,
+                or _count(
+                    popover.locator(
+                        'button[aria-label^="Inference settings for" i], '
+                        'button[aria-label^="Run settings for" i]'
+                    )
+                )
+                > 0,
                 timeout_s = 10,
                 what = "the row click to close the picker or show its gears",
                 interval_s = 0.1,
@@ -485,7 +491,8 @@ with sync_playwright() as p:
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
         # The gear is a sibling of the row. Anchor the quant at the end, or F16 matches BF16.
-        pattern = f"^Inference settings for .*{re.escape(hint)}"
+        # The header picker says "Inference settings", the composer picker "Run settings".
+        pattern = f"^(?:Inference|Run) settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"
         gear = popover.get_by_role("button", name = re.compile(pattern, re.IGNORECASE)).first
