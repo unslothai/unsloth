@@ -35,6 +35,8 @@ ERROR_KINDS: dict[str, dict[tuple[str, str], str]] = {
 }
 
 _LOCK = threading.Lock()
+# (account, thread) deleted in this process: a decision still in flight then must not log its words again.
+_DELETED: set[tuple[str, str]] = set()
 
 
 def log_dir() -> Path:
@@ -112,7 +114,15 @@ def append(
         "latency_ms": round(float(latency_ms), 2),
         "outcome": None,
     }
-    _append_line(log_path(), row)
+    from utils.account_context import OWNER_ACCOUNT_ID
+
+    with _LOCK:
+        if thread_id and (account or OWNER_ACCOUNT_ID, str(thread_id)) in _DELETED:
+            return row_id
+        path = log_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        with open(path, "a", encoding = "utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii = False) + "\n")
     return row_id
 
 
@@ -317,6 +327,8 @@ def delete_thread_rows(thread_ids, account: Optional[str] = None) -> int:
         return account is None or (r.get("account") or OWNER_ACCOUNT_ID) == account
 
     with _LOCK:
+        if account is not None:
+            _DELETED.update((account, t) for t in ids)
         rows = _read_lines(log_path())
         keep = [r for r in rows if not doomed(r)]
         if len(keep) == len(rows):
