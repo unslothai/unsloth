@@ -677,3 +677,67 @@ def test_a_self_hosted_server_without_a_catalogued_window_is_summarised(provider
         _serving(entry), provider_type = provider_type, context_overflow = "truncate_oldest"
     )
     assert summaries and _SUMMARY in _system_text(chats[-1])
+
+
+def test_summarised_turns_are_archived_when_more_must_be_dropped(
+    rag_home, rag_conn, stub_embeddings, monkeypatch
+):
+    from core.rag import conversation_archive
+
+    def fit(messages, payload, **_):
+        body = [m for m in messages if m["role"] != "system"]
+        kept = [m for m in messages if m["role"] == "system"] + body[2:]
+        return kept, {"dropped_messages": 2, "boundary_messages": 2, "fits": True}, 256
+
+    monkeypatch.setattr(ri, "_fit_external_context", fit)
+    thread = "thread-summary-drop-archive"
+    chat = _recall_chat(thread)
+    chunks, [_], _ = _bodies(_SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER)
+    [truncation] = _truncations(chunks)
+    assert truncation["archived_messages"] > 2
+    assert conversation_archive.has_archive(thread)
+
+
+class _RefusesOnce(_SummarisingHandler):
+    refused: list = []
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) or b"{}"
+        body = json.loads(raw)
+        if not _is_summary_call(body) and not type(self).refused:
+            type(self).refused.append(body)
+            self.server.recorded.append(body)  # type: ignore[attr-defined]
+            payload = json.dumps(
+                {
+                    "error": {
+                        "message": "maximum context length exceeded",
+                        "code": "context_length_exceeded",
+                    }
+                }
+            ).encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        self.rfile = __import__("io").BytesIO(raw)
+        self.headers.replace_header("Content-Length", str(len(raw)))
+        super().do_POST()
+
+
+def test_an_overflow_on_a_summarised_thread_folds_the_saved_summary_in():
+    thread = _saved_thread("thread-summary-overflow")
+    chat = _long_chat()
+    options = dict(thread_id = thread, **_SMALL_TRIGGER)
+    _bodies(_SummarisingHandler, messages = chat, **options)
+    later = [*chat, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
+    handler = type("RefusesOnce", (_RefusesOnce,), {"refused": []})
+    chunks, summaries, chats = _bodies(handler, messages = later, **options)
+    resent = chats[-1]
+    assert len(summaries) == 1 and resent["messages"][-1]["content"] == "next"
+    assert _system_text(resent).count("[Conversation summary]") == 1
+    # The new summary covers the full transcript up to the newest turn, so a later turn reuses it.
+    body = cloud_compaction.body_messages(later)
+    assert cloud_compaction.stored_summary(thread, body)["covered_messages"] == len(body) - 1

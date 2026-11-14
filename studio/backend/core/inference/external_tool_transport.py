@@ -122,6 +122,7 @@ class OAICompatTransport:
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, tool_choice: Any
     ) -> AsyncIterator[str]:
         request_kwargs = dict(self._request_kwargs)
+        unfitted = messages
         if self._first_turn_overrides:
             request_kwargs.update(self._first_turn_overrides)
             self._first_turn_overrides = {}
@@ -158,7 +159,7 @@ class OAICompatTransport:
         async def _recover():
             refitter, self._overflow_refitter = self._overflow_refitter, None
             fit = None
-            async for step in _fit_steps(refitter(messages, tools)):
+            async for step in _fit_steps(refitter(unfitted, tools)):
                 if not isinstance(step, str):
                     fit = step
             if fit is None or fit[0] is None:

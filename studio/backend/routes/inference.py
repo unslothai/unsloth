@@ -29481,6 +29481,17 @@ async def _finish_external_compaction(
                 truncation["boundary_messages"] = plan.covered + int(
                     evicted.get("boundary_messages") or evicted["dropped_messages"]
                 )
+                # The fit archived only what it cut from the summarised prompt.
+                archived = await asyncio.to_thread(
+                    _archive_and_recall,
+                    current,
+                    plan.messages,
+                    branch_messages = plan.messages,
+                    thread_id = thread_id,
+                    style = "inline",
+                    recall_done = True,
+                )
+                truncation.update(archived["counts"])
         elif evicted:
             # Nothing could be dropped: the prompt is still too long, and any summary still stands.
             refusal = evicted
@@ -30496,6 +30507,8 @@ async def _proxy_to_external_provider(
             return await _external_context_fitter(messages, auto = True)
 
     _deferred_fit_plan = None
+    # An overflow refit starts from the transcript, not from a prompt that already holds a summary.
+    _unfitted_messages = chat_messages
     if _fit_active and not run_studio_tool_loop and managed is not None:
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
             _fit_external_context,
@@ -30676,7 +30689,7 @@ async def _proxy_to_external_provider(
 
             async def _recover_plain():
                 fit = None
-                async for step in _external_overflow_refit(_sent_messages):
+                async for step in _external_overflow_refit(_unfitted_messages):
                     if not isinstance(step, str):
                         fit = step
                 if fit is None or fit[0] is None:
