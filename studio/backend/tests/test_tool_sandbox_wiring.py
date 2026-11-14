@@ -794,6 +794,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "option_operand",
         "config_no_user_key",
         "upgrade_isolated",
+        "download_into_install",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -846,6 +847,9 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         f"PIP_CONFIG_FILE=pip.ini {_PIP} {wheel} && {show}",
         # --upgrade is a flag of its own, not an abbreviation of --upgrade-strategy eating --isolated.
         "upgrade_isolated": f"python -m pip install -q --no-index --no-deps --upgrade --isolated {wheel} && {show}",
+        # A download destination literally named install is no install subcommand to add --prefix to.
+        "download_into_install": f"python -m pip download -q --isolated --dest install --no-index --no-deps {wheel}"
+        ' && find "$PWD/install" -name "*.whl"',
         # --prefix=... here is the build-backend setting -C carries, not pip's own --prefix.
         "option_operand": f"{_PIP} -C --prefix=buildtmp {wheel} && {show}",
         # [install] overrides [global], as pip resolves it: user ends up off.
@@ -906,6 +910,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "option_operand": packages,
         "config_no_user_key": packages,
         "upgrade_isolated": packages,
+        "download_into_install": str(workdir / "install"),
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1508,6 +1513,26 @@ def test_a_path_line_editable_never_shadows_the_stdlib(monkeypatch, tmp_path):
     out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
     assert "pip" in out and str(source) not in out and "no-msvcrt" in out, out
     assert not marker.exists()
+
+
+def test_host_session_packages_never_supply_a_stdlib_name(tmp_path):
+    """The host finder sits last: a msvcrt.py there must not answer subprocess's probe on Linux."""
+    folder = tmp_path / "host_packages"
+    folder.mkdir()
+    marker = tmp_path / "payload_ran"
+    (folder / "msvcrt.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+    env = {
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("PIP_", "_UNSLOTH", "PYTHONPATH"))
+        },
+        "PYTHONPATH": tools._SANDBOX_SITE_DIR,
+        "_UNSLOTH_HOST_SESSION_PACKAGES": str(folder),
+    }
+    code = "import subprocess; print('ok')"
+    out = subprocess.run([sys.executable, "-c", code], env = env, capture_output = True, text = True)
+    assert out.stdout.strip() == "ok" and not marker.exists(), out.stderr
 
 
 def test_a_module_launch_without_orig_argv_is_not_taken_for_pip():

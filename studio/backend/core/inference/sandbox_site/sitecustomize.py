@@ -256,7 +256,8 @@ class _HostPackagesFinder:
         import importlib.machinery
 
         if "." not in name:
-            if path is not None or name in self._skip:
+            # Appended last, it would otherwise supply a stdlib name this platform lacks (msvcrt on Linux).
+            if path is not None or name in self._skip or name in _stdlib_names():
                 return None
             return importlib.machinery.PathFinder.find_spec(name, self._folders)
         parent, _, _ = name.rpartition(".")
@@ -365,16 +366,16 @@ _PIP_VALUE_SHORTS = "Ccefirt"
 _PIP_PREFIX_FLAGS = ("--pre", "--upgrade")
 
 
-def _pip_options():
-    # The option words of pip's command line, without the operands of options that take one (-C --prefix=x).
-    found, args, i = [], sys.argv[1:], 0
+def _pip_words():
+    # (argv index, word, is option) over pip's command line; operands of value options (-C --prefix=x) skipped.
+    args, i = sys.argv, 1
     while i < len(args):
-        arg = args[i]
+        arg, at = args[i], i
         i += 1
         if arg == "--":
-            break
+            return
         if arg.startswith("--"):
-            found.append(arg)
+            yield at, arg, True
             name = arg.split("=", 1)[0]
             if (
                 "=" not in arg
@@ -383,12 +384,17 @@ def _pip_options():
             ):
                 i += 1
         elif arg.startswith("-") and len(arg) > 1:
-            found.append(arg)
+            yield at, arg, True
             for j, flag in enumerate(arg[1:], 1):
                 if flag in _PIP_VALUE_SHORTS:
                     i += j == len(arg) - 1  # -C VALUE; -CVALUE carries it
                     break
-    return found
+        else:
+            yield at, arg, False
+
+
+def _pip_options():
+    return [arg for _, arg, option in _pip_words() if option]
 
 
 def _chooses_location(arg):
@@ -622,10 +628,10 @@ def _route_pip(is_pip = None):
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
-                if isolated and "install" in sys.argv:
+                command = next((at for at, arg, option in _pip_words() if not option), None)
+                if isolated and command and sys.argv[command] == "install":
                     # --isolated ignores PIP_* variables: pass the same options on the command line.
-                    at = sys.argv.index("install") + 1
-                    sys.argv[at:at] = ["--prefix", prefix, "--ignore-installed"]
+                    sys.argv[command + 1 : command + 1] = ["--prefix", prefix, "--ignore-installed"]
             elif os.environ.get("PIP_PREFIX") == prefix:
                 os.environ.pop("PIP_PREFIX", None)
                 os.environ.pop("PIP_IGNORE_INSTALLED", None)
