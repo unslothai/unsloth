@@ -445,6 +445,31 @@ Or skip PyTorch for GGUF chat only:
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
 
+##### Intel SYCL builds and oneAPI environment
+
+If a custom llama.cpp build uses Intel SYCL, source oneAPI only for the `llama-server`
+child process instead of exporting it before starting Studio. This avoids changing the
+parent environment used to detect PyTorch/XPU. In the custom llama.cpp `bin` directory,
+rename the real executable and add a wrapper with the original name:
+
+```bash
+cd /path/to/llama.cpp/build/bin
+mv llama-server llama-server.bin
+cat > llama-server <<'EOF'
+#!/usr/bin/env bash
+set -e
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1
+exec "$SCRIPT_DIR/llama-server.bin" "$@"
+EOF
+chmod +x llama-server
+```
+
+Point Studio at that custom llama.cpp folder and restart the model. Replace the oneAPI path
+when it is installed elsewhere. To undo the wrapper, remove it and rename `llama-server.bin`
+back to `llama-server`. This keeps oneAPI scoped to llama-server and leaves Studio's Python
+environment unchanged.
+
 #### audio.cpp audio engine:
 
 Setup also installs [audio.cpp](https://github.com/0xShug0/audio.cpp) (prebuilt by [unslothai/audio.cpp](https://github.com/unslothai/audio.cpp)), which runs the audio.cpp speech, music and speech-to-text models on the Audio page, in Voice settings and behind `/v1/audio/*`. It is optional and never blocks setup:
