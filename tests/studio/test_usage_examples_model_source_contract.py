@@ -190,7 +190,10 @@ def test_monitor_can_unload_the_loaded_model():
     busy = re.search(r"const busy = ([^;]+);", controls)
     assert busy, "the load controls no longer compute busy"
     assert {"modelLoading", "unloading"} <= {term.strip() for term in busy.group(1).split("||")}
-    assert "onEject={busy ? undefined : handleEject}" in controls
+    # The composer picker's eject goes through the page's guard rather than a prop it can drop.
+    assert re.search(
+        r"eject: \(modelId\) => \{\s*if \(!busy\) \{\s*handleEject\(modelId\);", controls
+    )
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
     assert "resolveInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src

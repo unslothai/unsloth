@@ -184,7 +184,9 @@ from .diffusion_flux3 import (
 from .diffusion_flux3 import REFERENCE_AREA as FLUX3_REFERENCE_AREA
 from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
+    MAPPED_DENOISER_PREFIX,
     decide_small_host,
+    dense_denoiser_enabled as small_host_dense_enabled,
     enable_int8_act_ as small_host_enable_int8_act,
     download_first_enabled as small_host_download_first,
     engaged_on as small_host_engaged_on,
@@ -193,6 +195,7 @@ from .diffusion_small_host import (
     resolve_snapshot_dir,
     snapshot_weights_complete,
     spill_capacity_mib,
+    mapped_denoiser as small_host_mapped_denoiser,
     stored_components,
     torch_dtype_map as small_host_torch_dtype_map,
 )
@@ -556,6 +559,7 @@ from .diffusion_transformer_quant import (
     native_int8_act,
     rdna_auto_w8a8_reason,
     rdna_explicit_int8_reason,
+    turing_auto_int8_reason,
     native_offload_host,
     native_quant_host,
     native_quant_scheme,
@@ -8812,6 +8816,27 @@ class DiffusionBackend:
                     if transformer_quant_auto
                     else normalize_transformer_quant(transformer_quant_requested)
                 )
+                # Turing AUTO int8: same build as an int8 request; offloading modes were not measured, keep fp16.
+                turing_auto_int8 = (
+                    turing_auto_int8_reason(target, getattr(fam, "name", None))
+                    if transformer_quant == TQ_AUTO
+                    and kind == "pipeline"
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    else None
+                )
+                if turing_auto_int8 is not None:
+                    logger.info(
+                        "diffusion.transformer_quant: auto picks int8 on this Turing GPU (%s; "
+                        "UNSLOTH_DIFFUSION_FP16_CARD_INT8=0 keeps fp16)",
+                        turing_auto_int8,
+                    )
+                    transformer_quant = transformer_quant_pinned = TQ_INT8
+                # explicit none / off on a small host: keep the denoiser memory-mapped, not int8 behind 'off'
+                small_host_dense = (
+                    not transformer_quant_auto
+                    and transformer_quant_pinned is None
+                    and small_host_dense_enabled()
+                )
 
                 pipe = transformer = None
                 pipe_kwargs: dict[str, Any] = {}
@@ -9645,6 +9670,8 @@ class DiffusionBackend:
 
                     if (
                         transformer_quant_pinned is not None
+                        # AUTO's Turing int8 is AUTO's own pick: a decline loads fp16 as before, never refuses.
+                        and turing_auto_int8 is None
                         and not precision_fallback_allowed()
                         # Refuse known failures before downloading a pipeline.
                         and (
@@ -9960,22 +9987,28 @@ class DiffusionBackend:
                                             family_name = fam.name,
                                             storage_dtype = flux3_storage_dtype(target, dtype),
                                             # fp16-card native build reads Linears as stored (bf16, manual cast).
+                                            # A dense transformer reads as stored only when that saves memory.
                                             transformer_storage = (
-                                                transformer_quant_pinned is None
-                                                and native_scheme is None
-                                                and native_offload_scheme is None
-                                            )
-                                            or (
-                                                fp16_card_quant_storage_enabled()
-                                                and native_scheme is not None
-                                                and native_offload_scheme is None
-                                                and fp16_card_int8_host(target)
-                                                and native_quant_scheme(
-                                                    target,
-                                                    transformer_quant_pinned,
-                                                    family = getattr(fam, "name", None),
+                                                True
+                                                if (
+                                                    fp16_card_quant_storage_enabled()
+                                                    and native_scheme is not None
+                                                    and native_offload_scheme is None
+                                                    and fp16_card_int8_host(target)
+                                                    and native_quant_scheme(
+                                                        target,
+                                                        transformer_quant_pinned,
+                                                        family = getattr(fam, "name", None),
+                                                    )
+                                                    is None
                                                 )
-                                                is None
+                                                else None
+                                                if (
+                                                    transformer_quant_pinned is None
+                                                    and native_scheme is None
+                                                    and native_offload_scheme is None
+                                                )
+                                                else False
                                             ),
                                         )
                                     finally:
@@ -10052,6 +10085,7 @@ class DiffusionBackend:
                                         target,
                                         dtype,
                                         lora_active = _has_active_lora(loras),
+                                        dense_denoiser = small_host_dense,
                                         fetch = _small_host_fetch(
                                             pipeline_cls,
                                             fetch_base,
@@ -10256,18 +10290,31 @@ class DiffusionBackend:
                                 _comfy_fp8_plan = (
                                     self._comfy_fp8_stream_plan(plan) if _comfy_offload else None
                                 )
+                                _comfy_int8 = comfy_int8_backend(
+                                    target,
+                                    fam.name,
+                                    base,
+                                    offload = _comfy_offload,
+                                    lora = _has_active_lora(loras),
+                                )
+                                from .diffusion_grouped_int8 import grouped_packed_choice
+
+                                # W4A8 / W6A8: decoded to int8 unless the placement streams / offloads the denoiser
+                                _grouped_packed, _grouped_reason = grouped_packed_choice(
+                                    target,
+                                    _comfy_int8,
+                                    lora = _has_active_lora(loras),
+                                    image = True,
+                                    tight = _comfy_offload,
+                                )
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
                                     comfy_scan,
                                     sf_kwargs,
-                                    int8_backend = comfy_int8_backend(
-                                        target,
-                                        fam.name,
-                                        base,
-                                        offload = _comfy_offload,
-                                        lora = _has_active_lora(loras),
-                                    ),
+                                    int8_backend = _comfy_int8,
+                                    grouped_packed = _grouped_packed,
+                                    grouped_reason = _grouped_reason,
                                     fp8_backend = comfy_fp8_backend(
                                         target,
                                         fam.name,
@@ -10482,6 +10529,7 @@ class DiffusionBackend:
                                     target,
                                     dtype,
                                     lora_active = _has_active_lora(loras),
+                                    dense_denoiser = small_host_dense,
                                     fetch = _small_host_fetch(
                                         pipeline_cls,
                                         fetch_base,
@@ -10842,6 +10890,7 @@ class DiffusionBackend:
                         if (
                             transformer_quant_engaged is None
                             and transformer_quant_pinned is not None
+                            and turing_auto_int8 is None
                             and not precision_fallback_allowed()
                         ):
                             # Rebound, not deleted: the enclosing finally reads `pipe`.
@@ -10965,6 +11014,7 @@ class DiffusionBackend:
                         ),
                         logger = logger,
                         target = target,
+                        requested = attention_backend,
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.
@@ -11569,6 +11619,10 @@ class DiffusionBackend:
                             identity[2],
                         )
 
+                    # the small-host route stored the denoiser as int8 without a quant engaging: report int8, not off
+                    small_host_int8_unreported = (
+                        transformer_quant_engaged is None and _small_host_int8(pipe)
+                    )
                     # Per-control provenance; cpu_offload=False is the unset default, so only True is explicit.
                     resolved = build_resolved_record(
                         {
@@ -11589,10 +11643,13 @@ class DiffusionBackend:
                             "transformer_quant": (
                                 # Raw request so 'Auto: OFF' and a declined 'FP8' differ; captured before auto retries pin a rung.
                                 transformer_quant_requested,
-                                transformer_quant_engaged or "off",
+                                transformer_quant_engaged
+                                or ("int8" if small_host_int8_unreported else "off"),
                                 # A recorded decline wins: it names WHY, where the generic strings below only say the
                                 # GGUF ran
-                                (
+                                SMALL_HOST_INT8_REASON
+                                if small_host_int8_unreported
+                                else (
                                     transformer_quant_decline
                                     or (
                                         "not engaged (GGUF transformer loaded)"
@@ -11620,7 +11677,9 @@ class DiffusionBackend:
                                     failure = getattr(self, "_prequant_fallback_note", None),
                                 ),
                                 # Honored when the quant engaged, and when the ask was 'off' (a no-quant request GGUF satisfies).
-                                RESOLVED_APPLIED
+                                (RESOLVED_APPLIED if transformer_quant_auto else RESOLVED_FELL_BACK)
+                                if small_host_int8_unreported
+                                else RESOLVED_APPLIED
                                 if transformer_quant_engaged is not None
                                 or transformer_quant_pinned is None
                                 else transformer_quant_decline_status,
@@ -12099,11 +12158,17 @@ class DiffusionBackend:
             if scan is None or scan.problems:
                 return None
             name = getattr(fam, "name", None)
+            from .diffusion_grouped_int8 import grouped_packed_wanted
+
+            int8_backend = comfy_int8_backend(target, name, base, offload = offload, lora = lora)
             return comfy_resident_mib(
                 single_file_path,
                 scan,
-                keep_int8 = comfy_int8_backend(target, name, base, offload = offload, lora = lora)
-                is not None,
+                keep_int8 = int8_backend is not None,
+                # the loader's rule: an image denoiser stays packed only on an offloaded placement
+                grouped_packed = grouped_packed_wanted(
+                    target, int8_backend, lora = lora, image = True, tight = offload
+                ),
                 keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
                 target = target,
@@ -13293,6 +13358,7 @@ class DiffusionBackend:
         lora_active: bool,
         fetch: Optional[Callable[[], Any]] = None,
         variant: Optional[str] = None,
+        dense_denoiser: bool = False,
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
         ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
@@ -13334,6 +13400,7 @@ class DiffusionBackend:
             host_commit_mib = host_commit_mib(),
             pread_libraries = ("transformers",) if pread_available() else (),
             spill_free_mib = spill_capacity_mib(),
+            dense_denoiser = dense_denoiser,
         )
         if decision.engaged or decision.refuse:
             logger.info(
@@ -13344,6 +13411,13 @@ class DiffusionBackend:
             )
         elif decision.available_mib is not None:
             logger.info("diffusion.small_host: engaged=False (%s)", decision.reason)
+        if decision.engaged and getattr(decision, "dense_denoiser", False):
+            logger.info(
+                "diffusion.small_host: transformer_quant none: the denoiser keeps its stored weights memory-mapped "
+                "and casts each Linear per call (no int8); groups that fit neither the card nor the pinned host RAM "
+                "are read from the file on every step, so an image takes longer than on the int8 route "
+                "(transformer_quant auto or int8)"
+            )
         if decision.int8_spill:
             logger.info(
                 "diffusion.small_host: int8 denoiser spills to a memory-mapped scratch file (host estimate %d MiB "
@@ -13395,6 +13469,13 @@ class DiffusionBackend:
             elif name not in INT8_DENOISER_NAMES:
                 cast_resident_(module, "cpu", dtype)
                 info["components"][name] = "converted"
+            elif getattr(decision, "dense_denoiser", False):
+                # the float16 weights each call sees are the ones the dense load converts once, so output is unchanged
+                mib = prepare_streamed_encoder_(module, dtype)
+                info["components"][name] = (
+                    f"{MAPPED_DENOISER_PREFIX} {decision.storage_dtypes[name]}, layerwise cast to "
+                    f"{str(dtype).replace('torch.', '')} ({mib} MiB)"
+                )
             else:
                 # pageable: pinning rounds blocks to powers of two (11.3 GB of FLUX.1 int8 held 18 GB pinned)
                 act_int8 = int8_act_family(fam) and int8_act_device_ok(device)
@@ -14507,6 +14588,7 @@ class DiffusionBackend:
             ),
             logger = logger,
             target = target,
+            requested = state.attention_request,
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
         identity = getattr(state.pipe, "_unsloth_peak_identity", None)
@@ -16046,7 +16128,7 @@ class DiffusionBackend:
                     # The build this ran on, not just the repo id: a GGUF quant or torchao scheme each change the pixels.
                     "model_kind": state.kind,
                     "gguf_filename": state.gguf_filename,
-                    "transformer_quant": state.transformer_quant,
+                    "transformer_quant": _reported_transformer_quant(state),
                     # Read off the engaged state, never the request.
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
@@ -16451,13 +16533,14 @@ class DiffusionBackend:
             "speed_optims": speed_optims,
             "bg_compile": state.bg_compile.describe() if state.bg_compile is not None else None,
             "text_encoder_quant": state.text_encoder_quant,
-            "transformer_quant": state.transformer_quant,
+            "transformer_quant": _reported_transformer_quant(state),
             **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
+            "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(
                 tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
                 or getattr(state, "cuda_graphs", ())
@@ -16519,6 +16602,29 @@ def _small_host_int8(pipe: Any) -> bool:
     return any(str(v).startswith("int8") for v in (info.get("components") or {}).values())
 
 
+SMALL_HOST_INT8_REASON = (
+    "system RAM is too small for the dense float16 transformer, so the small-host route stores it as per-row int8 "
+    "weights"
+)
+
+
+def _reported_transformer_quant(state: Any) -> Optional[str]:
+    """Engaged scheme, or int8 when the small-host route stored an int8 denoiser with no quant engaged."""
+    quant = getattr(state, "transformer_quant", None)
+    if quant is None and _small_host_int8(getattr(state, "pipe", None)):
+        return "int8"
+    return quant
+
+
+def _grouped_form_status(pipe: Any) -> Optional[dict]:
+    """``grouped_form_status`` of the denoiser (None for a load without W4A8 / W6A8 layers)."""
+    try:
+        from .diffusion_grouped_int8 import grouped_form_status
+        return grouped_form_status(getattr(pipe, "transformer", None))
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
+
+
 def _lora_load_block_reason(pipe: Any) -> Optional[str]:
     """Why this load's transformer cannot carry adapters whatever the family and quant allow, or None."""
     if _small_host_int8(pipe):
@@ -16527,6 +16633,12 @@ def _lora_load_block_reason(pipe: Any) -> Optional[str]:
             "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Use a host "
             "with more RAM, or name the LoRA in the API load request (Unsloth then keeps the dense transformer)."
         )
+    if small_host_mapped_denoiser(pipe):
+        return (
+            "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth reads "
+            "the transformer's weights from the file and casts them per layer (small-host route), which cannot "
+            "carry adapters. Use a host with more RAM, or name the LoRA in the API load request."
+        )
     if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
         return (
             "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
@@ -16534,8 +16646,15 @@ def _lora_load_block_reason(pipe: Any) -> Optional[str]:
             "UNSLOTH_DIFFUSION_COMFY_MXFP8=0, or name the LoRA in the API load request (Unsloth then dequantizes "
             "those layers)."
         )
+    from .diffusion_grouped_int8 import GROUPED_PACKED_ENV, grouped_packed_layers
     from .diffusion_packed_block import PACKED_BLOCK_ENV, packed_block_layers
 
+    if grouped_packed_layers(getattr(pipe, "transformer", None)):
+        return (
+            "LoRA is not available on this load: the file's W4A8 / W6A8 layers are kept packed and decoded per "
+            f"layer, which cannot carry adapters. Set {GROUPED_PACKED_ENV}=0, or name the LoRA in the API load "
+            "request (Unsloth then decodes those layers at load)."
+        )
     if packed_block_layers(getattr(pipe, "transformer", None)):
         return (
             "LoRA is not available on this load: the file's nvfp4 / mxfp8 layers are kept packed and "

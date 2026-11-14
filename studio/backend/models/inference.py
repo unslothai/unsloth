@@ -165,6 +165,14 @@ class LoadRequest(BaseModel):
 
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
+    @field_validator("engram_precision", mode = "before")
+    @classmethod
+    def normalize_blank_engram_precision(cls, value):
+        # Only a blank string means the quant's own table; any other non-string is refused below.
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
     @field_validator("chat_template_override")
     @classmethod
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
@@ -428,6 +436,18 @@ class LoadRequest(BaseModel):
             "of image input, which is off for the session; text generation is "
             "unaffected. Ignored for models with no vision projector, and for "
             "non-GGUF models."
+        ),
+    )
+    engram_precision: Optional[str] = Field(
+        None,
+        max_length = 32,
+        pattern = r"^[A-Za-z0-9_]*$",
+        description = (
+            "Load a Hub GGUF quant with the repo's standalone Engram table of this "
+            "precision (engram/*-engram-<PRECISION>.gguf_file, e.g. 'Q8_0') in place "
+            "of the table the quant ships with. The table is downloaded on first use; "
+            "the quant's own table shard is then not needed. None or empty keeps the "
+            "quant's table. A precision the repo does not publish is an error."
         ),
     )
     audio_device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
@@ -1759,6 +1779,10 @@ class _InferenceRuntimeFields(BaseModel):
     context_length: Optional[int] = Field(
         None, description = "Runtime context length in tokens for the loaded model"
     )
+    npu_context_fit: Optional[int] = Field(
+        None,
+        description = "Token window estimated to fit free RAM at NPU load time, before the Auto minimum.",
+    )
     max_context_length: Optional[int] = Field(
         None,
         description = (
@@ -2027,6 +2051,13 @@ class _InferenceRuntimeFields(BaseModel):
             "Whether the load ran with the vision projector deliberately left "
             "unloaded. Echoes the request, so the Advanced Settings switch can "
             "reseed from it even on a GGUF that never had a projector."
+        ),
+    )
+    engram_precision: Optional[str] = Field(
+        None,
+        description = (
+            "Precision of the standalone Engram table the loaded GGUF runs with, as the "
+            "repo labels it; None when it runs with the table its quant ships with."
         ),
     )
     vision_disabled_by_user: bool = Field(
@@ -4929,6 +4960,7 @@ class DiffusionLoadRequest(BaseModel):
             "sage",
             "xformers",
             "aiter",
+            "unsloth_int8",
         ]
     ] = Field(
         None,
@@ -4937,7 +4969,8 @@ class DiffusionLoadRequest(BaseModel):
         "near-lossless, when a speed profile is active; native SDPA elsewhere and when "
         "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
         "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
-        "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
+        "friendly); unsloth_int8 is Studio's own INT8 attention kernel on the families with "
+        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
         "unavailable kernel falls back to the default.",
     )
     transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(
@@ -7452,6 +7485,7 @@ class VideoLoadRequest(BaseModel):
             "sage",
             "xformers",
             "aiter",
+            "unsloth_int8",
         ]
     ] = Field(
         None,
@@ -7459,7 +7493,8 @@ class VideoLoadRequest(BaseModel):
         "exact backend for the device (cuDNN fused attention on NVIDIA when a speed profile "
         "is active; native SDPA elsewhere and when speed=off). native (alias sdpa) forces "
         "default SDPA; cudnn/flash/flash3/flash4 are exact (kernel/arch-gated); sage is INT8 "
-        "attention; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
+        "attention; unsloth_int8 is Studio's own INT8 attention kernel on the families with strided "
+        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
         "kernel falls back to the default.",
     )
     transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(

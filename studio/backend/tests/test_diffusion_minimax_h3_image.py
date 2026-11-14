@@ -547,32 +547,110 @@ def test_a_quantized_dit_without_the_adaln_table_budgets_the_dense_adaln(h3i):
     )
 
 
-def test_auto_scheme_is_bf16_only_when_it_fits(h3i, monkeypatch):
-    import torch
+# (capability, free VRAM GB, host GB)
+_H3_CARDS = {
+    "g4": ((12, 0), 95.0, 160.0),
+    "a100_80": ((8, 0), 79.0, 160.0),
+    "l4": ((8, 9), 22.0, 50.0),
+    "t4": ((7, 5), 14.5, 50.0),
+}
 
-    assert h3i.resolve_dit_scheme(None, device = "cpu", vram_gb = None)[0] is None
-    assert h3i.resolve_dit_scheme("int8", device = "cpu", vram_gb = None)[0] is None
-    if torch.cuda.is_available():
-        assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 39.5)[0] == "int8"
-        assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] is None
+
+def _fake_card(monkeypatch, cap):
+    import torch
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: cap)
+
+
+@pytest.mark.parametrize("card", sorted(_H3_CARDS))
+@pytest.mark.parametrize("width, height", [(1024, 1024), (2048, 2048)])
+def test_auto_takes_int8_on_every_card_even_where_bf16_fits(h3i, monkeypatch, card, width, height):
+    pytest.importorskip("torchao")
+    cap, vram, host = _H3_CARDS[card]
+    _fake_card(monkeypatch, cap)
+    te = h3i.te_gb_for("int8")
+    for kwargs in ({}, {"host_gb": host, "te_gb": te}):
+        got, reason = h3i.resolve_dit_scheme(
+            None, device = "cuda", vram_gb = vram, width = width, height = height, **kwargs
+        )
+        assert got == "int8", reason
+        assert "int8" in reason
+    assert h3i.resolve_dit_scheme("auto", device = "cuda", vram_gb = vram)[0] == "int8"
+
+
+@pytest.mark.parametrize("card", sorted(_H3_CARDS))
+def test_explicit_requests_are_untouched_by_the_auto_order(h3i, monkeypatch, card):
+    pytest.importorskip("torchao")
+    cap, vram, _host = _H3_CARDS[card]
+    _fake_card(monkeypatch, cap)
+    for req in ("bf16", "none", "off", "dense"):
+        assert h3i.resolve_dit_scheme(req, device = "cuda", vram_gb = vram)[0] is None
+    assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = vram)[0] == "int8"
+    fp8 = h3i.resolve_dit_scheme("fp8", device = "cuda", vram_gb = vram)[0]
+    assert fp8 == ("fp8" if cap >= (8, 9) else "int8")
+
+
+def test_auto_falls_to_fp8_then_bf16_when_int8_is_ruled_out(h3i, monkeypatch):
+    pytest.importorskip("torchao")
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setitem(tq._FAMILY_AUTO_SKIP, h3i.H3_IMAGE_FAMILY_NAME, frozenset({"int8"}))
+    _fake_card(monkeypatch, (12, 0))
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] == "fp8"
+    _fake_card(monkeypatch, (8, 0))
+    got, reason = h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 79.0)
+    assert got is None and "bf16" in reason
+    monkeypatch.setitem(tq._FAMILY_AUTO_SKIP, h3i.H3_IMAGE_FAMILY_NAME, frozenset({"int8", "fp8"}))
+    _fake_card(monkeypatch, (12, 0))
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 95.0)[0] is None
+    assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = 95.0)[0] == "int8"
 
 
 @pytest.mark.parametrize(
-    "vram, host, scheme",
+    "rocm, cap",
+    [(True, (9, 4)), (True, (11, 5)), (True, (11, 0)), (False, (7, 0)), (False, (6, 1))],
+)
+def test_auto_keeps_the_fit_choice_on_rocm_and_pre_turing(h3i, monkeypatch, rocm, cap):
+    """ROCm capability is a gfx version and pre-Turing has no int8 tensor cores: auto stays bf16 where bf16 fits
+    (MI300X, a large Strix Halo carve-out) and int8 where it does not (V100 32 GB, P100), as before the order."""
+    pytest.importorskip("torchao")
+    import core._torchao_stub as stub
+
+    monkeypatch.setattr(stub, "torch_is_rocm", lambda: rocm)
+    _fake_card(monkeypatch, cap)
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 192.0)[0] is None
+    te = h3i.te_gb_for("int8")
+    assert (
+        h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 192.0, host_gb = 512.0, te_gb = te)[0]
+        is None
+    )
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 32.0)[0] == "int8"
+    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = 16.0)[0] == "int8"
+    assert h3i.resolve_dit_scheme("int8", device = "cuda", vram_gb = 192.0)[0] == "int8"
+    assert h3i.resolve_dit_scheme("bf16", device = "cuda", vram_gb = 16.0)[0] is None
+
+
+def test_auto_off_cuda_stays_bf16(h3i):
+    assert h3i.resolve_dit_scheme(None, device = "cpu", vram_gb = None)[0] is None
+    assert h3i.resolve_dit_scheme("int8", device = "cpu", vram_gb = None)[0] is None
+
+
+@pytest.mark.parametrize(
+    "cap, family_skip, expected",
     [
-        # 48 GB: bf16 beside the encoder would go sequential (refused under ~74 GB RAM).
-        (48.2, 72.0, "int8"),
-        (48.2, 128.0, "int8"),
-        (80.0, 64.0, None),
-        (190.0, 1500.0, None),
+        ((12, 0), frozenset(), ("int8", "fp8")),
+        ((9, 0), frozenset(), ("int8", "fp8")),
+        ((8, 9), frozenset(), ("int8", "fp8")),
+        ((8, 0), frozenset(), ("int8",)),
+        ((7, 5), frozenset(), ("int8",)),
+        ((7, 0), frozenset(), ()),
+        ((12, 0), frozenset({"int8"}), ("fp8",)),
+        (None, frozenset(), ()),
     ],
 )
-def test_auto_takes_bf16_only_when_it_stays_on_the_card_beside_the_encoder(h3i, vram, host, scheme):
-    pytest.importorskip("torchao")
-    te = h3i.te_gb_for("int8")
-    got, reason = h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram, host_gb = host, te_gb = te)
-    assert got == scheme, reason
-    assert h3i.resolve_dit_scheme(None, device = "cuda", vram_gb = vram)[0] is None
+def test_hosted_auto_scheme_order(monkeypatch, cap, family_skip, expected):
+    from core.inference import diffusion_transformer_quant as tq
+    monkeypatch.setitem(tq._FAMILY_AUTO_SKIP, "fake-family", family_skip)
+    assert tq.hosted_auto_scheme_order("fake-family", cap) == expected
 
 
 def test_the_plan_sizes_the_encoder_the_request_takes(h3i, monkeypatch):
@@ -594,10 +672,17 @@ def test_the_plan_credits_host_memory_the_unload_frees(h3i, monkeypatch):
     monkeypatch.delenv(h3i.HOST_BUDGET_ENV, raising = False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(h3i, "device_budgets", lambda dev: (80.0, 20.0))
+    seen = []
+    real = h3i.resolve_dit_scheme
+    monkeypatch.setattr(
+        h3i, "resolve_dit_scheme", lambda req, **kw: seen.append(kw["host_gb"]) or real(req, **kw)
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda dev = None: (8, 0))
     assert h3i.planned_dit_scheme(None, "cuda") == "int8"
-    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) is None
+    assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) == "int8"
     monkeypatch.setenv(h3i.HOST_BUDGET_ENV, "20")
     assert h3i.planned_dit_scheme(None, "cuda", reclaimable_host_gb = 44.0) == "int8"
+    assert seen == [pytest.approx(20.0), pytest.approx(64.0), pytest.approx(20.0)]
 
 
 def test_the_backend_plan_passes_the_resident_pipeline_host_memory(h3i, monkeypatch):
@@ -1285,6 +1370,34 @@ def test_the_conditioning_cache_keys_on_the_reference_pixels(h3i, release, monke
     assert len(seen) == 2
 
 
+def test_a_repeated_reference_samples_the_cached_posterior_bitwise(h3i, release, monkeypatch):
+    """Same picture, new seed / prompt: the VAE encoder runs once and the latents match a cache-off render bit for
+    bit (only the sample draws from the generator)."""
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    if p.processor is None:
+        pytest.skip("tiny release has no processor")
+    calls = []
+    real = p.vae.encode
+    monkeypatch.setattr(p.vae, "encode", lambda *a, **k: calls.append(1) or real(*a, **k))
+    pic = Image.fromarray((np.random.RandomState(3).rand(128, 160, 3) * 255).astype("uint8"))
+    first = _latents(p, "<Picture 1> at night", 1, image = [pic])
+    second = _latents(p, "<Picture 1> at dawn", 2, image = [pic.copy()])
+    assert len(calls) == 1 and p._unsloth_h3_last_stats["reference_cached"] == 1
+    _latents(p, "<Picture 1> at dawn", 2, image = [pic.transpose(Image.FLIP_LEFT_RIGHT)])
+    assert len(calls) == 2 and p._unsloth_h3_last_stats["reference_cached"] == 0
+    monkeypatch.setenv(h3i.REF_CACHE_ENV, "0")
+    assert torch.equal(_latents(p, "<Picture 1> at night", 1, image = [pic]), first)
+    assert torch.equal(_latents(p, "<Picture 1> at dawn", 2, image = [pic]), second)
+    assert len(calls) == 4
+    p.release()
+    assert not p._unsloth_h3_ref_posteriors
+
+
 def test_every_backend_loader_installs_the_prompt_cache():
     """Each DiffusionBackend method that commits a load (builds a _LoadState) installs the conditioning cache."""
     import ast
@@ -1363,6 +1476,127 @@ def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, m
     assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None
     assert {id(m): m.processor._attention_backend for m in mods} == before
     assert h3i.install_checkpoint_attention(p, "cpu", scheme = "int8") is None
+
+
+def test_int8_attention_stays_off_where_it_loses_the_race(h3i, release, monkeypatch):
+    """A card where the INT8 route times slower than the native one keeps native; UNSLOTH_H3_IMAGE_INT8_ATTENTION=1
+    skips the race and forces it."""
+    from core.inference import diffusion_attention as da
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    mods = h3i._attention_processors(p.transformer)
+    before = {id(m): m.processor._attention_backend for m in mods}
+
+    def fake_apply(
+        pipe,
+        backend,
+        logger = None,
+        target = None,
+    ):
+        for m in h3i._attention_processors(pipe.transformer):
+            m.processor._attention_backend = backend
+        return backend
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    raced = []
+    monkeypatch.setattr(
+        h3i,
+        "race_checkpoint_attention",
+        lambda *a, **k: raced.append(1)
+        or {"keep": False, "ms": [1.0, 1.2], "native": "_native_flash"},
+    )
+    monkeypatch.delenv(h3i.INT8_ATTENTION_ENV, raising = False)
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") is None
+    assert raced and {id(m): m.processor._attention_backend for m in mods} == before
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "1")
+    raced.clear()
+    assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") == "sage"
+    assert not raced
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+
+
+def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, release, monkeypatch):
+    """Studio's INT8 kernel is raced against whichever backend the blocks would keep (its block race also decides
+    SageAttention); where it wins every processor keeps its native backend and the kernel is the engaged route."""
+    from core.inference import diffusion_attention as da
+    from core.inference import diffusion_int8_attention as int8
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    mods = h3i._attention_processors(p.transformer)
+    blocks = {id(m) for b in p.transformer.transformer_blocks for m in b.modules()}
+    before = {id(m): m.processor._attention_backend for m in mods}
+    world = {"sage": True, "keep": True, "kernel": 0}
+    seen: list = []
+
+    def fake_apply(
+        pipe,
+        backend,
+        logger = None,
+        target = None,
+    ):
+        if not world["sage"]:
+            return None
+        for m in h3i._attention_processors(pipe.transformer):
+            m.processor._attention_backend = backend
+        return backend
+
+    def fake_kernel(transformer, block_modules, saved, dev, dtype, sage, forced, log):
+        seen.append({"sage": sage, "forced": forced, "blocks": {id(m) for m in block_modules}})
+        race = (
+            {"keep": world["keep"], "ms": [1.0, 1.2], "native": "_native_flash"}
+            if sage is None
+            else None
+        )
+        return (world["kernel"] and len(block_modules)), race
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    monkeypatch.setattr(
+        h3i,
+        "race_checkpoint_attention",
+        lambda *a, **k: {"keep": world["keep"], "ms": [1.0, 1.2], "native": "_native_flash"},
+    )
+    monkeypatch.setattr(h3i, "_race_int8_kernel", fake_kernel)
+    removed: list = []
+    monkeypatch.setattr(int8, "remove_int8_attention", lambda t: removed.append(t) or 0)
+    monkeypatch.delenv(h3i.INT8_ATTENTION_ENV, raising = False)
+
+    def backends():
+        return {id(m): m.processor._attention_backend for m in mods}
+
+    def install():
+        seen.clear()
+        return h3i.install_checkpoint_attention(p, "cuda", scheme = "int8")
+
+    for sage, keep, incumbent_is_sage in (
+        (True, True, None),
+        (True, False, None),
+        (False, True, False),
+    ):
+        world.update(sage = sage, keep = keep, kernel = 1)
+        assert install() == int8.BACKEND
+        assert seen == [
+            {"sage": incumbent_is_sage, "forced": False, "blocks": blocks & set(before)}
+        ]
+        assert backends() == before
+        assert install() is None and not seen
+        assert h3i.remove_checkpoint_attention(p) == len(mods) and removed.pop() is p.transformer
+        assert backends() == before
+    world.update(sage = True, keep = True, kernel = 0)
+    assert install() == "sage" and seen[0]["sage"] is None
+    assert all((m.processor._attention_backend == "sage") == (id(m) in blocks) for m in mods)
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+    for sage, keep in ((True, False), (False, True)):
+        world.update(sage = sage, keep = keep)
+        assert install() is None and not seen[0]["sage"]
+        assert backends() == before and not getattr(p, h3i.ATTENTION_SAVED_ATTR, None)
+    world.update(sage = True, keep = False)
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "1")
+    assert install() == "sage" and seen == [
+        {"sage": True, "forced": True, "blocks": blocks & set(before)}
+    ]
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
 
 
 def test_hosted_metadata_attention_is_recorded(h3i):

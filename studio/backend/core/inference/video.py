@@ -186,6 +186,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
+    install_streamed_eager_int8_gemm,
     engage_pinned_denoisers,
     rocm_probe_load_scoped,
     release_rocm_tunableop as _release_rocm_tunableop,
@@ -361,6 +362,23 @@ from .video_families import _FAMILIES as _VIDEO_REGISTRY  # noqa: E402
 from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
 
 _TRUSTED_NON_GGUF_VIDEO_REPOS = _trusted_repo_ids(_VIDEO_REGISTRY)
+
+
+def _grouped_form_status(pipe: Any) -> Optional[dict]:
+    """``grouped_form_status`` of the denoiser (None for a load without W4A8 / W6A8 layers)."""
+    try:
+        from .diffusion_grouped_int8 import grouped_form_status
+        return grouped_form_status(getattr(pipe, "transformer", None))
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
+
+
+def _grouped_form_note(model: Any) -> str:
+    try:
+        from .diffusion_grouped_int8 import grouped_form_note
+        return grouped_form_note(model)
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return ""
 
 
 def _gguf_quant_token(filename: Optional[str]) -> Optional[str]:
@@ -684,12 +702,16 @@ def _video_comfy_resident_mib(
             "keep_nvfp4": blocks["nvfp4_backend"] is not None,
             "keep_mxfp8": blocks["mxfp8_backend"] is not None,
         }
+    from .diffusion_grouped_int8 import grouped_packed_wanted
+
     return comfy_resident_mib(
         str(path),
         scan,
         keep_int8 = keep_int8,
         keep_fp8 = keep_fp8,
         fp8_stored = fp8_stored,
+        # W4A8 / W6A8 stay packed where the int8 runtime keeps them (the loader's same rule)
+        grouped_packed = grouped_packed_wanted(target, "int8" if keep_int8 else None),
         **keep_block,
         target = target,
         keep_key = keep_key,
@@ -10813,6 +10835,7 @@ class VideoBackend:
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept "
                 f"({comfy_info.get('backend') or comfy_info.get('fp8_backend')} runtime), "
                 f"{comfy_info.get('dequantized', 0)} dequantized"
+                + _grouped_form_note(getattr(pipe, "transformer", None))
             )
             logger.info("video.transformer_quant: %s", transformer_quant_source)
         elif (
@@ -11421,6 +11444,16 @@ class VideoBackend:
                 # fell back to a hooked placement: compiled through them, each block splits at the hook's
                 # torch.compiler.disable'd pre / post forward.
                 compile_pipe_below_offload_hooks(pipe, logger)
+            # Streamed uncompiled int8 denoiser: bit-identical int8 routes per call.
+            for view in views:
+                try:
+                    if (
+                        install_streamed_eager_int8_gemm(view, target.torch_device, logger)
+                        and "int8_gemm_streamed" not in speed_optims
+                    ):
+                        speed_optims += ("int8_gemm_streamed",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, torchao's path stays
+                    logger.warning("video.int8_gemm: streamed eager install skipped: %s", exc)
             # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
             graph_applied = arm_graphs_after_placement(
                 pipe, {"cuda_graph": "cuda_graph" in speed_optims}, logger
@@ -11887,7 +11920,11 @@ class VideoBackend:
         if comfy_scan is not None:
             counts = comfy_scan.counts()
             comfy_scheme = (
-                TQ_INT8 if any(k.startswith("int8") for k in counts) else TQ_FP8 if counts else None
+                TQ_INT8
+                if any(k.startswith("int8") or k in ("w6a8_int8", "asym_w4a8_int8") for k in counts)
+                else TQ_FP8
+                if counts
+                else None
             )
             if _h3_precision_pinned_dense(transformer_quant):
                 comfy_scheme = None
@@ -12015,7 +12052,7 @@ class VideoBackend:
                 f"ComfyUI-quantized denoiser ({Path(comfy_checkpoint).name}): "
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept, "
                 f"{comfy_info.get('fp8_stored', 0)} fp8 stored, "
-                f"{comfy_info.get('dequantized', 0)} dequantized"
+                f"{comfy_info.get('dequantized', 0)} dequantized" + _grouped_form_note(transformer)
                 if engaged is not None
                 else f"ComfyUI denoiser ({Path(comfy_checkpoint).name}) at bfloat16"
             )
@@ -12661,6 +12698,7 @@ class VideoBackend:
                 fuse_h3_qkv_,
                 h3_attention_backend,
                 install_strided_attention,
+                strided_install_backend,
             )
             h3_denoiser = getattr(pipe, denoiser_component, None)
             # Resident only: a streamed denoiser's offload hooks are keyed to the three projections.
@@ -12694,16 +12732,32 @@ class VideoBackend:
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
                 target = types.SimpleNamespace(device = device, dtype = dtype),
             )
+            from . import diffusion_int8_attention as int8_attention
+
+            # INT8 route also over a default SDPA pick (sm75, gfx1151), where the strided processor is otherwise not installed
+            int8_mode = int8_attention.mode()
+            int8_wanted = int8_mode == "force" or (
+                int8_mode != "off" and int8_attention.requested(attention_backend)
+            )
             # speed off stays bit-identical: the fused q/k norm + RoPE only matches stock within a rounding step
-            if effective_speed != SPEED_OFF and attention_engaged in (
-                "_native_cudnn",
-                "_native_flash",
+            if effective_speed != SPEED_OFF and (
+                strided_install_backend(attention_engaged) or int8_wanted
             ):
                 try:
                     if install_strided_attention(
-                        getattr(pipe, denoiser_component, None), logger = logger
+                        getattr(pipe, denoiser_component, None),
+                        logger = logger,
+                        qk_rope = None if strided_install_backend(attention_engaged) else False,
                     ):
                         h3_attn_levers += ("h3_strided_attn",)
+                        if int8_wanted and int8_attention.install_int8_attention(
+                            getattr(pipe, denoiser_component, None),
+                            device = device,
+                            dtype = dtype,
+                            force = True,
+                            logger = logger,
+                        ):
+                            h3_attn_levers += ("h3_int8_attention",)
                 except Exception as exc:  # noqa: BLE001 -- stock processor stays
                     logger.warning("video.h3_attn: strided attention skipped: %s", exc)
             # FlashInfer SM120 H3 block kernels (opt-in, UNSLOTH_H3_FLASHINFER=1): resident fp8 / nvfp4 blocks, before
@@ -12778,6 +12832,13 @@ class VideoBackend:
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
                 )
+            elif denoiser_streamed:
+                # Uncompiled: bit-identical int8 routes per call while a weight is on the card.
+                try:
+                    if install_streamed_eager_int8_gemm(speed_view, device, logger):
+                        speed_optims += ("int8_gemm_streamed",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, torchao's path stays
+                    logger.warning("video.h3_int8_gemm: streamed eager install skipped: %s", exc)
             if "int8_gemm" in speed_optims:
                 # before the first forward traces the blocks
                 try:
@@ -14212,6 +14273,11 @@ class VideoBackend:
                     if self._gen.get("phase") == "encode":
                         self._gen.update(phase = "denoise")
 
+                def _on_denoise_entry() -> None:
+                    _enter_denoise()
+                    from .video_stream_residency import begin_denoise
+                    begin_denoise(state.pipe, logger = logger)
+
                 ticker = _CompletedStepTicker(steps)
 
                 def _report(done: int) -> None:
@@ -14264,6 +14330,9 @@ class VideoBackend:
                         time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
                     if not marked:
                         _enter_decode_phase()
+                    from .video_stream_residency import prepare_decode
+
+                    prepare_decode(state.pipe, logger = logger)
                     if carry_by_scheduler:
                         logger.info(
                             "video.h3_stream_carry: %d carried copies read across forwards so far",
@@ -14328,7 +14397,7 @@ class VideoBackend:
                                 )
                             )
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
-                        stack.enter_context(_denoise_phase(pipe, _enter_denoise))
+                        stack.enter_context(_denoise_phase(pipe, _on_denoise_entry))
                         if fam.name == "minimax-h3":
                             from .video_minimax_h3_forward import h3_render_scope
 
@@ -15668,6 +15737,7 @@ class VideoBackend:
                 and state.engine != "sd_cpp",
             },
             "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
+            "packed_weights": _grouped_form_status(getattr(state, "pipe", None)),
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,
