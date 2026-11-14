@@ -76,7 +76,9 @@ def _backend_name(backend: Any) -> str:
 
 class Int8Route(str):
     """A processor's attention backend while it routes to the INT8 kernel: equal to the incumbent's name, with the
-    incumbent itself and what the card check and race decided. Built by ``install`` only."""
+    incumbent itself and what the card check and race decided. ``cards`` maps each CUDA device index the kernel
+    passed on to its token floor (a layer split or CFG replica runs the same processor on a second card);
+    ``min_tokens`` is the lowest of them, ``index`` the load's card. Built by ``install`` only."""
 
     def __new__(
         cls,
@@ -86,12 +88,16 @@ class Int8Route(str):
         index: int,
         head_dim: int,
         impl: Optional[str] = None,
+        cards: Optional[dict] = None,
     ) -> "Int8Route":
         if isinstance(incumbent, Int8Route):
             incumbent = incumbent.incumbent
         route = str.__new__(cls, _backend_name(incumbent))
         route.incumbent = incumbent
-        route.min_tokens = int(min_tokens)
+        route.cards = (
+            {int(k): int(v) for k, v in cards.items()} if cards else {int(index): int(min_tokens)}
+        )
+        route.min_tokens = min(route.cards.values())
         route.dtype = dtype
         route.index = int(index)
         route.head_dim = int(head_dim)
@@ -109,11 +115,19 @@ class Int8Route(str):
     def __reduce__(self) -> tuple:
         return (
             Int8Route,
-            (self.incumbent, self.min_tokens, self.dtype, self.index, self.head_dim, self.impl),
+            (
+                self.incumbent,
+                self.min_tokens,
+                self.dtype,
+                self.index,
+                self.head_dim,
+                self.impl,
+                self.cards,
+            ),
         )
 
     def __repr__(self) -> str:
-        return f"Int8Route({self.value!r}, min_tokens={self.min_tokens})"
+        return f"Int8Route({self.value!r}, cards={self.cards})"
 
 
 def _arg(
@@ -172,7 +186,10 @@ def _reason(route: Int8Route, args: tuple, kwargs: dict) -> Optional[str]:
         return "dtype"
     if not (_on_card(query, route) and _on_card(key, route) and _on_card(value, route)):
         return "device"
-    if query.shape[1] < route.min_tokens or key.shape[1] < route.min_tokens:
+    if query.device != key.device or query.device != value.device:
+        return "device"
+    floor = route.cards.get(query.device.index, route.min_tokens)
+    if query.shape[1] < floor or key.shape[1] < floor:
         return "short"
     if torch.is_grad_enabled() and (
         query.requires_grad or key.requires_grad or value.requires_grad
@@ -183,8 +200,8 @@ def _reason(route: Int8Route, args: tuple, kwargs: dict) -> Optional[str]:
 
 
 def _on_card(x: Any, route: Int8Route) -> bool:
-    """Whether a tensor is on the card the route was checked on."""
-    return bool(x.is_cuda) and x.device.index == route.index
+    """Whether a tensor is on a card the route was checked on."""
+    return bool(x.is_cuda) and x.device.index in route.cards
 
 
 _KNOWN = frozenset(
@@ -348,7 +365,7 @@ def status(pipe: Any = None) -> dict:
         for m in dit.modules():
             backend = getattr(getattr(m, "processor", None), "_attention_backend", None)
             if isinstance(backend, Int8Route):
-                key = f"{type(dit).__name__} heads={m.heads} head_dim={backend.head_dim} vs {backend.value} min_tokens={backend.min_tokens} impl={backend.impl}"
+                key = f"{type(dit).__name__} heads={m.heads} head_dim={backend.head_dim} vs {backend.value} cards={backend.cards} impl={backend.impl}"
                 routes[key] = routes.get(key, 0) + 1
     return {
         "enabled": enabled(),
@@ -414,6 +431,51 @@ def long_verdict(
     return found
 
 
+def _secondary_cards(primary: int) -> tuple:
+    """The other CUDA cards of this load's multi-GPU selection (a layer split or a CFG replica places DiT blocks
+    there after the attention pick), or none."""
+    try:
+        from .diffusion_multigpu import current_selection
+        selection = current_selection()
+    except Exception:  # noqa: BLE001
+        return ()
+    if selection is None or int(selection.primary) != int(primary):
+        return ()
+    return tuple(int(c) for c in selection.secondaries)
+
+
+def _card_floor(
+    device: Any,
+    dtype: Any,
+    heads: int,
+    head_dim: int,
+    run: Any,
+    name: str,
+    forced: bool,
+    env_force: bool,
+) -> tuple:
+    """(verdict, token floor or None) of one card: the accuracy check, then the race (both races unless forced)."""
+    from . import diffusion_int8_attention as I8
+
+    found = I8.verdict(device, dtype, heads, head_dim, run, name, timed = not forced)
+    stand_in = (
+        found.get("impl") == "triton"
+        and not env_force
+        and I8.impl_setting() == "auto"
+        and not I8._is_rocm()
+    )
+    if forced and stand_in and found.get("ok"):
+        found = I8.verdict(device, dtype, heads, head_dim, run, name, timed = True)
+    if not found.get("ok"):
+        return found, None
+    if forced and not stand_in:
+        return found, 0
+    if found.get("min_tokens") is None:
+        minimum = long_verdict(device, dtype, heads, head_dim, run, name)
+        return {**found, "long_min_tokens": minimum}, minimum
+    return found, max(int(found["min_tokens"]), int(I8.RACE_TOKENS[-1]))
+
+
 def _target_device(target: Any) -> str:
     return str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
 
@@ -451,12 +513,13 @@ def _install(pipe: Any, target: Any, requested: Any, logger: Any) -> int:
     I8.int8_attention_op()
     original = original_dispatch()
     env_force = setting == "force"
+    cards = [index] + [c for c in _secondary_cards(index) if c != index]
     report: dict = {}
     routed = 0
     for m in candidates:
         proc = m.processor
         head_dim = I8._head_dim(m)
-        if head_dim is None or I8.implementation(index, head_dim) is None:
+        if head_dim is None:
             continue
         incumbent = proc._attention_backend
         name = f"dispatch:{_backend_name(incumbent)}"
@@ -469,35 +532,43 @@ def _install(pipe: Any, target: Any, requested: Any, logger: Any) -> int:
         ) -> Any:
             return original(q, k, v, backend = backend)
 
-        found = I8.verdict(dev, dtype, int(m.heads), head_dim, run, name, timed = not forced)
-        stand_in = (
-            found.get("impl") == "triton"
-            and not env_force
-            and I8.impl_setting() == "auto"
-            and not I8._is_rocm()
-        )
-        if forced and stand_in and found.get("ok"):
-            found = I8.verdict(dev, dtype, int(m.heads), head_dim, run, name, timed = True)
-        report[(int(m.heads), head_dim, name)] = found
-        if not found.get("ok"):
-            continue
-        if forced and not stand_in:
-            minimum = 0
-        elif found.get("min_tokens") is None:
-            minimum = long_verdict(dev, dtype, int(m.heads), head_dim, run, name)
-            report[(int(m.heads), head_dim, name)] = {**found, "long_min_tokens": minimum}
-            if minimum is None:
+        floors: dict = {}
+        impl = None
+        for card in cards:
+            if I8.implementation(card, head_dim) is None:
                 continue
-        else:
-            minimum = max(int(found["min_tokens"]), int(I8.RACE_TOKENS[-1]))
+            found, minimum = _card_floor(
+                torch.device("cuda", card),
+                dtype,
+                int(m.heads),
+                head_dim,
+                run,
+                name,
+                forced,
+                env_force,
+            )
+            report[(card, int(m.heads), head_dim, name)] = found
+            if minimum is not None:
+                floors[card] = minimum
+                impl = impl or found.get("impl")
+        if not floors:
+            continue
         proc._attention_backend = Int8Route(
-            incumbent, minimum, dtype, index, head_dim, found.get("impl")
+            incumbent,
+            floors.get(index, min(floors.values())),
+            dtype,
+            index,
+            head_dim,
+            impl,
+            cards = floors,
         )
         routed += 1
     if logger is not None:
-        for (heads, head_dim, name), found in report.items():
+        for (card, heads, head_dim, name), found in report.items():
             logger.info(
-                "diffusion.int8_attention: heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s min_tokens=%s%s%s",
+                "diffusion.int8_attention: cuda:%d heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s "
+                "min_tokens=%s%s%s",
+                card,
                 heads,
                 head_dim,
                 name,
@@ -513,8 +584,9 @@ def _install(pipe: Any, target: Any, requested: Any, logger: Any) -> int:
             )
         if routed:
             logger.info(
-                "diffusion.int8_attention: %s on %d attention modules through the attention dispatch",
+                "diffusion.int8_attention: %s on %d attention modules through the attention dispatch (cards %s)",
                 I8.BACKEND,
                 routed,
+                ",".join(str(c) for c in cards),
             )
     return routed

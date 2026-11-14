@@ -344,6 +344,72 @@ def test_race_incumbent_is_the_processor_backend(monkeypatch):
     assert calls == [AttentionBackendName.NATIVE]
 
 
+def _selection(
+    monkeypatch,
+    primary = 0,
+    secondaries = (1,),
+):
+    from core.inference import diffusion_multigpu as mg
+    monkeypatch.setattr(
+        mg,
+        "current_selection",
+        lambda: mg.MultiGpuSelection(primary = primary, secondaries = tuple(secondaries)),
+    )
+
+
+def test_gate_and_race_run_per_card_of_a_multi_gpu_load(monkeypatch):
+    """A layer split or CFG replica runs the processors on a second card after the attention pick: every card of the
+    load's selection gets its own check and race, and the route keeps a token floor per card that passed."""
+    seen = _fake_cuda(
+        monkeypatch,
+        found = lambda head_dim: {"ok": True, "min_tokens": 2560},
+    )
+    _selection(monkeypatch, secondaries = (1, 2))
+    floors = {
+        "cuda:0": {"ok": True, "min_tokens": 2560},
+        "cuda:1": {"ok": True, "min_tokens": 0},
+        "cuda:2": {"ok": False, "min_tokens": None},
+    }
+    devices = []
+
+    def verdict(
+        device,
+        dtype,
+        heads,
+        head_dim,
+        incumbent = None,
+        incumbent_name = "native",
+        timed = True,
+    ):
+        devices.append(str(device))
+        return {"impl": "cuda", **floors[str(device)]}
+
+    monkeypatch.setattr(I, "verdict", verdict)
+    pipe = _Pipe(_wan_dit())
+    assert D.install(pipe, _TARGET) == 4 and not seen
+    assert sorted(set(devices)) == ["cuda:0", "cuda:1", "cuda:2"]
+    routes = [m.processor._attention_backend for m in D.routable_modules(pipe.transformer)]
+    assert all(r.cards == {0: 2560, 1: I.RACE_TOKENS[-1]} and r.index == 0 for r in routes)
+    assert routes[0].min_tokens == I.RACE_TOKENS[-1]
+    # a CFG replica is a deep copy: it keeps every card
+    assert copy.deepcopy(routes[0]).cards == routes[0].cards
+    # a selection for another primary is not this load's
+    _selection(monkeypatch, primary = 3)
+    devices.clear()
+    D.install(pipe, _TARGET)
+    assert set(devices) == {"cuda:0"}
+
+
+def test_route_cards_decide_the_device():
+    route = D.Int8Route(
+        AttentionBackendName.NATIVE, 0, torch.bfloat16, 0, 64, "cuda", cards = {0: 0, 1: 4096}
+    )
+    on = lambda index: types.SimpleNamespace(is_cuda = True, device = torch.device("cuda", index))
+    assert D._on_card(on(0), route) and D._on_card(on(1), route) and not D._on_card(on(2), route)
+    assert not D._on_card(types.SimpleNamespace(is_cuda = False, device = torch.device("cpu")), route)
+    assert route.min_tokens == 0 and route.cards[1] == 4096
+
+
 def test_long_race_routes_long_calls_only(card, monkeypatch):
     """A card where the kernel loses at the race's sizes but wins at video lengths routes from that length on."""
     _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": None})
@@ -724,6 +790,65 @@ def test_cuda_wan_dit_routes_and_matches(monkeypatch):
     rel = float((got - ref).norm() / ref.norm())
     cos = float(F.cosine_similarity(got.flatten(), ref.flatten(), dim = 0))
     assert rel < 0.05 and cos > 0.998, (rel, cos)
+
+
+two_kernel_cards = pytest.mark.skipif(
+    not torch.cuda.is_available()
+    or torch.cuda.device_count() < 2
+    or any(I.implementation(i, 128) is None for i in range(2)),
+    reason = "needs two CUDA cards with an INT8 attention kernel",
+)
+
+
+@pytest.mark.gpu
+@two_kernel_cards
+def test_cuda_route_engages_on_both_cards(monkeypatch):
+    """The gate runs on each card of the selection; calls on either card reach the kernel and match native there;
+    a cross-card call keeps the incumbent (which fails the way stock diffusers fails)."""
+    monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
+    _selection(monkeypatch, primary = 0, secondaries = (1,))
+    dtype = torch.bfloat16 if torch.cuda.get_device_capability(0) >= (8, 0) else torch.float16
+    from diffusers import WanTransformer3DModel
+
+    torch.manual_seed(0)
+    dit = WanTransformer3DModel(
+        patch_size = (1, 2, 2),
+        num_attention_heads = 4,
+        attention_head_dim = 128,
+        in_channels = 16,
+        out_channels = 16,
+        text_dim = 64,
+        freq_dim = 64,
+        ffn_dim = 256,
+        num_layers = 1,
+        rope_max_seq_len = 64,
+    ).to(dtype)
+    dit.set_attention_backend("native")
+    target = types.SimpleNamespace(device = "cuda:0", dtype = dtype)
+    assert D.install(_Pipe(dit), target) == 2
+    route = dit.blocks[0].attn1.processor._attention_backend
+    assert route.cards == {0: 0, 1: 0}
+    assert {k for k in I._VERIFIED if k[1] == 128 and k[2] == str(dtype)} >= {
+        (0, 128, str(dtype), route.impl),
+        (1, 128, str(dtype), route.impl),
+    }
+    for card in (0, 1):
+        q, k, v = (
+            torch.randn(1, 2048, 4, 128, device = f"cuda:{card}", dtype = dtype) for _ in range(3)
+        )
+        before = I.STATS["int8"]
+        with torch.no_grad():
+            out = D.routed_dispatch_attention_fn(q, k, v, backend = route)
+        assert I.STATS["int8"] == before + 1 and out.device == q.device
+        assert I.accuracy(out, I.reference_attention(q, k, v))["cos"] > 0.999
+    q = torch.randn(1, 2048, 4, 128, device = "cuda:0", dtype = dtype)
+    k = q.to("cuda:1")
+    before = I.STATS["int8"]
+    with pytest.raises(Exception) as stock:
+        D.original_dispatch()(q, k, k, backend = AttentionBackendName.NATIVE)
+    with pytest.raises(type(stock.value)):
+        D.routed_dispatch_attention_fn(q, k, k, backend = route)
+    assert I.STATS["int8"] == before
 
 
 @pytest.mark.gpu
