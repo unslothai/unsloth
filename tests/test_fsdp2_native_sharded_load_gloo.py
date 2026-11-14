@@ -52,7 +52,29 @@ def _save(
     overrides = None,
     remap = False,
 ):
-    if arch == "qwen2_5_vl":
+    if arch == "nemotron_h":
+        pytest.importorskip("transformers.models.nemotron_h")
+        from transformers import NemotronHConfig, NemotronHForCausalLM
+
+        torch.manual_seed(0)
+        model = NemotronHForCausalLM(
+            NemotronHConfig(
+                vocab_size = 128,
+                hidden_size = 16,
+                intermediate_size = 32,
+                layers_block_type = ["moe", "full_attention"],
+                num_attention_heads = 2,
+                num_key_value_heads = 2,
+                head_dim = 8,
+                n_routed_experts = 12,
+                moe_intermediate_size = 32,
+                moe_shared_expert_intermediate_size = 32,
+                moe_latent_size = 8,
+                num_experts_per_tok = 2,
+                use_mamba_kernels = False,
+            )
+        ).bfloat16()
+    elif arch == "qwen2_5_vl":
         import transformers
 
         config = transformers.AutoConfig.from_pretrained(VLM)
@@ -104,11 +126,19 @@ def _raised(fn):
 
 
 def _prep(model, mode):
-    if mode in ("lora", "lora_mts"):
+    if mode in ("lora", "lora_mts", "expert_lora"):
         from peft import LoraConfig, get_peft_model
 
         torch.manual_seed(1)
-        if mode == "lora":
+        if mode == "expert_lora":
+            config = LoraConfig(
+                r = 4,
+                lora_alpha = 8,
+                target_modules = "all-linear",
+                target_parameters = ["experts.up_proj", "experts.down_proj"],
+                init_lora_weights = False,
+            )
+        elif mode == "lora":
             config = LoraConfig(
                 r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False
             )
@@ -200,10 +230,12 @@ def _case(
     native, loading = _load_module()
     AutoModelForCausalLM = _auto(arch)
 
-    kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
+    dtype = torch.bfloat16 if arch == "nemotron_h" else torch.float32
+    element_size = torch.empty((), dtype = dtype).element_size()
+    kw = dict(torch_dtype = dtype, attn_implementation = "eager")
     if remap:
         kw["key_mapping"] = REMAP
-    base_config = native.FSDP2Config(param_dtype = torch.float32, fit_layout = fit, device = "cpu")
+    base_config = native.FSDP2Config(param_dtype = dtype, fit_layout = fit, device = "cpu")
 
     full = _prep(AutoModelForCausalLM.from_pretrained(ckpt, **kw), mode)
     config = _ignoring(base_config, full, ignore)
@@ -213,6 +245,16 @@ def _case(
     with loading.fsdp2_sharded_loading() as state:
         model = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
     stats = dict(model._unsloth_fsdp2_load_stats)
+    state_keys = model.state_dict().keys()
+    buffer_bytes = sum(
+        b.numel() * element_size for n, b in model.named_buffers() if n in state_keys
+    )
+    if arch == "nemotron_h":
+        # Every rank reads only its expert stack, in numeric expert order (including 10 and 11).
+        for name, param in model.named_parameters():
+            if ".experts." in name:
+                assert getattr(param, loading._PRELOAD)["shape"][0] == 12
+                assert param.shape[0] == 12 // world
     loaded_numel = sum(p.numel() for p in model.parameters())
     full_numel = sum(
         p.numel() for p in AutoModelForCausalLM.from_pretrained(ckpt, **kw).parameters()
@@ -223,7 +265,7 @@ def _case(
         if info is not None:
             start, stop = info["rows"]
             assert tuple(p.shape) == (stop - start,) + info["shape"][1:]
-            expect_sliced += p.numel() * 4
+            expect_sliced += p.numel() * element_size
     ids = torch.randint(0, 100, (2, 7), generator = torch.Generator().manual_seed(1))
     unsharded = _raised(lambda: model(input_ids = ids))
     model = _prep(model, mode)
@@ -251,6 +293,8 @@ def _case(
         "ref": ref,
         "out": out,
         "stats": stats,
+        "buffer_bytes": buffer_bytes,
+        "element_size": element_size,
         "expect_sliced": expect_sliced,
         "numel": (loaded_numel, full_numel),
         "unsharded": unsharded,
@@ -461,6 +505,8 @@ def _spawn(
         ("llama", {"intermediate_size": 37}, "full", False),
         ("qwen3", None, "lora", False),
         ("qwen3", None, "full", False),
+        ("nemotron_h", None, "full", False),
+        ("nemotron_h", None, "expert_lora", False),
         ("qwen2_5_vl", None, "lora", False),  # vision tower + projector linears sliced too
         # FSDP2Config.ignored_params naming a sharded-loaded weight: gathered whole and kept replicated.
         ("llama", {"intermediate_size": 37}, "full", "ignore"),
@@ -495,10 +541,13 @@ def test_sharded_loading_matches_full_load_shard_model(arch, overrides, mode, fi
         stats = res["stats"]
         # This rank read only its own rows of the sliced weights, everything else whole, nothing twice.
         assert stats["read_bytes_sliced"] == res["expect_sliced"] > 0, stats
-        assert stats["read_bytes_full"] == stats["replicated_numel"] * 4, stats
+        size = res["element_size"]
+        assert (
+            stats["read_bytes_full"] == stats["replicated_numel"] * size + res["buffer_bytes"]
+        ), stats
         loaded, full = res["numel"]
-        assert loaded == full - stats["sharded_numel"] + res["expect_sliced"] // 4 < full
-    assert sum(sliced) == results[0]["stats"]["sharded_numel"] * 4
+        assert loaded == full - stats["sharded_numel"] + res["expect_sliced"] // size < full
+    assert sum(sliced) == results[0]["stats"]["sharded_numel"] * results[0]["element_size"]
 
 
 def test_sharded_loading_refusals():

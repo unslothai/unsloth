@@ -2479,6 +2479,11 @@ class _SliceReader:
         return self.handles[path]
 
     def shape(self, key):
+        if isinstance(key, tuple):
+            shape = self.shape(key[0])
+            if any(self.shape(source) != shape for source in key[1:]):
+                raise ValueError("Unsloth: stacked checkpoint experts must have matching shapes.")
+            return (len(key),) + shape
         return tuple(self._open(key).get_slice(key).get_shape())
 
     def full(self, key):
@@ -2500,7 +2505,15 @@ class _SliceReader:
 
     def rows(self, key, start, stop):
         """Rows [start, stop) of dim 0 (an FSDP2 chunk); only those bytes are read."""
-        t = self._open(key).get_slice(key)[start:stop]
+        if isinstance(key, tuple):
+            # MergeModulelist(dim=0): a row is one complete expert. Allocate only the local
+            # stack, then copy one source at a time instead of materializing the global stack.
+            empty = self._open(key[0]).get_slice(key[0])[0:0]
+            t = empty.new_empty((stop - start,) + self.shape(key[0]))
+            for row, source in enumerate(key[start:stop]):
+                t[row].copy_(self._open(source).get_tensor(source))
+        else:
+            t = self._open(key).get_slice(key)[start:stop]
         self.slice_bytes += t.numel() * t.element_size()
         return t
 
@@ -2523,12 +2536,14 @@ def _checkpoint_aliases(
     model,
     index,
     key_mapping = None,
+    stacked_experts = False,
 ):
     """{model key: checkpoint key} for a checkpoint saved under another naming: transformers 5's conversion
     mapping renames (VLMs save `model.layers.*` for `model.language_model.layers.*`) and 4.x
     `_checkpoint_conversion_mapping`. A model key a WeightConverter builds (merged experts, fused or permuted
     weights) maps to None: it is not one checkpoint tensor, so it cannot be read sliced. `key_mapping` is the
-    load's own (from_pretrained(key_mapping = ...), e.g. Unsloth's text-only VLM loads)."""
+    load's own (from_pretrained(key_mapping = ...), e.g. Unsloth's text-only VLM loads).
+    With stacked_experts, a single MergeModulelist(dim=0) maps to its ordered source keys."""
     legacy = getattr(model, "_checkpoint_conversion_mapping", None) or {}
     renamings = converters = None
     try:
@@ -2553,7 +2568,23 @@ def _checkpoint_aliases(
     meta = dict.fromkeys(model.state_dict().keys(), True)
     prefix = getattr(model, "base_model_prefix", None) or None
     out = {}
-    for key in index:
+    stacks = {}
+    stack_patterns = set()
+    if stacked_experts and converters:
+        try:
+            from transformers.core_model_loading import MergeModulelist, dot_natural_key
+        except ImportError:
+            pass  # Older transformers still use the existing rename-only reader.
+        else:
+            stack_patterns = {
+                t.source_patterns[0]
+                for t in converters
+                if len(t.source_patterns) == len(t.target_patterns) == len(t.operations) == 1
+                and type(t.operations[0]) is MergeModulelist
+                and t.operations[0].dim == 0
+            }
+    keys = sorted(index, key = dot_natural_key) if stack_patterns else index
+    for key in keys:
         new = key
         for pattern, replacement in legacy.items():
             new, n = re.subn(pattern, replacement, new)
@@ -2567,8 +2598,11 @@ def _checkpoint_aliases(
                 converted = None
         if converted is not None:
             out[new] = None
+            if converted in stack_patterns:
+                stacks.setdefault(new, []).append(key)
         elif new != key:
             out.setdefault(new, key)
+    out.update({name: tuple(keys) for name, keys in stacks.items()})
     return out
 
 
@@ -2606,6 +2640,7 @@ def _fill_from_checkpoint(
     read_local,
     label = "tensor parallel",
     fallback = "full load, then apply_tensor_parallel",
+    stacked_experts = False,
 ):
     """Fill a meta model from its safetensors checkpoint. `read_local(old, reader, key)` returns this rank's
     Parameter for a sharded tensor (reading only its bytes) or None, and then the tensor is read whole.
@@ -2622,7 +2657,9 @@ def _fill_from_checkpoint(
         if key is not None:
             return key
         if aliases is None:
-            aliases = _checkpoint_aliases(model, index, (kwargs or {}).get("key_mapping"))
+            aliases = _checkpoint_aliases(
+                model, index, (kwargs or {}).get("key_mapping"), stacked_experts = stacked_experts
+            )
         for n in names:
             if n in aliases:
                 if aliases[n] is None:
