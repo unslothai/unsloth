@@ -31,6 +31,9 @@ def _clean(monkeypatch):
     monkeypatch.delenv(D.DISPATCH_ENV, raising = False)
     stats = dict(I.STATS)
     D.ROUTE_STATS.clear()
+    D._DECISIONS.clear()
+    # the toy DiTs here run a few dozen tokens: floors are tested on their own
+    monkeypatch.setattr(D, "MIN_TOKENS", 0)
     yield
     I.STATS.clear()
     I.STATS.update(stats)
@@ -93,6 +96,8 @@ def _fake_cuda(
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
     monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: False)
     monkeypatch.setattr(I, "implementation", lambda index, head_dim: impl)
+    # the extra race points lose unless a test says otherwise
+    monkeypatch.setattr(D, "_race_wins", lambda *a, **k: False)
     seen = []
 
     def verdict(
@@ -312,6 +317,7 @@ def test_wan_routes_self_and_cross_attention_unmasked(card, monkeypatch):
 def test_wan_auto_race_floor_keeps_short_cross_attention(card, monkeypatch):
     seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
     monkeypatch.setattr(I, "RACE_TOKENS", (64, 16))
+    monkeypatch.setattr(D, "MIN_TOKENS", 16)
     dit = _wan_dit()
     dit.set_attention_backend("native")
     pipe = _Pipe(dit)
@@ -365,6 +371,7 @@ def test_gate_and_race_run_per_card_of_a_multi_gpu_load(monkeypatch):
         found = lambda head_dim: {"ok": True, "min_tokens": 2560},
     )
     _selection(monkeypatch, secondaries = (1, 2))
+    monkeypatch.setattr(D, "MIN_TOKENS", 1024)
     floors = {
         "cuda:0": {"ok": True, "min_tokens": 2560},
         "cuda:1": {"ok": True, "min_tokens": 0},
@@ -389,8 +396,9 @@ def test_gate_and_race_run_per_card_of_a_multi_gpu_load(monkeypatch):
     assert D.install(pipe, _TARGET) == 4 and not seen
     assert sorted(set(devices)) == ["cuda:0", "cuda:1", "cuda:2"]
     routes = [m.processor._attention_backend for m in D.routable_modules(pipe.transformer)]
-    assert all(r.cards == {0: 2560, 1: I.RACE_TOKENS[-1]} and r.index == 0 for r in routes)
-    assert routes[0].min_tokens == I.RACE_TOKENS[-1]
+    # card 0 won at 4096 only and lost the 2048 point: floor between them; card 1 won everywhere: MIN_TOKENS
+    assert all(r.cards == {0: 3072, 1: 1024} and r.index == 0 for r in routes)
+    assert routes[0].min_tokens == 1024
     # a CFG replica is a deep copy: it keeps every card
     assert copy.deepcopy(routes[0]).cards == routes[0].cards
     # a selection for another primary is not this load's
@@ -427,6 +435,55 @@ def test_long_race_routes_long_calls_only(card, monkeypatch):
     asked.clear()
     monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
     assert D.install(pipe, _TARGET) == 4 and not asked
+
+
+def test_floors_from_the_race_points(monkeypatch):
+    """Forced or won at both race sizes: MIN_TOKENS. Won at 4096 only: the 2048 point puts the floor at 1536 or
+    3072. Lost at both: the long race decides."""
+    _fake_cuda(monkeypatch)
+    monkeypatch.setattr(D, "MIN_TOKENS", 1024)
+    wins = {}
+    monkeypatch.setattr(D, "_race_wins", lambda *a, **k: wins.get(a[-1], False))
+
+    def floor(found, forced = False):
+        monkeypatch.setattr(I, "verdict", lambda *a, **k: {"impl": "cuda", **found})
+        return D._card_floor("cuda:0", torch.bfloat16, 2, 64, None, "x", forced, forced)[1]
+
+    assert floor({"ok": True, "min_tokens": 0}) == 1024
+    assert floor({"ok": True, "min_tokens": 0}, forced = True) == 1024
+    assert floor({"ok": True, "min_tokens": 2560}) == 3072
+    wins[D.MID_RACE_TOKENS] = True
+    assert floor({"ok": True, "min_tokens": 2560}) == 1536
+    assert floor({"ok": True, "min_tokens": None}) is None
+    wins[D.LONG_RACE_TOKENS[0]] = True
+    assert (
+        floor({"ok": True, "min_tokens": None})
+        == (D.LONG_RACE_TOKENS[0] + D.LONG_RACE_TOKENS[1]) // 2
+    )
+    assert floor({"ok": False, "min_tokens": None}, forced = True) is None
+
+
+def test_eager_decisions_are_cached_per_signature(card, monkeypatch):
+    calls = []
+    real = D._reason
+    monkeypatch.setattr(D, "_reason", lambda *a: calls.append(1) or real(*a))
+    monkeypatch.setitem(D._STATE, "original", lambda *a, **k: I.native_attention(a[0], a[1], a[2]))
+    route = _route()
+    q, k, v = _qkv()
+    for _ in range(3):
+        D.routed_dispatch_attention_fn(q, k, v, backend = route)
+    assert len(calls) == 1 and len(card) == 3
+    mask = torch.ones(1, 1, 1, 32, dtype = torch.bool)
+    D.routed_dispatch_attention_fn(q, k, v, attn_mask = mask, backend = route)
+    D.routed_dispatch_attention_fn(q[:, :16], k, v, backend = route)
+    qg = q.clone().requires_grad_(True)
+    D.routed_dispatch_attention_fn(qg, k, v, backend = route)
+    with torch.no_grad():
+        D.routed_dispatch_attention_fn(qg, k, v, backend = route)
+    assert len(calls) == 5 and D.ROUTE_STATS == {"int8": 5, "mask": 1, "needs gradients": 1}
+    # a new route (a reinstall) decides afresh
+    D.routed_dispatch_attention_fn(q, k, v, backend = _route(min_tokens = 64))
+    assert len(calls) == 6 and D.ROUTE_STATS["short"] == 1
 
 
 def test_long_verdict_thresholds(monkeypatch):
@@ -608,7 +665,7 @@ def test_triton_stand_in_races_even_by_name(monkeypatch):
     assert [s["timed"] for s in seen[:2]] == [False, True]
     assert {
         m.processor._attention_backend.min_tokens for m in D.routable_modules(pipe.transformer)
-    } == {2560}
+    } == {3072}
 
 
 def test_rocm_auto_stays_off(monkeypatch):
@@ -755,6 +812,7 @@ needs_kernel = pytest.mark.skipif(
 @needs_kernel
 def test_cuda_wan_dit_routes_and_matches(monkeypatch):
     monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
+    monkeypatch.setattr(D, "MIN_TOKENS", 1024)
     dtype = _card_dtype()
     from diffusers import WanTransformer3DModel
 
@@ -785,7 +843,8 @@ def test_cuda_wan_dit_routes_and_matches(monkeypatch):
         assert D.install(_Pipe(dit), target) == 4
         before = I.STATS["int8"]
         got = dit(**kwargs)[0].float()
-        assert I.STATS["int8"] - before == 4
+        # 2 self-attention calls of 2304 tokens; the 64-token text cross-attention stays under the floor
+        assert I.STATS["int8"] - before == 2
         D.remove(_Pipe(dit))
     rel = float((got - ref).norm() / ref.norm())
     cos = float(F.cosine_similarity(got.flatten(), ref.flatten(), dim = 0))
@@ -806,6 +865,7 @@ def test_cuda_route_engages_on_both_cards(monkeypatch):
     """The gate runs on each card of the selection; calls on either card reach the kernel and match native there;
     a cross-card call keeps the incumbent (which fails the way stock diffusers fails)."""
     monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
+    monkeypatch.setattr(D, "MIN_TOKENS", 1024)
     _selection(monkeypatch, primary = 0, secondaries = (1,))
     dtype = torch.bfloat16 if torch.cuda.get_device_capability(0) >= (8, 0) else torch.float16
     from diffusers import WanTransformer3DModel
@@ -827,7 +887,7 @@ def test_cuda_route_engages_on_both_cards(monkeypatch):
     target = types.SimpleNamespace(device = "cuda:0", dtype = dtype)
     assert D.install(_Pipe(dit), target) == 2
     route = dit.blocks[0].attn1.processor._attention_backend
-    assert route.cards == {0: 0, 1: 0}
+    assert route.cards == {0: 1024, 1: 1024}
     assert {k for k in I._VERIFIED if k[1] == 128 and k[2] == str(dtype)} >= {
         (0, 128, str(dtype), route.impl),
         (1, 128, str(dtype), route.impl),

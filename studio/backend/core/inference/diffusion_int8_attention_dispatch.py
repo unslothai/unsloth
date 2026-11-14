@@ -22,12 +22,12 @@ Which loads route (``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL`` is read by ``diff
 
 * ``0``: never; ``UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH=0`` turns off only this route.
 * ``1``, or the load asked for ``unsloth_int8`` by name: every DiT whose processors call the dispatch, wherever the
-  kernel passes its accuracy check on this card (no race, except the Triton stand-in).
+  kernel passes its accuracy check on this card (no race, except the Triton stand-in), from ``MIN_TOKENS`` tokens.
 * unset: the DiT classes in ``AUTO_DITS`` on NVIDIA, where the kernel passes the check and wins the timed race
-  against the processor's own backend by more than ``RACE_MARGIN``; from ``RACE_TOKENS[1]`` tokens on at least. Where
-  it loses at the race's sizes, a second race at ``LONG_RACE_TOKENS`` (video and large-image lengths) can still route
-  the calls from that length on: the int8 products win more the longer the sequence (A100: 0.96x at 4096 tokens,
-  1.37x at 27k).
+  against the processor's own backend by more than ``RACE_MARGIN``. The token floor: ``MIN_TOKENS`` where it wins at
+  both race sizes; where it wins at 4096 only, a race at ``MID_RACE_TOKENS`` puts it below or above 2048. Where it
+  loses at the race's sizes, a race at ``LONG_RACE_TOKENS`` (video and large-image lengths) can still route the calls
+  from that length on: the int8 products win more the longer the sequence (A100: 0.96x at 4096 tokens, 1.37x at 27k).
 """
 
 from __future__ import annotations
@@ -55,9 +55,17 @@ _STRIDED_FLAG = "_unsloth_int8"
 
 # (large, small) token counts of the second race, for a card where the kernel loses at RACE_TOKENS
 LONG_RACE_TOKENS = (16384, 8192)
+# the card race wins at 4096 tokens but not 1024: one more point decides the floor between them
+MID_RACE_TOKENS = 2048
+# no route below this many query or key tokens, forced or not: short calls (text refiners, audio streams, text
+# cross-attention) are dominated by the quantisers' launches and lose to every incumbent measured (126 tokens: 6x)
+MIN_TOKENS = 1024
+# eager calls: the decision per (route, call signature) is cached, so a call repeated every step costs a key lookup
+_DECISION_CACHE_MAX = 512
 
 _LOCK = threading.Lock()
 _LONG_VERDICTS: dict = {}
+_DECISIONS: dict = {}
 _STATE: dict = {"original": None}
 # eager calls by outcome ("int8" or why the incumbent ran); compiled calls are counted when they are traced
 ROUTE_STATS: dict = {}
@@ -221,6 +229,48 @@ _KNOWN = frozenset(
 )
 
 
+def _signature(route: Int8Route, args: tuple, kwargs: dict) -> Optional[tuple]:
+    """What ``_reason`` reads from an eager call, or None for a call that is not plain tensors."""
+    import torch
+
+    tensors = [_arg(args, kwargs, i, n) for i, n in enumerate(("query", "key", "value"))]
+    if not all(torch.is_tensor(t) for t in tensors):
+        return None
+    mask = _arg(args, kwargs, 3, "attn_mask")
+    scale = _arg(args, kwargs, 6, "scale")
+    return (
+        id(route),
+        tuple((tuple(t.shape), t.dtype, t.device, t.requires_grad) for t in tensors),
+        mask is None,
+        bool(_arg(args, kwargs, 5, "is_causal", False)),
+        _arg(args, kwargs, 4, "dropout_p", 0.0),
+        None if scale is None else float(scale),
+        bool(_arg(args, kwargs, 7, "enable_gqa", False)),
+        bool(_arg(args, kwargs, 8, "attention_kwargs")),
+        kwargs.get("parallel_config") is None,
+        len(args),
+        tuple(sorted(kwargs)),
+        torch.is_grad_enabled(),
+    )
+
+
+def _cached_reason(route: Int8Route, args: tuple, kwargs: dict) -> Optional[str]:
+    """``_reason`` memoised per route and call signature (eager calls only; a route rebuilt by ``install`` is a new
+    object, so its decisions start over)."""
+    key = _signature(route, args, kwargs)
+    if key is None:
+        return _reason(route, args, kwargs)
+    found = _DECISIONS.get(key, _MISSING)
+    if found is _MISSING:
+        if len(_DECISIONS) >= _DECISION_CACHE_MAX:
+            _DECISIONS.clear()
+        found = _DECISIONS[key] = (route, _reason(route, args, kwargs))
+    return found[1]
+
+
+_MISSING = object()
+
+
 def _note(outcome: str) -> None:
     ROUTE_STATS[outcome] = ROUTE_STATS.get(outcome, 0) + 1
 
@@ -232,8 +282,11 @@ def routed_dispatch_attention_fn(*args: Any, **kwargs: Any) -> Any:
     backend = kwargs.get("backend")
     if isinstance(backend, Int8Route):
         kwargs["backend"] = backend.incumbent
-        reason = _reason(backend, args, kwargs)
-        if not torch.compiler.is_compiling():
+        if torch.compiler.is_compiling():
+            # traced once per graph: the checks become guards
+            reason = _reason(backend, args, kwargs)
+        else:
+            reason = _cached_reason(backend, args, kwargs)
             _note(reason or "int8")
         if reason is None:
             return torch.ops.unsloth_studio.int8_attention_nhd(
@@ -393,42 +446,64 @@ def install(
         return 0
 
 
-def long_verdict(
-    device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Any, name: str
-) -> Optional[int]:
-    """The token count from which the kernel beats the incumbent by more than ``RACE_MARGIN`` at
-    ``LONG_RACE_TOKENS``, or None. Timed like the card race (interleaved, median); cached per card, dtype, geometry
-    and incumbent; an out-of-memory probe counts as a loss."""
+def _race_wins(
+    device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Any, name: str, tokens: int
+) -> bool:
+    """Whether the kernel beats the incumbent by more than ``RACE_MARGIN`` at ``tokens`` tokens on this card. Timed
+    like the card race (interleaved, median); cached per card, dtype, geometry, incumbent and size; an out-of-memory
+    probe counts as a loss."""
     import torch
 
     from . import diffusion_int8_attention as I8
 
-    key = (str(device), str(dtype), int(heads), int(head_dim), name)
+    key = (str(device), str(dtype), int(heads), int(head_dim), name, int(tokens))
     if key in _LONG_VERDICTS:
         return _LONG_VERDICTS[key]
-    wins: dict = {}
-    for tokens in LONG_RACE_TOKENS:
-        try:
-            with torch.no_grad():
-                q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
-                ms = I8._median_ms(
-                    {
-                        "incumbent": lambda: incumbent(q, k, v),
-                        "int8": lambda: I8.int8_attention(q, k, v),
-                    }
-                )
-            wins[tokens] = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
-        except torch.OutOfMemoryError:
-            wins[tokens] = False
-        finally:
-            q = k = v = None
-            torch.cuda.empty_cache()
+    q = k = v = None
+    try:
+        with torch.no_grad():
+            q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
+            ms = I8._median_ms(
+                {
+                    "incumbent": lambda: incumbent(q, k, v),
+                    "int8": lambda: I8.int8_attention(q, k, v),
+                }
+            )
+        won = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
+    except torch.OutOfMemoryError:
+        won = False
+    finally:
+        q = k = v = None
+        torch.cuda.empty_cache()
+    _LONG_VERDICTS[key] = won
+    return won
+
+
+def long_verdict(
+    device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Any, name: str
+) -> Optional[int]:
+    """The token count from which the kernel wins at ``LONG_RACE_TOKENS`` (where it lost the card race), or None."""
+    from . import diffusion_int8_attention as I8
+
     large, small = LONG_RACE_TOKENS
-    found = None
-    if wins[large]:
-        found = (small + int(I8.RACE_TOKENS[0])) // 2 if wins[small] else (large + small) // 2
-    _LONG_VERDICTS[key] = found
-    return found
+    if not _race_wins(device, dtype, heads, head_dim, incumbent, name, large):
+        return None
+    if _race_wins(device, dtype, heads, head_dim, incumbent, name, small):
+        return (small + int(I8.RACE_TOKENS[0])) // 2
+    return (large + small) // 2
+
+
+def mid_verdict(
+    device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Any, name: str
+) -> int:
+    """The floor where the card race won at its large size only: the crossover lies on the side of
+    ``MID_RACE_TOKENS`` the kernel loses on."""
+    from . import diffusion_int8_attention as I8
+
+    large, small = int(I8.RACE_TOKENS[0]), int(I8.RACE_TOKENS[-1])
+    if _race_wins(device, dtype, heads, head_dim, incumbent, name, MID_RACE_TOKENS):
+        return (MID_RACE_TOKENS + small) // 2
+    return (large + MID_RACE_TOKENS) // 2
 
 
 def _secondary_cards(primary: int) -> tuple:
@@ -469,11 +544,15 @@ def _card_floor(
     if not found.get("ok"):
         return found, None
     if forced and not stand_in:
-        return found, 0
+        return found, MIN_TOKENS
     if found.get("min_tokens") is None:
         minimum = long_verdict(device, dtype, heads, head_dim, run, name)
         return {**found, "long_min_tokens": minimum}, minimum
-    return found, max(int(found["min_tokens"]), int(I8.RACE_TOKENS[-1]))
+    minimum = int(found["min_tokens"])
+    if minimum > int(I8.RACE_TOKENS[-1]):
+        minimum = mid_verdict(device, dtype, heads, head_dim, run, name)
+        found = {**found, "mid_min_tokens": minimum}
+    return found, max(minimum, MIN_TOKENS)
 
 
 def _target_device(target: Any) -> str:
@@ -579,7 +658,11 @@ def _install(pipe: Any, target: Any, requested: Any, logger: Any) -> int:
                 found.get("min_tokens"),
                 f" long race min_tokens={found['long_min_tokens']}"
                 if "long_min_tokens" in found
-                else "",
+                else (
+                    f" 2048 race min_tokens={found['mid_min_tokens']}"
+                    if "mid_min_tokens" in found
+                    else ""
+                ),
                 " (forced)" if forced else "",
             )
         if routed:
