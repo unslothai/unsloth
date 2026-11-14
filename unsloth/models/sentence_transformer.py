@@ -34,6 +34,8 @@ import inspect
 import json
 import os
 import posixpath
+import importlib.abc
+import sys
 import threading
 import types
 from huggingface_hub import hf_hub_download
@@ -436,6 +438,12 @@ def _save_pretrained_gguf(
     inner_model = self[0].auto_model
     if hasattr(inner_model, "_orig_mod"):
         inner_model = inner_model._orig_mod
+    # The GGUF saver reads the load's remote-code consent off the model it converts.
+    if getattr(self, "_unsloth_trust_remote_code", False) is True:
+        try:
+            inner_model._unsloth_trust_remote_code = True
+        except Exception:
+            pass
 
     transformer_path = "0_Transformer"
     modules_path = os.path.join(save_directory, "modules.json")
@@ -694,14 +702,17 @@ def _push_to_hub_gguf(
             )
 
         gguf_basenames = [os.path.basename(f) for f in gguf_files if os.path.exists(f)]
+        if isinstance(tags, str):
+            tags = [tags]
+        card_tags = ["gguf", "llama.cpp", "llama-cpp", "unsloth", "sentence-transformers"]
+        if is_vlm:
+            card_tags.append("vision-language-model")
+        tags_yaml = "".join(
+            f"- {json.dumps(t)}\n" for t in dict.fromkeys(card_tags + list(tags or []))
+        )
         readme_content = f"""---
 tags:
-- gguf
-- llama.cpp
-- unsloth
-- sentence-transformers
-{"- vision-language-model" if is_vlm else ""}
----
+{tags_yaml}---
 
 # {model_name} - GGUF
 
@@ -740,19 +751,6 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
             create_pr = create_pr,
             revision = revision,
         )
-
-    all_tags = ["gguf", "llama-cpp", "unsloth", "sentence-transformers"]
-    if is_vlm:
-        all_tags.append("vision-language-model")
-    if tags is not None:
-        if isinstance(tags, (list, tuple)):
-            all_tags.extend(tags)
-        else:
-            all_tags.append(tags)
-    try:
-        api.add_tags(repo_id = full_repo_id, tags = all_tags, repo_type = "model")
-    except:
-        pass
 
     print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
     return full_repo_id
@@ -1157,28 +1155,6 @@ class FastSentenceTransformer(FastModel):
             )
 
         modeling_distilbert.DistilBertModel.forward = forward
-
-    @staticmethod
-    def _add_unsloth_tags(
-        repo_id,
-        token,
-        tags = None,
-    ):
-        """Add Unsloth + sentence-transformers tags to the HF Hub repo."""
-        from huggingface_hub import HfApi
-
-        api = HfApi(token = token)
-        if tags is None:
-            tags = []
-        tags.extend(["unsloth", "sentence-transformers"])
-        try:
-            api.add_tags(
-                repo_id = repo_id,
-                tags = tags,
-                repo_type = "model",
-            )
-        except:
-            pass
 
     @staticmethod
     def _add_unsloth_branding(save_directory):
@@ -2810,7 +2786,6 @@ class FastSentenceTransformer(FastModel):
                     )
                 except:
                     pass
-                FastSentenceTransformer._add_unsloth_tags(repo_id, hub_token)
                 with tempfile.TemporaryDirectory() as temp_dir:
                     self.save_pretrained_merged(temp_dir, **push_kwargs)
                     api.upload_folder(
@@ -3084,8 +3059,6 @@ class FastSentenceTransformer(FastModel):
                 )
             except:
                 pass
-
-            FastSentenceTransformer._add_unsloth_tags(repo_id, token)
 
             with tempfile.TemporaryDirectory() as temp_dir:
                 self.save_pretrained_merged(temp_dir, **kwargs)
@@ -3634,7 +3607,80 @@ def _patch_dense_input_dtype():
     Dense._unsloth_input_dtype = True
 
 
-_patch_sentence_transformer_trainer()
-_patch_st_trainer_load_from_checkpoint()
-_patch_pooling_float16_accumulation()
-_patch_dense_input_dtype()
+def _apply_sentence_transformers_patches():
+    _patch_sentence_transformer_trainer()
+    _patch_st_trainer_load_from_checkpoint()
+    _patch_pooling_float16_accumulation()
+    _patch_dense_input_dtype()
+
+
+class _PatchAfterImportLoader(importlib.abc.Loader):
+    def __init__(self, loader):
+        self._loader = loader
+
+    def __getattr__(self, name):
+        # Resource / is_package lookups made while the package's __init__ runs.
+        if name == "_loader":  # copy / pickle build the object without __init__
+            raise AttributeError(name)
+        return getattr(self._loader, name)
+
+    def create_module(self, spec):
+        return self._loader.create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        # Hand the module back its own loader, then patch the fully imported package.
+        module.__loader__ = self._loader
+        if getattr(module, "__spec__", None) is not None:
+            module.__spec__.loader = self._loader
+        try:
+            _apply_sentence_transformers_patches()
+        except Exception as error:
+            # A failed patch must not make `import sentence_transformers` itself fail.
+            logging.getLogger(__name__).warning(
+                f"Unsloth: could not patch sentence_transformers: {error}"
+            )
+
+
+class _SentenceTransformersFinder(importlib.abc.MetaPathFinder):
+    # Found by marker, not isinstance: a re-executed module defines a new class.
+    _unsloth_st_finder = True
+
+    def __init__(self):
+        self._busy = threading.local()
+
+    def find_spec(
+        self,
+        fullname,
+        path,
+        target = None,
+    ):
+        if fullname != "sentence_transformers" or fullname in sys.modules:
+            return None
+        # Another finder that also walks sys.meta_path would otherwise call back into this one forever.
+        if getattr(self._busy, "active", False):
+            return None
+        self._busy.active = True
+        try:
+            for finder in sys.meta_path:
+                if finder is self or not hasattr(finder, "find_spec"):
+                    continue
+                try:
+                    spec = finder.find_spec(fullname, path, target)
+                except Exception:
+                    continue
+                if spec is None:
+                    continue
+                if spec.loader is not None and hasattr(spec.loader, "exec_module"):
+                    spec.loader = _PatchAfterImportLoader(spec.loader)
+                return spec
+            return None
+        finally:
+            self._busy.active = False
+
+
+# sentence_transformers is heavy and only embedding fine-tuning needs it: patch on first import.
+if "sentence_transformers" in sys.modules:
+    _apply_sentence_transformers_patches()
+elif not any(getattr(f, "_unsloth_st_finder", False) for f in sys.meta_path):
+    sys.meta_path.insert(0, _SentenceTransformersFinder())

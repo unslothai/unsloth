@@ -12,6 +12,7 @@ import { copyTabPageStorage, dropTabPageStorage } from "./page-storage";
 import { setShownBrowserChat } from "./panel-availability";
 import { defaultZoom } from "./prefs-store";
 import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
+import { chatIsUnsaved, loadTabSession, sameKindOfChat, saveTabSession } from "./tab-session";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -100,10 +101,12 @@ export type BrowserTab = {
   chat: string;
 };
 
-type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean; floating: boolean };
+type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean; floating: boolean; floatedForAgent?: boolean };
 
 /** The chat on screen before the chat page names it (chat-page.tsx `shownChatKey`). */
 export const NEW_CHAT = "new";
+/** chat-page.tsx's key for a chat whose thread id it doesn't know yet. */
+const UNNAMED_CHAT = "single:new";
 
 /** A saved chat's key, as chat-page.tsx names the chat on screen. */
 export function chatKeyOfThread(threadId: string): string {
@@ -204,6 +207,10 @@ export const sentPosts = new WeakSet<BrowserEntry>();
 
 let nextId = 0;
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(nextId++).toString(36)}`;
+
+function isBlankTab(tab: BrowserTab): boolean {
+  return tab.history.length === 1 && tab.history[0].kind === "newtab" && !tab.customTitle && !tab.pinnedId;
+}
 
 function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserTab {
   return {
@@ -495,6 +502,30 @@ export function chatTabs(state: Pick<BrowserState, "tabs" | "chat">): BrowserTab
 }
 
 export const useBrowserStore = create<BrowserState>((set, get) => {
+  const session = loadTabSession();
+  const { [NEW_CHAT]: shown, ...restoredChats } = session.chats;
+  // An unsaved chat returns from a reload under a new key: the first chat named takes its tabs and panel.
+  let restoredShown: string | null = null;
+  const claimRestored = (chat: string) => {
+    if (!restoredShown || chat === NEW_CHAT || chat === UNNAMED_CHAT) return;
+    const from = restoredShown;
+    restoredShown = null;
+    const state = get();
+    if (from === chat || !sameKindOfChat(from, chat) || state.tabs.some((tab) => tab.chat === chat)) return;
+    const { [from]: panel, ...chats } = state.chats;
+    const tabs = state.tabs.map((tab) => (tab.chat === from ? { ...tab, chat } : tab));
+    if (!panel) set({ tabs, chats });
+    else if (state.chat !== chat) set({ tabs, chats: { ...chats, [chat]: panel } });
+    else set({ tabs, chats, open: panel.open, activeTabId: panel.activeTabId, fullView: panel.fullView, floating: panel.floating });
+  };
+  if (session.shown) {
+    const shownBefore = session.shown;
+    void chatIsUnsaved(shownBefore).then((unsaved) => {
+      if (!unsaved) return;
+      restoredShown = shownBefore;
+      claimRestored(get().chat);
+    });
+  }
   const openTab = (tab: BrowserTab, background = false, after?: string, chat = get().chat) => {
     set((state) => {
       const owned = { ...tab, chat };
@@ -505,7 +536,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         // Another chat's: it shows there next time, without moving this chat's panel.
         const saved = state.chats[chat];
         const activeTabId = background && saved?.activeTabId ? saved.activeTabId : owned.id;
-        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, floating: saved?.floating ?? false, activeTabId } } };
+        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, floating: saved?.floating ?? false, floatedForAgent: saved?.floatedForAgent, activeTabId } } };
       }
       return {
         open: true,
@@ -523,29 +554,36 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
   };
 
   return {
-    open: false,
-    tabs: [],
-    activeTabId: null,
+    open: shown?.open ?? false,
+    tabs: session.tabs,
+    activeTabId: shown?.activeTabId ?? null,
     chat: NEW_CHAT,
-    chats: {},
+    chats: restoredChats,
     showChat: (chat) => {
       forgetDeletedChats();
+      claimRestored(chat);
       const state = get();
       if (chat === state.chat) return;
       const chats = { ...state.chats };
-      if (state.tabs.some((tab) => tab.chat === state.chat)) {
+      const left = state.tabs.filter((tab) => tab.chat === state.chat);
+      // An untouched new tab is remade on return (`fresh` below), so it isn't kept for every chat visited.
+      // Only with the panel open: a closed panel makes no `fresh`, and the chat would lose its closed state.
+      const blank = state.open && left.length === 1 && isBlankTab(left[0]) ? left[0] : null;
+      const tabs = blank ? state.tabs.filter((tab) => tab !== blank) : state.tabs;
+      if (left.length > 0) {
         chats[state.chat] = {
           open: state.open,
-          activeTabId: state.activeTabId,
+          activeTabId: blank ? null : state.activeTabId,
           fullView: state.fullView,
-          floating: state.floating && !state.floatedForAgent,
+          floating: state.floating,
+          floatedForAgent: state.floatedForAgent,
         };
       } else {
         delete chats[state.chat];
       }
       const saved = chats[chat];
       delete chats[chat];
-      const own = state.tabs.filter((tab) => tab.chat === chat);
+      const own = tabs.filter((tab) => tab.chat === chat);
       const activeTabId =
         saved && own.some((tab) => tab.id === saved.activeTabId) ? saved.activeTabId : (own.at(-1)?.id ?? null);
       const open = saved ? saved.open : state.open;
@@ -554,13 +592,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set({
         chat,
         chats,
-        tabs: fresh ? [...state.tabs, fresh] : state.tabs,
+        tabs: fresh ? [...tabs, fresh] : tabs,
         activeTabId: fresh?.id ?? activeTabId,
         open,
         fullView: open && (saved ? saved.fullView : state.fullView),
         // Each chat floats only once it was floated there; a chat new to the browser opens beside it.
         floating: saved?.floating ?? false,
-        floatedForAgent: false,
+        floatedForAgent: (saved?.floating && saved.floatedForAgent) ?? false,
         annotateTabId: null,
         renamingTabId: null,
       });
@@ -576,6 +614,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         return { tabs, chats, chat: state.chat === from ? to : state.chat };
       });
       for (const listener of adoptListeners) listener(from, to);
+      claimRestored(to);
     },
     revealIn: (chat, tabId) => {
       if (chat === get().chat) {
@@ -590,6 +629,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
             open: true,
             fullView: state.chats[chat]?.fullView ?? false,
             floating: state.chats[chat]?.floating ?? false,
+            floatedForAgent: state.chats[chat]?.floatedForAgent,
             activeTabId: tabId,
           },
         },
@@ -613,8 +653,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     focusAddressSequence: 0,
     bookmarkSequence: 0,
     device: "off",
-    fullView: false,
-    floating: false,
+    fullView: shown?.fullView ?? false,
+    floating: shown?.floating ?? false,
     floatedForAgent: false,
     chatDock: "composer",
     chatSide: "left",
@@ -913,6 +953,11 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
 });
 
 useBrowserStore.subscribe((state) => setShownBrowserChat(state.chat));
+
+const SESSION_FIELDS = ["tabs", "chat", "chats", "open", "activeTabId", "fullView", "floating", "floatedForAgent"] as const;
+useBrowserStore.subscribe((state, previous) => {
+  if (SESSION_FIELDS.some((field) => state[field] !== previous[field])) saveTabSession(state);
+});
 
 const adoptListeners = new Set<(from: string, to: string) => void>();
 

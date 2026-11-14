@@ -51,6 +51,7 @@ def _orchestrator(engine = "vllm", alive = True):
             headers = {"Authorization": "Bearer private"},
             engine = engine,
             alive = lambda: alive,
+            _completion_cap_in_window = lambda prompt, limit: limit,
         ),
     )
     return backend
@@ -161,6 +162,40 @@ def test_stream_relays_logprobs_and_honours_usage_opt_in(engine, include_usage):
     assert any(e.get("usage") for e in events) == include_usage
     assert b"data: [DONE]" in b"".join(chunks)
     assert engine.monitor.active_count() == 0
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_completion_cap_is_fitted_to_the_window(engine, monkeypatch, stream):
+    from core.inference import managed_engine
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(
+            self,
+            url,
+            headers = None,
+            json = None,
+        ):
+            assert (url, json["prompt"]) == ("http://engine.test/tokenize", "2+2=")
+            return SimpleNamespace(raise_for_status = lambda: None, json = lambda: {"count": 3000})
+
+    monkeypatch.setattr(managed_engine.httpx, "Client", _Client)
+    managed = managed_engine.ManagedEngine("vllm")
+    managed.model, managed.context, managed.key = "/models/qwen3", 4096, "private"
+    managed.base_url, managed.alive = "http://engine.test", lambda: True
+    engine.backend._managed_engine = managed
+    _call({"prompt": "2+2=", "max_tokens": 2000, "stream": stream})
+    assert engine.requests[-1]["max_tokens"] == 1096
+    _call({"prompt": "2+2=", "max_tokens": 64, "stream": stream})
+    assert engine.requests[-1]["max_tokens"] == 64
 
 
 def test_engine_rejection_keeps_its_status(engine):

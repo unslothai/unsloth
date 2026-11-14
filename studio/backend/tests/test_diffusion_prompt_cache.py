@@ -1043,6 +1043,55 @@ def test_an_unmarked_wrapper_of_the_same_helper_keeps_the_full_key(monkeypatch):
     assert not prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
 
 
+def test_a_wraps_copy_of_the_transparent_marker_keeps_the_full_key(monkeypatch):
+    # functools.wraps copies the no-K/V wrapper's marker onto this denoiser-reading wrapper
+    import functools
+
+    from core.inference.diffusion_qwenimage21_te import skip_text_encoder_kv_cache
+
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_QWEN21_TE_NO_KV", raising = False)
+    pipe = _Qwen21LikePipe({"transformer": ["style"]})
+    assert skip_text_encoder_kv_cache(pipe)
+    original = pipe._get_qwen_prompt_embeds
+
+    @functools.wraps(original)
+    def _get_qwen_prompt_embeds(prompt):
+        return original(prompt) * pipe.transformer.weight.detach().mean()
+
+    pipe._get_qwen_prompt_embeds = _get_qwen_prompt_embeds
+    assert not prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
+    prompt_cache.install(pipe)
+    out = []
+    for strength in (0.25, 0.75):
+        pipe._unsloth_loras = (("style", "/x/style.safetensors", strength),)
+        with torch.no_grad():
+            pipe.transformer.weight.fill_(strength)
+        out.append(float(pipe.encode_prompt("same")[0].flatten()[0]))
+    assert out[0] != out[1] and pipe.calls == 2
+
+
+class _Qwen21SelectablePipe(_Qwen21LikePipe):
+    def _get_qwen_prompt_embeds(self, prompt):
+        # select_final_hidden_state markers: norm.register_forward_hook outputs.hidden_states[-1]
+        return self.text_encoder(torch.full((1, 2), float(len(prompt))))
+
+
+def test_final_state_wrapper_over_the_no_kv_wrapper_keeps_the_scoped_key(monkeypatch):
+    from core.inference.diffusion_qwenimage21_te import (
+        select_final_hidden_state,
+        skip_text_encoder_kv_cache,
+    )
+
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_QWEN21_TE_NO_KV", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_TE_SELECT_HIDDEN", raising = False)
+    pipe = _Qwen21SelectablePipe({"transformer": ["style"]})
+    assert skip_text_encoder_kv_cache(pipe)
+    assert select_final_hidden_state(pipe)
+    assert prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
+
+
 def test_a_marked_wrapper_around_a_foreign_callable_keeps_the_full_key(monkeypatch):
     monkeypatch.delenv(SCOPED_ENV, raising = False)
     pipe = _Qwen21LikePipe({"transformer": ["style"]})

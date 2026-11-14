@@ -77,6 +77,14 @@ test("turning the wallpaper fade off drops the band behind the composer", () => 
 	);
 });
 
+test("the thread fades out under the see-through header of a background or macOS glass", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(
+		css,
+		/\[data-wallpaper-ready\]\[data-wallpaper-ready\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\),\nhtml\[data-glass="macos"\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\n  mask-image:\n    linear-gradient\(to bottom, transparent var\(--thread-header-offset, -1\.5rem\), #000 calc\(var\(--thread-header-offset, -1\.5rem\) \+ 1\.5rem\)\),/,
+	);
+});
+
 test("glass strength repairs malformed persisted data", () => {
 	assert.equal(sanitizeStrength(undefined), 50);
 	assert.equal(sanitizeStrength(Number.NaN), 50);
@@ -300,8 +308,8 @@ test("menus, popovers and dialogs point every hover token at the glass hover", (
 
 test("glass sheen runs at 90% except on the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.059\)/);
-	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.066\)/);
+	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: linear-gradient\(170deg, rgb\(255 255 255 \/ \.047\)/);
+	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-sheen: linear-gradient\(170deg, rgb\(255 255 255 \/ \.053\)/);
 	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
 });
 
@@ -354,7 +362,7 @@ test("light glass API cards use a thinner fill with the outlined glass edge", ()
 
 test("light glass outlines model buttons and the status chip, but not the sidebar", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /  --glass-light-inner: inset 0 1px 1px rgb\(255 255 255 \/ \.7\), inset 0 16px 30px -20px rgb\(255 255 255 \/ \.55\), inset 0 -18px 34px -20px rgb\(255 255 255 \/ \.4\);/);
+	assert.match(css, /  --glass-light-inner: inset 0 1px 0 rgb\(255 255 255 \/ \.7\);/);
 	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-slot="sidebar-inner"\] \{\n  border-color: transparent;\n  box-shadow: none;/);
 	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\) \{\n  box-shadow: var\(--glass-light-edge\);/);
 	assert.match(css, /\.glass-inset \{\n  box-shadow: var\(--glass-light-edge\);/);
@@ -374,6 +382,14 @@ test("light glass draws no grey outlines outside the composer", () => {
 	assert.match(css, /html\[data-glass\] \{\n  --glass-hover: [^;]*;\n  --glass-hover-rim: inset 0 0 0 0 transparent;/);
 	assert.match(css, /html\.dark\[data-glass\] \{\n[^}]*--glass-hover-rim: inset 0 0 0 1px rgb\(255 255 255 \/ \.06\);/);
 	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
+});
+
+test("glass decoration has no blurred inset shadows or radial sheens", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const glass = css.slice(css.indexOf('html[data-glass="frosted"]'), css.indexOf(".glass-lens {"));
+	assert.ok(glass.length > 10000);
+	assert.deepEqual(glass.match(/inset 0 -?[\d.]+px [1-9][\d.]*px/g), null);
+	assert.deepEqual(glass.match(/--glass-sheen: radial-gradient/g), null);
 });
 
 test("light glass pages keep the borders of boxed panels and select triggers", () => {
@@ -405,10 +421,9 @@ test("transparent glass keeps each surface's colour at the strength's opacity, w
 	const block = css.slice(css.indexOf("/* Transparent glass: the plain theme"));
 	// Shared surface tokens resolve from the opaque html palette.
 	for (const [token, copy] of [["background", "bg"], ["card", "card"], ["popover", "popover"], ["muted", "muted"], ["secondary", "secondary"], ["sidebar", "sidebar"]]) {
-		assert.match(block, new RegExp(`html\\[data-glass-clear\\] #root,\\nhtml\\[data-glass-clear\\] #root \\[data-sonner-toaster\\] \\{[^}]*--${token}: color-mix\\(in srgb, var\\(--glass-page-${copy}\\) var\\(--clear-alpha\\), transparent\\);`), token);
+		assert.match(block, new RegExp(`html\\[data-glass-clear\\] #root,\\nhtml\\[data-glass-clear\\] #root :is\\(\\[data-sonner-toaster\\], \\.toast-surface\\) \\{[^}]*--${token}: color-mix\\(in srgb, var\\(--glass-page-${copy}\\) var\\(--clear-alpha\\), transparent\\);`), token);
 	}
 	// Sonner renders inside #root (no portal), so toasts re-resolve the tokens at full opacity.
-	assert.match(block, /html\[data-glass-clear\] #root \[data-sonner-toaster\] \{\n  --clear-alpha: 100%;\n\}/);
 	assert.match(block, /html\[data-glass-clear\] #root \[class\*="text-background"\] \{\n  --background: var\(--glass-page-bg\);\n  --color-background: var\(--glass-page-bg\);\n\}/);
 	assert.match(css, /--glass-page-sidebar: var\(--sidebar\);/);
 	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\][^)]*\)\) \{\n\s*background-color: transparent;/);
@@ -443,4 +458,16 @@ test("macOS glass and a plain background image leave the resting page headers cl
 	const block = css.slice(css.indexOf("/* macOS glass sees the window through every page"));
 	assert.match(block, /^\/\*[^]*?\*\/\nhtml\[data-glass="macos"\] \[data-slot="sidebar-inset"\] :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], \.hub-page \.hub-detail-bar:not\(\[data-scrolled\]\)\),\nhtml:not\(\[data-glass\]\) \[data-wallpaper-workspace\]\[data-wallpaper-ready\]\[data-wallpaper-ready\] > \[data-slot="sidebar-inset"\] :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n  background-color: transparent;/);
 	assert.match(block, /html\[data-glass="macos"\] \[data-page-model-header\] \[data-slot="api-toolbar-fade"\],\nhtml:not\(\[data-glass\]\) [^{]*\[data-page-model-header\] \[data-slot="api-toolbar-fade"\] \{\n  display: none;/);
+});
+
+test("the update cards that float like toasts take the glass toast surface", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{[^}]*backdrop-filter: blur\(max\(var\(--glass-blur\), 18px\)\)/);
+	assert.match(css, /html\[data-glass\^="liquid"\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{/);
+	// Transparent keeps toasts opaque; the cards re-resolve the palette at full alpha like the toaster.
+	assert.match(css, /html\[data-glass-clear\] #root :is\(\[data-sonner-toaster\], \.toast-surface\) \{\n\s*--clear-alpha: 100%;/);
+	for (const file of ["components/llama-update-banner.tsx", "components/tauri/update-banner.tsx", "components/web/update-banner.tsx"]) {
+		const source = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+		assert.match(source, /className="toast-surface /, file);
+	}
 });

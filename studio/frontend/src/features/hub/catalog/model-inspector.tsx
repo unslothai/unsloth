@@ -785,6 +785,9 @@ export const ModelInspector = memo(function ModelInspector({
               onChange={onInventoryChange}
               isMlx={isMlx}
               onRunPrecision={precisionRunAction}
+              onRunCheckpoint={mediaPage === "images" && onRun && model.hubRepoId
+                ? (checkpointFilename) => onRun({ checkpointFilename }, "images")
+                : undefined}
             />
           )}
         </InspectorDownloadSlot>

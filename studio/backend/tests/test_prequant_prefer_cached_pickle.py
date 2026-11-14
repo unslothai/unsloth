@@ -700,6 +700,24 @@ def test_cached_own_pickle_offline_never_asks_for_the_twin(hub):
     assert hub.downloads == [("Model-INT8.pt", True)]
 
 
+@pytest.mark.parametrize("why", ["sha_mismatch", "no_lfs_record", "reuse_off", "prefer_st"])
+def test_unverified_cached_pickle_does_not_demote_the_hosted_twin(hub, monkeypatch, why):
+    """Only the own safetensors 404s: the hosted twin loads, never the cached pickle the Hub does not vouch for."""
+    hub.cache("Model-INT8.pt")
+    hub.hosted = {COMFY, "Model-INT8.pt"}
+    if why == "sha_mismatch":
+        hub.hub_sha["Model-INT8.pt"] = hashlib.sha256(b"other").hexdigest()
+    elif why == "no_lfs_record":
+        hub.hub_sha["Model-INT8.pt"] = None
+    elif why == "reuse_off":
+        monkeypatch.setenv(cws.ENV_DISABLE, "0")
+    else:
+        monkeypatch.setenv(KILL_SWITCH, "1")
+    assert pq.prefer_cached_pickle_twins(REPO, _comfy_dit().candidate_filenames)[0] == COMFY
+    assert _resolve(_comfy_dit()) == hub.cached[(REPO, COMFY)]
+    assert hub.fetched == [COMFY]
+
+
 def test_cached_comfy_twin_stays_first(hub):
     hub.cache(COMFY)
     hub.cache("Model-INT8.pt")

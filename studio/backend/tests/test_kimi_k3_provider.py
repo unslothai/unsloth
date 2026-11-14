@@ -90,9 +90,9 @@ _MOONSHOT_LIVE_IDS = [
 
 
 def test_kimi_k3_reaches_the_picker():
-    kimi = PROVIDER_REGISTRY["kimi"]
-    for model_id in ("kimi-k3", "kimi-k3.1-pro", "kimi-k2.6", "kimi-k2.5"):
-        assert model_id in kimi["default_models"], model_id
+    from core.inference.providers import provider_default_models
+    listed = [*_MOONSHOT_LIVE_IDS, "kimi-k2-thinking", "moonshot-v1-8k"]
+    assert provider_default_models("kimi", {"kimi": listed}) == _MOONSHOT_LIVE_IDS
 
 
 def test_every_current_kimi_model_reaches_the_picker(monkeypatch):

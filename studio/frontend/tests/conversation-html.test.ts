@@ -14,18 +14,38 @@ test("renders markdown with role sections", () => {
     {
       title: "Chat",
       messages: [
-        { role: "user", content: "What is **2+2**?" },
-        { role: "assistant", content: "```python\nprint(4)\n```" },
+        { role: "user", content: "What is 2+2?" },
+        { role: "assistant", content: "**4**\n\n```python\nprint(4)\n```" },
         { role: "assistant", content: "   " },
       ],
     },
   ]);
   assert.match(body, /<section class="message user">/);
   assert.match(body, /<h3 class="role">User<\/h3>/);
-  assert.match(body, /<strong>2\+2<\/strong>/);
+  assert.match(body, /<strong>4<\/strong>/);
   assert.match(body, /<pre><code class="language-python">print\(4\)/);
   assert.equal(body.match(/<section/g)?.length, 2);
   assert.doesNotMatch(body, /conversation-title/);
+});
+
+test("user messages keep their text as typed", () => {
+  const body = buildConversationHtmlBody([
+    {
+      title: "Chat",
+      messages: [
+        {
+          role: "user",
+          content:
+            'class A:\n    def __init__(self, *args):\n        self.x = args[0] * 2\n# TODO remove this line\n<b>a,b</b>\n1,2',
+        },
+      ],
+    },
+  ]);
+  assert.match(
+    body,
+    /<div class="content">class A:\n {4}def __init__\(self, \*args\):\n {8}self\.x = args\[0\] \* 2\n# TODO remove this line\n&lt;b&gt;a,b&lt;\/b&gt;\n1,2<\/div>/,
+  );
+  assert.doesNotMatch(body, /<strong>|<em>|<h1>|<p>|<b>/);
 });
 
 test("raw HTML from a model is shown as text, except the thinking wrapper", () => {
