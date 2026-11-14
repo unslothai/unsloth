@@ -808,6 +808,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "user_config_python_isolated",
         "python_main_parser",
         "log_takes_dashdash",
+        "install_section_python",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -879,6 +880,9 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "user_config_python_isolated": "python -m venv venv && mkdir -p .config/pip && "
         "printf '[global]\\npython = %s\\n' \"$PWD/venv/bin/python\" > .config/pip/pip.conf && "
         f"python -m pip --isolated install -q --no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
+        # [install] python is never the main parser's: under --isolated it delegates nowhere.
+        "install_section_python": "mkdir -p .config/pip && printf '[install]\\npython = /unused\\n' > .config/pip/pip.conf"
+        f" && python -m pip --isolated install -q --no-index --no-deps {wheel} && {show}",
         # --log -- : that -- is the log file name, no terminator to drop before install.
         "log_takes_dashdash": f"python -m pip --isolated --log -- install -q --no-index --no-deps {wheel} && {show}",
         # --python is the main parser's: an install-level --python= cannot undo the one before the subcommand.
@@ -971,6 +975,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "user_config_python_isolated": str(workdir / "venv"),
         "python_main_parser": str(workdir / "venv"),
         "log_takes_dashdash": packages,
+        "install_section_python": packages,
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -2120,6 +2125,28 @@ def test_path_line_files_fall_back_to_the_locale_encoding(tmp_path):
         [sys.executable, "-S", "-c", code], env = env, capture_output = True, text = True
     )
     assert out.stdout.strip() == "True", out.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "symlinked folders")
+def test_retirement_rechecks_each_path_before_removing_it(tmp_path):
+    """A folder swapped for a symlink out of the prefix after the list was taken: nothing outside is removed."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    (site_dir / "pkg").mkdir(parents = True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "old_only.py").write_text("")
+    victim = os.path.normcase(str(site_dir / "pkg" / "old_only.py"))
+    (site_dir / "pkg").rmdir()
+    (site_dir / "pkg").symlink_to(outside)
+    code = "import sitecustomize as s; s._remove_files({%r}, %r)" % (victim, str(site_dir))
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": os.pathsep.join([tools._SANDBOX_SITE_DIR, str(site_dir)]),
+        "PIP_PREFIX": str(prefix),
+    }
+    subprocess.run([sys.executable, "-c", code], env = env, check = True, cwd = tmp_path)
+    assert (outside / "old_only.py").exists()
 
 
 def test_an_unfinished_install_retires_nothing(tmp_path):

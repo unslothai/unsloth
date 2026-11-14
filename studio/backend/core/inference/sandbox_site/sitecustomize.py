@@ -654,11 +654,7 @@ def _config_chooses_location(
 
     # pip's precedence per option: [global], then [install], then a PIP_* variable (ignored under --isolated);
     # empty values are skipped, as pip's _get_ordered_configuration_items does.
-    def value(
-        key,
-        merged = merged,
-        isolated = isolated,
-    ):
+    def value(key):
         env = "" if isolated else os.environ.get("PIP_" + key.upper(), "")
         if env.strip() and env != os.environ.get("_UNSLOTH_PIP_PREFIX"):
             return env
@@ -671,7 +667,8 @@ def _config_chooses_location(
     if any(value(k).strip() for k in ("target", "prefix", "root") if k not in skip):
         return True
     # python: pip re-runs itself in that interpreter, as --python does, which installs there.
-    if "python" not in skip and value("python", full, False).strip():
+    # [global] only: that is the main parser's section ([install] python is never read for delegation).
+    if "python" not in skip and full.get("global", {}).get("python", "").strip():
         return True
     items = []
     for section in ("global", "install"):
@@ -1288,7 +1285,14 @@ def _claimed(root, skip):
 def _remove_files(paths, entry):
     # As pip's uninstall: the files, then any folder they leave empty, never above the site dir.
     stop = os.path.normcase(os.path.abspath(entry))
+    real = os.path.join(
+        os.path.normcase(os.path.realpath(os.environ.get("PIP_PREFIX") or entry)), ""
+    )
     for path in paths:
+        # Re-resolved now: a folder replaced by a symlink since the list was taken leads nowhere outside.
+        folder = os.path.join(os.path.normcase(os.path.realpath(os.path.dirname(path))), "")
+        if not folder.startswith(real):
+            continue
         try:
             os.remove(path)
         except OSError:
