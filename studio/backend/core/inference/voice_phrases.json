@@ -1,0 +1,607 @@
+{
+  "_about": "Thinking fillers spoken while the LLM thinks. classes -> phrases with sampling weights (higher = more common). Every phrase is hedged: it says the assistant is looking, never that it will or can. 'minimal' is the one-or-two-word tier for medium asks; 'none' means stay quiet.",
+  "classes": {
+    "minimal": {
+      "desc": "a medium-length ask: a sentence is too much, silence is wrong. one or two words.",
+      "phrases": [
+        {
+          "text": "Hmm.",
+          "weight": 6
+        },
+        {
+          "text": "Let's see.",
+          "weight": 5
+        },
+        {
+          "text": "One moment.",
+          "weight": 5
+        },
+        {
+          "text": "Hm, thinking.",
+          "weight": 4
+        },
+        {
+          "text": "Thinking...",
+          "weight": 4
+        },
+        {
+          "text": "Let me see.",
+          "weight": 4
+        },
+        {
+          "text": "One sec.",
+          "weight": 3
+        },
+        {
+          "text": "Mm, hold on.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, one sec.",
+          "weight": 3
+        },
+        {
+          "text": "Uh, hang on.",
+          "weight": 2
+        },
+        {
+          "text": "Hm.",
+          "weight": 2
+        }
+      ]
+    },
+    "task": {
+      "desc": "a concrete do-this request (write, make, draft, list) that is big enough to think about",
+      "phrases": [
+        {
+          "text": "Let me think about that.",
+          "weight": 5
+        },
+        {
+          "text": "Let me check if I can do that.",
+          "weight": 5
+        },
+        {
+          "text": "Hmm, let me look into that.",
+          "weight": 4
+        },
+        {
+          "text": "Give me a second on that one.",
+          "weight": 4
+        },
+        {
+          "text": "Let me see about that.",
+          "weight": 3
+        },
+        {
+          "text": "Let me have a look.",
+          "weight": 3
+        },
+        {
+          "text": "Let me see if that's doable.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, let me think on that.",
+          "weight": 2
+        },
+        {
+          "text": "Hmm, let me look at it.",
+          "weight": 2
+        },
+        {
+          "text": "Let me see here.",
+          "weight": 2
+        }
+      ]
+    },
+    "code": {
+      "desc": "programming: write, debug, or explain code, scripts, errors",
+      "phrases": [
+        {
+          "text": "Let me look at that code.",
+          "weight": 5
+        },
+        {
+          "text": "Hmm, let me see what's going on.",
+          "weight": 4
+        },
+        {
+          "text": "Let me check if I can work that out.",
+          "weight": 4
+        },
+        {
+          "text": "Let me think about the logic.",
+          "weight": 4
+        },
+        {
+          "text": "Give me a sec to look at this.",
+          "weight": 3
+        },
+        {
+          "text": "Let me see if I can figure it out.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, let me trace through that.",
+          "weight": 2
+        },
+        {
+          "text": "Hmm, let me have a look at it.",
+          "weight": 2
+        },
+        {
+          "text": "Let me see what we're working with.",
+          "weight": 2
+        }
+      ]
+    },
+    "explain": {
+      "desc": "a how/why/what-is question that needs a real explanation",
+      "phrases": [
+        {
+          "text": "Hmm, let me think about that.",
+          "weight": 5
+        },
+        {
+          "text": "Hmm, let me think.",
+          "weight": 5
+        },
+        {
+          "text": "Let me think about how to put that.",
+          "weight": 4
+        },
+        {
+          "text": "Hmm, let me see.",
+          "weight": 3
+        },
+        {
+          "text": "Let me think that through.",
+          "weight": 3
+        },
+        {
+          "text": "Mm, let me think.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, let me see how to explain it.",
+          "weight": 2
+        },
+        {
+          "text": "Let me think about that one.",
+          "weight": 3
+        },
+        {
+          "text": "Give me a second on that.",
+          "weight": 2
+        }
+      ]
+    },
+    "plan": {
+      "desc": "planning, scheduling, step-by-step organizing, itineraries, roadmaps",
+      "phrases": [
+        {
+          "text": "Let me think how to lay that out.",
+          "weight": 5
+        },
+        {
+          "text": "Hmm, let me see what makes sense.",
+          "weight": 4
+        },
+        {
+          "text": "Let me think through the steps.",
+          "weight": 4
+        },
+        {
+          "text": "Let me think about how that fits together.",
+          "weight": 4
+        },
+        {
+          "text": "Give me a second to think it through.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, let me think about the order.",
+          "weight": 2
+        },
+        {
+          "text": "Let me see how that could work.",
+          "weight": 2
+        },
+        {
+          "text": "Hmm, let me map that out in my head.",
+          "weight": 2
+        }
+      ]
+    },
+    "creative": {
+      "desc": "poems, stories, jokes, songs, scripts, names, slogans",
+      "phrases": [
+        {
+          "text": "Hmm, let me see what I come up with.",
+          "weight": 5
+        },
+        {
+          "text": "Let me think of something.",
+          "weight": 5
+        },
+        {
+          "text": "Ooh, let me think.",
+          "weight": 4
+        },
+        {
+          "text": "Let me see if anything comes to mind.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, let me play with that.",
+          "weight": 3
+        },
+        {
+          "text": "Give me a sec to think of something.",
+          "weight": 3
+        },
+        {
+          "text": "Let me see what I've got.",
+          "weight": 2
+        },
+        {
+          "text": "Hmm, let me find an angle.",
+          "weight": 2
+        }
+      ]
+    },
+    "compare": {
+      "desc": "compare, pros and cons, which is better, recommend between options",
+      "phrases": [
+        {
+          "text": "Hmm, let me weigh that.",
+          "weight": 5
+        },
+        {
+          "text": "Let me think about both.",
+          "weight": 4
+        },
+        {
+          "text": "Let me see how they stack up.",
+          "weight": 4
+        },
+        {
+          "text": "Hmm, let me think it over.",
+          "weight": 3
+        },
+        {
+          "text": "Let me think about the tradeoffs.",
+          "weight": 3
+        },
+        {
+          "text": "Let me see which fits.",
+          "weight": 2
+        },
+        {
+          "text": "Hmm, there's a few things to weigh.",
+          "weight": 2
+        },
+        {
+          "text": "Give me a second to compare.",
+          "weight": 2
+        }
+      ]
+    },
+    "transform": {
+      "desc": "summarize, rewrite, translate, proofread, extract, classify given text",
+      "phrases": [
+        {
+          "text": "Let me have a look at it.",
+          "weight": 5
+        },
+        {
+          "text": "Let me read through that.",
+          "weight": 4
+        },
+        {
+          "text": "Let me go over it.",
+          "weight": 4
+        },
+        {
+          "text": "One sec, looking it over.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, let me go through it.",
+          "weight": 3
+        },
+        {
+          "text": "Let me see how to rework that.",
+          "weight": 2
+        },
+        {
+          "text": "Let me check what's in there.",
+          "weight": 2
+        },
+        {
+          "text": "Hmm, let me look.",
+          "weight": 2
+        }
+      ]
+    },
+    "advice": {
+      "desc": "personal situation plus what should I do, help me decide, is this normal",
+      "phrases": [
+        {
+          "text": "Hmm, let me think about your situation.",
+          "weight": 5
+        },
+        {
+          "text": "Let me think about that for a second.",
+          "weight": 4
+        },
+        {
+          "text": "Hmm, let me think that through.",
+          "weight": 4
+        },
+        {
+          "text": "Let me see what might make sense.",
+          "weight": 3
+        },
+        {
+          "text": "Give me a moment on that.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, let me think.",
+          "weight": 3
+        },
+        {
+          "text": "Let me think about your options.",
+          "weight": 2
+        },
+        {
+          "text": "Hmm, let me consider that.",
+          "weight": 2
+        }
+      ]
+    },
+    "opinion": {
+      "desc": "open-ended or philosophical, what do you think, is it ethical",
+      "phrases": [
+        {
+          "text": "Hmm, let me think about that one.",
+          "weight": 5
+        },
+        {
+          "text": "Ooh, that's a big one.",
+          "weight": 4
+        },
+        {
+          "text": "Interesting, let me think.",
+          "weight": 4
+        },
+        {
+          "text": "Hmm, let me chew on that.",
+          "weight": 3
+        },
+        {
+          "text": "Let me think where I land on that.",
+          "weight": 2
+        },
+        {
+          "text": "Hmm, there's a lot to that.",
+          "weight": 2
+        },
+        {
+          "text": "Let me mull that over.",
+          "weight": 3
+        },
+        {
+          "text": "That's a deep one, let me think.",
+          "weight": 2
+        }
+      ]
+    },
+    "correction": {
+      "desc": "the user says the last answer was wrong, not what they asked, redo it",
+      "phrases": [
+        {
+          "text": "Hmm, let me look at that again.",
+          "weight": 5
+        },
+        {
+          "text": "Hmm, let me check that again.",
+          "weight": 4
+        },
+        {
+          "text": "Let me check that.",
+          "weight": 4
+        },
+        {
+          "text": "Let me take another look.",
+          "weight": 4
+        },
+        {
+          "text": "Ah, let me see what happened.",
+          "weight": 3
+        },
+        {
+          "text": "Let me look back at that.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, let me go over that again.",
+          "weight": 2
+        },
+        {
+          "text": "Hmm, let me look again.",
+          "weight": 2
+        }
+      ]
+    },
+    "none": {
+      "desc": "say nothing: greetings, one-word replies, yes/no, control commands, quick lookups, answers to the assistant's own question",
+      "phrases": []
+    }
+  },
+  "echo_templates": {
+    "desc": "Used only when the gate says yes and the echo slot confidence is high (>= 0.7). {slot} is the 2-5 word noun phrase from echo.py, pronouns already flipped.",
+    "templates": [
+      {
+        "text": "{slot}, let me see.",
+        "weight": 5
+      },
+      {
+        "text": "Hmm, {slot}.",
+        "weight": 4
+      },
+      {
+        "text": "{slot}, give me a sec.",
+        "weight": 4
+      },
+      {
+        "text": "Hmm, {slot}, let me think.",
+        "weight": 3
+      },
+      {
+        "text": "{slot}, one sec.",
+        "weight": 3
+      },
+      {
+        "text": "{slot}, let me look.",
+        "weight": 3
+      },
+      {
+        "text": "{slot}, one moment.",
+        "weight": 2
+      },
+      {
+        "text": "{slot}, let me check.",
+        "weight": 2
+      }
+    ],
+    "mix": {
+      "echo_when_slot": 0.5,
+      "note": "with a confident slot, pick an echo template this often, else the class phrase; keeps it from echoing every turn"
+    }
+  },
+  "stage2_phrases": {
+    "desc": "Runtime-only (no model). Spoken while reasoning or tool-call parts stream and no text token has arrived. Max two fillers per turn total, skip once text arrives, never speak reasoning verbatim.",
+    "tool_call": {
+      "search": [
+        {
+          "text": "Looking that up.",
+          "weight": 5
+        },
+        {
+          "text": "Let me search for that.",
+          "weight": 3
+        },
+        {
+          "text": "Checking online.",
+          "weight": 2
+        }
+      ],
+      "code": [
+        {
+          "text": "Running it real quick.",
+          "weight": 5
+        },
+        {
+          "text": "Let me run that.",
+          "weight": 3
+        },
+        {
+          "text": "Trying it out.",
+          "weight": 2
+        }
+      ],
+      "file_read": [
+        {
+          "text": "Checking the file.",
+          "weight": 5
+        },
+        {
+          "text": "Let me look at the file.",
+          "weight": 3
+        },
+        {
+          "text": "Reading that in.",
+          "weight": 2
+        }
+      ],
+      "file_write": [
+        {
+          "text": "Writing that out.",
+          "weight": 4
+        },
+        {
+          "text": "Saving that.",
+          "weight": 3
+        }
+      ],
+      "other": [
+        {
+          "text": "Checking something.",
+          "weight": 4
+        },
+        {
+          "text": "One sec, using a tool.",
+          "weight": 2
+        },
+        {
+          "text": "Let me check on that.",
+          "weight": 3
+        }
+      ]
+    },
+    "elapsed": {
+      "3s": [
+        {
+          "text": "Hmm, still thinking.",
+          "weight": 5
+        },
+        {
+          "text": "This one's bigger.",
+          "weight": 4
+        },
+        {
+          "text": "Still thinking.",
+          "weight": 3
+        },
+        {
+          "text": "Bear with me.",
+          "weight": 2
+        }
+      ],
+      "8s": [
+        {
+          "text": "Still working on the answer.",
+          "weight": 4
+        },
+        {
+          "text": "Still working through it.",
+          "weight": 4
+        },
+        {
+          "text": "Nearly done thinking.",
+          "weight": 2
+        }
+      ]
+    },
+    "topical": {
+      "desc": "optional: regex keyword grab from the last ~200 chars of reasoning, filled into {topic}; only a safe noun-ish word list, never a raw span",
+      "templates": [
+        {
+          "text": "Thinking about {topic}.",
+          "weight": 5
+        },
+        {
+          "text": "Working out {topic}.",
+          "weight": 3
+        },
+        {
+          "text": "Hmm, {topic}.",
+          "weight": 2
+        }
+      ]
+    }
+  }
+}

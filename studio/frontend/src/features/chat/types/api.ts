@@ -72,6 +72,7 @@ export interface LoadModelRequest {
 
   force_reload?: boolean;
   alongside?: boolean;
+  voice?: boolean;
   /** Set only after the user confirms: the load replaces the shared llama-server. */
   force_cancel_active?: boolean;
   nativePathLease?: string | null;

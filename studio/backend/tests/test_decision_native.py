@@ -217,6 +217,7 @@ def home(tmp_path, monkeypatch):
         "_loading",
         "_failure",
         "_fallback_reason",
+        "_placement_reason",
     ):
         monkeypatch.setattr(laya_runtime, name, None)
     monkeypatch.setattr(laya_runtime, "_incapable", set())
@@ -868,18 +869,22 @@ def test_training_and_the_gpu_arbiter_gate_a_gpu_server(home, client, stub, monk
     assert client.get("/api/settings/systemone").json()["fallback_reason"] == (
         "Another model is using the GPU."
     )
-    # Only llama.cpp reads images: those still wait for the GPU.
-    busy = _post(client, images = [PNG])
-    assert (
-        busy.status_code == 409 and "Unload the resident chat" in busy.json()["detail"]["message"]
-    )
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 0)
+    on_cpu = _post(client, images = [PNG])
+    assert on_cpu.status_code == 200 and laya_runtime._device_name == "cpu"
+    argv = stub.records("start")[-1]["argv"]
+    assert argv[argv.index("-ngl") + 1] == "0"
+    assert "on the CPU" in laya_runtime.status()["fallback_reason"]
+    assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
     laya_runtime.unload()
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 1 << 20)
     _put(client, backend = "llama.cpp")
-    busy = _post(client)
-    assert (
-        busy.status_code == 409 and "Unload the resident chat" in busy.json()["detail"]["message"]
-    )
-    assert stub.records("start") == []
+    joined = _post(client)
+    assert joined.status_code == 200 and laya_runtime._device_name != "cpu"
+    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT, gpu_arbiter.DECISIONS}
+    assert len(stub.records("start")) == 2
+    laya_runtime.unload()
+    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT}
     _put(client, backend = "auto")
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
@@ -1500,6 +1505,43 @@ def test_a_laya_export_gives_way_to_a_training_run(home, client, stub, monkeypat
         laya_runtime._ensure_loading(forced)
 
 
+def test_a_laya_export_joins_a_resident_chat_model_when_it_fits(home, client, stub, monkeypatch):
+    _torch_laya(monkeypatch)
+    _laya_fine_tune(home.outputs, "laya_beside")
+    _put(client, enabled = True, model = "laya-ft:laya_beside", backend = "llama.cpp")
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 1 << 20)
+    joined = _post(client, questions = NOUL)
+    assert joined.status_code == 200 and joined.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert laya_runtime._device_name != "cpu"
+    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT, gpu_arbiter.DECISIONS}
+    laya_runtime.unload()
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 0)
+    on_cpu = _post(client, questions = NOUL)
+    assert on_cpu.status_code == 200 and laya_runtime._device_name == "cpu"
+    argv = stub.records("start")[-1]["argv"]
+    assert argv[argv.index("-ngl") + 1] == "0"
+    assert "on the CPU" in laya_runtime.status()["fallback_reason"]
+    assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
+
+
+def test_a_beside_load_rechecks_its_room_when_the_arbiter_admits_it(
+    home, client, stub, monkeypatch
+):
+    _torch_laya(monkeypatch)
+    _laya_fine_tune(home.outputs, "laya_beside_race")
+    _put(client, enabled = True, model = "laya-ft:laya_beside_race", backend = "llama.cpp")
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 1 << 20)
+    monkeypatch.setattr(laya_runtime, "_fits_beside", lambda checkpoint: False)
+    refused = _post(client, questions = NOUL)
+    assert refused.status_code != 200
+    assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
+    assert stub.records("start") == []
+
+
 @pytest.mark.parametrize("mode", ["unknown_arch", "unknown_vocab"])
 def test_a_laya_export_llama_cpp_cannot_load_is_refused_and_remembered(home, client, stub, mode):
     laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
@@ -1661,3 +1703,82 @@ def test_an_expired_llama_cpp_gpu_answer_is_served_while_it_refreshes(monkeypatc
     systemone_settings._LLAMA_GPU_REFRESH.release()
     assert len(calls) == 1
     assert systemone_settings._llama_cpp_has_gpu() is False
+
+
+def _crowded_clef(
+    monkeypatch,
+    tmp_path,
+    *,
+    free,
+    gguf = 1000,
+    mlx = 3000,
+):
+    """A local Clef whose MLX form and GGUF cost `mlx` and `gguf` MiB, while a chat model holds the GPU."""
+    import dataclasses
+
+    clef = catalog.Checkpoint("clef-ft:x", str(tmp_path), None, "", layout = "clef")
+    target = dataclasses.replace(clef, backend = laya_runtime.MLX)
+    native = dataclasses.replace(clef, backend = laya_runtime.LLAMA_CPP) if gguf else None
+    monkeypatch.setattr(laya_runtime, "_mlx_target", lambda checkpoint: target)
+    monkeypatch.setattr(laya_runtime, "_native_target", lambda checkpoint: native)
+    monkeypatch.setattr(laya_runtime, "_native_unavailable", lambda checkpoint, n: None)
+    monkeypatch.setattr(
+        laya_runtime,
+        "_footprint_mib",
+        lambda checkpoint: gguf if laya_runtime._is_native(checkpoint) else mlx,
+    )
+    monkeypatch.setattr(laya_runtime, "_gpu_taken", lambda: True)
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: free)
+    return clef, target, native
+
+
+def test_a_busy_gpu_takes_the_gguf_beside_the_chat_model(monkeypatch, tmp_path):
+    clef, _, native = _crowded_clef(monkeypatch, tmp_path, free = 10_000)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") is None
+    assert laya_runtime._placement(native) == ("beside", None)
+
+
+def test_a_busy_gpu_without_a_gguf_runs_mlx_beside_when_it_fits(monkeypatch, tmp_path):
+    clef, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 10_000, gguf = None)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") == target
+    assert laya_runtime._placement(target) == ("beside", None)
+    clef, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 4_000, gguf = 5_000, mlx = 1_000)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") == target
+
+
+def test_a_busy_gpu_with_no_room_serves_the_gguf_on_cpu_or_says_why(monkeypatch, tmp_path):
+    clef, _, native = _crowded_clef(monkeypatch, tmp_path, free = 2_500)
+    assert laya_runtime._mlx_choice(clef, False, {}, "auto") is None
+    where, why = laya_runtime._placement(native)
+    assert where == "cpu" and "on the CPU" in why
+    _, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 2_500, gguf = None)
+    with pytest.raises(laya_runtime.Unavailable) as refused:
+        laya_runtime._placement(target)
+    assert refused.value.status == 409 and "needs about 2.9 GB" in refused.value.message
+    # An unpriced host is never assumed to have room.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: None)
+    assert laya_runtime._placement(native)[0] == "cpu"
+
+
+def test_a_server_placed_on_the_cpu_beside_the_chat_keeps_serving_during_training(
+    home, client, stub, monkeypatch
+):
+    _cache_gguf(home.cache)
+    _put(client, enabled = True, model = "clef-flash", backend = "llama.cpp", device = "gpu")
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 0)
+    assert _post(client).status_code == 200 and laya_runtime._device_name == "cpu"
+    home.training = True
+    assert _post(client).status_code == 200
+    assert len(stub.records("start")) == 1
+
+
+def test_switching_mlx_decision_models_counts_the_outgoing_one_as_free(monkeypatch, tmp_path):
+    import dataclasses
+
+    clef, target, _ = _crowded_clef(monkeypatch, tmp_path, free = 3_000, gguf = None, mlx = 3_000)
+    with pytest.raises(laya_runtime.Unavailable):
+        laya_runtime._placement(target)
+    outgoing = dataclasses.replace(target, name = "clef-ft:old")
+    monkeypatch.setattr(laya_runtime, "_loaded", outgoing)
+    assert laya_runtime._placement(target) == ("beside", None)

@@ -622,6 +622,78 @@ def fine_tunes() -> list[Checkpoint]:
     return [c for name in folders if (c := _fine_tune_in(root, name)) is not None]
 
 
+FOLDER_PREFIX = "decision-folder:"
+DECISION_FOLDER_MARKERS = {"unsloth_decision_config.json": "clef", "rl_agent_config.json": "laya"}
+
+
+def _folder_checkpoint(folder: Path) -> Checkpoint | None:
+    from utils.models.model_config import clef_folder_kind
+
+    from .laya_runtime import is_cached
+
+    layout = next(
+        (kind for marker, kind in DECISION_FOLDER_MARKERS.items() if (folder / marker).is_file()),
+        None,
+    )
+    if layout is None or (layout == "clef" and clef_folder_kind(folder) is None):
+        return None
+    family = "Clef" if layout == "clef" else "Laya"
+    checkpoint = Checkpoint(
+        FOLDER_PREFIX + str(folder),
+        str(folder),
+        None,
+        f"{family} in a custom model folder.",
+        layout = layout,
+        label = folder.name,
+    )
+    return checkpoint if is_cached(checkpoint) else None
+
+
+def _custom_roots() -> list[tuple[Path, bool]]:
+    from storage.studio_db import list_scan_folders
+    from utils.account_context import OWNER, run_as
+
+    try:
+        rows = run_as(OWNER, list_scan_folders)
+    except Exception:
+        return []
+    return [(Path(os.path.realpath(r["path"])), bool(r.get("recursive"))) for r in rows]
+
+
+def _subdirs(folder: Path) -> list[Path]:
+    try:
+        return sorted(p for p in folder.iterdir() if p.is_dir() and not p.name.startswith("."))
+    except OSError:
+        return []
+
+
+def folder_decisions() -> list[Checkpoint]:
+    """Decision models in the custom folders: the folder itself, its children, and grandchildren when recursive."""
+    seen: dict[str, Checkpoint] = {}
+    for root, recursive in _custom_roots():
+        candidates = [root, *_subdirs(root)]
+        if recursive:
+            candidates += [g for child in _subdirs(root) for g in _subdirs(child)]
+        for folder in candidates:
+            # Resolved and kept under the root, as folder_decision checks, so every listed name loads.
+            real = Path(os.path.realpath(folder))
+            if real != root and root not in real.parents:
+                continue
+            if str(real) not in seen and (c := _folder_checkpoint(real)) is not None:
+                seen[str(real)] = c
+    return list(seen.values())
+
+
+def folder_decision(name: str) -> Checkpoint | None:
+    if not isinstance(name, str) or not name.startswith(FOLDER_PREFIX):
+        return None
+    folder = Path(os.path.realpath(name[len(FOLDER_PREFIX) :]))
+    # Only under a registered custom folder, so a name cannot reach anywhere else on disk.
+    if not any(folder == root or root in folder.parents for root, _ in _custom_roots()):
+        return None
+    return _folder_checkpoint(folder)
+
+
 @dataclass(frozen = True)
 class Connection:
     provider_id: str
@@ -697,7 +769,7 @@ def resolve(model: str) -> Checkpoint | Connection | None:
         return CHECKPOINTS[name]
     from utils.account_context import is_owner_context
 
-    checkpoint = fine_tune(name)
+    checkpoint = fine_tune(name) if is_fine_tune_name(name) else folder_decision(name)
     # Other accounts reach only the fine-tune the owner configured, not the owner's other outputs.
     if checkpoint is None or is_owner_context() or checkpoint == default_checkpoint():
         return checkpoint

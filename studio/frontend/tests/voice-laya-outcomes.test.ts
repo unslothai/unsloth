@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  interjectOutcomeFor,
+  interjectUnderApproval,
+  isHoldOn,
+  REPEAT_WINDOW_MS,
+  replyEchoesFiller,
+  isSameAsk,
+  sharesMostWords,
+} from "../src/features/chat/voice/laya-outcomes.ts";
+
+test("sharesMostWords ignores stop words and needs most content words back", () => {
+  assert.equal(sharesMostWords("can you make it shorter", "please make it shorter"), true);
+  assert.equal(sharesMostWords("make it shorter", "what about the weather"), false);
+  assert.equal(sharesMostWords("um okay", "okay sure"), false);
+  assert.equal(sharesMostWords("", "anything"), false);
+});
+
+test("an ignored utterance said again inside the window is repeated, a queued one reasked", () => {
+  assert.equal(interjectOutcomeFor("ignore", "make it shorter", "make it shorter please", 3000), "repeated");
+  assert.equal(interjectOutcomeFor("queue", "set a timer for ten minutes", "timer for ten minutes", 9000), "reasked");
+  assert.equal(interjectOutcomeFor("ignore", "make it shorter", "make it shorter", REPEAT_WINDOW_MS + 1), "ok");
+  assert.equal(interjectOutcomeFor("ignore", "make it shorter", "tell me a joke", 2000), "ok");
+  assert.equal(interjectOutcomeFor("ignore", "make it shorter", null, 2000), "ok");
+  assert.equal(interjectOutcomeFor("restart", "make it shorter", "make it shorter", 100), "ok");
+});
+
+test("replyEchoesFiller spots the filler phrase at the head of the reply", () => {
+  assert.equal(replyEchoesFiller("Let me look into the weather. The forecast is", "Let me look into the weather."), true);
+  assert.equal(replyEchoesFiller("Sure, let me look into the weather!", "let me look into the weather"), true);
+  assert.equal(replyEchoesFiller("The forecast is sunny all week.", "Let me look into the weather."), false);
+  assert.equal(replyEchoesFiller("Anything", ""), false);
+});
+
+test("isHoldOn matches a bare stall, not a stall with content or aimed elsewhere", () => {
+  for (const t of ["hold on", "Wait.", "wait wait", "um, hang on", "one sec", "give me a minute", "okay hold on"]) {
+    assert.equal(isHoldOn(t), true, t);
+  }
+  for (const t of ["hold on, mom", "wait make it shorter", "stop", "never mind", "wait no"]) {
+    assert.equal(isHoldOn(t), false, t);
+  }
+});
+
+test("a queued interrupt cuts through a run parked on Allow/Deny; other verdicts are unchanged", () => {
+  assert.equal(interjectUnderApproval("queue", true), "restart");
+  assert.equal(interjectUnderApproval("queue", false), "queue");
+  assert.equal(interjectUnderApproval("ignore", true), "ignore");
+  assert.equal(interjectUnderApproval("restart", true), "restart");
+  assert.equal(interjectUnderApproval(null, true), null);
+});
+
+test("a correction is not the same ask, an impatient re-ask is", () => {
+  assert.equal(isSameAsk("Write a poem about dogs", "Write a poem about cats instead"), false);
+  assert.equal(isSameAsk("Set a timer for ten minutes", "No, set a timer for five minutes"), false);
+  assert.equal(isSameAsk("Write a poem about dogs", "can you write a poem about dogs"), true);
+  assert.equal(isSameAsk("what is the weather in Paris", "the weather in Paris?"), true);
+});
+
+test("a reversed or explicitly corrected request is not the same ask", () => {
+  assert.equal(isSameAsk("move alpha into beta", "No, move beta into alpha"), false);
+  assert.equal(isSameAsk("move alpha into beta", "move beta into alpha"), false);
+  assert.equal(isSameAsk("move alpha into beta", "actually move alpha into beta"), false);
+  assert.equal(isSameAsk("move alpha into beta", "can you move alpha into beta"), true);
+});
+
+
+test("an added or dropped negation is not the same ask", () => {
+  assert.equal(isSameAsk("Show accounts with balances", "Show accounts with no balances"), false);
+  assert.equal(isSameAsk("delete the old files", "don't delete the old files"), false);
+  assert.equal(isSameAsk("show me files without tags", "show me files with tags"), false);
+  assert.equal(isSameAsk("don't send the email", "please don't send the email"), true);
+});

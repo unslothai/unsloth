@@ -87,7 +87,7 @@ test("a native dialog that fails to open falls back to the in-app browser", asyn
 
 test("every model folder Browse button goes through the native picker", () => {
   const pickers = readSrc(
-    "features/model-picker/components/model-selector/pickers.tsx",
+    "features/model-picker/components/model-selector/custom-folders.tsx",
   );
   assert.equal(
     pickers.match(/onClick=\{\(\) => void browseForFolder\(\)\}/g)?.length,

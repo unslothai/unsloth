@@ -2044,6 +2044,7 @@ export function AppSidebar() {
       return next;
     });
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const voiceModeOn = useChatRuntimeStore((s) => s.voiceMode !== "off");
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
   // Watched here, not by the tool cards: only the open chat mounts those.
@@ -3278,7 +3279,11 @@ export function AppSidebar() {
   const exportInProgress = useExportRuntimeStore((s) => s.isExporting);
   const showReturnToChat =
     !isChatRoute &&
-    (trainingInProgress || exportInProgress || anyChatRunning || storeThreadId != null);
+    (trainingInProgress ||
+      exportInProgress ||
+      anyChatRunning ||
+      voiceModeOn ||
+      storeThreadId != null);
   // The Train-page status poll does not run off-route; keep state fresh so the spinner clears.
   useTrainingCompletionWatch();
 

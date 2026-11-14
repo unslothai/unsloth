@@ -1,6 +1,94 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+
+const SPEECH_STRIP_RE =
+  /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{20E3}\u{FE00}-\u{FE0F}\u{200D}]/gu;
+
+export function stripForSpeech(text: string): string {
+  const out = text
+    .replace(/\[([^\]\n]*)\]\([^)\s]*\)/g, "$1") //               [text](url) -> text
+    .replace(/\b(?:https?:\/\/|www\.)\S+/gi, " ") //                 bare URLs -> drop
+    // LaTeX: OmniVoice reads ")$." as a burst of noise, and "\frac" letter by letter.
+    .replace(/\\(?:times|cdot)(?![A-Za-z])/g, " times ")
+    .replace(/\\(?:frac|left|right|mathrm|mathbf|text|displaystyle|begin|end|quad)(?![A-Za-z])/g, " ")
+    .replace(/\\[()[\]]/g, " ")
+    .replace(/\\([A-Za-z]+)/g, " $1 ")
+    .replace(/\$(?!\d)/g, " ") //                                    math $, not "$5"
+    .replace(/(?<!\d)\/|\/(?!\d)/g, " ") //                          "and/or", "/s"; not 1/2
+    .replace(SPEECH_STRIP_RE, "")
+    .replace(/−(?=\d)/g, "-") //                                 a numeric minus is not a dash
+    .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ")
+    .replace(/[^\S\n]*…[^\S\n]*/g, " ")
+    .replace(/\.{2,}/g, " ")
+    .replace(/[‐‑]/g, "-")
+    .replace(/[*_`~^|#<>\\{}[\]]/g, " ")
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[“”„‟]/g, '"')
+    // Horizontal only: newlines are sentence boundaries for splitIntoSentences.
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/ ([.,!?;:])/g, "$1")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+  // A TTS model handed bare punctuation voices it as noise.
+  return /[\p{L}\p{N}]/u.test(out) ? out : "";
+}
+
+const JSON_OPEN_RE = /^[ \t]*(?:\{|\[[ \t]*(?:[{["]|$))/;
+const JSON_KEY_LINE_RE =
+  /^[ \t]*"[^"\n]+"[ \t]*:[ \t]*(?:"[^"\n]*"|-?\d[\d.eE+-]*|true|false|null|\{\}|\[\]|[{[])[ \t]*,?[ \t]*$/;
+// What a key line can look like before its end has streamed in. Only the last line gets
+// this: dropped while it may still be JSON, so it never queues a sentence it later loses.
+const JSON_KEY_PREFIX_RE =
+  /^[ \t]*"[^"\n]+"[ \t]*:[ \t]*(?:"[^"\n]*(?:"[ \t]*,?)?|[-\d.eE+]*,?|(?:t(?:r(?:ue?)?)?|f(?:a(?:l(?:se?)?)?)?|n(?:u(?:ll?)?)?),?|[{[])?[ \t]*$/;
+
+function bracketDepth(line: string): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") depth--;
+  }
+  return depth;
+}
+
+function dropJsonLines(): (line: string, i: number, lines: string[]) => string {
+  let depth = 0;
+  return (line, i, lines) => {
+    if (depth > 0) {
+      depth += bracketDepth(line);
+      return "";
+    }
+    if (JSON_OPEN_RE.test(line)) {
+      depth = Math.max(0, bracketDepth(line));
+      return "";
+    }
+    if (JSON_KEY_LINE_RE.test(line)) return "";
+    if (i === lines.length - 1 && JSON_KEY_PREFIX_RE.test(line)) return "";
+    return line;
+  };
+}
+
+// Every rule only looks backwards or drops to the end, so a streamed prefix splits as the finished reply does.
+export function speakableReply(text: string): string {
+  return text
+    .replace(/<(think|thinking|reasoning|tool_call)>[\s\S]*?(<\/\1>|$)/gi, " ")
+    .replace(/<\|channel\|?>[\s\S]*?(<\|?channel\|>|$)/g, " ")
+    .replace(/```[\s\S]*?(```|$)/g, "\n")
+    .split("\n")
+    .map(dropJsonLines())
+    .join("\n")
+    .replace(/^[ \t]*(?:\d{1,2}[.)]|[-*+•])(?=[ \t]|$)[ \t]*/gm, "")
+    .split("\n")
+    .map((line) => (speakable(line) ? line : ""))
+    .join("\n");
+}
+
 // A trailing period on these ends an abbreviation, not a sentence ("Dr.").
 const SPEECH_ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "eg",
@@ -59,4 +147,16 @@ export function splitIntoSentences(text: string): string[] {
   }
   if (lead) out.push(lead);
   return out;
+}
+
+/**
+ * Sentences of a reply still streaming that can no longer change. The last part may still grow
+ * ("Dr." before "Dr. Smith", "about 2." before "2.5"), and whether it joins the one before turns
+ * on its first two characters, so it stays partial until endStream.
+ */
+export function splitStreaming(raw: string): { complete: string[]; partial: string } {
+  const parts = splitIntoSentences(speakableReply(raw));
+  const tail = parts[parts.length - 1] ?? "";
+  const settled = Math.max(0, parts.length - (tail.length >= 2 ? 1 : 2));
+  return { complete: parts.slice(0, settled), partial: parts.slice(settled).join(" ") };
 }
