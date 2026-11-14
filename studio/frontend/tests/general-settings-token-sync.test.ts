@@ -111,6 +111,7 @@ function generalTab(initialToken: string) {
     "@/components/ui/select": componentStub,
     "@/components/ui/switch": componentStub,
     "@/features/chat": {
+      forgetSavedFullAccess: async () => {},
       useChatRuntimeStore: Object.assign(
         (selector: (state: typeof runtime) => unknown) => selector(runtime),
         { getState: () => runtime },

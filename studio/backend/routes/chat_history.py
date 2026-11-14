@@ -580,8 +580,9 @@ class ChatSettingsPayload(BaseModel):
     showCanvasMenuItem: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
     confirmToolCalls: Optional[bool] = None
-    # "full" (Full access) is session-only by design and never persisted.
+    # Never "full": Full access is the separate app-wide flag below.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    fullAccess: Optional[bool] = None
     sandboxLevel: Optional[Literal["high", "low"]] = None
     ragSource: Optional[
         Annotated[

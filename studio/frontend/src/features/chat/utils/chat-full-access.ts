@@ -34,6 +34,16 @@ interface PermissionState {
   chatFullAccessPreviousMode: BasePermissionMode | null;
 }
 
+export function appFullAccessState() {
+  return {
+    permissionMode: "full" as const,
+    bypassPermissions: true,
+    confirmToolCalls: false,
+    deepResearchEnabled: false,
+    chatFullAccessPreviousMode: null,
+  };
+}
+
 /** Overlay a live chat grant on queued or current settings without inheriting another chat's bypass. */
 export function withChatFullAccess<T extends PermissionState>(
   state: T,

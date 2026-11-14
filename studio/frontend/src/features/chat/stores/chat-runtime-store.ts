@@ -2,8 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import {
+  getConfirmedLoginMode,
+  getFullAccessAllowed,
+  subscribeLoginMode,
+} from "@/features/auth/login-client";
+import { fullAccessRestorable } from "@/lib/account-transition";
 import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "@/features/auth/session-events";
 import {
+  appFullAccessState,
   revokeChatFullAccess,
   withChatFullAccess,
   type ChatFullAccessGrant,
@@ -185,9 +192,13 @@ export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
+/** App-wide Full access, apart from the per-chat level so a chat snapshot never holds it. */
+export const CHAT_FULL_ACCESS_KEY = "unsloth_chat_full_access";
+/** Code switched off under that Full access; browser-only. */
+export const CHAT_FULL_ACCESS_CODE_OFF_KEY = "unsloth_chat_full_access_code_off";
 export const CHAT_SANDBOX_LEVEL_KEY = "unsloth_chat_sandbox_level";
 
-/** "ask" every call, "auto" high-risk only, "off" never, "full" no sandbox (session-only). */
+/** "ask" every call, "auto" high-risk only, "off" never, "full" no sandbox. */
 export type PermissionMode = "ask" | "auto" | "off" | "full";
 /** "high" adds the OS sandbox (bubblewrap, Seatbelt, MXC) to the software safeguards; "low" uses only those. */
 export type SandboxLevel = "high" | "low";
@@ -796,6 +807,7 @@ const MIRRORED_SETTINGS = {
         ? loadPermissionMode()
         : undefined,
   },
+  fullAccess: { storageKey: CHAT_FULL_ACCESS_KEY, ...BOOLEAN_SETTING },
   sandboxLevel: { storageKey: CHAT_SANDBOX_LEVEL_KEY, ...STRING_SETTING },
   ragSource: { storageKey: CHAT_RAG_SOURCE_KEY, ...JSON_SETTING },
   ragMode: { storageKey: CHAT_RAG_MODE_KEY, ...STRING_SETTING },
@@ -1994,8 +2006,6 @@ export function resolvePreserveThinkingOnLoad(resp: {
 }
 
 
-/** "full" is never restored: it disables the sandbox and every confirmation gate, so it needs
- *  the warning dialog each session. First run derives from the legacy confirm toggle. */
 /** Anything but an explicit "low" (missing, garbled, a newer value) reads as the default, "high". */
 export function normalizeSandboxLevel(raw: unknown): SandboxLevel {
   return raw === "low" ? "low" : "high";
@@ -2005,6 +2015,7 @@ export function loadSandboxLevel(): SandboxLevel {
   return normalizeSandboxLevel(readStorageValue(CHAT_SANDBOX_LEVEL_KEY));
 }
 
+/** First run derives from the legacy confirm toggle. */
 function loadPermissionMode(): PermissionMode {
   return normalizeStoredPermissionMode(
     readStorageValue(CHAT_PERMISSION_MODE_KEY),
@@ -2019,11 +2030,71 @@ function savePermissionMode(mode: PermissionMode): void {
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
+/** Runs at module load, so it reads the stored login-mode hint, not the login client's live state. */
+function loadFullAccess(): boolean {
+  return (
+    loadOptionalBool(CHAT_FULL_ACCESS_KEY) === true &&
+    fullAccessRestorable(readStorageValue)
+  );
+}
+
+/** The only writer of the app-wide flag. */
+function rememberFullAccess(on: boolean, codeDeclined = false): void {
+  fullAccessRestoredUnconfirmed = false;
+  if (on && !getFullAccessAllowed()) return;
+  saveBool(CHAT_FULL_ACCESS_KEY, on);
+  rememberFullAccessCodeOff(on && codeDeclined);
+}
+
+function rememberFullAccessCodeOff(off: boolean): void {
+  writeStorageValue(CHAT_FULL_ACCESS_CODE_OFF_KEY, off ? "true" : "false");
+}
+
+/** Sent directly: the queued write may still be held for a settings load that has not landed. */
+export async function forgetSavedFullAccess(): Promise<void> {
+  rememberFullAccess(false);
+  await savePersistedChatSettingsPatch({ fullAccess: false }).catch(() => undefined);
+}
+
+let fullAccessResetSubscribed = false;
+
+function applyFullAccessPolicy(): void {
+  if (getFullAccessAllowed()) return;
+  const state = useChatRuntimeStore.getState();
+  // Restored before the login mode was known: Full access now needs the dialog again.
+  if (
+    fullAccessRestoredUnconfirmed &&
+    state.permissionMode === "full" &&
+    state.chatFullAccessPreviousMode === null
+  ) {
+    state.setPermissionMode(threadScopedOverride("permissionMode") ?? loadPermissionMode());
+    return;
+  }
+  rememberFullAccess(false);
+}
+
+function subscribeFullAccessReset(): void {
+  if (fullAccessResetSubscribed) return;
+  fullAccessResetSubscribed = true;
+  subscribeLoginMode(applyFullAccessPolicy);
+  // The auth guard may have set the mode before this listener existed.
+  if (getConfirmedLoginMode() !== null) applyFullAccessPolicy();
+}
+
+const INITIAL_FULL_ACCESS = loadFullAccess();
+// Restored Full access the owner has not confirmed in this session; a pick through the dialog clears it.
+let fullAccessRestoredUnconfirmed = INITIAL_FULL_ACCESS;
+
 /** Re-picking the level already in force is not a fresh grant, so a manual Tools-off stands. */
 function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
   return state.permissionMode === "full"
     ? state.codeToolsDeclinedUnderFullAccess
     : false;
+}
+
+/** A server restore is not a fresh grant either: Code runs only when its own switch is on. */
+function codeDeclinedOnRestore(codeToolsEnabled: boolean): boolean {
+  return !codeToolsEnabled;
 }
 
 /** `state` with the paired chat's own values where the store shows its model's (pill clamps, a pin). */
@@ -2906,6 +2977,7 @@ type ScalarSettingKey =
   | "mcpEnabledForChat"
   | "confirmToolCalls"
   | "permissionMode"
+  | "fullAccess"
   | "sandboxLevel"
   | "ragSource"
   | "ragMode"
@@ -2959,6 +3031,7 @@ const SCALAR_SETTING_KEYS = [
   "mcpEnabledForChat",
   "confirmToolCalls",
   "permissionMode",
+  "fullAccess",
   "sandboxLevel",
   "ragSource",
   "ragMode",
@@ -3619,11 +3692,27 @@ function getHydratedSettingsState(
   ) {
     notePreserveThinkingPreference(settings.preserveThinking);
   }
+  // Ignored when a pick made while this response was out is newer, or Full access cannot persist.
+  const serverFullAccess =
+    settings.fullAccess !== undefined &&
+    scalarSettingMutationVersions.fullAccess === versions.scalarSettings.fullAccess &&
+    getFullAccessAllowed()
+      ? settings.fullAccess
+      : undefined;
+  const leavesAppFullAccess =
+    serverFullAccess === false &&
+    state.permissionMode === "full" &&
+    state.chatFullAccessPreviousMode === null;
+  const endsInFullAccess =
+    serverFullAccess === true ||
+    (state.permissionMode === "full" && !leavesAppFullAccess);
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
-    // Full access is session-only; a stored level must not drop the accepted bypass.
+    // Not a store field: applied below with the state it implies.
+    if (key === "fullAccess") continue;
+    // A stored level must not drop the accepted bypass.
     if (
-      state.permissionMode === "full" &&
+      endsInFullAccess &&
       (key === "permissionMode" || key === "confirmToolCalls")
     ) {
       continue;
@@ -3670,6 +3759,27 @@ function getHydratedSettingsState(
       (nextState as Record<ScalarSettingKey, unknown>)[key] = value;
     }
   }
+  if (serverFullAccess === true) {
+    if (state.permissionMode !== "full") fullAccessRestoredUnconfirmed = true;
+    const codeToolsDeclinedUnderFullAccess =
+      state.permissionMode === "full"
+        ? codeDeclinedOnEnteringFullAccess(state)
+        : codeDeclinedOnRestore(nextState.codeToolsEnabled ?? state.codeToolsEnabled);
+    // Saved here too, or the next reload starts with Code back on under Full access.
+    rememberFullAccessCodeOff(codeToolsDeclinedUnderFullAccess);
+    Object.assign(nextState, appFullAccessState(), { codeToolsDeclinedUnderFullAccess });
+  } else if (leavesAppFullAccess) {
+    const permissionMode =
+      nextState.permissionMode ??
+      threadScopedOverride("permissionMode") ??
+      loadPermissionMode();
+    Object.assign(nextState, {
+      permissionMode,
+      bypassPermissions: false,
+      confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+      codeToolsDeclinedUnderFullAccess: false,
+    });
+  }
   // The already-selected model never crossed a transition, so replay its memory here.
   const remembered = (nextState.paramsByModel ?? state.paramsByModel)[
     params.checkpoint
@@ -3713,7 +3823,7 @@ function getHydratedSettingsState(
   return nextState;
 }
 
-function setScalarSettingVersion<K extends ScalarSettingKey>(
+function setScalarSettingVersion<K extends Exclude<ScalarSettingKey, "fullAccess">>(
   key: K,
   value: ChatRuntimeStore[K],
   currentValue: ChatRuntimeStore[K],
@@ -4314,7 +4424,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   localImageModelReady: false,
   localVideoModelReady: false,
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, pillDefault("codeToolsEnabled")),
-  codeToolsDeclinedUnderFullAccess: false,
+  codeToolsDeclinedUnderFullAccess:
+    INITIAL_FULL_ACCESS && loadOptionalBool(CHAT_FULL_ACCESS_CODE_OFF_KEY) === true,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
@@ -4330,11 +4441,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // mirrors permissionMode so both controls agree on load.
   confirmToolCalls:
     INITIAL_PERMISSION_MODE === "ask" || INITIAL_PERMISSION_MODE === "auto",
-  // no stored bypass: sandbox and gate removal needs a warning each session.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
   chatPermissionChoiceVersion: 0,
   chatFullAccessPreviousMode: null,
+  ...(INITIAL_FULL_ACCESS ? appFullAccessState() : null),
   chatFullAccessGrants: {},
   chatFullAccessPendingRunId: null,
   chatFullAccessThreadByRunId: {},
@@ -4479,6 +4590,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
+    subscribeFullAccessReset();
     if (get().settingsHydrated) {
       return;
     }
@@ -4616,6 +4728,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         if (applied) {
           cacheHydratedSettings(hydratedSettings, hydrationVersions);
           mirroredSettingsHydrated = true;
+          // Else it would come back without the dialog once Full access is allowed again.
+          if (fromServer && hydratedSettings.fullAccess === true && !getFullAccessAllowed()) {
+            rememberFullAccess(false);
+          }
           // Only an authoritative read can say a mirrored field is unset; else backfill clobbers.
           if (fromServer) backfillMirroredSettings(hydratedSettings);
           // After the backfill, so a startup edit wins over the stored value.
@@ -5529,6 +5645,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
       if (codeToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      if (state.permissionMode === "full" && state.chatFullAccessPreviousMode === null) {
+        rememberFullAccessCodeOff(!codeToolsEnabled);
+      }
       return {
         ...(codeToolsEnabled
           ? { codeToolsEnabled, deepResearchEnabled: false }
@@ -5561,6 +5680,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const permissionMode =
         threadScopedOverride("permissionMode") ?? loadPermissionMode();
       if (deepResearchEnabled) {
+        rememberFullAccess(false);
         saveBool(CHAT_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, false);
@@ -5680,15 +5800,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setPermissionMode: (permissionMode) =>
     set((state) => {
       savePermissionMode(permissionMode);
+      rememberFullAccess(
+        permissionMode === "full",
+        permissionMode === "full" && codeDeclinedOnEnteringFullAccess(state),
+      );
       if (permissionMode === "full") {
         // Full access sends confirm_tool_calls=false; keep the store flag in sync.
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
-          permissionMode,
-          chatFullAccessPreviousMode: null,
-          bypassPermissions: true,
-          confirmToolCalls: false,
-          deepResearchEnabled: false,
+          ...appFullAccessState(),
           codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5710,16 +5830,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setBypassPermissions: (bypassPermissions) =>
-    // Not persisted: a reload must not keep the bypass unaccepted.
     set((state) => {
+      rememberFullAccess(
+        bypassPermissions,
+        bypassPermissions && codeDeclinedOnEnteringFullAccess(state),
+      );
       if (bypassPermissions) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
-          bypassPermissions,
-          permissionMode: "full" as PermissionMode,
-          chatFullAccessPreviousMode: null,
-          confirmToolCalls: false,
-          deepResearchEnabled: false,
+          ...appFullAccessState(),
           codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,

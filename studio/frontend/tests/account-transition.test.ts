@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   ACCOUNT_CHROME_KEYS,
@@ -15,6 +16,8 @@ import {
   browserAccountMarker,
   installAccountTransitionListener,
   normalizeAccountUsername,
+  FULL_ACCESS_HINT_KEY,
+  fullAccessRestorable,
   resetFullAccessForMultiUser,
   transitionBrowserAccount,
 } from "../src/lib/account-transition.ts";
@@ -473,10 +476,27 @@ test("a marker carries the account id and the normalized name", () => {
   );
 });
 
+test("a saved Full access is restorable only without the login client's hint", () => {
+  const loginClient = readFileSync(
+    new URL("../src/features/auth/login-client.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(loginClient.includes(`LOGIN_MODE_HINT_KEY = "${FULL_ACCESS_HINT_KEY}"`));
+  assert.equal(fullAccessRestorable(() => null), true);
+  assert.equal(fullAccessRestorable(() => "multi"), false);
+  assert.equal(fullAccessRestorable(() => "restricted"), false);
+});
+
 test("multi-user policy resets full while preserving other permission modes", () => {
-  const b = browserWith({ unsloth_chat_permission_mode: "full" });
+  const b = browserWith({
+    unsloth_chat_permission_mode: "full",
+    unsloth_chat_full_access: "true",
+    unsloth_chat_full_access_code_off: "true",
+  });
   resetFullAccessForMultiUser(b.browser.localStorage);
   assert.equal(b.data.get("unsloth_chat_permission_mode"), "auto");
+  assert.equal(b.data.has("unsloth_chat_full_access"), false);
+  assert.equal(b.data.has("unsloth_chat_full_access_code_off"), false);
   for (const mode of ["ask", "auto", "off"]) {
     b.data.set("unsloth_chat_permission_mode", mode);
     resetFullAccessForMultiUser(b.browser.localStorage);

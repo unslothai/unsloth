@@ -56,6 +56,14 @@ export function isAccountOwner(): boolean {
 export function useIsAccountOwner(): boolean {
   return useSyncExternalStore(subscribeSession, isAccountOwner, () => false);
 }
+
+export function isKnownNonOwner(): boolean {
+  return sessionAccount(getAuthToken())?.isOwner === false;
+}
+
+export function useIsKnownNonOwner(): boolean {
+  return useSyncExternalStore(subscribeSession, isKnownNonOwner, () => false);
+}
 export function useConfirmedLoginMode() {
   return useSyncExternalStore(
     subscribeLoginMode,

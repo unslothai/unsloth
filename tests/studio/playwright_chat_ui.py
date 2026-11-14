@@ -535,15 +535,18 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Full access overwrote persisted mode with {stored!r}")
 
+    # Full access is remembered across reloads as its own flag; the level under it stays "off".
+    expect_server_mode(True, key = "fullAccess")
     reload_and_wait_for_pill()
-    expect_mode("Run automatically")
+    expect_mode("Full access")
 
     # Without a sandbox: Run automatically applies at once, the Sandbox chip reads Low, and picking
     # High in its level picker opens the install popup, whose "Use Low sandbox" keeps Low.
     choose("Approve for me")
     expect_mode("Approve for me")
-    # Must land on the install first, or the reload hydrates the previous "off" back.
+    # Must land on the install first, or the reload hydrates the previous "off" and Full access back.
     expect_server_mode("auto")
+    expect_server_mode(False, key = "fullAccess")
     sandbox_answer["ready"] = False
     reload_and_wait_for_pill()
     expect_mode("Approve for me")

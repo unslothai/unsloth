@@ -4,7 +4,7 @@
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type { ComponentType } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { useFullAccessAllowed } from "@/features/auth/account-session";
+import { useFullAccessAllowed, useIsKnownNonOwner } from "@/features/auth/account-session";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 
@@ -311,11 +311,13 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
  *  directly; picking Full access must go through the caller's danger confirmation. */
 function useAccountPermissionMode() {
   const fullAccessAllowed = useFullAccessAllowed();
+  const knownNonOwner = useIsKnownNonOwner();
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  // Only a signed-in non-owner is switched: with no token yet the owner's saved choice would go.
   useEffect(() => {
-    if (!fullAccessAllowed && permissionMode === "full") setPermissionMode("auto");
-  }, [fullAccessAllowed, permissionMode, setPermissionMode]);
+    if (knownNonOwner && permissionMode === "full") setPermissionMode("auto");
+  }, [knownNonOwner, permissionMode, setPermissionMode]);
   return {
     permissionMode: !fullAccessAllowed && permissionMode === "full" ? "auto" : permissionMode,
     fullAccessAllowed,

@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useChatRuntimeStore } from "@/features/chat";
+import { forgetSavedFullAccess, useChatRuntimeStore } from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
 // so the key was still in its temporal dead zone when the module-scope list below read it, killing
 // the module graph. The keys module imports nothing, so it is always evaluated first.
@@ -163,6 +163,8 @@ const PREFS_KEYS: string[] = [
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
+  "unsloth_chat_full_access",
+  "unsloth_chat_full_access_code_off",
   "unsloth_chat_sandbox_level",
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
@@ -222,6 +224,8 @@ async function resetAllPrefs() {
     return;
   }
   resetInProgress = true;
+  // The server keeps its own copy, which would bring Full access back after the reload.
+  await forgetSavedFullAccess();
   for (const key of PREFS_KEYS) {
     try {
       localStorage.removeItem(key);

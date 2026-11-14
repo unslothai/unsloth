@@ -171,10 +171,19 @@ export function sameBrowserAccount(
   );
 }
 
+/** Login client's hint, set while other accounts exist or Full access is forbidden. */
+export const FULL_ACCESS_HINT_KEY = "unsloth.auth-login-mode.v1";
+
+export function fullAccessRestorable(read: (key: string) => string | null): boolean {
+  return read(FULL_ACCESS_HINT_KEY) === null;
+}
+
 export function resetFullAccessForMultiUser(storage: Storage): void {
   if (storage.getItem("unsloth_chat_permission_mode") === "full") {
     storage.setItem("unsloth_chat_permission_mode", "auto");
   }
+  storage.removeItem("unsloth_chat_full_access");
+  storage.removeItem("unsloth_chat_full_access_code_off");
 }
 
 const IMPORTED_FONT_SELECTIONS = [
