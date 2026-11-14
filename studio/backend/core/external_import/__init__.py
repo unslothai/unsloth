@@ -223,8 +223,7 @@ def _thread_row(transcript: Transcript, existing: dict, project_id: str) -> dict
 def _reread_messages(
     transcript: Transcript, turns: int, revision: str, stored: list[dict]
 ) -> list[dict]:
-    """Backfill what an older reader skipped; rows it imported keep their Studio edits and
-    deletions and only move under their backfilled parent."""
+    """Backfill what an older reader skipped; rows it imported only move under their new parent."""
     old = [m for m in transcript.messages if m["id"] not in transcript.reread]
     if revision.partition(":")[0] == transcript.revision.partition(":")[0]:
         start = turns

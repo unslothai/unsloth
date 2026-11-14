@@ -203,8 +203,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         created_at_ms = messages[0]["createdAt"] if messages else file_created,
         updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
         messages = messages,
-        # Imports before completed items were read missed their turns: re-read them. Keyed on
-        # the file's own mode so a deleted base rollout cannot drop the tag.
+        # Keyed on the file's own mode: a deleted base rollout must not drop the tag.
         revision = f"{revision}:items"
         if reread or _meta(path).get("history_mode") == "paginated"
         else revision,
