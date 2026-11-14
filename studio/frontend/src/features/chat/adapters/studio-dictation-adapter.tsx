@@ -127,7 +127,8 @@ export class StudioDictationAdapter implements DictationAdapter {
 
   private createSession(): StudioDictationSession {
     // First, whatever the mic target or dictation engine: the loop owns its turns and attaches their speech.
-    if (getVoiceMode() === "active") {
+    // chatId null is an unlinked composer (browser annotations, Compare): it keeps plain dictation.
+    if (this.chatId !== null && getVoiceMode() === "active") {
       const session = startVoiceListen();
       if (session) return session;
     }
