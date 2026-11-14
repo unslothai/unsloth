@@ -570,7 +570,7 @@ function npuFooterHint(
   return count ? `${count} available` : "";
 }
 
-function ListLabel({
+export function ListLabel({
   children,
   icon,
   action,
@@ -1216,7 +1216,7 @@ function ConnectedGroupHeading({
   );
 }
 
-function ModelRow({
+export function ModelRow({
   label,
   meta,
   selected,
