@@ -14,6 +14,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _en_catalog import en_string  # noqa: E402
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
@@ -458,9 +459,7 @@ def run_keystroke_search(page) -> None:
     toggle = page.locator(f"{PANEL} button[aria-pressed]")
     click_forced(toggle, timeout = 15000)
     until(page, "el => el?.getAttribute('aria-pressed') === 'true'", arg = toggle.element_handle())
-    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
-    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
-    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
+    # bindingFromEvent drops Meta chords off macOS, so a hardcoded Meta records nothing on Linux.
     mac = page.evaluate(
         "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
     )
@@ -655,6 +654,74 @@ def run_scroll_resets_on_tab_switch(page) -> None:
     report["steps"].append("scroll-reset")
 
 
+SEARCH_STATE_JS = """() => {
+    const aside = document.querySelector('div[role="dialog"] aside');
+    if (!aside) return null;
+    const results = [...aside.querySelectorAll('button:not([data-testid]):not([aria-label])')];
+    const nav = aside.querySelector('nav');
+    return {
+        query: aside.querySelector('input')?.value ?? null,
+        results: results.map(b => b.innerText.trim()),
+        current: results.filter(b => b.getAttribute('aria-current') === 'true')
+            .map(b => b.innerText.trim()),
+        navVisible: !!nav && getComputedStyle(nav).display !== 'none',
+    };
+}"""
+
+
+def run_search_reuse(page, query: str, first_label: str) -> None:
+    """A result click keeps the query, so the next result is one click away (#16313)."""
+    after_first = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"] = {"after_first": after_first}
+    if not after_first or after_first["query"] != query:
+        fail(f"search reuse: opening '{first_label}' cleared the query ({after_first})")
+        close_dialog(page)
+        return
+    if first_label not in after_first["results"] or after_first["navVisible"]:
+        fail(f"search reuse: results did not stay after opening '{first_label}' ({after_first})")
+    if after_first["current"] != [first_label]:
+        fail(f"search reuse: opened result not marked current ({after_first['current']})")
+    # The last result sits in another tab when the query spans tabs, so the jump crosses panels.
+    second = next(
+        (txt for txt in reversed(after_first["results"]) if txt and txt != first_label), None
+    )
+    if second is None:
+        fail(f"search reuse: '{query}' has no second result to open ({after_first['results']})")
+        close_dialog(page)
+        return
+    buttons = page.locator('div[role="dialog"] aside button:not([data-testid]):not([aria-label])')
+    click_forced(buttons.nth(after_first["results"].index(second)))
+    until(
+        page,
+        f"""label => ({SEARCH_STATE_JS})()?.current?.[0] === label""",
+        arg = second,
+    )
+    after_second = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["after_second"] = after_second
+    if after_second["query"] != query or after_second["current"] != [second]:
+        fail(
+            f"search reuse: second result '{second}' did not open from the kept list ({after_second})"
+        )
+    else:
+        log(f"search reuse: '{first_label}' then '{second}' opened from one '{query}' search")
+    # A panel link (Data > Manage storage) switches tabs through openDialog, not the list.
+    page.evaluate("() => window.__settingsSmoke.open('about')")
+    until(page, "() => window.__settingsSmoke.state().activeTab === 'about'")
+    page.wait_for_timeout(100)
+    left = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["after_panel_link"] = left
+    if left["query"] != query or left["current"]:
+        fail(f"search reuse: a panel link left a stale current result ({left})")
+    click_forced(page.locator('div[role="dialog"] aside button[aria-label]').first)
+    until(page, f"() => ({SEARCH_STATE_JS})()?.navVisible === true")
+    cleared = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["cleared"] = cleared
+    if cleared["query"] != "" or not cleared["navVisible"] or cleared["results"]:
+        fail(f"search reuse: the clear button did not bring the tab list back ({cleared})")
+    close_dialog(page)
+    report["steps"].append("search-reuse")
+
+
 def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
@@ -762,6 +829,11 @@ def run(page) -> None:
             log(f"search jump to '{target_label}': flashed, scrollTop {flashed['scrollTop']}")
     report["steps"].append("search-jump")
 
+    if index is not None:
+        run_search_reuse(page, query, target_label)
+
+    run_composer_search(page)
+
     run_keystroke_search(page)
 
     run_shortcut_recorder(page)
@@ -769,6 +841,50 @@ def run(page) -> None:
     run_scroll_resets_on_tab_switch(page)
 
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
+
+
+def run_composer_search(page) -> None:
+    """The moved controls must be reachable through search in Chat's Composer section."""
+    results = []
+    for key in (
+        "settings.appearance.custom.chatWidth.label",
+        "settings.chat.composerPosition",
+        "chatBackground.outline",
+        "settings.appearance.custom.sentAttachments.label",
+    ):
+        label = en_string(key)
+        close_dialog(page)
+        open_dialog(page, "appearance")
+        settle_panel(page)
+        if label in snapshot(page).get("labels", []):
+            fail(f"composer search: '{label}' still renders in Appearance")
+        search = page.locator('div[role="dialog"] aside input').first
+        search.fill(label)
+        entry = page.locator('div[role="dialog"] aside').get_by_role(
+            "button", name = label, exact = True
+        )
+        click_forced(entry, timeout = 15000)
+        until(
+            page,
+            """label => document.querySelector('.settings-search-hit')?.dataset.settingsLabel === label""",
+            arg = label,
+            timeout = 15000,
+        )
+        state = page.evaluate(
+            """() => {
+                const hit = document.querySelector('.settings-search-hit');
+                return {
+                    tab: window.__settingsSmoke.state().activeTab,
+                    label: hit?.dataset.settingsLabel,
+                    section: hit?.closest('section')?.dataset.settingsLabel,
+                };
+            }"""
+        )
+        results.append(state)
+        if state != {"tab": "chat", "label": label, "section": en_string("composerSettings.title")}:
+            fail(f"composer search: '{label}' reached {state}")
+    report["composer_search"] = results
+    report["steps"].append("composer-search")
 
 
 def write_report() -> None:

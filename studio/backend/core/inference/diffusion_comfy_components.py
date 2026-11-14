@@ -421,7 +421,8 @@ def quant_layers(path: str) -> dict[str, Any]:
         raise ComponentFileError(
             f"'{os.path.basename(path)}' uses a ComfyUI quantization Unsloth cannot load as a text encoder "
             f"or VAE: {shown}{more}. Supported: unquantized, scaled fp8 (float8_e4m3fn / float8_e5m2), nvfp4, "
-            "mxfp8 and int8_tensorwise (with or without ConvRot); use the bf16 or fp8 file instead."
+            "mxfp8, int8_tensorwise (with or without ConvRot) and the packed asym_w4a8_int8 / w6a8_int8; use the "
+            "bf16 or fp8 file instead."
         )
     return dict(scan.layers)
 
@@ -469,7 +470,7 @@ def resident_bytes(
         dtype = str(entry.get("dtype", ""))
         layer = layers.get(key[: -len(".weight")]) if key.endswith(".weight") else None
         if layer is not None and layer.convrot and layer.format == "int8_tensorwise":
-            total += _numel(shape) + int(shape[0]) * 4
+            total += _numel(_logical_shape(layer, shape)) + int(shape[0]) * 4
         elif layer is not None:
             total += _numel(_logical_shape(layer, shape)) * dtype_itemsize
         elif dtype in ("F32", "F16", "BF16", "F8_E4M3", "F8_E5M2", "I8", "U8") or layer is not None:
@@ -507,6 +508,8 @@ def _logical_shape(layer: Any, shape: Sequence[int]) -> tuple:
     dims = tuple(int(d) for d in shape)
     if layer is not None and layer.format == NVFP4 and len(dims) == 2:
         return (dims[0], dims[1] * 2)
+    if layer is not None and getattr(layer, "packed_bits", 0) and len(dims) == 2:
+        return (dims[0], dims[1] * 8 // layer.packed_bits)
     return dims
 
 
@@ -595,6 +598,19 @@ def build_text_encoder(
             )
             scale = handle.get_tensor(scale_key) if scale_key else None
             codes = handle.get_tensor(src)
+            if getattr(layer, "packed_bits", 0):
+                # W4A8 / W6A8: the int8 grid and the channel scale make it an int8 ConvRot layer
+                from .diffusion_grouped_int8 import decode_int8_torch
+
+                book_key = stem + ".weight_codebook"
+                codes = decode_int8_torch(
+                    codes,
+                    handle.get_tensor(stem + ".weight_s_rel"),
+                    handle.get_tensor(book_key).float() if book_key in header else None,
+                    layer.group_size,
+                    layer.packed_bits,
+                )
+                scale = handle.get_tensor(stem + ".weight_s_channel").to(torch.float32)
             if layer.format == "int8_tensorwise":
                 if scale is None:
                     raise ComponentFileError(f"'{name}': {stem} is int8 with no weight_scale")
@@ -952,9 +968,7 @@ def assign_components(
     *,
     family: str = "",
 ) -> tuple[dict[str, ComponentFileRef], dict[str, str]]:
-    """Each supplied file onto the one base component whose class it can fill (header-only). Raises
-    when a file fits nothing, or two files want the same slot. A CLIP-L vs CLIP-G pair is told apart by
-    width, so HiDream's two CLIP slots resolve in index order."""
+    """Header-only: raises when a file fits no slot or two want one; CLIP-L and CLIP-G split by width."""
     assigned: dict[str, ComponentFileRef] = {}
     kinds: dict[str, str] = {}
     for ref, header in te_headers:
@@ -1363,14 +1377,7 @@ def pick_comfy_text_encoders(
     fits: Callable[[ComponentOverrides], None],
     auto_scheme: Optional[str] = None,
 ) -> list[str]:
-    """The ComfyUI text-encoder files to load in place of the base repo's, one per slot, from ``candidates``.
-
-    A slot takes a file only when it fits that slot's real class strictly (``fits`` raises otherwise) and is
-    the single best by precision: dense, then fp8, then int8, the base repo's own precision first. Under a
-    family's automatic scheme (``auto_scheme``) only files that stay in that scheme once loaded count (int8
-    ConvRot; fp8 and plain int8 load dense), so a larger resident encoder never displaces the one the family
-    loads by default. Two equally good files for one slot (a
-    fine-tune beside the original) leave it to the base repo. Unreadable or unfitting files are skipped."""
+    """Best-precision fitting file per slot; under auto_scheme only in-scheme files count; ties keep base"""
     classes = component_classes_from_index(model_index)
     standalone = _STANDALONE_TE_SLOTS.get(family, ())
     wanted = {classes[c] for c in TEXT_ENCODER_COMPONENTS if c in classes and c not in standalone}

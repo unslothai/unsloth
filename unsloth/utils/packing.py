@@ -477,10 +477,19 @@ def _stateful_mixer_kind(module) -> Optional[str]:
 _PACKING_BOUNDARY_BLIND_MODULES = (
     "DeepseekV4CSACompressor",
     "DeepseekV4HCACompressor",
+    # DeepSeek-V4.1 port: engram n-grams hash across the whole row; the compressor pools row-wide token counts.
+    "DeepseekV41NgramHashState",
+    "DeepseekV41Compressor",
     "ZayaCCAProjection",
     "RecurrentGemmaRglru",
 )
-_PACKING_BOUNDARY_BLIND_MODEL_TYPES = ("deepseek_v4", "zaya", "recurrent_gemma")
+_PACKING_BOUNDARY_BLIND_MODEL_TYPES = (
+    "deepseek_v4",
+    "deepseek_v41",
+    "deepseek_v41_text",
+    "zaya",
+    "recurrent_gemma",
+)
 
 
 def packing_boundary_blocker(model, model_types = ()) -> Optional[str]:
@@ -1077,10 +1086,8 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         return out
 
     if _dynamo_folds_is_exporting():
-        # Eager even inside a compiled block: Dynamo folds torch.compiler.is_exporting() to True, so
-        # the hub-kernel wrappers trace their torch reference, which drops seq_idx / cu_seqlens and
-        # runs the packed documents into each other (Qwen3.5-0.8B per-document cosine 0.71). Newer
-        # torch traces the real kernels, and the eager mixer costs 6-20% per step there.
+        # Dynamo folds is_exporting() to True, so this stays eager: the traced reference drops
+        # seq_idx; newer torch traces real kernels, where eager costs 6-20% per step.
         _packed_forward = torch.compiler.disable(_packed_forward)
 
     module.forward = forward

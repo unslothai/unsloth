@@ -191,8 +191,7 @@ class TestItIsSafeToCallOnAnyPath:
 
 
 class TestMacOSIsNotACpuVerdict:
-    """The probe reads CUDA and HIP, so it is empty on every Mac; an Apple Silicon one
-    is still offloading to Metal."""
+    """The probe reads only CUDA and HIP, so Macs look empty though they offload to Metal."""
 
     @pytest.mark.parametrize("torch_state", ["absent", "no_cuda", "rocm_like"])
     def test_the_reason_names_metal_rather_than_blaming_torch(self, monkeypatch, torch_state):
@@ -241,8 +240,7 @@ class TestManualModeIsNotAnAbsentGpu:
 
 
 class TestItDoesNotAssertTheLaunchOutcome:
-    """llama.cpp enumerates devices itself, and an explicit ``gpu_ids`` pick is pinned
-    below, so an empty probe cannot tell you where the model ends up."""
+    """An empty probe cannot show placement, since llama.cpp enumerates devices itself."""
 
     def test_the_message_reports_the_probe_not_the_placement(self):
         # comments stripped: the guard's own note names the claim it forbids
@@ -300,8 +298,7 @@ class TestIntelMacGetsItsRealReason:
 
 
 class TestItDoesNotClaimTheFitterRuns:
-    """use_fit is the pre-extras default and a last-wins ``--fit off`` beats it, so the
-    message must not mention the fitter."""
+    """A later --fit off overrides use_fit, so the message must not name the fitter."""
 
     def test_the_message_does_not_mention_fit(self):
         body = "\n".join(

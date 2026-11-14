@@ -16,6 +16,9 @@ from .diffusion_vae_oom import free_first as oom_free_first
 from .diffusion_vae_tiling import axis_weights as _axis_weights
 
 WIDE_TILES_ENV = "UNSLOTH_VIDEO_VAE_WIDE_TILES"
+# =0: the full-clip fp32 accumulator stays on the card
+BANDED_OUTPUT_ENV = "UNSLOTH_LTX_VAE_BANDED_OUTPUT"
+_HOST_RESERVE_BYTES = 4 * 2**30
 
 # Stock tile side: the smallest tile, so the tightest tier never needs more per tile than stock.
 MIN_TILE_LATENTS = 16
@@ -199,6 +202,116 @@ def _plan(
     return tile, fits(*tile)
 
 
+def banded_output_disabled() -> bool:
+    return (os.environ.get(BANDED_OUTPUT_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _host_band_output(vae: Any, z: Any, ratio: int, itemsize: int) -> bool:
+    """Discrete NVIDIA card only, with host RAM for the clip above a reserve."""
+    device = getattr(z, "device", None)
+    if banded_output_disabled() or getattr(device, "type", None) != "cuda":
+        return False
+    import torch
+
+    from .rocm_bf16 import is_rocm_torch
+
+    if is_rocm_torch(torch):
+        return False
+    from .host_pinning import device_is_integrated
+
+    if device_is_integrated(device):
+        return False
+    batch, _, latent_frames, height, width = (int(x) for x in z.shape)
+    need = batch * 3 * output_frames(vae, latent_frames) * height * ratio * width * ratio * itemsize
+    try:
+        from .diffusion_memory import _available_system_memory_mib
+        avail = _available_system_memory_mib()
+    except Exception:  # noqa: BLE001 - unreadable host RAM: keep the device accumulator
+        return False
+    return avail is not None and need + _HOST_RESERVE_BYTES <= int(avail) * 2**20
+
+
+def _to_host(
+    chunk: Any,
+    torch: Any,
+    stream: Any = None,
+) -> Any:
+    """Contiguous pinned-RAM copy (one DMA), pageable if pinning is refused; overlaps the next decode on ``stream``."""
+    try:
+        host = torch.empty(chunk.shape, dtype = chunk.dtype, pin_memory = True)
+    except Exception:  # noqa: BLE001 - pinned allocation refused (e.g. Windows limits)
+        host = torch.empty(chunk.shape, dtype = chunk.dtype)
+    if stream is None:
+        return host.copy_(chunk, non_blocking = True)
+    stream.wait_stream(torch.cuda.current_stream(chunk.device))
+    with torch.cuda.stream(stream):
+        host.copy_(chunk, non_blocking = True)
+    chunk.record_stream(stream)  # its memory is not reused before the copy has read it
+    return host
+
+
+def _decode_bands(
+    vae: Any,
+    z: Any,
+    temb: Any,
+    causal: Any,
+    th: int,
+    tw: int,
+    hs: list,
+    ws: list,
+    wy: list,
+    wx: list,
+) -> Any:
+    """``_decode_tiles``'s math with one band on the card; done bands wait in host RAM, the last stays on the card."""
+    import torch
+
+    _, _, _, height, width = (int(x) for x in z.shape)
+    ratio = int(vae.spatial_compression_ratio)
+    rows = len(hs) > 1
+    axis, side, starts = (-2, th, hs) if rows else (-1, tw, ws)
+    done_bands, band, carry, copy = [], None, None, None
+    for b, s in enumerate(starts):
+        for i, j in [(b, j) for j in range(len(ws))] if rows else [(0, b)]:
+            y, x = hs[i], ws[j]
+            tile = vae.decoder(z[:, :, :, y : y + th, x : x + tw], temb, causal = causal)
+            if b == 0 and band is None:
+                lead, device, dtype = tuple(tile.shape[:3]), tile.device, tile.dtype
+            if band is None:
+                # Made after the band's first tile decodes: only the carried overlap is live during that decode.
+                shape = (
+                    (*lead, side * ratio, width * ratio)
+                    if rows
+                    else (*lead, height * ratio, side * ratio)
+                )
+                band = torch.zeros(shape, dtype = torch.float32, device = device)
+                if carry is not None:
+                    band.narrow(axis, 0, carry.shape[axis]).copy_(carry)
+                    carry = None
+            w = wy[i].view(-1, 1) * wx[j].view(1, -1)
+            y0, x0 = (0, x * ratio) if rows else (y * ratio, 0)
+            band[..., y0 : y0 + th * ratio, x0 : x0 + tw * ratio].addcmul_(tile.float(), w)
+            del tile
+        lo, hi = s * ratio, (s + side) * ratio
+        if b + 1 == len(starts):
+            # The last band never leaves the card: no decode follows it, so it cannot raise the peak.
+            dec = torch.empty((*lead, height * ratio, width * ratio), dtype = dtype, device = device)
+            dec.narrow(axis, lo, hi - lo).copy_(band)
+            del band
+            if copy is not None:
+                torch.cuda.current_stream(device).wait_stream(copy)
+            for start, host in done_bands:
+                dec.narrow(axis, start, host.shape[axis]).copy_(host, non_blocking = True)
+            return dec
+        if copy is None and device.type == "cuda":
+            copy = torch.cuda.Stream(device)
+        done = starts[b + 1] * ratio - lo
+        chunk = band.narrow(axis, 0, done).to(dtype).contiguous()
+        done_bands.append((lo, _to_host(chunk, torch, copy)))
+        del chunk
+        carry = band.narrow(axis, done, hi - lo - done).clone()
+        band = None
+
+
 def _decode_tiles(
     vae: Any,
     z: Any,
@@ -217,6 +330,8 @@ def _decode_tiles(
         return vae.decoder(z, temb, causal = causal)
     wy = _cached_weights(vae, hs, th, height, ratio, torch, z.device)
     wx = _cached_weights(vae, ws, tw, width, ratio, torch, z.device)
+    if fp32_accum and _host_band_output(vae, z, ratio, _itemsize(vae)):
+        return _decode_bands(vae, z, temb, causal, th, tw, hs, ws, wy, wx)
     out, dtype = None, None
     for i, y in enumerate(hs):
         for j, x in enumerate(ws):

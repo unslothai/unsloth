@@ -249,6 +249,12 @@ const FIELDS: FieldCase[] = [
     different: false,
   },
   {
+    key: "engramPrecision",
+    statusKey: "engram_precision",
+    same: "Q8_0",
+    different: "BF16",
+  },
+  {
     key: "mlxInt8Prefill",
     statusKey: "mlx_int8_prefill_requested",
     same: true,

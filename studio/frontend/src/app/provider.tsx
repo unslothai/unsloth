@@ -25,7 +25,7 @@ import {
 } from "@/config/env";
 import { routeNeedsHardware } from "@/config/hardware-verdict";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/use-chat-model-runtime";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/resync-inference-status-lazy";
 import { DeepLinkHandler } from "@/features/deep-links";
 import { receiveSharedRunConfigUrls } from "@/features/model-picker/sharing/receive-link";
 import {
@@ -57,6 +57,10 @@ import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
+import {
+  getDesktopFullscreen,
+  subscribeDesktopFullscreen,
+} from "@/lib/desktop-fullscreen";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
 import { installDismissClickStreakGuard } from "@/lib/dismiss-click-streak";
 import { useDocumentFlag } from "@/lib/document-flag";
@@ -85,6 +89,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import {
@@ -123,11 +128,9 @@ type TauriMonitor = NonNullable<
 // Keep in step with MOBILE_BREAKPOINT in hooks/use-mobile.ts.
 const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 
-// Room the corner rail keeps around its cards so its overflow clip does not cut their shadows off (#9246).
-// Sized off the deepest card shadow, the dark-mode one: 0 8px 28px -6px reaches 22px to a card's left
-// and 14px above it, and a shorter gutter ends the halo on a hard line. Only those two edges show it:
-// the rail is flush with the bottom-right corner, so the clip there lands on the screen edge. Both
-// gutters come out of the cap, never out of the cards: 100dvh less 16 and 16 is the band they had.
+// Gutters keep the rail's overflow clip from cutting card shadows (#9246), sized to the dark-mode
+// shadow (22px left, 14px above); only the left and top edges show, and both come out of the cap,
+// never the cards.
 const STACK_SHADOW_GUTTER_BOTTOM = 16;
 const STACK_SHADOW_GUTTER_TOP = 16;
 const STACK_SHADOW_GUTTER_LEFT = 28;
@@ -556,6 +559,7 @@ function TauriUpdateLayer({
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
       className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       data-testid="overlay-rail"
+      data-overlay-rail=""
       // Its cards stay clickable over a macOS browser page (native-view.ts).
       data-native-rail=""
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
@@ -647,13 +651,29 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-window-control-inset": "138px",
 } as CSSProperties;
 
+// Fullscreen hides the titlebar (it slides back in from the top edge), so content takes its band.
+const CUSTOM_CHROME_FULLSCREEN_STYLE = {
+  ...CUSTOM_CHROME_STYLE,
+  "--studio-custom-titlebar-height": "0px",
+  "--studio-desktop-titlebar-height": "0px",
+  "--studio-startup-top-inset": "8px",
+  "--studio-content-top-inset": "0px",
+  "--studio-non-chat-content-top-inset": "0px",
+  "--studio-non-chat-scroller-top": "0px",
+  "--studio-chat-scroller-top": "0px",
+  "--studio-hidden-route-top-inset": "0px",
+  "--studio-window-control-inset": "0px",
+} as CSSProperties;
+
 // Mirrored onto <html>: overlays portalled into document.body cannot read the wrapper styles.
 function DesktopChromeVarsEffect({
   usesCustomTitlebar,
   usesNativeMacTitlebar,
+  customTitlebarHidden,
 }: {
   usesCustomTitlebar: boolean;
   usesNativeMacTitlebar: boolean;
+  customTitlebarHidden: boolean;
 }) {
   useEffect(() => {
     const el = document.documentElement;
@@ -661,18 +681,22 @@ function DesktopChromeVarsEffect({
       value === null
         ? el.style.removeProperty(name)
         : el.style.setProperty(name, value);
-    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
+    const customTop = customTitlebarHidden ? "0px" : "34px";
+    set("--studio-custom-titlebar-height", usesCustomTitlebar ? customTop : null);
     set(
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "138px" : null);
+    set(
+      "--studio-window-control-inset",
+      usesCustomTitlebar ? (customTitlebarHidden ? "0px" : "138px") : null,
+    );
     // The toaster renders outside the wrapper.
-    set("--studio-content-top-inset", usesCustomTitlebar ? "34px" : null);
+    set("--studio-content-top-inset", usesCustomTitlebar ? customTop : null);
     set(
       "--studio-window-chrome-top",
       usesCustomTitlebar
-        ? "34px"
+        ? customTop
         : usesNativeMacTitlebar
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,
@@ -690,7 +714,7 @@ function DesktopChromeVarsEffect({
       set("--studio-window-chrome-top", null);
       refreshWindowChromeTop();
     };
-  }, [usesCustomTitlebar, usesNativeMacTitlebar]);
+  }, [usesCustomTitlebar, usesNativeMacTitlebar, customTitlebarHidden]);
   return null;
 }
 
@@ -765,6 +789,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [windowRevealRevision, setWindowRevealRevision] = useState(0);
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
   const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
+  const windowFullscreen = useSyncExternalStore(
+    subscribeDesktopFullscreen,
+    getDesktopFullscreen,
+    () => false,
+  );
+  const customTitlebarHidden = usesCustomTitlebar && windowFullscreen;
   const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   useEffect(() => {
@@ -948,6 +978,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
           className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
           data-testid="overlay-rail"
+          data-overlay-rail=""
           // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
           style={{
             paddingTop: STACK_SHADOW_GUTTER_TOP,
@@ -1048,6 +1079,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     <DesktopChromeVarsEffect
       usesCustomTitlebar={usesCustomTitlebar}
       usesNativeMacTitlebar={usesNativeMacTitlebar}
+      customTitlebarHidden={customTitlebarHidden}
     />
   );
 
@@ -1097,10 +1129,15 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   return (
     <div
       className="relative h-dvh min-h-0 overflow-hidden bg-background"
-      style={CUSTOM_CHROME_STYLE}
+      style={
+        customTitlebarHidden ? CUSTOM_CHROME_FULLSCREEN_STYLE : CUSTOM_CHROME_STYLE
+      }
     >
       {chromeVars}
-      <WindowTitlebar showSidebarSurface={showSidebarSurface} />
+      <WindowTitlebar
+        showSidebarSurface={showSidebarSurface}
+        fullscreen={customTitlebarHidden}
+      />
       <div
         className={
           hidesTitlebarSidebar
