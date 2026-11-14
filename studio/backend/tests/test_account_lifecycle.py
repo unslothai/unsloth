@@ -219,7 +219,7 @@ def test_accounts_requires_authentication(auth_env, method, suffix, payload):
         ("", False, None),
         ("alice ", False, None),
         (" ali", False, None),
-        ("a.b", False, None),
+        ("a.b", True, "a.b"),
         ("a/b", False, None),
         ("a\\b", False, None),
         ("álice", False, None),
