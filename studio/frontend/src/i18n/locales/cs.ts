@@ -5651,6 +5651,12 @@ export const cs = {
       openFileFailed: "Soubor se nepodařilo otevřít",
     },
   },
+  exportTabs: {
+    ariaLabel: "Typ exportu",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Převést na Q4NX",
+  },
   exportDecision: {
     title: "Rozhodovací model",
     description:

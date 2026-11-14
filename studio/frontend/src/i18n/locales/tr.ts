@@ -5629,6 +5629,12 @@ export const tr = {
       openFileFailed: "Dosya açılamadı",
     },
   },
+  exportTabs: {
+    ariaLabel: "Dışa aktarma türü",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Q4NX'e dönüştür",
+  },
   exportDecision: {
     title: "Karar modeli",
     description:

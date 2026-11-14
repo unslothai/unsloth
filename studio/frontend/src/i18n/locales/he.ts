@@ -5344,6 +5344,12 @@ export const he = {
       openFileFailed: "לא ניתן לפתוח את הקובץ",
     },
   },
+  exportTabs: {
+    ariaLabel: "סוג ייצוא",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "המרה ל-Q4NX",
+  },
   exportDecision: {
     title: "מודל החלטות",
     description:
