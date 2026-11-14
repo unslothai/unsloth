@@ -924,8 +924,10 @@ class _MarkdownRenderer(HTMLParser):
         self._link_heading_parts: list[str] = []
         self._emit_as_heading: bool = False
         self._replaying: bool = False
-        # Credited only at </a>: an <a> left open adopts body prose, which is not furniture.
+        # Credited only at </a> or a nested <a>: an <a> left open adopts body prose, which is not furniture.
         self._link_header_chars: int = 0
+        self._link_open_state: tuple = ()
+        self._closed_link_for: bool = False
 
         self._list_stack: list[str] = []  # "ul" or "ol"
         self._ol_counter: list[int] = []
@@ -1299,6 +1301,30 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row = []
         self._row_has_th = False
 
+    def _link_output_state(self) -> tuple:
+        frame = self._header_stack[-1] if self._header_stack else None
+        quote = self._bq_stack[-1] if self._bq_stack else None
+        row = self._current_row if self._in_table else None
+        cell = self._cell_seq if self._in_cell else -1
+        return (
+            frame,
+            len(self._heading_marks),
+            quote,
+            row,
+            cell,
+            self._table_depth(),
+            len(self._sup_starts),
+            self._inline_code_depth,
+        )
+
+    def _link_routes_unchanged(self) -> bool:
+        # buffers compare by identity: two empty quotes or rows are equal lists but different targets
+        now = self._link_output_state()
+        return all(
+            saved is cur or (not isinstance(saved, list) and saved == cur)
+            for saved, cur in zip(self._link_open_state, now)
+        ) and len(self._link_open_state) == len(now)
+
     # Link text helper: normalize whitespace so block content in <a> stays single-line.
     def _finish_link(self) -> None:
         text = re.sub(r"\s+", " ", "".join(self._link_text_parts)).strip()
@@ -1531,7 +1557,7 @@ class _MarkdownRenderer(HTMLParser):
                 or (_is_aria_heading(attr_dict) if aria_heading is None else aria_heading)
             ):
                 self._heading_marks.append(len(self._open_tags) - 1)
-                if self._in_link:
+                if self._in_link or self._closed_link_for:
                     self._link_had_heading = True
             if (
                 self._strip_header
@@ -1765,7 +1791,27 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag == "form":
             self._form_pointer = True
-        if not self._enter_tag(tag, attr_dict, hidden, aria_heading):
+        # a nested <a> implicitly closes the open one, even when hidden, when its text still routes where
+        # the link opened; <pre> text skips the link buffer
+        if (
+            tag == "a"
+            and self._in_link
+            and not self._in_pre
+            and not self._link_had_heading
+            and self._link_routes_unchanged()
+        ):
+            if self._header_stack:
+                self._header_stack[-1].link_chars += self._link_header_chars
+            self._finish_link()
+            # the closing anchor still records its own heading as one inside a link, as before
+            self._closed_link_for = True
+        entered = self._enter_tag(tag, attr_dict, hidden, aria_heading)
+        if self._closed_link_for:
+            self._closed_link_for = False
+            # a suppressed anchor never becomes the link, so its heading must not carry to the next one
+            if not entered:
+                self._link_had_heading = False
+        if not entered:
             return
 
         if tag in _HEADING_TAGS:
@@ -1779,6 +1825,7 @@ class _MarkdownRenderer(HTMLParser):
             self._in_link = True
             self._link_seq += 1
             self._link_header_chars = 0
+            self._link_open_state = self._link_output_state()
 
         elif tag in _INLINE_EMPHASIS:
             self._emit(_INLINE_EMPHASIS[tag])
