@@ -1776,8 +1776,7 @@ class _LoadingState:
     # ``{incomplete blob path: size}`` in the planned repos when this load claimed them: a cancelled sibling download
     # leaves ``*.incomplete`` blobs behind, and only growth past this snapshot is this load's own bytes.
     incomplete_baseline: dict[str, int] = field(default_factory = dict)
-    # ``{(repo_lower, filename): blob key}`` for the planned files whose listing named one. A
-    # ``<key>[.<8 hex>].incomplete`` with a planned key IS that file; any other (a cancelled sibling's) is ignored.
+    # ``{(repo_lower, filename): blob key}``: a ``<key>[.<8 hex>].incomplete`` with a planned key IS that file.
     planned_blob_keys: dict[tuple[str, str], str] = field(default_factory = dict)
     # (expected_bytes, downloaded) once every expected byte was on disk.
     finalized_scan: Optional[tuple[int, int]] = None
@@ -7927,9 +7926,8 @@ class DiffusionBackend:
                 name: (min(size, DiffusionBackend._cache_file_bytes(repo, name)) if size else 0)
                 for name, size in files
             }
-            # ``<key>.incomplete`` counts in full (a resume appends to it); ``<key>.<8 hex>.incomplete`` is a fresh file
-            # per attempt (huggingface_hub >= 1.18), so only growth past the baseline counts. One partial per file, up
-            # to what it still lacks. Other partials count (as baseline growth) only when a planned key is unknown.
+            # ``<key>.incomplete`` counts in full (resumes append); ``<key>.<8 hex>.incomplete`` (hub >= 1.18, one per
+            # attempt) only past the baseline. Unplanned partials count only when a planned key is unknown.
             remaining_by_key: dict[str, int] = {}
             unkeyed = False
             for name, size in files:

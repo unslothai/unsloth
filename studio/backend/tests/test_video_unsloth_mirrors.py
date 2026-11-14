@@ -1379,8 +1379,7 @@ def test_a_dead_partial_of_a_file_the_encoder_fallback_adds_is_not_progress(
 
 
 def test_a_poll_never_sees_a_replan_before_its_partial_baseline(empty_cache, monkeypatch):
-    """load_progress reads lock-free, so when the encoder-fallback re-plan publishes the dense encoder, a dead partial
-    of it must already be in the baseline: a poll at that moment would otherwise count it as this load's bytes."""
+    """A dead partial of the re-planned dense encoder is in the baseline before a lock-free poll can see the plan."""
     monkeypatch.setattr(_HubRecorder, "hex_keys", True)
     key = _lfs_key("text_encoder/model.safetensors")
     for repo in (_WAN_UP, _WAN_MIRROR):

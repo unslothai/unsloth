@@ -1747,8 +1747,7 @@ class _VideoLoadingState:
     # that owns this state (under the load-token check), replaced whole by a re-estimate, never patched by a fetch site.
     # The fetch sites read their repo + revision from it, and load_progress reads nothing else.
     fetch_plan: dict[str, "_PlannedFetch"] = field(default_factory = dict)
-    # ``{partial path: bytes}`` of each planned file's ``<key>.<8 hex>.incomplete`` (a dead attempt's) when a plan first
-    # named it. A re-plan only adds entries: by then this load may be writing the existing ones.
+    # Dead ``<key>.<8 hex>.incomplete`` sizes when a plan first named the file; a re-plan only adds entries.
     incomplete_baseline: dict[str, int] = field(default_factory = dict)
 
 

@@ -846,8 +846,7 @@ def test_a_preallocated_partial_counts_only_its_written_bytes(monkeypatch, tmp_p
 
 
 def test_a_poll_never_sees_the_plan_before_its_partial_baseline(monkeypatch, tmp_path):
-    """load_progress reads lock-free: a poll that reads the plan fields the moment the worker publishes the plan, then
-    reads expected_bytes once the worker sets it, must not count a dead attempt's partial and latch finalizing."""
+    """A lock-free poll racing the plan publish must not count a dead attempt's partial and latch finalizing."""
     import copy
 
     from core.inference import diffusion as dmod
