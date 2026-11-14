@@ -126,3 +126,13 @@ test("a voice pause survives the engine remount: the new player starts held", ()
   );
 });
 
+
+test("a voice that failed to load is not warmed (warm, fail, reload looped)", () => {
+  const effect = engine.slice(engine.indexOf("wasSlotLoadingRef.current = voiceSlotLoading;"));
+  assert.match(effect.slice(0, 500), /if \(useChatRuntimeStore\.getState\(\)\.voiceSlotLoaded\) void warmAsides\(asidePhrases\(\)\);/);
+});
+
+test("an image-share Allow from the floating orb brings the chat card up", () => {
+  const host = readSrc("features/chat/voice/orb-widget-host.ts");
+  assert.match(host, /if \(outcome === "needs_card"\) reveal\(t\);/);
+});
