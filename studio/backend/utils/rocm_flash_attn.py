@@ -21,8 +21,12 @@ SKIP_INSTALL_ENV = "UNSLOTH_STUDIO_SKIP_ROCM_FLASHATTN_INSTALL"
 
 # flash-attention main (2.8.4 dev), as built by the gfx1151 CI runner.
 FLASH_ATTN_TRITON_AMD_SHA = "bbe25bacff9f337568b66e69950e549df9839068"
+# pip and uv verify the archive bytes against this digest before running its setup.py; a changed
+# archive fails the best-effort install and Studio keeps SDPA.
+FLASH_ATTN_TRITON_AMD_SHA256 = "49dfc672baf27cde5ec37f86320a73378e5ab012bf639ab03e73f51efeb6aebd"
 FLASH_ATTN_TRITON_AMD_URL = (
     f"https://github.com/Dao-AILab/flash-attention/archive/{FLASH_ATTN_TRITON_AMD_SHA}.tar.gz"
+    f"#sha256={FLASH_ATTN_TRITON_AMD_SHA256}"
 )
 FLASH_ATTN_TRITON_AMD_SPEC = f"flash-attn @ {FLASH_ATTN_TRITON_AMD_URL}"
 # setup.py imports / setup_requires under --no-build-isolation, plus runtime einops.

@@ -455,49 +455,16 @@ _warn_bnb_no_rocm_binary() {
 _install_bnb_rocm() {
     _label="$1"
     _venv_py="$2"
-    case "$_ARCH" in
-        x86_64|amd64)
-            _bnb_whl_url="https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl"
-            ;;
-        aarch64|arm64)
-            _bnb_whl_url="https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl"
-            ;;
-        *)
-            _bnb_whl_url=""
-            ;;
-    esac
-    # uv rejects this pre-release wheel (filename/metadata version mismatch); pip accepts it.
+    # PyPI, not bnb's continuous-release_main: that one is rebuilt on every bnb commit under the
+    # same file names, and >=0.50.0 already carries the ROCm 4-bit fix.
     if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
         if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
             run_maybe_quiet uv pip install --python "$_venv_py" pip || \
                 substep "[WARN] could not bootstrap pip; bitsandbytes install will likely fail" "$C_WARN"
         fi
     fi
-    if [ -n "$_bnb_whl_url" ]; then
-        substep "installing bitsandbytes for AMD ROCm (pre-release, PR #1887)..."
-        _bnb_log=$(mktemp)
-        if "$_venv_py" -m pip install \
-            --disable-pip-version-check \
-            --force-reinstall --no-cache-dir --no-deps \
-            --retries 8 --timeout 90 \
-            "$_bnb_whl_url" >"$_bnb_log" 2>&1; then
-            rm -f "$_bnb_log"
-            _warn_bnb_no_rocm_binary
-            return 0
-        fi
-        _bnb_rc=$?
-        if _is_verbose; then
-            _redact_install_output "$_bnb_log" >&2
-        fi
-        rm -f "$_bnb_log"
-        step "warning" "$_label (pre-release) failed (exit code $_bnb_rc)" "$C_WARN" >&2
-        if _bnb_rocm_arch_has_binary; then
-            substep "[WARN] bnb pre-release install failed; falling back to PyPI $_BNB_ROCM_PYPI_FALLBACK, which carries the ROCm 4-bit fix" "$C_WARN"
-        else
-            substep "[WARN] bnb pre-release install failed; falling back to PyPI $_BNB_ROCM_PYPI_FALLBACK" "$C_WARN"
-        fi
-    fi
-    run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
+    substep "installing bitsandbytes for AMD ROCm ($_BNB_ROCM_PYPI_FALLBACK)..."
+    run_install_cmd "$_label" "$_venv_py" -m pip install \
         --force-reinstall --no-cache-dir --no-deps "$_BNB_ROCM_PYPI_FALLBACK"
     _bnb_pypi_rc=$?
     _warn_bnb_no_rocm_binary
