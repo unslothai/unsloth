@@ -59,3 +59,14 @@ def test_windows_upgrade_removes_the_installer_it_no_longer_ships() -> None:
         assert (
             'Delete "$INSTDIR\\install.sh"' in body
         ), f"{macro} must remove the install.sh a pre-split release left behind"
+
+
+def test_update_into_a_read_only_install_dir_relaunches_elevated_once() -> None:
+    # #15866: the unelevated updater could not write an install under Program Files.
+    hooks = (REPO / "studio/src-tauri/windows/hooks.nsh").read_text(encoding = "utf-8")
+    body = hooks.split("!macro NSIS_HOOK_PREINSTALL", 1)[1].split("!macroend", 1)[0]
+    assert "${If} $UpdateMode = 1" in body
+    assert 'ExecShell "runas" "$EXEPATH" "/UNSLOTHRELAUNCH $1 /D=$INSTDIR"' in body
+    # The marker stops an unelevated relaunch (UAC off) from looping.
+    assert '${GetOptions} $CMDLINE "/UNSLOTHRELAUNCH" $1' in body
+    assert body.index("ExecShell") < body.index('Delete "$INSTDIR\\install.sh"')
