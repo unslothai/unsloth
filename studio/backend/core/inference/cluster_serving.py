@@ -1503,6 +1503,16 @@ def usable_bytes(
     return max(0.0, float(device.free_bytes) - reserve)
 
 
+def _host_ram(held_bytes: float = 0.0) -> Optional[Device]:
+    """This machine's RAM as the device a master with no accelerator serves from, less what stays in host RAM anyway."""
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+    except Exception:
+        return None
+    return Device("CPU", "host RAM", int(mem.total), max(0, int(mem.available - held_bytes)))
+
+
 def plan_cluster(
     model_bytes: Optional[float],
     kv_bytes: float,
@@ -1514,6 +1524,7 @@ def plan_cluster(
     margin_bytes: float = 0.0,
     scratch_bytes: float = 0.0,
     host_extra: Optional[Tuple[int, float]] = None,
+    host_ram: Optional[Device] = None,
 ) -> ClusterPlan:
     if model_bytes is None:
         return ClusterPlan("single", "model size unknown; not guessing, serving on this machine")
@@ -1557,6 +1568,17 @@ def plan_cluster(
             extra_bytes = total_extra,
             **shared,
         )
+    if forced != "layer_split" and not local and host_ram is not None:
+        ram = usable_bytes(host_ram, margin_bytes, scratch_bytes)
+        if need + total_extra <= ram:
+            return ClusterPlan(
+                "single",
+                f"fits this machine's RAM ({(need + total_extra) / _GIB:.1f} GiB of "
+                f"{ram / _GIB:.1f} GiB usable)",
+                need_bytes = need,
+                usable_bytes = ram,
+                extra_bytes = total_extra,
+            )
     if forced == "single":
         return ClusterPlan("single", f"forced by {ENV_TOPOLOGY}=single", need_bytes = need)
     if not remote:
@@ -2321,6 +2343,7 @@ class ClusterServing:
                 layer_bytes = layer_for(kv),
                 margin_bytes = margin,
                 scratch_bytes = self._group_scratch_bytes(groups),
+                host_ram = None if local else _host_ram(off_device + self._host_projector),
             )
 
         # The input embedding stays whole in host RAM: off every device's share, all of it on a unified device.
@@ -2357,7 +2380,7 @@ class ClusterServing:
         groups = caller_groups if caller_groups > 1 else 0
         await self._size_group_scratch(groups)
         plan, skipped, spec_off_single = plan_with(groups)
-        if local_only and not (plan.topology == "single" and plan.devices):
+        if local_only and not (plan.topology == "single" and (plan.devices or plan.usable_bytes)):
             return None
         emit_groups = 0
         if caller_groups > 1:

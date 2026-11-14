@@ -247,6 +247,9 @@ def _cluster_env(
     monkeypatch.setattr(cs, "_shares_host_memory", lambda device: True)
     monkeypatch.setattr(cs, "_kv_unified_supported", lambda binary: True)
     monkeypatch.setattr(cs, "_keeps_resident", lambda: False)
+    monkeypatch.setattr(
+        cs, "_host_ram", lambda held = 0.0: cs.Device("CPU", "host RAM", 16 * GIB, 12 * GIB)
+    )
     seen = []
 
     def fake_list(binary, endpoints, *a, **kw):
@@ -820,6 +823,25 @@ def test_backend_sampling_only_when_a_worker_holds_the_output_layer(monkeypatch)
         ss, "llama_server_supports", lambda flag, binary = None: flag != cs.BACKEND_SAMPLING_FLAG
     )
     assert cs.BACKEND_SAMPLING_FLAG not in run(ss.before_load(_request(), 4)).llama_extra_args
+
+
+def test_a_cpu_only_master_keeps_a_model_that_fits_its_ram(monkeypatch):
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    _cluster_env(monkeypatch, listing = CPU_ONLY_LISTING, model_bytes = 0.8 * GIB)
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "single", ss.status()
+    assert "fits this machine's RAM" in cs.state().reason
+    assert "--rpc" not in (out.llama_extra_args or [])
+    # Forcing the split still splits, and samples on the worker holding the output layer.
+    monkeypatch.setenv(cs.ENV_TOPOLOGY, "layer_split")
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert out.llama_extra_args.count(cs.BACKEND_SAMPLING_FLAG) == 1
+    monkeypatch.delenv(cs.ENV_TOPOLOGY)
+    # Too big for the RAM: split as before.
+    _cluster_env(monkeypatch, listing = CPU_ONLY_LISTING, model_bytes = 20 * GIB)
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
 
 
 def test_the_projector_is_pinned_to_the_local_device_it_was_charged_to(monkeypatch):
