@@ -6,13 +6,7 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
 import { npuSearchText } from "./display-name";
 
-export const NPU_MODEL_PREFIX = "lemonade:";
-
-export function isNpuModelId(
-  value: string | null | undefined,
-): value is string {
-  return typeof value === "string" && value.startsWith(NPU_MODEL_PREFIX);
-}
+export { NPU_MODEL_PREFIX, isNpuModelId } from "./model-id";
 
 export interface NpuValidation {
   ready: boolean;

@@ -56,6 +56,9 @@ export interface ModelSelectorChangeMeta {
   config?: PerModelConfig;
   forceReload?: boolean;
   loadId?: string | null;
+  /** On-disk file or folder behind a filesystem pick; Hub picks resolve theirs through the cache. */
+  localPath?: string;
+  /** Native path token so an active-model reload can reopen a file-picked GGUF. */
   nativePathToken?: string;
   pipelineTag?: string | null;
   familyOverrideRequired?: boolean;
