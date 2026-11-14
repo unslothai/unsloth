@@ -108,6 +108,8 @@ def _usage(
         # A call beside visible text: 4 text characters plus the whole call.
         (False, 0, [("message_text_and_tool_call", 3986)], "completed", (0, 1001, 1001)),
         (False, 0, [("anthropic_tool_use", 3986)], "completed", (0, 1000, 1000)),
+        # A stop during thinking returns only thinking blocks: they are generated output.
+        (False, 0, [("anthropic_thinking", 400)], "cancelled", (0, 100, 100)),
         # A tool loop's earlier passes reported after a later one was interrupted mid-stream.
         (
             True,
@@ -190,8 +192,11 @@ def test_a_receipt_settles_reported_and_estimated_usage(
             inference_route._monitor_openai_chunk(
                 entry, {"choices": [{"index": 0, "message": message}]}
             )
-        elif kind == "anthropic_tool_use":
-            block = {"type": "tool_use", "id": "t", "name": "f", "input": "a" * value}
+        elif kind in ("anthropic_tool_use", "anthropic_thinking"):
+            if kind == "anthropic_thinking":
+                block = {"type": "thinking", "thinking": "t" * value, "signature": ""}
+            else:
+                block = {"type": "tool_use", "id": "t", "name": "f", "input": "a" * value}
             response = SimpleNamespace(body = json.dumps({"content": [block]}).encode())
             inference_route._monitor_anthropic_json_response(response, entry)
         elif kind == "tool_call":
@@ -334,6 +339,9 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     assert "Executed after its pass ended, so that pass's reported usage covers it." in source
     # The whole safetensors reply's thinking is split out of the preview, so it is counted beside it.
     assert "api_monitor.count_output(monitor_id, len(_reasoning_text))" in source
+    # A stop mid-pass in the JSON drain keeps the kept turn outside the earlier passes' report.
+    assert "reported_chars = None if _stats is not _sf_text_stats else 0," in source
+    assert '_sf_text_stats = _sf_stats_holder.get("stats")' in source
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):

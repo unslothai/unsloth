@@ -7958,7 +7958,7 @@ def _monitor_anthropic_sse_line(
 
 
 def _monitor_anthropic_content_blocks(content: Any) -> tuple[str, int]:
-    """Capped preview text, plus the generated characters the preview trimmed."""
+    """Capped preview text, plus the generated characters it leaves out (trimmed input, thinking)."""
     if not isinstance(content, list):
         return "", 0
     parts: list[str] = []
@@ -7972,6 +7972,8 @@ def _monitor_anthropic_content_blocks(content: Any) -> tuple[str, int]:
             parts.append(_monitor_call_text(block.get("name"), block.get("input")))
             full = _monitor_call_text(block.get("name"), block.get("input"), cap = None)
             trimmed += len(full) - len(parts[-1])
+        elif block.get("type") == "thinking" and isinstance(block.get("thinking"), str):
+            trimmed += len(block["thinking"])
     return "".join(parts), trimmed
 
 
@@ -35443,9 +35445,11 @@ async def produce_openai_chat_completions(
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
             _sf_context_truncation = None
+            # The pass stats in place when the kept turn's text arrived; replaced once that pass reports.
+            _sf_text_stats = None
 
             def _drain_to_text():
-                nonlocal _sf_context_truncation
+                nonlocal _sf_context_truncation, _sf_text_stats
                 full_text = ""
                 # Only the resumed turn skips the generation prompt; track the mode of the kept turn.
                 continued = _sf_continue
@@ -35467,6 +35471,7 @@ async def produce_openai_chat_completions(
                     _event_type = event.get("type")
                     if _event_type == "content":
                         raw_text = event.get("text", "")
+                        _sf_text_stats = _sf_stats_holder.get("stats")
                         prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                     elif _event_type == "tool_start" or (
                         _event_type == "status" and not event.get("text")
@@ -35502,6 +35507,8 @@ async def produce_openai_chat_completions(
                     monitor_id,
                     _stats.get("usage"),
                     timings = _stats.get("timings"),
+                    # A stop mid-pass: the earlier passes' counts do not cover the kept turn's text.
+                    reported_chars = None if _stats is not _sf_text_stats else 0,
                 )
             if cancel_event.is_set():
                 from core.inference.llama_keepwarm import mark_current_response_failed
