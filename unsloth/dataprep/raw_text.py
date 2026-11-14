@@ -148,16 +148,13 @@ class RawTextDataLoader:
         if not text or not text.strip():
             return []
 
-        # Tokenize the whole text once for accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
 
-        # Normalise tokenizer return formats
         if hasattr(tokens, "__len__") and len(tokens) > 0:
             if hasattr(tokens[0], "__len__"):
                 tokens = tokens[0]
         elif isinstance(tokens, int):
-            # Tokenizer returned a count; build a range
             tokens = list(range(tokens))
 
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
@@ -168,7 +165,6 @@ class RawTextDataLoader:
         num_tokens = len(tokens) + int(reserve_eos)
 
         if num_tokens <= chunk_size:
-            # Fits in a single chunk
             if return_tokenized:
                 tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                 if eos_token_id is not None:
