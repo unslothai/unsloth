@@ -1120,12 +1120,18 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("script -q -c 'rm -rf build' /dev/null", True),
         ("script --command='rm -rf build' /dev/null", True),
         ("script --command 'rm -rf build' /dev/null", True),
+        ("script -chalt", True),
+        ("script -q /dev/null rm -rf ~/project", True),
+        ("script -q -t 0 /dev/null git clean -fd", True),
+        ("script /dev/null >log rm -rf build", True),
         ("trap 'echo done' EXIT", False),
         ("trap 'echo done' EXIT; make", False),
         ("trap - EXIT", False),
         ("trap -p", False),
         ("script -qc 'make test' /dev/null", False),
         ("script -q session.log", False),
+        ("script -q /dev/null make test", False),
+        ("script session.log > /dev/null", False),
     ],
 )
 def test_command_string_run_by_trap_or_script_is_screened(command, high_risk):

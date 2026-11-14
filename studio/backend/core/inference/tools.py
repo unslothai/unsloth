@@ -7324,6 +7324,7 @@ _GIT_GLOBAL_VALUE_FLAGS = frozenset(
 )
 # Recursively screened; the hard-block only recurses for its own smaller set.
 _SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
+_SCRIPT_VALUE_FLAGS = frozenset({"-t", "-T", "-I", "-O", "-B", "-E", "-o", "-m"})
 # Command-position substitutions ($(printf rm) -rf build) are unreadable; argument ones are not.
 _COMMAND_SUBST_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
@@ -7957,7 +7958,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 ):
                     return True
                 # Shell `-c PAYLOAD` runs its quoted payload, so screen it recursively; also bash -lc clusters.
-                if current_command in _SHELL_C_INTERPRETERS or current_command == "script":
+                if current_command in _SHELL_C_INTERPRETERS:
                     payload = _short_flag_arg(token, "c")
                     if payload is not None:
                         # Plain letters after `c` (bash -ce) are more options, not an attached payload.
@@ -7970,11 +7971,19 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                                 return True
                         else:
                             shell_c_pending = True
-                if current_command == "script" and flag == "--command":
-                    if "=" not in token:
+                # util-linux `script -c CMD`: getopt takes the rest of the cluster (-chalt) as CMD.
+                if current_command == "script":
+                    payload = _short_flag_arg(token, "c")
+                    if flag == "--command":
+                        payload = token.split("=", 1)[1] if "=" in token else ""
+                    if payload == "":
                         shell_c_pending = True
-                    elif _depth >= 3 or _terminal_is_high_risk(token.split("=", 1)[1], _depth + 1):
+                    elif payload is not None and (
+                        _depth >= 3 or _terminal_is_high_risk(payload, _depth + 1)
+                    ):
                         return True
+                    if token in _SCRIPT_VALUE_FLAGS:
+                        wrapper_value_pending = True
                 # env -S runs a string as a command; env -C chdirs (enabling relative sensitive reads).
                 if current_command == "env":
                     if flag in ("-C", "--chdir"):
@@ -8248,6 +8257,23 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 and not git_submodule_action
             ):
                 git_submodule_action = base
+            elif current_command == "script":
+                # BSD/macOS `script [opts] file command ...` runs everything after the log file.
+                current_command = ""
+                script_argv: "list[str]" = []
+                skip_target = False
+                for rest in tokens[_tok_idx + 1 :]:
+                    if rest in _SHELL_SEPARATORS or not set(rest) - set(";&|()"):
+                        break
+                    redir = _REDIR_PREFIX_RE.match(rest)
+                    if skip_target or redir:
+                        skip_target = bool(redir) and redir.end() == len(rest)
+                        continue
+                    script_argv.append(rest)
+                if script_argv and (
+                    _depth >= 3 or _terminal_is_high_risk(" ".join(script_argv), _depth + 1)
+                ):
+                    return True
             elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
                 # The database name is the whole request; no path is mentioned.
                 return True
