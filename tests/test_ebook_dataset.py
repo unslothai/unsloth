@@ -144,6 +144,19 @@ def test_definition_lists_and_figures_do_not_merge_words(ebooks):
     assert ebooks._html_text(data) == "Term\n\nDefinition\n\nCaption\n\nNote"
 
 
+@pytest.mark.parametrize(
+    "ruby",
+    [
+        "<ruby>東<rt>とう</rt>京<rt>きょう</rt></ruby>",
+        "<ruby>東京<rp>(</rp><rt>とうきょう</rt><rp>)</rp></ruby>",
+    ],
+    ids = ["rt", "rp"],
+)
+def test_ruby_readings_are_not_inlined_into_the_text(ebooks, ruby):
+    data = f"<html><body><p>{ruby}に行く。</p></body></html>".encode("utf-8")
+    assert ebooks._html_text(data) == "東京に行く。"
+
+
 def test_bom_is_dropped_when_xml_declares_utf8(ebooks):
     data = b'\xef\xbb\xbf<?xml version="1.0" encoding="UTF-8"?><html><body><p>Chapter</p></body></html>'
     assert ebooks._html_text(data) == "Chapter"

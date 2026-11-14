@@ -72,7 +72,8 @@ _VOID = {
     "track",
     "wbr",
 }
-_IGNORE = {"head", "script", "style", "nav", "svg"}
+# <rt> is a ruby reading drawn above its base text and <rp> its no-ruby fallback; neither is prose.
+_IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp"}
 
 
 class _BookTextParser(HTMLParser):
