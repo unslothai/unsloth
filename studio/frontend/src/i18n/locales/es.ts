@@ -2227,6 +2227,18 @@ export const es = {
         deviceGpu: "GPU",
         deviceLocked: "Definido por {name}.",
         deviceSaveError: "No se pudo cambiar el dispositivo de embeddings",
+        offlineDocs: {
+          folderLabel: "Documentación de Unsloth sin conexión",
+          folderDescription: "Guarda la documentación completa de Unsloth en una carpeta para usarla sin internet.",
+          folderHint: "Unsloth descarga unsloth.ai/docs/llms-full.txt en esta carpeta como \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" y reemplaza la copia anterior. Vincula la carpeta a una base de conocimiento para buscar en la documentación desde el chat sin conexión. La carpeta se conserva entre actualizaciones.",
+          choose: "Elegir",
+          autoUpdateLabel: "Actualizar la documentación con cada versión",
+          autoUpdateDescription: "Descarga una copia nueva la primera vez que se inicia una nueva versión de Unsloth.",
+          downloadNow: "Descargar ahora",
+          downloading: "Descargando la documentación…",
+          notDownloaded: "Aún no descargada",
+          lastUpdated: "Actualizada el {date} para {release}",
+        },
       },
       storage: {
         sectionTitle: "Almacenamiento",

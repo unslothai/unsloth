@@ -2432,6 +2432,18 @@ export const cs = {
         deviceGpu: "GPU",
         deviceLocked: "Nastaveno pomocí {name}.",
         deviceSaveError: "Zařízení pro embedding se nepodařilo změnit",
+        offlineDocs: {
+          folderLabel: "Offline dokumentace Unsloth",
+          folderDescription: "Uložte celou dokumentaci Unsloth do složky, aby fungovala i bez internetu.",
+          folderHint: "Unsloth stáhne unsloth.ai/docs/llms-full.txt do této složky jako \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" a nahradí předchozí kopii. Propojte složku se znalostní bází a prohledávejte dokumentaci v chatu i offline. Složka se při aktualizacích zachová.",
+          choose: "Vybrat",
+          autoUpdateLabel: "Aktualizovat dokumentaci s každým vydáním",
+          autoUpdateDescription: "Stáhne novou kopii při prvním spuštění nové verze Unsloth.",
+          downloadNow: "Stáhnout nyní",
+          downloading: "Stahování dokumentace…",
+          notDownloaded: "Zatím nestaženo",
+          lastUpdated: "Aktualizováno {date} pro {release}",
+        },
       },
       storage: {
         sectionTitle: "Úložiště",

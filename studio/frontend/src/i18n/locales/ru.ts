@@ -2214,6 +2214,18 @@ export const ru = {
         deviceGpu: "GPU",
         deviceLocked: "Задано через {name}.",
         deviceSaveError: "Не удалось изменить устройство для эмбеддингов",
+        offlineDocs: {
+          folderLabel: "Документация Unsloth офлайн",
+          folderDescription: "Сохраняет полную документацию Unsloth в папку, чтобы она была доступна без интернета.",
+          folderHint: "Unsloth скачивает unsloth.ai/docs/llms-full.txt в эту папку как \"Unsloth Docs LLMs Full Text [Documentation] (date).md\", заменяя предыдущую копию. Привяжите папку к базе знаний, чтобы искать по документации в чате без интернета. Папка сохраняется при обновлениях.",
+          choose: "Выбрать",
+          autoUpdateLabel: "Обновлять документацию с каждым релизом",
+          autoUpdateDescription: "Скачивает свежую копию при первом запуске новой версии Unsloth.",
+          downloadNow: "Скачать сейчас",
+          downloading: "Скачивание документации…",
+          notDownloaded: "Ещё не скачана",
+          lastUpdated: "Обновлено {date} для {release}",
+        },
       },
       storage: {
         sectionTitle: "Хранилище",

@@ -414,6 +414,26 @@ def test_unsafe_ids_resolve_to_nothing(client, bad):
         assert client.delete(f"{INPUTS}/{quote(bad, safe = '')}").status_code == 404
 
 
+@pytest.mark.parametrize(
+    "prompt, name",
+    [
+        ("", "Clip"),
+        ("  a   short\n prompt ", "a short prompt"),
+        ("x" * 60, "x" * 60),
+        ("word " * 11 + "y" * 10, ("word " * 11 + "y" * 10)[:59].rstrip() + "\u2026"),
+        ("ab " * 30, ("ab " * 30)[:59].rstrip() + "\u2026"),
+    ],
+)
+def test_a_clip_source_name_is_its_prompt_cut_with_an_ellipsis(prompt, name):
+    meta = {"prompt": prompt, "model": "m", "audio_type": "snac", "sample_rate": 16000}
+    clip = gallery.save(
+        wav_bytes(), meta | {"duration_s": 1.0, "created_at": "2026-10-02T00:00:00Z"}
+    )
+    source = audio_inputs.resolve_source({"clip_id": clip["id"]})
+    assert source.name == name
+    assert len(source.name) <= 60
+
+
 def test_transcribe_sends_a_16k_mono_copy_and_saves_nothing(client, monkeypatch):
     from routes import inference
 
