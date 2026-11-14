@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The DeepSeek OCR modelling code is fetched from the Hub, so it must be pinned.
-
-Three properties, none of which the previous version of this path had:
-
-- the fetch names a revision, so the code that runs is the code that was reviewed
-  rather than whatever the branch points at when a user starts a training run,
-- the bytes are checked against committed digests before they are imported, so the
-  revision pin is not undone by a cached file edited in place,
-- the import comes from that fetch. The old code decided "already available" with a
-  bare `from deepseek_ocr.modeling_deepseekocr import ...`, which any directory named
-  `deepseek_ocr` anywhere on `sys.path` satisfied. That directory was imported, which
-  runs its code, and the real download was then skipped.
-
-No network: the fetch is stubbed and the pinned source is a local fixture, with the
-digest map pointed at the fixture's own bytes. What is exercised for real is which
-directory the import resolves to and what the install predicate accepts.
-"""
+"""Pin the DeepSeek OCR fetch to a revision, check digests before import, and import from that fetch."""
 
 import hashlib
 import re
@@ -115,8 +99,6 @@ def test_the_fetch_names_the_revision_and_only_python(tmp_path, monkeypatch, pin
     assert repo_id == _DEEPSEEK_OCR_REPOSITORY
     assert kwargs["revision"] == _DEEPSEEK_OCR_REVISION
     assert kwargs["allow_patterns"] == ["*.py"]
-    # Not inside the backend source tree: installing this must not put the backend's own
-    # directories on the import path as a side effect.
     assert str(source).startswith(str(tmp_path))
     assert _DEEPSEEK_OCR_REVISION in str(source)
 
@@ -156,11 +138,7 @@ def test_a_partial_install_is_rebuilt(monkeypatch, pinned_digests):
 
 
 def test_a_cached_module_edited_in_place_is_rebuilt(monkeypatch, pinned_digests):
-    """The case names and file types cannot see.
-
-    An edited file keeps its name, so presence alone would accept it, skip the download
-    and import the altered bytes, which is the revision pin defeated at the last step.
-    """
+    """Presence alone cannot catch an edited cached module; its digest is checked, so it is rebuilt."""
     fetched = []
 
     def counting_download(
@@ -206,13 +184,7 @@ def test_a_fetch_that_does_not_match_the_digests_is_not_installed(monkeypatch, p
 
 
 def test_a_foreign_package_on_sys_path_is_not_what_gets_imported(tmp_path, monkeypatch):
-    """The defect: a `deepseek_ocr` directory on sys.path used to be imported instead.
-
-    The witness file is how this observes execution. A bare
-    `from deepseek_ocr.modeling_deepseekocr import ...` runs the foreign package's
-    module body, so the witness exists before any check can be made about where the
-    code came from.
-    """
+    """A foreign deepseek_ocr dir on sys.path must not be imported, since importing runs its code."""
     witness = tmp_path / "witness.txt"
     foreign = tmp_path / "foreign" / _DEEPSEEK_OCR_PACKAGE
     foreign.mkdir(parents = True)
@@ -237,11 +209,7 @@ def test_a_foreign_package_on_sys_path_is_not_what_gets_imported(tmp_path, monke
 
 
 def test_the_trainer_entry_point_reports_success_from_the_pinned_source(tmp_path, monkeypatch):
-    """`_ensure_deepseek_ocr_installed` keeps its True/False contract.
-
-    The training flow checks the return value and surfaces an error to the user on
-    False, so the contract is what keeps the UX identical.
-    """
+    """_ensure_deepseek_ocr_installed must keep its True/False return: False is surfaced to the user."""
     pinned = tmp_path / "pinned"
     _write_package(pinned)
     monkeypatch.setattr(third_party_source, "ensure_deepseek_ocr_source", lambda *a, **k: pinned)
@@ -263,12 +231,7 @@ def test_the_trainer_entry_point_returns_false_when_the_source_is_unavailable(mo
 
 
 def test_an_added_shadowing_package_is_rebuilt(monkeypatch, pinned_digests):
-    """Digests on the listed files cannot see an ADDED file that wins the import.
-
-    `modeling_deepseekocr/__init__.py` is imported in preference to
-    `modeling_deepseekocr.py`, and an origin check passes it because it does sit inside
-    the pinned root, so the contents have to be exactly what was installed.
-    """
+    """Digests miss an added __init__.py that wins the import; the file set itself must match."""
     fetched = []
 
     def counting_download(
@@ -325,12 +288,7 @@ def test_the_install_leaves_only_the_pinned_files(monkeypatch, pinned_digests):
 
 
 def test_generated_bytecode_does_not_invalidate_the_install(monkeypatch, pinned_digests):
-    """Python writes __pycache__ on the first import.
-
-    Treating it as an unexpected entry made the predicate go False immediately after a
-    successful import, so every later run re-downloaded and an offline run failed on a
-    source it had already installed and used.
-    """
+    """Ignore __pycache__ in the install check, or every import re-downloads and offline runs fail."""
     monkeypatch.setattr("huggingface_hub.snapshot_download", _fake_download)
     source = ensure_deepseek_ocr_source()
 
@@ -349,11 +307,7 @@ def test_generated_bytecode_does_not_invalidate_the_install(monkeypatch, pinned_
 
 
 def test_a_sibling_planted_in_the_import_root_is_rebuilt(monkeypatch, pinned_digests):
-    """The root is on sys.path, and the origin check only looks at deepseek_ocr.*.
-
-    The modelling code imports addict, so a planted addict.py beside the package would
-    be imported by it with nothing objecting.
-    """
+    """Origin checks cover only deepseek_ocr, so a planted addict.py in the import root runs unchecked."""
     fetched = []
 
     def counting_download(

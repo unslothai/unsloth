@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Download a FastFlowLM model's files with resume, into the folder FastFlowLM reads.
-
-FastFlowLM's own pull cannot resume. It writes each file straight to its final name, starts a
-failed file over from zero (three tries), must finish each file within an hour, and takes a file a
-killed pull left half-written as complete. Studio downloads the files here instead: each one goes
-to ``<name>.partial``, continues from there with a Range request after any interruption, and is
-renamed only once its hash matches. lemond's pull then finds every file present and only
-registers the model.
-"""
+"""Resumable FastFlowLM downloads into the folder it reads; renamed from .partial once hash matches"""
 
 from __future__ import annotations
 
@@ -18,6 +10,7 @@ import json
 import logging
 import re
 import time
+from urllib.parse import unquote
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -31,6 +24,9 @@ _CHUNK = 1 << 20
 _MAX_STALLED_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 2.0
 _RETRIED_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_HF_REPO_URL = re.compile(
+    r"https://huggingface\.co/(?P<repo>[\w.-]+/[\w.-]+)(?:/resolve/(?P<revision>[^/?#]+))?/?$"
+)
 
 
 class FlmDownloadError(RuntimeError):
@@ -84,12 +80,29 @@ def _load(path: Path) -> Any:
     return _parsed(path, (info.st_mtime_ns, info.st_size))
 
 
+def read_model_repo(
+    flm_binary: Optional[Path], checkpoint: str
+) -> tuple[Optional[str], Optional[str]]:
+    """(owner/name, revision or None) of the Hugging Face repo model_list.json names for
+    checkpoint; (None, None) when unknown or not on huggingface.co."""
+    if flm_binary is None or ":" not in checkpoint:
+        return None, None
+    family, size = checkpoint.split(":", 1)
+    try:
+        url = _load(flm_binary.parent / "model_list.json")["models"][family][size]["url"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, None
+    match = _HF_REPO_URL.match(url) if isinstance(url, str) else None
+    if match is None:
+        return None, None
+    return match["repo"], unquote(match["revision"]) if match["revision"] else None
+
+
 def read_model_files(
     flm_binary: Optional[Path], flm_model_path: Path, checkpoint: str
 ) -> Optional[FlmModelFiles]:
-    """The files FastFlowLM expects for ``checkpoint`` (``family:size``), from the manifests it
-    ships next to its binary. None when they cannot be read, so the caller falls back to lemond.
-    """
+    """The files FastFlowLM expects for checkpoint (family:size), read from the manifests beside its
+    binary; None when unreadable, so the caller falls back to lemond."""
     if flm_binary is None or ":" not in checkpoint:
         return None
     family, size = checkpoint.split(":", 1)
@@ -145,11 +158,7 @@ def _matches(path: Path, file: FlmFile) -> bool:
 def download_files(
     model: FlmModelFiles, client: Optional[httpx.Client] = None
 ) -> Iterator[dict[str, Any]]:
-    """Download every missing file, yielding progress over the whole model as its percent moves.
-
-    Raises FlmDownloadError when a file stops making progress or fails its hash check. Whatever
-    was written stays in ``.partial`` files, so the next call continues from there.
-    """
+    """Raises FlmDownloadError on a stall or bad hash; partial files are kept so the next call resumes."""
     model.folder.mkdir(parents = True, exist_ok = True)
     owned = client is None
     client = client or httpx.Client(follow_redirects = True, timeout = httpx.Timeout(30.0, read = 120.0))

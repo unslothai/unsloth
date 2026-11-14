@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Engines disagree on what a timed-out fetch rejects with. Measured in real engines:
-// Chromium and Gecko give TimeoutError, WebKit gives AbortError, and engines without
-// signal.reason (Safari < 15.4, older WebKitGTK) give AbortError whatever we abort with.
-// WebKit is what the desktop app embeds, so classifying only TimeoutError left exactly
-// those users on the generic message.
+// Timeouts reject with TimeoutError on Chromium/Gecko but AbortError on WebKit (the desktop
+// engine) and on engines without signal.reason.
 
 import assert from "node:assert/strict";
 import test from "node:test";

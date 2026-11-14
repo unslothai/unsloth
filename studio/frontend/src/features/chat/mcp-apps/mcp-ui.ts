@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// No imports: the chat adapter, the tool card and the search index share it, and node tests load it as is.
+// No imports: shared by several modules and loaded as is by node tests.
 
 export interface McpUiEnvelope {
   resourceUri: string;
-  /** Image blocks carry no `data`: it rides the image envelope, in order. */
   content?: { type?: string; data?: string; [key: string]: unknown }[];
   structuredContent?: unknown;
   _meta?: Record<string, unknown>;
-  /** Seed data was too large to persist; the widget must fetch it itself. */
   structuredContentOmitted?: boolean;
 }
 
@@ -76,13 +74,43 @@ export function mcpUiReplayImages(
   );
 }
 
-/** The scope the chat adapter records "Always allow" under, shared so it covers model and widget calls. */
 export function toolApprovalScope(
   sessionId: string | null | undefined,
   threadId: string | null | undefined,
 ): string {
   const session = sessionId || "_default";
   return threadId ? `${session}:${threadId}` : session;
+}
+
+export const MAX_REVIEW_ARGS_CHARS = 20_000;
+
+// Every default-ignorable code point (bidi controls, tags, variation selectors, fillers), plus line separators.
+const HIDDEN_CHARS = /[\p{Default_Ignorable_Code_Point}\u2028\u2029]/gu;
+
+/** Bidi and invisible characters as `\uXXXX`, so what a card shows can't read reordered or hide text. */
+export function forReview(text: string): string {
+  // Per UTF-16 unit, so an astral character becomes a surrogate pair JSON.parse still reads.
+  return text.replace(HIDDEN_CHARS, (c) =>
+    Array.from(
+      { length: c.length },
+      (_, i) => `\\u${c.charCodeAt(i).toString(16).padStart(4, "0")}`,
+    ).join(""),
+  );
+}
+
+/** A widget call's arguments as they will be sent; a very long one is cut with a note saying so. */
+export function toolArgsForReview(args: Record<string, unknown>): string {
+  if (Object.keys(args).length === 0) return "";
+  let text: string;
+  try {
+    // Escaped inside JSON strings, so the shown text still parses to the sent arguments.
+    text = forReview(JSON.stringify(args, null, 2));
+  } catch {
+    return "(the arguments cannot be shown)";
+  }
+  if (text.length <= MAX_REVIEW_ARGS_CHARS) return text;
+  const hidden = text.length - MAX_REVIEW_ARGS_CHARS;
+  return `${text.slice(0, MAX_REVIEW_ARGS_CHARS)}\n… ${hidden.toLocaleString()} more characters are sent but not shown`;
 }
 
 /** The tool-result seed: server blocks, image bytes put back from the images envelope in order. */
@@ -131,7 +159,6 @@ const CSP_PARAMS: [string, string][] = [
   ["base_uri", "baseUriDomains"],
 ];
 
-/** The frame shell's query from the template's declared CSP; a server may send `"csp": null`. */
 export function cspFrameQuery(csp: unknown): string {
   const query = new URLSearchParams();
   const declared =
@@ -158,7 +185,6 @@ export function newBridgeToken(): string | null {
 
 /** A MessageChannel port bound to THIS document (a navigated page cannot use it), exposed as window.parent/top. */
 export function bridgeShim(token: string, hostOrigin: string): string {
-  // postMessage widened to Window's (message, targetOrigin, transfer); replies re-dispatched as the port's.
   return `(() => { try {
   const real = window.parent, channel = new MessageChannel(), port = channel.port1;
   const raw = port.postMessage.bind(port);

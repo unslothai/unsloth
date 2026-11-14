@@ -15,8 +15,7 @@ from typing import Optional
 from loggers import get_logger
 from utils.paths import path_utils as _path_utils
 
-# One policy, defined in utils.paths.storage_roots: the copy that used to live here drifted, and a
-# BOM'd settings.json was honoured by one side and dropped by the other (#9748).
+# One policy in utils.paths.storage_roots; a local copy drifted before.
 from utils.paths.storage_roots import (
     hermes_model_dirs,
     studio_root,
@@ -114,8 +113,7 @@ def is_valid_repo_id(repo_id: str) -> bool:
     segments = repo_id.split("/")
     if len(segments) not in (1, 2):
         return False
-    # Match huggingface_hub.validate_repo_id: the 96-char limit applies per segment, not to the whole
-    # "namespace/repo_name" string.
+    # Like validate_repo_id: the 96-char limit is per segment.
     return all(
         segment not in ("", ".", "..")
         and len(segment) <= _MAX_REPO_ID_LENGTH
@@ -129,12 +127,7 @@ _MAX_GGUF_VARIANT_LENGTH = 512
 
 
 def is_valid_gguf_variant(variant: str) -> bool:
-    """Validate Hub GGUF variant keys.
-
-    Known quant labels are short tokens (``Q4_K_M``), but unknown GGUF layouts
-    use a snapshot-relative key derived from the filename and may contain
-    slashes or spaces.
-    """
+    """Unknown GGUF layouts use snapshot-relative keys, which may hold slashes or spaces."""
     if not variant or variant != variant.strip():
         return False
     if len(variant) > _MAX_GGUF_VARIANT_LENGTH:
@@ -145,8 +138,7 @@ def is_valid_gguf_variant(variant: str) -> bool:
     return all(segment not in ("", ".", "..") for segment in normalized.split("/"))
 
 
-# Per-process memo for resolve_cached_repo_id_case. Bounded LRU so a long-lived process cannot
-# grow it without limit; evicted cold entries simply recompute.
+# Bounded LRU memo for resolve_cached_repo_id_case so long-lived processes cannot grow it unbounded.
 _CACHE_CASE_RESOLUTION_MEMO_MAX = 512
 _CACHE_CASE_RESOLUTION_MEMO: "OrderedDict[tuple[str, str], str]" = OrderedDict()
 _CACHE_CASE_RESOLUTION_LOCK = threading.Lock()
@@ -218,13 +210,7 @@ def _assert_contained(resolved: Path, root: Path) -> None:
 
 
 def path_is_same_or_child(path: Path, root: Path) -> bool:
-    """True when *path* is *root* or lives beneath it.
-
-    Compares real (symlink-resolved, case-normalized) paths so the check holds
-    through symlinks and on case-insensitive filesystems, where a plain
-    ``Path.is_relative_to`` would miss a casing-only match. Returns False on any
-    resolution error rather than raising.
-    """
+    """Compares normcased realpaths so symlinks and case-only matches count; any error returns False."""
     try:
         path_real = os.path.normcase(os.path.realpath(str(path)))
         root_real = os.path.normcase(os.path.realpath(str(root)))
@@ -237,8 +223,7 @@ def resolve_dataset_path(path_value: str) -> Path:
     raw = str(path_value or "").strip()
     if "\x00" in raw:
         raise ValueError("dataset path may not contain null bytes")
-    # Normalize first so Windows/UNC and backslash paths resolve like the rest of the Hub path layer,
-    # and a backslashed ".." is caught by the traversal guard below.
+    # Normalize first so a backslashed ".." is caught by the traversal guard below.
     normalized = normalize_path(raw)
     path = Path(normalized).expanduser()
     if ".." in path.parts:
@@ -281,12 +266,7 @@ def resolve_cached_repo_id_case(
     use_memo: bool = True,
     repo_type: str = "model",
 ) -> str:
-    """Resolve repo_id to the exact casing already present in local HF cache.
-
-    Prefers the requested casing, but if a case-variant already exists in
-    local HF cache, reuses that exact cached spelling so we don't trigger
-    a duplicate download.
-    """
+    """Reuses the cached spelling when a case-variant exists, to avoid a duplicate download."""
     if not model_name or "/" not in model_name:
         return model_name
 
@@ -324,8 +304,7 @@ def resolve_cached_repo_id_case(
                     continue
                 if entry.name.lower() != expected_lower:
                     continue
-                # The lowercased full-name match already proves the prefix matches; a case-sensitive startswith
-                # would reject a mixed-case imported dir such as Models--Org--Repo.
+                # Lowercased full-name match proves the prefix; case-sensitive startswith rejects Models--Org--Repo.
                 repo_part = entry.name[len(prefix) :]
                 if not repo_part:
                     continue

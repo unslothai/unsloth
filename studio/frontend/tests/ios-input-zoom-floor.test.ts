@@ -40,7 +40,6 @@ test("the floor skips controls that render no text of their own", () => {
   }
 });
 
-// Three controls pin a box sized for 9-12px text, so the floor clips their value.
 const COARSE_COMPANIONS: [string, RegExp][] = [
   ["features/studio/sections/progress-section.tsx", /pointer-coarse:h-auto[\s\S]{0,80}pointer-coarse:min-w-0/],
   ["features/studio/sections/params-section-controls.tsx", /w-12 pointer-coarse:w-16/],

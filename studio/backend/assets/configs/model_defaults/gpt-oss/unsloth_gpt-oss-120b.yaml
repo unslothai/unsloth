@@ -1,11 +1,7 @@
-# Model defaults for unsloth/gpt-oss-120b
-# Based on gpt-oss-(120B)_A100-Fine-tuning.ipynb
 # Also applies to: openai/gpt-oss-120b, unsloth/gpt-oss-120b-unsloth-bnb-4bit
-# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 4096
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 4

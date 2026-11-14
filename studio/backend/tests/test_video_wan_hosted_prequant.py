@@ -47,7 +47,10 @@ def test_t2v_a14b_seeds_both_experts_from_their_own_files(scheme):
     tag = scheme.upper()
     assert f"Wan2.2-T2V-A14B-{tag}.pt" in _names(sources["transformer"])
     # Expert 2 is served by its own row only: falling back to expert 1's name would load the wrong weights.
-    assert _names(sources["transformer_2"]) == (f"Wan2.2-T2V-A14B-{tag}-2.pt",)
+    assert _names(sources["transformer_2"]) == (
+        f"Wan2.2-T2V-A14B-{tag}-2.safetensors",
+        f"Wan2.2-T2V-A14B-{tag}-2.pt",
+    )
     assert sources["transformer_2"].location == "unsloth/Wan2.2-T2V-A14B-FP8"
 
 
@@ -72,7 +75,7 @@ def test_nvfp4_rows_are_unchanged():
     assert (
         "nvfp4",
         "transformer_2",
-        "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+        "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
     ) in a14b.prequant_filenames
 
 
@@ -85,8 +88,7 @@ def test_nvfp4_rows_are_unchanged():
 )
 @pytest.mark.parametrize("scheme", ["fp8", "int8"])
 def test_families_without_a_hosted_artifact_resolve_none(repo, scheme):
-    """No fp8 / int8 denoiser is hosted for HunyuanVideo-1.5, so nothing may be seeded (it would 404 after the plan
-    dropped the released shards)."""
+    """HunyuanVideo-1.5 hosts no fp8/int8 denoiser, so nothing may be seeded (it would 404)."""
     fam = detect_video_family(repo)
     assert video_family_prequant_repo(fam, scheme, repo) is None
     assert denoiser_prequant_sources(fam, scheme, repo) is None

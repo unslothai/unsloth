@@ -76,7 +76,6 @@ def test_a_plain_layout_names_no_repo_dir(tmp_path):
     )
 
     assert _hf_cache_repo_dir(str(weight)) is None
-    # And the lookup degrades to the weight's own directory rather than refusing.
     projector = _projector(model_dir / "mmproj-F16.gguf")
     assert _hf_cached_local_mmproj(str(weight)) == str(projector.resolve())
 

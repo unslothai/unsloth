@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
-* Why this file exists (unslothai/unsloth#7897): the training bar sat at 100% with no
-* completion. `applyStatus` never touches `progressPercent`, so once the SSE has reported step
-* N/N the bar stays at 100 whatever phase the status poll reports. Reaching 100% means the
-* optimizer loop ended, NOT that the save succeeded, so completion must come from the phase.
-*/
+ * Reaching 100% means the optimizer loop ended, not that the save succeeded, so completion
+ * must come from the phase; applyStatus never touches progressPercent.
+ */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -24,7 +22,7 @@ function reset() {
     useTrainingRuntimeStore.getInitialState?.() ?? {},
     true,
   );
-  // applyProgress ignores payloads whose job_id does not match, so a run has to be adopted first.
+  // applyProgress ignores payloads whose job_id does not match.
   useTrainingRuntimeStore.setState({ jobId: "job-1" } as never);
 }
 
@@ -67,17 +65,14 @@ test("100% does not imply completion - the bar stays pinned while phase goes idl
   assert.equal(useTrainingRuntimeStore.getState().progressPercent, 100);
   assert.equal(useTrainingRuntimeStore.getState().currentStep, 126);
 
-  // The status poll settles the run without a `completed` phase.
   useTrainingRuntimeStore
     .getState()
     .applyStatus(status({ phase: "idle", is_training_running: false }));
 
   const after = useTrainingRuntimeStore.getState();
   assert.equal(after.phase, "idle");
-  // This is the reported symptom: a bar reading 100% with nothing terminal.
   assert.equal(after.progressPercent, 100);
   assert.equal(after.currentStep, 126);
-  // ...and the view stays mounted because currentStep > 0, so the user sees it.
   assert.equal(shouldShowTrainingView(after), true);
 });
 
@@ -106,7 +101,6 @@ test("the post-training save is visible as its own phase, not silent 'training'"
 
   const after = useTrainingRuntimeStore.getState();
   assert.equal(after.phase, "finalizing");
-  // Still running, so live sync/SSE must stay on.
   assert.equal(after.isTrainingRunning, true);
   assert.equal(after.progressPercent, 100);
 });
@@ -131,7 +125,6 @@ test("a non-finite loss at a NEW step clears the display instead of going stale"
   store.applyProgress(progress({ step: 10, loss: 0.42 }), 10);
   assert.equal(useTrainingRuntimeStore.getState().currentLoss, 0.42);
 
-  // Backend reports a non-finite loss as null at a later step.
   useTrainingRuntimeStore
     .getState()
     .applyProgress(progress({ step: 11, loss: null }), 11);

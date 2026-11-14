@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Telling "loading a cached model" apart from "downloading it again" (#9094). Only a count that
- * GREW between two readings is a transfer: below the expected total is an ordinary partial
- * revision, and an unmeasurable cache leaves the watch alone rather than forfeiting it.
- */
+/** Only growth between readings is a re-download (#9094); partial totals are normal. */
 
-/** Previous reading's bytes; null when there is nothing to compare against. */
 export interface CacheMissWatch {
   readonly bytes: number | null;
 }
@@ -27,7 +22,6 @@ export const CACHE_MISS_DOWNLOAD_DESCRIPTION =
 export interface CacheMissVerdict {
   readonly started: boolean;
   readonly watch: CacheMissWatch;
-  /** Whole percent, or null when the total is unknown. */
   readonly percent: number | null;
 }
 

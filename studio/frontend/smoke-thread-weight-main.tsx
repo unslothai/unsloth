@@ -1,27 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_thread_weight.py: the real Thread at N messages, so the
-// measured cost of a keystroke, a scroll, a menu and a delete is the app's own and grows with the
-// thread the way a user's does (#8977).
-// Same shape as smoke-autoscroll.html and smoke-research.html: a vite entry, no backend, no auth.
-// Two things are real on purpose and cannot be mocked away without deleting the measurement:
-//   - Thread itself, from src/components/assistant-ui/thread.tsx, with its per-message action
-//     bars, tooltips and markdown blocks.
-//   - The message bodies, which carry prose plus one code fence plus one KaTeX block each, so
-//     Streamdown, Shiki and KaTeX all pay their per-message price.
-// The runtime is synthetic: a local runtime whose model adapter never runs, seeded through
-// `thread.import`.
-// useLocalRuntime rather than useExternalStoreRuntime: the delete path under measurement is
-// `thread.export()` -> MessageRepository -> `thread.import()`, which only the local runtime backs.
+// Harness for tests/studio/playwright_thread_weight.py: the real Thread and real markdown bodies,
+// seeded via thread.import on a local runtime (only it backs export/import used by delete).
 
+import {
+  hasPendingProgressiveMounts,
+  holdProgressiveMounts,
+} from "@/components/assistant-ui/progressive-messages";
 import { Thread } from "@/components/assistant-ui/thread";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   AssistantRuntimeProvider,
   type ChatModelAdapter,
   ExportedMessageRepository,
   SimpleImageAttachmentAdapter,
+  type ThreadAssistantMessagePart,
   type ThreadMessageLike,
   useAui,
   unstable_useRemoteThreadListRuntime,
@@ -37,16 +32,18 @@ import {
 import { type ReactElement, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
+import { watchModalPointerLock } from "./src/lib/modal-pointer-lock";
 
-// The local runtime's thread list item reports a synthetic `__LOCALID_...` remoteId, which is
-// truthy, so ForkCountBadge really does fire one GET per assistant message. Measured: seeding 20
-// messages issues 10 requests. Answering them here, before anything mounts, keeps that off the
-// wire entirely. Answering them from the Playwright side instead would put a CDP round trip to
-// another process inside a region this harness is timing, once per assistant message.
+// Answer ForkCountBadge GETs in-page: a Playwright-side answer would add a CDP round trip per
+// assistant message inside the timed region.
 const realFetch = window.fetch.bind(window);
+const apiWrites: { url: string; body: string | null }[] = [];
 window.fetch = (input, init) => {
   const url = typeof input === "string" ? input : (input as Request).url ?? String(input);
   if (url.includes("/api/")) {
+    if (init?.method && init.method !== "GET") {
+      apiWrites.push({ url, body: typeof init.body === "string" ? init.body : null });
+    }
     return Promise.resolve(
       new Response("{}", {
         status: 200,
@@ -93,15 +90,7 @@ function assistantMarkdown(index: number): string {
   ].join("\n\n");
 }
 
-/**
- * A reply that is prose and nothing else: no fence, no math, no link, no image.
- *
- * The default body above carries a code fence, and Streamdown gives every fence its own Copy
- * button, so every assistant message in the default fixture happens to hold a focusable control
- * whether or not its action bar is mounted. Most real replies are not like that. This variant
- * exists so the harness can seed a reply whose focusable count is ZERO and a keyboard walk has
- * nothing to land on (#8992, review item on unreachable plain-text replies).
- */
+/** Plain prose reply with zero focusable controls (fenced bodies always carry a Copy button). */
 function plainAssistantMarkdown(index: number): string {
   return [`Reply ${index}. ${PROSE}`, CLOSING].join("\n\n");
 }
@@ -117,13 +106,33 @@ function userMarkdown(index: number): string {
  */
 type SeedOptions = {
   plainAssistants?: readonly number[] | "all";
-  /** `rounds` x reasoning, tool call, answer per reply; truncation every `compactionEvery`th. */
-  agent?: { rounds: number; compactionEvery?: number };
+  /**
+   * `rounds` x reasoning, tool call, answer per reply; truncation every `compactionEvery`th.
+   * `sources` adds six URL source parts after every web_search call.
+   */
+  agent?: { rounds: number; compactionEvery?: number; sources?: boolean; rich?: boolean };
+  /** Each default reply also carries a numbered equation, which KaTeX counts page-wide, and
+   *  the same environments as code. */
+  numbered?: boolean;
 };
 
 const AGENT_TOOLS = ["web_search", "terminal", "python"] as const;
 
-function agentContent(index: number, rounds: number) {
+function urlSources(tag: string) {
+  return Array.from({ length: 6 }, (_, source) => ({
+    type: "source" as const,
+    sourceType: "url" as const,
+    id: `source_${tag}_${source}`,
+    url: `https://example${source}.org/${tag}`,
+    title: `Source ${source} for ${tag}`,
+  }));
+}
+
+function table(tag: string): string {
+  return ["| step | loss | lr |", "|---|---|---|", ...[0, 1, 2, 3].map((row) => `| ${tag}.${row} | 0.${row}4 | 2e-4 |`)].join("\n");
+}
+
+function agentContent(index: number, rounds: number, sources = false, rich = false) {
   const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
   for (let round = 0; round < rounds; round++) {
     const tag = `${index}_${round}`;
@@ -144,9 +153,12 @@ function agentContent(index: number, rounds: number) {
       argsText: JSON.stringify(args),
       result: `Result ${tag}. ${PROSE}\n${PROSE}\n${CLOSING}`,
     });
+    if (sources && toolName === "web_search") parts.push(...urlSources(tag));
     parts.push({
       type: "text" as const,
-      text: `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
+      text: rich
+        ? [assistantMarkdown(index * 10 + round), table(tag), `- first item ${tag}\n- second item ${tag}`].join("\n\n")
+        : `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
     });
   }
   return parts;
@@ -159,7 +171,6 @@ function isPlain(assistantOrdinal: number, options: SeedOptions | undefined): bo
   return plain.includes(assistantOrdinal);
 }
 
-/** Alternating prompts and replies, oldest first, as a loaded thread arrives. */
 function buildMessages(
   count: number,
   options?: SeedOptions,
@@ -169,7 +180,15 @@ function buildMessages(
     if (index % 2 === 0) {
       return {
         role: "user" as const,
-        content: [{ type: "text" as const, text: userMarkdown(index) }],
+        content: [
+          {
+            type: "text" as const,
+            // A prompt shows math source as text, so these take no number.
+            text:
+              userMarkdown(index) +
+              (options?.numbered ? "\n\n$$\\begin{equation}p=1\\end{equation}$$" : ""),
+          },
+        ],
       };
     }
     if (agent) {
@@ -178,7 +197,7 @@ function buildMessages(
       const compacted = every > 0 && ordinal > 0 && ordinal % every === 0;
       return {
         role: "assistant" as const,
-        content: agentContent(index, agent.rounds),
+        content: agentContent(index, agent.rounds, agent.sources, agent.rich),
         ...(compacted
           ? {
               metadata: {
@@ -201,7 +220,13 @@ function buildMessages(
           type: "text" as const,
           text: isPlain((index - 1) / 2, options)
             ? plainAssistantMarkdown(index)
-            : assistantMarkdown(index),
+            : assistantMarkdown(index) +
+              (options?.numbered
+                ? `\n\n$$\n\\begin{equation}E_{${index}} = mc^2\\end{equation}\n$$` +
+                  "\n\n$$\n\\begin{align}f &= \\begin{cases}1\\\\0\\end{cases}\\\\ g &= 2\\end{align}\n$$" +
+                  // Examples, not math: they render verbatim and take no number.
+                  "\n\n```latex\n\\begin{equation}x\\end{equation}\n```\n\nInline `\\begin{align}a\\end{align}` too."
+                : ""),
         },
       ],
     };
@@ -212,15 +237,59 @@ function buildMessages(
 const STREAM_CHUNKS = Number(
   new URLSearchParams(window.location.search).get("stream") ?? "0",
 );
+// `&sources=1`: the streamed reply follows a web_search call with six URL sources.
+const STREAM_SOURCES =
+  new URLSearchParams(window.location.search).get("sources") === "1";
+// `&rounds=N`: N agent rounds (reasoning, a call, its result, text with math) stream before the reply.
+const STREAM_ROUNDS = Number(
+  new URLSearchParams(window.location.search).get("rounds") ?? "0",
+);
+const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
 const NEVER_RUNS: ChatModelAdapter = STREAM_CHUNKS > 0
   ? {
       async *run({ abortSignal }) {
+        const rounds: ThreadAssistantMessagePart[] = [];
+        for (let round = 0; round < STREAM_ROUNDS; round++) {
+          const callArgs = { url: `https://example.com/${round}` };
+          const call = {
+            type: "tool-call" as const,
+            toolCallId: `call_round_${round}`,
+            toolName: "browser_snapshot",
+            args: callArgs,
+            argsText: JSON.stringify(callArgs),
+          };
+          for (const step of [
+            () => rounds.push({ type: "reasoning", text: `Planning round ${round}.` }),
+            () => rounds.push(call),
+            () => (rounds[rounds.length - 1] = { ...call, result: `Snapshot ${round}. ${PROSE}` }),
+            () => rounds.push({ type: "text", text: `Round ${round} gave $x_{${round}}^2$.` }),
+          ]) {
+            step();
+            await tick();
+            if (abortSignal.aborted) return;
+            yield { content: [...rounds] };
+          }
+        }
+        const args = { query: "live reference" };
+        const prefix = STREAM_SOURCES
+          ? [
+              {
+                type: "tool-call" as const,
+                toolCallId: "call_live",
+                toolName: "web_search",
+                args,
+                argsText: JSON.stringify(args),
+                result: `Result live. ${PROSE}`,
+              },
+              ...urlSources("live"),
+            ]
+          : [];
         let text = "";
         for (let chunk = 0; chunk < STREAM_CHUNKS; chunk++) {
-          await new Promise((resolve) => setTimeout(resolve, 20));
+          await tick();
           if (abortSignal.aborted) return;
           text += `word${chunk} `;
-          yield { content: [{ type: "text" as const, text }] };
+          yield { content: [...rounds, ...prefix, { type: "text" as const, text }] };
         }
       },
     }
@@ -256,19 +325,11 @@ function ThreadWeightApi({
             ExportedMessageRepository.fromArray(buildMessages(count, options)),
           );
       },
-      /**
-       * Unmount or remount the Thread while the RUNTIME stays alive, which is what a sidebar
-       * thread switch does to a message's React subtree. The per-message `isHovering` flag
-       * lives in the runtime's message client, not in React, so it outlives this.
-       */
+      /** Toggle the Thread while the runtime lives, like a sidebar switch; isHovering outlives it. */
       setThreadMounted(mounted: boolean): void {
         setThreadMounted(mounted);
       },
-      /**
-       * The runtime's own `isHovering` per message, oldest first. Reading the flag rather than
-       * counting mounted bars is what makes a leak test able to see a flag that is set while
-       * nothing is rendered.
-       */
+      /** Reads the runtime flag so a leak test sees isHovering even when nothing is rendered. */
       hoverFlags(): { id: string; isHovering: boolean }[] {
         return aui
           .thread()
@@ -278,18 +339,28 @@ function ThreadWeightApi({
             isHovering: Boolean(message.isHovering),
           }));
       },
-      /**
-       * One selector pass. Polling for a deletion has to read this, not counts(): counts() is
-       * eight document-wide queries including a walk of every element, so at 500 messages a
-       * poll loop built on it would spend more time measuring than the delete itself takes.
-       */
+      /** Cheap poll target; counts() is too heavy to poll at 500 messages. */
       messageCount(): number {
         return document.querySelectorAll("[data-role]").length;
       },
-      /**
-       * Everything a caller might use to prove the seed landed. A harness that seeds 500 and
-       * silently renders 0 measures nothing, so the Python side prints every one of these.
-       */
+      /** Opens the last user prompt's editor; returns its message id. */
+      editLastPrompt(): string | null {
+        const messages = aui.thread().getState().messages;
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          if (messages[index].role !== "user") continue;
+          aui.thread().message({ index }).composer().beginEdit();
+          return messages[index].id;
+        }
+        return null;
+      },
+      /** The conversation's length, where messageCount() is how much of it is mounted. */
+      threadLength(): number {
+        return aui.thread().getState().messages.length;
+      },
+      /** What the turn rail waits on before it renders: a full mount still under way. */
+      pendingMounts(): boolean {
+        return hasPendingProgressiveMounts();
+      },
       counts(): {
         messages: number;
         assistantMessages: number;
@@ -333,28 +404,27 @@ function ThreadWeightApi({
       viewport(): HTMLElement | null {
         return document.querySelector<HTMLElement>(".aui-thread-viewport");
       },
+      /** Non-GET /api/ calls the stub above answered. */
+      apiWrites(): { url: string; body: string | null }[] {
+        return apiWrites;
+      },
       composer(): HTMLTextAreaElement | null {
         return document.querySelector<HTMLTextAreaElement>(
           ".aui-composer-input",
         );
       },
-      /**
-       * What the RUNTIME thinks the composer holds. Reading the textarea back instead would
-       * only echo the value the caller just wrote, so a keystroke that never reached React
-       * would still look like it landed.
-       */
+      /** Runtime's composer text; reading the textarea would just echo what the caller wrote. */
       composerText(): string {
         return aui.composer().getState().text;
       },
-      /** One selector pass, for the seed gate; counts() is far too heavy to poll. */
       katexCount(): number {
         return document.querySelectorAll(".katex").length;
       },
-      /** Highlighted tokens. Shiki runs after the <pre> exists, so counting <pre> gates nothing. */
+      /** Shiki runs after the <pre> exists, so counting <pre> gates nothing. */
       highlightedTokenCount(): number {
         return document.querySelectorAll("pre code span").length;
       },
-      /** Items in the open action menu. An empty popover satisfies "the menu opened". */
+      /** An empty popover would satisfy "the menu opened", so count items. */
       openMenuItemCount(): number {
         return document.querySelectorAll(".aui-action-bar-more-item").length;
       },
@@ -364,11 +434,7 @@ function ThreadWeightApi({
         );
         return messages[messages.length - 1] ?? null;
       },
-      /**
-       * The last assistant message's action-bar button with accessible name `label`.
-       * TooltipIconButton puts that name in an `sr-only` span rather than an aria-label, so
-       * this matches on text and stays correct if the styling classes are renamed.
-       */
+      /** TooltipIconButton puts the name in an sr-only span, not aria-label, so match on text. */
       actionButton(label: string): HTMLButtonElement | null {
         const last = api.lastAssistantMessage();
         if (!last) return null;
@@ -384,6 +450,36 @@ function ThreadWeightApi({
   }, [aui, setThreadMounted]);
 
   return null;
+}
+
+// The checks on this page measure what a whole thread costs in the DOM (the state an open find bar
+// or a print puts the app in), so every row stays mounted. `?window=1` leaves the thread as the
+// app opens it: only the rows near the reader are mounted.
+if (new URLSearchParams(window.location.search).get("window") !== "1") {
+  holdProgressiveMounts();
+}
+
+// `?shell=1`: the ancestors the app puts around the thread (root layout + chat page), so CSS
+// anchored on them (e.g. a `:has()` on the wallpaper workspace) runs here as it does in Studio.
+const SHELL = new URLSearchParams(window.location.search).get("shell") === "1";
+
+function AppShell({ children }: { children: ReactElement }): ReactElement {
+  if (!SHELL) return children;
+  return (
+    <SidebarProvider
+      data-wallpaper-workspace=""
+      data-wallpaper-route="chat"
+      className="relative !min-h-0 h-[100dvh] overflow-hidden"
+    >
+      <SidebarInset className="overflow-hidden">
+        <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+          <div data-chat-content-root="" className="relative flex min-h-0 flex-1 flex-col">
+            {children}
+          </div>
+        </div>
+      </SidebarInset>
+    </SidebarProvider>
+  );
 }
 
 // `?remote=1`: the remote thread list + attachments adapter the app uses, for the same scopes.
@@ -440,21 +536,20 @@ function HarnessBody({
       <AssistantRuntimeProvider runtime={runtime}>
         <ThreadWeightApi setThreadMounted={setThreadMounted} />
         {/* Thread is flex-1 basis-0 min-h-0, so it needs a bounded flex parent to scroll. */}
-        <div
-          data-smoke="thread"
-          style={{ display: "flex", flexDirection: "column", height: "100vh" }}
-        >
-          {threadMounted ? <Thread hideWelcome={true} /> : null}
-        </div>
+        <AppShell>
+          <div
+            data-smoke="thread"
+            style={{ display: "flex", flexDirection: "column", height: SHELL ? "100%" : "100vh" }}
+          >
+            {threadMounted ? <Thread hideWelcome={true} /> : null}
+          </div>
+        </AppShell>
       </AssistantRuntimeProvider>
     </TooltipProvider>
   );
 }
 
-// Thread reaches useNavigate (the fork action, the composer tools menu). Without a router in
-// context tanstack's useRouter still works, but console.warns on every render of every action
-// bar: measured at 12 warnings for 10 assistant messages, which scales with N and is serialised
-// over CDP. A memory router with one route removes that without pulling in the app shell.
+// Memory router: without one, every action bar console.warns from useNavigate, scaling with N.
 const rootRoute = createRootRoute({ component: Harness });
 const router = createRouter({
   routeTree: rootRoute,
@@ -465,4 +560,7 @@ const root = document.getElementById("root");
 if (!root) {
   throw new Error("missing #root");
 }
+// As in main.tsx: the gate's modal lock check then times the attributes the app mirrors from the
+// body lock, not a bare inline style the modal rules no longer read.
+watchModalPointerLock(document);
 createRoot(root).render(<RouterProvider router={router as unknown as never} />);

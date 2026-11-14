@@ -43,8 +43,6 @@ const useFileSrc = (file: File | undefined): string | undefined => {
   return objectUrl;
 };
 
-// Resolves what a preview can show for the attachment in scope: a composer
-// attachment still holds its File, a sent one only the content parts.
 export const useAttachmentSource = (): AttachmentSource => {
   const source = useAuiState(useShallow(selectAttachmentSource));
 

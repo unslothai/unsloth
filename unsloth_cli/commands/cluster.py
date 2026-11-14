@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import errno
 import signal
 import re
@@ -149,6 +148,8 @@ def worker(
     ),
 ):
     """Serve this machine's GPUs to the master it was paired with."""
+    import asyncio
+
     identity = _link(crypto = True)
     from studio.cluster_link import AGENT_PORT_DEFAULT, NATIVE_RPC_PORT_DEFAULT, RPC_PORT_DEFAULT
 
@@ -271,6 +272,8 @@ def pair(
     ),
 ):
     """Print a one-time token that adds one worker to this machine's cluster."""
+    import asyncio
+
     identity = _link(crypto = True)
     from studio.cluster_link import PAIR_PORT_DEFAULT
     from studio.cluster_link.pairing import PairingError, PairingWindow
@@ -333,6 +336,8 @@ def join(
     ),
 ):
     """Pair this machine to a master as a worker."""
+    import asyncio
+
     _link(crypto = True)
     from studio.cluster_link.pairing import PairingError, PairingUnconfirmed, join as join_cluster
     from studio.cluster_link.tokens import TokenError

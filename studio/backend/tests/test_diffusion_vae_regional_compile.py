@@ -62,11 +62,10 @@ def test_regional_vae_compiles_blocks_static_and_keeps_decode():
     pipe = types.SimpleNamespace(vae = vae)
     assert ds_mod._compile_vae_decode(pipe, None) is True
     assert vae.compile_kwargs == {"fullgraph": False, "dynamic": False}
-    # the tiled decode itself is never wrapped: the tile loop stays in Python
+    # the tile loop must stay in Python, so decode itself is never wrapped
     assert "decode" not in vae.__dict__
     assert vae.decode(torch.zeros(1)).item() == 2
     assert vae._unsloth_compiled_decode is True
-    # idempotent across the dual-DiT second call
     vae.compile_kwargs = None
     assert ds_mod._compile_vae_decode(pipe, None) is True
     assert vae.compile_kwargs is None
@@ -80,7 +79,7 @@ def test_regional_vae_max_tier_autotunes_without_cudagraphs():
 
 
 def test_regional_vae_tiling_does_not_force_eager():
-    # eager_when_tiled exists because a WHOLE-decode compile unrolls the tile loop; a block compile does not.
+    # a whole-decode compile unrolls the tile loop; a block compile does not
     calls = {"compiled": 0}
 
     def factory(m):
@@ -106,13 +105,12 @@ def test_regional_vae_compile_failure_falls_back_and_settles_status():
     vae = _RegionalVae(factory)
     pipe = types.SimpleNamespace(vae = vae)
     assert ds_mod._compile_vae_decode(pipe, None) is True
-    assert vae.decode(torch.zeros(1)).item() == 2  # eager answer, same value
+    assert vae.decode(torch.zeros(1)).item() == 2
     state = types.SimpleNamespace(speed_optims = ("compiled", "compiled_vae_decode"))
     reason = ds_mod.settle_compile_fallback(state, pipe)
     assert "RecursionError" in reason or "BackendCompilerFailed" in reason  # torch < 2.7 wraps it
     assert "compiled_vae_decode" not in state.speed_optims
     assert "compile_fallback_eager" in state.speed_optims
-    # a later apply_speed_optims pass does not retry the broken lowering
     assert ds_mod._compile_vae_decode(pipe, None) is False
     assert all(b._compiled_call_impl is None for b in vae.blocks)
 
@@ -169,7 +167,6 @@ def test_tiny_minimax_h3_vae_decode_compiles_once_per_tile_shape():
         .cuda()
         .eval()
     )
-    # 2 x 2 tiles, 2 temporal chunks
     z = torch.randn(1, 24, 7, 24, 24, device = "cuda")
     with torch.no_grad():
         ref = vae.decode(z, return_dict = False)[0]
@@ -188,8 +185,7 @@ def test_tiny_minimax_h3_vae_decode_compiles_once_per_tile_shape():
 
 
 def test_a_vae_whose_blocks_the_fast_decoder_bypasses_is_not_compiled_even_when_forced(monkeypatch):
-    # MiniMax-H3's fused decoder reads block weights and never calls the blocks: compiling them would report
-    # compiled_vae_decode for a compile that never runs.
+    # MiniMax-H3's fused decoder never calls the blocks, so compiling them would never run
     monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
     vae = _RegionalVae()
     pipe = types.SimpleNamespace(vae = vae)

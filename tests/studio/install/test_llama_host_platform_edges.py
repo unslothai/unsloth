@@ -192,47 +192,42 @@ MAC_ARM = f"llama-{TAG}-bin-macos-arm64.tar.gz"
 MAC_X64 = f"llama-{TAG}-bin-macos-x64.tar.gz"
 
 
-def _fake_mac(
-    monkeypatch,
-    machine,
-    sysctl_out,
-    sysctl_rc = 0,
-    sysctl_raises = None,
-):
+def _fake_mac(monkeypatch, machine, hw_arm64):
+    """Darwin with ``platform.machine()`` = machine and sysctl hw.optional.arm64 = hw_arm64.
+    Returns the subprocess calls made: reading the key must spawn none."""
     calls = []
     real_run = subprocess.run
 
     def fake_run(cmd, *args, **kwargs):
         if list(cmd)[:1] == ["sysctl"]:
             calls.append(list(cmd))
-            if sysctl_raises is not None:
-                raise sysctl_raises
-            return subprocess.CompletedProcess(cmd, sysctl_rc, sysctl_out, "")
         return real_run(cmd, *args, **kwargs)
+
+    reads = []
+
+    def fake_hw_arm64():
+        reads.append(1)
+        return hw_arm64
 
     monkeypatch.setattr(ILP.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ILP.platform, "machine", lambda: machine)
     monkeypatch.setattr(ILP.platform, "mac_ver", lambda: ("14.5", ("", "", ""), machine))
     monkeypatch.setattr(ILP.shutil, "which", lambda *_a, **_k: None)
     monkeypatch.setattr(ILP.subprocess, "run", fake_run)
-    return calls
+    monkeypatch.setattr(ILP, "_darwin_hw_optional_arm64", fake_hw_arm64)
+    return calls, reads
 
 
 @pytest.mark.parametrize(
-    "machine, sysctl_out, rc, raises, expected_machine, expected_asset",
+    "machine, hw_arm64, expected_machine, expected_asset",
     [
-        ("x86_64", "1\n", 0, None, "arm64", MAC_ARM),  # Rosetta
-        ("x86_64", "0\n", 0, None, "x86_64", MAC_X64),  # Intel Mac
-        ("x86_64", "", 1, None, "x86_64", MAC_X64),  # key absent (older Intel macOS)
-        ("x86_64", "", 0, FileNotFoundError("sysctl"), "x86_64", MAC_X64),
-        ("x86_64", "", 0, subprocess.TimeoutExpired("sysctl", 5), "x86_64", MAC_X64),
-        ("arm64", "1\n", 0, None, "arm64", MAC_ARM),  # native arm64
+        ("x86_64", True, "arm64", MAC_ARM),  # Rosetta
+        ("x86_64", False, "x86_64", MAC_X64),  # Intel Mac, key absent or unreadable
+        ("arm64", True, "arm64", MAC_ARM),  # native arm64
     ],
 )
-def test_macos_host_machine(
-    machine, sysctl_out, rc, raises, expected_machine, expected_asset, monkeypatch
-):
-    _fake_mac(monkeypatch, machine, sysctl_out, rc, raises)
+def test_macos_host_machine(machine, hw_arm64, expected_machine, expected_asset, monkeypatch):
+    calls, _reads = _fake_mac(monkeypatch, machine, hw_arm64)
     host = ILP.detect_host()
     assert host.machine == expected_machine
     assert host.is_arm64 == (expected_machine == "arm64")
@@ -247,13 +242,36 @@ def test_macos_host_machine(
         host.is_arm64,
         host.is_x86_64,
     )
+    assert calls == []
 
 
-def test_sysctl_is_not_run_off_macos(monkeypatch):
-    calls = _fake_mac(monkeypatch, "x86_64", "1\n")
+def test_sysctl_is_not_read_off_macos(monkeypatch):
+    calls, reads = _fake_mac(monkeypatch, "x86_64", True)
     monkeypatch.setattr(ILP.platform, "system", lambda: "Linux")
     assert ILP.platform_only_host().machine == "x86_64"
+    assert calls == [] and reads == []
+
+
+def test_the_rosetta_read_spawns_no_subprocess_and_is_cached(monkeypatch):
+    # platform_only_host() runs on every desktop launch preflight: an Intel Mac must not
+    # pay a sysctl subprocess (up to 5 s) per call for an answer that never changes.
+    calls = []
+
+    def refuse(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        raise AssertionError("no subprocess on the health path")
+
+    monkeypatch.setattr(ILP.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ILP.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(ILP.platform, "mac_ver", lambda: ("14.5", ("", "", ""), "x86_64"))
+    monkeypatch.setattr(ILP.subprocess, "run", refuse)
+    for _ in range(3):
+        ILP.platform_only_host()
     assert calls == []
+    # Off macOS the libc has no sysctlbyname: the read fails closed to x86_64.
+    if sys.platform.startswith("linux"):
+        ILP._darwin_hw_optional_arm64.cache_clear()
+        assert ILP._darwin_hw_optional_arm64() is False
 
 
 def _fake_tegra(

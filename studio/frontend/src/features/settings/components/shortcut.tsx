@@ -4,9 +4,7 @@
 import type { ShortcutId } from "../lib/keyboard-shortcuts";
 import { useShortcut } from "../hooks/use-shortcut";
 
-/** `useShortcut` as a component, for registering a family of chords at once.
- *  A loop of hooks would break the rules of hooks; one element per slot does
- *  not, and each still registers exactly one action. */
+/** One element per slot avoids calling hooks in a loop. */
 export function Shortcut({
   id,
   onTrigger,

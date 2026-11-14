@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Seeds the Audio pickers and dictation settings; any GGUF the backend recognises works too.
-// Free of app imports so the node test runner can load it directly.
+// Free of app imports so the node test runner can load it.
 
 export const AUDIO_CPP_REPO = "audio-cpp/audio.cpp-gguf";
 
@@ -290,7 +289,6 @@ export function isCloneOnlyFamilyId(id: string | null | undefined): boolean {
   return CLONE_ONLY_FAMILY_HINT.test(id ?? "");
 }
 
-// Families that both speak and clone (fish_audio), likewise by repo name.
 const SPEAK_AND_CLONE_FAMILY_HINT = /fish-?(audio|speech)|openaudio/i;
 
 export function isSpeakAndCloneFamilyId(id: string | null | undefined): boolean {
@@ -314,7 +312,6 @@ export function isConvertOnlyFamilyId(id: string | null | undefined): boolean {
 export interface AudioCppDictationModel {
   key: string;
   id: string;
-  /** The folder's sub-package when it ships several (Moonshine sizes). */
   variant?: string;
   sizeBytes: number;
 }
@@ -377,6 +374,20 @@ export function audioCppDisplayName(id: string): string {
     return trimmed.slice(AUDIO_CPP_REPO.length + 1).split("/")[0] || trimmed;
   }
   return trimmed.split("/").pop() || trimmed;
+}
+
+// A trailing quant tag on a GGUF file stem: `-q8_0`, `-Q4_K_M`, `-f16`.
+const FILE_STEM_QUANT = /[-_.](?:i?q\d\w*|bf16|f16|f32)$/i;
+
+/** An older clip's model label (a GGUF file stem such as `kokoro-82m-q8_0`) as its catalog folder name. */
+export function audioCppNameForFileStem(stem: string): string | null {
+  const base = stem.trim().toLowerCase().replace(FILE_STEM_QUANT, "");
+  if (!base || base === stem.trim().toLowerCase()) return null;
+  for (const model of AUDIO_CPP_MODELS) {
+    const name = audioCppDisplayName(model.id);
+    if (name.toLowerCase().replace(/-gguf$/, "") === base) return name;
+  }
+  return null;
 }
 
 /** Hub path of an umbrella folder (`<repo>/tree/main/<Folder>`); null for any other id. */

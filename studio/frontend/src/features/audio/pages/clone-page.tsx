@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
-import { FloppyDiskIcon, SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { ClosedCaptionIcon, FloppyDiskIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useState } from "react";
 import type { AudioGalleryClip } from "../api";
@@ -15,6 +15,7 @@ import {
   AudioHistoryProvider,
   AudioSourceInput,
 } from "../components/audio-source-input";
+import { FieldLabel, FieldTag } from "../components/field";
 import { LanguageSelect } from "../components/language-select";
 import { SaveVoiceDialog } from "../components/save-voice-dialog";
 import {
@@ -73,32 +74,33 @@ function CloneInputs({
           disabled={disabled}
           handleRef={clone.referenceHandle}
           onStatusChange={clone.setReferenceStatus}
+          headerAction={<SaveReferenceVoice clone={clone} disabled={disabled} />}
         />
       </div>
 
       {transcriptField === "hidden" ? null : (
-        <div className="grid gap-1.5" data-tour="audio-clone-transcript">
+        <div className="grid gap-2" data-tour="audio-clone-transcript">
           <div className="flex items-center justify-between gap-2">
-            <label
+            <FieldLabel
               htmlFor={CLONE_REFERENCE_TEXT_FIELD_ID}
               className="text-ui-13 font-medium text-foreground"
             >
               What's said in the clip
-              <span className="ml-1.5 font-normal text-muted-foreground">
+              <FieldTag>
                 {transcriptField === "required" ? "Required" : "Optional"}
-              </span>
-            </label>
+              </FieldTag>
+            </FieldLabel>
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="h-auto px-2 py-1 text-ui-11p5"
+              className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
               disabled={
                 !referenceUsable || transcriber.transcribing || disabled
               }
               onClick={() => void transcriber.transcribe(reference)}
             >
-              <HugeiconsIcon icon={SpeechToTextIcon} className="size-3.5" />
+              <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
               {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
             </Button>
           </div>
@@ -127,7 +129,7 @@ function CloneInputs({
               </Button>
             </p>
           ) : (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               {transcriptField === "required"
                 ? "This model matches the voice using the clip's words."
                 : "Helps the model match the voice."}
@@ -140,12 +142,12 @@ function CloneInputs({
         className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1.5"
         data-tour="audio-clone-text"
       >
-        <label
+        <FieldLabel
           htmlFor={CLONE_TEXT_FIELD_ID}
           className="text-ui-13 font-medium text-foreground"
         >
           Text to speak
-        </label>
+        </FieldLabel>
         <Textarea
           data-type-to-activate="prompt"
           id={CLONE_TEXT_FIELD_ID}
@@ -155,24 +157,25 @@ function CloneInputs({
           className="min-h-28"
         />
         {clone.text.trim() ? null : (
-          <div
-            className="flex flex-wrap gap-1.5"
+          <fieldset
+            className="m-0 flex min-w-0 flex-wrap items-center gap-1 border-0 p-0"
             aria-label="Example sentences"
           >
+            <span className="me-0.5 text-ui-11p5 text-muted-foreground">Try</span>
             {CLONE_TEXT_EXAMPLES.map((example) => (
               <Button
-                key={example}
+                key={example.label}
                 type="button"
-                variant="outline"
+                variant="muted"
                 size="sm"
-                className="h-auto max-w-full px-3 py-1 text-ui-11p5 font-normal"
-                title={example}
-                onClick={() => setText(example)}
+                className="h-[calc(24px*var(--ui-space-scale,1))] px-2.5 text-ui-11p5 font-normal"
+                title={example.text}
+                onClick={() => setText(example.text)}
               >
-                <span className="truncate">{example}</span>
+                {example.label}
               </Button>
             ))}
-          </div>
+          </fieldset>
         )}
       </div>
       {clone.languageShown ? (
@@ -244,39 +247,46 @@ export function CloneFooter({
   | "handleGenerate"
   | "secondaryAction"
 > & { clone: CloneGeneration }) {
+  return (
+    <TtsFooter
+      {...props}
+      prompt={clone.text}
+      lyricsOptional={false}
+      musicNeedsDescription={false}
+      audioInstructions=""
+      handleGenerate={clone.handleGenerate}
+    />
+  );
+}
+
+function SaveReferenceVoice({
+  clone,
+  disabled,
+}: {
+  clone: CloneGeneration;
+  disabled: boolean;
+}) {
   const [saving, setSaving] = useState(false);
   const save = useAudioVoicesStore((state) => state.save);
   const { reference } = clone;
+  if (reference === null || reference.kind === "voice") return null;
   const canSave =
-    reference !== null &&
-    reference.kind !== "voice" &&
     !clone.referenceExpired &&
     clone.referenceStatus.phase !== "uploading" &&
-    props.busy === null;
+    !disabled;
   return (
     <>
-      <TtsFooter
-        {...props}
-        prompt={clone.text}
-        lyricsOptional={false}
-        musicNeedsDescription={false}
-        audioInstructions=""
-        handleGenerate={clone.handleGenerate}
-        secondaryAction={
-          reference?.kind === "voice" ? null : (
-            <Button
-              type="button"
-              variant="outline"
-              className="h-11 px-5"
-              disabled={!canSave}
-              onClick={() => setSaving(true)}
-            >
-              <HugeiconsIcon icon={FloppyDiskIcon} className="size-4" />
-              Save voice…
-            </Button>
-          )
-        }
-      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+        disabled={!canSave}
+        onClick={() => setSaving(true)}
+      >
+        <HugeiconsIcon icon={FloppyDiskIcon} className="size-3" />
+        Save voice
+      </Button>
       <SaveVoiceDialog
         open={saving}
         onOpenChange={setSaving}
@@ -323,7 +333,9 @@ export function CloneOutput({
   return (
     <TtsOutput
       {...props}
-      clipBadge={(clip) => clip.reference_name ?? null}
+      clipBadge={(clip, place) =>
+        place === "history" ? (clip.reference_name ?? null) : null
+      }
       emptyActions={
         picks.length > 0 ? (
           <div

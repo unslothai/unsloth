@@ -32,7 +32,6 @@ def _stub_data_designer(monkeypatch, seen):
             return lambda **kwargs: None
 
         def _upload_config_files(self, *, repo_id, metadata_path, builder_config_path):
-            # The real client gates each of the two files on .exists() on its own.
             if metadata_path.exists():
                 seen["uploaded_metadata"] = metadata_path.name
             if builder_config_path.exists():

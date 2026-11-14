@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Load-Model memory row's verdicts and the single note it prints.
-//
-// This file exists because the chain used to live inside model-config-page.tsx, where
-// the node runner cannot reach it: a 3,400-line .tsx that imports React, the router
-// and thirty component barrels. An arm that could never be taken shipped in it, and
-// nothing could have caught that except reading the ternary carefully enough.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -35,7 +28,6 @@ const SIZED: MemoryFitEstimate = {
   moeOffloadUnmodelled: false,
 };
 
-/** A roomy discrete host: 24 GB card, 64 GB of RAM, nothing else running. */
 const IDLE_DISCRETE: MemoryFitCapacity = {
   gpuCapacityGb: 24,
   totalCapacityGb: 88,
@@ -45,7 +37,6 @@ const IDLE_DISCRETE: MemoryFitCapacity = {
   singleMemoryPool: false,
 };
 
-/** Apple, 64 GB unified. One pool for everything. */
 const APPLE: MemoryFitCapacity = {
   gpuCapacityGb: 64,
   totalCapacityGb: 64,
@@ -61,9 +52,6 @@ const fit = (
   base: MemoryFitCapacity = IDLE_DISCRETE,
 ) => resolveMemoryFit({ ...SIZED, ...estimate }, { ...base, ...capacity });
 
-// ---------------------------------------------------------------------------
-// classifyMemoryFit
-
 test("a footprint well inside the capacity fits", () => {
   assert.equal(classifyMemoryFit(8 * GB, 24), "fits");
 });
@@ -71,9 +59,7 @@ test("a footprint well inside the capacity fits", () => {
 test("above 85% of the capacity is tight, above 100% exceeds", () => {
   assert.equal(classifyMemoryFit(20.5 * GB, 24), "tight");
   assert.equal(classifyMemoryFit(25 * GB, 24), "exceeds");
-  // The boundary itself is not tight: 85% exactly is still a fit.
   assert.equal(classifyMemoryFit(0.85 * 24 * GB, 24), "fits");
-  // And a footprint exactly filling the capacity has not exceeded it.
   assert.equal(classifyMemoryFit(24 * GB, 24), "tight");
 });
 
@@ -84,9 +70,7 @@ test("nothing probed and nothing to weigh are both no verdict", () => {
   assert.equal(classifyMemoryFit(-8 * GB, 24), "unknown");
 });
 
-// The regression this guard exists for. Every one of these came back "fits" before:
-// NaN and Infinity fail `<= 0` and every ratio comparison, so control fell all the way
-// through to the confident green answer at the bottom.
+// NaN and Infinity fail every comparison, so they used to fall through to fits.
 test("a non-finite reading is never a fit", () => {
   for (const bytes of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
     assert.equal(classifyMemoryFit(bytes, 24), "unknown", `bytes=${bytes}`);
@@ -103,9 +87,6 @@ test("a value that is not a number at all is not a fit either", () => {
     assert.equal(classifyMemoryFit(8 * GB, value), "unknown", `capacity=${String(value)}`);
   }
 });
-
-// ---------------------------------------------------------------------------
-// worseMemoryFit
 
 test("the worse of two verdicts wins, and unknown loses to any real one", () => {
   assert.equal(worseMemoryFit("fits", "exceeds"), "exceeds");
@@ -125,15 +106,6 @@ test("worseMemoryFit is symmetric for every pair", () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// D1: the advisory chain
-//
-// The defect: the pool ternary gated the WHOLE tail. Inside its
-// `singleMemoryPool === false` arm, the host-pressure branch chose its wording by
-// re-testing `singleMemoryPool` -- which is false there by construction -- so the
-// single-pool string could not be selected by any input. The visible half of the same
-// bug is that a single-pool host had exactly one reachable note.
-
 const ADVISORY_TEXTS = {
   singlePoolExceeds:
     "Exceeds shared memory. Try a shorter context or smaller model; CPU offloading adds no memory.",
@@ -152,9 +124,6 @@ const ADVISORY_TEXTS = {
 };
 
 test("D1: a single-pool host under memory pressure now says so", () => {
-  // Apple, 64 GB unified, a 30 GB load, 6 GB actually free. The machine holds it;
-  // what is free does not. Before the fix this produced no note whatsoever, because
-  // the only branch a single pool could reach was "exceeds".
   const result = fit(
     { gpuBytes: 30 * GB, totalBytes: 30 * GB },
     { freeGpuCapacityGb: 6, usableSystemRamGb: 6 },
@@ -169,14 +138,12 @@ test("D1: a single-pool host under memory pressure now says so", () => {
 });
 
 test("D1: the single-pool pressure text is reachable from EITHER free reading", () => {
-  // Free VRAM sees it, host RAM does not.
   const gpuSide = fit(
     { gpuBytes: 30 * GB, totalBytes: 30 * GB },
     { freeGpuCapacityGb: 6, usableSystemRamGb: 60 },
     APPLE,
   );
   assert.equal(gpuSide.advisory?.text, ADVISORY_TEXTS.singlePoolPressure);
-  // Host RAM sees it, free VRAM does not.
   const hostSide = fit(
     { gpuBytes: 30 * GB, totalBytes: 30 * GB },
     { freeGpuCapacityGb: 60, usableSystemRamGb: 6 },
@@ -198,9 +165,6 @@ test("a tight reading warns without claiming the load exceeds available memory",
 });
 
 test("D1: no discrete-host string can be chosen on a single-pool host", () => {
-  // The other half of the dead branch: the two discrete pressure strings talk about
-  // "the card" and "the part of this load that runs from system RAM", neither of
-  // which means anything where there is one pool.
   const sweep = new Set<string>();
   for (const gpuBytes of [0, 4 * GB, 30 * GB, 90 * GB]) {
     for (const totalBytes of [0, 4 * GB, 30 * GB, 90 * GB]) {
@@ -242,8 +206,6 @@ test("D1: the discrete host keeps its own wording, and never the single-pool one
 });
 
 test("the floor notes outrank every verdict, in their own order", () => {
-  // An unsizable cache says the figures are incomplete, which beats any reading of
-  // them. The header case outranks the drafter case, and both outrank the MoE note.
   const both = fit(
     { kvEstimable: false, drafterKvUnsized: true, moeOffloadUnmodelled: true, totalBytes: 900 * GB },
     {},
@@ -269,9 +231,6 @@ test("the floor marker follows either unsizable case", () => {
 });
 
 test("the aggregate verdict is asked before the GPU one", () => {
-  // A 200 GB load on a 24 GB card and 64 GB of RAM. Reading gpuFit alone offered
-  // spilling to system RAM as the remedy, which is advice to do something that cannot
-  // work.
   const result = fit({ gpuBytes: 20 * GB, totalBytes: 200 * GB }, {});
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.totalExceeds);
 });
@@ -345,7 +304,6 @@ test("a discrete host under VRAM pressure alone gets the card wording", () => {
     { freeGpuCapacityGb: 8 },
   );
   assert.equal(result.advisory?.text, ADVISORY_TEXTS.gpuPressure);
-  // And the GPU figure is coloured amber rather than left green.
   assert.equal(result.rawGpuFit, "fits");
   assert.equal(result.gpuFit, "tight");
 });
@@ -358,13 +316,8 @@ test("a comfortable load says nothing at all", () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// The pool-aware free reading
-
 test("one pool weighs the WHOLE load against what is free, not the GPU share", () => {
-  // A shared iGPU with half the load CPU-offloaded. Those bytes come out of the same
-  // memory, so measuring only the GPU share against free memory called a load that
-  // cannot fit comfortable.
+  // On one pool, CPU-offloaded bytes come from the same memory.
   const pooled = fit(
     { gpuBytes: 6 * GB, totalBytes: 30 * GB },
     { freeGpuCapacityGb: 10, usableSystemRamGb: 10 },
@@ -372,8 +325,6 @@ test("one pool weighs the WHOLE load against what is free, not the GPU share", (
   );
   assert.equal(pooled.freeGpuFit, "exceeds");
   assert.equal(pooled.gpuPressured, true);
-  // The discrete host asks the same question of the GPU share alone, which is right
-  // there: the host bytes are a different pool.
   const discrete = fit(
     { gpuBytes: 6 * GB, totalBytes: 30 * GB },
     { freeGpuCapacityGb: 10 },
@@ -383,18 +334,12 @@ test("one pool weighs the WHOLE load against what is free, not the GPU share", (
 
 test("the host share is the bytes outside the GPU, floored at zero", () => {
   assert.equal(fit({ gpuBytes: 10 * GB, totalBytes: 30 * GB }, {}).hostShareBytes, 20 * GB);
-  // gpu_bytes above total_bytes is nonsense off the wire, not a negative footprint.
   assert.equal(fit({ gpuBytes: 30 * GB, totalBytes: 10 * GB }, {}).hostShareBytes, 0);
 });
 
 test("one pool asks no separate host-share question", () => {
-  // The combined figure already describes that case exactly, so a second verdict
-  // drawn from the same bytes would only be able to disagree with it.
   assert.equal(fit({ gpuBytes: 6 * GB, totalBytes: 30 * GB }, {}, APPLE).hostShareFit, "unknown");
 });
-
-// ---------------------------------------------------------------------------
-// Garbage in
 
 test("a non-finite footprint produces no verdict and no advisory, and does not throw", () => {
   for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
@@ -402,7 +347,7 @@ test("a non-finite footprint produces no verdict and no advisory, and does not t
     assert.equal(result.gpuFit, "unknown");
     assert.equal(result.totalFit, "unknown");
     assert.equal(result.advisory, null);
-    // A number the caller can print. Math.max(0, NaN) is NaN, not 0.
+    // Math.max(0, NaN) is NaN, not 0.
     assert.equal(result.hostShareBytes, 0);
   }
 });
@@ -448,16 +393,13 @@ test("no combination of garbage throws or produces a verdict outside the four", 
       ]) {
         assert.ok(allowed.has(verdict), `${String(a)}/${String(b)} -> ${verdict}`);
       }
-      // Never a confident green from a number that does not exist. `a` drives both
-      // gpuBytes and gpuCapacityGb, so it is the one this verdict depends on; a bad
-      // `b` only reaches the free reading, and losing that warning is not a false fit.
+      // a drives both gpuBytes and gpuCapacityGb; b only reaches the free reading.
       if (!Number.isFinite(a)) {
         assert.notEqual(result.gpuFit, "fits", `gpuBytes=${String(a)}`);
       }
       if (!Number.isFinite(b)) {
         assert.notEqual(result.totalFit, "fits", `totalBytes=${String(b)}`);
       }
-      // And every figure the row prints stays printable.
       assert.ok(
         Number.isFinite(result.hostShareBytes) && result.hostShareBytes >= 0,
         `hostShareBytes=${result.hostShareBytes}`,
@@ -466,15 +408,8 @@ test("no combination of garbage throws or produces a verdict outside the four", 
   }
 });
 
-// ---------------------------------------------------------------------------
-// formatMemoryGb
-
 test("a figure is always finite and never negative", () => {
-  // GiB, not GB. The divide was always by 1024**3, so every figure this printed
-  // was a gibibyte value wearing a gigabyte label -- 7.4% high, on seven figures
-  // of the Load Model panel. Same defect #9570 fixed elsewhere; the guard test
-  // could not see this one because its regex only matches interpolations naming
-  // a `*TotalGb`.
+  // GiB, not GB: the divide is by 1024**3.
   assert.equal(formatMemoryGb(24 * GB), "24.00 GiB");
   assert.equal(formatMemoryGb(0), "0.00 GiB");
   assert.equal(formatMemoryGb(-5 * GB), "0.00 GiB");
@@ -483,21 +418,15 @@ test("a figure is always finite and never negative", () => {
   assert.equal(formatMemoryGb(undefined as unknown as number), "0.00 GiB");
 });
 
-// ---------------------------------------------------------------------------
-// The two captions
-
 test("the KV caption names the dtype, what was priced, and where it lives", () => {
   assert.equal(
     resolveKvNote({ cacheTypeKv: "q8_0", nCtx: 32768, nParallel: 1, kvOnGpu: true }),
     "q8_0 · 32,768 tokens",
   );
-  // No dtype reported falls back to f16, several slots are named, and a cache the
-  // loader moved off the GPU says where it went.
   assert.equal(
     resolveKvNote({ cacheTypeKv: null, nCtx: 4096, nParallel: 4, kvOnGpu: false }),
     "f16 · 4,096 tokens · 4 slots · host RAM",
   );
-  // A single slot is the unremarkable case and is not named.
   assert.equal(
     resolveKvNote({ cacheTypeKv: "f16", nCtx: 4096, nParallel: 1, kvOnGpu: false }),
     "f16 · 4,096 tokens · host RAM",
@@ -505,8 +434,7 @@ test("the KV caption names the dtype, what was priced, and where it lives", () =
 });
 
 test("the KV caption survives a field that is not a number", () => {
-  // `.toLocaleString()` on a null throws, and one bad field must not take the panel
-  // down with it.
+  // toLocaleString() on null throws.
   assert.doesNotThrow(() =>
     resolveKvNote({
       cacheTypeKv: null,
@@ -527,20 +455,15 @@ test("the KV caption survives a field that is not a number", () => {
 });
 
 test("the draft cache note reads its OWN placement, not the target cache's", () => {
-  // --spec-draft-ngl 0 moves the drafter while --no-kv-offload moves the target, so a
-  // boolean read off the target was wrong in both directions.
+  // --spec-draft-ngl 0 moves the drafter; --no-kv-offload moves the target.
   assert.equal(resolveDraftCacheNote(0, 4 * GB), "host RAM");
-  // Under MTP the term is split across both placements: a third case.
   assert.equal(resolveDraftCacheNote(1 * GB, 4 * GB), "1.00 GiB on GPU");
-  // Entirely on the GPU is the unremarkable case and gets no caption.
   assert.equal(resolveDraftCacheNote(4 * GB, 4 * GB), undefined);
   assert.equal(resolveDraftCacheNote(Number.NaN, 4 * GB), "host RAM");
 });
 
 test("an unsizable pass-through adapter marks the total a floor", () => {
-  // llama.cpp loads every --lora / --control-vector into resident tensors on top of
-  // the base model. When one is named but cannot be stat'd its bytes are missing, so
-  // the figure is a lower bound and has to say so, exactly as an unsized drafter does.
+  // Unstatable --lora / --control-vector files make the figure a lower bound.
   const bounded = resolveMemoryFit(
     { ...SIZED, adaptersUnsized: true, totalBytes: 8 * GB, gpuBytes: 8 * GB },
     IDLE_DISCRETE,
@@ -645,10 +568,6 @@ test("capacity advice does not assume a pageable load mode", () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Auto context: an unpinned context is priced at the native length, which the loader shrinks
-
-/** An 8 GB card at the default budget, beside 32 GB of RAM. */
 const EIGHT_GB_CARD: Partial<MemoryFitCapacity> = {
   gpuCapacityGb: 7.2,
   totalCapacityGb: 39.2,
@@ -656,10 +575,8 @@ const EIGHT_GB_CARD: Partial<MemoryFitCapacity> = {
   freeGpuCapacityGb: 7,
   usableSystemRamGb: 22,
 };
-/** Qwen3-8B Q4_K_M at its native 40,960 tokens, and what remains at the shortest context. */
 const NATIVE_QWEN3_8B = { gpuBytes: 10.45 * GB, totalBytes: 10.45 * GB, nCtx: 40960 };
 const QWEN3_8B_FLOOR = 4.82 * GB;
-/** An unpinned context the loader shrinks to `bytes`, with layers free to move past it. */
 const floorAt = (bytes: number) => ({
   contextIsPinned: false,
   gpuFloorBytes: bytes,
@@ -697,7 +614,6 @@ test("an unpinned context without a floor keeps the native verdict", () => {
 });
 
 test("a floor over the card is a real overage, and the note does not send the user to Auto", () => {
-  // The floor is Auto's shortest context; past it the launch spills layers to the CPU.
   const result = fit(
     {
       gpuBytes: 14 * GB,
@@ -806,11 +722,9 @@ test("pressure where layers cannot move promises only a shorter context", () => 
   );
 });
 
-/** 16 GB of RAM beside the 8 GB card, so a host share can be over or under it. */
 const SMALL_HOST = { systemRamCapacityGb: 16, totalCapacityGb: 23.2, usableSystemRamGb: 15 };
 
 test("a context whose GPU share fits is opened native, so its host share is too", () => {
-  // A drafter cache on the CPU grows with the context, and nothing shrinks it here.
   const result = fit(
     { gpuBytes: 2 * GB, totalBytes: 30 * GB, nCtx: 262144, ...floorAt(1 * GB) },
     { ...EIGHT_GB_CARD, ...SMALL_HOST },
@@ -820,7 +734,6 @@ test("a context whose GPU share fits is opened native, so its host share is too"
 });
 
 test("a shrunk context keeps its host terms at native, the bound that holds", () => {
-  // The fitted context is unknown, and sliding-window caches do not grow linearly.
   const result = fit(
     { gpuBytes: 9 * GB, totalBytes: 29 * GB, nCtx: 131072, ...floorAt(5 * GB) },
     { ...EIGHT_GB_CARD, ...SMALL_HOST },

@@ -65,6 +65,7 @@ test("the rail flyout lists every workflow and greys out what the model cannot d
 
 test("a row with a flyout drops its label tooltip, every other row keeps it", () => {
   const nav = block(SIDEBAR, "function NavItem({", "const WORKFLOW_UNAVAILABLE");
-  assert.match(nav, /tooltip=\{flyout \? undefined : \(tooltip \?\? label\)\}/);
+  assert.match(nav, /tooltip=\{flyout \? undefined : rowTooltip\}/);
+  assert.match(nav, /: \(tooltip \?\? label\);/);
   assert.match(nav, /\{flyout \? flyout\(row\) : row\}/);
 });

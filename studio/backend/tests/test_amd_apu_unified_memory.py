@@ -18,11 +18,7 @@ _VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VI
 
 @pytest.fixture(autouse = True)
 def _no_inherited_gpu_mask(monkeypatch):
-    """These tests fake a torch host and then ask about GPU ordinal 0. A mask
-    inherited from the shell remaps that ordinal onto a physical id the fake
-    host does not have, so the answer flips to False and nine tests fail. CI
-    runners carry no mask, so it only ever bites locally. The tests that are
-    about a mask still set their own, after this."""
+    """Clear inherited GPU masks per test: a shell mask remaps ordinal 0 off the fake host."""
     for _m in _VISIBLE_DEVICE_MASKS:
         monkeypatch.delenv(_m, raising = False)
 
@@ -67,17 +63,14 @@ def test_apu_guard_scopes_to_selected_gpu(monkeypatch):
     for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(_m, raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1100", "gfx1151"]))
-    # Selecting only the dGPU, or an empty selection, must not be unified-memory.
     assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is False
     assert LlamaCppBackend._amd_apu_wants_unified_memory([]) is False
-    # Selecting the APU, or no selection, does.
     assert LlamaCppBackend._amd_apu_wants_unified_memory([1]) is True
     assert LlamaCppBackend._amd_apu_wants_unified_memory() is True
 
 
 def test_apu_guard_honors_hip_visible_devices_mask(monkeypatch):
-    # ROCm resolves ids via HIP first: the mask exposes only the APU as ordinal 0
-    # but physical id 1, so the selection [1] must still match.
+    # HIP's mask shows the APU as ordinal 0 but physical id 1, so [1] must still match.
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
@@ -103,27 +96,21 @@ _shortfall = LlamaCppBackend._apu_ram_shortfall_message
 
 
 class TestApuRamShortfall:
-    """On a unified-memory APU the weights load into system RAM, so a model
-    larger than available RAM (the field case: a 64.6 GB GGUF on a WSL VM capped
-    well below the ROCm-reported APU budget) must be refused before spawning,
-    not left to OOM-kill the Unsloth process."""
+    """On a unified-memory APU, weights load into RAM, so an oversized model must be refused early."""
 
     def test_field_case_wsl_cap_refuses(self):
-        # 64.6 GB weights, ~46 GB available (WSL VM): refuse with guidance.
         msg = _shortfall(int(64.6 * _GB), 46 * _MIB_PER_GB)
         assert msg is not None
         assert "65 GB" in msg and "46 GB" in msg
         assert ".wslconfig" in msg
 
     def test_bare_metal_fits_allows(self):
-        # Same model, ~92 GB available (no WSL cap): allow.
         assert _shortfall(int(64.6 * _GB), 92 * _MIB_PER_GB) is None
 
     def test_unknown_available_never_refuses(self):
         assert _shortfall(int(64.6 * _GB), None) is None
 
     def test_boundary_at_headroom(self):
-        # 20 GB weights, headroom 2 GB. avail 23 GB -> fits; 21 GB -> refuse.
         assert _shortfall(20 * _GB, 23 * _MIB_PER_GB) is None
         assert _shortfall(20 * _GB, 21 * _MIB_PER_GB) is not None
 
@@ -132,10 +119,7 @@ class TestApuRamShortfall:
         assert v is None or (isinstance(v, int) and v > 0)
 
 
-# The local B200's real profile, so the spoofed APU is sized like a machine we
-# actually have rather than an invented one. A large shared pool is exactly where
-# the missing host reserve mattered: 3% of 179 GiB is 5.4 GiB, but the reserve is
-# an absolute 1 GiB off free, and the "total" must not become a VRAM budget.
+# Real B200 profile; the host reserve is an absolute 1 GiB off free, not a percent of total.
 _B200_TOTAL_MIB = 183359
 _B200_FREE_MIB = 181928
 _MIB = 1024 * 1024
@@ -167,11 +151,9 @@ def _probe(
     monkeypatch.setitem(
         sys.modules, "torch", _fake_torch_with_memory(hip, archs, free_mib, total_mib)
     )
-    # Force the torch branch: no Vulkan build, and nvidia-smi must not answer.
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "x"))
-    # Pin host availability: the shared path caps by it, so a runner with less RAM
-    # than the spoofed profile would otherwise change every expectation below.
+    # Pin host RAM: the shared path caps by it.
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 1 << 30)
     )
@@ -183,9 +165,7 @@ def _probe(
 
 
 class TestTheRocmProbeReservesHostRamOnAnApu:
-    """ROCm reports no iGPU flag, so before this an APU was sized as a discrete
-    card: no host margin, and an absolute reserve taken off what is really
-    system RAM. The Vulkan probe already did both; this matches it."""
+    """ROCm reports no iGPU flag, so APUs were sized as discrete; the Vulkan probe already handled this."""
 
     def test_an_apu_loses_the_host_reserve_and_reports_no_total(self, monkeypatch):
         assert _probe(monkeypatch, "6.2.0", ["gfx1151:xnack-"]) == [(0, _B200_FREE_MIB - 1024, 0)]
@@ -219,9 +199,7 @@ class TestTheRocmProbeReservesHostRamOnAnApu:
 
 
 class TestTheGateStillFailsOpen:
-    """Every helper in this family answers False rather than raising: they are
-    consulted on the load path, so a bad argument must skip the optimisation,
-    not fail the load."""
+    """Load-path helpers answer False rather than raise, so a bad argument skips the optimisation."""
 
     @pytest.mark.parametrize("gpu_indices", [5, [[0]], "0", [None], object()])
     def test_a_bad_gpu_indices_answers_false(self, monkeypatch, gpu_indices):
@@ -234,9 +212,7 @@ class TestTheGateStillFailsOpen:
 
 
 class TestAmdSdkWheelsCountAsRocm:
-    """AMD SDK / Radeon wheels leave torch.version.hip unset and only encode
-    "rocm" in __version__, which _resolve_visible_physical_ids already handles.
-    The arch map must use the same predicate or an APU goes unrecognised there."""
+    """AMD SDK wheels leave torch.version.hip unset; the arch map must use the same predicate."""
 
     @staticmethod
     def _torch(
@@ -252,8 +228,8 @@ class TestAmdSdkWheelsCountAsRocm:
         ("hip", "version", "expected"),
         [
             ("6.2.0", "2.5.0+rocm6.2", True),
-            (None, "2.11.0+rocm7.13", True),  # AMD SDK wheel
-            (None, "2.5.0+ROCm7.0", True),  # case-insensitive
+            (None, "2.11.0+rocm7.13", True),
+            (None, "2.5.0+ROCm7.0", True),
             (None, "2.5.0+cu124", False),
             (None, "2.5.0", False),
         ],
@@ -303,10 +279,7 @@ class TestTheApuBudgetIsCappedByHostRam:
 
 
 class TestRadeonWheelsWithoutAnArchName:
-    """AMD SDK / Radeon wheels may populate none of the arch attributes. The
-    training worker's classifier already handles that (is_integrated, then the
-    arch spellings, then the Radeon name table); this path shares it so the two
-    cannot disagree about a device."""
+    """Radeon wheels may expose no arch attribute, so this path shares the training worker's classifier."""
 
     @staticmethod
     def _torch(**props):
@@ -318,9 +291,9 @@ class TestRadeonWheelsWithoutAnArchName:
         ("props", "expected"),
         [
             ({"gcnArchName": "gfx1151"}, True),
-            ({"gcn_arch_name": "gfx1150"}, True),  # variant spelling
-            ({"name": "AMD Radeon 8060S Graphics"}, True),  # Strix Halo by name
-            ({"name": "AMD Radeon 860M"}, True),  # Krackan by name
+            ({"gcn_arch_name": "gfx1150"}, True),
+            ({"name": "AMD Radeon 8060S Graphics"}, True),
+            ({"name": "AMD Radeon 860M"}, True),
             ({"is_integrated": True, "name": "AMD Radeon Graphics"}, True),
             ({"gcnArchName": "gfx1100"}, False),
             ({"name": "AMD Radeon RX 7900 XTX"}, False),
@@ -333,8 +306,7 @@ class TestRadeonWheelsWithoutAnArchName:
 
 
 class TestTheProbeTestsDoNotDependOnHostRam:
-    """The shared path caps by available system RAM, so the spoofed profile must
-    pin it or every expectation moves with the runner's memory."""
+    """The shared path caps by available RAM, so the spoofed profile must pin availability."""
 
     def test_the_helper_pins_availability(self, monkeypatch):
         """_probe must survive a runner smaller than the spoofed free figure."""
@@ -355,25 +327,23 @@ class TestTheProbeTestsDoNotDependOnHostRam:
 
 
 class TestTheOptOutHelper:
-    """_unified_memory_opted_out, the #8651 escape hatch. ggml tests presence, not
-    value, so only ABSENCE is off and this decides when to make it absent."""
+    """Decides when to make the var absent: ggml tests presence of the variable, not its value."""
 
     @pytest.mark.parametrize(
         "env,expected",
         [
-            ({}, False),  # nothing set: the default decides
+            ({}, False),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}, False),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "2"}, False),  # any value is ON to ggml
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "true"}, False),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "0"}, True),  # the reported trap
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": ""}, True),
-            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": " Off "}, True),  # trimmed, folded
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": " Off "}, True),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "no"}, True),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "false"}, True),
             ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"}, True),
-            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"}, False),  # exact "1", like the DC switch
+            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"}, False),
             ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "yes"}, False),
-            # The switch has to beat a truthy value.
             (
                 {
                     "UNSLOTH_DISABLE_UNIFIED_MEMORY": "1",
@@ -420,8 +390,7 @@ _GIB = 1024**3
 
 
 class TestTheUnifiedMemorySwapIsOnlyTakenWhenItPays:
-    """Managed allocation is enabled only when host RAM is the larger pool. Every arm
-    prices weights that outgrow the carve-out, so only the pools decide."""
+    """Managed allocation only when host RAM is the larger pool; the pools alone decide."""
 
     def _host(self, monkeypatch, specs, ram_mib):
         monkeypatch.setitem(sys.modules, "torch", _fake_torch_sized(specs))
@@ -604,11 +573,7 @@ class TestTheEnableSwitch:
 
 
 class TestTheDirectIoGateNeedsEveryDeviceRead:
-    """`_rocm_classification_answered` guards a loader choice, so it must mean "the
-    devices were classified", not "a classifier was importable and something
-    enumerated". `_rocm_unified_memory_gpu_ids` drops any device it cannot read with
-    `except: continue`, and an absent device reads as discrete, which is how an
-    unclassified APU would be handed DirectIO over its own system RAM."""
+    """Every device must be read before DirectIO is chosen, or an unreadable APU reads as discrete."""
 
     @staticmethod
     def _torch(archs, *, raises_on = None):
@@ -627,9 +592,8 @@ class TestTheDirectIoGateNeedsEveryDeviceRead:
         assert LlamaCppBackend._rocm_classification_answered() is True
 
     def test_one_unreadable_device_declines(self, monkeypatch):
-        """The discrete gfx1100 beside it is exactly the trap: the set comes back
-        empty, the launch looks like two discrete cards, and the unreadable one may
-        be the APU."""
+        """A discrete card beside an unreadable device empties the set and looks like two discrete
+        cards, yet the unreadable one may be the APU."""
         monkeypatch.setitem(sys.modules, "torch", self._torch(["gfx1100", "gfx1151"], raises_on = 1))
         assert LlamaCppBackend._rocm_unified_memory_gpu_ids() == set()
         assert LlamaCppBackend._rocm_classification_answered() is False
@@ -643,7 +607,6 @@ class TestTheDirectIoGateNeedsEveryDeviceRead:
         assert LlamaCppBackend._rocm_classification_answered() is False
 
     def test_non_rocm_torch_declines(self, monkeypatch):
-        """No Windows ROCm wheel, so this is the usual answer on the one platform
-        the DirectIO decision runs on."""
+        """No Windows ROCm wheel exists, so the DirectIO decision declines here."""
         monkeypatch.setitem(sys.modules, "torch", _fake_torch(None, ["sm_90"]))
         assert LlamaCppBackend._rocm_classification_answered() is False

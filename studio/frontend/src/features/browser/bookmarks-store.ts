@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import { MAX_TITLE_CHARS, MAX_URL_CHARS } from "./history-store";
 
 export type BookmarkFolder = "toolbar" | "other";
@@ -13,7 +14,6 @@ export type Bookmark = {
   title: string;
   folder: BookmarkFolder;
   addedAt: number;
-  /** The page's icon when last seen, as a small PNG data: URL. */
   icon?: string;
 };
 
@@ -72,13 +72,14 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
           ),
           lastFolder: patch.folder ?? state.lastFolder,
         })),
-      setBookmarkIcon: (id, icon) =>
-        set((state) => {
-          if (!icon.startsWith("data:image/") || icon.length > MAX_ICON_CHARS) return state;
-          const current = state.bookmarks.find((bookmark) => bookmark.id === id);
-          if (!current || current.icon === icon) return state;
-          return { bookmarks: state.bookmarks.map((bookmark) => (bookmark.id === id ? { ...bookmark, icon } : bookmark)) };
-        }),
+      // No-op calls skip set(): persist rewrites storage on every set().
+      setBookmarkIcon: (id, icon) => {
+        if (!icon.startsWith("data:image/") || icon.length > MAX_ICON_CHARS) return;
+        const { bookmarks } = get();
+        const current = bookmarks.find((bookmark) => bookmark.id === id);
+        if (!current || current.icon === icon) return;
+        set({ bookmarks: bookmarks.map((bookmark) => (bookmark.id === id ? { ...bookmark, icon } : bookmark)) });
+      },
       removeBookmark: (id) => set((state) => ({ bookmarks: state.bookmarks.filter((bookmark) => bookmark.id !== id) })),
       importBookmarks: (items) => {
         const saved = new Set(get().bookmarks.map((bookmark) => bookmark.url));
@@ -103,13 +104,12 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
         if (added.length > 0) set((state) => ({ bookmarks: [...state.bookmarks, ...added] }));
         return { added: added.length, leftOut };
       },
-      restoreBookmark: (bookmark, index) =>
-        set((state) => {
-          if (state.bookmarks.some((other) => other.id === bookmark.id || other.url === bookmark.url)) return state;
-          const bookmarks = [...state.bookmarks];
-          bookmarks.splice(Math.min(index, bookmarks.length), 0, bookmark);
-          return { bookmarks };
-        }),
+      restoreBookmark: (bookmark, index) => {
+        const bookmarks = [...get().bookmarks];
+        if (bookmarks.some((other) => other.id === bookmark.id || other.url === bookmark.url)) return;
+        bookmarks.splice(Math.min(index, bookmarks.length), 0, bookmark);
+        set({ bookmarks });
+      },
     }),
     {
       name: accountDatabaseName("unsloth_browser_bookmarks"),
@@ -118,6 +118,7 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
     },
   ),
 );
+syncAcrossWindows(useBrowserBookmarksStore);
 
 export function useBookmarkFor(url: string | null): Bookmark | undefined {
   return useBrowserBookmarksStore((state) =>

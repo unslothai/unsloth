@@ -70,9 +70,10 @@ def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
     from utils.models.model_config import _find_local_gguf_by_variant
 
     # custom folders have no remote listing to constrain their keys, so every build keeps a row (#13926).
-    folder = tmp_path / "esatapedico" / "Qwen3.8-27B-NVFP4-MTP-GGUF"
+    # NVFP4 ends each name, so it is the quant all three share (mid-name it is part of the model name).
+    folder = tmp_path / "esatapedico" / "Qwen3.8-27B-MTP-NVFP4-GGUF"
     folder.mkdir(parents = True)
-    names = [f"Qwen3.8-27B-NVFP4-MTP-{build}.gguf" for build in ("HIGHEST", "LOW", "MID-HIGH_enru")]
+    names = [f"Qwen3.8-27B-MTP-{build}-NVFP4.gguf" for build in ("HIGHEST", "LOW", "MID-HIGH_enru")]
     for name in names:
         (folder / name).write_bytes(b"x" * 64)
     variants, _ = list_local_gguf_variants(str(folder))

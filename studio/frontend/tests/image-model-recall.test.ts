@@ -8,7 +8,9 @@ import { explicitFamily } from "../src/features/model-picker/components/model-se
 import {
   componentFilesMatch,
   matchesRememberedModel,
+  forgetStaleImageComponents,
   readImageModel,
+  recalledComponentFiles,
   rememberImageModel,
 } from "../src/features/images/image-model-recall.ts";
 import { splitComponentFileList } from "../src/features/images/component-files.ts";
@@ -64,6 +66,8 @@ test("recalling a quantized model carries the selected adapters into its load", 
       textEncoderFiles: "",
       vaeFile: "",
       splitComponentFileList,
+      recalledComponentFiles,
+      forgetStaleImageComponents,
       busy: null,
       external: null,
       imagePresets: { hydrated: true },
@@ -92,7 +96,6 @@ test("recalling a quantized model carries the selected adapters into its load", 
       kind: "gguf",
       filename: "model-Q8_0.gguf",
     };
-    // The live selection (qwen-image) must not leak into a recalled load.
     const { scope, loads, callbacks } = recall({
       loras: [
         { id: " org/style ", weight: 0.7 },
@@ -131,7 +134,6 @@ test("recalling a quantized model carries the selected adapters into its load", 
     );
   }
 
-  // An opaque pipeline loaded under an explicit family recalls with it after a restart (UI at Auto).
   const { loads, callbacks } = recall({
     rememberedModel: { repoId: "/cache/models--org--custom/snapshots/abc", kind: "pipeline", familyOverride: "flux.1" },
   });

@@ -11,7 +11,6 @@ export interface CropRect extends CropPoint {
   height: number;
 }
 
-/** One picture slot keeps its original upload, current raster and crop. */
 export interface StagedReferenceImage {
   originalDataUrl: string;
   dataUrl: string;
@@ -42,13 +41,11 @@ export interface CropRasterCanvas {
   toDataURL(type: string): string;
 }
 
-// Keep this aligned with VideoGenerateRequest.reference_images in models/inference.py.
+// Keep aligned with VideoGenerateRequest.reference_images in models/inference.py.
 export const MAX_REFERENCE_IMAGE_DATA_URL_LENGTH = 32 * 1024 * 1024;
 
-// fit_h3_reference_image never keeps more than a 2048px short edge, so a full-resolution export
-// just spends the 32 MiB cap and a blocking encode on pixels it discards: a 12MP photo alone
-// reaches ~52 MiB of PNG base64. The long edge is bounded too, so an extreme aspect cannot stay
-// huge just because its short edge fits.
+// fit_h3_reference_image keeps at most a 2048px short edge, so a larger export only wastes the cap;
+// the long edge is bounded too.
 export const MAX_REFERENCE_CROP_SHORT_EDGE = 2048;
 export const MAX_REFERENCE_CROP_LONG_EDGE = 4096;
 
@@ -67,7 +64,6 @@ function boundedSize(size: ImageSize): ImageSize {
   };
 }
 
-/** Clamp an arbitrary source-pixel rectangle to the decoded image. */
 export function clampCropRect(rect: CropRect, image: ImageSize): CropRect {
   const bounds = boundedSize(image);
   const x = between(Math.floor(finite(rect.x)), 0, bounds.width);
@@ -85,7 +81,6 @@ export function clampCropRect(rect: CropRect, image: ImageSize): CropRect {
   return { x, y, width: right - x, height: bottom - y };
 }
 
-/** Build a bounded source-pixel rectangle from either drag direction. */
 export function cropRectFromPoints(
   start: CropPoint,
   end: CropPoint,
@@ -106,7 +101,6 @@ export function cropRectFromPoints(
   );
 }
 
-/** Move a selection without letting any edge leave the source image. */
 export function moveCropRect(
   rect: CropRect,
   delta: CropPoint,
@@ -129,7 +123,6 @@ export function moveCropRect(
   };
 }
 
-/** Map a pointer on the rendered preview onto orientation-correct source pixels. */
 export function displayPointToSource(
   point: CropPoint,
   display: ImageSize,
@@ -150,7 +143,6 @@ export interface CropImageLoadClaim {
   isCurrent(): boolean;
 }
 
-/** Latest-wins gate shared by image decode callbacks and covered without a DOM harness. */
 export function createCropImageLoadGate(): {
   begin(dataUrl: string): CropImageLoadClaim;
 } {
@@ -173,7 +165,6 @@ export function createCropImageLoadGate(): {
   };
 }
 
-/** Parent-state actions keep Cancel structurally separate from Apply. */
 export function createReferenceImageEditorActions(callbacks: {
   onApply(dataUrl: string, crop: CropRect | null): void;
   onOpenChange(open: boolean): void;
@@ -192,7 +183,6 @@ export function createReferenceImageEditorActions(callbacks: {
   };
 }
 
-/** The exported size for a crop: its own size, reduced to what the model can use. */
 export function referenceCropExportSize(crop: ImageSize): ImageSize {
   const longest = Math.max(crop.width, crop.height);
   const shortest = Math.min(crop.width, crop.height);
@@ -208,7 +198,6 @@ export function referenceCropExportSize(crop: ImageSize): ImageSize {
   };
 }
 
-/** Rasterize exactly one bounded source rectangle without enlarging it. */
 export function rasterizeReferenceImageCrop(
   source: CanvasImageSource,
   selection: CropRect,
@@ -248,7 +237,6 @@ export function stageReferenceImage(dataUrl: string): StagedReferenceImage {
   return { originalDataUrl: dataUrl, dataUrl, crop: null };
 }
 
-/** Apply a raster and crop to one position while retaining its original upload. */
 export function applyReferenceImageCrop(
   images: StagedReferenceImage[],
   index: number,

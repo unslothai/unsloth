@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Behaviour of the two small-card fixes through entry points that exist before and after them.
-
-Imports only names present on main, so on main these fail by ASSERTION, not ImportError:
-
-1. The pipeline seed call in diffusion.py, evaluated as written, drives ``load_prequantized_transformer`` (checkpoint
-   I/O faked) under an offloading Qwen-Image-2.1 plan: the module must be materialised on the host, not the GPU.
-2. The post-load refinement expression in diffusion.py, evaluated as written, applied to a balanced 16 GB plan and a
-   pipe whose loaded fp8 text encoder is 8960 MiB: the encoder must not stay resident.
-"""
+"""Small-card fixes exercised through diffusion.py's own expressions, so main fails by assertion."""
 
 from __future__ import annotations
 
@@ -69,9 +61,6 @@ def _call(name):
     return calls[0]
 
 
-# ---------------------------------------------------------------- 1. seed placement
-
-
 class _FakeDiT(torch.nn.Module):
     placed: list = []
 
@@ -83,7 +72,7 @@ class _FakeDiT(torch.nn.Module):
     def from_config(cls, config):
         return cls()
 
-    def to(self, *args, **kwargs):  # record, never move (CPU-only test host)
+    def to(self, *args, **kwargs):  # record, never move (CPU-only host)
         _FakeDiT.placed.append(str(args[0] if args else kwargs.get("device")))
         return self
 
@@ -137,18 +126,15 @@ def _seed_through_call_site(
 def test_offloading_plan_materialises_the_seed_on_the_host(fake_checkpoint, free, total):
     plan = _plan(free, total)
     if plan.offload_policy == OFFLOAD_MODEL:
-        plan = torchao_streaming_plan(plan)  # what torchao_offload_plan makes of it for int8
+        plan = torchao_streaming_plan(plan)
     assert not dm.plan_keeps_transformer_resident(plan)
     assert _seed_through_call_site(plan) == "cpu"
 
 
 def test_resident_plan_keeps_the_seed_on_the_device(fake_checkpoint):
-    plan = _plan(24176, 24576)  # transformer resident, encoders streamed
+    plan = _plan(24176, 24576)
     assert dm.plan_keeps_transformer_resident(plan)
     assert _seed_through_call_site(plan) == "cuda"
-
-
-# ---------------------------------------------------------------- 2. balanced refinement
 
 
 def _meta(mib):
@@ -162,7 +148,7 @@ def _meta(mib):
 class _Pipe:
     def __init__(self):
         self.transformer = _meta(7448)
-        self.text_encoder = _meta(8960)  # fp8 Qwen3-VL as loaded
+        self.text_encoder = _meta(8960)
         self.vae = _meta(645)
         self.components = {
             "transformer": self.transformer,
@@ -193,9 +179,7 @@ def no_torchao(monkeypatch):
 @pytest.mark.parametrize("sizes", [SIZES_AUTO, SIZES_EXPLICIT_INT8], ids = ["auto_quant", "int8"])
 def test_balanced_16gb_does_not_keep_the_9gib_encoder_resident(no_torchao, sizes):
     plan = _plan(15976, 16376, "balanced", sizes)
-    assert (
-        plan.offload_policy == OFFLOAD_GROUP and not plan.stream_text_encoders
-    )  # the plan main ships
+    assert plan.offload_policy == OFFLOAD_GROUP and not plan.stream_text_encoders
     final = _refine_as_loaded(_Pipe(), plan)
     encoder_resident = final.offload_policy == OFFLOAD_GROUP and not final.stream_text_encoders
     assert not encoder_resident

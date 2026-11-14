@@ -68,14 +68,12 @@ def main() -> None:
         assert login.json()["access_token"]
     finally:
         client.close()
-    # auth.db and studio.db gain columns when a current build opens them, so both are compared by what
-    # the old build wrote rather than byte for byte. Everything else must be untouched.
+    # auth.db and studio.db gain columns when opened by a current build, so compare content.
     for name, payload in original.items():
         if name not in ("auth/auth.db", "studio.db"):
             assert (home / name).read_bytes() == payload, f"Owner read changed {name}"
     assert old_auth_row(home / "auth" / "auth.db") == auth_row
-    # The attachment inventory is a versioned derived cache: a newer build rebuilds it on first
-    # read, so its bookkeeping row moves by design. Every user-written row must not.
+    # Derived cache: its bookkeeping row moves by design.
     derived = "chat_attachment_inventory_state"
     after = legacy_studio_rows(home / "studio.db")
     assert {t: r for t, r in after.items() if t != derived} == {

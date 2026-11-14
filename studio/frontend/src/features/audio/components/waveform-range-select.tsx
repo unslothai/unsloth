@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Add01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -296,7 +296,7 @@ export function WaveformRangeSelect({
               <li
                 // biome-ignore lint/suspicious/noArrayIndexKey: ranges are kept sorted; the index is their name.
                 key={index}
-                className="flex items-center rounded-4xl bg-muted"
+                className="flex items-center rounded-full bg-muted"
               >
                 <button
                   type="button"
@@ -306,7 +306,7 @@ export function WaveformRangeSelect({
                   aria-keyshortcuts="Delete Backspace ArrowLeft ArrowRight"
                   title="Arrow keys move it, Shift+arrow by a second, Delete removes it"
                   className={cn(
-                    "rounded-l-4xl py-0.5 pl-2.5 pr-1 font-mono text-ui-11p5 tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "rounded-l-full py-0.5 pl-2.5 pr-1 font-mono text-ui-11p5 tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     focused === index && "underline underline-offset-2",
                   )}
                   onKeyDown={(event) => onRangeKey(event, index, "both")}
@@ -318,8 +318,9 @@ export function WaveformRangeSelect({
                 <button
                   type="button"
                   disabled={disabled}
+                  title="Remove range"
                   aria-label={`Remove range ${index + 1}`}
-                  className="flex items-center rounded-r-4xl py-1 pl-0.5 pr-2 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex items-center rounded-r-full py-1 pl-0.5 pr-2 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                   onClick={() => remove(index)}
                 >
                   <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
@@ -333,7 +334,7 @@ export function WaveformRangeSelect({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-auto px-2 py-1 text-ui-11p5"
+            className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
             disabled={!canAdd}
             onClick={() => {
               const next = nextFreeRange(ranges, limits);
@@ -346,7 +347,7 @@ export function WaveformRangeSelect({
               requestAnimationFrame(() => focusChip(at));
             }}
           >
-            <HugeiconsIcon icon={Add01Icon} className="size-3" />
+            <HugeiconsIcon icon={PlusSignIcon} className="size-3" />
             {ranges.length === 0 ? "Select a part" : "Add a part"}
           </Button>
         ) : null}

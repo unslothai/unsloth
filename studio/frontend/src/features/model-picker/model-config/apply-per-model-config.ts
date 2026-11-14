@@ -11,12 +11,14 @@ import {
 } from "@/features/chat/stores/chat-runtime-store";
 import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { defaultInferenceParams } from "@/features/chat/presets/preset-policy";
-// Its own module so hosts needing only the signature skip the chat runtime store.
+// Separate module so hosts needing only the signature skip the chat runtime store.
 import { gpuFieldsSignature } from "./config-signature";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
+  normalizeEngramPrecision,
   normalizeMaxSeqLength,
+  sameEngramPrecision,
 } from "./per-model-config";
 
 export { gpuFieldsSignature };
@@ -29,9 +31,7 @@ export function applyPerModelConfigToRuntime(
   config: PerModelConfig,
   options: { isDiffusion?: boolean } = {},
 ): void {
-  // Fall back to the standing default when the model has no saved maxSeqLength. It is the only
-  // per-model field carried on params, so without this a model with no remembered config would
-  // inherit the previously loaded model's value.
+  // Without the standing default, a model with no saved config inherits the previous model's value.
   const maxSeqLength =
     normalizeMaxSeqLength(config.maxSeqLength) ??
     defaultInferenceParams.maxSeqLength;
@@ -78,6 +78,10 @@ export function applyPerModelConfigToRuntime(
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
     mlxInt8Prefill: config.mlxInt8Prefill ?? false,
+    mlxAnePrefill: config.mlxAnePrefill ?? false,
+    mlxFastVerify: config.mlxFastVerify ?? false,
+    mlxPleOffload: config.mlxPleOffload ?? null,
+    mlxExpertOffload: config.mlxExpertOffload ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -90,21 +94,21 @@ export function applyPerModelConfigToRuntime(
     reasoningBudgetMessage: options.isDiffusion
       ? ""
       : config.reasoningBudgetMessage,
-    // the diffusion runner ignores the llama-server batch flags
+    // The diffusion runner ignores the llama-server batch flags.
     nBatch: options.isDiffusion ? null : (config.nBatch ?? null),
     nUbatch: options.isDiffusion ? null : (config.nUbatch ?? null),
-    // Same reason as the batch flags: these are llama-server's own, and the diffusion runner never launches one.
     loadMode: options.isDiffusion ? null : (config.loadMode ?? null),
     ctxCheckpoints: options.isDiffusion ? null : (config.ctxCheckpoints ?? null),
     cacheRam: options.isDiffusion ? null : (config.cacheRam ?? null),
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
-    // The diffusion runner has no projector to skip, so the toggle is inert there for the same
-    // reason tensorParallel is.
     disableVision: options.isDiffusion
       ? false
       : (config.disableVision ?? false),
+    engramPrecision: options.isDiffusion
+      ? null
+      : normalizeEngramPrecision(config.engramPrecision),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is a standing
     // preference so an absent mode falls back to the persisted one. The per-GPU split is restored
@@ -154,6 +158,10 @@ export function currentRuntimePerModelConfig(
     kvCacheDtype: s.kvCacheDtype ?? null,
     mlxKvQuant: s.mlxKvQuant ?? null,
     mlxInt8Prefill: s.mlxInt8Prefill ?? false,
+    mlxAnePrefill: s.mlxAnePrefill ?? false,
+    mlxFastVerify: s.mlxFastVerify ?? false,
+    mlxPleOffload: s.mlxPleOffload ?? null,
+    mlxExpertOffload: s.mlxExpertOffload ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -174,6 +182,7 @@ export function currentRuntimePerModelConfig(
     cacheRam: s.cacheRam ?? null,
     tensorParallel: s.tensorParallel ?? false,
     disableVision: s.disableVision ?? false,
+    engramPrecision: s.engramPrecision ?? null,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous model's GPU Memory
     // settings back, split included.
@@ -186,8 +195,7 @@ export function currentRuntimePerModelConfig(
   };
 }
 
-/** `followGlobal`: only against the running config, which holds the mode a null one resolved to.
- *  Stored configs and presets keep null distinct from an explicit mode equal to today's global. */
+/** `followGlobal` only for the running config; stored configs keep null distinct from explicit. */
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,
@@ -211,6 +219,10 @@ export function perModelConfigsEqual(
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
     Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
+    Boolean(a.mlxAnePrefill) === Boolean(b.mlxAnePrefill) &&
+    Boolean(a.mlxFastVerify) === Boolean(b.mlxFastVerify) &&
+    (a.mlxPleOffload ?? null) === (b.mlxPleOffload ?? null) &&
+    (a.mlxExpertOffload ?? null) === (b.mlxExpertOffload ?? null) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
@@ -225,6 +237,7 @@ export function perModelConfigsEqual(
     (a.cacheRam ?? null) === (b.cacheRam ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     Boolean(a.disableVision) === Boolean(b.disableVision) &&
+    sameEngramPrecision(a.engramPrecision, b.engramPrecision) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
     extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&
@@ -236,9 +249,7 @@ function resolvedSpeculativeType(value: string | null | undefined): string {
   return normalizeSpeculativeType(value) ?? readPersistedSpeculativeType();
 }
 
-/** Compare on the launched command, so "not loaded" and "cleared" are equal here. They differ
- *  only in what a SAVE does, and treating them as different would make the row read as an
- *  unsaved change the moment it finished reading the server. */
+/** Compare on the launched command, so "not loaded" and "cleared" are equal. */
 function extraArgsSignature(value: string[] | null | undefined): string {
   return (value ?? []).join("\u0000");
 }

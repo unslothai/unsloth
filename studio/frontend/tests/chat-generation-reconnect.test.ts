@@ -156,6 +156,58 @@ test("reconnect resumes from the applied cursor without duplicate chunks", async
   );
 });
 
+test("a stream that goes silent without closing is dropped and resumed from the cursor", async () => {
+  const eventUrls: string[] = [];
+  const encoder = new TextEncoder();
+  let deadStreamCancelled = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/events")) {
+      eventUrls.push(url);
+      if (eventUrls.length > 1) {
+        return sse([
+          frame(2, "chunk", { choices: [{ delta: { content: "B" } }] }),
+          frame(3, "run.completed", { status: "completed" }, run("completed", 3)),
+        ]);
+      }
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                frame(1, "chunk", { choices: [{ delta: { content: "A" } }] }),
+              ),
+            );
+            init?.signal?.addEventListener("abort", () =>
+              controller.error(init.signal?.reason),
+            );
+          },
+          cancel() {
+            deadStreamCancelled = true;
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    return new Response(JSON.stringify(run("running", 1)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const sequences: number[] = [];
+  for await (const update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+    silenceTimeoutMs: 50,
+    signal: AbortSignal.timeout(2_000),
+  })) {
+    if (update.event) sequences.push(update.event.seq);
+  }
+  assert.deepEqual(sequences, [1, 2, 3]);
+  assert.equal(deadStreamCancelled, true);
+  assert.match(eventUrls[1], /after=1$/);
+});
+
 test("durable replay normalizes reasoning summary control frames", async () => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     if (String(input).includes("/events")) {
@@ -206,8 +258,6 @@ test("durable replay re-tags persisted tool control frames for the shared consum
   })) {
     if (update.event?.type === "chunk") chunks.push(update.event.payload);
   }
-  // Tagged exactly like the legacy stream yields them, and structured delta.tool_calls chunks
-  // pass through untouched for the consumer's index-keyed accumulation.
   assert.deepEqual(chunks, [
     { _toolStatus: "Searching…" },
     { _toolEvent: toolStart },
@@ -380,7 +430,6 @@ test("Stop during create cancels the run after its delayed reply", async () => {
 });
 
 test("a null admission does not mean the run was stopped", async () => {
-  // json() makes an unparseable 2xx body null and `ok` keeps it, so the create resolves null.
   globalThis.fetch = (async () =>
     new Response("", { status: 200 })) as typeof fetch;
   const controller = new AbortController();
@@ -393,10 +442,7 @@ test("a null admission does not mean the run was stopped", async () => {
 });
 
 test("Stop before admission resolves still reaches the server", () => {
-  // Admission resolves long after the abort listener is installed (model auto-load,
-  // RAG, attachment upload, first history save). A Stop in that window has no run id
-  // and the turn may still fall back to the legacy stream, so it has to send the
-  // cancel_id POST the backend stashes for a generation that registers afterwards.
+  // A Stop before admission has no run id, so the cancel_id POST must still be sent.
   assert.deepEqual(chatGenerationStopPlan("pending", null), {
     cancelRunId: null,
     postLegacyCancel: true,
@@ -406,7 +452,6 @@ test("Stop before admission resolves still reaches the server", () => {
     postLegacyCancel: true,
   });
 
-  // Once the run exists, cancelling it is enough and is the precise thing to do.
   assert.deepEqual(chatGenerationStopPlan("pending", "run-7"), {
     cancelRunId: "run-7",
     postLegacyCancel: false,
@@ -416,8 +461,7 @@ test("Stop before admission resolves still reaches the server", () => {
     postLegacyCancel: false,
   });
 
-  // Durable with no id means create was aborted before it replied; that path chains
-  // its own cancel onto the pending create, so a second POST would be noise.
+  // Durable with no id chains its own cancel onto the pending create.
   assert.deepEqual(chatGenerationStopPlan("durable", null), {
     cancelRunId: null,
     postLegacyCancel: false,

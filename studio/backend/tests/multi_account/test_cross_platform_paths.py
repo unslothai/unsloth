@@ -87,7 +87,7 @@ def test_distinct_generated_account_ids_do_not_collide_under_case_folding(isolat
 def test_max_path_budget_for_realistic_leaves(leaf):
     owner_path = ntpath.join(str(ROOT), leaf)
     account_path = ntpath.join(str(ROOT), "accounts", ACCOUNT_ID, leaf)
-    # MAX_PATH includes the trailing NUL. The fixed accounts/hex component adds 42 UTF-16 units.
+    # MAX_PATH includes the trailing NUL; accounts/hex adds 42 UTF-16 units.
     assert utf16_units(account_path) - utf16_units(owner_path) == 42
     assert utf16_units(account_path) + 1 <= 260
     budget = 259 - utf16_units(ntpath.join("accounts", ACCOUNT_ID, leaf)) - 1

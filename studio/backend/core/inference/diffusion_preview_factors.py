@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Latent -> RGB maps for the live denoise preview (diffusion_preview). GENERATED, do not edit by hand.
-
-Each map was fitted by least squares from the final denoised latent of real renders to the same renders' VAE
-decode, box-averaged onto the latent grid. Families without an entry get no preview."""
+"""Generated, do not edit: RGB preview maps fitted to VAE decodes; no entry means no preview."""
 
 # family name (lower case) -> map key: ``FamilyProfile.preview_factors`` on the registry rows (not generated).
 from .family_profile import profile_table as _profile_table  # noqa: E402

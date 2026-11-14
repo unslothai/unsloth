@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GPU arbiter for Unsloth's heavy GPU consumers.
-
-The chat backends, diffusion, and video share the GPUs. Before taking them each calls
-``acquire_for(owner)``. Under the default policy that evicts every other resident, so two large
-models never sit in VRAM at once. Under "always" (Keep multiple models loaded set to Always) it
-refuses instead of evicting a chat, image or video model. The arbiter only sequences residency
-(freeing is each backend's teardown); eviction runs under the lock, so a transfer is atomic vs
-other acquires.
-
-Residents are tracked in ``_residents`` with the physical GPU ids each one uses (None when not
-known). ``_owner`` stays the last claimant, and tests may still set it directly: while it
-disagrees with ``_residents``, ``_owner`` wins.
-"""
+"""GPU arbiter: default evicts other residents, 'always' refuses instead; eviction runs under lock"""
 
 from __future__ import annotations
 
@@ -50,6 +38,9 @@ _residents: dict[str, Optional[frozenset[int]]] = {}
 _accounts: dict[str, tuple[Optional[str], Optional[str]]] = {}
 # What each image or video resident was admitted with under When they fit / Always (gpu_residency.MediaNeed).
 _media_needs: dict[str, dict] = {}
+# The price each media owner had before its newest load started (None: unpriced), put back by
+# restore_media_need when that load fails and the model it was replacing stays loaded.
+_media_need_rollback: dict[str, Optional[dict]] = {}
 
 # Phrases the refusal copy always contains, for readers that lose the X-Unsloth-Refusal header.
 MULTI_MODEL_REFUSAL_MARKERS = ("is set to Always", "is set to keep loaded")
@@ -80,7 +71,7 @@ class MultiModelAlwaysRefusal(RuntimeError):
 
     def as_http_exception(self, path: Optional[str] = None):
         from fastapi import HTTPException
-        from utils.api_errors import error_body_for_path
+        from utils.api_errors import error_body_for_path, problem_headers
 
         message = str(self)
         detail = (
@@ -88,9 +79,11 @@ class MultiModelAlwaysRefusal(RuntimeError):
             if path and path.startswith("/v1/")
             else message
         )
-        return HTTPException(
-            status_code = 409, detail = detail, headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
-        )
+        headers = {
+            **MULTI_MODEL_REFUSAL_HEADERS,
+            **problem_headers("multi_model_always", kind = self.kind),
+        }
+        return HTTPException(status_code = 409, detail = detail, headers = headers)
 
 
 def always_refusal_message(
@@ -136,9 +129,7 @@ def _evict_chat() -> None:
 
     unload_extra_models(strict = True)
     llama = get_llama_cpp_backend()
-    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is
-    # not healthy. chat_load_active too, since an HF load has no process until its GGUF downloaded. unload_model sets
-    # the cancel event the download loop polls, so it aborts.
+    # is_active, not is_loaded: a model still starting holds VRAM. chat_load_active covers HF GGUF downloads.
     if llama.is_active or chat_load_active():
         # unload_model clears the identity, so read it first for the pre-swap KV save.
         unloaded = _chat_identity(llama)
@@ -146,10 +137,11 @@ def _evict_chat() -> None:
         _commit_swap_kv(unloaded)
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
+        unloaded = _mlx_chat_identity(orchestrator)
         orchestrator.unload_model(orchestrator.active_model_name)
-    # An in-flight safetensors load has no active_model_name yet (published only on success), so the unload above misses
-    # it and it would finish onto the GPU we just granted away. cancel_load discards the loading marker BEFORE tearing
-    # the worker down, and runs off the lifecycle gate.
+        if unloaded is not None:
+            _commit_swap_kv(unloaded)
+    # In-flight loads lack active_model_name; cancel_load must drop the loading marker before teardown.
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
@@ -159,8 +151,7 @@ def _evict_chat() -> None:
         raise RuntimeError(
             "The inference engine did not stop; GPU ownership cannot be transferred."
         )
-    # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a
-    # warm handoff can transiently OOM.
+    # The driver reclaims killed VRAM asynchronously; wait or a warm handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())
     from hub.services.models.account_access import clear_resident
 
@@ -171,6 +162,14 @@ def _chat_identity(llama):
     try:
         from core.inference.llama_keepwarm import _loaded_identity
         return _loaded_identity(llama)
+    except Exception:
+        return None
+
+
+def _mlx_chat_identity(orchestrator):
+    try:
+        from core.inference.chat_swap_kv import mlx_chat_identity
+        return mlx_chat_identity(orchestrator)
     except Exception:
         return None
 
@@ -278,6 +277,40 @@ def _release_idle_video_servers(reason: str) -> None:
         logger.warning("gpu_arbiter: could not release the idle video sd-server: %s", exc)
 
 
+# Set by the restyle route around its own acquire, which a reserved runner must not refuse.
+restyle_handoff: ContextVar[bool] = ContextVar("restyle_handoff", default = False)
+
+
+def _refuse_beside_a_running_restyle() -> None:
+    module = sys.modules.get("core.inference.video_restyle")
+    if module is not None and not restyle_handoff.get() and module.runner.holds_gpu():
+        raise RestyleRunningError()
+
+
+def _release_idle_restyle_server() -> None:
+    module = sys.modules.get("core.inference.video_restyle")
+    if module is None:
+        return
+    try:
+        released = module.runner.unload_if_idle()
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on this
+        logger.warning("gpu_arbiter: could not release the idle restyle sd-server: %s", exc)
+        return
+    if not released and not restyle_handoff.get():
+        # A restyle reserved the server after the refusal check: its VRAM is not coming back.
+        raise RestyleRunningError()
+
+
+def _release_idle_decision_worker() -> None:
+    module = sys.modules.get("core.systemone.laya_runtime")
+    if module is None:
+        return
+    try:
+        module.evict_idle_worker()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_arbiter: could not release the idle decision worker: %s", exc)
+
+
 def _evict_video() -> None:
     from core.inference.video import get_video_backend
     get_video_backend().unload()
@@ -288,8 +321,7 @@ def _evict_decisions() -> None:
     evict_for_gpu()
 
 
-# Patchable in tests via monkeypatch.setitem. Under the default policy acquire_for evicts every other resident, so this
-# generalises to any number of owners.
+# Under the default policy acquire_for evicts all other residents, so any owner count works.
 _EVICTORS = {
     CHAT: _evict_chat,
     DIFFUSION: _evict_diffusion,
@@ -420,6 +452,9 @@ def begin_media_load(
 ) -> Any:
     """``guarded_media_begin`` for a load that takes no GPU claim, under ``_lock`` all the same."""
     register = guarded_media_begin(owner, policy, requested, begin)
+    with _lock:
+        # This load reprices nothing, so an older load's rollback must not apply to its failure.
+        _media_need_rollback.pop(owner, None)
     if register is begin:
         return begin()
     with _lock:
@@ -535,6 +570,7 @@ def _drop_resident(owner: str) -> None:
         return
     del _residents[owner]
     _media_needs.pop(owner, None)
+    _media_need_rollback.pop(owner, None)
     if owner == _owner:
         if _residents:
             _owner = next(reversed(_residents))
@@ -597,6 +633,21 @@ class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
         )
 
 
+class RestyleRunningError(GpuOwnerBusyError):
+    """A video restyle holds the GPU outside every owner; a load waits for it (409, retryable)."""
+
+    def __init__(self):
+        super().__init__("video restyle")
+
+    def as_http_exception(self, path: Optional[str] = None):
+        from fastapi import HTTPException
+        return HTTPException(
+            status_code = 409,
+            detail = "A video restyle is running. Try again when it finishes, or cancel it.",
+            headers = {"Retry-After": "30"},
+        )
+
+
 def other_accounts_active(account_id: str) -> int:
     from state import active_generations
 
@@ -631,7 +682,7 @@ def acquire_for_request(
     from core.inference.gpu_residency import ChatLoadInFlightRefusal
     try:
         return acquire_for(owner, register, **kwargs)
-    except (GpuBusyForAnotherAccountError, ChatLoadInFlightRefusal) as exc:
+    except (GpuBusyForAnotherAccountError, ChatLoadInFlightRefusal, RestyleRunningError) as exc:
         raise exc.as_http_exception() from exc
 
 
@@ -649,6 +700,7 @@ def acquire_for(
     gpu_ids: Optional[Iterable[int]] = None,
     need_mib: Optional[dict] = None,
     evict_first: bool = False,
+    admit: Optional[Callable[[], None]] = None,
 ) -> Any:
     """Make ``owner`` resident, evicting every other resident under the default policy.
 
@@ -664,6 +716,7 @@ def acquire_for(
     Under "fit" and "always" only residents on the same GPUs can be evicted (gpu_residency.coreside_locked):
     ``need_mib`` is what an image or video load will hold per physical GPU (None: unknown, so it evicts first),
     and ``evict_first`` makes a chat load with no estimate before launch evict as "off" does.
+    ``admit`` runs under the lock before anything is evicted; raising refuses the acquire untouched.
     """
     global _owner, _owner_epoch, _owner_account, _prior_account
     if owner not in _EVICTORS:
@@ -674,14 +727,16 @@ def acquire_for(
     # The segmenter's VRAM goes to this owner: a mask call arriving before its register returns stays off the card.
     handover = owner != DIFFUSION or register is not None or replacing
     with _lock, _handover_fence() if handover else nullcontext():
+        if admit is not None:
+            admit()
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
+        _refuse_beside_a_running_restyle()
         coreside = policy != "off" and owner in _KEPT_UNDER_ALWAYS
         if (register is not None or replacing) and not coreside:
             raise_if_other_accounts_active(acting)
         elif (register is not None or replacing) and not (owner == CHAT and alongside):
-            # Only another account's work on this model blocks reloading it; residents it would evict are
-            # checked one by one.
+            # Only another account's work on this model blocks reloading it.
             from core.inference.gpu_residency import foreign_on
             busy = foreign_on(owner, acting)
             if busy:
@@ -726,9 +781,12 @@ def acquire_for(
                 _EVICTORS[name]()
                 note_evictions(unloading, sink)
                 _drop_resident(name)
+        _release_idle_restyle_server()
         if owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
+        if owner != DECISIONS and (register is not None or replacing) and policy == "off":
+            _release_idle_decision_worker()
         if owner != DIFFUSION or register is not None or replacing:
             # A load (or another kind taking the GPU) gets the segmenter's VRAM; an image model's re-assert keeps it.
             _release_mask_segmenter(f"GPU acquired for {owner}", handover = True)
@@ -774,6 +832,7 @@ def acquire_for(
             raise
         if owner in (DIFFUSION, VIDEO) and register is not None:
             # The price media_held_mib() reports for this resident; unpriced residents are evicted to make room.
+            _media_need_rollback[owner] = _media_needs.get(owner)
             if coreside and need_mib:
                 _media_needs[owner] = need_mib
             else:
@@ -791,8 +850,7 @@ def would_evict(
     need_mib: Optional[dict] = None,
     gpu_ids: Optional[Iterable[int]] = None,
 ) -> bool:
-    """Lock-free peek: will ``acquire_for(owner, policy = ..., need_mib = ..., gpu_ids = ...)`` unload
-    the chat model? Never call it under ``_lock``."""
+    """Lock-free peek: would acquire_for unload the chat model? Do not call under _lock."""
     if owner == CHAT or owner not in _EVICTORS:
         return False
     holds = globals().get("holds")
@@ -826,6 +884,9 @@ def would_evict(
             in_flight = getattr(gpu_residency, "chat_load_in_flight", None)
             if callable(in_flight) and in_flight():
                 return True  # coreside_locked evicts a chat that is still loading
+            unpriced = getattr(gpu_residency, "chat_growth_unpriced", None)
+            if callable(unpriced) and unpriced():
+                return True
             answer = fits(owner, need_mib)
             ok, info = answer if isinstance(answer, tuple) else (answer, {})
             return not (ok or _idle_media_frees_room(gpu_residency, owner, info))
@@ -875,6 +936,19 @@ def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:
         return True
 
 
+def restore_media_need(owner: str) -> None:
+    """Put back the price the newest load of ``owner`` overwrote, when that load failed and the
+    model it was replacing stays loaded; otherwise the kept model is priced as the failed one."""
+    with _lock:
+        if owner not in _media_need_rollback:
+            return
+        previous = _media_need_rollback.pop(owner)
+        if previous is None:
+            _media_needs.pop(owner, None)
+        else:
+            _media_needs[owner] = previous
+
+
 def release(owner: str) -> None:
     """Drop ``owner``'s residency (no-op if it isn't resident)."""
     with _lock:
@@ -887,12 +961,8 @@ def release(owner: str) -> None:
 
 
 def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
-    """Drop ``owner``'s residency only if it still holds it AND ``predicate()`` is true, atomically.
-
-    A slow unload's idle check and its ``release`` must not straddle a concurrent same-owner load
-    whose ``acquire_for(register=...)`` re-registers ownership under this lock; evaluating the
-    predicate under the lock keeps them atomic so ``release`` never clears the newer claim.
-    ``predicate`` must be quick and not re-enter the arbiter. Returns True iff ownership was dropped."""
+    """Drops residency only if owner still holds it and predicate() is true, atomically under _lock;
+    predicate must be quick and not re-enter the arbiter; returns True iff ownership dropped."""
     with _lock:
         if owner not in _view() or not predicate():
             return False

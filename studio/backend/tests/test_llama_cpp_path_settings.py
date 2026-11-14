@@ -362,24 +362,11 @@ def test_settings_route_returns_the_specific_validation_error(settings_store, tm
     )
 
 
-# The account that does not exist anywhere, which is what a rename leaves behind in a
-# service unit or a .env.
 _UNKNOWN_USER = "~no-such-account-anywhere/llama.cpp"
 
 
 def test_an_unresolvable_named_user_does_not_raise_out_of_the_expansion():
-    """Codex 3962583754, P2. Path.expanduser() raises RuntimeError on a name it cannot
-    resolve, unlike os.path.expanduser, which hands the value straight back.
-
-    Measured on this host:
-
-        Path("~no-such-account-anywhere/llama.cpp").expanduser()
-        RuntimeError: Could not determine home directory.
-
-    Every reader of UNSLOTH_LLAMA_CPP_PATH used the raising form, so a stale pin made
-    runtime discovery itself throw rather than treating the override as unusable and
-    continuing down the documented search order.
-    """
+    """Path.expanduser() raises on an unknown user where os.path.expanduser returns the value unchanged."""
     with pytest.raises(RuntimeError):
         Path(_UNKNOWN_USER).expanduser()
     assert path_settings.expanded_user_path(_UNKNOWN_USER) == Path(_UNKNOWN_USER)
@@ -397,8 +384,7 @@ def test_the_resolvable_forms_still_expand(monkeypatch, tmp_path):
 
 
 def test_the_status_payload_survives_an_unresolvable_override(settings_store, monkeypatch):
-    """The UI reads this, and a raise here is a broken settings page rather than a
-    message saying the pin is unusable."""
+    """The UI reads this: raising would break the settings page, not flag the pin unusable."""
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", _UNKNOWN_USER)
     status = path_settings.custom_llama_cpp_path_status()
     assert status["source"] == "environment"
@@ -414,7 +400,6 @@ def test_discovery_continues_past_an_unresolvable_override(monkeypatch, tmp_path
     llama_cpp = pytest.importorskip("core.inference.llama_cpp")
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", _UNKNOWN_USER)
     monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
-    # Not asserting which runtime is found: the machine decides that. The claim under
-    # test is only that the search reaches its own answer instead of raising.
+    # Which runtime is found depends on the machine; only "does not raise" is under test.
     result = llama_cpp.LlamaCppBackend._find_llama_server_binary()
     assert result is None or isinstance(result, (str, Path, tuple))

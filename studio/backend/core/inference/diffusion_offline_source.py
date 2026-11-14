@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Offline tokenizer / processor loads open the cached snapshot folder, not the Hub repo id.
-
-transformers 5.x asks for ``<subfolder>/config.json`` first; offline by repo id it ignores the
-``.no_exist`` marker and raises, while a local folder just skips the missing file.
-"""
+"""Offline tokenizer loads must open the snapshot folder: transformers 5.x raises on repo ids offline."""
 
 from __future__ import annotations
 

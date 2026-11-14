@@ -13,8 +13,7 @@ const DOCK_ONE_SIDED =
 const SCALED_GUTTER_INSET =
   /(?:left|right)-\[calc\(10px\*var\(--ui-space-scale,1\)\)\]/;
 
-// The chat column is centred by margin, so every inset around it has to be
-// symmetric. A one-sided scrollbar gutter counts as an inset.
+// The chat column is centred by margin, so every inset, including the scrollbar gutter, is symmetric.
 
 test("the thread viewport reserves its scrollbar gutter on both edges", async () => {
   const css = atDefaultUiScale(await readSrcAsync("index.css"));
@@ -24,8 +23,6 @@ test("the thread viewport reserves its scrollbar gutter on both edges", async ()
   const rule = css.slice(at, css.indexOf("}", at));
   assert.match(rule, /scrollbar-gutter:\s*stable both-edges;/);
 
-  // Messages sit inside this viewport, the dock outside it. A one-sided
-  // gutter offsets only the first, so they stop agreeing with each other.
   assert.doesNotMatch(rule, /scrollbar-gutter:\s*stable;/);
 });
 
@@ -33,15 +30,12 @@ test("nothing around the composer re-adds a one-sided inset", async () => {
   const chatPage = atDefaultUiScale(await readSrcAsync("features/chat/chat-page.tsx"));
   const thread = atDefaultUiScale(await readSrcAsync("components/assistant-ui/thread.tsx"));
 
-  // The compare-mode wrapper mirrored the old one-sided gutter.
   assert.doesNotMatch(chatPage, /pl-5 pr-5 md:pr-\[30px\]/);
   assert.match(chatPage, /pl-5 pr-5 md:px-\[30px\]/);
 
   // The dock's padding is measured off the message column, so it has no fixed inset to drift.
   assert.match(thread, /ref=\{dockInnerRef\} className="unsloth-composer-dock-inner relative pb-2"/);
 
-  // The dock offset keeps the bottom fade off the scrollbar, so it stays,
-  // but one-sided it also shifts the composer half its width off centre.
   assert.match(thread, DOCK_INSETS);
   assert.doesNotMatch(thread, DOCK_ONE_SIDED);
 });

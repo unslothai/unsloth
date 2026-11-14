@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ollama's OpenAI-compatible proxy must carry API thinking controls. #9649
-
-``ExternalProviderClient.stream_chat_completion`` already maps thinking for
-Kimi, Mistral, vLLM and OpenRouter. Ollama documents ``reasoning_effort``
-values ``high`` / ``medium`` / ``low`` / ``none`` on ``/v1/chat/completions``,
-but the outbound body omitted the field.
-"""
+"""The outbound Ollama body must carry reasoning_effort, which Ollama documents and the body omitted."""
 
 from __future__ import annotations
 

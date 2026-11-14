@@ -215,7 +215,7 @@ def test_scan_folders_schema_is_initialised_for_each_account(tmp_path, monkeypat
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
-    # macOS keeps tmp_path under /private/var, which the folder deny list refuses; not what this checks.
+    # macOS tmp_path lives under /private/var, which the deny list refuses.
     monkeypatch.setattr(scan_folders, "_denied_path_prefixes", lambda: [])
     folder = tmp_path / "shared-folder"
     folder.mkdir()

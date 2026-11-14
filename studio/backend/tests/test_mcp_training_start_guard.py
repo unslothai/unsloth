@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end coverage for the MCP `start_training` inference guard.
-
-PR #9434 made the MCP tool call POST /training/start with via_api_key = True, so
-an MCP agent can no longer unload the chat model out from under a live stream.
-The PR shipped only a forwarding assertion; these tests drive the real route (and
-the real MCP tool) against a simulated in-flight inference request.
-"""
+"""MCP start_training sets via_api_key, so an agent cannot unload the chat model under a live stream."""
 
 import asyncio
 import importlib.util
@@ -72,11 +66,6 @@ async def _call(route, config):
     )
 
 
-# --------------------------------------------------------------------------------------
-# The guard itself
-# --------------------------------------------------------------------------------------
-
-
 def test_live_chat_stream_refuses_the_mcp_start(monkeypatch):
     route = _load_training_route("training_route_guard_stream_test")
     _arm(monkeypatch, route, inflight = 1)
@@ -107,8 +96,6 @@ def test_idle_backend_lets_the_mcp_start_through_the_guard(monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(_call(route, _config()))
 
-    # Validation past the guard still rejects the fake model, but never with the
-    # guard's 409/"inference request is in progress".
     assert not (
         excinfo.value.status_code == 409
         and "inference request is in progress" in str(excinfo.value.detail)
@@ -135,11 +122,6 @@ def test_stream_finishing_then_retrying_starts(monkeypatch):
     with pytest.raises(HTTPException) as second:
         asyncio.run(_call(route, _config()))
     assert "inference request is in progress" not in str(second.value.detail)
-
-
-# --------------------------------------------------------------------------------------
-# Counting boundary cases (does the guard over-count and block valid MCP training?)
-# --------------------------------------------------------------------------------------
 
 
 def test_the_mcp_call_does_not_count_itself():
@@ -203,11 +185,6 @@ def test_a_pending_waiter_counts_as_active(monkeypatch):
         keepwarm._note_unpending()
 
 
-# --------------------------------------------------------------------------------------
-# FINDING 1: the 409 poisons a caller-supplied start_request_id
-# --------------------------------------------------------------------------------------
-
-
 def test_a_guard_409_does_not_poison_the_supplied_start_request_id(monkeypatch):
     """The refusal is transient, so it must not resolve the idempotency key."""
     route = _load_training_route("training_route_guard_sticky_test")
@@ -227,11 +204,8 @@ def test_a_guard_409_does_not_poison_the_supplied_start_request_id(monkeypatch):
         asyncio.run(_call(route, config))
     assert first.value.status_code == 409
 
-    # The guard runs before the reservation, so no permanent record is written.
     assert backend.get_start_request("agent-retry-1") is None
 
-    # Stream is over. The agent retries with the same idempotency key and the
-    # start is admitted (it fails later on the fake model, never on the guard).
     counter["n"] = 0
     with pytest.raises(HTTPException) as second:
         asyncio.run(_call(route, config))
@@ -261,11 +235,7 @@ def test_a_fresh_start_request_id_recovers(monkeypatch):
 
 
 def test_a_resolved_start_request_id_still_replays_under_the_guard(monkeypatch):
-    """The transient guard must not swallow the idempotent replay.
-
-    An agent that retries an ACCEPTED start (its first response was lost) while an
-    unrelated inference request is in flight has to hear "your job is queued", not a
-    fresh 409 telling it the start never happened."""
+    """An accepted start's retry replays its result while the inference guard is active, not a 409."""
     route = _load_training_route("training_route_guard_replay_test")
     backend = _arm(monkeypatch, route, inflight = 1)
 
@@ -284,10 +254,7 @@ def test_a_resolved_start_request_id_still_replays_under_the_guard(monkeypatch):
 
 
 def test_a_cancelled_start_request_id_replays_and_keeps_its_tombstone(monkeypatch):
-    """A retry blocked by the guard must still refresh the cancellation tombstone.
-
-    Otherwise the tombstone expires mid-inference and the next retry reserves the id
-    afresh and spawns the very run the user cancelled."""
+    """A guard-blocked retry must refresh the cancellation tombstone, or the cancelled run can respawn."""
     import time
 
     from core.training import training as training_module
@@ -298,8 +265,6 @@ def test_a_cancelled_start_request_id_replays_and_keeps_its_tombstone(monkeypatc
     outcome, cancelled = backend.cancel_start_request("agent-cancelled")
     assert outcome == "cancelled"
 
-    # Wind the tombstone to the brink of its TTL: without a refresh the next retry
-    # would find nothing and start the job.
     backend._start_cancel_tombstones["agent-cancelled"] = (time.monotonic() + 0.5, cancelled)
 
     response = asyncio.run(_call(route, _config(start_request_id = "agent-cancelled")))
@@ -323,11 +288,6 @@ def test_an_unknown_start_request_id_is_still_refused_without_a_record(monkeypat
     assert excinfo.value.status_code == 409
     assert backend.get_start_request("agent-never-seen") is None
     assert backend.peek_start_request("agent-never-seen") is None
-
-
-# --------------------------------------------------------------------------------------
-# FINDING 2: what the MCP client sees on the 409
-# --------------------------------------------------------------------------------------
 
 
 def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
@@ -356,11 +316,6 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
     assert result["isError"] is True
     assert "inference request is in progress" in result["content"][0]["text"]
     assert "(HTTP 409)" in result["content"][0]["text"]
-
-
-# --------------------------------------------------------------------------------------
-# Concurrency
-# --------------------------------------------------------------------------------------
 
 
 def test_two_concurrent_mcp_starts_during_a_stream_both_refuse(monkeypatch):

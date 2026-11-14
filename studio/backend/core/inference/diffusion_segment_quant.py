@@ -1,25 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pre-quantized SAM 3 / SAM 3.1 detector weights for Mask from text: FP8, INT8 and INT8-ConvRot.
-
-The segmenter is not a diffusion transformer, but its quantization is the diffusion one, imported rather than copied
-so the two cannot drift: the torchao config (``_make_quant_config``: fp8 per-row weight scale with dynamic per-token
-activations, int8 W8A8 dynamic), the Linear filter (``make_filter_fn``: min features, bf16 and alignment rules), the
-ConvRot block-Hadamard rotation and its recorded-fqn contract (``diffusion_convrot``), the safetensors container
-(``prequant_safetensors``, torchao's flatten layout + ``unsloth_format`` / ``unsloth_metadata``) and the
-version-neutral weight fingerprint. What is SAM specific lives here: which Linears are left in bf16, which arms
-``auto`` may pick, the artifact names, and the loader that builds a ``Sam3Model`` around the quantized state dict.
-
-Exclusions come from a per-group sensitivity scan (numbers on the unsloth/sam3.1 model card): one group at a time,
-mask IoU / score / kept-count measured against bf16 over a 53-prompt set. They are baked into every artifact and
-compared at load, like the diffusion families' exclude tokens, so an artifact built under a different rule is refused
-rather than loaded.
-
-Quantized kernels are CUDA only here: on the CPU or Apple's MPS the segmenter runs bf16 / fp32 weights, and a
-quantized file that is the only one downloaded is dequantized for that device (the rotation, when present, stays
-installed, which is exact in floating point).
-"""
+"""SAM 3 pre-quantized FP8/INT8/ConvRot detector weights sharing diffusion quant code; quantized
+kernels CUDA only (CPU/MPS dequantize a lone quantized file); other exclusions refused at load"""
 
 from __future__ import annotations
 
@@ -43,7 +26,8 @@ ENV_PRECISION = "UNSLOTH_SAM3_PRECISION"
 # int8 loads the ConvRot artifact unless this is 0 (then the plain INT8 one).
 ENV_INT8_CONVROT = "UNSLOTH_SAM3_INT8_CONVROT"
 
-# What ``auto`` may pick on a CUDA card, best first; it also needs that file's GATE_PASSED. Empty: auto stays bf16.
+# What ``auto`` may pick on a CUDA card short of memory, best first (needs GATE_PASSED); empty: always bf16. With room
+# auto runs bf16: at this size the 8-bit files save ~0.5 GB but are ~2x slower per Find (activation quant cost).
 AUTO_ORDER: tuple[str, ...] = (PRECISION_INT8,)
 
 # Minimum compute capability per scheme: fp8 scaled_mm needs Ada / Hopper (sm_89+), int8 _int_mm Ampere (sm_80+).
@@ -51,9 +35,7 @@ _MIN_CAPABILITY = {PRECISION_FP8: (8, 9), PRECISION_INT8: (8, 0)}
 
 # ── what is quantized ──────────────────────────────────────────────────────────────────────────────────────────────
 SEGMENTER_QUANT_FAMILY = "sam3"
-# The diffusion runtime's DEFAULT_MIN_LINEAR_FEATURES. Every DETR encoder / decoder, geometry, mask-decoder and
-# scoring Linear in SAM 3 is 256 wide, so this leaves all of them bf16; the ViT (1024 / 4736) and the CLIP text
-# encoder (1024 / 4096) are what gets quantized.
+# Keeps SAM 3's 256-wide DETR and mask Linears in bf16; only the ViT and CLIP text encoder quantize.
 SEGMENTER_MIN_FEATURES = 512
 SEGMENTER_CONVROT_GROUP = 256
 
@@ -67,11 +49,8 @@ def artifact_tag(scheme: str, rotated: bool = False) -> str:
     return scheme + ("-convrot" if rotated else "")
 
 
-# Name tokens left in bf16 on top of the size rule, per file. The sensitivity scan (one group quantized at a time,
-# 53 prompts) put the error in the first ViT blocks for every scheme (the text encoder, its projection and the late
-# ViT blocks cost a fraction of it; the 256-wide DETR / mask / scoring Linears, already bf16 by the size rule, cost as
-# much as a whole ViT half for 4% of the bytes). Each file keeps the smallest set of early blocks that brought it
-# inside the gate tolerance (or, for fp8, closest to it).
+# Early ViT blocks kept bf16 per file: smallest set from the sensitivity scan that brings it inside
+# the gate tolerance (for fp8, closest to it).
 SEGMENTER_EXCLUDE_TOKENS: dict[str, tuple[str, ...]] = {
     "fp8": _first_vision_blocks(8),
     "int8": _first_vision_blocks(4),
@@ -128,10 +107,9 @@ def quantize_segmenter_(
     select: Any = None,
     min_features: int = SEGMENTER_MIN_FEATURES,
 ) -> dict:
-    """Quantize ``model`` (a dense bf16 Sam3Model) in place with the Studio runtime config; with ``convrot_group``,
-    rotate every selected Linear whose input width the group divides first. Returns the metadata fragment to record
-    (exclusions, filter facts, and the rotation contract when rotated). ``select`` / ``min_features`` exist for the
-    sensitivity scan; artifacts use the defaults, which the loader checks."""
+    """Quantizes in place; with convrot_group, rotates each selected Linear whose input width the
+    group divides first; select and min_features are for the sensitivity scan only; artifacts use
+    the defaults the loader checks."""
     from torchao.quantization import quantize_
 
     from .diffusion_transformer_quant import _REQUIRE_BF16_SCHEMES, _make_quant_config
@@ -187,9 +165,7 @@ def write_prequant_file(
     base_model_id: str,
     source_revision: Optional[str] = None,
 ) -> dict:
-    """Save a quantized Sam3Model (``quantize_segmenter_``'s output and fragment) as a segmenter prequant artifact:
-    the diffusion prequant safetensors container, v2 when a rotation is baked, with the canonical fingerprint.
-    Returns the metadata written."""
+    """Saves a quantized Sam3Model as a prequant artifact; v2 when rotated, with canonical fingerprint."""
     import safetensors
     import torch
     import torchao
@@ -338,9 +314,8 @@ def load_prequantized_segmenter(
     dequantize: bool = False,
     convrot_group: int = SEGMENTER_CONVROT_GROUP,
 ) -> tuple[Any, dict]:
-    """``(Sam3Model, info)`` from a segmenter prequant artifact. On CUDA the weights stay quantized unless
-    ``dequantize``; elsewhere they are dequantized to ``dtype``. Raises on anything wrong with the file (the caller
-    falls back to bf16)."""
+    """Loads a prequant artifact; on CUDA the weights stay quantized unless dequantize, and a bad
+    file raises so the caller uses bf16."""
     from .diffusion_convrot import apply_activation_rotation
     from .diffusion_prequant import _pin_kernel_preference, _verify_packed_fingerprint
     from .prequant_safetensors import load_prequant_safetensors
@@ -471,12 +446,16 @@ def resolve_precision(
     dtype: Any = None,
     *,
     available: tuple[str, ...] = QUANT_PRECISIONS,
+    memory_tight: bool = False,
 ) -> tuple[str, str]:
     """``(precision, why)`` for a run on ``device``. ``available`` is the quantized arms the variant ships (and, at
-    load, has on disk). bf16 when asked for, when nothing quantized can run here, or when auto has no gated arm."""
+    load, has on disk). bf16 when asked for, when nothing quantized can run here, when auto has no gated arm, or for
+    auto on CUDA unless ``memory_tight``. An explicit fp8 / int8 is honoured either way."""
     requested = requested_precision()
     if requested == PRECISION_BF16:
         return PRECISION_BF16, f"{ENV_PRECISION}=bf16"
+    if requested == PRECISION_AUTO and not memory_tight and device.startswith("cuda"):
+        return PRECISION_BF16, "auto: bf16 fits and is faster"
     candidates = AUTO_ORDER if requested == PRECISION_AUTO else (requested,)
     reasons = []
     for precision in candidates:

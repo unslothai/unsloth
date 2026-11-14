@@ -10,6 +10,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
+from .rocm_bf16 import is_rocm_torch
 
 _ENV = "UNSLOTH_DIFFUSION_RENDER_THREAD"
 _EXECUTORS: dict[str, ThreadPoolExecutor] = {}
@@ -22,7 +23,7 @@ def enabled() -> bool:
         return False
     try:
         import torch  # noqa: PLC0415
-        return bool(torch.cuda.is_available()) and getattr(torch.version, "hip", None) is None
+        return bool(torch.cuda.is_available()) and not is_rocm_torch(torch)
     except Exception:  # noqa: BLE001
         return False
 

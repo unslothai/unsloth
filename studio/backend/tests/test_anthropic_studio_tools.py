@@ -779,7 +779,6 @@ def test_anthropic_does_not_forward_foreign_message_metadata(monkeypatch):
 
 
 def test_whitespace_text_blocks_are_not_replayed(monkeypatch):
-    # Anthropic 400s "text content blocks must contain non-whitespace text" on a replayed blank block.
     events = [
         *_block(0, {"type": "text", "text": ""}, {"type": "text_delta", "text": "\n\n"}),
         *_block(
