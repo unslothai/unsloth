@@ -957,6 +957,13 @@ def build_sd_cpp_command(
     return cmd
 
 
+# References arrive already sized (fit_h3_reference_image, LANCZOS). sd.cpp's "max" mode leaves an
+# image with a short edge of at most 2048 untouched, while its default "match" scales again: after
+# the 32 px snap the area rule is not idempotent, so a sized image could be resized a second time.
+# Builds before stable-diffusion.cpp#2177 ignore the key for video and keep their own sizing.
+H3_SIZED_REF_IMAGE_ARGS = "ref_image_size=max"
+
+
 def build_sd_cpp_video_command(
     binary: str,
     files: SdCppModelFiles,
@@ -1012,6 +1019,8 @@ def build_sd_cpp_video_command(
         cmd += ["--end-img", params.end_img]
     for ref in params.ref_images:
         cmd += ["--ref-image", ref]
+    if params.ref_images:
+        cmd += ["--ref-image-args", H3_SIZED_REF_IMAGE_ARGS]
     for ref in params.ref_videos:
         cmd += ["--ref-video", ref]
     for ref in params.ref_video_audios:
@@ -1349,6 +1358,7 @@ def build_vid_gen_request(
             req[key] = images[key]
     if ref_images_b64:
         req["ref_images"] = list(ref_images_b64)
+        req["ref_image_args"] = H3_SIZED_REF_IMAGE_ARGS
     for key in h3_reference_media_keys(params):
         req[key] = [list(item) if key == "ref_videos" else item for item in inline_refs[key]]
     return req

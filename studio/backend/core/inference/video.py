@@ -14191,7 +14191,15 @@ class VideoBackend:
                 if last_pil is not None and video_family_accepts_last_frame(fam):
                     kwargs["last_image"] = last_pil
                 if references:
-                    from .video_minimax_h3 import h3_diffusers_references
+                    from .video_minimax_h3 import (
+                        h3_diffusers_references,
+                        keep_h3_reference_image_sizes,
+                    )
+                    if references.images and not keep_h3_reference_image_sizes(pipe):
+                        logger.warning(
+                            "video.h3_references: no Ref2VA setup step found; Diffusers may rescale "
+                            "the reference images"
+                        )
                     kwargs["references"] = h3_diffusers_references(references)
                 if continuation is not None:
                     kwargs["video"], kwargs["condition_video_keep"] = continuation
@@ -14841,7 +14849,8 @@ class VideoBackend:
         decoded_audios: Optional[Any] = None,
         decoded_images: Optional[list] = None,
     ) -> Any:
-        """Sizing is settled here so both engines' min(1, ...) scales are no-ops; native refuses max."""
+        """Image sizing is settled here: Diffusers' rescale is skipped, and sd.cpp is asked for its
+        "max" mode, a no-op on these images in builds that read it (#2177); native refuses "max"."""
         from .video_minimax_h3 import (
             MiniMaxH3References,
             decode_h3_reference_audio,
