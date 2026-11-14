@@ -332,6 +332,8 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     assert 'event.get("tool_call_id") not in _sf_streamed_calls' in source
     # A finalized call runs after its pass ended, so that pass's report already covers it.
     assert "Executed after its pass ended, so that pass's reported usage covers it." in source
+    # The whole safetensors reply's thinking is split out of the preview, so it is counted beside it.
+    assert "api_monitor.count_output(monitor_id, len(_reasoning_text))" in source
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
@@ -554,3 +556,118 @@ def test_media_routes_are_admitted_against_the_allowance(monkeypatch):
     with pytest.raises(HTTPException) as refused:
         asyncio.run(transcribe())
     assert refused.value.status_code == 429
+
+
+def _gguf_tool_route(
+    monkeypatch,
+    events,
+    *,
+    parse_think = False,
+    tools = True,
+):
+    class _Backend(FakeLlamaCppBackend):
+        supports_tools = True
+        context_length = 8192
+        base_url = "http://token-limit-tool-drain"
+        effective_parallel_slots = 2
+
+        def count_chat_tokens(self, *args, **kwargs):
+            return 20
+
+        def _request_reasoning_kwargs(self, *args, **kwargs):
+            return {}
+
+        def generate_chat_completion_with_tools(self, **kwargs):
+            for event in events:
+                if event == "stop":
+                    # The user stops the run while it waits on the approval.
+                    for bucket in list(inference_route._CANCEL_REGISTRY.values()):
+                        for cancel in list(bucket):
+                            cancel.set()
+                    event = {"type": "heartbeat"}
+                yield event
+
+        def generate_chat_completion(self, **kwargs):
+            yield from events
+
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: tools)
+    monkeypatch.setattr(
+        inference_route, "_responses_should_parse_think_markers", lambda *_args: parse_think
+    )
+
+    async def _select(payload, **_kwargs):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    app = FastAPI()
+    app.include_router(inference_route.router)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    response = TestClient(app).post(
+        "/chat/completions",
+        json = {
+            "messages": [{"role": "user", "content": "search it"}],
+            "stream": False,
+            "enable_tools": tools,
+            "cancel_id": "token-limit-drain",
+        },
+    )
+    assert response.status_code == 200, response.text
+    [receipt] = receipts
+    return receipt
+
+
+def test_a_whole_tool_run_without_a_final_frame_keeps_each_pass_report(monkeypatch):
+    receipt = _gguf_tool_route(
+        monkeypatch,
+        [
+            {"type": "context_usage", "prompt_tokens": 900, "completion_tokens": 100},
+            {
+                "type": "tool_start",
+                "tool_name": "web_search",
+                "tool_call_id": "call_1",
+                "arguments": {"query": "x"},
+                "awaiting_confirmation": True,
+            },
+            {"type": "context_usage", "prompt_tokens": 1100, "completion_tokens": 200},
+            # Stopped at the approval wait: no final metadata frame.
+        ],
+    )
+    assert (receipt.prompt_tokens, receipt.completion_tokens) == (1100, 300)
+
+
+@pytest.mark.parametrize("tools", [True, False])
+def test_a_whole_reply_counts_thinking_split_from_it(monkeypatch, tools):
+    thought = "<think>" + "t" * 400 + "</think>"
+    receipt = _gguf_tool_route(
+        monkeypatch,
+        [{"type": "content", "text": thought} if tools else thought],
+        parse_think = True,
+        tools = tools,
+    )
+    assert receipt.completion_tokens == 100
+
+
+def test_a_stopped_whole_tool_run_charges_its_reported_preamble_once(monkeypatch):
+    receipt = _gguf_tool_route(
+        monkeypatch,
+        [
+            {"type": "content", "text": "hi there"},
+            {"type": "context_usage", "prompt_tokens": 900, "completion_tokens": 100},
+            {
+                "type": "tool_start",
+                "tool_name": "web_search",
+                "tool_call_id": "call_1",
+                "arguments": {"query": "x"},
+                "awaiting_confirmation": True,
+            },
+            "stop",
+            {"type": "content", "text": "never sent"},
+        ],
+    )
+    assert receipt.status == "cancelled"
+    assert (receipt.prompt_tokens, receipt.completion_tokens) == (900, 100)

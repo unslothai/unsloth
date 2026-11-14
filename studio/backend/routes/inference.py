@@ -33671,6 +33671,9 @@ async def produce_openai_chat_completions(
                 context_truncation = None
                 gen = gguf_generate_with_tools()
                 raw_text = None
+                passes_completion = 0
+                # The last pass's usage while no text followed it, so the final reply is already covered.
+                settled = None
                 try:
                     for event in gen:
                         if cancel_event.is_set():
@@ -33679,6 +33682,16 @@ async def produce_openai_chat_completions(
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
                             timings = event.get("timings")
+                        elif event.get("type") == "context_usage":
+                            # As in the streaming branch: a run stopped at a tool wait keeps this pass's usage.
+                            passes_completion += int(event.get("completion_tokens") or 0)
+                            pass_prompt = int(event.get("prompt_tokens") or 0)
+                            settled = {
+                                "prompt_tokens": pass_prompt,
+                                "completion_tokens": passes_completion,
+                                "total_tokens": pass_prompt + passes_completion,
+                            }
+                            _monitor_usage(monitor_id, settled, _monitor_context_length())
                         elif event.get("type") == "context_truncated":
                             context_truncation = _accumulate_context_truncation(
                                 context_truncation, event
@@ -33690,6 +33703,7 @@ async def produce_openai_chat_completions(
                             # preamble emitted before a tool call (its own earlier
                             # turn) isn't carried -- only the final turn is.
                             raw_text = event.get("text", "")
+                            settled = None
                     if raw_text is not None:
                         # Stripped once: stripping every cumulative event is quadratic in the turn.
                         full_text = _strip_tool_xml_for_display(
@@ -33697,7 +33711,7 @@ async def produce_openai_chat_completions(
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                             enabled_tool_names = _gguf_display_tool_names,
                         )
-                    return full_text, usage, finish, timings, context_truncation
+                    return full_text, usage, finish, timings, context_truncation, settled
                 finally:
                     # Close on early break/cancel so the llama-server socket is released.
                     try:
@@ -33771,6 +33785,7 @@ async def produce_openai_chat_completions(
                         completion_finish,
                         completion_timings,
                         completion_context_truncation,
+                        settled_usage,
                     ) = await asyncio.shield(drain_task)
                 finally:
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -33806,6 +33821,10 @@ async def produce_openai_chat_completions(
                     ),
                 )
                 api_monitor.set_reply(monitor_id, visible_text)
+                api_monitor.count_output(monitor_id, len(reasoning_text))
+                if settled_usage is not None and not completion_usage:
+                    # Stopped after a reported pass: re-settled so that report covers the reply set above.
+                    _monitor_usage(monitor_id, settled_usage, _monitor_context_length())
                 _monitor_usage(
                     monitor_id,
                     {
@@ -34509,6 +34528,11 @@ async def produce_openai_chat_completions(
                         f"Choice {_idx + 1}:\n{text}" for _idx, text in enumerate(_monitor_replies)
                     )
                 api_monitor.set_reply(monitor_id, monitor_reply)
+                # set_reply replaces the count; thinking is split out of the replies above.
+                api_monitor.count_output(
+                    monitor_id,
+                    sum(len(choice.message.reasoning_content or "") for choice in _choices),
+                )
                 _monitor_usage(
                     monitor_id,
                     {
@@ -35468,6 +35492,7 @@ async def produce_openai_chat_completions(
                 reasoning_prefilled = _sf_drain_prefilled,
             )
             api_monitor.set_reply(monitor_id, _visible_text)
+            api_monitor.count_output(monitor_id, len(_reasoning_text))
             _stats = _sf_stats_holder.get("stats")
             # Outside the stats block: a run with unknown token count reports no stats.
             _sf_json_finish = "stop" if cancel_event.is_set() else _stats_finish_reason(_stats)
