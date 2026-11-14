@@ -932,6 +932,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "namespace",
         "pkgutil_namespace",
         "namespace_upgrade",
+        "regular_prepend",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -1011,6 +1012,17 @@ def test_a_chat_install_wins_over_what_studio_already_has(monkeypatch, tmp_path,
             },
         )
         command = f'{_PIP} {wheel} && python -c "{show}"'
+    elif case == "regular_prepend":
+        # A chat package whose __init__ puts a preferred dir first in its own __path__ keeps that order.
+        init = "import os\n__path__.insert(0, os.path.join(__path__[0], 'preferred'))\n"
+        files = {
+            f"{name}/__init__.py": init,
+            f"{name}/child.py": "",
+            f"{name}/preferred/child.py": "",
+        }
+        wheel = _wheel(workdir, name, files)
+        command = f'{_PIP} {wheel} && python -c "import {name}.child as c; print(c.__file__)"'
+        expected = os.path.join(packages, os_sandbox._PIP_PREFIX_LIB_DIRS[0], name, "preferred")
     elif case == "namespace_upgrade":
         # Studio's namespace is imported first, then a newer child lands in the chat folder.
         studio_files = {f"{name}/child.py": "", f"{name}/other.py": "", f"{name}/data.txt": "v1"}
@@ -1578,6 +1590,7 @@ def test_a_failed_upgrade_keeps_the_old_versions_files(monkeypatch, tmp_path):
     assert list(packages.rglob(f"{name}/old.py")), out
     assert not list(packages.rglob(f"{name}_gone.py")), out
     assert not list(packages.rglob(f"{name}_ok-1.0.dist-info")), out
+    assert not list(packages.glob(".unsloth-installing-*")), out
     # Nor does a later process take the half-written 2.0 for a finished replacement.
     later = tools._bash_exec(
         f"python -m pip --version; python -c \"import importlib.metadata as m; print('ok', m.version('{name}_ok'))\"",
@@ -1699,6 +1712,23 @@ def test_a_site_dir_linked_outside_the_prefix_is_left_alone(tmp_path):
     _dist(prefix / "lib64" / "site-packages", "unsloth_linked", "2.0", 2)
     _prune(prefix, prefix / "lib" / "site-packages", prefix / "lib64" / "site-packages")
     assert old.exists() and (outside / "unsloth_linked.py").exists()
+
+
+def test_a_killed_install_retires_nothing(tmp_path):
+    """pip SIGKILLed mid-wheel leaves only its pending note: the new dist-info, INSTALLER row and all, is not trusted."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    old = _dist(site_dir, "unsloth_killed", "1.0", 1, module = "old.py")
+    _dist(site_dir, "unsloth_killed", "2.0", 2, module = "new.py")
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    note = prefix / f".unsloth-installing-{dead.pid}"
+    note.write_text(f"{os.path.abspath(site_dir)}\t{old.name}\t{10**9}\n")
+    _prune(prefix, site_dir)
+    assert old.exists() and (site_dir / "old.py").exists()
+    assert (
+        not note.exists() and "unsloth_killed-2.0" in (prefix / ".unsloth-incomplete").read_text()
+    )
 
 
 def test_an_unfinished_install_retires_nothing(tmp_path):

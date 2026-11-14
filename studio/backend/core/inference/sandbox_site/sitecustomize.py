@@ -869,9 +869,9 @@ class _SessionPackagesFinder:
             return None
         listed = {os.path.abspath(p) for p in path}
         portions = [p for p in chat if os.path.abspath(p) not in listed]
-        if portions and parent.origin not in (None, "namespace"):
-            if not _pkgutil_namespace(parent.origin):
-                return None
+        # A regular package keeps its own __path__ order (it may prepend a preferred dir): pkgutil ones only.
+        if parent.origin not in (None, "namespace") and not _pkgutil_namespace(parent.origin):
+            return None
         for portion in portions:
             path.append(portion)
         # A late portion sits last in __path__: search it in sys.path order, as a fresh start would, for every child.
@@ -969,8 +969,56 @@ def _failed_installs():
                         found.add(tuple(parts))
         except (KeyError, OSError):
             pass
+        found |= _killed_installs()
         _incomplete.append(found)
     return _incomplete[0]
+
+
+_PENDING = ".unsloth-installing-"
+
+
+def _alive(pid):
+    if sys.platform == "win32":
+        return (
+            False  # os.kill there terminates; a concurrent pip in one chat folder is not expected
+        )
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _killed_installs():
+    # A pip killed mid-wheel (tool timeout, SIGKILL) runs no handler: its pending note, written before the
+    # wheel, names the RECORD mtimes from before; whatever differs now is that wheel's half-written state.
+    prefix = os.environ.get("PIP_PREFIX", "")
+    found = set()
+    try:
+        names = [n for n in os.listdir(prefix) if n.startswith(_PENDING)]
+    except OSError:
+        return found
+    for name in names:
+        pid = name[len(_PENDING) :]
+        if not pid.isdigit() or int(pid) == os.getpid() or _alive(int(pid)):
+            continue
+        path = os.path.join(prefix, name)
+        try:
+            with open(path, encoding = "utf-8") as f:
+                rows = [line.rstrip("\n").split("\t") for line in f]
+            before = {(r[0], r[1]): r[2] for r in rows if len(r) == 3}
+            now = {(os.path.abspath(e), n): str(v) for (e, n), v in _dist_stamps().items()}
+            lines = [f"{e}\t{n}\t{v}\n" for (e, n), v in now.items() if before.get((e, n)) != v]
+            if lines:
+                with open(os.path.join(prefix, _INCOMPLETE), "a", encoding = "utf-8") as f:
+                    f.writelines(lines)
+            found.update(tuple(line.rstrip("\n").split("\t")) for line in lines)
+            os.remove(path)
+        except OSError:
+            pass
+    return found
 
 
 def _finished(entry, dist_info):
@@ -1167,11 +1215,23 @@ def _track_wheel(entry):
     # The dist-info one wheel left half-written when its install raised: other wheels of the run are finished.
     def wrapped(*args, **kwargs):
         before = _dist_stamps()
+        pending = os.path.join(os.environ["PIP_PREFIX"], f"{_PENDING}{os.getpid()}")
+        try:
+            with open(pending, "w", encoding = "utf-8") as f:
+                f.writelines(f"{os.path.abspath(e)}\t{n}\t{v}\n" for (e, n), v in before.items())
+        except OSError:
+            pending = None
         try:
             return entry(*args, **kwargs)
         except BaseException:
             _failed_wheels.append({k: v for k, v in _dist_stamps().items() if before.get(k) != v})
             raise
+        finally:
+            if pending:
+                try:
+                    os.remove(pending)
+                except OSError:
+                    pass
 
     return wrapped
 
