@@ -26,10 +26,12 @@ from core.inference.offload_planner import (
     _device_slots,
     _per_device_shortfall,
     ContextPolicy,
+    DeviceLayerEstimate,
     Plan,
     PlanOptions,
     SpillOrder,
     all_resident_bytes,
+    estimate_layer_split,
     max_context_for,
     plan_placement,
     plan_to_args,
@@ -1438,3 +1440,134 @@ def test_layout_from_gguf_reads_the_sibling_shards_only_when_asked(tmp_path):
 
     shards[1].unlink()
     assert not layout_from_gguf(str(shards[0]), all_shards = True).complete
+
+
+def _asymmetric_layers():
+    fields = _shard_fields(**{"llama.block_count": 4, "split.count": 2})
+    return _layout_from_readers(
+        [
+            _StubReader(
+                fields,
+                [
+                    _StubTensor("token_embd.weight", 4 * GIB),
+                    _StubTensor("blk.0.ffn_up.weight", 8 * GIB),
+                    _StubTensor("blk.1.ffn_up.weight", 9 * GIB),
+                ],
+            ),
+            _StubReader(
+                {},
+                [
+                    _StubTensor("blk.2.ffn_up.weight", 4 * GIB),
+                    _StubTensor("blk.3.ffn_up.weight", 3 * GIB),
+                    _StubTensor("output_norm.weight", 128),
+                ],
+            ),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "split, n_layers, weights, kv",
+    [
+        ([24, 16], [3, 1], [21, 7], [816, 272]),
+        ([16, 24], [2, 2], [17, 11], [544, 544]),
+    ],
+)
+def test_fixed_split_prices_actual_blocks_and_tied_output_in_device_order(
+    split, n_layers, weights, kv
+):
+    layout = _asymmetric_layers()
+    # 131072 cells, 8 KV heads, K and V each 128 wide, Q8_0 costs 34 bytes per 32 values.
+    cache = 4 * 131072 * 8 * (128 + 128) * 34 // 32
+    rows = estimate_layer_split(layout, 5, split, kv_bytes = cache)
+    assert rows == [
+        DeviceLayerEstimate(n_layers[0], False, weights[0] * GIB, kv[0] * MIB, 0),
+        DeviceLayerEstimate(n_layers[1], True, weights[1] * GIB + 128, kv[1] * MIB, 0),
+    ]
+
+
+def test_fixed_partial_offload_starts_at_the_suffix_and_counts_output_as_one_slot():
+    layout = _asymmetric_layers()
+    cache = 4 * 272 * MIB
+    assert estimate_layer_split(layout, 2, [1, 1], kv_bytes = cache) == [
+        DeviceLayerEstimate(1, False, 3 * GIB, 272 * MIB, 0),
+        DeviceLayerEstimate(0, True, 4 * GIB + 128, 0, 0),
+    ]
+    assert estimate_layer_split(layout, 0, [1, 1], kv_bytes = cache) == [
+        DeviceLayerEstimate(0, False, 0, 0, 0),
+        DeviceLayerEstimate(0, False, 0, 0, 0),
+    ]
+
+
+def _qwen_hybrid(*, missing_state = False):
+    # Eight target blocks plus an inactive ninth MTP block. Two attention blocks
+    # and six recurrent blocks. The single-sequence recurrent state is 112 B per block.
+    fields = {
+        "general.architecture": "qwen35",
+        "qwen35.block_count": 9,
+        "qwen35.nextn_predict_layers": 1,
+        "qwen35.full_attention_interval": 4,
+        "qwen35.attention.head_count_kv": 1,
+        "qwen35.attention.key_length": 128,
+        "qwen35.ssm.inner_size": 8,
+        "qwen35.ssm.state_size": 2,
+        "qwen35.ssm.group_count": 1,
+        "qwen35.ssm.conv_kernel": 2,
+    }
+    tensors = [_StubTensor("output.weight", 10), _StubTensor("token_embd.weight", 1000)]
+    for i in range(9):
+        if i in (3, 7, 8):
+            name = "attn_q.weight"
+        elif missing_state and i == 2:
+            name = "attn_norm.weight"
+        else:
+            name = "ssm_a"
+        tensors.append(_StubTensor(f"blk.{i}.{name}", i + 1))
+    return _layout_from_reader(_StubReader(fields, tensors))
+
+
+def test_fixed_qwen_hybrid_assigns_q8_kv_and_per_sequence_state_to_their_own_blocks():
+    layout = _qwen_hybrid()
+    # 72% of ten loader slots gives GPU 0 all eight target blocks. Dropping the
+    # inactive MTP slot before partitioning would move attention block 7 to GPU 1.
+    cache_per_attention = 131072 * (128 + 128) * 34 // 32
+    state_per_layer = 2 * 112
+    cache = 2 * cache_per_attention + 6 * state_per_layer
+    rows = estimate_layer_split(layout, -1, [72, 28], kv_bytes = cache, n_parallel = 2)
+    assert rows == [
+        DeviceLayerEstimate(8, False, 36, 2 * cache_per_attention, 6 * state_per_layer),
+        DeviceLayerEstimate(0, True, 10, 0, 0),
+    ]
+    # GPU 0 gets blocks 6 and 7. GPU 1 gets the inactive MTP slot and output.
+    assert estimate_layer_split(layout, 4, [1, 1], kv_bytes = cache, n_parallel = 2) == [
+        DeviceLayerEstimate(2, False, 15, cache_per_attention, state_per_layer),
+        DeviceLayerEstimate(0, True, 10, 0, 0),
+    ]
+
+
+def test_unpriced_cache_preserves_known_weights_and_host_cache_is_zero():
+    layout = _qwen_hybrid(missing_state = True)
+    rows = estimate_layer_split(layout, 10, [6, 4], kv_bytes = 1200)
+    assert rows == [
+        DeviceLayerEstimate(6, False, 21, None, None),
+        DeviceLayerEstimate(2, True, 25, None, None),
+    ]
+    host = estimate_layer_split(layout, 10, [6, 4], kv_bytes = 0)
+    assert [(r.kv_bytes, r.recurrent_bytes) for r in host] == [(0, 0), (0, 0)]
+
+
+def test_fixed_split_abstains_on_missing_blocks_unknown_globals_and_unusable_split():
+    layout = _asymmetric_layers()
+    assert not estimate_layer_split(
+        replace(layout, blocks = layout.blocks[1:]), 5, [1, 1], kv_bytes = 0
+    )
+    globals_unknown = _layout_from_reader(
+        _StubReader(
+            _shard_fields(**{"llama.block_count": 1}),
+            _shard_tensors([0])
+            + [_StubTensor("token_embd.weight", 600), _StubTensor("rope_freqs.weight", 400)],
+        )
+    )
+    assert not estimate_layer_split(globals_unknown, 2, [1, 1], kv_bytes = 0)
+    for invalid in ([], [0, 0], [1, -1], [float("nan"), 1], [1e100, 1], [1e-90, 1e-90]):
+        assert not estimate_layer_split(layout, 5, invalid, kv_bytes = 0)

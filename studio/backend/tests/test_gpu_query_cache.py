@@ -46,6 +46,8 @@ for i, g in enumerate(gpus):
         "memory.total": str(total), "memory.free": str(free), "memory.used": str(total - free),
         "utilization.gpu": str(g.get("util", 0)), "temperature.gpu": "40",
         "power.draw": "100.0", "power.limit": "1000.0",
+        "pcie.link.width.current": str(g.get("link_width", 16)),
+        "pcie.link.gen.current": str(g.get("link_gen", 4)),
     }}
     out = []
     for name in fields:
@@ -141,6 +143,31 @@ def llama_probe(monkeypatch):
 
 def _free_by_index(result):
     return {d["index"]: round(d["vram_total_gb"] - d["vram_used_gb"], 2) for d in result["devices"]}
+
+
+def test_nvidia_free_and_link_follow_mask_order(smi):
+    first, second = smi.state["gpus"]
+    first.update(link_width = "[N/A]", link_gen = 0)
+    second.update(link_width = 8, link_gen = 3)
+    smi.set_free(0, 923)
+    b, a = nvidia.get_visible_gpu_utilization(None, "GPU-bbbb,GPU-aaaa")["devices"]
+    assert b["vram_free_bytes"] == 923 * 1024**2
+    assert (b["pcie_link_width"], b["pcie_link_gen"]) == (8, 3)
+    assert a["vram_free_bytes"] == 0
+    assert "pcie_link_width" not in a and "pcie_link_gen" not in a
+
+
+def test_nvidia_retains_telemetry_on_drivers_rejecting_link_fields(monkeypatch):
+    def run(argv, **kwargs):
+        if "pcie.link.width.current" in argv[1]:
+            return subprocess.CompletedProcess(argv, 2, "")
+        return subprocess.CompletedProcess(argv, 0, "0, 42, 61, 100, 1024, 60, 200")
+
+    monkeypatch.setattr(gpu_query, "run_nvidia_smi", run)
+    (device,) = nvidia.get_visible_gpu_utilization([0])["devices"]
+    assert device["gpu_utilization_pct"] == 42
+    assert "pcie_link_width" not in device
+    assert "vram_free_bytes" not in device
 
 
 def test_classification():

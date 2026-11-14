@@ -9,7 +9,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { MemoryEstimate } from "../api/memory-estimate";
+import type { SystemGpuDevice } from "@/hooks/gpu-selection";
+import type { GpuMemoryEstimate, MemoryEstimate } from "../api/memory-estimate";
 import {
   type MemoryFitVerdict,
   NOTE_SEPARATOR,
@@ -131,17 +132,19 @@ function MemoryBreakdownLine({
   value,
   note,
   muted,
+  exceeds,
 }: {
   label: string;
   value: string;
   note?: string;
   muted?: boolean;
+  exceeds?: boolean;
 }) {
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-1">
       <span className="min-w-0 text-ui-12 text-muted-foreground">{label}</span>
       <span
-        className={`whitespace-nowrap pr-2 text-ui-12 tabular-nums ${muted ? "text-muted-foreground" : "text-foreground"}`}
+        className={`whitespace-nowrap pr-2 text-ui-12 tabular-nums ${exceeds ? MEMORY_VALUE_TONE.exceeds : muted ? "text-muted-foreground" : "text-foreground"}`}
       >
         {value}
       </span>
@@ -154,10 +157,56 @@ function MemoryBreakdownLine({
   );
 }
 
+function gpuPlacementRow(estimate: GpuMemoryEstimate, device?: SystemGpuDevice) {
+  const { gpuId, weightsBytes, cacheBytes, layerCount, outputLayer } = estimate;
+  const subtotal = weightsBytes + (cacheBytes ?? 0);
+  const gib = 1024 ** 3;
+  // An APU's reported VRAM may be a reserved window onto host memory.
+  const dedicated = device && !device.unifiedMemory && !device.sharedMemory;
+  const total = dedicated && device.memoryTotalGb > 0 ? device.memoryTotalGb * gib : null;
+  const free = dedicated && (device.memoryFreeKnown ?? device.memoryFreeGb > 0)
+    ? device.memoryFreeGb * gib
+    : null;
+  const exceedsTotal = total !== null && subtotal > total;
+  const exceedsFree = free !== null && subtotal > free;
+  const name = `GPU ${gpuId}`;
+  const details = [
+    `${layerCount} repeating ${layerCount === 1 ? "layer" : "layers"}`,
+    outputLayer ? "output layer" : null,
+    `${formatMemoryGb(weightsBytes)} weights`,
+    cacheBytes === null ? "cache unknown" : `${formatMemoryGb(cacheBytes)} cache`,
+    free !== null ? `${formatMemoryGb(free)} free` : null,
+    total !== null ? `${formatMemoryGb(total)} total` : null,
+  ];
+  return {
+    gpuId,
+    name,
+    label: device?.name && device.name !== name ? `${name} · ${device.name}` : name,
+    value: cacheBytes === null ? memoryFigureCandidates(subtotal, true)[0] : formatMemoryGb(subtotal),
+    note: details.filter(Boolean).join(NOTE_SEPARATOR),
+    exceedsTotal,
+    exceedsFree,
+  };
+}
+
+function gpuLayersNote(estimate: MemoryEstimate): string | null {
+  if (estimate.perGpu.length > 0) {
+    // Some GGUFs declare unused draft slots in layerCount. Count the blocks placed on devices.
+    const layers = estimate.perGpu.reduce((sum, gpu) => sum + gpu.layerCount, 0);
+    const output = estimate.perGpu.some((gpu) => gpu.outputLayer);
+    return `${layers} repeating ${layers === 1 ? "layer" : "layers"}${output ? " and the output layer" : ""} on GPU`;
+  }
+  if (estimate.gpuLayers === null || estimate.gpuLayers < 0 || estimate.layerCount === null) return null;
+  const slots = estimate.layerCount + 1;
+  return `${Math.min(estimate.gpuLayers, slots)} of ${slots} layers on GPU`;
+}
+
 export function MemoryEstimateRow({
   estimate,
   loading,
   stale,
+  gpuDevices,
+  placementMode,
   gpuCapacityGb,
   totalCapacityGb,
   systemRamCapacityGb,
@@ -177,6 +226,8 @@ export function MemoryEstimateRow({
   estimate: MemoryEstimate | null;
   loading: boolean;
   stale: boolean;
+  gpuDevices?: SystemGpuDevice[];
+  placementMode?: "auto" | "manual";
   /** GiB; 0 means unknown. */
   gpuCapacityGb: number;
   /** GiB; 0 means unknown. */
@@ -217,11 +268,19 @@ export function MemoryEstimateRow({
       reclaimableGpuBytes,
     },
   );
+  const gpuRows = stale
+    ? []
+    : estimate.perGpu.map((gpu) =>
+        gpuPlacementRow(gpu, gpuDevices?.find((device) => device.index === gpu.gpuId)),
+      );
+  const overCapacity = gpuRows.find((row) => row.exceedsTotal);
+  const pressured = overCapacity ?? gpuRows.find((row) => row.exceedsFree);
+  const placementWarning = pressured
+    ? `${pressured.name}’s estimated subtotal exceeds its ${overCapacity ? "total" : "currently free"} memory.`
+    : null;
   const kvNote = resolveKvNote(estimate);
   const weightsNote = [
-    estimate.gpuLayers != null && estimate.layerCount != null
-      ? `${estimate.gpuLayers} of ${estimate.layerCount + 1} layers on GPU`
-      : null,
+    gpuLayersNote(estimate),
     estimate.mlxPleOffload ? `PLE ${mlxOffloadPercent(estimate.mlxPleOffload)} on disk` : null,
     estimate.mlxExpertOffload
       ? `experts ${mlxOffloadPercent(estimate.mlxExpertOffload)} on disk`
@@ -278,7 +337,9 @@ export function MemoryEstimateRow({
           }
           bounded={bounded}
           tone={
-            MEMORY_VALUE_TONE[singleMemoryPool || cpuOnly ? totalFit : gpuFit]
+            overCapacity
+              ? MEMORY_VALUE_TONE.exceeds
+              : MEMORY_VALUE_TONE[singleMemoryPool || cpuOnly ? totalFit : gpuFit]
           }
         />
         {singleMemoryPool || cpuOnly ? null : (
@@ -339,13 +400,37 @@ export function MemoryEstimateRow({
             note={draftCacheNote}
           />
         )}
+        {gpuRows.length > 0 ? (
+          <div className="space-y-2 border-t border-border pt-3">
+            <div className="text-ui-12 font-medium text-foreground">Per-GPU placement</div>
+            {gpuRows.map((row) => (
+              <MemoryBreakdownLine
+                key={row.gpuId}
+                label={row.label}
+                value={row.value}
+                note={row.note}
+                exceeds={row.exceedsTotal || row.exceedsFree}
+              />
+            ))}
+            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+              Subtotals cover weights and KV or recurrent cache. Compute buffers and other runtime allocations need additional memory.
+              {estimate.perGpuBasis === "free_memory" && " The default split uses currently free VRAM. Unloading a model can change the placement."}
+            </p>
+          </div>
+        ) : placementMode && !stale && !cpuOnly ? (
+          <p className="text-ui-12 text-muted-foreground">
+            {placementMode === "auto"
+              ? "Per-GPU placement is determined at load time."
+              : "Per-GPU placement is unavailable for these settings."}
+          </p>
+        ) : null}
       </div>
-      {advisory && (
+      {(placementWarning || advisory) && (
         <p
           data-memory-advisory=""
-          className={`mt-1.5 text-pretty text-ui-12 leading-relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
+          className={`mt-1.5 text-pretty text-ui-12 leading-relaxed ${placementWarning || advisory?.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
         >
-          {advisory.text}
+          {placementWarning ?? advisory?.text}
         </p>
       )}
     </div>

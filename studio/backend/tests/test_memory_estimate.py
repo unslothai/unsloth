@@ -703,6 +703,232 @@ def _request_with_slots(slots: int):
     )
 
 
+class TestManualLayerEstimate:
+    @pytest.fixture
+    def model(self, monkeypatch, tmp_path, request):
+        import numpy as np
+        from gguf import GGUFWriter
+
+        variant = getattr(request, "param", None)
+        nextn = 1 if variant == "nextn" else 0
+        arch = "qwen35moe" if nextn else "qwen3"
+        path = tmp_path / "layers.gguf"
+        writer = GGUFWriter(str(path), arch)
+        for key, value in {
+            **_GQA_FIELDS,
+            "block_count": 4 + nextn,
+            "nextn_predict_layers": nextn,
+        }.items():
+            writer.add_uint32(f"{arch}.{key}", value)
+        for i in range(4 + nextn):
+            writer.add_tensor(f"blk.{i}.attn_q.weight", np.zeros(i + 1, dtype = np.float32))
+        writer.add_tensor("token_embd.weight", np.zeros(32, dtype = np.float32))
+        if variant != "tied":
+            writer.add_tensor("output.weight", np.zeros(16, dtype = np.float32))
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+        config = _local_config(str(path))
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a: config)
+        return str(path)
+
+    @pytest.fixture
+    def inventory(self, monkeypatch):
+        import time
+
+        # Picker is in PCI order. The inherited CUDA mask is in reverse order.
+        devices = [
+            dict(index = i, visible_ordinal = o, vram_free_bytes = free, vram_free_gb = 1)
+            for i, o, free in [(2, 1, 300), (5, 0, 100)]
+        ]
+        inventory = dict(
+            available = True,
+            gguf_gpu_ids_supported = True,
+            index_kind = "physical",
+            backend = "cuda",
+            devices = devices,
+        )
+        main = SimpleNamespace(_system_gpu_cache = (time.monotonic(), (inventory, inventory)))
+        monkeypatch.setitem(sys.modules, "main", main)
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5,2")
+        return inventory
+
+    def test_manual_split_tracks_actual_offloaded_suffix_and_output(self, model, inventory):
+        # Extras win over the fields. The pin strips --device; --no-kv-offload keeps cache on CPU.
+        response = _estimate(
+            model_path = model,
+            n_ctx = 2048,
+            selected_gpu_ids = [5, 2],
+            tensor_split = [0, 1],
+            gpu_memory_mode = "manual",
+            gpu_layers = 1,
+            llama_extra_args = ["-ts", "1,1", "-ngl", "3", "-dev", "none", "-nkvo"],
+        )
+        assert response.available
+        assert response.per_gpu_basis == "tensor_split"
+        assert [r.model_dump() for r in response.per_gpu] == [
+            dict(gpu_id = 5, layer_count = 2, output_layer = False, weights_bytes = 28, cache_bytes = 0),
+            dict(gpu_id = 2, layer_count = 0, output_layer = True, weights_bytes = 64, cache_bytes = 0),
+        ]
+
+    def test_default_split_uses_raw_bytes_in_child_order(self, model, inventory):
+        # A mismatched first-class ratio is dropped at launch. Four offloaded slots
+        # at 1:3 give GPU 5 block 1 and GPU 2 blocks 2, 3 and the output matrix.
+        response = _estimate(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 4,
+            tensor_split = [1, 1, 1],
+        )
+        assert response.available
+        assert response.per_gpu_basis == "free_memory"
+        per_block = response.kv_bytes // 4
+        assert per_block > 0
+        assert [
+            (r.gpu_id, r.layer_count, r.weights_bytes, r.cache_bytes) for r in response.per_gpu
+        ] == [
+            (5, 1, 8, per_block),
+            (2, 2, 12 + 16 + 64, per_block * 2),
+        ]
+
+    @pytest.mark.parametrize("model", ["tied"], indirect = True)
+    @pytest.mark.parametrize("extra_args", [[], ["-nkvo"]], ids = ["device-kv", "host-kv"])
+    def test_partial_tied_output_aggregate_matches_rows(self, model, inventory, extra_args):
+        request = dict(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 2,
+            tensor_split = [1, 1],
+            selected_gpu_ids = [2, 5],
+            llama_extra_args = extra_args,
+        )
+        response = _estimate(**request)
+        block, output = response.per_gpu
+        assert block.weights_bytes == 16 and block.layer_count == 1
+        assert output.weights_bytes == 128 and output.output_layer
+        assert block.cache_bytes == (0 if extra_args else response.kv_bytes // 4)
+        assert output.cache_bytes == 0
+        assert response.gpu_bytes == 16 + 128 + block.cache_bytes + response.compute_bytes
+        assert (
+            response.total_bytes
+            == response.weights_bytes + response.kv_bytes + response.compute_bytes
+        )
+
+    def test_unknown_cache_keeps_the_aggregate_fallback(self, model, inventory):
+        request = dict(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 2,
+            selected_gpu_ids = [2, 5],
+            llama_extra_args = ["-ctk", "f32", "-ctv", "f16"],
+        )
+        estimated = _estimate(**request)
+        assert estimated.per_gpu[0].cache_bytes is None
+        inventory["devices"][0].pop("vram_free_bytes")
+        fallback = _estimate(**request)
+        assert fallback.per_gpu is None and estimated.gpu_bytes == fallback.gpu_bytes
+
+    def test_unpinned_explicit_ratio_sets_child_order_to_picker_order(self, model, inventory):
+        response = _estimate(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 4,
+            tensor_split = [1, 3],
+        )
+        assert [(r.gpu_id, r.layer_count) for r in response.per_gpu] == [(2, 1), (5, 2)]
+
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            {"gpu_memory_mode": "auto"},
+            {"gpu_layers": None},
+            {"gpu_layers": 0},
+            {"tensor_parallel": True},
+            {"llama_extra_args": ["-sm", "row"]},
+            {"llama_extra_args": ["-ot", "blk.0.*=CPU"]},
+            {"llama_extra_args": ["--override-kv", "qwen3.block_count=int:2"]},
+            {"llama_extra_args": ["-ncffn", "1"]},
+            {"llama_extra_args": ["-dev", "CUDA1,CUDA0"]},
+            {"n_cpu_moe": 1},
+            {"selected_gpu_ids": [2, 9]},
+            {"selected_gpu_ids": [2]},
+        ],
+    )
+    def test_unmodelled_placements_keep_the_aggregate(self, model, inventory, settings):
+        request = dict(model_path = model, n_ctx = 2048, gpu_memory_mode = "manual", gpu_layers = 4)
+        response = _estimate(**{**request, **settings})
+        assert response.available and response.per_gpu is None and response.per_gpu_basis is None
+
+    @pytest.mark.parametrize("model", ["nextn"], indirect = True)
+    def test_auto_embedded_mtp_hides_rows_until_speculation_is_off(
+        self, model, inventory, monkeypatch
+    ):
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
+            staticmethod(lambda: {"found": True, "mtp_token": "draft-mtp"}),
+        )
+        request = dict(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 5,
+            tensor_split = [1, 1],
+            selected_gpu_ids = [5, 2],
+        )
+        auto = _estimate(**request, speculative_type = "auto")
+        assert auto.available and auto.drafter_runtime_bytes > 0
+        assert auto.per_gpu is None
+        off = _estimate(**request, speculative_type = "off")
+        assert off.drafter_runtime_bytes == 0 and off.per_gpu is not None
+
+    def test_expired_free_snapshot_is_not_used_for_default_split(self, model, inventory):
+        import time
+
+        sys.modules["main"]._system_gpu_cache = (time.monotonic() - 60, (inventory, inventory))
+        request = dict(model_path = model, n_ctx = 2048, gpu_memory_mode = "manual", gpu_layers = 4)
+        assert _estimate(**request).per_gpu is None
+        assert _estimate(**request, tensor_split = [1, 1]).per_gpu_basis == "tensor_split"
+
+    def test_slider_uses_the_cached_layout_and_never_probes_devices(
+        self, model, inventory, monkeypatch
+    ):
+        import core.inference.offload_layout as layouts
+
+        calls = []
+        read = layouts.layout_from_gguf
+
+        def capture(*args, **kwargs):
+            calls.append(args)
+            return read(*args, **kwargs)
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("estimating a fixed split probed live device memory")
+
+        monkeypatch.setattr(layouts, "layout_from_gguf", capture)
+        monkeypatch.setattr(ri.LlamaCppBackend, "_get_gpu_memory", staticmethod(forbidden))
+        monkeypatch.setattr(ri.LlamaCppBackend, "vulkan_device_inventory", staticmethod(forbidden))
+        request = dict(
+            model_path = model, n_ctx = 2048, gpu_memory_mode = "manual", selected_gpu_ids = [2, 5]
+        )
+        assert _estimate(**request, gpu_layers = 4).per_gpu is not None
+        assert _estimate(**request, gpu_layers = 2).per_gpu is not None
+        assert len(calls) == 1
+
+    def test_unknown_free_is_not_derived_from_display_telemetry(self, model, inventory):
+        inventory["devices"][0].pop("vram_free_bytes")
+        request = dict(model_path = model, n_ctx = 2048, gpu_memory_mode = "manual", gpu_layers = 4)
+        assert _estimate(**request).per_gpu is None
+        # An explicit validated split has no dependency on free VRAM.
+        assert _estimate(**request, tensor_split = [1, 1]).per_gpu is not None
+
+
 class TestEstimateMemoryRoute:
     """The three "cannot size this" answers, and what they must not do first."""
 
