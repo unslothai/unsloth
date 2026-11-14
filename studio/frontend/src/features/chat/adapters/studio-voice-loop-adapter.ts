@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The store directly: the feature barrel imports back here through the dictation dispatcher.
+import { encodeWav } from "@/features/chat/adapters/pcm-recorder";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   createBargeGate,
@@ -66,35 +67,6 @@ const getAudioContextCtor = (): AudioContextCtor | undefined => {
       .webkitAudioContext
   );
 };
-
-function encodeWav(samples: Float32Array, sampleRate: number): Blob {
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
-  const view = new DataView(buffer);
-  const writeStr = (offset: number, s: string) => {
-    for (let i = 0; i < s.length; i++)
-      view.setUint8(offset + i, s.charCodeAt(i));
-  };
-  writeStr(0, "RIFF");
-  view.setUint32(4, 36 + samples.length * 2, true);
-  writeStr(8, "WAVE");
-  writeStr(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, "data");
-  view.setUint32(40, samples.length * 2, true);
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i] ?? 0));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    offset += 2;
-  }
-  return new Blob([view], { type: "audio/wav" });
-}
 
 function isHallucinatedTranscript(text: string): boolean {
   const words = text
@@ -262,7 +234,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         merged.set(c, offset);
         offset += c.length;
       }
-      const wav = encodeWav(merged, sampleRate);
+      const wav = new Blob([encodeWav(merged, sampleRate)], { type: "audio/wav" });
 
       if ((await clipHasSpeech(wav)) === false) {
         if (ended) return;
@@ -448,7 +420,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               probe.set(c, at);
               at += c.length;
             }
-            void clipHasSpeech(encodeWav(probe, sampleRate)).then((voiced) => {
+            void clipHasSpeech(new Blob([encodeWav(probe, sampleRate)], { type: "audio/wav" })).then((voiced) => {
               bargeConfirming = false;
               if (ended || bargedIn) return;
               if (voiced === false) {
