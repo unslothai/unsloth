@@ -78,5 +78,5 @@ test("the engine registers the typed send, cancels the session and skips the int
   const src = read("features/chat/voice/voice-engine.tsx");
   assert.match(src, /registerVoiceTypedSubmit\(\(box\) =>/);
   assert.match(src, /cancelVoiceSession\(\);\s*submitTranscript\(box, true\)/);
-  assert.match(src, /if \(!typed && thread\.getState\(\)\.isRunning && latestAssistantIsReasoning\(\)\)/);
+  assert.match(src, /if \(!typed && thread\.getState\(\)\.isRunning && \(latestAssistantIsReasoning\(\) \|\| replyNotStarted\(\)\)\)/);
 });
