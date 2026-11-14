@@ -325,3 +325,19 @@ def test_a_pipless_uv_venv_with_uv_off_path_gets_the_wheels(tmp_path):
     )
     assert subprocess.run([str(py), "-c", code], env = env, timeout = 300).returncode == 0
     assert subprocess.run([str(py), "-c", "import unsloth_uv_probe"], env = env).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "installed, still_missing, says_cpu",
+    [(True, True, True), (True, False, False), (False, True, False)],
+)
+def test_a_runtime_still_missing_after_its_install_is_reported(
+    monkeypatch, tmp_path, installed, still_missing, says_cpu
+):
+    answers = iter([("nvidia-cuda-runtime",), ("nvidia-cuda-runtime",) if still_missing else ()])
+    monkeypatch.setattr(ip, "_missing_cuda_runtime_wheels", lambda d: next(answers))
+    monkeypatch.setattr(ip, "_install_cuda_runtime_wheels", lambda wheels: installed)
+    logged = []
+    monkeypatch.setattr(ip, "log", logged.append)
+    ip.ensure_cuda_runtime_wheels(tmp_path)
+    assert any("llama.cpp will run on the CPU" in line for line in logged) is says_cpu
