@@ -5574,6 +5574,7 @@ class FastBaseModel:
         # Models with their own projection names (Unsloth's native DeepSeek-V4.1) translate q/k/v/o/gate/up/down_proj,
         # "all-linear" and None into their real Linears; the attention / mlp family choice is applied there.
         _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
+        _targets_remapped = False
         if callable(_remap_targets) and finetune_language_layers:
             _remapped = _remap_targets(
                 target_modules,
@@ -5583,6 +5584,8 @@ class FastBaseModel:
             if _remapped is not target_modules:
                 target_modules = _remapped
                 finetune_attention_modules = finetune_mlp_modules = True
+                # Final module-name suffixes: get_peft_regex would read the qualified ones as leaves.
+                _targets_remapped = True
 
         if type(r) is not int:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
@@ -5750,8 +5753,10 @@ class FastBaseModel:
                 "." not in str(name) for name in target_modules
             )
             # Qualified paths already name their module; get_peft_regex treats every entry as a leaf.
-            if type(target_modules) in (list, tuple) and (
-                _scoping or finetune_audio_layers or (_core_prefix and _leaf_list)
+            if (
+                type(target_modules) in (list, tuple)
+                and not _targets_remapped
+                and (_scoping or finetune_audio_layers or (_core_prefix and _leaf_list))
             ):
                 if _scoping:
                     print(
