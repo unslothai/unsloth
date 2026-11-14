@@ -214,4 +214,7 @@ test("the Compact chip is offered only for a large cloud thread left past the ca
   // It rides the /compact request, and a click withdraws it for that message.
   assert.match(chip, /store\.request\(threadId\)/);
   assert.match(chip, /setKeptFor\(offerKey\);\s*store\.clear\(threadId\);/);
+  // Auto-compaction off: the offer is shown but never queued on its own.
+  assert.match(chip, /const autoCompactEnabled = useChatRuntimeStore\(\(s\) => s\.autoCompactEnabled\);/);
+  assert.match(chip, /if \(eligible && !kept && autoCompactEnabled && offeredRef\.current !== offerKey\)/);
 });

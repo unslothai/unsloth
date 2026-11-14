@@ -30,13 +30,15 @@ const RECHECK_MS = 30_000;
 
 /**
  * Next to send on a large cloud thread the user has come back to after the provider's prompt
- * cache lapsed. On by default: the next message is sent after a summary of the history, through
- * the same request /compact makes. A click switches it off for that message.
+ * cache lapsed. On by default when auto-compaction is on: the next message is sent after a summary
+ * of the history, through the same request /compact makes. A click switches it off or on.
  */
 export const CompactOnReturnChip: FC = () => {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const incognito = useChatRuntimeStore((s) => s.incognito);
+  // With auto-compaction off the chip still shows, but only a click queues the summary.
+  const autoCompactEnabled = useChatRuntimeStore((s) => s.autoCompactEnabled);
   const threadTokens = useChatRuntimeStore((s) =>
     s.contextUsage ? (s.contextUsage.contextTokens ?? s.contextUsage.totalTokens) : null,
   );
@@ -80,7 +82,7 @@ export const CompactOnReturnChip: FC = () => {
   useEffect(() => {
     if (!threadId) return;
     const store = useCompactRequestStore.getState();
-    if (eligible && !kept && offeredRef.current !== offerKey) {
+    if (eligible && !kept && autoCompactEnabled && offeredRef.current !== offerKey) {
       offeredRef.current = offerKey;
       store.request(threadId);
     } else if (!eligible && offeredRef.current?.startsWith(`${threadId}:`)) {
@@ -89,7 +91,7 @@ export const CompactOnReturnChip: FC = () => {
       offeredRef.current = null;
       if (!running) store.clear(threadId);
     }
-  }, [eligible, kept, offerKey, running, threadId]);
+  }, [autoCompactEnabled, eligible, kept, offerKey, running, threadId]);
 
   if (!eligible || !threadId) return null;
   const on = requested && !kept;
