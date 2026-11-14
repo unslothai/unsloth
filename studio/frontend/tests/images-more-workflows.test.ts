@@ -29,7 +29,7 @@ test("an unpinned Images row opens its workflows from More", () => {
     "function AudioMoreSubmenu(",
   );
   assert.match(images, /<MediaMoreSubmenu/);
-  assert.match(images, /tabs=\{WORKFLOW_TABS\}/);
+  assert.match(images, /tabs=\{imageWorkflowTabs\(unifiedEdit\)\}/);
   assert.match(
     images,
     /enabled=\{\(id\) => isWorkflowEnabled\(id, supported\)\}/,

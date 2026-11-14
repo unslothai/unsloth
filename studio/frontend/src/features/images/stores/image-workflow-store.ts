@@ -16,11 +16,13 @@ interface ImageWorkflowState {
   workflow: WorkflowId;
   pageMode: "create" | "train";
   supported: WorkflowId[] | null;
+  unifiedEdit: boolean;
   navExpanded: boolean;
   setNavExpanded: (expanded: boolean) => void;
   setWorkflow: (id: WorkflowId) => void;
   setPageMode: (mode: "create" | "train") => void;
   setSupported: (ids: WorkflowId[] | null) => void;
+  setUnifiedEdit: (unifiedEdit: boolean) => void;
   /** Video's Train tab hands Images its adapters: Video loads none. */
   pendingDeploy: AdapterDeployRequest | null;
   requestDeploy: (request: AdapterDeployRequest) => void;
@@ -33,11 +35,13 @@ export const useImageWorkflowStore = create<ImageWorkflowState>((set, get) => ({
   workflow: "create",
   pageMode: "create",
   supported: null,
+  unifiedEdit: false,
   navExpanded: false,
   setNavExpanded: (navExpanded) => set({ navExpanded }),
   setWorkflow: (workflow) => set({ workflow, pageMode: "create" }),
   setPageMode: (pageMode) => set({ pageMode }),
   setSupported: (supported) => set({ supported }),
+  setUnifiedEdit: (unifiedEdit) => set({ unifiedEdit }),
   pendingDeploy: null,
   requestDeploy: (pendingDeploy) => set({ pendingDeploy }),
   takeDeploy: () => {
