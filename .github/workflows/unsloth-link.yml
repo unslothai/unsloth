@@ -1,7 +1,4 @@
-# unsloth-link: the tailcat helper that lets Studio cluster machines on different networks reach
-# each other (studio/cluster_link/tailcat_helper). Builds all six targets reproducibly, requires the
-# archives to match studio/unsloth_link_pins.json, runs the installer and a real tunnel on each
-# platform natively, and publishes the archives to the release named by the tag.
+# The cluster tailcat helper (studio/cluster_link/tailcat_helper): reproducible builds checked against the pins, native smoke, release.
 name: unsloth-link
 
 on:
@@ -56,8 +53,7 @@ jobs:
           set -euo pipefail
           bash studio/cluster_link/tailcat_helper/build.sh "$RUNNER_TEMP/dist"
           python studio/cluster_link/tailcat_helper/package.py "$RUNNER_TEMP/dist" release
-      # The pins are the installer's only trust anchor, so a build they do not describe fails here.
-      # On a mismatch, regenerate them with update_pins.py from this job's artifact.
+      # The pins are the installer's only trust anchor; on a mismatch regenerate them with update_pins.py.
       - name: Archives match the pins
         working-directory: studio/cluster_link/tailcat_helper
         run: python update_pins.py "$GITHUB_WORKSPACE/release" --check

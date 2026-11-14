@@ -1,18 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// unsloth-link carries Unsloth cluster traffic over tailcat tunnels.
-//
-// "unsloth-link stdio" speaks JSON lines: one request per line on stdin, one
-// response per line on stdout with the same id. Addresses and keys only ever
-// arrive on stdin and leave on stdout, never in argv, the environment or logs.
-// The process exits when stdin closes, so it dies with its parent.
-//
-// "unsloth-link genkey --kind server|client --path P [--fixed-region]" writes a
-// key file (tailcat's genkey JSON format, mode 0600) and prints its public key.
-//
-// "unsloth-link devderp" (tests only) runs a loopback DERP + STUN server and
-// prints the URL of a DERP map naming it; it exits when stdin closes.
+// unsloth-link carries Unsloth cluster traffic over tailcat tunnels. Secrets travel only on
+// stdin/stdout (never argv, env or logs), and the process exits when stdin closes.
 package main
 
 import (
@@ -198,7 +188,6 @@ func (h *helper) handle(req request) (response, error) {
 		}
 		return c.probe(req.TimeoutS)
 	case "pubkey":
-		// The client key a server should allow, for the given client key file.
 		if req.KeyPath == "" {
 			return nil, errors.New("key_path required")
 		}
@@ -221,8 +210,6 @@ func (h *helper) close() {
 		h.srv.ts.Close()
 	}
 }
-
-// ---- server side ----
 
 type server struct {
 	ts      *tailcat.Server
@@ -434,8 +421,6 @@ func (h *helper) serve(req request) (response, error) {
 	return response{"address": s.address, "pubkey": priv.Private.Public().String()}, nil
 }
 
-// ---- client side ----
-
 type client struct {
 	tc      *tailcat.Client
 	keyPath string
@@ -529,7 +514,6 @@ func (c *client) close() {
 	c.tc.Close()
 }
 
-// probe disco-pings until a pong arrives over a direct path or the timeout ends.
 func (c *client) probe(timeoutS float64) (response, error) {
 	if timeoutS <= 0 {
 		timeoutS = 10
@@ -567,8 +551,6 @@ func (c *client) probe(timeoutS float64) (response, error) {
 		}
 	}
 }
-
-// ---- keys ----
 
 func readKey(path string) (*tailcat.PrivateKey, error) {
 	j, err := os.ReadFile(path)
@@ -643,7 +625,7 @@ func runGenkey(args []string) int {
 	return 0
 }
 
-// ---- loopback DERP for tests (TS_DEBUG_TAILCAT_LOCAL_DERP=1), as in cmd/tailcat ----
+// Loopback DERP for tests (TS_DEBUG_TAILCAT_LOCAL_DERP=1), as in cmd/tailcat.
 
 func runDevDERP() *tailcfg.DERPRegion {
 	d := derpserver.New(key.NewNode(), logf)
@@ -690,8 +672,7 @@ func runDevDERP() *tailcfg.DERPRegion {
 	}
 }
 
-// runDevDERPMap shares one loopback DERP between test processes through a DERP map URL, so keys
-// with a fixed region take the same path as with the public map.
+// One loopback DERP shared by test processes through a map URL, so fixed-region keys behave as with the public map.
 func runDevDERPMap() int {
 	region := runDevDERP()
 	region.RegionID, region.Nodes[0].RegionID = 900, 900

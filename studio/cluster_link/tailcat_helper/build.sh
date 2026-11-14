@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Cross-compiles unsloth-link for every Studio host into ${1:-dist}/ and writes SHA256SUMS.
-# Needs the Go toolchain named in go.mod. build-tags.txt is tailcat's release tag list, kept in
-# sync with the pinned tailcat commit.
+# build-tags.txt is tailcat's release tag list for the pinned commit.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 out="$(mkdir -p "${1:-$here/dist}" && cd "${1:-$here/dist}" && pwd)"
