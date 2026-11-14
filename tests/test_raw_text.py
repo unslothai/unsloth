@@ -853,6 +853,22 @@ def test_add_structure_tokens_leaves_code_blocks_alone():
     )
 
 
+def test_add_structure_tokens_reads_any_fence_info_string():
+    """A fence language with non-word characters or extra attributes is still a code block."""
+    text = (
+        "```c++\n// main\nint main() {}\n```\n\n"
+        "```shell-session\n# install deps\n$ pip install unsloth\n```\n\n"
+        '``` python title="train.py"\n# load the model\nimport unsloth\n```\n\n'
+        "# Title\n"
+    )
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|code|c++|>// main\nint main() {}<|/code|>\n\n"
+        "<|code|shell-session|># install deps\n$ pip install unsloth<|/code|>\n\n"
+        "<|code|python|># load the model\nimport unsloth<|/code|>\n\n"
+        "<|chapter|>Title<|/chapter|>\n"
+    )
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     test_clean_text_keeps_text_in_any_script()
@@ -873,4 +889,5 @@ if __name__ == "__main__":
     test_text_chunks_reserve_space_for_the_final_eos()
     test_chunk_size_one_keeps_the_final_eos_overflow()
     test_add_structure_tokens_leaves_code_blocks_alone()
+    test_add_structure_tokens_reads_any_fence_info_string()
     sys.exit(0 if success else 1)
