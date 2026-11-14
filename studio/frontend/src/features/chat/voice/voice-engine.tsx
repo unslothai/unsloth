@@ -281,6 +281,7 @@ export const VoiceEngine: FC = () => {
   speakRef.current = speak;
   const streamBegunRef = useRef(false);
   const streamGenRef = useRef(0);
+  const [streamSeq, setStreamSeq] = useState(0);
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFallbackAtRef = useRef(0);
   // The filler model answered (say or quiet). A quiet vote is the answer, so the
@@ -1010,6 +1011,8 @@ export const VoiceEngine: FC = () => {
             sayAsideRef.current(f.phrase, { standIns: fillerStandIns() });
           }, fillerDelayMs());
         }
+        // isSpeaking may already be true (a typed follow-up over a reply): the mic re-arms per stream, not per flip.
+        setStreamSeq((n) => n + 1);
         if (streamPollRef.current) clearInterval(streamPollRef.current);
         let quietFallbackAt: number | null = null;
         let writingDone = false;
@@ -1165,7 +1168,7 @@ export const VoiceEngine: FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isSpeaking]);
+  }, [isSpeaking, streamSeq]);
 
   // No session-end watcher: the adapter raises requestVoiceSubmit itself.
 

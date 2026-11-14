@@ -278,3 +278,11 @@ test("the judge falls back to the local unfinished check, and parked speech wait
   assert.match(loop, /const unfinished = r === null \? looksUnfinished\(text\) : r\.p < JUDGE_SEND_THRESHOLD;/);
   assert.match(engine, /if \(pendingForVoiceRef\.current\.length && !rt\.voiceSlotLoading && rt\.voiceSlotLoaded\) \{/);
 });
+
+test("the mic re-arms for every reply stream, and a deleted saved voice falls back to the model's own", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /streamBegunRef\.current = true;[\s\S]{0,1200}setStreamSeq\(\(n\) => n \+ 1\);/);
+  assert.match(engine, /\}, \[isSpeaking, streamSeq\]\);/);
+  const player = readSrc("features/chat/hooks/use-tts-player.ts");
+  assert.match(player, /if \(\/saved voice no longer exists\/i\.test\([^)]*\)\) \{[\s\S]{0,200}useChatRuntimeStore\.getState\(\)\.setSelectedVoiceId\(""\);\s*url = await request\(\);/);
+});
