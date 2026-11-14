@@ -306,3 +306,17 @@ test("internal marker characters in copied text are dropped", () => {
   const body = el("body", el("p", el("b", "a\u0002b"), el("code", "c\u0003d")), el("pre", "e\u0004f\u0005"));
   assert.equal(htmlNodeToMarkdown(body), "**ab**`cd`\n\n```\nef\n```");
 });
+
+test("list items and table cells that reset white-space collapse their text", () => {
+  const body = el(
+    "body",
+    el("ul", { style: "white-space:pre-wrap" }, el("li", { style: "white-space:normal" }, "first\n    second")),
+    el("table", { style: "white-space:pre-wrap" }, el("tr", el("th", "k")), el("tr", el("td", { style: "white-space:normal" }, el("b", "a\n    b")))),
+  );
+  assert.equal(htmlNodeToMarkdown(body), "- first second\n\n| k |\n| --- |\n| **a b** |");
+});
+
+test("a preserved link label is split into one link per paragraph", () => {
+  const body = el("body", el("a", { href: "https://x.com", style: "white-space:pre-wrap" }, "first\n\nsecond"));
+  assert.equal(htmlNodeToMarkdown(body), "[first](https://x.com)\n\n[second](https://x.com)");
+});

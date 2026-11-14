@@ -108,14 +108,14 @@ function paragraphs(body: string): string[] {
   return parts;
 }
 
-// Emphasis cannot span paragraphs or open a code block, so each paragraph gets its own markers.
-function wrap(marker: string, inner: string): string {
+// Emphasis and link text cannot span paragraphs or open a code block, so each paragraph is built alone.
+function perParagraph(inner: string, build: (body: string) => string): string {
   const [lead, body, trail] = edges(inner);
   const core = body.replaceAll(`${FENCE_OPEN}${FENCE_CLOSE}`, "");
   const block = core.startsWith(`${FENCE_OPEN}${CODE_BLOCK}`) && core.indexOf(FENCE_CLOSE) === core.length - 1;
   if (block || !body.replace(MARKS, "")) return inner;
   const parts = paragraphs(body);
-  if (parts.length === 1) return `${lead}${marker}${body}${marker}${trail}`;
+  if (parts.length === 1) return `${lead}${build(body)}${trail}`;
   // A split can cut a fence; close it at each piece's end and reopen it in the next.
   let open = false;
   const pieces = parts.map((part, i) => {
@@ -124,10 +124,12 @@ function wrap(marker: string, inner: string): string {
     const c = part.lastIndexOf(FENCE_CLOSE);
     if (o !== c) open = o > c;
     const piece = `${reopen}${part}${open ? FENCE_CLOSE : ""}`;
-    return i % 2 ? piece : wrap(marker, piece);
+    return i % 2 ? piece : perParagraph(piece, build);
   });
   return `${lead}${pieces.join("")}${trail}`;
 }
+
+const wrap = (marker: string, inner: string) => perParagraph(inner, (body) => `${marker}${body}${marker}`);
 
 function safeHref(raw: string): string | null {
   const href = raw.trim();
@@ -171,7 +173,7 @@ function list(node: PasteNode, ctx: Ctx, ordered: boolean): string {
     const marker = ordered ? `${index++}.` : "-";
     // Blank lines are kept only inside fenced code.
     let fenced = false;
-    const body = clean(children(item, ctx))
+    const body = clean(children(item, resolve(item, ctx)))
       .split("\n")
       .filter((line) => {
         const keep = fenced || line.trim() !== "";
@@ -218,7 +220,7 @@ function table(node: PasteNode, ctx: Ctx): string {
     let c = 0;
     for (const cell of elements(row).filter((child) => /^T[DH]$/i.test(child.nodeName))) {
       while (rows[r][c] !== undefined) c++;
-      const text = flatten(clean(children(cell, ctx)).replaceAll(INDENT, "")).replace(/\|/g, "\\|");
+      const text = flatten(clean(children(cell, resolve(cell, ctx))).replaceAll(INDENT, "")).replace(/\|/g, "\\|");
       const cols = span(cell, "colspan", 1000);
       const down = span(cell, "rowspan", physical.length - r);
       for (let dr = 0; dr < down; dr++)
@@ -232,8 +234,16 @@ function table(node: PasteNode, ctx: Ctx): string {
     `| ${Array.from({ length: width }, (_, i) => cells[i] ?? "").join(" | ")} |`;
   const [head, ...body] = rows;
   const caption = elements(node).find((child) => child.nodeName.toUpperCase() === "CAPTION");
-  const title = caption ? flatten(clean(children(caption, ctx))) : "";
+  const title = caption ? flatten(clean(children(caption, resolve(caption, ctx)))) : "";
   return [...(title ? [title, ""] : []), line(head), `| ${Array(width).fill("---").join(" | ")} |`, ...body.map(line)].join("\n");
+}
+
+// The element's last white-space declaration wins over the inherited mode.
+function resolve(node: PasteNode, parent: Ctx): Ctx {
+  const declared = [...attr(node, "style").toLowerCase().matchAll(/white-space:\s*([\w-]+)/g)].at(-1)?.[1];
+  if (declared === undefined) return parent;
+  const space = declared === "pre-line" ? "line" : /^(?:pre|break-spaces)/.test(declared) ? "pre" : "collapse";
+  return space === parent.space ? parent : { ...parent, space };
 }
 
 function convert(node: PasteNode, parent: Ctx): string {
@@ -250,9 +260,7 @@ function convert(node: PasteNode, parent: Ctx): string {
   const tag = node.nodeName.toUpperCase();
   if (SKIP.has(tag)) return "";
   const style = attr(node, "style").toLowerCase();
-  const declared = [...style.matchAll(/white-space:\s*([\w-]+)/g)].at(-1)?.[1];
-  const space = declared === undefined ? parent.space : declared === "pre-line" ? "line" : /^(?:pre|break-spaces)/.test(declared) ? "pre" : "collapse";
-  const ctx = space === parent.space ? parent : { ...parent, space };
+  const ctx = resolve(node, parent);
   switch (tag) {
     case "BR":
       return "\n";
@@ -266,7 +274,7 @@ function convert(node: PasteNode, parent: Ctx): string {
       const [lead, text, trail] = edges(inner);
       const plain = text.replace(MARKS, "");
       if (!plain || plain === raw || plain === href || `mailto:${plain}` === raw) return `${lead}${href}${trail}`;
-      return `${lead}[${text.replace(/([[\]])/g, "\\$1")}](${href})${trail}`;
+      return perParagraph(inner, (body) => `[${body.replace(/([[\]])/g, "\\$1")}](${href})`);
     }
     case "STRONG":
     case "B":
