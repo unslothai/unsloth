@@ -26,6 +26,12 @@ processor ran before. Calls it cannot take (masks, other head dims, other device
 
 ``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``: ``0`` never engages it, ``1`` engages it wherever it is accurate without
 the race, unset races it where INT8 attention is already wanted (an INT8 checkpoint) or it was requested by name.
+
+Where the CUDA kernel cannot be built or loaded on an NVIDIA card (no NVRTC, as on a Windows install without the CUDA
+runtime wheels, or a failed compile, module load or first launch), the same calls run the Triton kernel of
+``diffusion_int8_attention_triton`` instead, when Triton imports and ``TRITON_KERNEL_CONFIGS`` has the card. That path
+passes its own accuracy check and race before it engages. ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL``: ``auto`` (default),
+``cuda`` (never Triton on NVIDIA) or ``triton`` (skip the CUDA kernel).
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from functools import lru_cache
 from typing import Any, Callable, Optional
 
 INT8_ATTENTION_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL"
+IMPL_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL"
 BACKEND = "unsloth_int8"
 _OP = "unsloth_studio::int8_attention_nhd"
 HEAD_DIMS = (64, 128)
@@ -90,6 +97,26 @@ ROCM_KERNEL_CONFIGS: dict = {
         64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "f16_t", "kscale": "tile"},
     },
 }
+# NVIDIA cards whose CUDA kernel cannot be built or loaded run the Triton kernel: block shape and P.V mode per CUDA
+# capability and head dim; a missing capability keeps native (sm75: Triton has no int8 tensor-core dot there).
+TRITON_KERNEL_CONFIGS: dict = {
+    (8, 0): {
+        128: {"bm": 128, "bn": 64, "warps": 8, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+    },
+    (8, 6): {
+        128: {"bm": 128, "bn": 64, "warps": 8, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+    },
+    (8, 9): {
+        128: {"bm": 128, "bn": 64, "warps": 8, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+    },
+    (12, 0): {
+        128: {"bm": 128, "bn": 64, "warps": 8, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+    },
+}
 QUANT_ROWS = 64  # the padded Q length is a multiple of this
 ROT_GROUP = (
     128  # channels per Hadamard block of the Q / K rotation (the head dim where that is smaller)
@@ -104,7 +131,10 @@ _VERDICTS: dict = {}
 _BROKEN: set = set()
 _VERIFIED: set = set()
 _LOADED: dict = {}
-STATS = {"int8": 0, "native": 0}
+# (device index, head dim) -> why the CUDA kernel cannot run there (NVRTC, compile, module load or launch error)
+_CUDA_FAILED: dict = {}
+# "int8": calls the INT8 kernels ran (either implementation), "triton": those the Triton kernel ran
+STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 
 
@@ -116,6 +146,13 @@ def mode() -> str:
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
     return "auto"
+
+
+def impl_setting() -> str:
+    """``auto`` | ``cuda`` | ``triton`` from ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL`` (NVIDIA only: ROCm always runs
+    Triton)."""
+    raw = (os.environ.get(IMPL_ENV) or "auto").strip().lower()
+    return raw if raw in ("cuda", "triton") else "auto"
 
 
 def requested(value: Any) -> bool:
@@ -151,13 +188,68 @@ def rocm_kernel_config(arch: Any, head_dim: int) -> Optional[dict]:
     return dict(found) if found else None
 
 
-def device_config(index: int, head_dim: int) -> Optional[dict]:
-    """The kernel config for this device and head dim: the CUDA table by capability, the ROCm table by gfx arch."""
+def triton_kernel_config(capability: Any, head_dim: int) -> Optional[dict]:
+    """The Triton config for an NVIDIA capability and head dim, or None."""
+    try:
+        table = TRITON_KERNEL_CONFIGS.get((int(capability[0]), int(capability[1])))
+    except Exception:  # noqa: BLE001
+        return None
+    found = (table or {}).get(int(head_dim))
+    return dict(found) if found else None
+
+
+@lru_cache(maxsize = 1)
+def triton_available() -> bool:
+    """Whether the Triton kernel module has Triton to compile with (torch's own on Linux, triton-windows on
+    Windows)."""
+    try:
+        from . import diffusion_int8_attention_triton as triton_kernel
+        return triton_kernel.triton is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def implementation(index: int, head_dim: int) -> Optional[str]:
+    """``cuda`` | ``triton`` | None (native attention): what serves this device and head dim. NVIDIA runs the CUDA
+    kernel unless it failed to build, load or launch here (or ``IMPL=triton``); then the Triton kernel where Triton
+    imports and the capability has a Triton config. ROCm runs Triton where its gfx arch has a config."""
     import torch
 
     if _is_rocm():
+        return "triton" if rocm_kernel_config(_gfx_arch(index), head_dim) is not None else None
+    setting = impl_setting()
+    capability = torch.cuda.get_device_capability(index)
+    if (
+        setting != "triton"
+        and kernel_config(capability, head_dim) is not None
+        and (int(index), int(head_dim)) not in _CUDA_FAILED
+    ):
+        return "cuda"
+    if setting == "cuda":
+        return None
+    if triton_kernel_config(capability, head_dim) is not None and triton_available():
+        return "triton"
+    return None
+
+
+def device_config(
+    index: int,
+    head_dim: int,
+    impl: Optional[str] = None,
+) -> Optional[dict]:
+    """The kernel config for this device and head dim on the implementation that serves it (``implementation``):
+    the CUDA or the Triton table by capability, the ROCm table by gfx arch."""
+    import torch
+
+    impl = impl or implementation(index, head_dim)
+    if impl is None:
+        return None
+    if _is_rocm():
         return rocm_kernel_config(_gfx_arch(index), head_dim)
-    return kernel_config(torch.cuda.get_device_capability(index), head_dim)
+    capability = torch.cuda.get_device_capability(index)
+    if impl == "triton":
+        return triton_kernel_config(capability, head_dim)
+    return kernel_config(capability, head_dim)
 
 
 def kernel_defines(head_dim: int, config: dict) -> dict:
@@ -496,11 +588,15 @@ def unsupported_reason(q: Any, k: Any, v: Any) -> Optional[str]:
 
 
 def _verified(q: Any, k: Any, v: Any) -> bool:
-    """Whether the accuracy check passed for this call's card, head dim and operand dtypes (the op runs the kernel
-    only then: a check passed in one dtype says nothing about another)."""
+    """Whether the accuracy check passed for this call's card, head dim and operand dtypes on the implementation that
+    serves it (the op runs the kernel only then: a check passed in one dtype, or by the other implementation, says
+    nothing about this one)."""
     index = _device_index(q.device)
     head_dim = int(q.shape[-1])
-    return all((index, head_dim, str(x.dtype)) in _VERIFIED for x in (q, k, v))
+    impl = implementation(index, head_dim)
+    return impl is not None and all(
+        (index, head_dim, str(x.dtype), impl) in _VERIFIED for x in (q, k, v)
+    )
 
 
 def int8_attention(
@@ -518,8 +614,9 @@ def int8_attention(
     if reason is not None:
         raise ValueError(f"INT8 attention cannot take this call: {reason}")
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    config = config or device_config(index, q.shape[-1])
-    if _is_rocm():
+    impl = implementation(index, int(q.shape[-1]))
+    config = config or device_config(index, q.shape[-1], impl)
+    if impl == "triton":
         from . import diffusion_int8_attention_triton as triton_kernel
         with torch.no_grad(), torch.cuda.device(q.device):
             return triton_kernel.int8_attention(q, k, v, config, scale = scale)
@@ -545,6 +642,8 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
         try:
             out = int8_attention(q, k, v)
             STATS["int8"] += 1
+            if implementation(_device_index(q.device), int(q.shape[-1])) == "triton":
+                STATS["triton"] += 1
             return out
         except torch.OutOfMemoryError:
             raise
@@ -645,14 +744,22 @@ def _median_ms(fns: dict, rounds: int = 5) -> dict:
 
 
 def _check(
-    device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Optional[Callable], timed: bool
+    device: Any,
+    dtype: Any,
+    heads: int,
+    head_dim: int,
+    incumbent: Optional[Callable],
+    timed: bool,
+    impl: str = "cuda",
 ) -> dict:
     """``ok``: the kernel runs here and matches fp32 attention on the probe, also with q and k scaled up. ``ms``: int8 and incumbent milliseconds
     per call at each RACE_TOKENS size (when ``timed``). ``min_tokens``: the sequence length from which the kernel
-    is more than 2% faster than the incumbent, or None when it is not at the larger size."""
+    is more than 2% faster than the incumbent, or None when it is not at the larger size. ``failed``: the kernel
+    raised (it could not be built, loaded or launched) rather than missed the accuracy bar. ``impl`` is the
+    implementation ``int8_attention`` runs here; a pass is recorded for it alone."""
     import torch
 
-    out: dict = {"ok": False, "ms": {}, "min_tokens": None}
+    out: dict = {"ok": False, "ms": {}, "min_tokens": None, "impl": impl}
     try:
         with torch.no_grad():
             q, k, v = probe_inputs(device, dtype, 1000, min(int(heads), 4), head_dim)
@@ -665,6 +772,7 @@ def _check(
         raise
     except Exception as exc:  # noqa: BLE001 -- no kernel on this card
         out["error"] = repr(exc)[:300]
+        out["failed"] = True
         return out
     out.update(acc)
     out["sharp_cos"] = sharp_cos
@@ -673,7 +781,7 @@ def _check(
     )
     if out["ok"]:
         dev = torch.device(device)
-        _VERIFIED.add((_device_index(dev), int(head_dim), str(dtype)))
+        _VERIFIED.add((_device_index(dev), int(head_dim), str(dtype), impl))
     if not out["ok"] or not timed:
         return out
     wins = {}
@@ -710,22 +818,55 @@ def verdict(
     incumbent_name: str = "native",
     timed: bool = True,
 ) -> dict:
-    """``_check`` cached per (device, dtype, heads, head dim, incumbent, timed)."""
+    """``_check`` cached per (device, dtype, heads, head dim, incumbent, timed, implementation). A CUDA kernel that
+    raises in the check (no NVRTC, a failed compile, module load or launch) is recorded as failed on this card and
+    the check runs again on the implementation that serves it now (Triton, where it can), whose verdict is
+    returned."""
     import torch
 
     dev = torch.device(device)
     index = dev.index if dev.index is not None else torch.cuda.current_device()
-    key = (index, str(dtype), int(heads), int(head_dim), incumbent_name, bool(timed))
-    found = _VERDICTS.get(key)
-    if found is not None:
+    hd = int(head_dim)
+
+    def key_of(impl: Optional[str]) -> tuple:
+        return (index, str(dtype), int(heads), hd, incumbent_name, bool(timed), impl)
+
+    found = _VERDICTS.get(key_of(implementation(index, hd)))
+    if found is not None and not (found.get("impl") == "cuda" and found.get("failed")):
         return found
     with _LOCK:
-        if key not in _VERDICTS:
-            with torch.cuda.device(index):
-                _VERDICTS[key] = _check(
-                    torch.device("cuda", index), dtype, int(heads), int(head_dim), incumbent, timed
+        while True:
+            impl = implementation(index, hd)
+            key = key_of(impl)
+            found = _VERDICTS.get(key)
+            if found is None and impl is None:
+                found = {
+                    "ok": False,
+                    "ms": {},
+                    "min_tokens": None,
+                    "impl": None,
+                    "error": _CUDA_FAILED.get((index, hd)) or "no kernel for this card",
+                }
+                _VERDICTS[key] = found
+            if found is None:
+                with torch.cuda.device(index):
+                    found = _check(
+                        torch.device("cuda", index), dtype, int(heads), hd, incumbent, timed, impl
+                    )
+                _VERDICTS[key] = found
+            if impl == "cuda" and found.get("failed") and (index, hd) not in _CUDA_FAILED:
+                _CUDA_FAILED[(index, hd)] = found.get("error")
+                _log().warning(
+                    "diffusion.int8_attention: CUDA kernel unavailable on cuda:%d (head_dim=%d): %s; %s",
+                    index,
+                    hd,
+                    found.get("error"),
+                    "trying the Triton kernel"
+                    if implementation(index, hd) == "triton"
+                    else "native attention",
                 )
-    return _VERDICTS[key]
+                continue
+            return found
 
 
 def _head_dim(attn: Any) -> Optional[int]:
@@ -828,7 +969,7 @@ def _install(
     for m in candidates:
         proc = m.processor
         head_dim = _head_dim(m)
-        if head_dim is None or device_config(index, head_dim) is None:
+        if head_dim is None or implementation(index, head_dim) is None:
             continue
         if getattr(proc, "_parallel_config", None) is not None:
             continue
@@ -839,6 +980,7 @@ def _install(
         )
         found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = not force)
         report[(int(m.heads), head_dim, name)] = found
+        proc._unsloth_int8_impl = found.get("impl")
         if not found.get("ok"):
             continue
         if force:
@@ -853,10 +995,11 @@ def _install(
     if logger is not None:
         for (heads, head_dim, name), found in report.items():
             logger.info(
-                "diffusion.int8_attention: heads=%d head_dim=%d vs %s: ok=%s cos=%s ms=%s min_tokens=%s%s",
+                "diffusion.int8_attention: heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s min_tokens=%s%s",
                 heads,
                 head_dim,
                 name,
+                found.get("impl"),
                 found.get("ok"),
                 found.get("cos"),
                 found.get("ms"),
@@ -864,7 +1007,12 @@ def _install(
                 " (forced)" if force else "",
             )
         if engaged:
-            logger.info("diffusion.int8_attention: %s on %d attention modules", BACKEND, engaged)
+            logger.info(
+                "diffusion.int8_attention: %s (%s) on %d attention modules",
+                BACKEND,
+                "/".join(sorted(engaged_implementations(transformer))),
+                engaged,
+            )
     return engaged
 
 
@@ -923,17 +1071,31 @@ def int8_attention_count(transformer: Any) -> int:
     )
 
 
+def engaged_implementations(transformer: Any) -> set:
+    """The implementations (``cuda`` / ``triton``) the routed processors run."""
+    if transformer is None:
+        return set()
+    return {
+        str(getattr(m.processor, "_unsloth_int8_impl", None) or "cuda")
+        for m in int8_processors(transformer)
+        if getattr(m.processor, "_unsloth_int8", False)
+    }
+
+
 def status(transformer: Any = None) -> dict:
     """What the status panel and the logs report."""
     return {
         "backend": BACKEND,
         "mode": mode(),
+        "impl_setting": impl_setting(),
         "modules": int8_attention_count(transformer),
+        "impl": sorted(engaged_implementations(transformer)),
         "calls": dict(STATS),
+        "cuda_failed": {f"cuda:{k[0]} head_dim={k[1]}": v for k, v in _CUDA_FAILED.items()},
         "verdicts": {
-            f"cuda:{k[0]} {k[1]} heads={k[2]} head_dim={k[3]} vs {k[4]}": {
+            f"cuda:{k[0]} {k[1]} heads={k[2]} head_dim={k[3]} vs {k[4]} impl={k[6]}": {
                 x: v.get(x)
-                for x in ("ok", "cos", "rel_l1", "sharp_cos", "ms", "min_tokens", "error")
+                for x in ("impl", "ok", "cos", "rel_l1", "sharp_cos", "ms", "min_tokens", "error")
                 if x in v
             }
             for k, v in _VERDICTS.items()

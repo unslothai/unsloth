@@ -53,6 +53,7 @@ needs_rocm_kernel = pytest.mark.skipif(
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+    monkeypatch.delenv(I.IMPL_ENV, raising = False)
     stats = dict(I.STATS)
     yield
     I.STATS.update(stats)

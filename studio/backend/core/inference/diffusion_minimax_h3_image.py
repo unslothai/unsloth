@@ -2939,6 +2939,9 @@ def _race_int8_kernel(
             transformer, device = dev, dtype = dtype, modules = block_modules, force = True, logger = log
         )
         record["checked_s"] = round(time.perf_counter() - started, 3)
+        # which INT8 implementation passed the card check: the CUDA kernel, or Triton where it cannot load
+        impls = {getattr(m.processor, "_unsloth_int8_impl", None) for m in block_modules}
+        record["impl"] = "/".join(sorted(x for x in impls if x)) or None
         if not ready or setting == "force":
             record["blocks"] = ready
             return ready, None
