@@ -1779,6 +1779,10 @@ class _InferenceRuntimeFields(BaseModel):
     context_length: Optional[int] = Field(
         None, description = "Runtime context length in tokens for the loaded model"
     )
+    npu_context_fit: Optional[int] = Field(
+        None,
+        description = "Token window estimated to fit free RAM at NPU load time, before the Auto minimum.",
+    )
     max_context_length: Optional[int] = Field(
         None,
         description = (
@@ -2418,7 +2422,7 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     resident_on_gpu: Optional[bool] = Field(
         None,
-        description = "True when resident_mib is model buffers on the GPUs /api/system reports, false for a CPU-only llama.cpp build, null when unknown (Vulkan or SYCL buffers are not parsed).",
+        description = "True when resident_mib is model buffers on the GPUs /api/system reports, false for system RAM (a CPU-only llama.cpp build, an NPU model), null when unknown (Vulkan or SYCL buffers are not parsed).",
     )
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
@@ -4956,6 +4960,7 @@ class DiffusionLoadRequest(BaseModel):
             "sage",
             "xformers",
             "aiter",
+            "unsloth_int8",
         ]
     ] = Field(
         None,
@@ -4964,7 +4969,8 @@ class DiffusionLoadRequest(BaseModel):
         "near-lossless, when a speed profile is active; native SDPA elsewhere and when "
         "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
         "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
-        "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
+        "friendly); unsloth_int8 is Studio's own INT8 attention kernel on the families with "
+        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
         "unavailable kernel falls back to the default.",
     )
     transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(
@@ -7111,6 +7117,15 @@ class TranscribeSourceRequest(SttContextSettings):
     language: Optional[str] = Field(None, max_length = 64)
     timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
     speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
+    speaker_accent: Optional[str] = Field(
+        None,
+        max_length = 200,
+        description = (
+            "Optional accent of the speaker, such as 'Chinese-accented English'. Sent as a text hint "
+            "to models that take one (stt capabilities 'accent_hint'); the transcript stays in the "
+            "spoken language."
+        ),
+    )
     title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
     provider_id: Optional[str] = Field(
         None,
@@ -7479,6 +7494,7 @@ class VideoLoadRequest(BaseModel):
             "sage",
             "xformers",
             "aiter",
+            "unsloth_int8",
         ]
     ] = Field(
         None,
@@ -7486,7 +7502,8 @@ class VideoLoadRequest(BaseModel):
         "exact backend for the device (cuDNN fused attention on NVIDIA when a speed profile "
         "is active; native SDPA elsewhere and when speed=off). native (alias sdpa) forces "
         "default SDPA; cudnn/flash/flash3/flash4 are exact (kernel/arch-gated); sage is INT8 "
-        "attention; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
+        "attention; unsloth_int8 is Studio's own INT8 attention kernel on the families with strided "
+        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
         "kernel falls back to the default.",
     )
     transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(

@@ -124,7 +124,8 @@ jobs:
         #
         # Shards root at `tests/` and differ only in ignores: `--ignore=FILE` does not filter explicit arguments.
         # `rest` is the remainder, so new files land in exactly one shard (test_ci_backend_pytest_shards.py).
-        # Ranges balance the 1500 s backstop: a-k hit it on 2026-10-23, g-r on 2026-11-09 (g-l ~40%, m-r ~60%).
+        # Ranges balance the 1500 s backstop: a-k hit it on 2026-10-23, g-r on 2026-11-09 (g-l ~40%, m-r ~60%),
+        # a-f on 2026-11-13, so test_diffusion* (~60% of a-f) has its own shard.
         include:
           - python: '3.13'
             scope: full
@@ -134,6 +135,24 @@ jobs:
               --ignore-glob=tests/*/*
               --ignore-glob=tests/*_test.py
               --ignore-glob=tests/test_[!a-f]*.py
+              --ignore-glob=tests/test_diffusion*.py
+          - python: '3.13'
+            scope: full
+            shard: diffusion
+            # Everything but test_diffusion*: one letter at a time, so test_diffusers* stays in a-f.
+            selection: >-
+              tests/
+              --ignore-glob=tests/*/*
+              --ignore-glob=tests/*_test.py
+              --ignore-glob=tests/test_[!d]*.py
+              --ignore-glob=tests/test_d[!i]*.py
+              --ignore-glob=tests/test_di[!f]*.py
+              --ignore-glob=tests/test_dif[!f]*.py
+              --ignore-glob=tests/test_diff[!u]*.py
+              --ignore-glob=tests/test_diffu[!s]*.py
+              --ignore-glob=tests/test_diffus[!i]*.py
+              --ignore-glob=tests/test_diffusi[!o]*.py
+              --ignore-glob=tests/test_diffusio[!n]*.py
           - python: '3.13'
             scope: full
             shard: g-l

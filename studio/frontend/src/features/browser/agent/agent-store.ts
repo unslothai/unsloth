@@ -126,7 +126,7 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
           enabled: saved.enabled === true,
           permissions: checkedPermissions(saved.permissions),
           historyAccess: saved.historyAccess === "allow" || saved.historyAccess === "never" ? saved.historyAccess : "ask",
-          scriptAccess: saved.scriptAccess === "never" ? "never" : "ask",
+          scriptAccess: saved.scriptAccess === "allow" || saved.scriptAccess === "never" ? saved.scriptAccess : "ask",
           showCursor: saved.showCursor !== false,
         };
       },

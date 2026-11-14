@@ -24,6 +24,7 @@ import {
   committedServerTuningState,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
+import { isNpuModelId } from "@/features/npu";
 import { withSandboxAttachmentPaths } from "../sandbox-attachments";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
@@ -2316,6 +2317,7 @@ export async function buildLocalTokenCountExtras(
       }),
       isMlx: state.loadedIsMlx === true,
       isManagedEngine: state.loadedEngine !== "auto",
+      isNpu: isNpuModelId(state.params.checkpoint),
       autoCompactEnabled: state.autoCompactEnabled,
     }),
   };
@@ -2769,6 +2771,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxPleOffloadReason",
   "mlxExpertOffloadReason",
   "loadedMlxOffloadDiskBytes",
+  "loadedNpuContextFit",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
@@ -5641,10 +5644,11 @@ export function createOpenAIStreamAdapter(
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const isManagedEngineForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
+      const isNpuForCompaction = isNpuModelId(params.checkpoint);
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&
-        (isGgufForCompaction || isMlxForCompaction);
+        (isGgufForCompaction || isMlxForCompaction || isNpuForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -6981,6 +6985,7 @@ export function createOpenAIStreamAdapter(
               isGguf: isGgufForCompaction,
               isMlx: isMlxForCompaction,
               isManagedEngine: isManagedEngineForCompaction,
+              isNpu: isNpuForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
               compactNow,
             }),

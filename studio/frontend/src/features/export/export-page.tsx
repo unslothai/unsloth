@@ -303,7 +303,8 @@ export function ExportPage() {
   const [destination, setDestination] = useState<"local" | "hub">("local");
   // The converter writes beside the GGUFs, so a Hub-only export has nowhere to put it.
   const [npuStatus] = useNpuStatus();
-  const hasNpu = !!npuStatus?.supported;
+  // An AMD NPU feature: only with a supported NPU and FastFlowLM installed, never on NVIDIA.
+  const hasNpu = !!npuStatus?.supported && !!npuStatus?.ready;
   const [q4nxSummary, setQ4nxSummary] = useState<Q4nxSummary | null>(null);
   const [q4nxInUse, setQ4nxInUse] = useState(false);
   const trackCardInUse = (event: { target: EventTarget }) =>

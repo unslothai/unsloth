@@ -151,6 +151,7 @@ _NVIDIA_EXPECTED = {
     "sage": ("sage", "sage"),
     "xformers": ("xformers", "xformers"),
     "aiter": (None, None),
+    "unsloth_int8": ("_native_cudnn", "_native_cudnn"),
 }
 
 
