@@ -58,11 +58,15 @@ const EDGES = new RegExp(`^([\\s${FENCE_OPEN}${FENCE_CLOSE}]*)([\\s\\S]*?)([\\s$
 const MARKS = new RegExp(`[${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
 const NOT_MARKS = new RegExp(`[^${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
 
-// Edge whitespace moves out past fence marks, so `**bold **` never forms.
+// Edge whitespace moves out past fence marks, so `**bold **` never forms; it stays fenced if it was.
 function edges(inner: string): [string, string, string] {
   const [, head, body, tail] = EDGES.exec(inner) ?? ["", "", inner, ""];
   const marks = (s: string) => s.replace(NOT_MARKS, "");
-  return [head.replace(MARKS, ""), `${marks(head)}${body}${marks(tail)}`, tail.replace(MARKS, "")];
+  const space = (s: string, keep: boolean) => {
+    const ws = s.replace(MARKS, "");
+    return keep && ws && ws !== s ? `${FENCE_OPEN}${ws}${FENCE_CLOSE}` : ws;
+  };
+  return [space(head, true), `${marks(head)}${body}${marks(tail)}`, space(tail, tail.includes("\n"))];
 }
 
 function wrap(marker: string, inner: string): string {
@@ -181,7 +185,9 @@ function convert(node: PasteNode, parent: Ctx): string {
   const tag = node.nodeName.toUpperCase();
   if (SKIP.has(tag)) return "";
   const style = attr(node, "style").toLowerCase();
-  const ctx = /white-space:\s*pre/.test(style) ? { ...parent, pre: true } : parent;
+  const space = [...style.matchAll(/white-space:\s*([\w-]+)/g)].at(-1)?.[1];
+  const pre = space === undefined ? parent.pre : /^(?:pre|break-spaces)/.test(space);
+  const ctx = pre === parent.pre ? parent : { ...parent, pre };
   switch (tag) {
     case "BR":
       return "\n";
@@ -246,10 +252,14 @@ function convert(node: PasteNode, parent: Ctx): string {
   }
 }
 
+// Non-breaking spaces outside fences are layout; inside code they may be data.
+const FINAL = new RegExp(`${FENCE_OPEN}([\\s\\S]*?)${FENCE_CLOSE}|[${INDENT}\u00a0]|[${FENCE_OPEN}${FENCE_CLOSE}]`, "g");
+
 export function htmlNodeToMarkdown(root: PasteNode): string {
   return clean(convert(root, { pre: false, bold: false, italic: false })).replace(
-    new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}\u00a0]`, "g"),
-    (mark) => (mark === FENCE_OPEN || mark === FENCE_CLOSE ? "" : " "),
+    FINAL,
+    (mark, fenced?: string) =>
+      fenced !== undefined ? fenced.replaceAll(INDENT, " ") : mark === INDENT || mark === "\u00a0" ? " " : "",
   );
 }
 
@@ -266,7 +276,7 @@ export function richPasteMarkdown(
   if (!html || !STRUCTURE.test(html)) return null;
   const root = parse(html);
   if (!root) return null;
-  const markdown = htmlNodeToMarkdown(root);
+  const markdown = htmlNodeToMarkdown(root).trim();
   const plain = data.getData("text/plain");
   if (!markdown || squash(markdown) === squash(plain)) return null;
   // Restore the copied text's edge whitespace, which conversion trims.

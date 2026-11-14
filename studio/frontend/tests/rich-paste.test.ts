@@ -197,3 +197,24 @@ test("Google Docs bold, italic and links keep valid Markdown around their spaces
   );
   assert.equal(htmlNodeToMarkdown(body), "This is **bold** and *italic*\n\nhttps://x.com and [site](https://y.com)");
 });
+
+test("preformatted edge whitespace is restored once, and bold code keeps its indent", () => {
+  const docs = "white-space:pre;white-space:pre-wrap;";
+  const body = el(
+    "body",
+    el("b", { style: "font-weight:normal;" }, el("p", el("span", { style: docs }, "    if x:")), el("p", el("span", { style: `${docs}font-weight:700` }, "        return 1"))),
+  );
+  const plain = "    if x:\n        return 1";
+  const data = { types: ["text/html"], getData: (type: string) => (type === "text/html" ? "<b>x</b>" : plain) };
+  assert.equal(richPasteMarkdown(data, () => body), "    if x:\n\n        **return 1**");
+});
+
+test("a non-breaking space inside code is kept as data", () => {
+  const body = el("body", el("pre", el("code", "s = 'a\u00a0b'")));
+  assert.equal(htmlNodeToMarkdown(body), "```\ns = 'a\u00a0b'\n```");
+});
+
+test("a descendant that resets white-space collapses its own text again", () => {
+  const body = el("body", el("div", { style: "white-space:pre-wrap" }, el("b", "Q"), ":\n", el("span", { style: "white-space: normal" }, "hello\n    world")));
+  assert.equal(htmlNodeToMarkdown(body), "**Q**:\nhello world");
+});
