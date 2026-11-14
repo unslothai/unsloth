@@ -762,10 +762,6 @@ def test_cuda_compiled_and_graphed_dispatch_call(monkeypatch):
 
 
 def test_auto_list_matches_the_measured_families():
-    """Qwen-Image-2.1, Wan 2.2 and LTX-2 race by default; Z-Image-Turbo's per-step error with the kernel is above its
-    shipped INT8 weight error, so it routes only on request."""
-    assert D.AUTO_DITS == {
-        "QwenImage21Transformer2DModel",
-        "WanTransformer3DModel",
-        "LTX2VideoTransformer3DModel",
-    }
+    """Qwen-Image-2.1 and Wan 2.2 race by default; Z-Image-Turbo and LTX-2 (audio output) have a per-step error with
+    the kernel above their shipped INT8 weight error, so they route only on request."""
+    assert D.AUTO_DITS == {"QwenImage21Transformer2DModel", "WanTransformer3DModel"}

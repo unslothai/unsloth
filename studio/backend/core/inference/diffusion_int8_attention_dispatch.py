@@ -41,12 +41,12 @@ DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
 # DiT classes the unset switch races on: those whose teacher-forced per-step denoiser error with the kernel stays
-# within the error of the weight quantisation Studio ships for them. Z-Image-Turbo is left out: 1.4x its INT8 weight
-# error (rel L2 0.035 against 0.024 at bf16 weights, G4), so it routes only by name or with the env switch.
+# within the error of the INT8 weights Studio ships for them, on every output. Left out, so they route only by name
+# or with the env switch: Z-Image-Turbo (rel L2 0.035 against 0.024 for its INT8 weights, G4) and LTX-2 (video 0.044
+# against 0.046, but its audio output 0.010 against 0.008).
 AUTO_DITS = frozenset(
     {
         "QwenImage21Transformer2DModel",
-        "LTX2VideoTransformer3DModel",
         "WanTransformer3DModel",
     }
 )
