@@ -22638,6 +22638,9 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     response = await _slot_status(current_subject)
     if isinstance(response, InferenceStatusResponse) and response.is_gguf:
         response.resident_mib, response.resident_on_gpu = _llama_resident()
+    elif isinstance(response, InferenceStatusResponse) and response.is_npu:
+        # Off Linux psutil finds lemond's children by reading every process: not on the loop.
+        response.resident_mib, response.resident_on_gpu = await asyncio.to_thread(_npu_resident_mib)
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
@@ -22678,6 +22681,43 @@ def _llama_resident() -> "tuple[Optional[int], Optional[bool]]":
 
         # No parsed buffers proves nothing (Vulkan, SYCL); only a CPU-only build is a CPU run.
         return mib, (False if _Llama._backend_lacks_gpu_lib() else None)
+    except Exception:  # noqa: BLE001 - optional decoration on a status read
+        return None, None
+
+
+def _npu_resident_mib() -> "tuple[Optional[int], Optional[bool]]":
+    """RSS of lemond's process tree, floored at the catalog size: NPU buffers can miss the working set."""
+    try:
+        from core.inference.npu_backend import peek_npu_backend
+
+        npu = peek_npu_backend()
+        resident = npu.resident() if npu is not None else None
+        if resident is None:
+            return None, None
+        measured = 0
+        pid = getattr(getattr(npu, "_server", None), "pid", None)
+        if isinstance(pid, int):
+            import psutil
+
+            from utils.process_tree import linux_descendant_pids
+
+            try:
+                root = psutil.Process(pid)
+                descendants = linux_descendant_pids(pid)
+                tree = root.children(recursive = True) if descendants is None else descendants
+            except psutil.Error:
+                root, tree = None, []
+            for proc in [root, *tree] if root is not None else []:
+                try:
+                    proc = psutil.Process(proc) if isinstance(proc, int) else proc
+                    measured += proc.memory_info().rss
+                except psutil.Error:
+                    continue
+        # Lemonade lists sizes in decimal GB.
+        size_gb = resident.model.size_gb
+        catalog = size_gb * 1000**3 if size_gb else 0
+        mib = int(max(measured, catalog) // (1024 * 1024))
+        return (mib, False) if mib > 0 else (None, None)
     except Exception:  # noqa: BLE001 - optional decoration on a status read
         return None, None
 

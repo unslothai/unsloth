@@ -78,7 +78,13 @@ import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { MemoryShareBar } from "@/components/monitor-memory";
 import { inferenceGpuDisjoint, poolSplit } from "@/components/monitor-share";
 import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
-import { holdsModelsInVram, vramCards } from "@/components/monitor-cards";
+import {
+  holdsModelsInVram,
+  npuActive,
+  npuCard,
+  vramCards,
+} from "@/components/monitor-cards";
+import { useNpuStatus } from "@/features/npu";
 import {
   Select,
   SelectContent,
@@ -322,9 +328,11 @@ export function ResourcesTab() {
     setShowModelBreakdown,
   } = useMonitorOverlayStore();
   const wantsModels = showUnslothShare || showModelBreakdown;
+  const [npuStatus] = useNpuStatus();
+  const wantsModelRows = wantsModels || npuActive(npuStatus);
   const { polledEntries: loadedModels } = useLoadedModels(
-    wantsModels,
-    wantsModels,
+    wantsModelRows,
+    wantsModelRows,
   );
   const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
   // always fetch once: the switch is persisted now, so gating the hook on it
@@ -681,6 +689,9 @@ export function ResourcesTab() {
   });
   const ramSegments = split.ram;
   const vramSegments = split.vram;
+  const npu = hostUnread
+    ? null
+    : npuCard(npuStatus, loadedModels, systemInfo.npu_load_percent);
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu, not displayedGpu: a Vulkan llama.cpp makes displayedGpu use the inference
@@ -851,6 +862,31 @@ export function ResourcesTab() {
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
+          {npu && (
+            <MetricTile
+              label={t("settings.resources.liveMonitor.npu")}
+              value={npu.name}
+              detail={
+                npu.driver
+                  ? t("settings.resources.liveMonitor.npuDriver", {
+                      version: npu.driver,
+                    })
+                  : undefined
+              }
+              extraDetail={
+                npu.model
+                  ? npu.residentGb !== null
+                    ? t("settings.resources.liveMonitor.npuModelInRam", {
+                        model: npu.model,
+                        size: formatGiB(npu.residentGb),
+                      })
+                    : npu.model
+                  : t("settings.resources.liveMonitor.noModelLoaded")
+              }
+              showUsage={npu.loadPercent !== null}
+              percent={npu.loadPercent}
+            />
+          )}
         </div>
         {(ramSegments || vramSegments) && (
           <div
