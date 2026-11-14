@@ -238,7 +238,6 @@ function table(node: PasteNode, ctx: Ctx): string {
   return [...(title ? [title, ""] : []), line(head), `| ${Array(width).fill("---").join(" | ")} |`, ...body.map(line)].join("\n");
 }
 
-// The element's last white-space declaration wins over the inherited mode.
 function resolve(node: PasteNode, parent: Ctx): Ctx {
   const declared = [...attr(node, "style").toLowerCase().matchAll(/white-space:\s*([\w-]+)/g)].at(-1)?.[1];
   if (declared === undefined) return parent;
