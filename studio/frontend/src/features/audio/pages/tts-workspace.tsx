@@ -20,6 +20,7 @@ import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
+import { useT } from "@/i18n";
 import { formatRelativeShort } from "@/features/hub/lib/format";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import { toast } from "@/lib/toast";
@@ -173,6 +174,7 @@ export function TtsRailFields({
   audioOptionSpecs: allAudioOptionSpecs,
   advancedOpen,
   setAdvancedOpen,
+  modelSelection,
   temperature,
   mossFrameLimit,
   handleTemperatureChange,
@@ -221,12 +223,49 @@ export function TtsRailFields({
     advancedOpen: boolean;
     inputs?: ReactNode;
     claimedOptions?: ReadonlySet<string>;
+    modelSelection?: {
+      selectedModel: string | null;
+      onChooseModel: () => void;
+    };
   }) {
+  const t = useT();
   const audioOptionSpecs = claimedOptions?.size
     ? allAudioOptionSpecs.filter((spec) => !claimedOptions.has(spec.name))
     : allAudioOptionSpecs;
   return (
     <>
+      {modelSelection ? (
+        <div className="grid gap-1.5">
+          <span className="text-ui-13 font-medium text-foreground">
+            {t("studio.wizard.modelLabel")}
+          </span>
+          <Button
+            type="button"
+            variant="picker"
+            className="w-full justify-between gap-3"
+            disabled={busy !== null}
+            onClick={modelSelection.onChooseModel}
+            aria-label={
+              modelSelection.selectedModel
+                ? `${t("studio.wizard.modelLabel")}: ${modelSelection.selectedModel}. ${t("studio.modelPicker.selectModel")}`
+                : t("studio.training.chooseModel")
+            }
+          >
+            {modelSelection.selectedModel ? (
+              <>
+                <span className="min-w-0 flex-1 truncate text-left">
+                  {modelSelection.selectedModel}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {t("studio.modelPicker.selectModel")}
+                </span>
+              </>
+            ) : (
+              t("studio.training.chooseModel")
+            )}
+          </Button>
+        </div>
+      ) : null}
       {/* Field inlined: its label needs a form control, and PillTabs is a tablist. */}
       <div className="grid gap-1.5">
         <span className="text-ui-13 font-medium text-foreground">
