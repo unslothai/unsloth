@@ -1136,3 +1136,35 @@ test("missing send times are distinguished from real Open WebUI timestamps", () 
   assert.equal(conversation.messages[0].metadata?.createdAtEstimated, true);
   assert.notEqual(conversation.messages[1].metadata?.createdAtEstimated, true);
 });
+
+test("hosted calls replay cannot strip get no made-up result", () => {
+  const record = recordOf(
+    [
+      {
+        id: "a",
+        parentId: null,
+        role: "assistant",
+        timestamp: 1,
+        content: "done",
+        output: [
+          { type: "file_search_call", id: "fs_1", queries: ["revenue"], status: "completed" },
+          { type: "mcp_call", id: "mcp_1", name: "read_file", server_label: "fs", arguments: "{}", status: "completed" },
+          { type: "web_search_call", id: "ws_1", action: { type: "search", query: "cats" }, status: "completed" },
+        ],
+      },
+    ],
+    "a",
+  );
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  const calls = parts(conversation, 0).filter((part) => part.type === "tool-call");
+  assert.deepEqual(
+    calls.map((call) => [call.toolName, call.result]),
+    [
+      ["file_search", undefined],
+      ["fs__read_file", undefined],
+      ["web_search", "completed"],
+    ],
+  );
+});

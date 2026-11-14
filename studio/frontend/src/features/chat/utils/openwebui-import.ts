@@ -230,6 +230,8 @@ const BUILTIN_TOOL_NAMES: Record<string, string> = {
   shell: "code_execution",
   code_interpreter: "code_execution",
 };
+// Hosted cards replay strips (chat-adapter SERVER_SIDE_BUILTIN_TOOL_NAMES); only these may get a status-only result.
+const REPLAY_STRIPPED_TOOL_NAMES = new Set(["web_search", "web_fetch", "code_execution", "image_generation"]);
 // Executed by the client, so neither hosted nor answered on its own.
 export const CLIENT_RUN_CALLS = new Set([
   "function_call",
@@ -340,8 +342,10 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
           ? item.results
           : undefined) ??
         item.error ??
-        // Client-run calls get their result from a later *_call_output; a hosted call finished.
-        (hosted ? (str(item.status) ?? "completed") : undefined);
+        // A finished hosted card needs a result or it spins; any other card would replay a made-up one.
+        (hosted && REPLAY_STRIPPED_TOOL_NAMES.has(part.toolName as string)
+          ? (str(item.status) ?? "completed")
+          : undefined);
       if (done != null) part.result = done;
       toolCallIndex.set(callId, part);
       parts.push(part);
