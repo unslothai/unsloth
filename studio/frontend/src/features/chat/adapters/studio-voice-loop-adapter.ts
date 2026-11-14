@@ -83,6 +83,13 @@ let heldTurn: { text: string; at: number } | null = null;
 // through the paused reply's barge gate, which resets its clocks and never flushes the fragment.
 let heldFromBarge = false;
 
+// The last transcript this loop put in the composer: the re-arm clears only that, never a typed draft.
+let voiceBoxText = "";
+
+export function voiceWroteBox(text: string): boolean {
+  return text.trim() !== "" && text.trim() === voiceBoxText.trim();
+}
+
 export function clearHeldTurn(): void {
   heldTurn = null;
   heldFromBarge = false;
@@ -154,6 +161,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         return () => speechCallbacks.delete(cb);
       },
     };
+    const emitSpeech = (transcript: string, isFinal: boolean) => {
+      voiceBoxText = transcript;
+      for (const cb of speechCallbacks) cb({ transcript, isFinal });
+    };
 
     const teardown = () => {
       useChatRuntimeStore.getState().setVoiceHearing(false);
@@ -202,8 +213,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (heldTurn) {
         const text = heldTurn.text;
         heldTurn = null;
-        for (const cb of speechCallbacks)
-          cb({ transcript: text, isFinal: true });
+        emitSpeech(text, true);
         finish("stopped", text);
         setTimeout(() => requestVoiceSubmit(), 0);
         return;
@@ -291,7 +301,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             at: heldTurn?.at ?? performance.now(),
           };
           heldFromBarge = bargedIn;
-          for (const cb of speechCallbacks) cb({ transcript, isFinal: false });
+          emitSpeech(transcript, false);
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);
           return;
@@ -306,12 +316,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           for (let i = stepChars; i < total; i += stepChars) {
             if (ended) return;
             const partial = transcript.slice(0, i);
-            for (const cb of speechCallbacks)
-              cb({ transcript: partial, isFinal: false });
+            emitSpeech(partial, false);
             await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
           }
           if (ended) return;
-          for (const cb of speechCallbacks) cb({ transcript, isFinal: true });
+          emitSpeech(transcript, true);
           finish("stopped", transcript);
           setTimeout(() => requestVoiceSubmit(), 0);
         } else {

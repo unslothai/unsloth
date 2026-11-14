@@ -12,6 +12,7 @@ import {
 import {
   StudioVoiceLoopAdapter,
   clearHeldTurn,
+  voiceWroteBox,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -77,9 +78,8 @@ export const VoiceEngine: FC = () => {
       const fresh = auiRef.current.composer();
       // Already listening: startDictation() on a live session tears the mic down.
       if (fresh.getState().dictation) return;
-      if (fresh.getState().text) {
-        fresh.setText("");
-      }
+      // Leftover transcript doubles up as the next session appends; a typed draft is the user's.
+      if (voiceWroteBox(fresh.getState().text)) fresh.setText("");
       // Via the runtime, not the Dictate button: voice mode hides it.
       fresh.startDictation();
     };

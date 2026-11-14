@@ -29,3 +29,12 @@ test("a barge-in pause latches even before the first clip is queued", () => {
   const pause = player.slice(player.indexOf("const pausePlayback = useCallback("));
   assert.doesNotMatch(pause.slice(0, 400), /clipsRef\.current\.size === 0/);
 });
+
+test("the re-arm clears only the transcript the loop wrote, never a typed draft", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /if \(voiceWroteBox\(fresh\.getState\(\)\.text\)\) fresh\.setText\(""\);/);
+  assert.doesNotMatch(engine, /if \(fresh\.getState\(\)\.text\) \{\s*fresh\.setText\(""\);/);
+  // Every transcript reaches the composer through emitSpeech, which records it.
+  assert.equal((loop.match(/for \(const cb of speechCallbacks\)/g) ?? []).length, 1);
+  assert.match(loop, /const emitSpeech = \(transcript: string, isFinal: boolean\) => \{\s*voiceBoxText = transcript;/);
+});
