@@ -287,6 +287,41 @@ def test_a_durable_run_refused_before_inference_refunds_its_override():
     assert token_limit.enforce(api = False) is not None
 
 
+def test_a_finalized_tool_call_is_charged_and_keeps_the_override_spent():
+    now = _now_ms()
+    _thread("seed", now)
+    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override("combined")
+    spent = token_limit.enforce(api = False)
+    runs, token = _durable_run(
+        {"model": "local", "messages": [], "token_limit_override": list(spent)}
+    )
+    runs.append_events(
+        "run",
+        token,
+        [
+            ("chunk", {"type": "tool_args", "tool_call_id": "r1", "text": "h" * 100}),
+            ("chunk", {"type": "tool_start", "tool_call_id": "r1", "arguments_text": "h" * 100}),
+            (
+                "chunk",
+                {
+                    "type": "tool_start",
+                    "tool_call_id": "p1",
+                    "tool_name": "python",
+                    "arguments_text": "x" * 300,
+                    "awaiting_confirmation": True,
+                },
+            ),
+        ],
+    )
+    assert runs.reconcile_orphaned_runs() == 1
+    # 100 streamed + 300 finalized characters, the streamed call not counted twice.
+    assert _pools()["combined"]["used"] == 100 + 100
+    with pytest.raises(HTTPException):
+        token_limit.enforce(api = False)
+
+
 def test_native_tool_call_deltas_count_in_an_interrupted_run():
     runs, token = _durable_run({"model": "local", "messages": []})
     runs.append_events(

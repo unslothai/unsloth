@@ -1097,6 +1097,29 @@ def test_scheduled_replies_respect_the_cap_and_one_override(monkeypatch, externa
             assert producer.payload is None
 
 
+def test_a_scheduled_run_refused_before_inference_keeps_its_override(monkeypatch):
+    import json
+
+    from fastapi import HTTPException
+
+    from core.inference import token_limit
+
+    now = db.now_ms()
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+    task = make_task()
+    response = json.loads(completion("Done.").body)
+    response["usage"] = {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}
+    answer = generate(monkeypatch, FakeProducer(JSONResponse(response)), task)
+    scheduler_module.save_chat(task, {"id": "run-1"}, answer, now, now + 1)
+    token_limit.update_settings({"enabled": True, "limit": 100}, password = None, new_password = None)
+    token_limit.grant_override("combined")
+    refused = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded"))
+    with pytest.raises(RunFailed):
+        generate(monkeypatch, refused, task)
+    # Nothing was generated, so the override still admits the next run.
+    assert generate(monkeypatch, FakeProducer(completion("Done.")), task).content == "Done."
+
+
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("empty", [False, True])
 def test_scheduled_usage_is_recorded_before_a_chat_is_saved(monkeypatch, external, empty):

@@ -618,6 +618,7 @@ async def generate_answer(
             async def produce() -> Any:
                 # Settled in this task: slot routing lives in its context, which the caller never sees.
                 reply = None
+                refused_status = None
                 try:
                     await _enforce_token_limit(request, external = provider is not None)
                     with temporary_usage_scope(
@@ -651,12 +652,23 @@ async def generate_answer(
                     if allow_switch and int(getattr(reply, "status_code", 200)) < 400:
                         serving["loaded"] = _model_is_loaded(payload.model)
                     return reply
+                except HTTPException as exc:
+                    refused_status = exc.status_code
+                    raise
                 finally:
                     end_in_process_request(
                         request.scope,
                         answered = reply is not None
                         and int(getattr(reply, "status_code", 200)) < 400,
                     )
+                    # No HTTP middleware sees this in-process request: refund a 4xx refusal here.
+                    status = refused_status or (
+                        int(getattr(reply, "status_code", 200)) if reply is not None else None
+                    )
+                    spent = getattr(getattr(request, "state", None), "token_limit_override", None)
+                    if spent and status is not None and 400 <= status < 500:
+                        from core.inference.token_limit import restore_override
+                        await asyncio.to_thread(restore_override, *spent)
 
             producer = asyncio.ensure_future(produce())
             done, _ = await asyncio.wait({producer}, timeout = max(0.0, deadline - loop.time()))

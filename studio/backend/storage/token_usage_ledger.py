@@ -255,6 +255,7 @@ def settle_interrupted_run(conn: sqlite3.Connection, run_id: str):
     output it persisted after the last one; reported usage, if it ever arrives, replaces it."""
     output = 0
     reported = False
+    streamed_calls: set = set()
     for (payload,) in conn.execute(
         "SELECT payload_json FROM chat_generation_events WHERE run_id = ? AND event_type = 'chunk'"
         " ORDER BY seq",
@@ -276,6 +277,11 @@ def settle_interrupted_run(conn: sqlite3.Connection, run_id: str):
         if chunk.get("type") == "tool_args":
             # Generated arguments (e.g. render_html), sent as additive slices; tool output is not.
             output += _text_chars(chunk.get("text"))
+            streamed_calls.add(chunk.get("tool_call_id"))
+            continue
+        if chunk.get("type") == "tool_start" and chunk.get("tool_call_id") not in streamed_calls:
+            # A finalized call (python, terminal) carries its whole generated arguments here.
+            output += _text_chars(chunk.get("arguments_text"))
             continue
         choices = chunk.get("choices")
         for choice in choices if isinstance(choices, list) else ():
