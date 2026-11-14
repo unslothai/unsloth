@@ -337,10 +337,67 @@ def test_race_incumbent_is_the_processor_backend(monkeypatch):
     dit.set_attention_backend("native")
     D.install_dispatch_route()
     monkeypatch.setitem(D._STATE, "original", spy)
-    assert D.install(_Pipe(dit), _TARGET) == 0  # lost the race: nothing routes
+    monkeypatch.setattr(D, "long_verdict", lambda *a, **k: None)
+    assert D.install(_Pipe(dit), _TARGET) == 0  # lost both races: nothing routes
     q, k, v = _qkv(dtype = torch.float32)
     seen[0]["incumbent"](q, k, v)
     assert calls == [AttentionBackendName.NATIVE]
+
+
+def test_long_race_routes_long_calls_only(card, monkeypatch):
+    """A card where the kernel loses at the race's sizes but wins at video lengths routes from that length on."""
+    _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": None})
+    asked = []
+    monkeypatch.setattr(D, "long_verdict", lambda *a, **k: asked.append(a[2:5]) or 24)
+    dit = _wan_dit()
+    dit.set_attention_backend("native")
+    pipe = _Pipe(dit)
+    assert D.install(pipe, _TARGET) == 4 and asked
+    assert {m.processor._attention_backend.min_tokens for m in D.routable_modules(dit)} == {24}
+    with torch.no_grad():
+        dit(**_wan_inputs())
+    assert D.ROUTE_STATS == {"int8": 2, "short": 2}
+    # forced never needs it
+    asked.clear()
+    monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
+    assert D.install(pipe, _TARGET) == 4 and not asked
+
+
+def test_long_verdict_thresholds(monkeypatch):
+    times = {}
+
+    def median_ms(fns, rounds = 5):
+        return dict(times[current[0]])
+
+    current = [None]
+
+    def probe(
+        device,
+        dtype,
+        tokens,
+        heads,
+        head_dim,
+        seed = 0,
+    ):
+        current[0] = tokens
+        return (None, None, None)
+
+    monkeypatch.setattr(I, "_median_ms", median_ms)
+    monkeypatch.setattr(I, "probe_inputs", probe)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    large, small = D.LONG_RACE_TOKENS
+    cases = [
+        ({large: (10.0, 9.0), small: (5.0, 4.0)}, (small + I.RACE_TOKENS[0]) // 2),
+        ({large: (10.0, 9.0), small: (5.0, 4.95)}, (large + small) // 2),
+        ({large: (10.0, 9.9), small: (5.0, 4.0)}, None),
+    ]
+    for n, (rows, want) in enumerate(cases):
+        times.clear()
+        times.update({t: {"incumbent": a, "int8": b} for t, (a, b) in rows.items()})
+        assert D.long_verdict("cuda:0", torch.bfloat16, 2, 64, None, f"case{n}") == want
+    # cached per key
+    times.clear()
+    assert D.long_verdict("cuda:0", torch.bfloat16, 2, 64, None, "case0") == cases[0][1]
 
 
 def test_masked_processors_keep_the_incumbent(card, monkeypatch):

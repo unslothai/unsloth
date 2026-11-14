@@ -24,7 +24,10 @@ Which loads route (``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL`` is read by ``diff
 * ``1``, or the load asked for ``unsloth_int8`` by name: every DiT whose processors call the dispatch, wherever the
   kernel passes its accuracy check on this card (no race, except the Triton stand-in).
 * unset: the DiT classes in ``AUTO_DITS`` on NVIDIA, where the kernel passes the check and wins the timed race
-  against the processor's own backend by more than ``RACE_MARGIN``; from ``RACE_TOKENS[1]`` tokens on at least.
+  against the processor's own backend by more than ``RACE_MARGIN``; from ``RACE_TOKENS[1]`` tokens on at least. Where
+  it loses at the race's sizes, a second race at ``LONG_RACE_TOKENS`` (video and large-image lengths) can still route
+  the calls from that length on: the int8 products win more the longer the sequence (A100: 0.96x at 4096 tokens,
+  1.37x at 27k).
 """
 
 from __future__ import annotations
@@ -49,7 +52,11 @@ AUTO_DITS = frozenset(
 # processors that already run the kernel themselves
 _STRIDED_FLAG = "_unsloth_int8"
 
+# (large, small) token counts of the second race, for a card where the kernel loses at RACE_TOKENS
+LONG_RACE_TOKENS = (16384, 8192)
+
 _LOCK = threading.Lock()
+_LONG_VERDICTS: dict = {}
 _STATE: dict = {"original": None}
 # eager calls by outcome ("int8" or why the incumbent ran); compiled calls are counted when they are traced
 ROUTE_STATS: dict = {}
@@ -361,6 +368,44 @@ def install(
         return 0
 
 
+def long_verdict(
+    device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Any, name: str
+) -> Optional[int]:
+    """The token count from which the kernel beats the incumbent by more than ``RACE_MARGIN`` at
+    ``LONG_RACE_TOKENS``, or None. Timed like the card race (interleaved, median); cached per card, dtype, geometry
+    and incumbent; an out-of-memory probe counts as a loss."""
+    import torch
+
+    from . import diffusion_int8_attention as I8
+
+    key = (str(device), str(dtype), int(heads), int(head_dim), name)
+    if key in _LONG_VERDICTS:
+        return _LONG_VERDICTS[key]
+    wins: dict = {}
+    for tokens in LONG_RACE_TOKENS:
+        try:
+            with torch.no_grad():
+                q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
+                ms = I8._median_ms(
+                    {
+                        "incumbent": lambda: incumbent(q, k, v),
+                        "int8": lambda: I8.int8_attention(q, k, v),
+                    }
+                )
+            wins[tokens] = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
+        except torch.OutOfMemoryError:
+            wins[tokens] = False
+        finally:
+            q = k = v = None
+            torch.cuda.empty_cache()
+    large, small = LONG_RACE_TOKENS
+    found = None
+    if wins[large]:
+        found = (small + int(I8.RACE_TOKENS[0])) // 2 if wins[small] else (large + small) // 2
+    _LONG_VERDICTS[key] = found
+    return found
+
+
 def _target_device(target: Any) -> str:
     return str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
 
@@ -431,7 +476,10 @@ def _install(pipe: Any, target: Any, requested: Any, logger: Any) -> int:
         if forced and not stand_in:
             minimum = 0
         elif found.get("min_tokens") is None:
-            continue
+            minimum = long_verdict(dev, dtype, int(m.heads), head_dim, run, name)
+            report[(int(m.heads), head_dim, name)] = {**found, "long_min_tokens": minimum}
+            if minimum is None:
+                continue
         else:
             minimum = max(int(found["min_tokens"]), int(I8.RACE_TOKENS[-1]))
         proc._attention_backend = Int8Route(
@@ -441,7 +489,7 @@ def _install(pipe: Any, target: Any, requested: Any, logger: Any) -> int:
     if logger is not None:
         for (heads, head_dim, name), found in report.items():
             logger.info(
-                "diffusion.int8_attention: heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s min_tokens=%s%s",
+                "diffusion.int8_attention: heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s min_tokens=%s%s%s",
                 heads,
                 head_dim,
                 name,
@@ -450,6 +498,9 @@ def _install(pipe: Any, target: Any, requested: Any, logger: Any) -> int:
                 found.get("cos"),
                 found.get("ms"),
                 found.get("min_tokens"),
+                f" long race min_tokens={found['long_min_tokens']}"
+                if "long_min_tokens" in found
+                else "",
                 " (forced)" if forced else "",
             )
         if routed:
