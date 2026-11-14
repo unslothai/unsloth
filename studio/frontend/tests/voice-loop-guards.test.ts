@@ -146,7 +146,7 @@ test("speech begun just before the reply ended keeps its opening frames", () => 
 test("a temporary chat never asks for its voice decisions to be logged", () => {
   const client = readSrc("features/chat/voice/voice-models-client.ts");
   assert.match(client, /const temporary = useChatRuntimeStore\.getState\(\)\.incognito \|\| \(threadId !== null && isThreadIncognito\(threadId\)\);/);
-  assert.match(client, /voice\.voiceLogEnabled && !temporary &&/);
+  assert.match(client, /threadId !== null &&\s*voice\.voiceLogEnabled &&\s*!temporary &&/);
 });
 
 test("turning voice off forgets the open reply stream", () => {
