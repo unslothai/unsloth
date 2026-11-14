@@ -56,15 +56,8 @@ def _registry(identity: Any) -> Any:
 
 
 def _addresses(peer: Any) -> List[Tuple[str, int]]:
-    default = int(getattr(peer, "agent_port", 0) or 0)
-    out: List[Tuple[str, int]] = []
-    for addr in getattr(peer, "addrs", None) or []:
-        host, sep, port = str(addr).rpartition(":")
-        if sep and host and port.isdigit() and ":" not in host:
-            out.append((host, int(port)))
-        elif addr and default:
-            out.append((str(addr), default))
-    return out
+    from studio.cluster_link.status import addresses
+    return addresses(peer)
 
 
 def parse_duration(text: str) -> float:
@@ -435,47 +428,6 @@ def _sentence(text: str) -> str:
     return text[:1].upper() + text[1:] if text else text
 
 
-# macOS answers "No route to host" for every outgoing LAN connection until the app has Local Network access.
-LOCAL_NETWORK_HINT = (
-    "on macOS, allow Local Network access for the app running Unsloth in "
-    "System Settings > Privacy & Security > Local Network"
-)
-
-
-def _unreachable_reason(st: Any) -> str:
-    if not isinstance(st, dict):
-        return "not found on the LAN"
-    raw = str(st.get("error") or "")
-    low = raw.lower()
-    if "errno 111" in low or "connection refused" in low or "connect call failed" in low:
-        return "not running: start `unsloth worker` there"
-    if "timeout" in low or "timed out" in low:
-        return "timed out"
-    if "certificate" in low or "ssl" in low or "tls" in low:
-        return f"TLS refused: {raw}; re-pair it if it was reset"
-    if "no route" in low or "unreachable" in low or "errno 113" in low:
-        if sys.platform == "darwin":
-            return f"no route to it on the network; {LOCAL_NETWORK_HINT}"
-        return "no route to it on the network"
-    return raw or "no answer"
-
-
-def _through_tailnet(peer: Any, ask: Any) -> Optional[Tuple[str, Any]]:
-    """("direct" | "relayed", status) for a worker answering through its tailcat address, else None."""
-    from studio.cluster_link import AGENT_PORT_DEFAULT, remote
-
-    if not getattr(peer, "tc_addr", "") or not remote.enabled():
-        return None
-    local = remote.forward(peer.node_id, peer.tc_addr, int(peer.agent_port or AGENT_PORT_DEFAULT))
-    if local is None:
-        return None
-    st = ask(peer, "127.0.0.1", local)
-    if not isinstance(st, dict) or st.get("type") == "error" or st.get("reachable") is False:
-        return None
-    info = remote.path(peer.node_id)
-    return ("direct" if getattr(info, "direct", False) else "relayed"), st
-
-
 @cluster_app.command("list")
 def list_workers(
     check: bool = typer.Option(True, "--check/--no-check", help = "Ask each worker for its status."),
@@ -504,91 +456,36 @@ def list_workers(
             where = f"{pairs[0][0]}:{pairs[0][1]}" if pairs else "address unknown"
             _say(_printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}"))
         return
-    from studio.cluster_link.relay import RelayManager
+    from studio.cluster_link import status
 
-    relays = RelayManager(
-        master, lambda peer: _registry(identity).authorize(peer, "worker") is not None
-    )
-
-    def ask(peer: Any, host: str, port: int) -> Any:
-        try:
-            relays.ensure(peer.node_id, host, port)
-            return relays.status(peer.node_id, timeout = 3.0)
-        except Exception as exc:
-            return {"type": "error", "error": type(exc).__name__, "reachable": False}
-
-    def answered(st: Any) -> bool:
-        return (
-            isinstance(st, dict)
-            and st.get("reachable", True) is not False
-            and st.get("type") != "error"
-        )
-
-    found: dict = {}
     try:
-        for peer in workers:
-            for i, (addr, aport) in enumerate(_addresses(peer)):
-                st = ask(peer, addr, aport)
-                if i == 0 or answered(st):
-                    found[peer.node_id] = (f"{addr}:{aport}", st, False)
-                if answered(st):
-                    if i:
-                        with registry.transaction():
-                            registry.record_address(peer.node_id, addr, aport)
-                    break
-        missing = [p for p in workers if not answered(found.get(p.node_id, (None, None))[1])]
-        if missing:
-            from studio.cluster_link.discovery import Listener
-
-            fps = {p.node_id: p.fingerprint for p in workers}
-            _say(f"Looking for {len(missing)} worker(s) on the LAN...")
-            listener = Listener(accept = lambda node_id, fp: fps.get(node_id) == fp).start()
-            try:
-                time.sleep(DISCOVERY_SETTLE_S)
-                for peer in missing:
-                    for seen in listener.candidates(peer.node_id):
-                        if seen.fp != peer.fingerprint:
-                            continue
-                        st = ask(peer, seen.host, seen.agent_port)
-                        if answered(st):
-                            found[peer.node_id] = (f"{seen.host}:{seen.agent_port}", st, True)
-                            with registry.transaction():
-                                registry.record_address(peer.node_id, seen.host, seen.agent_port)
-                            break
-            finally:
-                listener.stop()
-        via: dict = {}
-        for peer in [p for p in workers if not answered(found.get(p.node_id, (None, None))[1])]:
-            path = _through_tailnet(peer, ask)
-            if path is not None:
-                found[peer.node_id] = ("through tailcat", path[1], False)
-                via[peer.node_id] = path[0]
-        for peer in workers:
-            where, st, discovered = found.get(peer.node_id, ("address unknown", None, False))
-            line = _printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}")
-            if not answered(st):
-                line += _printable(f"  unreachable ({_unreachable_reason(st)})")
-            elif via.get(peer.node_id) == "relayed":
-                line += "  relayed only: too slow to serve models"
-            else:
-                state = "busy" if st.get("busy") else ("ready" if st.get("rpc_up") else "rpc down")
-                if state == "ready":
-                    kind = via.get(peer.node_id)
-                    state += (
-                        " (direct internet connection)" if kind == "direct" else " (local network)"
-                    )
-                devices = ", ".join(str(d) for d in st.get("devices") or [])
-                line += f"  {state}" + (f"  [{devices}]" if devices else "")
-                if discovered:
-                    line += "  (found by discovery)"
-            _say(line)
+        rows = status.check_workers(
+            master,
+            registry,
+            workers,
+            authorize = lambda peer: _registry(identity).authorize(peer, "worker") is not None,
+            settle_s = DISCOVERY_SETTLE_S,
+            on_search = lambda n: _say(f"Looking for {n} worker(s) on the LAN..."),
+        )
     finally:
-        relays.stop()
         try:
             from studio.cluster_link import remote
             remote.close()
         except Exception:
             pass
+    for row in rows:
+        line = _printable(f"{row.name:<20} {row.node_id[:12]}  {row.where}")
+        if row.state == "unreachable":
+            line += _printable(f"  unreachable ({row.reason})")
+        elif row.state == "relayed":
+            line += "  relayed only: too slow to serve models"
+        else:
+            state = f"ready ({row.via})" if row.state == "ready" else row.state
+            devices = ", ".join(row.devices)
+            line += f"  {state}" + (f"  [{devices}]" if devices else "")
+            if row.discovered:
+                line += "  (found by discovery)"
+        _say(line)
 
 
 @cluster_app.command("discover")
