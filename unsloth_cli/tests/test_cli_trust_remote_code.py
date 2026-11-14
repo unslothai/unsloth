@@ -179,3 +179,16 @@ def test_server_refusal_points_at_the_flag(monkeypatch, capsys):
         backend.ensure_loaded("m", hf_token = None, max_seq_length = 2048, load_in_4bit = True)
 
     assert "--trust-remote-code" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["remote_code_blocked", "malware_blocked"])
+def test_a_scan_refusal_wins_over_the_flag(monkeypatch, capsys, kind):
+    refusal = Exception("Model 'm' ships custom code flagged as CRITICAL by the security scan.")
+    refusal.error_kind = kind
+    _install_fake_backend(monkeypatch, error = refusal)
+
+    with pytest.raises(typer.Exit):
+        _local_load(trust_remote_code = True)
+
+    err = capsys.readouterr().err
+    assert "flagged as CRITICAL" in err and "never overrides it" in err

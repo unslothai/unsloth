@@ -750,7 +750,18 @@ def _load_gguf_backend(
     return ChatBackend("gguf", llama_backend)
 
 
-def _exit_if_needs_remote_code(model: str, exc: Exception, trust_remote_code: bool) -> None:
+_SECURITY_BLOCKS = ("malware_blocked", "remote_code_blocked")
+
+
+def _exit_if_refused_load(model: str, exc: Exception, trust_remote_code: bool) -> None:
+    if getattr(exc, "error_kind", None) in _SECURITY_BLOCKS:
+        typer.echo(f"Error: {exc}", err = True)
+        typer.echo(
+            "The repository security scan refused this load; --trust-remote-code never "
+            "overrides it.",
+            err = True,
+        )
+        raise typer.Exit(code = 1)
     # transformers and the server both phrase this refusal with the kwarg name.
     if trust_remote_code or "trust_remote_code" not in str(exc):
         return
@@ -830,7 +841,7 @@ def load_chat_backend(
                 load_kwargs["trust_remote_code"] = trust_remote_code
             loaded = backend.load_model(**load_kwargs)
         except Exception as exc:
-            _exit_if_needs_remote_code(model, exc, trust_remote_code)
+            _exit_if_refused_load(model, exc, trust_remote_code)
             if not is_mlx_distributed:
                 raise
             if rank == 0:
@@ -1117,7 +1128,7 @@ class HttpChatBackend:
                 self._request("POST", "/api/inference/load", payload),
             )
         except Exception as exc:
-            _exit_if_needs_remote_code(model, exc, trust_remote_code)
+            _exit_if_refused_load(model, exc, trust_remote_code)
             typer.echo(f"Model load failed: {exc}", err = True)
             raise typer.Exit(code = 1)
         self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
