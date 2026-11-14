@@ -311,6 +311,20 @@ def _read_local_json_object(path: Path) -> dict:
         return {}
 
 
+def _is_decision_folder(path: str | Path, hf_token: Optional[str] = None) -> bool:
+    """A Decision API model (Clef or Laya) by its files: a folder, or a repo id's cached snapshot. Never raises, so
+    one odd folder cannot fail a scan or a load."""
+    from utils.models.model_config import is_decision_model
+    try:
+        # The d1 marker test reads config.json, and that read blocks forever on a FIFO.
+        config = Path(path) / "config.json"
+        if config.exists() and not config.is_file():
+            return False
+        return is_decision_model(str(path), hf_token, local_files_only = True)
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        return False
+
+
 def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     """False for a locally identifiable non-generative Transformers row. ``None`` means inconclusive and the format capability stands, so a custom architecture is never hidden. Without this, an embedding export is chat-capable on file format alone, and those are small enough that chat auto-load spends its whole attempt budget on them."""
     if not _safe_is_dir(path):
@@ -330,6 +344,11 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     config = _read_local_json_object(path / "config.json")
     if not config:
         return None
+
+    # A Clef decision model is a causal LM plus a decision head, so the rules below answer True. Checked after the
+    # guarded read above, as the d1 marker test reads config.json again.
+    if _is_decision_folder(path):
+        return False
 
     auto_map = config.get("auto_map")
     if isinstance(auto_map, dict) and any(
