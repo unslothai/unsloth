@@ -181,7 +181,7 @@ import {
   parseExternalModelId,
   useExternalProvidersStore,
 } from "@/features/chat";
-import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { ModelLoadCompactStatus, ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { cancelConnectionImageGeneration } from "./connection-cancel";
 import {
   type ImageGenerationPresetParams,
@@ -231,6 +231,7 @@ import {
   routedImageFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
+import { createMediaLoadToast } from "@/lib/media-load-toast";
 import { toast } from "@/lib/toast";
 import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
@@ -788,55 +789,56 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-function loadToastDescription(p: DiffusionLoadProgress) {
+function loadStatus(p: DiffusionLoadProgress) {
   if (p.phase === "saving_chat_context") {
-    return (
-      <ModelLoadDescription
-        title="Saving chat context…"
-        message="Saving the chat model's context so it can resume after this load."
-      />
-    );
+    return {
+      title: "Saving chat context…",
+      brief: "Saving chat context",
+      message: "Saving the chat model's context so it can resume after this load.",
+      progressPercent: null,
+      progressLabel: null,
+    };
   }
   // "Downloading" only when bytes actually remain: a cached model must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
-  const title = downloading
-    ? "Downloading model requirements…"
-    : p.phase === "finalizing"
-      ? "Loading to GPU…"
-      : "Starting model…";
   const hasTotal = p.bytes_total > 0;
+  return {
+    title: downloading
+      ? "Downloading model requirements…"
+      : p.phase === "finalizing"
+        ? "Loading to GPU…"
+        : "Starting model…",
+    brief: downloading ? "Downloading" : p.phase === "finalizing" ? "Loading to GPU" : "Starting",
+    message: downloading
+      ? "Downloading the files required to load this model."
+      : "Loading the model.",
+    progressPercent: hasTotal ? p.fraction * 100 : null,
+    progressLabel: hasTotal
+      ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
+      : p.bytes_downloaded > 0
+        ? `${formatBytes(p.bytes_downloaded)} downloaded`
+        : null,
+  };
+}
+
+function LoadInlineStatus({ p }: { p: DiffusionLoadProgress }) {
+  const s = loadStatus(p);
   return (
-    <ModelLoadDescription
-      title={title}
-      message={
-        downloading
-          ? "Downloading the files required to load this model."
-          : "Loading the model."
-      }
-      progressPercent={hasTotal ? p.fraction * 100 : null}
-      progressLabel={
-        hasTotal
-          ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
-          : p.bytes_downloaded > 0
-            ? `${formatBytes(p.bytes_downloaded)} downloaded`
-            : null
-      }
+    <ModelLoadCompactStatus
+      label={s.brief}
+      title={[s.title, s.message, s.progressLabel].filter(Boolean).join(" ")}
+      progressPercent={s.progressPercent}
     />
   );
 }
 
 // `onCancel` is the only control that reaches a first load in flight.
-function loadToastArgs(
-  p: DiffusionLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
-) {
+function loadToastArgs(p: DiffusionLoadProgress, onCancel: () => void) {
   return {
-    ...(id != null ? { id } : {}),
-    description: loadToastDescription(p),
+    description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
+    cancel: { label: "Cancel", onClick: onCancel },
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
@@ -2198,7 +2200,7 @@ export function ImagesPage({
     setStopping(false);
   }, []);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadToastId = useRef<string | number | null>(null);
+  const [closedLoad, setClosedLoad] = useState<DiffusionLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
@@ -2316,14 +2318,15 @@ export function ImagesPage({
     [claimImageRecipe, familyOverride, imageFormClaimId, modelSelectionAction],
   );
 
-  const dismissLoadToast = useCallback(() => {
-    if (loadToastId.current != null) toast.dismiss(loadToastId.current);
-    loadToastId.current = null;
-  }, []);
+  const [loadToast] = useState(() =>
+    createMediaLoadToast<DiffusionLoadProgress>({
+      toastOptions: loadToastArgs,
+      onClosedChange: setClosedLoad,
+    }),
+  );
+  const dismissLoadToast = loadToast.dismiss;
   const pickToast = useDiffusionPickToast();
 
-  const cancelLoadRef = useRef<() => void>(() => {});
-  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
   // In-flight requests compare against this and discard their result after a cancel.
   const cancelSeq = useRef(0);
   // The compensating unload carries no identity, so it must not fire once a newer load owns the page.
@@ -3622,25 +3625,25 @@ export function ImagesPage({
       }
       // Include bytes_total: the estimate lands as a 0->real jump while the rest holds.
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
-      if (loadToastId.current != null && sig !== lastLoadSig.current) {
+      if (sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        loadToast.update(p);
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor, rememberFinishedLoad]);
+  }, [dismissLoadToast, refreshStatus, loadToast, offerLoadAnywayFor, rememberFinishedLoad]);
 
   // The unload failed, so restore the poll and toast. refreshStatus cannot: a first load is not resident.
   const restoreLoadTracking = useCallback(() => {
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToast.open(IDLE_PROGRESS);
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, loadToast]);
 
   // generate-progress carries no terminal record, so refresh the gallery on completion.
   const resumeGeneratePoll = useCallback(() => {
@@ -3762,7 +3765,7 @@ export function ImagesPage({
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToast.open(p);
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
@@ -3802,7 +3805,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
+  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, loadToast, rememberFinishedLoad]);
 
   // Seed from a resident model's recipe, else flux.1-dev generates garbage at 9 steps.
   const residentSeeded = useRef(false);
@@ -4007,8 +4010,7 @@ export function ImagesPage({
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToast.open(IDLE_PROGRESS, pickToast.take(pickToastId));
       // Snapshot first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       // A torchao int8/fp8 transformer takes adapters only at LOAD time and /images/generate then
@@ -4048,8 +4050,8 @@ export function ImagesPage({
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
-        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
-          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {
+          loadToast.update(SAVING_PROGRESS);
         }
       });
       try {
@@ -4116,7 +4118,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, loadToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
   );
 
   const handleInitChange = useCallback((dataUrl: string | null) => {
@@ -5093,8 +5095,8 @@ export function ImagesPage({
   }, [busy, handleUnload, restoreLoadTracking]);
 
   useEffect(() => {
-    cancelLoadRef.current = () => void handleCancelLoad();
-  }, [handleCancelLoad]);
+    loadToast.setCancel(() => void handleCancelLoad());
+  }, [loadToast, handleCancelLoad]);
 
   const buildKey = status?.loaded
     ? [
@@ -6349,6 +6351,9 @@ export function ImagesPage({
                 </TooltipTrigger>
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
+            )}
+            {pageMode !== "train" && busy === "loading" && closedLoad && (
+              <LoadInlineStatus p={closedLoad} />
             )}
           </div>
         </div>
