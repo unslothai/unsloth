@@ -800,6 +800,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "isolated_as_log_operand",
         "config_default_per_file",
         "config_python",
+        "empty_cli_target",
+        "pip_python_env",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -862,6 +864,11 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "config_python": f"python -m venv venv && printf '[global]\\npython = %s\\n' \"$PWD/venv/bin/python\" > pip.ini"
         f" && PIP_CONFIG_FILE=pip.ini python -m pip --isolated install -q --no-index --no-deps {wheel}"
         f" && env -u PYTHONPATH venv/bin/{show}",
+        # An empty --target (an unset $DEST) chooses nothing, as pip tests it for truthiness.
+        "empty_cli_target": f"{_PIP} --target= {wheel} && {show}",
+        # PIP_PYTHON re-runs pip in that interpreter even under --isolated.
+        "pip_python_env": 'python -m venv venv && PIP_PYTHON="$PWD/venv/bin/python" PIP_CONFIG_FILE=/dev/null '
+        f"python -m pip --isolated install -q --no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
         # pip isolates on the raw word, even when it is --log's operand.
         "isolated_as_log_operand": f"{_PIP} --log --isolated {wheel} && {show}",
         # PIP_HOME is no pip option (no --home): it chooses nothing.
@@ -935,6 +942,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "isolated_as_log_operand": packages,
         "config_default_per_file": packages,
         "config_python": str(workdir / "venv"),
+        "empty_cli_target": packages,
+        "pip_python_env": str(workdir / "venv"),
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1905,12 +1914,19 @@ def test_a_killed_reinstall_keeps_its_old_file_list(tmp_path):
     prefix = tmp_path / "prefix"
     site_dir = prefix / "lib" / "site-packages"
     info = _dist(site_dir, "unsloth_killed_same", "1.0", 2, module = "kept.py")
+    # Reinstalled at the same version earlier in the run, before the kill: its note stamp is already current.
+    done = _dist(site_dir, "unsloth_done_same", "1.0", 3, module = "done.py")
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     site = os.path.abspath(site_dir)
-    (prefix / f".unsloth-installing-{dead.pid}").write_text(f"{site}\t{info.name}\t{10**9}\n")
+    (prefix / f".unsloth-installing-{dead.pid}").write_text(
+        f"{site}\t{info.name}\t{10**9}\n{site}\t{done.name}\t{3 * 10**9}\n"
+    )
     gone = os.path.normcase(str(site_dir / "gone.py"))
-    (prefix / f".unsloth-old-files-{dead.pid}").write_text(f"{site}\t{info.name}\t{gone}\n")
+    gone_done = os.path.normcase(str(site_dir / "gone_done.py"))
+    (prefix / f".unsloth-old-files-{dead.pid}").write_text(
+        f"{site}\t{info.name}\t{gone}\n{site}\t{done.name}\t{gone_done}\n"
+    )
     code = "import sitecustomize as s; print(sorted(p for v in s._saved_inventory().values() for p in v))"
     env = {
         **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
@@ -1920,7 +1936,7 @@ def test_a_killed_reinstall_keeps_its_old_file_list(tmp_path):
     out = subprocess.run(
         [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
     )
-    assert out.stdout.strip() == repr([gone]), out.stderr
+    assert out.stdout.strip() == repr(sorted([gone, gone_done])), out.stderr
     assert not (prefix / f".unsloth-old-files-{dead.pid}").exists()
 
 

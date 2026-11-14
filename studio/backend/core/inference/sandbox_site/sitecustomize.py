@@ -403,15 +403,18 @@ def _pip_options():
     return [arg for _, arg, option in _pip_words() if option]
 
 
-def _chooses_location(arg):
-    name = arg.split("=", 1)[0]
+def _chooses_location(arg, operand = ""):
+    # Only with a value: pip tests the option for truthiness, so --target= (an empty $DEST) chooses nothing.
+    name, eq, value = arg.partition("=")
     if name.startswith("--"):
-        return any(full.startswith(name) and len(name) >= n for full, n in _PIP_LOCATION_FLAGS)
+        if any(full.startswith(name) and len(name) >= n for full, n in _PIP_LOCATION_FLAGS):
+            return bool(value if eq else operand)
+        return False
     # -t DIR, -tDIR, or clustered after no-operand flags (-qt DIR, -Ut).
-    if name.startswith("-") and len(name) > 1:
-        for flag in name[1:]:
+    if arg.startswith("-") and len(arg) > 1:
+        for j, flag in enumerate(arg[1:], 1):
             if flag == "t":
-                return True
+                return bool(arg[j + 1 :] or operand)
             if flag not in "qvUI":
                 return False
     return False
@@ -638,7 +641,12 @@ def _route_pip(is_pip = None):
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             cli_user = _cli_user()
             options = _pip_options()
-            placed = cli_user is True or any(_chooses_location(a) for a in options)
+            argv = sys.argv + [""]
+            placed = cli_user is True or any(
+                _chooses_location(arg, argv[at + 1]) for at, arg, option in _pip_words() if option
+            )
+            # pip's main parser picks PIP_PYTHON up even under --isolated and re-runs pip in that interpreter.
+            placed = placed or bool(os.environ.get("PIP_PYTHON"))
             # pip's own trigger is the raw word anywhere after the subcommand, even as an operand (--log --isolated).
             isolated = "--isolated" in options or "--isolated" in sys.argv[1:]
             if not isolated:
@@ -1056,11 +1064,11 @@ def _killed_installs():
                     f.writelines(lines)
             found.update(tuple(line.rstrip("\n").split("\t")) for line in lines)
             # The killed run's pre-install file lists, so a later reinstall still retires the old-only files.
-            changed = {(e, n) for (e, n), v in now.items() if before.get((e, n)) != v}
+            # All of them: a reinstall that finished before the killed wheel also rewrote its RECORD.
             inventory = os.path.join(prefix, f"{_SAVED}-{pid}")
-            if changed and os.path.exists(inventory):
+            if os.path.exists(inventory):
                 with open(inventory, encoding = "utf-8") as f:
-                    rows = [line for line in f if tuple(line.split("\t")[:2]) in changed]
+                    rows = f.readlines()
                 with open(os.path.join(prefix, _SAVED), "a", encoding = "utf-8") as f:
                     f.writelines(rows)
             os.remove(path)
