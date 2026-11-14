@@ -708,7 +708,7 @@ test("non-function call items keep their name, arguments and result", () => {
   assert.equal(calls[0].toolName, "filesystem__read_file");
   assert.deepEqual(calls[0].args, { path: "/tmp/notes.txt", _server_tool: true });
   assert.equal(calls[0].result, "file contents");
-  assert.equal(calls[1].toolName, "code_interpreter");
+  assert.equal(calls[1].toolName, "code_execution");
   assert.deepEqual(calls[1].args, { command: "print(2 + 2)", _server_tool: true });
 });
 

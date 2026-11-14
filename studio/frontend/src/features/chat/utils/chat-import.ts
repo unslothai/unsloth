@@ -24,6 +24,7 @@ import {
   type ImportSource,
 } from "./json-record-stream";
 import {
+  CLIENT_RUN_CALLS,
   isOpenWebUIRecord,
   openWebUIRecordToConversation,
   reasoningText,
@@ -508,8 +509,6 @@ const BUILTIN_TOOL_NAMES: Record<string, string> = {
   code_interpreter_call: "code_execution",
   shell_call: "code_execution",
 };
-// Executed by the client, so neither hosted nor answered on its own.
-const CLIENT_RUN_CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call", "computer_call"]);
 
 // Adjacent assistant items share one turn, as in the backend's _normalise_responses_input.
 function responsesToTurns(obj: Record<string, unknown>): unknown[] {
