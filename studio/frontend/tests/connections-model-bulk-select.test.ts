@@ -32,18 +32,20 @@ test("Clear only removes the models the search shows", () => {
   assert.doesNotMatch(clear, /setSelectedModelIds\(\[\]\)/);
 });
 
-test("both model lists wire their buttons to the scoped handlers", () => {
-  assert.equal(dialog.match(/onClick=\{selectAllModels\}/g)?.length, 2);
-  assert.equal(
-    dialog.match(/onClick=\{clearModelSelection\}|clearModelSelection\(\);/g)
-      ?.length,
-    2,
-  );
+test("both model lists share one checklist wired to the scoped handlers", () => {
+  assert.equal(dialog.match(/onSelectAll=\{selectAllModels\}/g)?.length, 1);
+  assert.equal(dialog.match(/clearModelSelection\(\);/g)?.length, 1);
+  assert.match(dialog, /availableModels\.length > 0 \? modelChecklist\(true\) : null/);
+  assert.match(dialog, /availableModels\.length === 0 \? null : modelChecklist\(false\)/);
 });
 
 test("Clear keeps typed model IDs while a search is active", () => {
   assert.match(
     dialog,
-    /clearModelSelection\(\);\s*if \(!modelSearchQuery\.trim\(\)\) setManualModelIds\(""\);/,
+    /clearModelSelection\(\);\s*if \(clearsTypedIds && !modelSearchQuery\.trim\(\)\) setManualModelIds\(""\);/,
   );
+});
+
+test("the list has no Selected filter", () => {
+  assert.doesNotMatch(dialog, /selectedOnly/);
 });

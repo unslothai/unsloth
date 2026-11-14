@@ -40,6 +40,7 @@ from core.inference.providers import (
     get_provider_info,
     list_available_providers,
     provider_default_models,
+    provider_probes_with_chat,
     validate_provider_base_url,
 )
 from core.inference.pricing import pricing_snapshot
@@ -86,8 +87,11 @@ _MAX_RESPONSES_CONNECTIVITY_MODELS = 5
 _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS = 15.0
 _RESPONSES_PROBE_BUDGET_SECONDS = 20.0
 _API_KEY_REJECTED = "The server rejected the API key."
+_NO_CREDIT = "The key was accepted, but its account has no credit."
+_RATE_LIMITED = "The server is rate limiting this key right now. Try again in a moment."
+_TIMED_OUT = "The server took too long to answer."
 # Their /models answers without auth, so only a second request can tell a bad key apart.
-_KEY_CHECKED_PROVIDERS = frozenset({"openrouter", "huggingface"})
+_KEY_CHECKED_PROVIDERS = frozenset({"openrouter", "huggingface", "vercel"})
 _URL_USERINFO = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/\s@'\"]+@", re.IGNORECASE)
 
 
@@ -113,20 +117,44 @@ def _unreachable_detail(base_url: str) -> str:
     return detail
 
 
+def _provider_error_kind(exc: Exception, *, listing_models: bool = False) -> str:
+    """Machine-readable cause, so the UI can point at the field to fix."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in (401, 403):
+            return "auth"
+        if status == 402:
+            return "billing"
+        if status == 429:
+            return "rate_limit"
+        if listing_models and status in (404, 405):
+            return "not_found"
+    elif isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return "unreachable"
+    elif isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    return "other"
+
+
 def _known_provider_error(
     exc: Exception,
     base_url: str,
     *,
     listing_models: bool = False,
 ) -> str | None:
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        if status in (401, 403):
-            return _API_KEY_REJECTED
-        if listing_models and status in (404, 405):
-            return "No /models endpoint at this URL (check that it ends in /v1)."
-    elif isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+    kind = _provider_error_kind(exc, listing_models = listing_models)
+    if kind == "auth":
+        return _API_KEY_REJECTED
+    if kind == "billing":
+        return _NO_CREDIT
+    if kind == "rate_limit":
+        return _RATE_LIMITED
+    if kind == "not_found":
+        return "No /models endpoint at this URL (check that it ends in /v1)."
+    if kind == "unreachable":
         return _unreachable_detail(base_url)
+    if kind == "timeout":
+        return _TIMED_OUT
     return None
 
 
@@ -840,13 +868,18 @@ async def _test_custom_provider_connectivity(
                 message = f"Connected successfully. Found {len(models)} model(s).",
                 models_count = len(models),
             )
+        # A named cause (bad key, no credit, server down) is the answer; a model ID would not change it.
+        known = _known_provider_error(models_error, base_url)
         return ProviderTestResult(
             success = False,
             message = (
-                "Connection failed: could not reach /models and no model ID was "
+                f"Connection failed: {known}"
+                if known
+                else "Connection failed: could not reach /models and no model ID was "
                 f"provided to test further. {_provider_error_detail(models_error, base_url)}"
             ),
             models_count = None,
+            error_kind = _provider_error_kind(models_error),
         )
 
     if api_type == "responses":
@@ -930,11 +963,84 @@ async def _test_custom_provider_connectivity(
             models_count = None,
         )
     except Exception as exc:
+        # The probe's own error can be a plain 404 on a server whose /models already named the real cause.
+        if _provider_error_kind(exc) == "other" and models_error is not None:
+            if _known_provider_error(models_error, base_url):
+                exc = models_error
         return ProviderTestResult(
             success = False,
             message = f"Connection failed: {_provider_error_detail(exc, base_url)}",
             models_count = None,
+            error_kind = _provider_error_kind(exc),
         )
+
+
+async def _test_by_chat(client, model_id: str, base_url: str) -> ProviderTestResult:
+    """For providers with no usable model list (Azure deployments, Bedrock, Vertex, Perplexity)."""
+    if not model_id:
+        return ProviderTestResult(
+            success = False,
+            message = "Connection failed: add a model ID to test with.",
+            error_kind = "other",
+        )
+    failure: str | None = None
+    kind = "other"
+    answered = False
+    stream = client.stream_chat_completion(
+        messages = [{"role": "user", "content": "ping"}],
+        model = model_id,
+        temperature = None,
+        top_p = None,
+        max_tokens = 16,
+    )
+
+    async def consume() -> None:
+        nonlocal failure, kind, answered
+        async for line in stream:
+            if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                event = json.loads(line[6:])
+                answered = answered or bool(event.get("choices"))
+                if event.get("error"):
+                    failure = event["error"].get("message", "The request failed.")
+                    # The stream arrives under a 200; the upstream status rides in `code`.
+                    status = str(event["error"].get("code"))
+                    if status in ("401", "403"):
+                        failure, kind = _API_KEY_REJECTED, "auth"
+                    elif status == "402":
+                        failure, kind = _NO_CREDIT, "billing"
+                    elif status == "429":
+                        failure, kind = _RATE_LIMITED, "rate_limit"
+                    # The client turns transport failures into these frames instead of raising.
+                    elif status == "504":
+                        failure, kind = _TIMED_OUT, "timeout"
+                    elif failure.startswith("Failed to connect to "):
+                        failure, kind = _unreachable_detail(base_url), "unreachable"
+
+    try:
+        try:
+            await asyncio.wait_for(consume(), timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS)
+        finally:
+            await stream.aclose()
+    except asyncio.TimeoutError:
+        return ProviderTestResult(
+            success = False, message = f"Connection failed: {_TIMED_OUT}", error_kind = "timeout"
+        )
+    except Exception as exc:
+        return ProviderTestResult(
+            success = False,
+            message = f"Connection failed: {_provider_error_detail(exc, base_url)}",
+            error_kind = _provider_error_kind(exc),
+        )
+    if failure is None and answered:
+        return ProviderTestResult(
+            success = True, message = f"Connected successfully. {model_id} answered."
+        )
+    failure = failure or "The model returned nothing."
+    return ProviderTestResult(
+        success = False,
+        message = f"Connection failed: {_redact_url_userinfo(failure)}",
+        error_kind = kind,
+    )
 
 
 async def _test_decision_connectivity(client, model_id: str) -> ProviderTestResult:
@@ -1009,6 +1115,7 @@ async def test_provider(
                 success = False,
                 message = "Connection failed: Base URL is required for custom providers.",
                 models_count = None,
+                error_kind = "invalid_url",
             )
     try:
         base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
@@ -1017,6 +1124,7 @@ async def test_provider(
             success = False,
             message = f"Connection failed: {exc}",
             models_count = None,
+            error_kind = "invalid_url",
         )
 
     client = await asyncio.to_thread(
@@ -1034,6 +1142,12 @@ async def test_provider(
         try:
             if answers_decisions_only(payload.provider_type, payload.api_type):
                 await client.list_decision_models()
+            elif provider_probes_with_chat(payload.provider_type, base_url):
+                # No model list to read, so a listing would fail even when the chat works.
+                saved = (providers_db.get_provider(payload.provider_id) or {}).get("models") or []
+                model = payload.model_id if payload.model_id in saved else next(iter(saved), "")
+                if not (await _test_by_chat(client, model, base_url)).success:
+                    raise RuntimeError("chat check failed")
             elif payload.provider_type == "openrouter":
                 await client.verify_models_endpoint_lightweight()
             else:
@@ -1057,11 +1171,15 @@ async def test_provider(
             return await _test_custom_provider_connectivity(
                 client, payload.model_id or "", payload.api_type, base_url
             )
+        if provider_probes_with_chat(payload.provider_type, base_url):
+            return await _test_by_chat(client, (payload.model_id or "").strip(), base_url)
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
             if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
                 return ProviderTestResult(
-                    success = False, message = f"Connection failed: {_API_KEY_REJECTED}"
+                    success = False,
+                    message = f"Connection failed: {_API_KEY_REJECTED}",
+                    error_kind = "auth",
                 )
             return ProviderTestResult(
                 success = True,
@@ -1076,7 +1194,9 @@ async def test_provider(
         models = await client.list_models()
         if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
             return ProviderTestResult(
-                success = False, message = f"Connection failed: {_API_KEY_REJECTED}"
+                success = False,
+                message = f"Connection failed: {_API_KEY_REJECTED}",
+                error_kind = "auth",
             )
         return ProviderTestResult(
             success = True,
@@ -1091,6 +1211,7 @@ async def test_provider(
                 f"Connection failed: {_provider_error_detail(exc, base_url, listing_models = True)}"
             ),
             models_count = None,
+            error_kind = _provider_error_kind(exc, listing_models = True),
         )
     finally:
         await client.close()
@@ -1442,7 +1563,7 @@ async def list_provider_models(
         models = await client.list_models()
         # Model-id filters only apply on the vendor's own host; proxies and Azure use other names.
         _NATIVE_HOSTS = {
-            "gemini": ("generativelanguage.googleapis.com",),
+            "gemini": ("generativelanguage.googleapis.com", "aiplatform.googleapis.com"),
             "openai": ("api.openai.com",),
         }
         apply_registry_model_filters = True

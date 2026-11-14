@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -95,6 +96,13 @@ MODELS_DEV_PROVIDER_MAP = {
     "opencode-go": "opencode_go",
     "ollama-cloud": "ollama",
     "lmstudio": "lmstudio",
+    "xai": "xai",
+    "nvidia": "nvidia",
+    "perplexity": "perplexity",
+    "vercel": "vercel",
+    "azure": "azure",
+    "amazon-bedrock": "bedrock",
+    "google-vertex": "vertex",
 }
 
 
@@ -122,6 +130,10 @@ def _trim_models_dev_model(model: dict[str, Any]) -> dict[str, Any]:
     context = limit.get("context") if isinstance(limit, dict) else None
     if isinstance(context, int) and not isinstance(context, bool) and context > 0:
         entry["context"] = context
+    # The model list folds away anything released over a year ago.
+    released = model.get("release_date")
+    if isinstance(released, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", released):
+        entry["released"] = released
     # The prompt's own cap where it is below the window (gpt-5.5: 922K of 1.05M).
     prompt = limit.get("input") if isinstance(limit, dict) else None
     if isinstance(prompt, int) and not isinstance(prompt, bool) and prompt > 0:
@@ -156,6 +168,9 @@ MODELS_DEV_MODEL_LIST_SOURCES = {
     "opencode_go": "opencode-go",
     "qwen": "alibaba",
     "huggingface": "huggingface",
+    "xai": "xai",
+    "nvidia": "nvidia",
+    "cohere": "cohere",
 }
 
 
