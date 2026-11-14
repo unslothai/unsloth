@@ -68,12 +68,14 @@ export type GlassSettings = {
 	strength: GlassStrengths;
 	lens: LensMode;
 	menus: boolean;
+	scope: BackgroundScope;
 };
 export const DEFAULT_GLASS: GlassSettings = {
 	material: "solid",
 	strength: DEFAULT_GLASS_STRENGTH,
 	lens: "off",
 	menus: true,
+	scope: "all",
 };
 export function sanitizeStrengths(value: unknown): GlassStrengths {
 	const stored =

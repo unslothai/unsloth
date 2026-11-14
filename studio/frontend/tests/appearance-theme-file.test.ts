@@ -41,6 +41,7 @@ const BASE: Snapshot = {
     strength: { light: 40, dark: 15 },
     lens: "off",
     menus: true,
+    scope: "all",
   },
   background: null,
 };
@@ -293,4 +294,23 @@ test("undo restores the previous look but keeps personal settings changed since"
     [target.contrast, target.reduceMotion, target.pointerCursors],
     [30, "on", true],
   );
+});
+
+test("glass scope round-trips and counts as a glass change", () => {
+  const saved = {
+    ...BASE,
+    glass: {
+      ...BASE.glass,
+      material: "frosted" as const,
+      scope: "newChat" as const,
+    },
+  };
+  const theme = roundTrip(saved);
+  assert.equal(theme.glass.scope, "newChat");
+  const plan = apply(
+    { ...saved, glass: { ...saved.glass, scope: "all" } },
+    theme,
+  );
+  assert.equal(plan.glass.scope, "newChat");
+  assert.deepEqual(plan.changes, ["glass"]);
 });

@@ -8,6 +8,7 @@ import {
   sanitizeAdjustments,
   sanitizeLens,
   sanitizeMaterial,
+  sanitizeScope,
   sanitizeStrength,
   type WindowMaterial,
 } from "../../chat-background/model.ts";
@@ -170,14 +171,14 @@ export function captureTheme(
     for (const field of FONT_FIELDS)
       if (omitted.has(fontKey(look[field]))) look[field] = null;
   }
-  const { material, strength, lens, menus } = snapshot.glass;
+  const { material, strength, lens, menus, scope } = snapshot.glass;
   const file: Dict = {
     kind: THEME_FILE_KIND,
     schemaVersion: THEME_SCHEMA_VERSION,
     name: cleanThemeName(opts.name) || "Theme",
     palette: snapshot.palette,
     look,
-    glass: { material, strength, lens, menus },
+    glass: { material, strength, lens, menus, scope },
   };
   if (opts.includeLayout) file.layout = pick(c, LAYOUT_FIELDS);
   if (opts.includeAssets && c.importedFonts.length > 0)
@@ -319,6 +320,7 @@ export function parseThemeFile(text: string): ThemeParseResult {
     "strength",
     "lens",
     "menus",
+    "scope",
   ]);
   const strengthIn = object(own(glassIn, "strength"), "glass.strength", [
     "light",
@@ -350,6 +352,12 @@ export function parseThemeFile(text: string): ThemeParseResult {
       DEFAULT_GLASS.menus,
       (v) => (typeof v === "boolean" ? v : DEFAULT_GLASS.menus),
       "glass.menus",
+    ),
+    scope: read(
+      own(glassIn, "scope"),
+      DEFAULT_GLASS.scope,
+      (v) => sanitizeScope(v, DEFAULT_GLASS.scope),
+      "glass.scope",
     ),
   };
 
@@ -480,6 +488,7 @@ export function planThemeApply(
       g.strength.dark,
       g.lens,
       g.menus,
+      g.scope,
     ]);
   if (glassKey(current.glass) !== glassKey(glass)) changed.add("glass");
   if (background !== "keep") changed.add("background");
