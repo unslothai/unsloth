@@ -888,14 +888,15 @@ def _speech_event_streamers(events, cancel_event, stopped):
     return _Text(), _Audio()
 
 
-# LiquidCodec frames are 80 ms: a short first chunk starts playback early.
-_SPEECH_FIRST_CHUNK_FRAMES = 4
-_SPEECH_CHUNK_FRAMES = 12
+# LiquidCodec frames are 80 ms. Measured on an A100 (LFM3-Audio-2B, 9 replies): 2 then 6 frames
+# start audio at 0.39 s vs 0.53 s for 4 then 12, with less total silence (1.24 s vs 1.49 s).
+_SPEECH_FIRST_CHUNK_FRAMES = 2
+_SPEECH_CHUNK_FRAMES = 6
 
 
 class _SpeechChunker:
     """Chunked decode through LiquidCodecStreamingCache: the chunks join into the whole decode.
-    Placed before generate starts, and decoded on a side CUDA stream so it overlaps the next frames."""
+    Placed before generate starts, so the first reply's codec move is off the first chunk."""
 
     def __init__(self, codec, model):
         self.codec = codec
@@ -914,17 +915,11 @@ class _SpeechChunker:
         self.device = next(model.parameters()).device
         if next(codec.parameters()).device != self.device:
             codec.to(device = self.device)
-        self.stream = torch.cuda.Stream(self.device) if self.device.type == "cuda" else None
 
     def _decode(self, codes, **kwargs):
-        codes = codes.to(self.device)
         with torch.inference_mode():
-            if self.stream is None:
-                return self.codec.decode(codes, **kwargs).audio_values[0].float().cpu().numpy()
-            self.stream.wait_stream(torch.cuda.current_stream(self.device))
-            with torch.cuda.stream(self.stream):
-                audio = self.codec.decode(codes, **kwargs).audio_values[0].float()
-                return audio.cpu().numpy()
+            out = self.codec.decode(codes.to(self.device), **kwargs)
+        return out.audio_values[0].float().cpu().numpy()
 
     def add(self, frame):
         if self.cache is None:

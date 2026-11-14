@@ -463,7 +463,8 @@ def test_spoken_reply_streams_speech_before_generation_ends():
     text = "".join(x for x in early + rest if isinstance(x, str))
     speech = [x for x in early + rest if isinstance(x, dict)]
     assert text == "Paris is the capital."
-    assert len(speech) == 2
+    rest_frames = 10 - inf._SPEECH_FIRST_CHUNK_FRAMES
+    assert len(speech) == 1 + -(-rest_frames // inf._SPEECH_CHUNK_FRAMES)
     assert sum(_wav(x["speech"])[1] for x in speech) == 10 * 1920
     assert b.last_generation_stats["usage"]["completion_tokens"] == 4
 
