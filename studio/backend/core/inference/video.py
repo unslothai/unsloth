@@ -14849,8 +14849,7 @@ class VideoBackend:
         decoded_audios: Optional[Any] = None,
         decoded_images: Optional[list] = None,
     ) -> Any:
-        """Image sizing is settled here: Diffusers' rescale is skipped, and sd.cpp is asked for its
-        "max" mode, a no-op on these images in builds that read it (#2177); native refuses "max"."""
+        """Image sizing is settled here: Diffusers' rescale is skipped, sd.cpp gets "max" (#2177); native refuses "max"."""
         from .video_minimax_h3 import (
             MiniMaxH3References,
             decode_h3_reference_audio,

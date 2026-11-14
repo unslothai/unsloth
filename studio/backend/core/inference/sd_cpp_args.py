@@ -957,10 +957,8 @@ def build_sd_cpp_command(
     return cmd
 
 
-# References arrive already sized (fit_h3_reference_image, LANCZOS). sd.cpp's "max" mode leaves an
-# image with a short edge of at most 2048 untouched, while its default "match" scales again: after
-# the 32 px snap the area rule is not idempotent, so a sized image could be resized a second time.
-# Builds before stable-diffusion.cpp#2177 ignore the key for video and keep their own sizing.
+# References are already sized. sd.cpp's "max" leaves a short edge <= 2048 untouched; its default
+# "match" is not idempotent after the 32 px snap, so it could resize them again. Pre-#2177 builds ignore it.
 H3_SIZED_REF_IMAGE_ARGS = "ref_image_size=max"
 
 

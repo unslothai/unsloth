@@ -95,7 +95,7 @@ def test_fit_follows_the_sizing_rule_and_never_upscales(source, gen, policy):
     assert calls == [Image.LANCZOS]
     assert fitted.size == _spec_size(*source, *gen, policy)
     assert fitted.size[0] % 32 == 0 and fitted.size[1] % 32 == 0
-    # Down only: the snap may round a side up by at most 16 px, never beyond the source.
+    # The snap may round up by at most 16 px, never beyond the source.
     assert fitted.size[0] <= max(32, round(source[0] / 32) * 32)
     assert fitted.size[1] <= max(32, round(source[1] / 32) * 32)
     if policy == H3_REF_SIZE_MAX:

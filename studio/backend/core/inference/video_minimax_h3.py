@@ -519,12 +519,11 @@ def fit_h3_reference_image(image: Any, *, width: int, height: int, policy: str) 
 
 @functools.lru_cache(maxsize = None)
 def _h3_sized_reference_setup_class(base: type) -> type:
-    """Subclass of Diffusers' Ref2VA setup step that leaves the request's image references at their size."""
+    """Ref2VA setup step that leaves the request's image references at their size."""
 
     class StudioSizedRef2VASetupStep(base):
         def __call__(self, components: Any, state: Any) -> Any:
-            # The step's only rescale is this call; PIL images the request passed skip it, while
-            # arrays and tensors (converted to new images first) keep Diffusers' own sizing.
+            # Only the request's own PIL images skip the rescale; arrays and tensors keep Diffusers' sizing.
             own = {
                 id(ref.image)
                 for ref in (state.get("references") or ())
@@ -549,13 +548,11 @@ def _h3_sized_reference_setup_class(base: type) -> type:
 
 
 def keep_h3_reference_image_sizes(pipe: Any) -> int:
-    """Make the pipeline's Ref2VA setup step take image references at the size they were passed.
+    """Make the Ref2VA setup step take image references at their passed size.
 
-    Diffusers rescales every image reference to ``reference_image_short_edge`` (2048), upscaling
-    included, which would put a "match" reference back on a 2048 px short edge. One config
-    value cannot stand for several references of different sizes, so the step is switched to a
-    subclass that skips the rescale: the VAE and the vision tower then both see the image
-    fit_h3_reference_image produced. Idempotent; returns how many setup steps are switched.
+    Diffusers rescales every image reference (upscaling too) to ``reference_image_short_edge``
+    (2048). One config value cannot fit references of different sizes, so the step is swapped
+    for a subclass that skips the rescale. Idempotent; returns how many steps are switched.
     """
     try:
         from diffusers.modular_pipelines.minimax_h3.before_encoder import (
