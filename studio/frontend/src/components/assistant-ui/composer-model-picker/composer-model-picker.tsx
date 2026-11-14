@@ -2720,8 +2720,7 @@ export function ComposerModelPicker({
     return pickSeq.current;
   };
 
-  // Closing, a tab change or unmount abandons a quant still resolving, as the header picker's
-  // variant list aborted on collapse. Not pickSeq: an NPU download keeps its load after a close.
+  // Close, tab change or unmount abandons a resolving quant; not pickSeq, so an NPU download still loads.
   const resolveGen = useRef(0);
   const pickQuantRow = async (
     row: Row,
@@ -2957,8 +2956,7 @@ export function ComposerModelPicker({
   const variantCount = (row: Row) =>
     (deviceQuants.get(row.key)?.length ?? 0) + partialsOf(row).length;
 
-  // The disk read cannot see newer uploads; an open quant list asks the Hub once, as the header
-  // picker's expanded row did, so Update shows on its quants.
+  // The disk read cannot see newer uploads: an open quant list asks the Hub once, as the header picker did.
   const updatesReadAt = useRef(new Map<string, object>());
   // biome-ignore lint/correctness/useExhaustiveDependencies: the open rows are the trigger; variantCount reads deviceQuants.
   useEffect(() => {
@@ -3034,7 +3032,6 @@ export function ComposerModelPicker({
     );
     return () => {
       live = false;
-      // Not yet asked: the next look asks again.
       for (const row of queue) {
         updatesReadAt.current.delete(row.key);
       }
@@ -3605,7 +3602,6 @@ export function ComposerModelPicker({
       : undefined;
 
   const deleteQuantFor = (row: Row, variant: GgufVariantDetail) => {
-    // The quant rows' own rule for which one is loaded.
     const inMemory =
       Boolean(row.loaded) &&
       variant.quant.toLowerCase() ===
