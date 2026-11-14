@@ -177,11 +177,11 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       const ctx = getPlayCtx();
       if (!ctx) return null;
       const request = () => {
-        const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker } =
+        const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker, params } =
           useChatRuntimeStore.getState();
         return generateStudioTtsAudio(sentence, abortRef.current?.signal, {
-          // Unnamed: /audio/generate reads with the loaded chat model.
-          model: isChatModelVoice(selectedVoiceModelId) ? "" : selectedVoiceModelId,
+          // The chat model's voice is the selected chat model, which may sit in a kept slot.
+          model: isChatModelVoice(selectedVoiceModelId) ? params.checkpoint : selectedVoiceModelId,
           voiceId: voiceTtsCanClone(selectedVoiceModelId) ? selectedVoiceId : "",
           speaker: selectedVoiceSpeaker,
         });

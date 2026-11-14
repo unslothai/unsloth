@@ -177,3 +177,8 @@ test("the reply's player WAV is rejoined at doubling chunk counts and once the s
   assert.match(adapter, /\(\(spokenCount & \(spokenCount - 1\)\) === 0 \|\|\s*Boolean\(chunk\.choices\?\.\[0\]\?\.finish_reason\)\) &&\s*joinSpokenPart\(\)/);
   assert.ok((adapter.match(/joinSpokenPart\(\);/g) ?? []).length >= 2);
 });
+
+test("the chat model's voice names the selected chat model, kept slot or primary", () => {
+  const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
+  assert.match(player, /model: isChatModelVoice\(selectedVoiceModelId\) \? params\.checkpoint : selectedVoiceModelId,/);
+});
