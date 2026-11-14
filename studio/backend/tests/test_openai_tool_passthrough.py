@@ -11285,7 +11285,7 @@ class TestCodexVisionCapability:
 
         body = inspect.getsource(inference_route._proxy_to_external_provider)
         assert "_may_receive_image = (" in body
-        assert "if _may_receive_image and model not in capabilities" in body
+        assert "if _may_receive_image and listed_model is None" in body
 
     def test_a_replay_only_turn_also_resolves_the_catalog(self):
         """MCP can be switched off while earlier image turns remain; the capability must still be
@@ -11493,7 +11493,7 @@ class TestMcpReplayDetectorProvenance:
 
 def test_a_text_only_qwen_model_is_never_sent_an_mcp_picture():
     """qwen reports supports_vision for the family and names no model, and every one
-    of its four registry defaults is a text model -- the DashScope vision line is
+    of the four below is a text model -- the DashScope vision line is
     qwen-vl-*. Appending an image there fails the run upstream rather than degrading."""
     from core.inference.providers import get_provider_info
     from routes.inference import _external_takes_mcp_images
@@ -11503,19 +11503,19 @@ def test_a_text_only_qwen_model_is_never_sent_an_mcp_picture():
     assert vision is True, "the premise is that the family flag is permissive"
     assert not (info.get("model_capabilities") or {}), "and that it names no model"
 
-    for model in info.get("default_models") or []:
+    for model in ("qwen-plus", "qwen-turbo", "qwen-max", "qwen2.5-72b-instruct"):
         assert _external_takes_mcp_images("qwen", vision, model, info) is False, model
 
 
 def test_kimi_stays_permissive_because_its_allowlist_already_narrowed_it():
     """Kimi stays permissive: its model_id_allowlist already admits only the documented pair."""
-    from core.inference.providers import get_provider_info
+    from core.inference.providers import get_provider_info, provider_default_models
     from routes.inference import _external_takes_mcp_images
 
     info = get_provider_info("kimi") or {}
     vision = info.get("supports_vision", False)
 
-    for model in info.get("default_models") or []:
+    for model in provider_default_models("kimi"):
         assert _external_takes_mcp_images("kimi", vision, model, info) is True, model
 
 

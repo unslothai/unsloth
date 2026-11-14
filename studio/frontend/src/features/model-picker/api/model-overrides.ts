@@ -81,6 +81,8 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   disable_vision?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
+  engram_precision?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
   chat_template_override?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_memory_mode?: "auto" | "manual";
@@ -359,6 +361,7 @@ export function fromApiOverride(
     // Both are stored only when true, so an absent one is a gap.
     tensorParallel: override.tensor_parallel ?? local.tensorParallel,
     disableVision: override.disable_vision ?? local.disableVision,
+    engramPrecision: override.engram_precision ?? local.engramPrecision,
     mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
     mlxAnePrefill: override.mlx_ane_prefill ?? local.mlxAnePrefill,
     mlxFastVerify: override.mlx_fast_verify ?? local.mlxFastVerify,
@@ -401,6 +404,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     // Sent even at Auto: the server keeps a stored knob the payload omits.
     mlx_ple_offload: config.mlxPleOffload ?? null,
     mlx_expert_offload: config.mlxExpertOffload ?? null,
+    // Null clears a stored table; travels with mirrors_engram_precision.
+    engram_precision: config.engramPrecision ?? null,
   };
   if (config.maxSeqLength && config.maxSeqLength > 0) {
     payload.max_seq_length = config.maxSeqLength;
@@ -575,6 +580,8 @@ async function sendModelOverride(
       mirrors_reasoning_budget: true,
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_spec_draft_model: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_engram_precision: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema

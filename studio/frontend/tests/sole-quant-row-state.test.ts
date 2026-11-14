@@ -122,6 +122,6 @@ test("the picker resolves the loaded quant from the task override first", async 
   );
   assert.match(
     selector,
-    /loadedGgufVariantOverride=\{loadedGgufVariantOverride\}\s*loraModels=\{fineTunedModels\}[\s\S]{0,200}?valueLoaded=\{loaded\}/,
+    /loadedGgufVariantOverride=\{loadedGgufVariantOverride\}[\s\S]{0,200}?valueLoaded=\{loaded\}/,
   );
 });

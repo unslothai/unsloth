@@ -106,7 +106,8 @@ def test_header_quantization_metadata_is_read_and_refused(tmp_path):
     )
     scan = cq.scan_comfy_quant(path)
     assert scan is not None and not scan.layers
-    with pytest.raises(ValueError, match = "'asym_w4a8_int8'"):
+    # a packed layer stored in another layout (nvfp4-style bytes and scales) is refused naming its format
+    with pytest.raises(ValueError, match = "asym_w4a8_int8 weight U8"):
         cq.refuse_comfy_quant(path)
 
 
