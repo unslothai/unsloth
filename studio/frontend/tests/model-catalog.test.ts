@@ -16,11 +16,13 @@ const {
   setProviderModelCatalog,
 } = await import("../src/features/chat/model-catalog.ts");
 const {
+  externalStopWindow,
   getExternalReasoningCapabilities,
   getPublishedExternalMaxOutputTokens,
   reasoningFieldsAfterCatalogRefresh,
 } = await import("../src/features/chat/provider-capabilities.ts");
 const {
+  isGeminiApiProviderType,
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
   setProviderModelCapabilities,
@@ -484,4 +486,14 @@ test("SGLang and Vertex connections read the registry entry they are sent as", (
     setProviderModelCapabilities("custom", undefined);
     setProviderModelCapabilities("gemini", undefined);
   }
+});
+
+test("Vertex is the Gemini API for replay and stop handling", () => {
+  assert.equal(isGeminiApiProviderType("vertex"), true);
+  assert.equal(isGeminiApiProviderType("gemini"), true);
+  assert.equal(isGeminiApiProviderType("openrouter"), false);
+  const vertex = "https://aiplatform.googleapis.com/v1/publishers/google";
+  assert.equal(externalStopWindow("vertex", vertex), Number.POSITIVE_INFINITY);
+  assert.equal(externalStopWindow("gemini", "https://generativelanguage.googleapis.com/v1beta"), Number.POSITIVE_INFINITY);
+  assert.equal(externalStopWindow("gemini", "https://litellm.example/v1"), null);
 });

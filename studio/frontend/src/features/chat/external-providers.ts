@@ -529,6 +529,11 @@ export function customProviderApiKeyUrl(providerType: string | null | undefined)
   return (providerType && CLOUD_PRESET_API_KEY_URLS[providerType]) || null;
 }
 
+/** Vertex is the native Gemini API under another type, so it shares Gemini's thought replay and resume. */
+export function isGeminiApiProviderType(providerType: string | null | undefined): boolean {
+  return providerType === "gemini" || providerType === "vertex";
+}
+
 function vertexUrl(baseUrl: string | null | undefined): URL | null {
   try {
     const url = new URL(baseUrl ?? "");

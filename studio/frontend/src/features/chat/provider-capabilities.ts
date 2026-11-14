@@ -555,7 +555,8 @@ export function externalStopWindow(
   providerType: string | null | undefined,
   baseUrl: string | null | undefined,
 ): number | null {
-  return providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl)
+  return (providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl)) ||
+    providerType === "vertex"
     ? Number.POSITIVE_INFINITY
     : null;
 }
