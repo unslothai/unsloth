@@ -943,23 +943,6 @@ def test_codex_reimport_brings_turns_an_older_import_missed(codex_home):
     assert _turns(_PAGINATED_SID) == [*_PAGINATED_TURNS, ("user", "One more")]
 
 
-def test_codex_turn_written_in_both_formats_imports_once(codex_home):
-    path = _rollout(
-        codex_home,
-        body = [
-            x_line("event_msg", {"type": "user_message", "message": "Hello"}),
-            _completed("UserMessage", "Hello"),
-            _completed("AgentMessage", "Hi"),
-            x_line("event_msg", {"type": "agent_message", "message": "Hi"}),
-        ],
-    )
-    messages = codex.read_transcript(path, "t", "s1").messages
-    assert [(m["role"], m["content"][0]["text"]) for m in messages] == [
-        ("user", "Hello"),
-        ("assistant", "Hi"),
-    ]
-
-
 def test_an_empty_tool_output_still_completes_the_call(claude_home):
     path = _session(
         claude_home,
@@ -975,3 +958,24 @@ def test_an_empty_tool_output_still_completes_the_call(claude_home):
     )
     call = claude.read_transcript(path, "t", "s1").messages[1]["content"][0]
     assert call["result"] == ""
+
+
+def test_codex_revert_after_an_older_import_brings_the_missed_prefix(codex_home):
+    _paginated_rollout(codex_home, keep = lambda r: r["payload"].get("type") != "item_completed")
+    assert run_import(codex.SOURCE).messages == 1
+    _paginated_rollout(codex_home)
+    meta = {
+        "id": _PAGINATED_SID,
+        "cwd": "/Users/me/webshop",
+        "history_base": {"thread_id": _PAGINATED_SID, "end_ordinal_exclusive": 22},
+    }
+    name = f"rollout-2026-11-14T10-00-00-{_PAGINATED_SID}_r2.jsonl"
+    _write(
+        codex_home / "sessions" / "2026" / "11" / "14" / name,
+        [
+            {**x_line("session_meta", meta), "ordinal": 22},
+            {**_completed("UserMessage", "Try again"), "ordinal": 23},
+        ],
+    )
+    run_import(codex.SOURCE)
+    assert _turns(_PAGINATED_SID) == [*_PAGINATED_TURNS[:4], ("user", "Try again")]

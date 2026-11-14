@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Codex text comes from user_message/agent_message events, not response_item (injected context)."""
+"""Codex text comes from user/agent message events (legacy rollouts) or completed items (paginated),
+not response_item (injected context)."""
 
 from __future__ import annotations
 
@@ -140,7 +141,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     messages: list[dict] = []
     inherited = 0
     open_calls: dict[str, dict] = {}
-    from_items = read_items = False
+    read_items = False
     for position, (origin, ordinal, line) in enumerate(_records(path)):
         payload = line.get("payload")
         if not isinstance(payload, dict):
@@ -178,14 +179,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             continue
         if parts[0]["type"] == "text" and not parts[0]["text"]:
             continue
-        if (
-            messages
-            and (item is None) == from_items
-            and (messages[-1]["role"], messages[-1]["content"]) == (role, parts)
-        ):
-            continue  # the same turn written both as a legacy event and as a completed item
-        from_items = item is not None
-        read_items |= from_items
+        read_items |= item is not None
         timestamp = iso_ms(line.get("timestamp"))
         inherited += origin != revision
         messages.append(
@@ -206,7 +200,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         created_at_ms = messages[0]["createdAt"] if messages else file_created,
         updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
         messages = messages,
-        # Older imports skipped completed items and counted fewer turns: re-base them.
+        # Imports before completed items were read missed their turns: re-read them.
         revision = f"{revision}:items" if read_items else revision,
         inherited = inherited,
     )

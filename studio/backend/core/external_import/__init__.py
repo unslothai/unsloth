@@ -54,6 +54,7 @@ class Transcript:
     messages: list[dict]
     # Which physical file the messages came from; a change (Codex revert) re-bases the ledger
     # at ``inherited``, the count of leading messages carried over from the previous revision.
+    # A ``:<tag>`` suffix names the reader; a stored mark with another tag re-reads from 0.
     revision: str = ""
     inherited: int = 0
 
@@ -228,9 +229,13 @@ def _pending_messages(
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
     turns, revision = mark
-    pending = transcript.messages[
-        turns if revision == transcript.revision else transcript.inherited :
-    ]
+    if revision == transcript.revision:
+        start = turns
+    elif revision.partition(":")[2] != transcript.revision.partition(":")[2]:
+        start = 0  # a newer reader sees turns the old one skipped, inherited ones too
+    else:
+        start = transcript.inherited
+    pending = transcript.messages[start:]
     # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
     # does not orphan it (the frontend refuses a thread with a missing parent).
     present = {message["id"] for message in stored}
