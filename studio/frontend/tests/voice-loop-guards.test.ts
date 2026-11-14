@@ -106,3 +106,10 @@ test("Escape on the orb hides it without reaching the composer's cancel", () => 
   assert.match(orb, /e\.stopPropagation\(\);\s*setVoiceOrbCollapsed\(true\);/);
   assert.match(orb, /window\.addEventListener\("keydown", onKeyDown, true\);/);
 });
+
+test("turning voice off mid-reveal stops the transcript reaching the composer", () => {
+  const reveal = loop.slice(loop.indexOf("const stepChars = Math.max("));
+  const emitFinal = reveal.indexOf("emitSpeech(transcript, true);");
+  const offChecks = reveal.slice(0, emitFinal).match(/if \(getVoiceMode\(\) === "off"\) \{\s*finish\("cancelled"\);/g) ?? [];
+  assert.equal(offChecks.length, 2);
+});

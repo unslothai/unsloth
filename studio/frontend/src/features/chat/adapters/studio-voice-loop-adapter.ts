@@ -332,11 +332,20 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           );
           for (let i = stepChars; i < total; i += stepChars) {
             if (ended) return;
+            // Voice turned off mid-reveal: the rest would land in whatever the user types next.
+            if (getVoiceMode() === "off") {
+              finish("cancelled");
+              return;
+            }
             const partial = transcript.slice(0, i);
             emitSpeech(partial, false);
             await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
           }
           if (ended) return;
+          if (getVoiceMode() === "off") {
+            finish("cancelled");
+            return;
+          }
           emitSpeech(transcript, true);
           finish("stopped", transcript);
           setTimeout(() => requestVoiceSubmit(), 0);

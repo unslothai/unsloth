@@ -26845,10 +26845,25 @@ def _vad_http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code = 500, detail = safe_error_detail(exc))
 
 
+def _require_vad_access(model: Optional[str]) -> None:
+    """The detector is install-wide, so a managed account needs a grant on the model it names, as for STT."""
+    if not account_access.managed_account():
+        return
+    from core.inference.audio_cpp_models import repo_of
+    from core.inference.vad_audiocpp_sidecar import DEFAULT_VAD_MODEL
+
+    reference = (model or "").strip() or DEFAULT_VAD_MODEL
+    account_access.require_model_access(repo_of(reference) or reference)
+
+
 @studio_router.get("/audio/vad/status")
 async def vad_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
-    return JSONResponse(content = await asyncio.to_thread(get_audio_cpp_vad_sidecar().status))
+
+    status = await asyncio.to_thread(get_audio_cpp_vad_sidecar().status)
+    if account_access.resident_hidden("vad", status.get("loaded_model")):
+        status = {**status, "loaded_model": None}
+    return JSONResponse(content = status)
 
 
 @studio_router.post("/audio/vad/load")
@@ -26863,22 +26878,30 @@ async def vad_load(
         get_audio_cpp_vad_sidecar,
     )
 
+    await asyncio.to_thread(_require_vad_access, payload.model)
     sidecar = get_audio_cpp_vad_sidecar()
     try:
         try:
             loaded = await asyncio.to_thread(sidecar.load, payload.model)
         except VadModelNotDownloadedError:
-            await asyncio.to_thread(sidecar.download, payload.model, hf_token)
+            token = account_access.account_hf_token(hf_token)
+            await asyncio.to_thread(sidecar.download, payload.model, token)
             loaded = await asyncio.to_thread(sidecar.load, payload.model)
     except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
         raise _vad_http_error(exc)
+    account_access.note_resident_account("vad", loaded)
     return JSONResponse(content = {"loaded_model": loaded})
 
 
 @studio_router.post("/audio/vad/unload")
 async def vad_unload(current_subject: str = Depends(get_current_subject)):
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
-    released = await asyncio.to_thread(get_audio_cpp_vad_sidecar().unload)
+
+    sidecar = get_audio_cpp_vad_sidecar()
+    # Another account's detector is not this caller's to stop.
+    if account_access.resident_hidden("vad", sidecar.loaded_model):
+        return JSONResponse(content = {"released": False})
+    released = await asyncio.to_thread(sidecar.unload)
     return JSONResponse(content = {"released": released})
 
 
@@ -26898,6 +26921,8 @@ async def vad_detect(
         if size > MAX_CLIP_BYTES:
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
         chunks.append(chunk)
+    # detect loads the model it names, so it takes the same grant as an explicit load.
+    await asyncio.to_thread(_require_vad_access, model)
     try:
         result = await asyncio.to_thread(
             get_audio_cpp_vad_sidecar().detect, b"".join(chunks), model
