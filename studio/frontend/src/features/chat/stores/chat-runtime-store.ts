@@ -20,6 +20,8 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in React.
+import { isNpuModelId } from "@/features/npu/api";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
 import { persistReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
@@ -931,6 +933,17 @@ function readThreadScopedSettings(
   return sanitizeThreadScopedSettings(source);
 }
 
+/** The defaults new chats fall back to: an NPU model's forced-off pills are not the installation's. */
+function readInstallationDefaults(state: ChatRuntimeStore): ThreadScopedSettings {
+  const settings = readThreadScopedSettings(state);
+  if (npuPillDefault(state.params.checkpoint, "toolsEnabled") === undefined) return settings;
+  const out: Record<string, unknown> = { ...settings };
+  for (const key of ["toolsEnabled", "codeToolsEnabled"] as const) {
+    out[key] = loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ?? pillDefault(key);
+  }
+  return out as ThreadScopedSettings;
+}
+
 /** What a chat whose snapshot omits `key` runs with: applyThreadScopedSettings falls back to these. */
 export function threadScopedDefault<K extends ThreadScopedSettingKey>(
   key: K,
@@ -1654,7 +1667,7 @@ export function beginThreadScopedPairing(threadId: string): void {
     pairingWindowDefaultsThreadId = threadId;
     pairingWindowDefaults =
       threadScopedSettingsThreadId === null
-        ? readThreadScopedSettings(useChatRuntimeStore.getState())
+        ? readInstallationDefaults(useChatRuntimeStore.getState())
         : globalThreadScopedDefaults;
   }
   openThreadScopedPairingGate(threadId);
@@ -1920,7 +1933,21 @@ export function loadOptionalBool(key: string): boolean | null {
   return raw === "true";
 }
 
-export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
+// A tools list costs FastFlowLM its speculative decoding (ROCm/FastFlowLM#1016), so NPU models
+// default Search and Code to a saved click, else off; captured chat defaults echo the GPU default.
+function npuPillDefault(
+  checkpoint: string | null | undefined,
+  key: string,
+): boolean | undefined {
+  if (!isNpuModelId(checkpoint)) return undefined;
+  if (key !== "toolsEnabled" && key !== "codeToolsEnabled") return undefined;
+  return loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ?? false;
+}
+
+export function resolveToolsEnabledOnLoad(
+  supportsTools: boolean,
+  checkpoint?: string | null,
+): {
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   deepResearchEnabled: boolean;
@@ -1932,12 +1959,18 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
       deepResearchEnabled: false,
     };
   }
+  const preference = (key: "toolsEnabled" | "codeToolsEnabled") => {
+    const npuDefault = npuPillDefault(checkpoint, key);
+    return npuDefault === undefined
+      ? pillPreference(key)
+      : (pillOverride(key) ?? npuDefault);
+  };
   return {
     deepResearchEnabled:
       !useChatRuntimeStore.getState().incognito &&
       pillPreference("deepResearchEnabled"),
-    toolsEnabled: pillPreference("toolsEnabled"),
-    codeToolsEnabled: pillPreference("codeToolsEnabled"),
+    toolsEnabled: preference("toolsEnabled"),
+    codeToolsEnabled: preference("codeToolsEnabled"),
   };
 }
 
@@ -5077,7 +5110,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       if (threadScopedSettingsThreadId === null) {
         // Capture the pre-window value: a held edit belongs to its chat, not the defaults.
-        const captured = readThreadScopedSettings(state) as Record<
+        const captured = readInstallationDefaults(state) as Record<
           string,
           unknown
         >;
@@ -5153,6 +5186,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
         const value = firstSetThreadScopedValue(
           stored?.[key],
+          npuPillDefault(state.params.checkpoint, key),
           globalThreadScopedDefaults?.[key],
         );
         if (value === undefined) continue;

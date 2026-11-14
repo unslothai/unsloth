@@ -76,6 +76,23 @@ _FULL_USAGE = {
 
 
 def _script(prompt: str) -> str:
+    if "PYCALL" in prompt and prompt.count('"role": "tool"') < (
+        2 if "PYBIG" in prompt or "PYTWO" in prompt else 1
+    ):
+        call = {
+            "index": 0,
+            "id": "call_py",
+            "type": "function",
+            "function": {
+                "name": "python",
+                "arguments": json.dumps(
+                    {"code": "print('word ' * 9000)" if "PYBIG" in prompt else "print(6*7)"}
+                ),
+            },
+        }
+        return (
+            _chunk({"tool_calls": [call]}) + _chunk({}, "tool_calls", _USAGE) + "data: [DONE]\n\n"
+        )
     if "FULL" in prompt:
         return (
             _chunk({"reasoning_content": " Wait, no!"})
@@ -528,6 +545,8 @@ def test_tool_choice_none_withholds_the_tools(flm):
     ]
     _call(stream = False, tools = tools, tool_choice = "none")
     assert "tools" not in recorded[-1]["body"]
+    # A forwarded "none" becomes a FastFlowLM constraint, which turns speculative decoding off.
+    assert "tool_choice" not in recorded[-1]["body"]
 
 
 def test_a_bare_error_line_becomes_an_error(flm):
@@ -1509,3 +1528,439 @@ def test_whitespace_beside_a_tool_call_is_no_content(flm):
     message = body["choices"][0]["message"]
     assert message["content"] is None
     assert message["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def _long_chat(turns = 20):
+    messages = [{"role": "system", "content": "Answer briefly."}]
+    for index in range(turns):
+        messages.append({"role": "user", "content": f"question {index} " + "word " * 400})
+        messages.append({"role": "assistant", "content": f"answer {index} " + "word " * 400})
+    return messages + [{"role": "user", "content": "latest question"}]
+
+
+def _truncations(lines):
+    return [chunk["context_truncated"] for chunk in _data(lines) if "context_truncated" in chunk]
+
+
+def _seed_thread(studio_db, thread, messages):
+    studio_db.upsert_chat_thread(
+        {"id": thread, "title": "t", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    for index, message in enumerate(m for m in messages if m["role"] != "system"):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{thread}-{index}",
+                "threadId": thread,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_an_npu_chat_over_the_window_is_compacted_before_fastflowlm(flm, stream):
+    recorded = flm()
+    status, body = _call(stream = stream, messages = _long_chat(), context_overflow = "truncate_oldest")
+    assert status == 200
+    sent = recorded[-1]["body"]["messages"]
+    assert len(sent) < len(_long_chat())
+    assert sent[0]["content"].endswith("Answer briefly.")
+    assert sent[-1]["content"] == "latest question"
+    if stream:
+        [truncation] = _truncations(body)
+        assert truncation["fits"] is True
+        assert truncation["dropped_messages"] == len(_long_chat()) - len(sent)
+
+
+@pytest.mark.parametrize("overflow", ["error", None])
+def test_an_npu_chat_with_auto_compact_off_is_forwarded_whole(flm, overflow):
+    recorded = flm()
+    status, body = _call(stream = True, messages = _long_chat(), context_overflow = overflow)
+    assert status == 200
+    assert len(recorded[-1]["body"]["messages"]) == len(_long_chat())
+    assert _truncations(body) == []
+
+
+def test_an_npu_chat_that_fits_is_forwarded_whole(flm):
+    recorded = flm()
+    short = _long_chat(turns = 2)
+    _call(stream = True, messages = short, context_overflow = "truncate_oldest")
+    assert len(recorded[-1]["body"]["messages"]) == len(short)
+
+
+def test_compact_now_resets_an_npu_chat_that_fits(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-thread"
+    short = _long_chat(turns = 4)
+    _seed_thread(studio_db, thread, short)
+
+    async def connected(self) -> bool:
+        return False
+
+    # The tool loop polls for a disconnect and would stop before reaching FastFlowLM.
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded = flm(tools = True)
+    status, body = _call(
+        stream = True,
+        messages = short,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    sent = recorded[0]["body"]["messages"]
+    assert len(sent) < len(short)
+    assert "latest question" in json.dumps(sent[-1])
+    [truncation] = _truncations(body)
+    assert truncation["checkpoint_started"] is True
+    assert truncation["manual"] is True
+
+
+def test_compact_now_resets_an_npu_chat_with_tools_switched_off(
+    flm, rag_home, rag_conn, stub_embeddings
+):
+    from storage import studio_db
+
+    thread = "npu-compact-no-tools"
+    short = _long_chat(turns = 4)
+    _seed_thread(studio_db, thread, short)
+    recorded = flm(tools = True)
+    status, body = _call(
+        stream = True,
+        messages = short,
+        thread_id = thread,
+        enable_tools = False,
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    assert len(recorded[-1]["body"]["messages"]) < len(short)
+    [truncation] = _truncations(body)
+    assert truncation["checkpoint_started"] is True
+    assert truncation["manual"] is True
+
+
+@pytest.mark.parametrize("can_reset", [True, False])
+def test_the_checkpoint_fit_is_told_search_conversation_is_offered(monkeypatch, can_reset):
+    import core.inference.llama_cpp as lc
+    import routes.inference as ri
+
+    seen = {}
+
+    def fit(messages, **kwargs):
+        seen.update(kwargs)
+        return messages, None
+
+    monkeypatch.setattr(lc, "_can_reset_epoch", lambda *a, **k: True)
+    monkeypatch.setattr(lc, "_fit_with_instruction_pins", fit)
+    payload = ChatCompletionRequest(
+        messages = _long_chat(),
+        thread_id = "t",
+        context_overflow = "truncate_oldest",
+        context_window = 8192,
+        compaction_threshold = 6144,
+    )
+    catalog = [{"type": "function", "function": {"name": "search_conversation", "parameters": {}}}]
+    ri._fit_external_context(
+        _long_chat(), payload, tools = catalog, tool_loop = True, can_reset = can_reset
+    )
+    assert seen["recall_offered"] is can_reset
+
+
+def test_compact_now_resets_once_across_a_tool_call(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-tool-call"
+    chat = _long_chat(turns = 4)
+    chat[-1] = {"role": "user", "content": "latest question PYCALL"}
+    _seed_thread(studio_db, thread, chat)
+
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded = flm(tools = True)
+    status, body = _call(
+        stream = True,
+        messages = chat,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    first, second = (r["body"]["messages"] for r in recorded[:2])
+    assert second[: len(first)] == first
+    assert [m["role"] for m in second[len(first) :]] == ["assistant", "tool"]
+    [truncation] = _truncations(body)
+    assert truncation["manual"] is True
+
+
+def test_a_collected_npu_reply_keeps_its_compaction(flm):
+    flm()
+    status, body = _call(stream = False, messages = _long_chat(), context_overflow = "truncate_oldest")
+    assert status == 200
+    assert body["context_truncated"]["fits"] is True
+    assert body["context_truncated"]["dropped_messages"] > 0
+
+
+@pytest.mark.parametrize("offered, recalled", [(True, False), (False, True)])
+def test_a_replay_recalls_inline_only_without_search_conversation(monkeypatch, offered, recalled):
+    import core.inference.llama_cpp as lc
+    import routes.inference as ri
+
+    seen = {}
+    replay = {"fits": True, "dropped_messages": 4, "checkpoint": True, "checkpoint_started": False}
+
+    def recall(fitted, messages, **kwargs):
+        seen.update(kwargs)
+        return {"conversation": fitted, "counts": {}}
+
+    monkeypatch.setattr(lc, "_can_reset_epoch", lambda *a, **k: True)
+    monkeypatch.setattr(lc, "_fit_with_instruction_pins", lambda m, **k: (m, dict(replay)))
+    monkeypatch.setattr(lc, "_archive_and_recall", recall)
+    payload = ChatCompletionRequest(
+        messages = _long_chat(),
+        thread_id = "t",
+        context_overflow = "truncate_oldest",
+        context_window = 8192,
+        compaction_threshold = 6144,
+    )
+    name = "search_conversation" if offered else "python"
+    catalog = [{"type": "function", "function": {"name": name, "parameters": {}}}]
+    ri._fit_external_context(_long_chat(), payload, tools = catalog, tool_loop = True, can_reset = True)
+    assert seen["force_recall"] is recalled
+
+
+def test_a_later_pass_that_overflows_counts_the_full_branch(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-big-tool"
+    chat = _long_chat(turns = 4)
+    chat[-1] = {"role": "user", "content": "latest question PYCALL PYBIG"}
+    _seed_thread(studio_db, thread, chat)
+
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded = flm(tools = True)
+    status, body = _call(
+        stream = True,
+        messages = chat,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    first, *later = _truncations(body)
+    assert later
+    # Counted against the client's branch with the tool result, not against the shortened list.
+    assert later[-1]["prompt_tokens_before"] > first["prompt_tokens_before"]
+    assert later[-1]["dropped_messages"] >= first["dropped_messages"]
+    # The refit is what the next pass extends, so the fresh tool result is never evicted.
+    assert "tool" in [m["role"] for m in recorded[-1]["body"]["messages"]]
+
+
+def test_a_compact_epoch_replays_when_tool_calls_are_off(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-replay"
+    chat = _long_chat(turns = 4)
+    _seed_thread(studio_db, thread, chat)
+
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded = flm(tools = True)
+    fields = dict(
+        stream = True,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+    )
+    _, body = _call(messages = chat, compact_context = True, **fields)
+    [truncation] = _truncations(body)
+    count = len(chat) - 1
+    studio_db.upsert_chat_message(
+        {
+            "id": f"{thread}-{count}",
+            "threadId": thread,
+            "role": "assistant",
+            "content": [{"type": "text", "text": "answer"}],
+            "metadata": {"custom": {"contextTruncation": truncation}},
+            "createdAt": count + 2,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": f"{thread}-{count + 1}",
+            "threadId": thread,
+            "role": "user",
+            "content": [{"type": "text", "text": "follow up"}],
+            "createdAt": count + 3,
+        }
+    )
+    follow = chat + [
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "follow up"},
+    ]
+    status, _ = _call(messages = follow, tool_choice = "none", **fields)
+    assert status == 200
+    assert len(recorded[-1]["body"]["messages"]) < len(follow)
+
+
+def test_a_reset_after_a_controller_reprompt_keeps_the_users_turn(
+    monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    import core.inference.llama_cpp as lc
+    import routes.inference as ri
+    from storage import studio_db
+
+    monkeypatch.setattr(lc, "_can_reset_epoch", lambda *a, **k: True)
+    chat = _long_chat(turns = 4)
+    chat[-1] = {"role": "user", "content": "the real task"}
+    _seed_thread(studio_db, "nudge", chat)
+    call = {"id": "c1", "type": "function", "function": {"name": "python", "arguments": "{}"}}
+    loop = chat + [
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "RESULT"},
+        {"role": "user", "content": "You are out of tool calls. Answer now."},
+    ]
+    payload = ChatCompletionRequest(
+        messages = chat,
+        thread_id = "nudge",
+        context_overflow = "truncate_oldest",
+        context_window = 8192,
+        compaction_threshold = 6144,
+        compact_context = True,
+    )
+    fitted, _, _ = ri._fit_external_context(
+        loop, payload, tools = [], branch = chat, tool_loop = True, can_reset = True
+    )
+    assert {"role": "user", "content": "the real task"} in fitted
+    assert any(m.get("content") == "RESULT" for m in fitted)
+
+
+def test_only_the_active_copy_of_a_repeated_prompt_is_pinned(monkeypatch):
+    import core.inference.llama_cpp as lc
+    import routes.inference as ri
+
+    seen = {}
+
+    def fit(messages, **kwargs):
+        seen.update(kwargs)
+        return messages, None
+
+    monkeypatch.setattr(lc, "_can_reset_epoch", lambda *a, **k: True)
+    monkeypatch.setattr(lc, "_fit_with_instruction_pins", fit)
+    chat = _long_chat(turns = 2)
+    for index in (1, 3, len(chat) - 1):
+        chat[index] = {"role": "user", "content": "continue"}
+    payload = ChatCompletionRequest(
+        messages = chat,
+        thread_id = "t",
+        context_overflow = "truncate_oldest",
+        context_window = 8192,
+        compaction_threshold = 6144,
+        compact_context = True,
+    )
+    ri._fit_external_context(chat, payload, tools = [], branch = chat, tool_loop = True, can_reset = True)
+    assert seen["anchor_ids"] == {id(chat[-1])}
+
+
+def test_compact_on_a_chat_with_nothing_to_evict_spares_the_tool_results(
+    flm, monkeypatch, rag_home, rag_conn, stub_embeddings
+):
+    from starlette.requests import Request
+
+    from storage import studio_db
+
+    thread = "npu-compact-nothing"
+    chat = [{"role": "user", "content": "work it out PYCALL PYTWO"}]
+    _seed_thread(studio_db, thread, chat)
+
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded = flm(tools = True)
+    status, _ = _call(
+        stream = True,
+        messages = chat,
+        thread_id = thread,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compact_context = True,
+    )
+    assert status == 200
+    roles = [m["role"] for m in recorded[-1]["body"]["messages"]]
+    assert "tool" in roles
+
+
+def test_a_replaced_trailing_turn_keeps_the_checkpoint():
+    import routes.inference as ri
+
+    old = {"role": "user", "content": "do it"}
+    seen = [{"role": "system", "content": "s"}, {"role": "user", "content": "old"}, old]
+    fitted = [{"role": "system", "content": "s"}, {"role": "user", "content": "<recalled>\ndo it"}]
+    state = {"input": seen, "fitted": fitted}
+    merged = seen[:-1] + [{"role": "user", "content": "do it\n\nUse a tool now."}]
+    assert ri._extend_checkpoint_fit(state, merged) == [
+        fitted[0],
+        {"role": "user", "content": "<recalled>\ndo it\n\nUse a tool now."},
+    ]
+    call = {"role": "assistant", "content": "x"}
+    assert ri._extend_checkpoint_fit(state, seen + [call]) == fitted + [call]
+    assert ri._extend_checkpoint_fit(state, [{"role": "user", "content": "other"}]) is None
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}
+    parts = [{"type": "text", "text": "look"}, image]
+    seen = [{"role": "user", "content": parts}]
+    state = {"input": seen, "fitted": [{"role": "user", "content": "<recalled>\nlook"}]}
+    nudge = {"type": "text", "text": "\n\nUse a tool now."}
+    assert ri._extend_checkpoint_fit(state, [{"role": "user", "content": parts + [nudge]}]) == [
+        {"role": "user", "content": [{"type": "text", "text": "<recalled>\nlook"}, nudge]}
+    ]
+
+
+def test_a_merged_reprompt_still_marks_the_users_turn(monkeypatch):
+    import routes.inference as ri
+
+    chat = _long_chat(turns = 2)
+    merged = {"role": "user", "content": chat[-1]["content"] + "\n\nAct now."}
+    call = {"role": "assistant", "content": "", "tool_calls": []}
+    result = {"role": "tool", "tool_call_id": "c1", "content": "RESULT"}
+    notice = {"role": "user", "content": "You are out of tool calls. Answer now."}
+    loop = chat[:-1] + [merged, call, result, notice]
+    assert ri._active_turn_anchors(loop, chat) == {id(merged), id(call), id(result), id(notice)}

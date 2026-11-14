@@ -165,3 +165,18 @@ export function isUnslothFinetunable(result: {
   const quant = result.quantMethod?.toLowerCase();
   return !quant || FINETUNABLE_QUANT.has(quant);
 }
+
+/** A shared ?npu= link opens on another filter; true while it still has to switch to NPU. */
+export function npuLinkNeedsFormat({
+  npu,
+  formatFilter,
+  modelsMode,
+  npuSupported,
+}: {
+  npu: string | null;
+  formatFilter: FormatFilterValue;
+  modelsMode: boolean;
+  npuSupported: boolean;
+}): boolean {
+  return npu !== null && formatFilter !== "npu" && modelsMode && npuSupported;
+}

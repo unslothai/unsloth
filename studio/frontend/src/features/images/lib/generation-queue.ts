@@ -18,6 +18,11 @@ export function queueBusy(jobs: readonly ImageQueueJob[]): boolean {
   return jobs.some((job) => job.status === "queued" || job.status === "running");
 }
 
+/** A pick made during a run releases the stage only once the page knows nothing runs or waits. */
+export function pickReleased(run: { statusKnown: boolean; generating: boolean; queueBusy: boolean }): boolean {
+  return run.statusKnown && !run.generating && !run.queueBusy;
+}
+
 /** Jobs that finished between two polls, including one queued and finished in between. `prev` null is the first
  *  poll (a reload): what already finished then is not news. */
 export function newlyFinished(
