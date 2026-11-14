@@ -4,7 +4,7 @@
 import { Input } from "@/components/ui/input";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import { ApiProviderLogo } from "./api-provider-logo";
@@ -24,46 +24,26 @@ const POPULAR_PROVIDER_TYPES = [
   "anthropic",
   "gemini",
   "openrouter",
+  "deepseek",
 ];
 
-const PROVIDER_DESCRIPTIONS: Record<string, string> = {
-  openai_codex: "Sign in with your ChatGPT plan. No API key.",
-  openai: "GPT models with an API key.",
-  anthropic: "Claude models with an API key.",
-  gemini: "Gemini models from Google AI Studio.",
-  openrouter: "One key for hundreds of models.",
-  deepseek: "DeepSeek chat and reasoning models.",
-  zai: "GLM models.",
-  kimi: "Kimi models from Moonshot AI.",
-  mistral: "Mistral, Codestral and Devstral.",
-  minimax: "MiniMax M-series models.",
-  opencode: "OpenCode Console and Go plans.",
-  qwencloud: "Qwen models, pay as you go.",
-  huggingface: "Open models through Inference Providers.",
-  xai: "Grok models with an API key.",
-  nvidia: "Open models hosted by NVIDIA.",
-  perplexity: "Sonar models with built-in web search.",
-  cohere: "Command models.",
-  vercel: "One key for hundreds of models.",
-  azure: "Your Azure deployments, by endpoint and key.",
-  bedrock: "OpenAI-compatible models on AWS, by API key.",
-  vertex: "Gemini on Google Cloud, by API key.",
-  ollama: "Models served by Ollama, local or cloud.",
-  llama_cpp: "A running llama-server.",
-  vllm: "A self-hosted vLLM server.",
-  [LEGACY_CUSTOM_PROVIDER_TYPE]: "Any OpenAI-compatible endpoint.",
-};
-
-const DECISION_DESCRIPTION = "Decision models for the Decision API.";
+// Niche or setup-heavy providers, folded away until asked for or searched.
+const EVEN_MORE_PROVIDER_TYPES = new Set([
+  "cohere",
+  "perplexity",
+  "azure",
+  "vertex",
+  "typesafe",
+  "liquid",
+]);
 
 export interface ConnectionGalleryItem {
   providerType: string;
   name: string;
-  description: string;
 }
 
 export interface ConnectionGalleryGroup {
-  id: "popular" | "local" | "more";
+  id: "popular" | "local" | "more" | "even-more";
   label: string;
   items: ConnectionGalleryItem[];
 }
@@ -83,11 +63,6 @@ export function buildConnectionGallery(
   ): ConnectionGalleryItem => ({
     providerType: entry.provider_type,
     name: entry.provider_type === "opencode" ? "OpenCode" : entry.display_name,
-    description:
-      PROVIDER_DESCRIPTIONS[entry.provider_type] ??
-      (isDecisionConnection({ providerType: entry.provider_type })
-        ? DECISION_DESCRIPTION
-        : ""),
   });
   const popular = POPULAR_PROVIDER_TYPES.flatMap((type) => {
     const entry = byType.get(type);
@@ -98,7 +73,6 @@ export function buildConnectionGallery(
     (preset) => ({
       providerType: preset.providerType as string,
       name: preset.displayName as string,
-      description: PROVIDER_DESCRIPTIONS[preset.providerType] ?? "",
     }),
   );
   const local: ConnectionGalleryItem[] = [
@@ -106,7 +80,6 @@ export function buildConnectionGallery(
     {
       providerType: LEGACY_CUSTOM_PROVIDER_TYPE,
       name: CUSTOM_PROVIDER_DISPLAY_NAME,
-      description: PROVIDER_DESCRIPTIONS[LEGACY_CUSTOM_PROVIDER_TYPE],
     },
   ];
   const chat = registry.filter(
@@ -118,7 +91,7 @@ export function buildConnectionGallery(
     isDecisionConnection({ providerType: entry.provider_type }),
   );
   // Cloud platforms sit with the other hosted providers, ahead of the decision-only ones.
-  const more = [
+  const hosted = [
     ...chat.map(fromRegistry),
     ...presets.filter((item) => isCloudPresetProviderType(item.providerType)),
     ...decision.map(fromRegistry),
@@ -127,12 +100,22 @@ export function buildConnectionGallery(
   const matches = (item: ConnectionGalleryItem) =>
     !needle ||
     searchKey(item.name).includes(needle) ||
-    searchKey(item.providerType).includes(needle) ||
-    searchKey(item.description).includes(needle);
+    searchKey(item.providerType).includes(needle);
+  const folded = (item: ConnectionGalleryItem) =>
+    EVEN_MORE_PROVIDER_TYPES.has(item.providerType);
   const groups: ConnectionGalleryGroup[] = [
     { id: "popular", label: "Popular", items: popular.filter(matches) },
     { id: "local", label: "Local and custom", items: local.filter(matches) },
-    { id: "more", label: "More providers", items: more.filter(matches) },
+    {
+      id: "more",
+      label: "More providers",
+      items: hosted.filter((item) => !folded(item) && matches(item)),
+    },
+    {
+      id: "even-more",
+      label: "Even more",
+      items: hosted.filter((item) => folded(item) && matches(item)),
+    },
   ];
   return groups.filter((group) => group.items.length > 0);
 }
@@ -149,6 +132,7 @@ export function ConnectionGallery({
   onPick: (providerType: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [showEvenMore, setShowEvenMore] = useState(false);
   const groups = useMemo(
     () => buildConnectionGallery(registry, query),
     [registry, query],
@@ -184,66 +168,86 @@ export function ConnectionGallery({
         </p>
       ) : (
         <div className="flex flex-col gap-2 p-2">
-          {groups.map((group) => (
-            <div key={group.id} className="flex flex-col gap-0.5">
-              <span className="px-1.5 pt-1 text-ui-11 font-medium text-muted-foreground/80">
-                {group.label}
-              </span>
-              <div className="grid grid-cols-2 gap-0.5 max-sm:grid-cols-1">
-                {group.items.map((item) => {
-                  const connected = connectedTypes.has(
-                    connectionPickerValue(item.providerType),
-                  );
-                  return (
-                    <button
-                      key={item.providerType}
-                      type="button"
-                      onClick={() => onPick(item.providerType)}
-                      data-provider-type={item.providerType}
-                      className="group/tile flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    >
-                      <span className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-border/70 bg-background/80">
-                        <ApiProviderLogo
-                          providerType={item.providerType}
-                          className="size-5"
-                          title={item.name}
-                          name={
-                            isCloudPresetProviderType(item.providerType) ||
-                            item.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
-                              ? undefined
-                              : item.name
-                          }
-                        />
-                      </span>
-                      <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate text-sm font-medium text-foreground">
-                          {item.name}
-                        </span>
-                        {item.description ? (
-                          <span className="truncate text-xs text-muted-foreground">
-                            {item.description}
+          {groups.map((group) => {
+            // A search shows its matches wherever they live.
+            const collapsed =
+              group.id === "even-more" && !showEvenMore && !query.trim();
+            return (
+              <div key={group.id} className="flex flex-col gap-0.5">
+                {group.id === "even-more" ? (
+                  <button
+                    type="button"
+                    aria-expanded={!collapsed}
+                    onClick={() => setShowEvenMore((open) => !open)}
+                    className="flex items-center gap-1 self-start rounded-md px-1.5 pt-1 text-ui-11 font-medium text-muted-foreground/80 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    {group.label}
+                    <HugeiconsIcon
+                      icon={ArrowDown01Icon}
+                      className={cn(
+                        "size-3 transition-transform",
+                        collapsed && "-rotate-90",
+                      )}
+                    />
+                  </button>
+                ) : (
+                  <span className="px-1.5 pt-1 text-ui-11 font-medium text-muted-foreground/80">
+                    {group.label}
+                  </span>
+                )}
+                {collapsed ? null : (
+                  <div className="grid grid-cols-2 gap-0.5 max-sm:grid-cols-1">
+                    {group.items.map((item) => {
+                      const connected = connectedTypes.has(
+                        connectionPickerValue(item.providerType),
+                      );
+                      return (
+                        <button
+                          key={item.providerType}
+                          type="button"
+                          onClick={() => onPick(item.providerType)}
+                          data-provider-type={item.providerType}
+                          className="group/tile flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        >
+                          <span className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-border/70 bg-background/80">
+                            <ApiProviderLogo
+                              providerType={item.providerType}
+                              className="size-5"
+                              title={item.name}
+                              name={
+                                item.providerType ===
+                                LEGACY_CUSTOM_PROVIDER_TYPE
+                                  ? undefined
+                                  : item.name
+                              }
+                            />
                           </span>
-                        ) : null}
-                      </span>
-                      <span
-                        className={cn(
-                          "flex shrink-0 items-center gap-1 pr-1 text-ui-11 text-muted-foreground",
-                          !connected &&
-                            "opacity-0 transition-opacity group-hover/tile:opacity-100 group-focus-visible/tile:opacity-100",
-                        )}
-                      >
-                        <HugeiconsIcon
-                          icon={connected ? Tick02Icon : PlusSignIcon}
-                          className="size-3.5"
-                        />
-                        {connected ? "Added" : null}
-                      </span>
-                    </button>
-                  );
-                })}
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <span className="truncate text-sm font-medium text-foreground">
+                              {item.name}
+                            </span>
+                          </span>
+                          <span
+                            className={cn(
+                              "flex shrink-0 items-center gap-1 pr-1 text-ui-11 text-muted-foreground",
+                              !connected &&
+                                "opacity-0 transition-opacity group-hover/tile:opacity-100 group-focus-visible/tile:opacity-100",
+                            )}
+                          >
+                            <HugeiconsIcon
+                              icon={connected ? Tick02Icon : PlusSignIcon}
+                              className="size-3.5"
+                            />
+                            {connected ? "Added" : null}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>

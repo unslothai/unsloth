@@ -191,27 +191,24 @@ test("the gallery leads with popular providers and always offers the self-hosted
   const groups = buildConnectionGallery(REGISTRY);
   assert.deepEqual(
     groups.map((group) => group.id),
-    ["popular", "local", "more"],
+    ["popular", "local", "more", "even-more"],
   );
   assert.deepEqual(
     groups[0].items.map((item) => item.providerType),
-    ["openai_codex", "openai", "anthropic"],
+    ["openai_codex", "openai", "anthropic", "deepseek"],
   );
   assert.deepEqual(
     groups[1].items.map((item) => item.providerType),
     ["llama_cpp", "vllm", "ollama", "custom"],
   );
-  // Cloud platforms that use the custom-server form sit with the hosted providers, before decision-only ones.
   assert.deepEqual(
     groups[2].items.map((item) => item.name),
-    [
-      "DeepSeek",
-      "OpenCode",
-      "Azure OpenAI",
-      "Amazon Bedrock",
-      "Google Vertex AI",
-      "TypeSafe",
-    ],
+    ["OpenCode", "Amazon Bedrock"],
+  );
+  // Folded behind a click in the UI.
+  assert.deepEqual(
+    groups[3].items.map((item) => item.name),
+    ["Azure OpenAI", "Google Vertex AI", "TypeSafe"],
   );
 });
 
@@ -227,7 +224,7 @@ test("gallery search ignores punctuation and drops empty groups", () => {
     buildConnectionGallery(REGISTRY, "Open AI").flatMap((group) =>
       group.items.map((item) => item.providerType),
     ),
-    ["openai_codex", "openai", "custom", "azure", "bedrock"],
+    ["openai_codex", "openai", "azure"],
   );
   assert.deepEqual(buildConnectionGallery(REGISTRY, "zzz"), []);
 });

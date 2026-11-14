@@ -17,8 +17,6 @@ const HUB_PROVIDER_IDS = new Map([
   ["xai", "xai-org"],
   ["nvidia", "nvidia"],
   ["cohere", "cohere"],
-  ["azure", "microsoft"],
-  ["vertex", "google"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(
@@ -36,6 +34,11 @@ const CONNECTION_LOGO_PATHS = new Map([
   ["typesafe", "/provider-logos/typesafe.svg"],
   ["opencode", "/provider-logos/opencode.svg"],
   ["opencode_go", "/provider-logos/opencode.svg"],
+  ["azure", "/provider-logos/microsoft.svg"],
+  ["vertex", "/provider-logos/vertex.svg"],
+  ["bedrock", "/provider-logos/bedrock.svg"],
+  ["perplexity", "/provider-logos/perplexity.svg"],
+  ["vercel", "/provider-logos/vercel.svg"],
 ]);
 
 export function providerLogoPath(
