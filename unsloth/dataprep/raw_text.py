@@ -209,7 +209,11 @@ class RawTextDataLoader:
 
                 chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
-                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = False)
+                # Literal special tokens are corpus text; clean-up would rewrite spacing (Llama 3 enables it).
+                decode_kwargs = {"skip_special_tokens": False}
+                if getattr(self.tokenizer, "clean_up_tokenization_spaces", False):
+                    decode_kwargs["clean_up_tokenization_spaces"] = False
+                chunk_text = self.tokenizer.decode(chunk_tokens, **decode_kwargs)
                 if is_last:
                     chunk_text += eos_token
 

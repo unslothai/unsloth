@@ -32,6 +32,8 @@ def tokenizer():
         "beta": 6,
         "gamma": 7,
         "delta": 8,
+        ".": 9,
+        "?": 10,
     }
     backend = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocabulary, unk_token = "[UNK]"))
     backend.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
@@ -41,6 +43,7 @@ def tokenizer():
         eos_token = "[EOS]",
         bos_token = "[BOS]",
         additional_special_tokens = ["[USER]", "[ASSISTANT]"],
+        clean_up_tokenization_spaces = True,
     )
 
 
@@ -49,12 +52,13 @@ def tokenizer():
 def test_text_chunks_preserve_the_same_tokens_as_tokenized_chunks(
     raw_text, tokenizer, chunk_size, stride
 ):
-    text = "[BOS] alpha [USER] beta [EOS] [ASSISTANT] gamma delta"
+    text = "[BOS] alpha . [USER] beta ? [EOS] [ASSISTANT] gamma . delta"
     loader = raw_text.RawTextDataLoader(tokenizer, chunk_size = chunk_size, stride = stride)
     tokenized = loader.chunk_text(text, return_tokenized = True)
     texts = loader.chunk_text(text, return_tokenized = False)
 
     assert len(texts) == len(tokenized)
+    assert all(chunk.removesuffix("[EOS]").strip() in text for chunk in texts)
     assert [tokenizer(chunk, add_special_tokens = False)["input_ids"] for chunk in texts] == [
         chunk["input_ids"] for chunk in tokenized
     ]
