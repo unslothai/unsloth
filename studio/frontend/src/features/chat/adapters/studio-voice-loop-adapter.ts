@@ -20,6 +20,7 @@ import {
 } from "@/features/chat/voice/vad-client";
 import {
   getVoiceMode,
+  voiceOffEpoch,
   isVoicePlaybackActive,
   requestVoiceBargeAbort,
   requestVoiceBargeIn,
@@ -125,6 +126,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     const chunks: Float32Array[] = [];
     const chunkVoiced: boolean[] = [];
     let voicedMs = 0;
+    const offAtOpen = voiceOffEpoch();
+    // Off now, or off and back on since this recording opened: either way its words are dropped.
+    const switchedOff = () => getVoiceMode() === "off" || voiceOffEpoch() !== offAtOpen;
     let prerollVoicedMs = 0;
     const bargeGate = createBargeGate(
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
@@ -291,7 +295,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           store.setVoiceTranscribing(false);
         }
         // Voice was turned off while this clip was heard: its words are discarded, never held for the next session.
-        if (getVoiceMode() === "off") {
+        if (switchedOff()) {
           finish("cancelled");
           return;
         }
@@ -334,7 +338,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           for (let i = stepChars; i < total; i += stepChars) {
             if (ended) return;
             // Voice turned off mid-reveal: the rest would land in whatever the user types next.
-            if (getVoiceMode() === "off") {
+            if (switchedOff()) {
               finish("cancelled");
               return;
             }
@@ -343,7 +347,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
           }
           if (ended) return;
-          if (getVoiceMode() === "off") {
+          if (switchedOff()) {
             finish("cancelled");
             return;
           }

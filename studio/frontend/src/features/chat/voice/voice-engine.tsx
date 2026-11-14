@@ -175,6 +175,8 @@ export const VoiceEngine: FC = () => {
     if (voiceModeRef.current !== "active") return;
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
+    // The chat model went away while this was heard: keep it as a draft, never auto-load a model to send it.
+    if (!hasChatModelRef.current) return;
     const text = composer.getState().text.trim();
     if (!text) {
       // No speech is not a barge-in: cutting the reply here truncated it after the first word.
@@ -348,7 +350,11 @@ export const VoiceEngine: FC = () => {
   useEffect(() => {
     if (armedForModelRef.current === hasChatModel) return;
     armedForModelRef.current = hasChatModel;
-    if (!hasChatModel) return;
+    if (!hasChatModel) {
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
+      return;
+    }
     if (voiceModeRef.current !== "active") return;
     resumeListen();
   }, [hasChatModel, resumeListen]);

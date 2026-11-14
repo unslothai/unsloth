@@ -85,7 +85,7 @@ test("turning voice off forgets the open reply stream", () => {
 });
 
 test("a clip still being transcribed when voice turns off is dropped, not held", () => {
-  const off = loop.indexOf('if (getVoiceMode() === "off") {\n          finish("cancelled");');
+  const off = loop.indexOf('if (switchedOff()) {\n          finish("cancelled");');
   assert.ok(off > 0 && off < loop.indexOf("heldTurn = {\n            text: transcript,"));
 });
 
@@ -110,7 +110,7 @@ test("Escape on the orb hides it without reaching the composer's cancel", () => 
 test("turning voice off mid-reveal stops the transcript reaching the composer", () => {
   const reveal = loop.slice(loop.indexOf("const stepChars = Math.max("));
   const emitFinal = reveal.indexOf("emitSpeech(transcript, true);");
-  const offChecks = reveal.slice(0, emitFinal).match(/if \(getVoiceMode\(\) === "off"\) \{\s*finish\("cancelled"\);/g) ?? [];
+  const offChecks = reveal.slice(0, emitFinal).match(/if \(switchedOff\(\)\) \{\s*finish\("cancelled"\);/g) ?? [];
   assert.equal(offChecks.length, 2);
 });
 
@@ -125,4 +125,17 @@ test("voice off waits for a detect in flight before unloading the detector", () 
   assert.match(vad, /return track\(runDetect\(wav, model, signal\)\);/);
   assert.match(vad, /return track\(startVadModel\(model, signal\)\);/);
   assert.match(vad, /await Promise\.all\(\[\.\.\.pendingLoads\]\);\s*await authFetch\("\/api\/inference\/audio\/vad\/unload"/);
+});
+
+test("a recording that crossed a voice off stays dropped after voice comes back", () => {
+  const bridge = readSrc("features/chat/voice/voice-loop-bridge.ts");
+  assert.match(bridge, /if \(next === "off" && voiceMode !== "off"\) offEpoch\+\+;/);
+  assert.match(loop, /const switchedOff = \(\) => getVoiceMode\(\) === "off" \|\| voiceOffEpoch\(\) !== offAtOpen;/);
+});
+
+test("speech heard after the chat model went away is never sent", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const submit = engine.slice(engine.indexOf("const submitTranscript = useCallback("));
+  assert.match(submit.slice(0, 500), /if \(!hasChatModelRef\.current\) return;/);
+  assert.match(engine, /if \(!hasChatModel\) \{\s*const composer = auiRef\.current\.composer\(\);\s*if \(composer\.getState\(\)\.dictation\) composer\.stopDictation\(\);/);
 });
