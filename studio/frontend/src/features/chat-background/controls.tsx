@@ -39,20 +39,15 @@ import {
 	POSITIONS,
 	SCOPES,
 	type BackgroundScope,
-	normalizedSize,
 	parsePosition,
-	validUpload,
 	type BackgroundEffect,
 } from "./model";
 import {
-	beginBackgroundUpload,
-	failBackgroundUpload,
-	finishBackgroundUpload,
 	patchBackground,
 	resetChatBackground,
 	useChatBackground,
 } from "./storage";
-import { canvasBlob, decodeImage } from "./image";
+import { uploadBackgroundImage } from "./upload";
 import {
 	nativeMaterialAvailable,
 	useGlassStrength,
@@ -330,43 +325,11 @@ export function ChatBackgroundControls() {
 				type="file"
 				accept="image/jpeg,image/png,image/webp"
 				disabled={!ready || busy}
-				onChange={async (event) => {
+				onChange={(event) => {
 					const file = event.target.files?.[0];
 					event.target.value = "";
 					if (!file) return;
-					const ticket = beginBackgroundUpload();
-					if (!validUpload(file)) {
-						failBackgroundUpload(ticket, "file");
-						return;
-					}
-					try {
-						const decoded = await decodeImage(file);
-						try {
-							const [width, height] = normalizedSize(
-								decoded.width,
-								decoded.height,
-							);
-							const canvas = document.createElement("canvas");
-							canvas.width = width;
-							canvas.height = height;
-							const ctx = canvas.getContext("2d");
-							if (!ctx) throw new Error("decode");
-							ctx.drawImage(decoded.source, 0, 0, width, height);
-							await finishBackgroundUpload(ticket, {
-								...DEFAULT_ADJUSTMENTS,
-								blob: await canvasBlob(canvas),
-							});
-						} finally {
-							decoded.close();
-						}
-					} catch (error) {
-						failBackgroundUpload(
-							ticket,
-							error instanceof Error && error.message === "dimensions"
-								? "dimensions"
-								: "decode",
-						);
-					}
+					void uploadBackgroundImage(file, DEFAULT_ADJUSTMENTS);
 				}}
 			/>
 			{error && (

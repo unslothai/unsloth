@@ -192,13 +192,15 @@ export function beginBackgroundUpload() {
 	useBackgroundStore.setState({ busy: true, error: null });
 	return ++uploadTicket;
 }
+/** Resolves false when a newer upload took over or the image could not be stored. */
 export async function finishBackgroundUpload(
 	ticket: number,
 	value: ChatBackgroundValue,
-) {
-	if (ticket !== uploadTicket) return;
-	await persist(value, false);
+): Promise<boolean> {
+	if (ticket !== uploadTicket) return false;
+	const stored = await persist(value, false);
 	if (ticket === uploadTicket) useBackgroundStore.setState({ busy: false });
+	return stored;
 }
 export function failBackgroundUpload(ticket: number, error: BackgroundError) {
 	if (ticket === uploadTicket)

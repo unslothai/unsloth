@@ -5031,13 +5031,13 @@ class PersonalizationImportedFont(BaseModel):
         return value
 
 
-# Boolean is each optional user-menu item's default visibility; Settings-tab shortcuts ship hidden.
+# Boolean is each optional user-menu item's default visibility; Settings-tab shortcuts except Appearance ship hidden.
 SIDEBAR_MENU_ITEM_DEFAULTS = {
     "api": True,
     "darkMode": True,
     "guidedTour": True,
     "profile": False,
-    "appearance": False,
+    "appearance": True,
     "resources": False,
     "chat": False,
     "connections": False,

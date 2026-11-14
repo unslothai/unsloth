@@ -63,6 +63,20 @@ export function sanitizeStrength(value: unknown, fallback = 50): number {
 }
 export type GlassStrengths = { light: number; dark: number };
 export const DEFAULT_GLASS_STRENGTH: GlassStrengths = { light: 40, dark: 15 };
+export type GlassSettings = {
+	material: WindowMaterial;
+	strength: GlassStrengths;
+	lens: LensMode;
+	menus: boolean;
+	scope: BackgroundScope;
+};
+export const DEFAULT_GLASS: GlassSettings = {
+	material: "solid",
+	strength: DEFAULT_GLASS_STRENGTH,
+	lens: "off",
+	menus: true,
+	scope: "all",
+};
 export function sanitizeStrengths(value: unknown): GlassStrengths {
 	const stored =
 		value && typeof value === "object" ? (value as Partial<GlassStrengths>) : {};
