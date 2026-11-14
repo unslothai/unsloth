@@ -25,6 +25,7 @@ import {
   sharedMemoryDetail,
 } from "@/hooks/gpu-memory-display";
 import {
+  carveOutVramGb,
   deviceSharedMemorySplitGb,
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
@@ -428,23 +429,31 @@ export function ResourcesTab() {
     const perDeviceKnown = gpuVramUsedIsPerDevice(usageDevices);
     const vramUsed = resolveGpuVramUsedGb(display.usageGpu);
     const vramUsageKnown = vramUsed !== null;
-    const vramFree = perDeviceKnown
-      ? usageDevices.reduce(
-          (sum, device) =>
-            sum +
-            (device.vram_free_gb ??
-              Math.max(
-                0,
-                (device.memory_total_gb ?? 0) - (device.vram_used_gb ?? 0),
-              )),
-          0,
-        )
-      : vramUsed !== null
-        ? Math.max(0, vramTotal - vramUsed)
-        : null;
+    const vramCarveOut = carveOutVramGb(
+      usageDevices,
+      vramUsed,
+      systemInfo.memory?.available_gb ?? null,
+    );
+    const vramFree = vramCarveOut
+      ? vramCarveOut.freeGb
+      : perDeviceKnown
+        ? usageDevices.reduce(
+            (sum, device) =>
+              sum +
+              (device.vram_free_gb ??
+                Math.max(
+                  0,
+                  (device.memory_total_gb ?? 0) - (device.vram_used_gb ?? 0),
+                )),
+            0,
+          )
+        : vramUsed !== null
+          ? Math.max(0, vramTotal - vramUsed)
+          : null;
+    const vramCapacity = vramCarveOut?.totalGb ?? vramTotal;
     const vramPercent =
-      vramUsageKnown && isFiniteNumber(vramUsed) && vramTotal > 0
-        ? (vramUsed / vramTotal) * 100
+      vramUsageKnown && isFiniteNumber(vramUsed) && vramCapacity > 0
+        ? (vramUsed / vramCapacity) * 100
         : 0;
 
     return {
@@ -461,6 +470,7 @@ export function ResourcesTab() {
       vramTotal,
       vramDedicated: gpuMemoryTotals.dedicated,
       vramShared: gpuMemoryTotals.shared,
+      vramCarveOut,
       vramUsed,
       vramFree,
       vramPercent,
@@ -637,12 +647,16 @@ export function ResourcesTab() {
   ];
   const unifiedPool = metrics.vramShared > 0 && metrics.vramDedicated === 0;
   const vramCapacityLabel =
-    metrics.vramShared > 0 && !unifiedPool
+    !metrics.vramCarveOut && metrics.vramShared > 0 && !unifiedPool
       ? t("settings.resources.environment.vramWithShared", {
           vram: formatGiB(metrics.vramDedicated),
           shared: formatGiB(metrics.vramShared),
         })
-      : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
+      : formatGiB(
+          unifiedPool
+            ? metrics.vramShared
+            : (metrics.vramCarveOut?.totalGb ?? metrics.vramTotal),
+        );
   const vram = vramCards(memoryDisplay.usageDevices, memoryDisplay.usageGpu);
   const discreteVram =
     hasGpu &&
@@ -814,7 +828,7 @@ export function ResourcesTab() {
                       ? t("settings.resources.gpu.estimatedAvailable", {
                           value: formatGiB(memoryDisplay.unifiedAvailableGb),
                         })
-                      : metrics.vramUsageKnown
+                      : metrics.vramUsageKnown && metrics.vramFree !== null
                         ? t("settings.resources.liveMonitor.free", {
                             value: formatGiB(metrics.vramFree),
                           })
@@ -835,9 +849,13 @@ export function ResourcesTab() {
                         value: formatGiB(gb),
                       }),
                   )
-                : unifiedPool && !memoryDisplay.sharedOnly
-                  ? t("settings.resources.gpu.sharedWithSystemRam")
-                  : undefined
+                : metrics.vramCarveOut
+                  ? t("settings.resources.gpu.alsoSystemRam", {
+                      value: formatGiB(metrics.vramCarveOut.borrowableGb),
+                    })
+                  : unifiedPool && !memoryDisplay.sharedOnly
+                    ? t("settings.resources.gpu.sharedWithSystemRam")
+                    : undefined
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
@@ -984,7 +1002,9 @@ export function ResourcesTab() {
               {t("settings.resources.gpu.ggufInference")}
             </span>
             <span className="text-right font-mono text-xs text-foreground">
-              {separateInferenceGpu.backend?.toUpperCase() ?? "GPU"}
+              {t("settings.resources.gpu.llamaCppBuild", {
+                backend: separateInferenceGpu.backend?.toUpperCase() ?? "GPU",
+              })}
               {separateInferenceGpu.available ? (
                 inferenceVramTotal ? (
                   <span className="block">
@@ -1020,7 +1040,7 @@ export function ResourcesTab() {
                   <span className="block normal-case">
                     {inferenceDisplay.sharedAvailableGb === null
                       ? t("settings.resources.gpu.sharedWithSystemRam")
-                      : t("settings.resources.gpu.sharedEstimatedAvailable", {
+                      : t("settings.resources.gpu.estimatedAvailable", {
                           value: formatGiB(inferenceDisplay.sharedAvailableGb),
                         })}
                   </span>
@@ -1032,15 +1052,21 @@ export function ResourcesTab() {
           metrics.devices.map((device, index) => {
             const ordinal = deviceOrdinal(device);
             // Preserve null (unknown); 0 would render a fabricated reading.
-            const total = device.memory_total_gb ?? null;
             const used = device.vram_used_gb ?? null;
-            const free =
-              device.vram_free_gb ??
-              (isFiniteNumber(total) && isFiniteNumber(used)
-                ? Math.max(0, total - used)
-                : null);
+            // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
+            const sharedSplit = deviceSharedMemorySplitGb(device);
+            const carveOut = sharedSplit
+              ? carveOutVramGb([device], used, null)
+              : null;
+            const total = carveOut?.totalGb ?? device.memory_total_gb ?? null;
+            const free = carveOut
+              ? carveOut.freeGb
+              : (device.vram_free_gb ??
+                (isFiniteNumber(total) && isFiniteNumber(used)
+                  ? Math.max(0, total - used)
+                  : null));
             const percent =
-              device.vram_utilization_pct ??
+              (carveOut ? null : device.vram_utilization_pct) ??
               (isFiniteNumber(total) && total > 0 && isFiniteNumber(used)
                 ? (used / total) * 100
                 : null);
@@ -1057,11 +1083,9 @@ export function ResourcesTab() {
             const percentText = isFiniteNumber(percent)
               ? formatPercent(safePercent)
               : unknownLabel;
-            // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
-            const sharedSplit = deviceSharedMemorySplitGb(device);
             const telemetry = telemetryByOrdinal.get(`${ordinal ?? index}`);
             // Shared pool: used is every app's GPU allocation (AGX), free an available-RAM floor.
-            const shared = device.shared_memory === true;
+            const shared = device.shared_memory === true && !carveOut;
             const usedBySystem =
               shared &&
               isFiniteNumber(total) &&

@@ -386,13 +386,18 @@ def _cached_model_path(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a fully downloaded GGML file in the shared HF cache, else None."""
+    """Path of a fully downloaded GGML file in *hub_cache* (default: every cache find_in_hub_caches covers) or None."""
+    if hub_cache is None:
+        from core.inference.model_cache_search import find_in_hub_caches
+        return find_in_hub_caches(
+            GGML_STT_REPOS[model_id],
+            lambda root: _cached_model_path(model_id, hub_cache = root, revision = revision),
+        )
+
     from huggingface_hub import hf_hub_download
 
-    from core.inference.stt_sidecar import _active_hf_hub_cache
-
     repo_id = GGML_STT_REPOS[model_id]
-    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+    root = hub_cache
 
     def cached_at(candidate_revision: str) -> Optional[str]:
         try:

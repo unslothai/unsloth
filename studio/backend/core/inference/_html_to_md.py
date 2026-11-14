@@ -84,6 +84,36 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     return bool(style) and _style_hides_element(style)
 
 
+_MATH_INVISIBLE = {0x2061: " ", 0x2062: None, 0x2063: None, 0x2064: None}
+_MATH_SPECIALS = re.compile(r"[{}%#&_$]")
+_MATH_SCRIPTS = {"msup": "^", "msub": "_", "munder": "_"}
+
+
+def _mathml_tex(tag: str, parts: list[str]) -> str:
+    if tag in ("annotation-xml", "mphantom"):
+        return ""
+    if tag == "mtext":
+        text = "".join(parts)
+        return f"\\text{{{text}}}" if text.strip() else " "
+    if tag == "mfrac" and len(parts) == 2:
+        return f"\\frac{{{parts[0]}}}{{{parts[1]}}}"
+    if tag == "msqrt":
+        return f"\\sqrt{{{''.join(parts)}}}"
+    if tag == "mroot" and len(parts) == 2:
+        return f"\\sqrt[{parts[1]}]{{{parts[0]}}}"
+    if tag in _MATH_SCRIPTS and len(parts) == 2:
+        return f"{parts[0]}{_MATH_SCRIPTS[tag]}{{{parts[1]}}}"
+    if tag == "mover" and len(parts) == 2:
+        return f"\\overset{{{parts[1]}}}{{{parts[0]}}}"
+    if tag in ("msubsup", "munderover") and len(parts) == 3:
+        return f"{parts[0]}_{{{parts[1]}}}^{{{parts[2]}}}"
+    if tag == "mtr":
+        return " & ".join(parts)
+    if tag == "mtable":
+        return " \\\\ ".join(parts)
+    return "".join(parts)
+
+
 def _span_attr(attr_dict: dict, name: str) -> int:
     try:
         value = int(attr_dict.get(name) or 1)
@@ -849,6 +879,11 @@ class _MarkdownRenderer(HTMLParser):
         self._skip_html_at: list[int] = []
         self._skip_html_integration: list[bool] = []
         self._form_pointer: bool = False
+        # one list per skipped element of the formula being read: the TeX of its children so far
+        self._math: list[list[str]] | None = None
+        self._math_tex: str = ""
+        self._math_tex_at: int = -1
+        self._math_block: bool = False
 
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
@@ -1435,7 +1470,24 @@ class _MarkdownRenderer(HTMLParser):
         encoding = (attrs.get("encoding") or "").strip().lower()
         return tag == "annotation-xml" and encoding in {"text/html", "application/xhtml+xml"}
 
+    def _close_math(self, index: int) -> None:
+        for position in range(len(self._skip_tags) - 1, index - 1, -1):
+            tex = _mathml_tex(self._skip_tags[position], self._math.pop())
+            if position == self._math_tex_at:
+                self._math_tex_at = -1
+                if tex.strip():
+                    self._math_tex = tex
+            elif position:
+                self._math[-1].append(tex)
+            else:
+                tex = " ".join((self._math_tex or tex).translate(_MATH_INVISIBLE).split())
+                self._math = None
+                if tex:
+                    self._emit(f"\n\n$${tex}$$\n\n" if self._math_block else f"${tex}$")
+
     def _truncate_skip_tags(self, index: int) -> None:
+        if self._math is not None:
+            self._close_math(index)
         for position, name in enumerate(self._skip_tags[index:], start = index):
             self._skip_at[name].pop()
             self._skip_ns_at[(self._skip_namespaces[position], name)].pop()
@@ -1446,6 +1498,8 @@ class _MarkdownRenderer(HTMLParser):
         del self._skip_html_integration[index:]
 
     def _clear_skip_tags(self) -> None:
+        if self._math is not None:
+            self._close_math(0)
         self._skip_tags.clear()
         self._skip_at.clear()
         self._skip_ns_at.clear()
@@ -1675,6 +1729,11 @@ class _MarkdownRenderer(HTMLParser):
                 self._skip_html_integration.append(
                     self._is_html_integration_point(tag, namespace, attr_dict)
                 )
+                if self._math is not None:
+                    self._math.append([])
+                    encoding = (attr_dict.get("encoding") or "").strip().lower()
+                    if tag == "annotation" and encoding == "application/x-tex":
+                        self._math_tex_at = position
             return
 
         if tag == "form" and self._form_pointer:
@@ -1689,6 +1748,10 @@ class _MarkdownRenderer(HTMLParser):
             self._prepare_table_start(tag)
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
+            if tag == "math" and not self._text_suppressed() and not _is_hidden_element(attr_dict):
+                self._math = [[]]
+                self._math_tex = (attr_dict.get("alttext") or "").strip()
+                self._math_block = (attr_dict.get("display") or "").strip().lower() == "block"
             self._skip_tags.append(tag)
             self._skip_at = {tag: [0]}
             namespace = self._html_start_namespace(tag)
@@ -2024,6 +2087,15 @@ class _MarkdownRenderer(HTMLParser):
         if self._title_scan is not None:
             self._title_scan.data(data)
         if self._skip_tags or self._hidden_marks or self._text_suppressed():
+            if self._math is None:
+                return
+            if len(self._skip_tags) - 1 == self._math_tex_at:
+                self._math[-1].append(data)
+            elif (
+                self._skip_namespaces[-1] == "math"
+                and self._skip_tags[-1] in _MATHML_TEXT_INTEGRATION_POINTS
+            ):
+                self._math[-1].append(_MATH_SPECIALS.sub(r"\\\g<0>", data))
             return
         if self._in_pre:
             self._count_header_text(data)
@@ -2065,6 +2137,11 @@ class _MarkdownRenderer(HTMLParser):
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
+        if self._math is not None:
+            # an annotation cut off mid-source must not override alttext or the MathML
+            if self._math_tex_at >= 0:
+                self._math[self._math_tex_at].clear()
+            self._close_math(0)
         # Headers first: a frame emits into the enclosing link or cell, which must still be open.
         self._flush_header_frames()
 
@@ -2469,6 +2546,7 @@ _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
 _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 # absent text = no generated span cells, so a pass needs no span-free scoring re-render
 _SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
+_NOSCRIPT_TAG = re.compile(r"<(/?)noscript\b", re.IGNORECASE)
 # html.unescape raises once a decimal reference has more digits, leading zeros included, than
 # int()'s limit, which Python never sets below 640
 _LONG_DECIMAL_REF = re.compile(r"&#([0-9]{641,})")
@@ -2533,4 +2611,16 @@ def html_to_markdown(
             rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)
+    if not rendered.strip() and _NOSCRIPT_TAG.search(source_html):
+        # read whole: scoped, a link card's <article> inside one post would stand in for the thread
+        exposed = _NOSCRIPT_TAG.sub(r"<\1div", source_html)
+        if main_content:
+            visible, fallback = _render_main_document(exposed, site_links, span_limit)
+        else:
+            fallback = _render(exposed, None, site_links = site_links, span_char_limit = span_limit)
+            visible = _visible_chars(
+                site_links.clean(fallback) if site_links is not None else fallback
+            )
+        if visible >= _MIN_MAIN_CONTENT_CHARS:
+            rendered = fallback
     return site_links.finish(rendered) if site_links is not None else rendered

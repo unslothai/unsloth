@@ -27,6 +27,7 @@ const code = ts.transpileModule(
   const useChatRuntimeStore = select => select({incognito: props.incognito});
   const useChatPreferencesStore = select => select({shareComposerDraft: props.share});
   const NewChatDraftIdContext = null;
+  const NewChatNonceContext = null;
   const useContext = () => props.nonce;
   const justSentRef = useRef(null), draftKeyRef = useRef(null), imeSessionOpenRef = useRef(false);
   const setIsWritingExpanded = () => {};
@@ -49,11 +50,24 @@ type Props = {
 };
 type Effect = { deps: unknown[]; cleanup?: () => void };
 
-async function harness() {
+async function harness(
+  initial: Partial<Props> = {},
+  seed: (drafts: typeof import("../src/features/chat/utils/composer-draft.ts")) => void = () => {},
+) {
   installLocalStorageFake();
+  const session = new Map<string, string>();
+  Object.assign(globalThis.window, {
+    sessionStorage: {
+      getItem: (key: string) => session.get(key) ?? null,
+      setItem: (key: string, value: string) => void session.set(key, value),
+      removeItem: (key: string) => void session.delete(key),
+    },
+  });
+  const temporary = new Map<string, string>();
   const drafts = await import(
     `../src/features/chat/utils/composer-draft.ts?lifecycle=${Math.random()}`
   );
+  seed(drafts);
   const props: Props = {
     threadId: null,
     runtimeId: "local-new",
@@ -63,6 +77,7 @@ async function harness() {
     share: false,
     text: "",
     attachments: [],
+    ...initial,
   };
   const slots: unknown[] = [];
   const timers = new Map<number, () => void>();
@@ -103,6 +118,8 @@ async function harness() {
     isCompositionWrite: () => false,
     flushResourcesSync: (fn: () => void) => fn(),
     INCOGNITO_DRAFT_SCOPE: "\0incognito",
+    temporaryQueryDraft: (key: string) => temporary.get(key) ?? "",
+    clearTemporaryQueryDraft: (key: string | null) => key && temporary.delete(key),
     pastedTextOf: (file?: Attachment["file"]) => file?.paste,
     createPastedTextFile: (paste: string) => ({ paste }),
     aui: {
@@ -178,6 +195,8 @@ async function harness() {
   return {
     props,
     drafts,
+    session,
+    temporary,
     update,
     async type(text: string) {
       await update({ text });
@@ -451,4 +470,102 @@ test("first persistence keeps the guard against a delayed submitted-text write",
   await h.update({ threadId: "other", runtimeId: "other", remoteId: "other" });
   assert.equal(await h.delayedInput("submitted prompt"), true);
   assert.equal(h.props.text, "submitted prompt");
+});
+
+test("a query link's chat restores its own slot and leaves the New chat draft alone", async (t) => {
+  const h = await harness({ nonce: "query-1" }, (drafts) => {
+    drafts.writeComposerDraft(drafts.composerDraftKey(drafts.NEW_CHAT_DRAFT_ID), "unsent work");
+    drafts.writeComposerDraft(drafts.composerDraftKey("query-1"), "what is lora");
+  });
+  t.after(h.close);
+  assert.equal(h.props.text, "what is lora");
+  await h.type("what is qlora");
+  await h.paste("query paste");
+  h.flush();
+  assert.equal(h.session.get("chat-draft:query-1"), "what is qlora");
+  assert.equal(h.drafts.readComposerDraft("chat-draft:__new__"), "unsent work");
+  await h.update({ runtimeId: "local-2", nonce: "nonce-2" });
+  assert.equal(h.props.text, "unsent work");
+  assert.equal(h.props.attachments.length, 0);
+  await h.update({ runtimeId: "local-new", nonce: "query-1" });
+  assert.equal(h.props.text, "what is qlora");
+  assert.equal(h.props.attachments[0]?.file.paste, "query paste");
+});
+
+test("a query link's follow-up moves to the saved chat on first persistence", async (t) => {
+  const h = await harness({ nonce: "query-1" }, (drafts) => {
+    drafts.writeComposerDraft(drafts.composerDraftKey("query-1"), "what is lora");
+  });
+  t.after(h.close);
+  await h.send();
+  await h.type("follow-up");
+  await h.update({ remoteId: "saved" });
+  await h.update({ threadId: "saved" });
+  assert.equal(h.props.text, "follow-up");
+  h.flush();
+  assert.equal(h.drafts.readComposerDraft("chat-draft:saved"), "follow-up");
+  assert.equal(h.session.has("chat-draft:query-1"), false);
+});
+
+test("a temporary query link shows its text once and never stores it", async (t) => {
+  const h = await harness({ nonce: "query-1", incognito: true });
+  h.temporary.set("chat-draft:query-1", "private");
+  await h.update({ runtimeId: "local-temp" });
+  t.after(h.close);
+  assert.equal(h.props.text, "private");
+  h.flush();
+  assert.equal(h.session.size, 0);
+  await h.send();
+  assert.equal(h.temporary.size, 0);
+});
+
+test("a query link opened onto an empty temporary composer still shows its text", async (t) => {
+  const h = await harness({ incognito: true });
+  t.after(h.close);
+  assert.equal(h.props.text, "");
+  h.temporary.set("chat-draft:query-2", "reused runtime");
+  await h.update({ nonce: "query-2" });
+  assert.equal(h.props.text, "reused runtime");
+});
+
+test("turning on draft sharing keeps an unsaved query chat's own slot", async (t) => {
+  const h = await harness({ nonce: "query-1" }, (drafts) => {
+    drafts.writeComposerDraft(drafts.composerDraftKey("query-1"), "what is lora");
+  });
+  t.after(h.close);
+  await h.type("edited query");
+  h.flush();
+  await h.update({ share: true });
+  assert.equal(h.props.text, "edited query");
+  assert.equal(h.session.get("chat-draft:query-1"), "edited query");
+});
+
+test("with sharing on, a query chat's follow-up survives first persistence", async (t) => {
+  const h = await harness({ nonce: "query-1", share: true }, (drafts) => {
+    drafts.writeComposerDraft("chat-draft:latest", "unrelated shared draft");
+    drafts.writeComposerDraft(drafts.composerDraftKey("query-1"), "what is lora");
+  });
+  t.after(h.close);
+  assert.equal(h.props.text, "what is lora");
+  await h.send();
+  await h.type("follow-up");
+  await h.update({ remoteId: "saved" });
+  await h.update({ threadId: "saved" });
+  assert.equal(h.props.text, "follow-up");
+});
+
+test("with sharing on, sending a query chat leaves the unrelated shared draft alone", async (t) => {
+  const h = await harness({ nonce: "query-1", share: true }, (drafts) => {
+    drafts.writeComposerDraft("chat-draft:latest", "unsent shared work");
+    drafts.writePasteDraft("chat-draft-pastes:latest", ["shared paste"]);
+    drafts.writeComposerDraft(drafts.composerDraftKey("query-1"), "what is lora");
+  });
+  t.after(h.close);
+  await h.send();
+  await h.update({ remoteId: "saved" });
+  await h.update({ threadId: "saved" });
+  h.flush();
+  assert.equal(h.props.text, "unsent shared work");
+  assert.equal(h.drafts.readComposerDraft("chat-draft:latest"), "unsent shared work");
+  assert.deepEqual(h.drafts.latestPasteDraft(), ["shared paste"]);
 });

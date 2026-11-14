@@ -27,6 +27,7 @@ const empty = {
   browser: null,
   chat: null,
   plusMenu: null,
+  material: null,
   timeFormat: null,
   spellcheck: null,
 };
@@ -49,6 +50,9 @@ const { useChatPreferencesStore } = await import(
 const { PLUS_MENU_ORDER, usePlusMenuPrefsStore } = await import(
   "../src/features/chat/stores/plus-menu-prefs-store.ts"
 );
+const { useMaterialStore } = await import(
+  "../src/features/chat-background/material.ts"
+);
 const { getTimeFormat, setTimeFormat, TIME_FORMAT_STORAGE_KEY, watchTimeFormat } =
   await import("../src/lib/time-format.ts");
 const { getSpellCheck, setSpellCheck, SPELLCHECK_STORAGE_KEY, watchSpellCheck } =
@@ -65,6 +69,7 @@ function freshBrowser() {
   puts.length = 0;
   useChatPreferencesStore.setState(useChatPreferencesStore.getInitialState());
   usePlusMenuPrefsStore.setState(usePlusMenuPrefsStore.getInitialState());
+  useMaterialStore.setState(useMaterialStore.getInitialState());
   setTimeFormat("system");
   store.clear();
 }
@@ -116,6 +121,39 @@ test("an edit sends only its own section, without this browser's local-only fiel
   assert.equal(chat.showReplyTimes, true);
   assert.equal("notifyWhenReplyFinishes" in chat, false);
   assert.equal("filesPanelCollapsed" in chat, false);
+});
+
+test("window material follows the account, keeping this window's native and route state", async () => {
+  freshBrowser();
+  useMaterialStore.setState({ nativeFailed: true, here: false });
+  account = {
+    ...empty,
+    saved: true,
+    material: { material: "frosted", style: "frosted", strength: { light: 70, dark: 5 }, lens: "bogus" },
+  };
+  const stop = startClientPreferencesSync();
+  await settle();
+  const applied = useMaterialStore.getState();
+  assert.equal(applied.material, "frosted");
+  assert.deepEqual(applied.strength, { light: 70, dark: 5 });
+  assert.equal(applied.lens, "off");
+  assert.equal(applied.nativeFailed, true);
+  assert.equal(applied.here, false);
+  assert.equal(puts.length, 0);
+  useMaterialStore.setState({ here: true });
+  useMaterialStore.getState().setStrength(30, "dark");
+  await settle();
+  stop();
+  assert.equal(puts.length, 1);
+  assert.deepEqual(Object.keys(puts[0]), ["material"]);
+  assert.deepEqual(puts[0].material, {
+    material: "frosted",
+    style: "frosted",
+    menus: true,
+    strength: { light: 70, dark: 30 },
+    lens: "off",
+    scope: "all",
+  });
 });
 
 test("choices made here before the account had any are uploaded once", async () => {
@@ -223,4 +261,21 @@ test("an edit still queued when this tab switches accounts is not sent as the ne
   await settle();
   stop();
   assert.deepEqual(puts, []);
+});
+
+test("the server accepts every window material, lens and scope this build can save", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { MATERIALS, LENS_MODES, SCOPES } = await import(
+    "../src/features/chat-background/model.ts"
+  );
+  const routes = readFileSync(
+    new URL("../../backend/routes/settings.py", import.meta.url),
+    "utf8",
+  );
+  const literal = (pattern: RegExp) =>
+    [...(pattern.exec(routes)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  const glass = literal(/_GlassMaterial = Literal\[([^\]]+)\]/);
+  assert.deepEqual(["solid", ...glass].sort(), [...MATERIALS].sort());
+  assert.deepEqual(literal(/lens: Optional\[Literal\[([^\]]+)\]\]/).sort(), [...LENS_MODES].sort());
+  assert.deepEqual(literal(/scope: Optional\[Literal\[([^\]]+)\]\]/).sort(), [...SCOPES].sort());
 });

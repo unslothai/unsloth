@@ -573,7 +573,9 @@ function FloatingMonitorPanel({
                   {t("settings.resources.gpu.ggufInference")}
                 </span>
                 <span className="block text-foreground">
-                  {separateInferenceGpu.backend?.toUpperCase() ?? "GPU"}
+                  {t("settings.resources.gpu.llamaCppBuild", {
+                    backend: separateInferenceGpu.backend?.toUpperCase() ?? "GPU",
+                  })}
                   {separateInferenceGpu.available ? (
                     inferenceVramTotal ? (
                       <span className="block">
@@ -591,7 +593,7 @@ function FloatingMonitorPanel({
                       <span className="block normal-case">
                         {inferenceDisplay.sharedAvailableGb === null
                           ? t("settings.resources.gpu.sharedWithSystemRam")
-                          : t("settings.resources.gpu.sharedEstimatedAvailable", {
+                          : t("settings.resources.gpu.estimatedAvailable", {
                               value: formatGiB(inferenceDisplay.sharedAvailableGb),
                             })}
                       </span>

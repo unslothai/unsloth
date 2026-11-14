@@ -2617,7 +2617,9 @@ class InferenceOrchestrator:
                     failure = AudioCppFailure.from_payload(resp.get("failure"))
                     if failure is not None:
                         raise AudioCppFailureError(error, failure)
-                    raise Exception(error)
+                    load_error = Exception(error)
+                    load_error.error_kind = resp.get("error_kind")
+                    raise load_error
 
         except Exception as exc:
             self.loading_models.discard(model_name)
