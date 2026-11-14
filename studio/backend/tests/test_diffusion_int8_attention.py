@@ -587,6 +587,50 @@ def test_statistics_cover_every_key():
         assert 1 <= kstep <= I.K_MEAN_STEP and -(-n // kstep) >= min(n, I.K_MEAN_KEYS)
 
 
+def test_the_quantisers_read_only_aligned_rows():
+    """The quantisers load 16 bytes at a time: a tensor goes in as it is when its last-dim stride is 1 and every
+    row starts on a 16-byte boundary (packed QKV views do), and as a contiguous copy otherwise."""
+    H, D = 2, 64
+    packed = torch.zeros(1, 9, 3 * H * D, dtype = torch.bfloat16)
+    for view in packed.chunk(3, dim = -1):
+        x = view.unflatten(-1, (H, D))
+        assert I._strides_aligned(x) and I._aligned(x) is x
+    odd = torch.zeros(1, 9, 3 * H * D + 1, dtype = torch.bfloat16)[..., : H * D].unflatten(-1, (H, D))
+    assert not I._strides_aligned(odd)  # rows 2 bytes apart from a 16-byte boundary
+    shifted = torch.zeros(1, 9, H, D + 8, dtype = torch.bfloat16)[..., 1 : D + 1]
+    assert I._strides_aligned(shifted) and shifted.data_ptr() % 16 != 0
+    sparse = torch.zeros(1, 9, H, 2 * D, dtype = torch.bfloat16)[..., ::2]
+    assert not I._strides_aligned(sparse)
+    for x in (odd, shifted, sparse):
+        copy_ = I._aligned(x)
+        assert copy_ is not x and copy_.is_contiguous() and copy_.data_ptr() % 16 == 0
+        assert I._strides_aligned(copy_) and torch.equal(copy_, x)
+
+
+def test_a_launch_plan_is_keyed_by_everything_it_depends_on(monkeypatch):
+    """The launch arithmetic of a call is done once per signature: the same shape, dtypes, strides, config and
+    scale find the plan again (the config by value: the per-card table hands out copies), any other call does not."""
+    H, D = 2, 64
+    config = {"bn": 128, "wpc": 4, "nq": 2, "stages": 2}
+    packed = torch.zeros(1, 9, 3 * H * D, dtype = torch.bfloat16)
+    q, k, v = (x.unflatten(-1, (H, D)) for x in packed.chunk(3, dim = -1))
+    key = I._plan_key(q, k, v, config, None, 0)
+    assert key == I._plan_key(q, k, v, dict(reversed(list(config.items()))), None, 0)
+    assert hash(key) == hash(I._plan_key(q, k, v, dict(config), None, 0))
+    others = [
+        I._plan_key(q, k, v, dict(config, wpc = 8), None, 0),
+        I._plan_key(q, k, v, config, 0.25, 0),
+        I._plan_key(q, k, v, config, None, 1),
+        I._plan_key(q.contiguous(), k, v, config, None, 0),  # other strides
+        I._plan_key(q, k.float(), v.float(), config, None, 0),
+        I._plan_key(q[:, :8], k, v, config, None, 0),
+        I._plan_key(q, k[:, :8], v[:, :8], config, None, 0),
+    ]
+    assert len({key, *others}) == len(others) + 1
+    monkeypatch.setattr(I, "V_RANGE_STEP", 8)  # the statistics plan is part of what a plan holds
+    assert I._plan_key(q, k, v, config, None, 0) != key
+
+
 def test_v_range_over_every_key_keeps_a_short_sequence_accurate(monkeypatch):
     """16 tokens, one of them with V thirty times the rest (a text refiner call). With the range of V taken over
     every 8th key (keys 0 and 8 here) the gain of most channels came out far too small and the error is more than
@@ -1151,6 +1195,67 @@ def test_kernel_matches_its_torch_model(shape, dtype, config, strided):
     rel = ((out.float() - want).abs().mean() / want.abs().mean()).item()
     assert rel < (2e-3 if dtype == torch.float32 else 4e-3), rel
     assert torch.equal(I.int8_attention(q, k, v, config = config), out)
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_a_call_signature_is_planned_once(head_dim):
+    """Two quantiser launches and the kernel, with their grids and arguments worked out on the first call of a
+    signature only; packed views and separate tensors are two signatures with one answer, and the query rows are
+    padded to the kernel's block, no further."""
+    shape = (2, 333, 3, head_dim)
+    config = _cuda_config(head_dim)
+    q, k, v = _case(shape, _card_dtype(), seed = 5, strided = True)
+    I._plans().clear()
+    first = I.quantise(q, k, v, config)
+    plan = first["plan"]
+    assert len(I._plans()) == 1 and len(plan["stats_grids"]) == len(plan["kv_grids"]) == 1
+    rows = 16 * config["nq"] * config["wpc"]
+    assert first["pads"] == (-(-333 // rows) * rows, -(-333 // config["bn"]) * config["bn"])
+    assert (
+        first["qi"].shape == (6, first["pads"][0], head_dim) and first["f32"].dtype == torch.float32
+    )
+    out = I.attend(first)
+    again = I.quantise(q, k, v, dict(config))
+    assert again["plan"] is plan and len(I._plans()) == 1
+    assert torch.equal(I.attend(again), out)
+    apart = I.quantise(q.contiguous(), k.contiguous(), v.contiguous(), config)
+    assert apart["plan"] is not plan and len(I._plans()) == 2
+    assert torch.equal(I.attend(apart), out)
+    assert torch.equal(I.int8_attention(q, k, v, scale = 0.05), I.int8_attention(q, k, v, scale = 0.05))
+    assert len(I._plans()) == 3
+
+
+@needs_kernel
+def test_inputs_off_the_16_byte_grid_are_copied():
+    """A view whose rows do not start on a 16-byte boundary (here one element into a wider buffer) is read from
+    an aligned copy: the same bits as the aligned call."""
+    shape = (1, 200, 2, 128)
+    q, k, v = _case(shape, _card_dtype(), seed = 9)
+    want = I.int8_attention(q, k, v)
+    wide = torch.zeros(1, 200, 2, 128 + 8, dtype = q.dtype, device = "cuda")
+    wide[..., 1:129] = k
+    shifted = wide[..., 1:129]
+    assert shifted.data_ptr() % 16 != 0
+    assert torch.equal(I.int8_attention(q, shifted, v), want)
+    wide[..., 1:129] = q
+    assert torch.equal(I.int8_attention(shifted, k, v), want)
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_a_long_call_splits_its_quantiser_grids(monkeypatch, head_dim):
+    """A grid holds 65535 blocks along the axis the quantisers' jobs sit on; a call with more jobs than that runs
+    them in several launches, each told its first job. With the limit turned down to three the bits stay the same."""
+    q, k, v = _case((2, 700, 2, head_dim), _card_dtype(), seed = 11)
+    want = I.int8_attention(q, k, v)
+    monkeypatch.setattr(I, "GRID_LIMIT", 3)
+    I._plans().clear()
+    got = I.int8_attention(q, k, v)
+    (plan,) = I._plans().values()
+    assert len(plan["stats_grids"]) > 3 and len(plan["kv_grids"]) > 3
+    assert all(grid[1] <= 3 for grid, _ in plan["stats_grids"] + plan["kv_grids"])
+    assert torch.equal(got, want)
 
 
 @needs_kernel

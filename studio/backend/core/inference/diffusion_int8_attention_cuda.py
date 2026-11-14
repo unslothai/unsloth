@@ -756,18 +756,23 @@ extern "C" __global__ void unsloth_i8attn(
 }
 """
 
-QUANT_KERNELS = ("unsloth_i8stats", "unsloth_i8quant_v", "unsloth_i8quant_qk")
+QUANT_KERNELS = ("unsloth_i8stats_q", "unsloth_i8quant_kv")
 
 QUANT_SOURCE = r"""
 // The INT8 attention kernel's operands from [B, S, H, D] q / k / v of any float dtype and any strides on the first
-// three dims (the last dim has stride 1 and every row starts 16-byte aligned: the caller checks). Three launches:
+// three dims (the last dim has stride 1 and every row starts 16-byte aligned: the caller checks). Two launches (a
+// short call is mostly launches: every one less is time back), each a grid (batch * heads, jobs) whose blocks do
+// the job their y index names. Blocks start in y order, so a launch works through its jobs one after the other,
+// each across every head, and the order is chosen so that V is read the second time while the first read is still
+// in the L2 cache:
 //
-//   unsloth_i8stats     per (batch, head): the K mean over every kstep-th key (one block, a fixed summation order)
-//                       and the V minimum / maximum per channel over every vstep-th key, in nvc row chunks
-//   unsloth_i8quant_v   one block per key tile: (v - centre) / gain per channel, one scale per tile, stored
-//                       channel-major in the key order of the kernel's operand registers
-//   unsloth_i8quant_qk  one block per BN rows of Q (rotated, one scale per row) or per key tile of K (centred,
-//                       rotated, one scale per 32 keys and accumulator lane group)
+//   unsloth_i8stats_q   Q, QROWS rows per block (rotated, one scale per row); the K mean over every kstep-th key
+//                       (one block per head, a fixed summation order); last the V minimum / maximum per channel
+//                       over every vstep-th key, in nvc row chunks
+//   unsloth_i8quant_kv  needs the statistics. V, one block per key tile, the last tile first ((v - centre) / gain
+//                       per channel, one scale per tile, stored channel-major in the key order of the kernel's
+//                       operand registers); then K, KROWS keys per block (centred, rotated, one scale per 32 keys
+//                       and accumulator lane group)
 //
 // The rotation is the same fixed orthogonal map for Q and K (so Q.K^T is unchanged): a sign per channel, then an
 // unnormalised Walsh-Hadamard transform over every RG channels (16 inside one thread, the rest by warp shuffles).
@@ -789,10 +794,12 @@ typedef unsigned short u16;
 #define RGX 0
 #endif
 #define TPR (HD / 16)   // threads per row: one thread holds 16 channels
-#define NTQ (BN * TPR)  // threads per quantiser block (one key tile)
-#define NTV (BN * HD / 64)  // threads per V quantiser block: one thread holds 16 channels of 4 keys
-#define NTS 256         // threads per statistics block
+#define NTV (BN * HD / 64)  // threads of a V tile: one thread holds 16 channels of 4 keys
+#define NTKV (NTV > 32 * TPR ? NTV : 32 * TPR)  // threads per block of unsloth_i8quant_kv: a V tile, or KROWS keys
+#define KROWS (NTKV / TPR)  // a multiple of 32: whole scale runs
+#define NTS 256         // threads per block of unsloth_i8stats_q
 #define SLOTS (NTS / TPR)
+#define QROWS SLOTS     // rows of Q per block
 #define NWS (NTS / 32)
 
 struct __align__(16) W4 { u32 a, b, c, d; };
@@ -840,14 +847,22 @@ __device__ __forceinline__ float load1(const void* base, i64 elem, int kind) {
   return kind == 1 ? __uint_as_float(w << 16) : h2f(w);
 }
 
-// The rotation of the 16 channels 16 * g16 .. 16 * g16 + 15 of a row whose TPR threads sit in adjacent lanes.
-__device__ __forceinline__ void rotate(float* x, u32 g16) {
-#pragma unroll
+// bit i: whether the rotation negates channel 16 * g16 + i
+constexpr u32 flips(u32 g16) {
+  u32 m = 0u;
   for (u32 i = 0; i < 16; ++i) {
     const u32 c = 16u * g16 + i;
-    const u32 flip = (((c * 7919u + 13u) * (c + 3u)) >> 7) & 1u;
-    x[i] = __uint_as_float(__float_as_uint(x[i]) ^ (flip << 31));
+    m |= ((((c * 7919u + 13u) * (c + 3u)) >> 7) & 1u) << i;
   }
+  return m;
+}
+static const u32 FLIPS[8] = {flips(0), flips(1), flips(2), flips(3), flips(4), flips(5), flips(6), flips(7)};
+
+// The rotation of the 16 channels 16 * g16 .. 16 * g16 + 15 of a row whose TPR threads sit in adjacent lanes.
+__device__ __forceinline__ void rotate(float* x, u32 g16) {
+  const u32 flip = FLIPS[g16];
+#pragma unroll
+  for (u32 i = 0; i < 16; ++i) x[i] = __uint_as_float(__float_as_uint(x[i]) ^ ((flip >> i) << 31));
 #pragma unroll
   for (int m = 0; m < 4; ++m) {
 #pragma unroll
@@ -861,11 +876,11 @@ __device__ __forceinline__ void rotate(float* x, u32 g16) {
   }
 #pragma unroll
   for (int s = 0; s < RGX; ++s) {
-    const bool upper = (g16 >> s) & 1u;
+    const u32 upper = ((g16 >> s) & 1u) << 31;  // the upper lane of a pair holds o - x, as a sign flip and a sum
 #pragma unroll
     for (int i = 0; i < 16; ++i) {
       const float o = __shfl_xor_sync(0xffffffffu, x[i], 1 << s);
-      x[i] = upper ? (o - x[i]) : (x[i] + o);
+      x[i] = __uint_as_float(__float_as_uint(x[i]) ^ upper) + o;
     }
   }
 }
@@ -898,17 +913,41 @@ __device__ __forceinline__ void store16(s8* dst, const float* x, float s) {
 // kc    [BH, HD] the K mean over the keys 0, kstep, 2 * kstep, ...
 // vpart [BH, nvc, 2, HD] per row chunk of vrows keys (a multiple of vstep): the minimum and the maximum of every
 //       channel of V over the chunk's keys r0, r0 + vstep, ...
-// grid (nvc + 1, BH): block x < nvc is V chunk x, block nvc the K mean; NTS threads.
-extern "C" __global__ void unsloth_i8stats(
-    const void* __restrict__ k, const void* __restrict__ v, float* __restrict__ kc, float* __restrict__ vpart,
-    int n_k, int n_heads, int nvc, int vrows, int vstep, int kstep, i64 k_sb, i64 k_ss, i64 k_sh, i64 v_sb,
-    i64 v_ss, i64 v_sh, int k_kind, int v_kind) {
+// qi    [BH, n_qpad, HD] int8 rotated q (zeros past n_q); qs [BH, n_qpad] the row maximum over 127, times mul
+// grid (BH, jobs): job = job0 + y of qblocks + 1 + nvc, qblocks = (n_qpad + QROWS - 1) / QROWS (job0: a grid holds
+// 65535 jobs, a longer call takes several launches). Job < qblocks holds QROWS rows of Q (thread: row, 16
+// channels), job qblocks is the K mean, the others are the V chunks; NTS threads.
+extern "C" __global__ void unsloth_i8stats_q(
+    const void* __restrict__ q, const void* __restrict__ k, const void* __restrict__ v, float* __restrict__ kc,
+    float* __restrict__ vpart, s8* __restrict__ qi, float* __restrict__ qs, int n_q, int n_qpad, int n_k,
+    int n_heads, int nvc, int vrows, int vstep, int kstep, i64 q_sb, i64 q_ss, i64 q_sh, i64 k_sb, i64 k_ss,
+    i64 k_sh, i64 v_sb, i64 v_ss, i64 v_sh, float mul, int q_kind, int k_kind, int v_kind, int job0) {
   __shared__ float sm[NWS][2][HD];
   const u32 tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
   const u32 slot = tid / TPR, g16 = tid % TPR;
-  const i64 bh = blockIdx.y;
+  const i64 bh = blockIdx.x;
   const i64 b = bh / n_heads, h = bh % n_heads;
-  const bool mean = (int)blockIdx.x == nvc;
+  const int qblocks = (n_qpad + QROWS - 1) / QROWS;
+  const int job = job0 + (int)blockIdx.y;
+  if (job < qblocks) {
+    const i64 row = (i64)job * QROWS + slot;
+    float x[16];
+    if (row < n_q) {
+      load16(q, b * q_sb + h * q_sh + row * q_ss + 16 * g16, q_kind, x);
+    } else {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) x[i] = 0.f;
+    }
+    rotate(x, g16);
+    const float amax = fmaxf(row_max(amax16(x)), 1e-20f);
+    if (row < n_qpad) {
+      store16(qi + (bh * n_qpad + row) * HD + 16 * g16, x, 127.f / amax);
+      if (g16 == 0) qs[bh * n_qpad + row] = row < n_q ? amax * (mul / 127.f) : 0.f;
+    }
+    return;
+  }
+  const int chunk = job - qblocks - 1;  // of V; -1: the K mean
+  const bool mean = chunk < 0;
   float lo[16], hi[16];  // the K mean block: lo holds the sums
   if (mean) {
 #pragma unroll
@@ -931,7 +970,7 @@ extern "C" __global__ void unsloth_i8stats(
       lo[i] = 3.0e38f;
       hi[i] = -3.0e38f;
     }
-    const i64 r0 = (i64)blockIdx.x * vrows;
+    const i64 r0 = (i64)chunk * vrows;
     const i64 r1 = min(r0 + (i64)vrows, (i64)n_k);
     const i64 base = b * v_sb + h * v_sh + 16 * g16;
     for (i64 r = r0 + (i64)slot * vstep; r < r1; r += (i64)SLOTS * vstep) {
@@ -974,7 +1013,7 @@ extern "C" __global__ void unsloth_i8stats(
     if (mean) {
       kc[bh * HD + tid] = a / (float)((n_k + kstep - 1) / kstep);
     } else {
-      float* o = vpart + ((bh * nvc + blockIdx.x) * 2) * HD + tid;
+      float* o = vpart + ((bh * nvc + chunk) * 2) * HD + tid;
       o[0] = a;
       o[HD] = c;
     }
@@ -983,20 +1022,65 @@ extern "C" __global__ void unsloth_i8stats(
 
 // vt [BH, n_kpad / BN, HD, BN] int8 ((v - centre) / gain over the tile scale, zeros past n_k) in the key order of
 // the kernel's operand registers; vs [BH, n_kpad / BN] the tile scales; vc / vg [BH, HD] centre and gain, merged from
-// vpart by every block (HD threads) and written by tile 0.
-// grid (n_kpad / BN, BH), NTV threads: thread (16 channels, word kq) reads its four keys row by row (whole 16-byte
-// loads) and writes one 32-bit word per channel; adjacent lanes write adjacent words of a channel.
-extern "C" __global__ void unsloth_i8quant_v(
-    const void* __restrict__ v, const float* __restrict__ vpart, s8* __restrict__ vt, float* __restrict__ vs,
-    float* __restrict__ vc, float* __restrict__ vg, int n_k, int n_kpad, int n_heads, int nvc, i64 v_sb, i64 v_ss,
-    i64 v_sh, int v_kind) {
+// vpart by every V block (HD threads) and written by tile 0.
+// ki [BH, n_kpad, HD] int8 rotated (k - kc) (zeros past n_k); ks [BH, n_kpad / 32, 4] = the maximum over the keys
+// of a run of 32 with the same (key % 8) / 2, over 127
+// grid (BH, jobs): job = job0 + y of n_kpad / BN + n_kpad / KROWS, NTKV threads. Job < n_kpad / BN is a V tile,
+// the last one first: thread (16 channels, word kq) reads its four keys row by row (whole 16-byte loads) and
+// writes one 32-bit word per channel; adjacent lanes write adjacent words of a channel. The others hold KROWS keys
+// of K: thread (key, 16 channels).
+extern "C" __global__ void unsloth_i8quant_kv(
+    const void* __restrict__ k, const void* __restrict__ v, const float* __restrict__ kc,
+    const float* __restrict__ vpart, s8* __restrict__ ki, float* __restrict__ ks, s8* __restrict__ vt,
+    float* __restrict__ vs, float* __restrict__ vc, float* __restrict__ vg, int n_k, int n_kpad, int n_heads,
+    int nvc, i64 k_sb, i64 k_ss, i64 k_sh, i64 v_sb, i64 v_ss, i64 v_sh, int k_kind, int v_kind, int job0) {
   __shared__ __align__(16) float smc[HD], smr[HD];
-  __shared__ float sm[NTV / 32 + 1];
+  __shared__ float sm[KROWS + KROWS / 8 > NTV / 32 + 1 ? KROWS + KROWS / 8 : NTV / 32 + 1];
   const u32 tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
-  const u32 g16 = tid / (BN / 4), kq = tid % (BN / 4);
-  const i64 bh = (i64)gridDim.y - 1 - blockIdx.y;  // the heads the statistics read last come first
+  const i64 tiles = n_kpad / BN;
+  const i64 bh = blockIdx.x;
   const i64 b = bh / n_heads, h = bh % n_heads;
-  const i64 tile = blockIdx.x, tiles = n_kpad / BN;
+  const i64 job = (i64)job0 + blockIdx.y;
+  if (job >= tiles) {
+    const u32 rin = tid / TPR, g16 = tid % TPR;
+    const i64 run = job - tiles;
+    const i64 key = run * KROWS + rin;
+    float x[16];
+    if (key < n_k) {
+      load16(k, b * k_sb + h * k_sh + key * k_ss + 16 * g16, k_kind, x);
+      const F4* c = reinterpret_cast<const F4*>(kc + bh * HD + 16 * g16);
+#pragma unroll
+      for (int i = 0; i < 4; ++i) {
+        const F4 f = c[i];
+        x[4 * i] -= f.a;
+        x[4 * i + 1] -= f.b;
+        x[4 * i + 2] -= f.c;
+        x[4 * i + 3] -= f.d;
+      }
+    } else {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) x[i] = 0.f;
+    }
+    rotate(x, g16);
+    const float amax = row_max(amax16(x));
+    if (g16 == 0) sm[rin] = amax;
+    __syncthreads();
+    if (tid < KROWS / 8) {  // scale tid: the keys 32 * (tid / 4) + 8 * a + 2 * (tid % 4) + {0, 1}
+      const u32 first = 32u * (tid >> 2) + 2u * (tid & 3u);
+      float m = 0.f;
+#pragma unroll
+      for (int a = 0; a < 4; ++a) m = fmaxf(m, fmaxf(sm[first + 8 * a], sm[first + 8 * a + 1]));
+      m = fmaxf(m, 1e-20f);
+      sm[KROWS + tid] = m;
+      ks[bh * (n_kpad / 8) + run * (KROWS / 8) + tid] = m / 127.f;
+    }
+    __syncthreads();
+    store16(ki + (bh * n_kpad + key) * HD + 16 * g16, x, 127.f / sm[KROWS + 4u * (rin >> 5) + ((rin & 7u) >> 1)]);
+    return;
+  }
+  if (tid >= NTV) return;
+  const u32 g16 = tid / (BN / 4), kq = tid % (BN / 4);
+  const i64 tile = tiles - 1 - job;  // the keys the statistics read last come first
   for (u32 c = tid; c < HD; c += NTV) {
     float lo = 3.0e38f, hi = -3.0e38f;
     const float* part = vpart + bh * nvc * 2 * HD + c;
@@ -1066,75 +1150,12 @@ extern "C" __global__ void unsloth_i8quant_v(
   for (int i = 0; i < 16; ++i)
     dst[i * (BN / 4)] = q8(x[0][i], s) | (q8(x[1][i], s) << 8) | (q8(x[2][i], s) << 16) | (q8(x[3][i], s) << 24);
 }
-
-// ki [BH, n_kpad, HD] int8 rotated (k - kc) (zeros past n_k); ks [BH, n_kpad / 32, 4] = the maximum over the keys
-// of a run of 32 with the same (key % 8) / 2, over 127
-// grid ((n_qpad + BN - 1) / BN + n_kpad / BN, BH), NTQ threads: thread (row, 16 channels); the first blocks are Q.
-extern "C" __global__ void unsloth_i8quant_qk(
-    const void* __restrict__ q, const void* __restrict__ k, const float* __restrict__ kc, s8* __restrict__ qi,
-    float* __restrict__ qs, s8* __restrict__ ki, float* __restrict__ ks, int n_q, int n_qpad, int n_k, int n_kpad,
-    int n_heads, i64 q_sb, i64 q_ss, i64 q_sh, i64 k_sb, i64 k_ss, i64 k_sh, float mul, int q_kind, int k_kind) {
-  __shared__ float sm[BN + BN / 8];
-  const u32 tid = threadIdx.x;
-  const u32 rin = tid / TPR, g16 = tid % TPR;
-  const i64 bh = blockIdx.y;
-  const i64 b = bh / n_heads, h = bh % n_heads;
-  const int qblocks = (n_qpad + BN - 1) / BN;
-  float x[16];
-  if ((int)blockIdx.x < qblocks) {
-    const i64 row = (i64)blockIdx.x * BN + rin;
-    if (row < n_q) {
-      load16(q, b * q_sb + h * q_sh + row * q_ss + 16 * g16, q_kind, x);
-    } else {
-#pragma unroll
-      for (int i = 0; i < 16; ++i) x[i] = 0.f;
-    }
-    rotate(x, g16);
-    const float amax = fmaxf(row_max(amax16(x)), 1e-20f);
-    if (row < n_qpad) {
-      store16(qi + (bh * n_qpad + row) * HD + 16 * g16, x, 127.f / amax);
-      if (g16 == 0) qs[bh * n_qpad + row] = row < n_q ? amax * (mul / 127.f) : 0.f;
-    }
-  } else {
-    const i64 tile = (i64)blockIdx.x - qblocks, tiles = n_kpad / BN;
-    const i64 key = tile * BN + rin;
-    if (key < n_k) {
-      load16(k, b * k_sb + h * k_sh + key * k_ss + 16 * g16, k_kind, x);
-      const F4* c = reinterpret_cast<const F4*>(kc + bh * HD + 16 * g16);
-#pragma unroll
-      for (int i = 0; i < 4; ++i) {
-        const F4 f = c[i];
-        x[4 * i] -= f.a;
-        x[4 * i + 1] -= f.b;
-        x[4 * i + 2] -= f.c;
-        x[4 * i + 3] -= f.d;
-      }
-    } else {
-#pragma unroll
-      for (int i = 0; i < 16; ++i) x[i] = 0.f;
-    }
-    rotate(x, g16);
-    const float amax = row_max(amax16(x));
-    if (g16 == 0) sm[rin] = amax;
-    __syncthreads();
-    if (tid < BN / 8) {  // scale tid: the keys 32 * (tid / 4) + 8 * a + 2 * (tid % 4) + {0, 1}
-      const u32 first = 32u * (tid >> 2) + 2u * (tid & 3u);
-      float m = 0.f;
-#pragma unroll
-      for (int a = 0; a < 4; ++a) m = fmaxf(m, fmaxf(sm[first + 8 * a], sm[first + 8 * a + 1]));
-      m = fmaxf(m, 1e-20f);
-      sm[BN + tid] = m;
-      ks[(bh * tiles + tile) * (BN / 8) + tid] = m / 127.f;
-    }
-    __syncthreads();
-    store16(ki + (bh * n_kpad + key) * HD + 16 * g16, x, 127.f / sm[BN + 4u * (rin >> 5) + ((rin & 7u) >> 1)]);
-  }
-}
 """
 
 _LOCK = threading.Lock()
 _NVRTC: Any = None
 _DRIVER: Any = None
+_LAUNCH: Any = None
 _FUNCTIONS: dict = {}
 
 _CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES = 3
@@ -1265,6 +1286,17 @@ def driver() -> Any:
     return _DRIVER
 
 
+def _launcher() -> Any:
+    """``cuLaunchKernel`` with its argument types declared: a call then converts plain integers itself."""
+    global _LAUNCH
+    if _LAUNCH is None:
+        fn = driver().cuLaunchKernel
+        fn.argtypes = [ctypes.c_void_p] + [ctypes.c_uint] * 7 + [ctypes.c_void_p] * 3
+        fn.restype = ctypes.c_int
+        _LAUNCH = fn
+    return _LAUNCH
+
+
 def _check(rc: int, what: str) -> None:
     if rc != 0:
         raise RuntimeError(f"{what} failed with CUDA error {rc}")
@@ -1319,7 +1351,7 @@ class Function:
                 *[base + 8 * i for i in range(len(values))]
             )
         slots[:] = values
-        rc = driver().cuLaunchKernel(
+        rc = _launcher()(
             self.handle,
             grid[0],
             grid[1],
@@ -1328,7 +1360,7 @@ class Function:
             1,
             1,
             shared,
-            ctypes.c_void_p(stream),
+            stream,
             self._local.pointers,
             None,
         )
@@ -1407,7 +1439,7 @@ def load(
 
 
 def load_quantisers(device_index: int, capability: tuple, defines: dict) -> dict:
-    """The three quantiser kernels compiled with ``defines`` (HD, BN, RGX) for this device; cached per process."""
+    """The two quantiser kernels compiled with ``defines`` (HD, BN, RGX) for this device; cached per process."""
     return load_module(device_index, capability, QUANT_SOURCE, QUANT_KERNELS, defines)
 
 

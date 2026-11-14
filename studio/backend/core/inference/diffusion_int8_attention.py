@@ -128,7 +128,6 @@ TRITON_KERNEL_CONFIGS: dict = {
         64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "half_strided", "kscale": "tile"},
     },
 }
-QUANT_ROWS = 64  # the padded Q length is a multiple of this
 ROT_GROUP = (
     128  # channels per Hadamard block of the Q / K rotation (the head dim where that is smaller)
 )
@@ -303,26 +302,36 @@ def stats_plan(n_keys: int) -> tuple:
 
 
 class Operands(dict):
-    """``quantise``'s output: the int8 operands and their scales as views of two allocations, made when asked for."""
+    """``quantise``'s output: the int8 operands and their scales as views of one allocation, made when asked for."""
 
     def __missing__(self, key: str) -> Any:
-        offset, shape = self["layout"][key]
-        base = self["i8"] if key in ("qi", "ki", "vt") else self["f32"]
-        view = base[offset : offset + math.prod(shape)].view(shape)
+        import torch
+
+        plan = self["plan"]
+        if key == "f32":
+            view = self["i8"][plan["f32_at"] :].view(torch.float32)
+        elif key == "layout":
+            view = plan["layout"]
+        else:
+            offset, shape = plan["layout"][key]
+            base = self["i8"] if key in ("qi", "ki", "vt") else self["f32"]
+            view = base[offset : offset + math.prod(shape)].view(shape)
         self[key] = view
         return view
+
+
+def _strides_aligned(x: Any) -> bool:
+    """Whether the strides of ``x`` let the quantisers' 16-byte loads read it: last-dim stride 1 and every row a
+    whole number of 16 bytes from the first (the first one's own alignment is the caller's to check)."""
+    size, stride = x.element_size(), x.stride()
+    return stride[3] == 1 and all((stride[d] * size) % 16 == 0 for d in range(3) if x.shape[d] > 1)
 
 
 def _aligned(x: Any) -> Any:
     """``x`` with last-dim stride 1 and every row 16-byte aligned (what the quantisers' vector loads need)."""
     import torch
 
-    size = x.element_size()
-    if (
-        x.stride(3) == 1
-        and x.data_ptr() % 16 == 0
-        and all((x.stride(d) * size) % 16 == 0 for d in range(3) if x.shape[d] > 1)
-    ):
+    if x.data_ptr() % 16 == 0 and _strides_aligned(x):
         return x
     # a copy even where the view is already contiguous: a fresh allocation starts aligned
     return x.clone(memory_format = torch.contiguous_format)
@@ -365,28 +374,63 @@ def _functions(index: int, head_dim: int, config: dict) -> tuple:
     return found
 
 
-def quantise(
-    q: Any,
-    k: Any,
-    v: Any,
-    config: dict,
-    scale: Optional[float] = None,
-) -> dict:
-    """The kernel's inputs from ``[B, S, H, D]`` q / k / v (any strides on the first three dims)."""
+def _raw_stream(index: int) -> int:
+    """The current stream of device ``index`` as the driver's handle (the capture stream under a CUDA graph)."""
     import torch
 
+    get = getattr(torch._C, "_cuda_getCurrentRawStream", None)
+    if get is not None:
+        return get(index)
+    return torch.cuda.current_stream(index).cuda_stream
+
+
+# A call's launch arithmetic (padded lengths, operand layout, grids, every argument that is not a pointer), keyed
+# by everything it depends on: a short call is mostly this glue, so it is done once per call signature.
+_PLAN_LIMIT = 512
+GRID_LIMIT = 65535  # blocks along y in one launch
+
+
+def _plans() -> dict:
+    """The launch plans, kept with the loaded kernels they hold (a plan does not outlive them)."""
+    found = _LOADED.get("plans")
+    if found is None:
+        found = _LOADED["plans"] = {}
+    return found
+
+
+def _plan_key(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> tuple:
+    return (
+        index,
+        tuple(sorted(config.items())),
+        q.shape,
+        k.shape[1],
+        q.dtype,
+        k.dtype,
+        v.dtype,
+        q.stride(),
+        k.stride(),
+        v.stride(),
+        scale,
+        (K_MEAN_STEP, K_MEAN_KEYS, V_RANGE_STEP, V_RANGE_CHUNKS, GRID_LIMIT),
+    )
+
+
+def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> dict:
+    """The launch plan for ``[B, S, H, D]`` q / k / v with aligned strides (``_aligned``) on device ``index``."""
     from .diffusion_int8_attention_cuda import float_bits
 
-    q, k, v = _aligned(q), _aligned(k), _aligned(v)
+    key = _plan_key(q, k, v, config, scale, index)
+    plans = _plans()
+    plan = plans.get(key)
+    if plan is not None:
+        return plan
     B, Sq, H, D = q.shape
     Sk = k.shape[1]
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
-    dev = q.device
-    index = _device_index(dev)
-    _, kernels, _ = _functions(index, D, config)
+    fn, kernels, shared = _functions(index, D, config)
     # log2(e) turns the kernel's 2^x into e^x; the rotation adds sqrt(group) in norm to Q and to K
     mul = (1.0 / math.sqrt(D) if scale is None else float(scale)) * LOG2E / min(int(ROT_GROUP), D)
-    n_qpad = _pad(Sq, math.lcm(QUANT_ROWS, 16 * nq * wpc))
+    n_qpad = _pad(Sq, 16 * nq * wpc)
     n_kpad = _pad(Sk, bn)
     tiles = n_kpad // bn
     BH = B * H
@@ -399,7 +443,7 @@ def quantise(
     ):
         layout[name] = (at, shape)
         at += math.prod(shape)
-    n_i8, at = at, 0
+    f32_at, at = _pad(at, 16), 0
     for name, shape in (
         ("qs", (BH, n_qpad)),
         ("ks", (BH, n_kpad // 32, 4)),
@@ -411,107 +455,122 @@ def quantise(
     ):
         layout[name] = (at, shape)
         at += math.prod(shape)
-    i8 = torch.empty(n_i8, dtype = torch.int8, device = dev)
-    f32 = torch.empty(at, dtype = torch.float32, device = dev)
-    pi, pf = i8.data_ptr(), f32.data_ptr()
-    at_i = {name: pi + layout[name][0] for name in ("qi", "ki", "vt")}
-    at_f = {
-        name: pf + 4 * layout[name][0] for name in ("qs", "ks", "kc", "vs", "vc", "vg", "vpart")
-    }
-    qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
-    q_kind, k_kind, v_kind = (
-        _OUT_KIND[str(q.dtype)],
-        _OUT_KIND[str(k.dtype)],
-        _OUT_KIND[str(v.dtype)],
+    off = {name: layout[name][0] for name in ("qi", "ki", "vt")}
+    off.update(
+        {
+            name: f32_at + 4 * layout[name][0]
+            for name in ("qs", "ks", "kc", "vs", "vc", "vg", "vpart")
+        }
     )
+    q_kind, k_kind, v_kind = (_OUT_KIND[str(x.dtype)] for x in (q, k, v))
     qst, kst, vst = q.stride(), k.stride(), v.stride()
-    threads = bn * D // 16
-    with torch.cuda.device(dev):
-        stream = torch.cuda.current_stream().cuda_stream
-        kernels["unsloth_i8stats"].launch(
-            (nvc + 1, BH),
-            256,
-            (
-                kp,
-                vp,
-                at_f["kc"],
-                at_f["vpart"],
-                Sk,
-                H,
-                nvc,
-                vrows,
-                vstep,
-                kstep,
-                kst[0],
-                kst[1],
-                kst[2],
-                vst[0],
-                vst[1],
-                vst[2],
-                k_kind,
-                v_kind,
-            ),
-            0,
-            stream,
-        )
-        kernels["unsloth_i8quant_v"].launch(
-            (tiles, BH),
-            bn * D // 64,
-            (
-                vp,
-                at_f["vpart"],
-                at_i["vt"],
-                at_f["vs"],
-                at_f["vc"],
-                at_f["vg"],
-                Sk,
-                n_kpad,
-                H,
-                nvc,
-                vst[0],
-                vst[1],
-                vst[2],
-                v_kind,
-            ),
-            0,
-            stream,
-        )
-        kernels["unsloth_i8quant_qk"].launch(
-            ((n_qpad + bn - 1) // bn + tiles, BH),
-            threads,
-            (
-                qp,
-                kp,
-                at_f["kc"],
-                at_i["qi"],
-                at_f["qs"],
-                at_i["ki"],
-                at_f["ks"],
-                Sq,
-                n_qpad,
-                Sk,
-                n_kpad,
-                H,
-                qst[0],
-                qst[1],
-                qst[2],
-                kst[0],
-                kst[1],
-                kst[2],
-                float_bits(mul),
-                q_kind,
-                k_kind,
-            ),
-            0,
-            stream,
-        )
+    stats_threads = 256  # NTS of the quantiser source
+    stats_jobs = -(-n_qpad // (stats_threads // (D // 16))) + 1 + nvc
+    kv_threads = max(bn * D // 64, 2 * D)  # NTKV: a V tile, or runs of 32 keys
+    kv_jobs = tiles + n_kpad // (kv_threads // (D // 16))
+    out_stride = (Sq * H * D, H * D, D)
+
+    def grids(jobs: int) -> tuple:
+        """((BH, jobs of this launch), first job) per launch: a grid dimension holds 65535 blocks"""
+        return tuple(((BH, min(GRID_LIMIT, jobs - at)), at) for at in range(0, jobs, GRID_LIMIT))
+
+    plan = {
+        "index": index,
+        "layout": layout,
+        "off": off,
+        "f32_at": f32_at,
+        "bytes": f32_at + 4 * at,
+        "shape": (B, Sq, Sk, H, D),
+        "pads": (n_qpad, n_kpad),
+        "kernels": (kernels["unsloth_i8stats_q"], kernels["unsloth_i8quant_kv"], fn),
+        "shared": shared,
+        "stats_grids": grids(stats_jobs),
+        "stats_threads": stats_threads,
+        "stats_tail": (
+            Sq,
+            n_qpad,
+            Sk,
+            H,
+            nvc,
+            vrows,
+            vstep,
+            kstep,
+            *qst[:3],
+            *kst[:3],
+            *vst[:3],
+            float_bits(mul),
+            q_kind,
+            k_kind,
+            v_kind,
+        ),
+        "kv_grids": grids(kv_jobs),
+        "kv_threads": kv_threads,
+        "kv_tail": (Sk, n_kpad, H, nvc, *kst[:3], *vst[:3], k_kind, v_kind),
+        "attn_grid": (n_qpad // (16 * nq * wpc), BH),
+        "attn_threads": 32 * wpc,
+        "attn_tail": (Sq, n_qpad, Sk, n_kpad, H, *out_stride, _OUT_KIND[str(v.dtype)]),
+        "out_shape": (B, Sq, H, D),
+    }
+    if len(plans) >= _PLAN_LIMIT:
+        plans.clear()
+    plans[key] = plan
+    return plan
+
+
+def quantise(
+    q: Any,
+    k: Any,
+    v: Any,
+    config: dict,
+    scale: Optional[float] = None,
+) -> dict:
+    """The kernel's inputs from ``[B, S, H, D]`` q / k / v (any strides on the first three dims)."""
+    import torch
+
+    dev = q.device
+    index = _device_index(dev)
+    qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
+    # a plan is only ever made for aligned strides: finding one leaves the first rows' alignment to check
+    plan = None if (qp | kp | vp) & 15 else _plans().get(_plan_key(q, k, v, config, scale, index))
+    if plan is None:
+        q, k, v = _aligned(q), _aligned(k), _aligned(v)
+        qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
+        plan = _plan(q, k, v, config, scale, index)
+    i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = dev)
+    base, off = i8.data_ptr(), plan["off"]
+    stats_q, quant_kv, _ = plan["kernels"]
+    kc, vpart = base + off["kc"], base + off["vpart"]
+
+    def launch() -> None:
+        stream = _raw_stream(index)
+        args = (qp, kp, vp, kc, vpart, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
+        for grid, job in plan["stats_grids"]:
+            stats_q.launch(grid, plan["stats_threads"], args + (job,), 0, stream)
+        args = (
+            kp,
+            vp,
+            kc,
+            vpart,
+            base + off["ki"],
+            base + off["ks"],
+            base + off["vt"],
+            base + off["vs"],
+            base + off["vc"],
+            base + off["vg"],
+        ) + plan["kv_tail"]
+        for grid, job in plan["kv_grids"]:
+            quant_kv.launch(grid, plan["kv_threads"], args + (job,), 0, stream)
+
+    if torch.cuda.current_device() == index:
+        launch()
+    else:
+        with torch.cuda.device(index):
+            launch()
     return Operands(
         i8 = i8,
-        f32 = f32,
-        layout = layout,
-        pointers = (at_i, at_f),
-        shape = (B, Sq, Sk, H, D),
-        pads = (n_qpad, n_kpad),
+        plan = plan,
+        shape = plan["shape"],
+        pads = plan["pads"],
         dtype = v.dtype,
         config = config,
         inputs = (q, k, v),  # kept alive until the launches that read them are done
@@ -528,41 +587,29 @@ def attend(p: dict) -> Any:
     """Launch the kernel on ``quantise``'s output; ``[B, Sq, H, D]`` in the dtype of V."""
     import torch
 
-    config = p["config"]
-    B, Sq, Sk, H, D = p["shape"]
-    dev = p["i8"].device
-    out = torch.empty((B, Sq, H, D), dtype = p["dtype"], device = dev)
-    fn, _, shared = _functions(_device_index(dev), D, config)
-    n_qpad, n_kpad = p["pads"]
-    at_i, at_f = p["pointers"]
-    wpc, nq = int(config["wpc"]), int(config["nq"])
-    with torch.cuda.device(dev):
-        fn.launch(
-            (n_qpad // (16 * nq * wpc), B * H),
-            32 * wpc,
-            (
-                at_i["qi"],
-                at_i["ki"],
-                at_i["vt"],
-                at_f["qs"],
-                at_f["ks"],
-                at_f["vs"],
-                at_f["vg"],
-                at_f["vc"],
-                out.data_ptr(),
-                Sq,
-                n_qpad,
-                Sk,
-                n_kpad,
-                H,
-                out.stride(0),
-                out.stride(1),
-                out.stride(2),
-                _OUT_KIND[str(out.dtype)],
-            ),
-            shared,
-            torch.cuda.current_stream().cuda_stream,
-        )
+    plan, i8 = p["plan"], p["i8"]
+    index = plan["index"]
+    out = torch.empty(plan["out_shape"], dtype = p["dtype"], device = i8.device)
+    base, off = i8.data_ptr(), plan["off"]
+    args = (
+        base + off["qi"],
+        base + off["ki"],
+        base + off["vt"],
+        base + off["qs"],
+        base + off["ks"],
+        base + off["vs"],
+        base + off["vg"],
+        base + off["vc"],
+        out.data_ptr(),
+    ) + plan["attn_tail"]
+    fn = plan["kernels"][2]
+    if torch.cuda.current_device() == index:
+        fn.launch(plan["attn_grid"], plan["attn_threads"], args, plan["shared"], _raw_stream(index))
+    else:
+        with torch.cuda.device(index):
+            fn.launch(
+                plan["attn_grid"], plan["attn_threads"], args, plan["shared"], _raw_stream(index)
+            )
     return out
 
 
