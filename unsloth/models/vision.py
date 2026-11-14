@@ -2502,6 +2502,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 cache_implementation = "static"
     if do_bfloat16_mixed_precision:
         cache_implementation = None
+    # transformers refuses a static cache next to the caller's own cache or with assisted decoding (#4232).
+    if kwargs.get("past_key_values") is not None or any(
+        kwargs.get(k) is not None
+        for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
+    ):
+        cache_implementation = None
     # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
     force_dynamic_cache = kwargs.get(
         "past_key_values"
