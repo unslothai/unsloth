@@ -136,6 +136,13 @@ def _reason(route: Int8Route, args: tuple, kwargs: dict) -> Optional[str]:
         return "not tensors"
     if _arg(args, kwargs, 3, "attn_mask") is not None:
         return "mask"
+    # cheapest decisive check next: an eager family below the token floor pays only these few lines per call
+    if (
+        query.dim() == 4
+        and key.dim() == 4
+        and (query.shape[1] < route.min_tokens or key.shape[1] < route.min_tokens)
+    ):
+        return "short"
     if _arg(args, kwargs, 5, "is_causal", False):
         return "causal"
     if _arg(args, kwargs, 4, "dropout_p", 0.0):
