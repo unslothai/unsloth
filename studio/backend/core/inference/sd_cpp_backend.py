@@ -2462,9 +2462,7 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
 
 
 _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
-_SD_CPP_LIB_NAME = re.compile(
-    r"(lib)?stable-diffusion(\.dll|\.so(\.\d+)*|(\.\d+)*\.dylib)", re.IGNORECASE
-)
+_SD_CPP_LIBS = ("stable-diffusion.dll", "libstable-diffusion.so", "libstable-diffusion.dylib")
 
 
 def _file_carries_marker(path: str, marker: str) -> Optional[bool]:
@@ -2513,9 +2511,8 @@ def binary_carries_marker(
     if found is None:
         return unreadable
     return found or any(
-        _file_carries_marker(str(lib), marker)
-        for lib in sorted(Path(binary).parent.glob("*stable-diffusion*"))
-        if _SD_CPP_LIB_NAME.fullmatch(lib.name)
+        _file_carries_marker(os.path.join(os.path.dirname(binary), lib), marker)
+        for lib in _SD_CPP_LIBS
     )
 
 

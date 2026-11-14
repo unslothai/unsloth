@@ -178,23 +178,25 @@ def test_a_shared_library_build_advertises_edit(tmp_path, lib):
     assert "edit" in b.status()["workflows"]
 
 
-def test_an_unreadable_build_advertises_no_edit_and_no_fidelity(tmp_path):
+def test_an_unreadable_build_advertises_no_edit_and_no_fidelity(tmp_path, monkeypatch):
     binary = tmp_path / "sd-server"
     binary.write_bytes(
         FAM.sd_cpp_edit_marker.encode() + b" " + bk._REFERENCE_FIDELITY_MARKER.encode()
     )
-    binary.chmod(0o111)
+
+    # chmod cannot revoke read access on Windows or for root.
+    def _refuse(*a, **k):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(bk, "open", _refuse, raising = False)
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     b._state = _state(
         mode = "server",
         server = types.SimpleNamespace(binary = str(binary), is_alive = lambda: True),
     )
-    try:
-        assert "edit" not in b.status()["workflows"]
-        assert b._native_reference_fidelity(b._state) is False
-        assert bk.binary_carries_marker(str(binary), "anything") is True
-    finally:
-        binary.chmod(0o644)
+    assert "edit" not in b.status()["workflows"]
+    assert b._native_reference_fidelity(b._state) is False
+    assert bk.binary_carries_marker(str(binary), "anything") is True
 
 
 def test_oneshot_edit_stages_ordered_pngs_and_records_the_workflow(monkeypatch):
