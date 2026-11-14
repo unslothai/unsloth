@@ -231,3 +231,16 @@ def test_unanswered_conversations_report_a_drop_warning():
         "Dropped 1 of 2 conversations with no assistant response" in warning
         for warning in info["warnings"]
     )
+
+
+def test_drop_count_spans_parallel_shards():
+    answered = [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]
+    convos = [answered if i % 3 else [{"role": "user", "content": "Q"}] for i in range(30)]
+    stats = {}
+    converted = convert_chatml_to_alpaca(
+        Dataset.from_dict({"messages": convos}), 4, 2, chat_column = "messages", stats = stats
+    )
+
+    assert stats == {"conversations": 30, "dropped": 10}
+    assert converted.column_names == ["instruction", "input", "output"]
+    assert len(converted) == 20

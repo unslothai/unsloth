@@ -39,3 +39,17 @@ def test_csv_files_differing_headers_keep_cells_as_written(tmp_path):
     files = [str(narrow), str(wide)]
     with pytest.raises(DatasetGenerationCastError):
         load_dataset("csv", data_files = files, split = "train", **csv_as_text_kwargs(files))
+
+
+def test_csv_files_differing_headers_keep_numeric_columns_typed(tmp_path):
+    wide = tmp_path / "wide.csv"
+    wide.write_text("anchor,positive,score,note\nhi,hello,0.9,N/A\n")
+    narrow = tmp_path / "narrow.csv"
+    narrow.write_text("anchor,positive,score\ncat,kitten,0.75\n")
+
+    files = [str(wide), str(narrow)]
+    dataset = load_dataset("csv", data_files = files, split = "train", **csv_as_text_kwargs(files))
+    # Embedding training reads score as a number; only text columns are kept as written.
+    assert dataset.features["score"].dtype == "float64"
+    assert dataset["score"] == [0.9, 0.75]
+    assert dataset["note"] == ["N/A", None]

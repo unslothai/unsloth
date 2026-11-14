@@ -252,19 +252,21 @@ test("a headerless csv keeps its first message", () => {
   );
 });
 
-test("a csv with a header row still skips it", () => {
-  const [conversation] = parseImportText(
-    '"role","content"\n"user","hello"\n"assistant","hi"\n',
-    "chat.csv",
-  );
-  assert.deepEqual(
-    conversation.messages.map((message) => [message.role, (message.content[0] as { text: string }).text]),
-    [
-      ["user", "hello"],
-      ["assistant", "hi"],
-    ],
-  );
-});
+for (const header of ['"role","content"', "sender,message"]) {
+  test(`a csv with a ${header} header row still skips it`, () => {
+    const [conversation] = parseImportText(
+      `${header}\n"user","hello"\n"assistant","hi"\n`,
+      "chat.csv",
+    );
+    assert.deepEqual(
+      conversation.messages.map((message) => [message.role, (message.content[0] as { text: string }).text]),
+      [
+        ["user", "hello"],
+        ["assistant", "hi"],
+      ],
+    );
+  });
+}
 
 test("a Responses object keeps tool calls and reads created_at seconds", () => {
   const [conversation] = parseImportText(

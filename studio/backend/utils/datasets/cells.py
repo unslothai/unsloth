@@ -164,26 +164,28 @@ def csv_as_text_kwargs(files):
         }
 
     def _cell_text(value):
-        return None if value == "" or value != value else str(value)
+        return None if value == "" else value
 
     with pd.read_csv(files[0], chunksize = _CSV_CHUNK_ROWS) as chunks:
         first = next(chunks)
     headers = [first.columns] + [pd.read_csv(path, nrows = 0).columns for path in files[1:]]
     if all(set(columns) == set(headers[0]) for columns in headers):
-        names = list(first.columns)
         strings = _string_columns(first)
-        tags = {name: _CSV_TEXT if name in strings else _CSV_TYPED for name in names}
+        tags = {name: _CSV_TEXT if name in strings else _CSV_TYPED for name in first.columns}
         return {
             "features": Features({name: Value("string", id = tag) for name, tag in tags.items()}),
             "keep_default_na": False,
             "na_values": [""],
         }
-    # A Features schema requires every column in every file, so differing headers
-    # force string reads through converters instead; a column one file lacks still
-    # concatenates as null instead of every cell falling back to pandas-typed values.
-    names = dict.fromkeys(name for columns in headers for name in columns)
+    # Features needs every column in every file, so read text columns through converters;
+    # columns numeric in every file stay typed, as the default loader reads them.
+    text = set()
+    for path in files:
+        text |= _string_columns(
+            pd.read_csv(path, nrows = _CSV_CHUNK_ROWS, keep_default_na = False, na_values = [""])
+        )
     return {
-        "converters": {name: _cell_text for name in names},
+        "converters": {name: _cell_text for name in text},
         "keep_default_na": False,
         "na_values": [""],
     }

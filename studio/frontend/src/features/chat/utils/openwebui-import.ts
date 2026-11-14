@@ -333,9 +333,8 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
           ? item.results
           : undefined) ??
         item.error ??
-        str(item.status) ??
-        // A recorded hosted call finished; without the default the card spins forever.
-        (!CLIENT_RUN_CALLS.has(item.type as string) ? "completed" : undefined);
+        // Client-run calls get their result from a later *_call_output; a hosted call finished.
+        (CLIENT_RUN_CALLS.has(item.type as string) ? undefined : (str(item.status) ?? "completed"));
       if (done != null) part.result = done;
       toolCallIndex.set(callId, part);
       parts.push(part);

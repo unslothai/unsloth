@@ -440,8 +440,9 @@ def _format_dataset(
 ):
     """Formats dataset and returns {dataset, detected_format, final_format, chat_column, is_standardized, requires_manual_mapping, warnings}."""
 
+    multimodal_info = detect_multimodal_dataset(dataset)
+
     if hasattr(dataset, "__len__") and len(dataset) == 0:
-        multimodal_info = detect_multimodal_dataset(dataset)
         return {
             "dataset": dataset,
             "detected_format": "unknown",
@@ -453,8 +454,6 @@ def _format_dataset(
             "multimodal_info": multimodal_info,
             "warnings": ["Dataset has no rows."],
         }
-
-    multimodal_info = detect_multimodal_dataset(dataset)
 
     auto_raw = (
         format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset)

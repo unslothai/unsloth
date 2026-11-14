@@ -277,6 +277,9 @@ def _content_text(content):
     return cell_text(content)
 
 
+_SOURCE_COLUMN = "__unsloth_source_row"
+
+
 def convert_chatml_to_alpaca(
     dataset,
     batch_size = 1000,
@@ -336,7 +339,7 @@ def convert_chatml_to_alpaca(
                 instruction = None
         return rows
 
-    def _convert(examples):
+    def _convert(examples, indices = None):
         chatml_data = examples.get(chat_column) if chat_column else None
         if chatml_data is None:
             chatml_data = (
@@ -349,15 +352,22 @@ def convert_chatml_to_alpaca(
         instructions = []
         outputs = []
         inputs = []
+        sources = []
         column_systems = examples.get("system") or [None] * len(chatml_data)
 
-        for convo, column_system in zip(chatml_data, column_systems):
+        for index, convo, column_system in zip(
+            indices or range(len(chatml_data)), chatml_data, column_systems
+        ):
             for instruction, input_text, output in _convo_rows(convo, column_system):
                 instructions.append(instruction)
                 inputs.append(input_text)
                 outputs.append(output)
+                sources.append(index)
 
-        return {"instruction": instructions, "input": inputs, "output": outputs}
+        converted = {"instruction": instructions, "input": inputs, "output": outputs}
+        if indices is not None:
+            converted[_SOURCE_COLUMN] = sources
+        return converted
 
     dataset_map_kwargs = {
         "batched": True,
@@ -365,6 +375,7 @@ def convert_chatml_to_alpaca(
         "remove_columns": dataset.column_names or list(next(iter(dataset), {})),
     }
 
+    count = stats is not None and not is_iterable
     if not is_iterable:
         from utils.hardware import light_map_num_proc
 
@@ -372,6 +383,7 @@ def convert_chatml_to_alpaca(
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
+        dataset_map_kwargs["with_indices"] = count
 
     result = dataset.map(_convert, **dataset_map_kwargs)
 
@@ -384,28 +396,13 @@ def convert_chatml_to_alpaca(
                 f"Streaming ChatML-to-Alpaca conversion failed on the first row: {exc}"
             ) from exc
 
-    if stats is not None and not is_iterable:
-        # Mirror _convert's fallback: an absent chat_column falls back to the standard names.
-        count_column = next(
-            (
-                name
-                for name in ([chat_column] if chat_column else [])
-                + ["messages", "conversations", "texts"]
-                if name in (dataset.column_names or [])
-            ),
-            None,
-        )
-        if count_column is not None:
-            stats["conversations"] = 0
-            stats["dropped"] = 0
-            for start in range(0, len(dataset), batch_size):
-                chunk = dataset[start : start + batch_size]
-                convos = chunk[count_column]
-                column_systems = chunk.get("system") or [None] * len(convos)
-                for convo, column_system in zip(convos, column_systems):
-                    stats["conversations"] += 1
-                    if not _convo_rows(convo, column_system):
-                        stats["dropped"] += 1
+    if count:
+        import pyarrow.compute as pc
+
+        answered = pc.count_distinct(result.data.column(_SOURCE_COLUMN)).as_py()
+        result = result.remove_columns(_SOURCE_COLUMN)
+        stats["conversations"] = len(dataset)
+        stats["dropped"] = len(dataset) - answered
 
     return result
 

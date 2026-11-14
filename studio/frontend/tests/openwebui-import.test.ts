@@ -740,6 +740,7 @@ test("builtin calls keep inline outputs and results arrays", () => {
             type: "local_shell_call",
             id: "ls_1",
             action: { type: "exec", command: ["ls", "-la"] },
+            status: "in_progress",
           },
           { type: "web_search_call", id: "ws_1", action: { type: "search", query: "cats" } },
         ],

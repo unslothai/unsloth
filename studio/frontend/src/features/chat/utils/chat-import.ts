@@ -421,8 +421,8 @@ function markdownToRecords(
 function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
   const parsed = parseCsv(csvText);
   const first = parsed[0]?.[0]?.trim().toLowerCase();
-  // Skip row 0 only when it is a header; a headerless file's first row is data.
-  const rows = first === "role" || first === "speaker" || first === "from" ? parsed.slice(1) : parsed;
+  // Row 0 is data only in a headerless file, where it starts with a role.
+  const rows = first === "user" || first === "assistant" || first === "system" ? parsed : parsed.slice(1);
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
   let idx = 0;
