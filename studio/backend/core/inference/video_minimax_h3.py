@@ -2257,9 +2257,19 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
             for packet in src.demux(*selected):
                 for frame in packet.decode():
                     if packet.stream.type == "video":
-                        for encoded in output_video.encode(frame):
+                        if frame.format.name.startswith("yuvj"):
+                            # MJPG decodes to full-range yuvj, which the yuv420p encoder takes as limited range and
+                            # stretches (x1.14, -16). A fresh RGB frame carries no range, so the conversion is exact.
+                            pts, time_base = frame.pts, frame.time_base
+                            frame = av.VideoFrame.from_ndarray(
+                                frame.to_ndarray(format = "rgb24"), format = "rgb24"
+                            )
+                            frame.pts, frame.time_base = pts, time_base
+                        for encoded in output_video.encode(_unforced_picture_type(frame)):
                             dst.mux(encoded)
                     elif output_audio is not None and audio_resampler is not None:
+                        if frame.format.name in ("flt", "fltp", "dbl", "dblp"):
+                            frame = _finite_audio_frame(frame)
                         for resampled in audio_resampler.resample(frame):
                             for encoded in output_audio.encode(resampled):
                                 dst.mux(encoded)
@@ -2276,6 +2286,38 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
         return target.read_bytes()
     finally:
         target.unlink(missing_ok = True)
+
+
+def _unforced_picture_type(frame: Any) -> Any:
+    """A decoded frame keeps its picture type (every MJPG / raw frame is I), which libx264 obeys, so the export was
+    all-intra: clear it and let the encoder pick I / P / B frames, as the Diffusers export does."""
+    try:
+        from av.video.frame import PictureType
+        frame.pict_type = PictureType.NONE
+    except Exception:  # noqa: BLE001 - older PyAV takes the name
+        try:
+            frame.pict_type = "NONE"
+        except Exception:  # noqa: BLE001 - leave the frame as decoded
+            pass
+    return frame
+
+
+def _finite_audio_frame(frame: Any) -> Any:
+    """``frame`` with float samples bounded to [-1, 1] and NaN zeroed: the AAC encoder refuses NaN, which sd.cpp's
+    float PCM (the uncompressed AVI) keeps, and 16-bit PCM clipped the same range."""
+    import av
+    import numpy as np
+
+    samples = frame.to_ndarray()
+    if np.isfinite(samples).all() and np.abs(samples).max(initial = 0.0) <= 1.0:
+        return frame
+    fixed = av.AudioFrame.from_ndarray(
+        np.clip(np.nan_to_num(samples, nan = 0.0), -1.0, 1.0).astype(samples.dtype),
+        format = frame.format.name,
+        layout = frame.layout.name,
+    )
+    fixed.sample_rate, fixed.pts, fixed.time_base = frame.sample_rate, frame.pts, frame.time_base
+    return fixed
 
 
 def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:

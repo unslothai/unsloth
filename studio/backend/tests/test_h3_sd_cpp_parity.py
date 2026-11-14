@@ -267,3 +267,93 @@ def test_bad_soundtrack_indices_are_refused(indices, audios):
     )
     with pytest.raises(ValueError):
         build_sd_cpp_video_command("/bin/sd-cli", _FILES, params, output_path = "/tmp/o.avi")
+
+
+def _write_avi(
+    path,
+    codec,
+    pix_fmt,
+    frames,
+    audio = None,
+):
+    import av
+    with av.open(str(path), "w", format = "avi") as out:
+        v = out.add_stream(codec, rate = 24)
+        v.width, v.height, v.pix_fmt = frames[0].shape[1], frames[0].shape[0], pix_fmt
+        a = None
+        if audio is not None:
+            a = out.add_stream("pcm_f32le", rate = 32000, layout = "stereo")
+        for f in frames:
+            for p in v.encode(av.VideoFrame.from_ndarray(f, format = "rgb24")):
+                out.mux(p)
+        for p in v.encode():
+            out.mux(p)
+        if a is not None:
+            frame = av.AudioFrame.from_ndarray(audio, format = "flt", layout = "stereo")
+            frame.sample_rate = 32000
+            for p in a.encode(frame):
+                out.mux(p)
+            for p in a.encode():
+                out.mux(p)
+
+
+def _moving_frames(
+    n = 24,
+    w = 128,
+    h = 96,
+):
+    yy, xx = np.mgrid[0:h, 0:w]
+    return [
+        np.stack([(xx * 2 + i * 3) % 256, (yy * 2) % 256, (xx + yy + i * 5) % 256], -1).astype(
+            np.uint8
+        )
+        for i in range(n)
+    ]
+
+
+def _decoded(data):
+    import io
+
+    import av
+
+    with av.open(io.BytesIO(data)) as c:
+        packets = [p for p in c.demux(c.streams.video[0]) if p.size]
+    with av.open(io.BytesIO(data)) as c:
+        frames = [f.to_ndarray(format = "rgb24") for f in c.decode(video = 0)]
+    return frames, sum(1 for p in packets if not p.is_keyframe)
+
+
+@pytest.mark.parametrize("codec,pix_fmt", [("mjpeg", "yuvj420p"), ("rawvideo", "bgr24")])
+def test_export_keeps_levels_and_uses_inter_frames(tmp_path, codec, pix_fmt):
+    from core.inference.video_minimax_h3 import transcode_video_to_mp4
+
+    frames = _moving_frames()
+    src = tmp_path / "in.avi"
+    _write_avi(src, codec, pix_fmt, frames)
+    out, inter = _decoded(transcode_video_to_mp4(src, fps = 24))
+    assert len(out) == len(frames)
+    # Full-range MJPG used to be stretched (gain 1.14, offset -16); levels now survive within x264's error.
+    gain = np.polyfit(
+        np.stack(frames).reshape(-1)[::7].astype(float),
+        np.stack(out).reshape(-1)[::7].astype(float),
+        1,
+    )[0]
+    assert abs(gain - 1.0) < 0.03
+    # Decoded frames are all marked I; the export must not force that on libx264.
+    assert inter > 0
+
+
+def test_export_survives_nan_float_audio(tmp_path):
+    import io
+
+    import av
+
+    from core.inference.video_minimax_h3 import transcode_video_to_mp4
+
+    audio = np.zeros((1, 2 * 32000), dtype = np.float32)
+    audio[0, 100] = np.nan
+    audio[0, 200] = 5.0
+    src = tmp_path / "in.avi"
+    _write_avi(src, "rawvideo", "bgr24", _moving_frames(), audio)
+    with av.open(io.BytesIO(transcode_video_to_mp4(src, fps = 24))) as c:
+        assert c.streams.audio and c.streams.audio[0].codec_context.name == "aac"
