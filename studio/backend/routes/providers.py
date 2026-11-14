@@ -45,6 +45,7 @@ from core.inference.providers import (
 from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import (
     _CATALOG_WINDOW_PROVIDERS,
+    _SERVED_WINDOW_PROVIDERS,
     ExternalProviderClient,
 )
 
@@ -1137,6 +1138,19 @@ def cached_catalog_models() -> dict[str, list[str]]:
     return (_model_catalog_cache or {}).get("models") or {}
 
 
+def cached_catalog_model_context(namespace: str, model: str) -> int | None:
+    global _model_catalog_cache
+    if _model_catalog_cache is None:
+        _model_catalog_cache = _read_model_catalog_file()
+    bucket = ((_model_catalog_cache or {}).get("providers") or {}).get(namespace) or {}
+    entry = bucket.get(model.strip().lower()) if isinstance(bucket, dict) else None
+    entry = entry if isinstance(entry, dict) else {}
+    limits = [
+        v for v in (entry.get("input_tokens"), entry.get("context")) if isinstance(v, int) and v > 0
+    ]
+    return min(limits, default = None)
+
+
 def cached_catalog_model_inputs(namespace: str, model: str) -> list[str] | None:
     global _model_catalog_cache
     if _model_catalog_cache is None:
@@ -1309,7 +1323,13 @@ async def load_served_window(
     if row is None or not row["is_enabled"] or model not in (row.get("models") or []):
         raise HTTPException(status_code = 404, detail = "Connection model not found")
     if row["provider_type"] in _CATALOG_WINDOW_PROVIDERS:
-        return {"context_length": await _catalog_window(row, model, request)}
+        listed = await _catalog_window(row, model, request)
+        return {
+            "context_length": listed or cached_catalog_model_context(row["provider_type"], model)
+        }
+    if row["provider_type"] not in _SERVED_WINDOW_PROVIDERS:
+        # A hosted provider whose listing has no window (OpenAI): the daily models.dev catalog.
+        return {"context_length": cached_catalog_model_context(row["provider_type"], model)}
     try:
         # The saved key and headers stay with the chat path; a keyed server just reports nothing.
         client = await asyncio.to_thread(

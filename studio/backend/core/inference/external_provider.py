@@ -77,7 +77,7 @@ def _json_object_refused_for_schema(
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
 _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom", "ollama"})
 # Hosted providers whose model listing carries each model's window; needs the saved key.
-_CATALOG_WINDOW_PROVIDERS = frozenset({"anthropic", "openrouter"})
+_CATALOG_WINDOW_PROVIDERS = frozenset({"anthropic", "openrouter", "gemini"})
 # refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
@@ -7756,7 +7756,7 @@ class ExternalProviderClient:
         return window
 
     async def catalog_context_window(self, model: str) -> Optional[int]:
-        """A hosted provider's listed window: Anthropic max_input_tokens, OpenRouter context_length."""
+        """A hosted provider's listed window: Anthropic and Gemini input limits, OpenRouter context_length."""
         if self.provider_type not in _CATALOG_WINDOW_PROVIDERS:
             return None
         try:
@@ -7890,6 +7890,11 @@ class ExternalProviderClient:
                     "id": short_id,
                     "owned_by": "google",
                     "display_name": entry.get("displayName") or short_id,
+                    **(
+                        {"max_input_tokens": limit}
+                        if isinstance(limit := entry.get("inputTokenLimit"), int) and limit > 0
+                        else {}
+                    ),
                 }
             )
         return out

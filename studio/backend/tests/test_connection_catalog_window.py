@@ -112,3 +112,31 @@ def test_a_caller_without_saved_key_access_gets_no_window_and_sends_no_key(monke
     )
     assert answer == {"context_length": None}
     assert not any(key and "sk-saved" in key for key in seen)
+
+
+def test_a_gemini_connection_reports_its_input_token_limit(monkeypatch):
+    body = {
+        "models": [
+            {
+                "name": "models/gemini-3-flash",
+                "inputTokenLimit": 1_048_576,
+                "supportedGenerationMethods": ["generateContent"],
+            }
+        ]
+    }
+    answer, _ = _window(monkeypatch, "gemini", body, "gemini-3-flash")
+    assert answer == {"context_length": 1_048_576}
+
+
+def test_a_listing_without_windows_falls_back_to_the_daily_catalog(monkeypatch):
+    catalog = {
+        "fetched_at": 1.0,
+        "providers": {"openai": {"gpt-5.5": {"context": 1_050_000, "input_tokens": 922_000}}},
+        "models": {},
+    }
+    monkeypatch.setattr(providers_route, "_model_catalog_cache", catalog)
+    answer, seen = _window(monkeypatch, "openai", {"data": [{"id": "gpt-5.5"}]}, "gpt-5.5")
+    # The prompt cap, not the whole window, is what an agent may fill.
+    assert answer == {"context_length": 922_000}
+    # Nothing to ask the provider for: the window comes from the cached catalog only.
+    assert seen == []
