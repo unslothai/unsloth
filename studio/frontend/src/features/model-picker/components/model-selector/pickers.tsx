@@ -96,10 +96,12 @@ import {
   type NpuPickerSource,
   NpuRuntimeVersions,
   NpuSetupNotice,
+  npuDeleteDescription,
   npuDownloadLabel,
-  npuResumeLabel,
+  npuRowDetails,
+  npuRowLabel,
   npuRowsFor,
-  npuSizeLabel,
+  npuRowTooltip,
   useNpuCatalog,
 } from "@/features/npu";
 import {
@@ -7688,11 +7690,8 @@ export function HubModelPicker({
     const downloading = model.id in npuCatalog.downloads;
     const progress = npuCatalog.downloads[model.id];
     const reconnecting = model.id in npuCatalog.reconnecting;
-    const details = [
-      "NPU",
-      npuSizeLabel(model.size_gb),
-      npuResumeLabel(model),
-    ].filter(Boolean);
+    const details = npuRowDetails(model);
+    const problem = model.local?.problem ?? null;
     const meta = {
       source: "local",
       isLora: false,
@@ -7701,7 +7700,8 @@ export function HubModelPicker({
     const pick = () => onSelect(model.model_path, meta);
     const row = (
       <ModelRow
-        label={model.id}
+        label={npuRowLabel(model)}
+        tooltipText={npuRowTooltip(model) ?? undefined}
         meta={
           downloading
             ? `NPU · ${npuDownloadLabel(progress, reconnecting)}`
@@ -7721,6 +7721,12 @@ export function HubModelPicker({
         optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
         onClick={() => {
           if (downloading) return;
+          if (problem) {
+            toast.error("Can't load this model on the NPU", {
+              description: problem,
+            });
+            return;
+          }
           if (model.downloaded) {
             pick();
             return;
@@ -7741,7 +7747,7 @@ export function HubModelPicker({
     );
     const configMeta = { ...meta, contextLength: model.max_context_length };
     const settings =
-      onConfigure && model.downloaded && !downloading ? (
+      onConfigure && model.downloaded && !downloading && !problem ? (
         <ModelLoadSettingsAction
           ariaLabel={`Inference settings for ${model.id}`}
           onConfigure={() => onConfigure(model.model_path, configMeta)}
@@ -7759,10 +7765,10 @@ export function HubModelPicker({
           {settings}
           {onDevice && (
             <ModelDeleteAction
-              ariaLabel={`Delete ${model.id}`}
-              title={`Delete ${model.id}?`}
-              description="This removes the model's NPU files from this device."
-              successMessage={`Deleted ${model.id}`}
+              ariaLabel={`Delete ${npuRowLabel(model)}`}
+              title={`Delete ${npuRowLabel(model)}?`}
+              description={npuDeleteDescription(model)}
+              successMessage={`Deleted ${npuRowLabel(model)}`}
               disabled={isLoaded}
               onConfirm={() => npuCatalog.remove(model)}
             />
