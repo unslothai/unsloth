@@ -136,3 +136,9 @@ def test_outer_link_text_stays_out_of_a_table_opened_inside_it():
 def test_outer_link_text_does_not_move_into_a_sibling_quote():
     html = '<blockquote><a href="/o">FIRST</blockquote><blockquote><a href="/i">SECOND</a></blockquote>'
     assert "FIRST" not in html_to_markdown(html)
+
+
+def test_role_heading_anchor_closing_the_outer_link_keeps_its_title():
+    nav = "".join(f'<a href="/n{i}">Nav item {i}</a> ' for i in range(20))
+    html = f'<header>{nav}<a href="/o"><a role="heading" href="/i">Page Title</header><p>tail</p>'
+    assert "Page Title" in html_to_markdown(html, main_content = True)

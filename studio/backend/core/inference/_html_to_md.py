@@ -892,6 +892,7 @@ class _MarkdownRenderer(HTMLParser):
         # Credited only at </a> or a nested <a>: an <a> left open adopts body prose, which is not furniture.
         self._link_header_chars: int = 0
         self._link_open_state: tuple = ()
+        self._closed_link_for: bool = False
 
         self._list_stack: list[str] = []  # "ul" or "ol"
         self._ol_counter: list[int] = []
@@ -1502,7 +1503,7 @@ class _MarkdownRenderer(HTMLParser):
                 or (_is_aria_heading(attr_dict) if aria_heading is None else aria_heading)
             ):
                 self._heading_marks.append(len(self._open_tags) - 1)
-                if self._in_link:
+                if self._in_link or self._closed_link_for:
                     self._link_had_heading = True
             if (
                 self._strip_header
@@ -1739,7 +1740,11 @@ class _MarkdownRenderer(HTMLParser):
             if self._header_stack:
                 self._header_stack[-1].link_chars += self._link_header_chars
             self._finish_link()
-        if not self._enter_tag(tag, attr_dict, hidden, aria_heading):
+            # the closing anchor still records its own heading as one inside a link, as before
+            self._closed_link_for = True
+        entered = self._enter_tag(tag, attr_dict, hidden, aria_heading)
+        self._closed_link_for = False
+        if not entered:
             return
 
         if tag in _HEADING_TAGS:
