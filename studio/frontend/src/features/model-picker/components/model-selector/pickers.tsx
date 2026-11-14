@@ -3690,7 +3690,13 @@ function sortLocalModels(
   });
 }
 
+// A cached snapshot can supply distinct GGUF and Safetensors rows with one load path.
+function localDeviceOptionKey(section: string, model: LocalModelInfo): string {
+  return makeModelOptionKey(section, model.inventory_id ?? model.id);
+}
+
 function localModelIsGguf(m: LocalModelInfo): boolean {
+  if (m.source === "hf_cache") return m.model_format === "gguf";
   return (
     m.model_format === "gguf" ||
     isGgufRepo(m.id) ||
@@ -4214,7 +4220,10 @@ export function HubModelPicker({
     [pickerInventory.localModels],
   );
   const localDirModels = useMemo(
-    () => pickerInventory.localModels.filter((m) => m.source === "models_dir"),
+    () =>
+      pickerInventory.localModels.filter(
+        (m) => m.source === "models_dir" || m.source === "hf_cache",
+      ),
     [pickerInventory.localModels],
   );
   // Ollama rows list alongside custom folders: both are user-managed stores outside ./models,
@@ -6490,7 +6499,7 @@ export function HubModelPicker({
     if (section === "downloaded" && !customFoldersCollapsed) {
       keys.push(
         ...sortedCustomFolderModels.map((model) =>
-          makeModelOptionKey("custom-folder", model.id),
+          localDeviceOptionKey("custom-folder", model),
         ),
       );
     }
@@ -6498,7 +6507,7 @@ export function HubModelPicker({
     if (section === "downloaded" && !lmStudioCollapsed) {
       keys.push(
         ...sortedLmStudio.map((model) =>
-          makeModelOptionKey("lm-studio", model.id),
+          localDeviceOptionKey("lm-studio", model),
         ),
       );
     }
@@ -6506,7 +6515,7 @@ export function HubModelPicker({
     if (section === "downloaded" && !localDirCollapsed) {
       keys.push(
         ...sortedLocalDir.map((model) =>
-          makeModelOptionKey("local-dir", model.id),
+          localDeviceOptionKey("local-dir", model),
         ),
       );
     }
@@ -7579,11 +7588,11 @@ export function HubModelPicker({
     section: string,
     directGguf: boolean,
   ) => {
-    const optionKey = makeModelOptionKey(section, m.id);
+    const optionKey = localDeviceOptionKey(section, m);
     const isGguf = localModelIsGguf(m);
     return (
       <LocalModelDeviceRow
-        key={m.id}
+        key={optionKey}
         model={m}
         optionKey={optionKey}
         directGguf={directGguf}
