@@ -15,7 +15,9 @@ import sys
 from typing import Optional
 
 _PROC_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
-_TCP_ESTABLISHED = "01"
+# TIME_WAIT, CLOSE, LISTEN: orphaned (UID 0) or not a connection; no other state can hide a socket
+# that can still read the response, so a half-closed client is still found under its own UID.
+_TCP_NOT_A_LIVE_CLIENT = frozenset(("06", "07", "0A"))
 
 
 def _ip(value) -> Optional[ipaddress._BaseAddress]:
@@ -42,10 +44,10 @@ def _endpoint(field: str):
 
 
 def loopback_peer_uid(client, server) -> Optional[int]:
-    """UID owning the live client end (local=client, remote=server, ESTABLISHED), else None.
+    """UID owning the client end (local=client, remote=server) of a socket that can still read, else None.
 
     `client` and `server` are (host, port); the whole tuple must match so a stale entry that only
-    shares the ports (another loopback address, TIME_WAIT) cannot stand in for this connection."""
+    shares the ports (another loopback address) cannot stand in for this connection."""
     if not sys.platform.startswith("linux") or not client or not server:
         return None
     want = ((_ip(client[0]), client[1]), (_ip(server[0]), server[1]))
@@ -57,7 +59,7 @@ def loopback_peer_uid(client, server) -> Optional[int]:
                 next(fh, None)  # header
                 for line in fh:
                     parts = line.split()
-                    if len(parts) < 8 or parts[3] != _TCP_ESTABLISHED:
+                    if len(parts) < 8 or parts[3].upper() in _TCP_NOT_A_LIVE_CLIENT:
                         continue
                     if (_endpoint(parts[1]), _endpoint(parts[2])) != want:
                         continue

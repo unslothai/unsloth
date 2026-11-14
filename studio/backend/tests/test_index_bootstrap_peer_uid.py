@@ -30,6 +30,20 @@ def loopback_pair():
             s.close()
 
 
+@pytest.fixture
+def loopback_pair_sockets():
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    cli = socket.create_connection(srv.getsockname())
+    conn, peer = srv.accept()
+    try:
+        yield cli, peer, srv.getsockname()
+    finally:
+        for s in (cli, conn, srv):
+            s.close()
+
+
 def _request(peer, server):
     host = f"{server[0]}:{server[1]}"
     return SimpleNamespace(
@@ -102,9 +116,38 @@ def test_a_stale_entry_sharing_only_the_ports_cannot_stand_in_for_the_live_clien
     assert lp.peer_is_another_local_user(req) is True
 
 
-def test_only_established_entries_count(tmp_path, monkeypatch):
+def test_orphaned_time_wait_alone_is_not_an_identity(tmp_path, monkeypatch):
     lp = _tables(tmp_path, monkeypatch, tcp = _row("0100007F:C350", "0100007F:22B8", "06", 0))
     assert lp.loopback_peer_uid(("127.0.0.1", 50000), ("127.0.0.1", 8888)) is None
+
+
+def test_half_closed_client_is_still_found_under_its_own_uid(tmp_path, monkeypatch):
+    # shutdown(SHUT_WR) moves the client to FIN_WAIT2 while it can still read the response.
+    lp = _tables(tmp_path, monkeypatch, tcp = _row("0100007F:C350", "0100007F:22B8", "05", 65534))
+    assert lp.loopback_peer_uid(("127.0.0.1", 50000), ("127.0.0.1", 8888)) == 65534
+
+
+def test_a_reused_tuple_prefers_the_live_entry_over_its_time_wait(tmp_path, monkeypatch):
+    lp = _tables(
+        tmp_path,
+        monkeypatch,
+        tcp = _row("0100007F:C350", "0100007F:22B8", "06", 0)
+        + _row("0100007F:C350", "0100007F:22B8", "01", 65534),
+    )
+    assert lp.loopback_peer_uid(("127.0.0.1", 50000), ("127.0.0.1", 8888)) == 65534
+
+
+def test_real_half_closed_socket_is_refused_for_another_user(loopback_pair_sockets, monkeypatch):
+    import utils.loopback_peer as lp
+
+    cli, peer, server = loopback_pair_sockets
+    cli.shutdown(socket.SHUT_WR)
+    real = os.geteuid()
+    if real == 0:
+        pytest.skip("root peers are allowed by design")
+    assert lp.loopback_peer_uid(peer, server) == real
+    monkeypatch.setattr(os, "geteuid", lambda: real + 4242)
+    assert lp.peer_is_another_local_user(_request(peer, server)) is True
 
 
 def test_dual_stack_ipv4_mapped_entry_matches(tmp_path, monkeypatch):
