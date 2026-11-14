@@ -546,3 +546,22 @@ def test_hidden_added_special_token_outside_all_special_tokens_stops():
 
     assert stopped.matched.is_set()
     assert "".join(stopped).rstrip() == "alpha"
+
+
+def test_hidden_stop_through_the_native_tool_token_decoder():
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    from core.inference.native_tool_tokens import NativeToolTokenDecoder
+
+    streamer = inf.IncrementalTextIteratorStreamer(
+        NativeToolTokenDecoder(_registered_stop_tokenizer()),
+        skip_prompt = False,
+        skip_special_tokens = False,
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["[STOP]"])
+    for token in (1, 2, 3):
+        stopped.put(torch.tensor([token]))
+    stopped.end()
+
+    assert stopped.matched.is_set()
+    assert "".join(stopped).rstrip() == "alpha"

@@ -586,12 +586,12 @@ class _StopSequenceStreamer:
 
     def _hidden_stop_ids(self):
         # The decoder can hide added special tokens beyond all_special_tokens, so ask it per stop.
-        tokenizer = self.streamer.tokenizer
-        for owner in (tokenizer, getattr(tokenizer, "_tokenizer", None)):
-            convert = getattr(owner, "convert_tokens_to_ids", None)
-            if callable(convert):
-                break
-        else:
+        owner = self.streamer.tokenizer
+        if isinstance(owner, NativeToolTokenDecoder):
+            # Its decode() ignores skip_special_tokens, so round-trip on the wrapped tokenizer.
+            owner = owner._tokenizer
+        convert = getattr(owner, "convert_tokens_to_ids", None)
+        if not callable(convert):
             return frozenset()
         ids = set()
         for sequence in self.sequences:
