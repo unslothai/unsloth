@@ -272,3 +272,10 @@ test("a voice turn with local tools on goes as its transcript, so the tools stil
   assert.match(engine, /const toolsOn =\s*rt\.supportsTools &&\s*\(rt\.toolsEnabled \|\| codeToolsOn\(rt\) \|\| rt\.mcpEnabledForChat \|\| rt\.ragEnabled \|\| rt\.deepResearchEnabled\);/);
   assert.match(engine, /!visual && !toolsOn && voiceHearsAudio\(rt,/);
 });
+
+test("a noise word continuing a held turn is kept, and an edit claimed mid-judgment is never auto-sent", () => {
+  assert.match(loop, /const noise =\s*isSttNoise\(transcript\) && !heldTurn && !answersClosingQuestion\(transcript, getVoiceReplyText\(\)\);/);
+  assert.match(loop, /\(await turnUnfinished\(transcript\)\);\s*\/\/[^\n]*\n\s*editing = editing \|\| !heldEdit\.autoSend\(\);/);
+  assert.match(loop, /unfinished &&\s*!editing &&\s*performance\.now\(\)/);
+  assert.match(loop, /if \(editing \|\| !heldEdit\.autoSend\(\)\) \{\s*voiceTrace\("hold\.userEditAppend"/);
+});

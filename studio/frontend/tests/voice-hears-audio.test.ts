@@ -89,7 +89,7 @@ test("the loop keeps and sends the turn's speech through the hearing gate, not t
   assert.match(loop, /transcript &&\s*epoch === heldEpoch &&\s*voiceHearsAudio\(rt, useVoiceSettingsStore\.getState\(\)\.micTarget\)\s*\) \{\s*turnAudio\.add/);
   // An emptied edit drops its speech before this turn's is kept.
   assert.match(loop, /onCleared: \(\) => turnAudio\.clear\(\)/);
-  assert.match(loop, /const editing = !heldEdit\.autoSend\(\);[\s\S]{0,400}turnAudio\.add\(analysis\.samples, sampleRate\)/);
+  assert.match(loop, /let editing = !heldEdit\.autoSend\(\);[\s\S]{0,400}turnAudio\.add\(analysis\.samples, sampleRate\)/);
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(engine, /const turnAudio =\s*!visual && !toolsOn && voiceHearsAudio\(/);
   assert.doesNotMatch(engine, /const turnAudio = speaksWithChatModel\(\)/);

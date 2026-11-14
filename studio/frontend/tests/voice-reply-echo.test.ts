@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isReplyEcho } from "../src/features/chat/voice/turn-complete.ts";
+import { answersClosingQuestion, isReplyEcho } from "../src/features/chat/voice/turn-complete.ts";
 
 const reply = "I can't \"hear\" you in the literal sense, but I can see your message. What's on your mind?";
 
@@ -42,4 +42,10 @@ test("an answer picked from the reply's closing question is the user's, not echo
   assert.equal(isReplyEcho("javascript please", reply), false);
   assert.equal(isReplyEcho("I can write it either way", reply), true);
   assert.equal(isReplyEcho("either way", "I can write it either way."), true);
+});
+
+test("a noise word that answers the reply's closing question is the user's answer", () => {
+  assert.equal(answersClosingQuestion("you", "Who should do it, you or me?"), true);
+  assert.equal(answersClosingQuestion("thank you", "Here is your summary."), false);
+  assert.equal(answersClosingQuestion("bye", "Anything else I can help with?"), false);
 });
