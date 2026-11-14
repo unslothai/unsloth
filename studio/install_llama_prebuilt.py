@@ -11634,8 +11634,12 @@ def ensure_cuda_runtime_wheels(install_dir: Path) -> None:
     """Installs NVIDIA's runtime wheels into this env when the CUDA install has none; never raises."""
     try:
         wheels = _missing_cuda_runtime_wheels(install_dir)
-        if wheels:
-            _install_cuda_runtime_wheels(wheels)
+        if (
+            wheels
+            and _install_cuda_runtime_wheels(wheels)
+            and _missing_cuda_runtime_wheels(install_dir)
+        ):
+            log("CUDA runtime still missing after installing it; llama.cpp will run on the CPU")
     except Exception as exc:
         log(f"CUDA runtime wheel step skipped: {exc}")
 
