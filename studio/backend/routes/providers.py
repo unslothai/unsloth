@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -43,7 +43,10 @@ from core.inference.providers import (
     validate_provider_base_url,
 )
 from core.inference.pricing import pricing_snapshot
-from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_provider import (
+    _CATALOG_WINDOW_PROVIDERS,
+    ExternalProviderClient,
+)
 
 from core.inference import openai_codex_auth, openai_codex_client
 from core.inference.provider_model_capabilities import (
@@ -1270,11 +1273,43 @@ def _model_capability_names(model: dict) -> Optional[list[str]]:
     return [name for name in values if isinstance(name, str) and name]
 
 
+async def _catalog_window(row: dict, model: str, request: Optional[Request]) -> Optional[int]:
+    # A hosted listing needs the key: same gate as the chat path (UI session or the `unsloth start` key).
+    from routes.inference import _request_may_use_saved_provider_key
+    from routes.provider_credentials import provider_config_guard
+
+    if request is None or not _request_may_use_saved_provider_key(request):
+        return None
+    async with provider_config_guard(row["id"], shared_by_owner = bool(row.get("shared_by_owner"))):
+        api_key = await asyncio.to_thread(credential_secrets.get_provider_api_key, row["id"])
+        if not api_key:
+            return None
+        headers = row.get("extra_headers")
+        try:
+            client = await asyncio.to_thread(
+                ExternalProviderClient,
+                provider_type = row["provider_type"],
+                base_url = row["base_url"],
+                api_key = api_key,
+                api_type = row.get("api_type", "chat_completions"),
+                **({"extra_headers": headers} if headers else {}),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+    return await client.catalog_context_window(model)
+
+
 @router.post("/{provider_id}/served-window")
-async def load_served_window(provider_id: str, model: str):
+async def load_served_window(
+    provider_id: str,
+    model: str,
+    request: Request = None,
+):
     row = providers_db.get_provider(provider_id)
     if row is None or not row["is_enabled"] or model not in (row.get("models") or []):
         raise HTTPException(status_code = 404, detail = "Connection model not found")
+    if row["provider_type"] in _CATALOG_WINDOW_PROVIDERS:
+        return {"context_length": await _catalog_window(row, model, request)}
     try:
         # The saved key and headers stay with the chat path; a keyed server just reports nothing.
         client = await asyncio.to_thread(

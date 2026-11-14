@@ -76,6 +76,8 @@ def _json_object_refused_for_schema(
 
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
 _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom", "ollama"})
+# Hosted providers whose model listing carries each model's window; needs the saved key.
+_CATALOG_WINDOW_PROVIDERS = frozenset({"anthropic", "openrouter"})
 # refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
@@ -7752,6 +7754,27 @@ class ExternalProviderClient:
             del _served_windows[stale]
         _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
         return window
+
+    async def catalog_context_window(self, model: str) -> Optional[int]:
+        """A hosted provider's listed window: Anthropic max_input_tokens, OpenRouter context_length."""
+        if self.provider_type not in _CATALOG_WINDOW_PROVIDERS:
+            return None
+        try:
+            models = await asyncio.wait_for(self.list_models(), timeout = _SERVED_WINDOW_TIMEOUT_S)
+        except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
+            logger.info("No catalogued context window from %s: %r", self.provider_type, exc)
+            return None
+        for entry in models:
+            if isinstance(entry, dict) and entry.get("id") == model:
+                top = entry.get("top_provider")
+                # OpenRouter's context_length is the widest route; the default route may be narrower.
+                listed = [
+                    _positive_int(entry.get("max_input_tokens")),
+                    _positive_int(entry.get("context_length")),
+                    _positive_int(top.get("context_length") if isinstance(top, dict) else None),
+                ]
+                return min((w for w in listed if w), default = None)
+        return None
 
     async def served_chat_template(self, model: str) -> Optional[str]:
         """llama-server's chat template from /props, cached for a minute like the served window."""
