@@ -4,6 +4,7 @@
 
 import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { isThreadIncognito } from "@/features/chat/utils/chat-history-storage";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import type { FillerDecision } from "./thinking-filler";
 import {
@@ -49,7 +50,10 @@ async function post<T>(path: string, body: unknown, timeoutMs = TIMEOUT_MS): Pro
 function logFields(): { log: boolean; thread_id: string | null } {
   const threadId = useChatRuntimeStore.getState().activeThreadId ?? null;
   const voice = useVoiceSettingsStore.getState();
-  const log = voice.voiceLogEnabled && !(threadId && voice.voiceLogOptOutThreadIds.includes(threadId));
+  // A temporary chat is never saved, so its transcripts stay out of the voice log too.
+  const temporary = useChatRuntimeStore.getState().incognito || (threadId !== null && isThreadIncognito(threadId));
+  const log =
+    voice.voiceLogEnabled && !temporary && !(threadId && voice.voiceLogOptOutThreadIds.includes(threadId));
   return { log, thread_id: threadId };
 }
 
