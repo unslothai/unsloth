@@ -14517,6 +14517,8 @@ def _manual_estimate_split(
     backend = inventory.get("backend")
     if (
         backend not in {"cuda", "rocm", "vulkan"}
+        # An unpinned ROCm child may drop GPUs unsupported by the installed llama.cpp build.
+        or (backend == "rocm" and not pin)
         or not inventory.get("gguf_gpu_ids_supported")
         or inventory.get("index_kind") not in {"physical", "vulkan", "cuda_device"}
     ):

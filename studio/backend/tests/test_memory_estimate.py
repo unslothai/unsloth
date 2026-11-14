@@ -755,6 +755,21 @@ class TestManualLayerEstimate:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5,2")
         return inventory
 
+    def test_rocm_ratio_needs_a_pin_to_establish_the_launch_devices(self, model, inventory):
+        inventory["backend"] = "rocm"
+        settings = dict(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 4,
+            llama_extra_args = ["-ts", "1,1"],
+        )
+        unpinned = _estimate(**settings)
+        assert unpinned.available and unpinned.per_gpu is None
+        pinned = _estimate(**settings, selected_gpu_ids = [5, 2])
+        assert pinned.per_gpu_basis == "tensor_split"
+        assert [row.gpu_id for row in pinned.per_gpu] == [5, 2]
+
     def test_manual_split_tracks_actual_offloaded_suffix_and_output(self, model, inventory):
         # Extras win over the fields. The pin strips --device; --no-kv-offload keeps cache on CPU.
         response = _estimate(

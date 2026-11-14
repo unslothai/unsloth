@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SystemGpuDevice } from "@/hooks/gpu-selection";
 import { fetchSystemInfo } from "@/hooks/use-system";
-import { extraArgFlags } from "../model-config/llama-extra-args";
+import { extraArgFlags, tensorSplitOverrideCount } from "../model-config/llama-extra-args";
 import {
   type MemoryEstimate,
   type MemoryEstimateRequest,
@@ -39,33 +39,41 @@ export interface MemoryEstimateState {
   stale: boolean;
 }
 
-// Only the implicit layer split depends on live memory. A zero sample is a real device weight.
-function implicitSplitMemory(
+function splitInventory(
   request: MemoryEstimateRequest | null,
   devices: SystemGpuDevice[] | undefined,
-): [number, number | null][] | null {
+) {
   if (!devices || !request || request.gpuMemoryMode !== "manual" || request.nCpuMoe) return null;
   const ids = request.selectedGpuIds ?? devices.map((device) => device.index);
-  if (ids.length < 2 || request.tensorSplit?.length === ids.length) return null;
-  const flags = extraArgFlags(request.llamaExtraArgs ?? []);
-  if (flags.includes("--tensor-split") || flags.includes("-ts")) return null;
+  if (ids.length < 2) return null;
+  const args = request.llamaExtraArgs ?? [];
+  const flags = extraArgFlags(args);
   // Extra args can override the layer count or tensor parallel setting. The backend resolves them.
   if (request.tensorParallel && !flags.includes("--split-mode") && !flags.includes("-sm")) return null;
   const layerOverride = flags.some((flag) =>
     ["-ngl", "--gpu-layers", "--n-gpu-layers"].includes(flag),
   );
   if ((request.gpuLayers ?? 0) <= 0 && !layerOverride) return null;
-  return ids.map((id) => {
-    const gpu = devices.find((device) => device.index === id);
-    const known = gpu && (gpu.memoryFreeKnown ?? gpu.memoryFreeGb > 0);
-    return [id, known ? gpu.memoryFreeGb : null];
-  });
+  // A mismatched --tensor-split is dropped at launch, leaving the free-memory split.
+  const shareCount = tensorSplitOverrideCount(args) ?? request.tensorSplit?.length;
+  const usesFreeMemory = shareCount !== ids.length;
+  return {
+    usesFreeMemory,
+    devices: ids.map((id) => {
+      const gpu = devices.find((device) => device.index === id);
+      if (!gpu) return null;
+      return [
+        id, gpu.indexKind, gpu.sharedMemory || gpu.unifiedMemory === true,
+        usesFreeMemory && (gpu.memoryFreeKnown ?? gpu.memoryFreeGb > 0) ? gpu.memoryFreeGb : null,
+      ];
+    }),
+  };
 }
 
 /** Settings the backend ignores stay out, or the row re-fetches for nothing. */
 function estimateKey(
   request: MemoryEstimateRequest | null,
-  freeMemory: ReturnType<typeof implicitSplitMemory>,
+  inventory: ReturnType<typeof splitInventory>,
 ): string | null {
   if (!request) return null;
   return JSON.stringify([
@@ -95,7 +103,7 @@ function estimateKey(
     request.selectedGpuIds ?? null,
     request.tensorSplit ?? null,
     request.llamaExtraArgs ?? null,
-    freeMemory,
+    inventory,
   ]);
 }
 
@@ -107,9 +115,9 @@ export function useMemoryEstimate(
     gpuDevices,
   }: { refreshMemory?: boolean; gpuDevices?: SystemGpuDevice[] } = {},
 ): MemoryEstimateState {
-  const freeMemory = implicitSplitMemory(request, gpuDevices);
-  const refreshSplitMemory = freeMemory !== null;
-  const settings = estimateKey(request, freeMemory);
+  const inventory = splitInventory(request, gpuDevices);
+  const refreshSplitMemory = inventory?.usesFreeMemory === true;
+  const settings = estimateKey(request, inventory);
   // A resident estimate is usable only after its corresponding memory probe finished.
   const key = refreshMemory && settings !== null ? `probe:${settings}` : settings;
   // Computed during render: the clearing effect runs after paint and would flash the old model's numbers.

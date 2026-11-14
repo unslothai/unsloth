@@ -126,8 +126,8 @@ test("implicit layer placement tracks free memory and shares one probe across sl
     { relativePassthrough: true },
   );
   type Request = NonNullable<Parameters<typeof hook.useMemoryEstimate>[0]>;
-  const render = (free: number | null, request: Partial<Request> = {}) => {
-    const gpuDevices = [0, 1, 2].map((index) => ({
+  const render = (free: number | null, request: Partial<Request> = {}, visible = [0, 1, 2]) => {
+    const gpuDevices = visible.map((index) => ({
       index, name: `Card ${index}`, indexKind: "physical" as const, memoryTotalGb: 24,
       memoryFreeKnown: index !== 0 || free !== null,
       memoryFreeGb: index === 0 ? free ?? 0 : 10,
@@ -170,5 +170,26 @@ test("implicit layer placement tracks free memory and shares one probe across sl
     assert.equal(calls, prior);
   }
   assert.equal(refreshes.length, 1);
+  // A saved ratio can reach the estimator before the first system inventory.
+  for (const fixed of [{ tensorSplit: [2, 1] }, { llamaExtraArgs: ["--tensor-split=2/1"] }]) {
+    render(8, fixed, []);
+    await settle();
+    const beforeDiscovery: number = calls;
+    render(8, fixed);
+    await settle();
+    assert.equal(calls, beforeDiscovery + 1);
+    render(6, fixed);
+    await settle();
+    assert.equal(calls, beforeDiscovery + 1);
+  }
+  assert.equal(refreshes.length, 1);
+  // A ratio saved for three cards falls back to free memory when two are selected.
+  const mismatch = { tensorSplit: [2, 1], llamaExtraArgs: ["-ts", "2/1", "--tensor-split=2/1/1"] };
+  render(12, mismatch);
+  await settle();
+  const beforeMemoryChange: number = calls;
+  render(1, mismatch);
+  await settle();
+  assert.equal(calls, beforeMemoryChange + 1);
   cleanup?.();
 });
