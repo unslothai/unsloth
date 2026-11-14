@@ -26899,7 +26899,9 @@ async def vad_unload(current_subject: str = Depends(get_current_subject)):
 
     sidecar = get_audio_cpp_vad_sidecar()
     # Another account's detector is not this caller's to stop.
-    if account_access.resident_hidden("vad", sidecar.loaded_model):
+    # loaded_model takes the sidecar lock, which a detect holds for its whole run: never on the event loop.
+    resident = await asyncio.to_thread(lambda: sidecar.loaded_model)
+    if account_access.resident_hidden("vad", resident):
         return JSONResponse(content = {"released": False})
     released = await asyncio.to_thread(sidecar.unload)
     return JSONResponse(content = {"released": released})
@@ -26924,14 +26926,18 @@ async def vad_detect(
     # detect loads the model it names, so it takes the same grant as an explicit load.
     await asyncio.to_thread(_require_vad_access, model)
     sidecar = get_audio_cpp_vad_sidecar()
-    before = sidecar.loaded_model
+    before = await asyncio.to_thread(lambda: sidecar.loaded_model)
     try:
         result = await asyncio.to_thread(sidecar.detect, b"".join(chunks), model)
     except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
         raise _vad_http_error(exc)
     # A detect that loaded the detector owns it as a load would; one that only used it claims nothing.
     loaded = result.get("model")
-    if loaded and loaded != before and sidecar.loaded_model == loaded:
+    if (
+        loaded
+        and loaded != before
+        and await asyncio.to_thread(lambda: sidecar.loaded_model) == loaded
+    ):
         account_access.note_resident_account("vad", loaded)
     return JSONResponse(content = result)
 
