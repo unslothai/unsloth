@@ -328,8 +328,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Reasoning deployments accept nothing else.
+        # The deployment name hides the model, and reasoning deployments reject these and max_tokens
+        # (learn.microsoft.com/azure/foundry/openai/how-to/reasoning#unsupported-parameters).
         "max_tokens_field": "max_completion_tokens",
+        "body_omit": ("temperature", "top_p", "presence_penalty"),
         "reasoning_effort_values": ("none", "minimal", "low", "medium", "high", "xhigh"),
         "hidden": True,
     },
@@ -813,9 +815,10 @@ def _transport_host(hostname: str) -> str:
         pass
     if hostname.isascii():
         # Match httpx percent-encoding so we resolve the same name it dials.
-        return quote(hostname.lower(), safe = _HOST_SAFE_CHARS)
+        return quote(hostname.lower(), safe=_HOST_SAFE_CHARS)
     try:
         import idna
+
         return idna.encode(hostname.lower()).decode("ascii")
     except Exception:
         # httpx raises InvalidURL for this name, so returning the name as written is as good as any answer.
@@ -842,7 +845,7 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
 
     # Local binding: an abandoned worker may outlive the global; BoundedSemaphore would raise.
     in_flight = _dns_in_flight
-    if not in_flight.acquire(timeout = _DNS_TIMEOUT_SECONDS):
+    if not in_flight.acquire(timeout=_DNS_TIMEOUT_SECONDS):
         return None
 
     resolved: list[str] = []
@@ -854,7 +857,7 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
             infos = socket.getaddrinfo(
                 hostname,
                 port or (443 if scheme == "https" else 80),
-                type = socket.SOCK_STREAM,
+                type=socket.SOCK_STREAM,
             )
         except (OSError, UnicodeError, ValueError):
             return
@@ -865,7 +868,7 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
         answered = True
 
     # Daemon thread so a silent resolver cannot block shutdown; timeouts count as lookup failures.
-    thread = threading.Thread(target = _resolve, daemon = True)
+    thread = threading.Thread(target=_resolve, daemon=True)
     thread.start()
     thread.join(_DNS_TIMEOUT_SECONDS)
     if thread.is_alive():
@@ -902,12 +905,14 @@ def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
 def _managed_account_caller() -> bool:
     """True when this validation runs for a managed (non-owner) account."""
     from utils.account_context import is_owner_context
+
     return not is_owner_context()
 
 
 def _managed_private_urls_allowed() -> bool:
     """Imported locally so tests/test_provider_base_url_validation.py can load this module standalone."""
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
     return get_managed_private_provider_urls_allowed()
 
 
@@ -921,11 +926,12 @@ def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str
         if resolved is None:
             # Unbounded fallback: slow resolvers are normal (5s x 2), and here no answer fails closed.
             import socket
+
             try:
                 infos = socket.getaddrinfo(
                     _transport_host(hostname),
                     port or (443 if scheme == "https" else 80),
-                    type = socket.SOCK_STREAM,
+                    type=socket.SOCK_STREAM,
                 )
             except (OSError, UnicodeError) as exc:
                 raise ValueError("Provider base URL hostname could not be resolved.") from exc
@@ -951,7 +957,7 @@ def public_provider_address(url: str) -> str:
             infos = socket.getaddrinfo(
                 _transport_host(hostname),
                 parts.port or (443 if parts.scheme == "https" else 80),
-                type = socket.SOCK_STREAM,
+                type=socket.SOCK_STREAM,
             )
         except (OSError, UnicodeError) as exc:
             raise ValueError("Provider base URL hostname could not be resolved.") from exc
@@ -981,7 +987,7 @@ def provider_address_excluding_metadata(url: str) -> str:
             infos = socket.getaddrinfo(
                 _transport_host(hostname),
                 parts.port or (443 if parts.scheme == "https" else 80),
-                type = socket.SOCK_STREAM,
+                type=socket.SOCK_STREAM,
             )
         except (OSError, UnicodeError) as exc:
             raise ValueError("Provider base URL hostname could not be resolved.") from exc
@@ -1064,7 +1070,7 @@ def validate_provider_base_url(base_url: str) -> str:
     path = parts.path.rstrip("/")
     endpoint = _PASTED_ENDPOINT_PATH.search(path)
     if endpoint:
-        raw = urlunsplit(parts._replace(path = path[: endpoint.start()]))
+        raw = urlunsplit(parts._replace(path=path[: endpoint.start()]))
     return raw.rstrip("/")
 
 
