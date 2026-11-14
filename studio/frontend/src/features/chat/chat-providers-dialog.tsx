@@ -2005,9 +2005,9 @@ export function ChatProvidersSettings({
         </header>
 
         <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
-          <section className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
-            <div className="divide-y divide-border/60">
-              <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+          <section>
+            <div>
+              <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <Label
                     htmlFor="provider-preset"
@@ -2089,7 +2089,7 @@ export function ChatProvidersSettings({
               </div>
 
               {isOpenCodeProviderType(providerType) ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label htmlFor="provider-opencode-plan" className="text-sm font-medium">
                       Plan
@@ -2118,7 +2118,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {showApiKeyField ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-api-key"
@@ -2212,7 +2212,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {isCustomProvider ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-custom-name"
                     className="text-sm font-medium"
@@ -2233,7 +2233,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {shouldShowProviderApiType(providerType) ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label htmlFor="provider-api-type" className="text-sm font-medium">
                       API type
@@ -2265,7 +2265,7 @@ export function ChatProvidersSettings({
               ) : null}
               {isCustomProvider &&
               selectedProviderContract?.base_url_editable !== false ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-base-url"
@@ -2291,7 +2291,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {showShareToggle ? (
-                <div className="flex items-start justify-between gap-4 px-4 py-3">
+                <div className="flex items-start justify-between gap-4 py-3">
                   <div className="space-y-1">
                     <Label
                       htmlFor="provider-shared"
@@ -2324,9 +2324,9 @@ export function ChatProvidersSettings({
           <Collapsible
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
-            className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]"
+            className="overflow-hidden"
           >
-            <CollapsibleTrigger className="group/advanced flex w-full items-center justify-between gap-3 px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <CollapsibleTrigger className="group/advanced flex w-full items-center justify-between gap-3 py-3 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               <span className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-sm font-medium">Advanced</span>
                 <span className="text-xs leading-snug text-muted-foreground">
@@ -2338,9 +2338,9 @@ export function ChatProvidersSettings({
               <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/advanced:rotate-180" />
             </CollapsibleTrigger>
             <CollapsibleContent>
-            <div className="divide-y divide-border/60 border-border/60 border-t">
+            <div>
               {supportsMaxOutputTokens ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-max-output-tokens"
@@ -2385,7 +2385,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {supportsAutoCompactTokens ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-auto-compact-tokens"
@@ -2434,7 +2434,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {providerType !== "openai_codex" ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-extra-headers"
@@ -2462,7 +2462,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {providerType === "llama_cpp" ? (
-                <div className="flex items-start justify-between gap-4 px-4 py-3">
+                <div className="flex items-start justify-between gap-4 py-3">
                   <div className="space-y-1">
                     <Label
                       htmlFor="provider-auto-reload-models"
@@ -2489,7 +2489,7 @@ export function ChatProvidersSettings({
               ) : null}
               {providerType === "openai_codex" ||
               autoTicksNewlyListedModels({ providerType }) ? (
-                <div className="flex items-start justify-between gap-4 px-4 py-3">
+                <div className="flex items-start justify-between gap-4 py-3">
                   <div className="space-y-1">
                     <Label
                       htmlFor="provider-new-model-check"
@@ -2532,7 +2532,7 @@ export function ChatProvidersSettings({
 
               {showCustomReasoning ? (
                 <>
-                  <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                     <div className="flex min-w-0 flex-col gap-0.5">
                       <Label htmlFor="provider-reasoning-support" className="text-sm font-medium">
                         Reasoning support
@@ -2555,7 +2555,7 @@ export function ChatProvidersSettings({
                     </label>
                   </div>
                   {reasoningConfig?.enabled ? (
-                    <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                    <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <Label htmlFor="provider-reasoning-style" className="text-sm font-medium">
                           Reasoning parameter style
@@ -2597,7 +2597,7 @@ export function ChatProvidersSettings({
                 </>
               ) : null}
               {showReasoningToggle ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-is-reasoning"
                     className="text-sm font-medium"
@@ -2665,7 +2665,7 @@ export function ChatProvidersSettings({
             />
           ) : null}
 
-          <section className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
+          <section>
             <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={modelsPanelKey}
@@ -2685,7 +2685,7 @@ export function ChatProvidersSettings({
                 }}
               >
                 <div
-                  className={`flex flex-wrap items-start justify-between gap-3 px-4 py-3 ${showModelsBody || (formCheck && !keyRejected) ? "border-border/60 border-b" : ""}`}
+                  className={`flex flex-wrap items-start justify-between gap-3 py-3`}
                 >
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label className="text-sm font-medium">Models</Label>
@@ -2723,10 +2723,7 @@ export function ChatProvidersSettings({
                 {formCheck && !keyRejected ? (
                   <div
                     role={formCheck.state === "error" ? "alert" : "status"}
-                    className={cn(
-                      "px-4 py-2",
-                      showModelsBody && "border-border/60 border-b",
-                    )}
+                    className="py-2"
                   >
                     <ConnectionStatusLine
                       status={
@@ -2740,7 +2737,7 @@ export function ChatProvidersSettings({
                   </div>
                 ) : null}
                 {isCustomProvider && !supportsRemoteModelCatalog(providerType) ? (
-                  <div className="space-y-3 px-4 py-4">
+                  <div className="space-y-3 py-3">
                     <div className="space-y-2">
                       <Label
                         htmlFor="provider-manual-models"
@@ -2761,7 +2758,7 @@ export function ChatProvidersSettings({
                     </div>
                   </div>
                 ) : isCuratedModelList && (availableModels.length > 0 || modelIdsEditable) ? (
-                  <div className="space-y-3 px-4 py-4">
+                  <div className="space-y-3 py-3">
                     <p className="text-xs leading-relaxed text-muted-foreground">
                       Select from suggestions below or enter exact model IDs.
                     </p>
@@ -2787,7 +2784,7 @@ export function ChatProvidersSettings({
                   </div>
                 ) : availableModels.length === 0 &&
                   !allowsManualModelIdsWithCatalog(providerType) ? null : (
-                  <div className="space-y-3 px-4 py-4">
+                  <div className="space-y-3 py-3">
                     {availableModels.length === 0 ? null : modelChecklist(false)}
                     {allowsManualModelIdsWithCatalog(providerType) ? (
                       <div className="space-y-2">
@@ -2960,7 +2957,7 @@ export function ChatProvidersSettings({
                 <span className="text-xs leading-snug text-muted-foreground">
                   {syncingProviders
                     ? "Loading your connections"
-                    : "Pick a provider below to use its models in chat."}
+                    : "Pick a provider below."}
                 </span>
               </div>
             </div>
@@ -3038,7 +3035,7 @@ export function ChatProvidersSettings({
 
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span>
-            Model names, context sizes and capabilities come from models.dev
+            Model data from models.dev
             {catalogFetchedAt
               ? `, updated ${formatCheckedAgo(catalogFetchedAt * 1000, now)}.`
               : ". A bundled copy is in use until the first refresh."}

@@ -41,10 +41,14 @@ export function ConnectionStatusLine({
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center gap-1.5 text-xs leading-4",
+        "flex min-w-0 items-center gap-1.5 text-xs leading-snug",
         className,
       )}
-      title={status.detail ? `${status.label}. ${status.detail}` : status.label}
+      title={
+        (status.full ?? status.detail)
+          ? `${status.label}. ${status.full ?? status.detail}`
+          : status.label
+      }
     >
       {dot ? (
         <span
@@ -93,15 +97,16 @@ export function ConnectionRow({
   onEnabledChange: (enabled: boolean) => void;
 }) {
   const readOnly = provider.sharedByOwner === true;
+  // One description line, as other settings rows have: the fix when something is wrong, else the models.
+  const healthy = status.tone === "ok" || status.tone === "muted";
+  const models = source ? `${source} · ${modelSummary}` : modelSummary;
   const summary = (
     <>
-      <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-sm border border-border/70 bg-background/80">
-        <ApiProviderLogo
-          providerType={provider.providerType}
-          className="size-5"
-          title={provider.name}
-        />
-      </div>
+      <ApiProviderLogo
+        providerType={provider.providerType}
+        className="size-5"
+        title={provider.name}
+      />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm font-medium text-foreground">
@@ -109,13 +114,13 @@ export function ConnectionRow({
           </span>
           {badges}
         </div>
-        <ConnectionStatusLine status={status} />
-        <div
-          className="truncate text-ui-11 leading-4 text-muted-foreground/80"
-          title={provider.models.join(", ")}
-        >
-          {source ? `${source} · ${modelSummary}` : modelSummary}
-        </div>
+        <ConnectionStatusLine
+          status={
+            healthy
+              ? { ...status, detail: models, full: provider.models.join(", ") }
+              : status
+          }
+        />
       </div>
     </>
   );
@@ -123,12 +128,12 @@ export function ConnectionRow({
     <div
       data-connection-id={provider.id}
       data-connection-enabled={enabled}
-      className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2.5 max-sm:grid-cols-1"
+      className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-2 py-3 max-sm:grid-cols-1"
     >
       {readOnly ? (
         <div
           className={cn(
-            "flex min-w-0 items-start gap-3",
+            "flex min-w-0 items-center gap-2.5",
             !enabled && "opacity-60",
           )}
         >
@@ -141,7 +146,7 @@ export function ConnectionRow({
           onClick={onEdit}
           aria-label={`Edit ${provider.name}`}
           className={cn(
-            "flex min-w-0 items-start gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "flex min-w-0 items-center gap-2.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             !enabled && "opacity-60",
           )}
         >

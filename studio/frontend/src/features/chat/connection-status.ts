@@ -20,6 +20,8 @@ export interface ConnectionStatus {
   tone: ConnectionStatusTone;
   label: string;
   detail?: string;
+  /** The provider's own wording, for a tooltip; `detail` is the short form a row has room for. */
+  full?: string;
 }
 
 const FAILED_CHECK_LABELS: Record<ProviderTestErrorKind, string> = {
@@ -31,6 +33,16 @@ const FAILED_CHECK_LABELS: Record<ProviderTestErrorKind, string> = {
   timeout: "Timed out",
   invalid_url: "Invalid base URL",
   other: "Check failed",
+};
+
+const FAILED_CHECK_HINTS: Partial<Record<ProviderTestErrorKind, string>> = {
+  auth: "Check the API key.",
+  billing: "Add credit to the account.",
+  rate_limit: "Try again shortly.",
+  not_found: "Check the base URL.",
+  unreachable: "Is the server running?",
+  timeout: "The server took too long.",
+  invalid_url: "Check the base URL.",
 };
 
 const FAILED_CHECK_PREFIX = /^Connection failed[:.]\s*/;
@@ -72,21 +84,21 @@ export function connectionStatus(
       return {
         tone: "warn",
         label: "Sign in again",
-        detail: "The ChatGPT sign-in expired.",
+        detail: "The sign-in expired.",
       };
     }
     if (provider.authStatus !== "connected") {
       return {
         tone: "warn",
         label: "Not signed in",
-        detail: "Open it to sign in with ChatGPT.",
+        detail: "Sign in with ChatGPT.",
       };
     }
   } else if (!provider.hasApiKey && !options.keyOptional) {
     return {
       tone: "warn",
       label: "Needs API key",
-      detail: "Open it to add a key.",
+      detail: "Add a key.",
     };
   }
   const check = options.check;
@@ -95,14 +107,17 @@ export function connectionStatus(
       tone: "error",
       label:
         FAILED_CHECK_LABELS[check.kind ?? "other"] ?? FAILED_CHECK_LABELS.other,
-      detail: checkFailureDetail(check.message),
+      detail:
+        FAILED_CHECK_HINTS[check.kind ?? "other"] ??
+        checkFailureDetail(check.message),
+      full: checkFailureDetail(check.message),
     };
   }
   if (provider.models.length === 0) {
     return {
       tone: "warn",
       label: "No models enabled",
-      detail: "Open it to choose models.",
+      detail: "Choose models.",
     };
   }
   if (check) {

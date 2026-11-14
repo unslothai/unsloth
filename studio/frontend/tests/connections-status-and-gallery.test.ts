@@ -83,8 +83,11 @@ test("a failed check names its cause and drops the boilerplate prefix", () => {
   assert.deepEqual(failed("auth"), {
     tone: "error",
     label: "Key rejected",
-    detail: "The server said no.",
+    detail: "Check the API key.",
+    full: "The server said no.",
   });
+  // No short hint for an unclassified failure: the server's words stand.
+  assert.equal(failed(null).detail, "The server said no.");
   assert.equal(failed("billing").label, "No credit");
   assert.equal(failed("rate_limit").label, "Rate limited");
   assert.equal(failed("unreachable").label, "Unreachable");

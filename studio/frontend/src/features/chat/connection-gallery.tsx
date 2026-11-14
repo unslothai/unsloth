@@ -141,7 +141,7 @@ export function ConnectionGallery({
   return (
     <SettingsSection
       title="Add a connection"
-      description="Pick a provider, then paste a key or point at your own server."
+      description="Paste a key or point at your own server."
       action={
         <Input
           type="search"
@@ -200,9 +200,9 @@ export function ConnectionGallery({
                           type="button"
                           onClick={() => onPick(item.providerType)}
                           data-provider-type={item.providerType}
-                          className="group/tile flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          className="group/tile flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-2 text-left transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         >
-                          <span className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-border/70 bg-background/80">
+                          <span className="flex size-5 shrink-0 items-center justify-center">
                             <ApiProviderLogo
                               providerType={item.providerType}
                               className="size-5"
