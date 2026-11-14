@@ -729,6 +729,11 @@ class _TensorTableStore:
         self._paths = []
         self.nbytes = weight.numel() * weight.element_size()
 
+    def resident_on(self, device):
+        """unsloth_zoo asks whether a lookup on ``device`` needs a host round trip: rows held in memory on that
+        device gather there directly."""
+        return self.weight.device == device
+
     def gather(
         self,
         ids,
