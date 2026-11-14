@@ -499,6 +499,14 @@
       "reason": "Imports transformers.models.<model_type>.modeling_<model_type> only for an identifier model_type, so it can only reach an installed transformers module."
     },
     {
+      "file": "studio/spark_pipeline.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "99b72ca2fec458c8",
+      "count": 1,
+      "reason": "Loads unsloth/models/_ddp_defaults.py from the installed unsloth package directory (found by find_spec, never a user or model path) without importing the package, which would patch transformers."
+    },
+    {
       "file": "unsloth/__init__.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
