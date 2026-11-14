@@ -8,7 +8,8 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useSyncExternalStore } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import {
   modelCatalogVersion,
   resolveModelCatalogEntry,
@@ -26,14 +27,41 @@ export function formatContextWindow(tokens: number): string {
   return tokens >= 1_000 ? `${Math.round(tokens / 1_000)}K` : String(tokens);
 }
 
-export function modelFacts(providerType: string, modelId: string): string {
+const INPUT_LABELS: Record<string, string> = {
+  text: "Text",
+  image: "Image",
+  audio: "Audio",
+  video: "Video",
+  pdf: "PDF",
+};
+
+/** Label and value pairs for a model's hover card; empty when the catalog does not know it. */
+export function modelDetails(
+  providerType: string,
+  modelId: string,
+): [string, string][] {
   const entry = resolveModelCatalogEntry(providerType, modelId);
-  if (!entry) return "";
-  const facts: string[] = [];
-  if (entry.contextLength) facts.push(formatContextWindow(entry.contextLength));
-  if (entry.inputModalities?.includes("image")) facts.push("Vision");
-  if (entry.reasoning) facts.push("Reasoning");
-  return facts.join(" · ");
+  if (!entry) return [];
+  const details: [string, string][] = [];
+  const inputs = (entry.inputModalities ?? []).map(
+    (input) => INPUT_LABELS[input] ?? input,
+  );
+  if (inputs.length > 0) details.push(["Inputs", inputs.join(", ")]);
+  const efforts = entry.efforts
+    .filter((effort) => effort !== "none")
+    .map((effort) =>
+      effort === "xhigh"
+        ? "XHigh"
+        : effort.charAt(0).toUpperCase() + effort.slice(1),
+    );
+  details.push([
+    "Reasoning",
+    efforts.length > 0 ? efforts.join(", ") : entry.reasoning ? "Yes" : "No",
+  ]);
+  if (entry.contextLength) {
+    details.push(["Context", entry.contextLength.toLocaleString("en-US")]);
+  }
+  return details;
 }
 
 /** Fades the list's top or bottom edge while more rows lie beyond it. */
@@ -98,9 +126,36 @@ export function ConnectionModelList({
   const rows = models.map((model) => ({
     id: model,
     name: providerModelDisplayName(providerType, model),
-    facts: modelFacts(providerType, model),
+    details: modelDetails(providerType, model),
   }));
   const filtered = query.trim().length > 0;
+  const [card, setCard] = useState<{
+    name: string;
+    details: [string, string][];
+    left: number;
+    top: number;
+  } | null>(null);
+  // Beside the name, 24px clear of the text.
+  const showCard = (
+    row: { name: string; details: [string, string][] },
+    label: HTMLElement,
+  ) => {
+    if (row.details.length === 0) return setCard(null);
+    const text = label
+      .querySelector("[data-model-name]")
+      ?.getBoundingClientRect();
+    if (!text) return;
+    const width = 240;
+    setCard({
+      name: row.name,
+      details: row.details,
+      left: Math.max(
+        8,
+        Math.min(text.right + 24, window.innerWidth - width - 8),
+      ),
+      top: text.top - 12,
+    });
+  };
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -140,7 +195,35 @@ export function ConnectionModelList({
           </Button>
         </div>
       </div>
-      <div className="overflow-hidden rounded-2xl border border-border/60 py-1 pl-1">
+      {card
+        ? createPortal(
+            // One card for the whole list, drawn outside it and deaf to the pointer: a tooltip per row
+            // sat under the cursor and fought the row for hover.
+            <div
+              role="tooltip"
+              style={{ left: card.left, top: card.top }}
+              className="tooltip-rich pointer-events-none fixed z-[999999] flex w-[calc(240px*var(--ui-space-scale,1))] flex-col gap-2 text-xs"
+            >
+              <div className="flex min-w-0 items-center gap-4">
+                <span className="shrink-0 text-muted-foreground">Model</span>
+                <span className="ml-auto min-w-0 truncate text-right">
+                  {card.name}
+                </span>
+              </div>
+              {card.details.map(([name, value]) => (
+                <div key={name} className="flex min-w-0 items-start gap-4">
+                  <span className="shrink-0 text-muted-foreground">{name}</span>
+                  <span className="ml-auto min-w-0 text-right">{value}</span>
+                </div>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
+      <div
+        className="overflow-hidden rounded-2xl border border-border/60 py-1 pl-1"
+        onScrollCapture={() => setCard(null)}
+      >
         <ul
           ref={fadeScrollEdges}
           className={cn(
@@ -159,6 +242,8 @@ export function ConnectionModelList({
               <li key={row.id}>
                 <label
                   htmlFor={`provider-model-${panelKey}-${index}`}
+                  onPointerEnter={(event) => showCard(row, event.currentTarget)}
+                  onPointerLeave={() => setCard(null)}
                   className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-3 py-1.5 transition-colors hover:bg-accent"
                 >
                   <Checkbox
@@ -168,7 +253,10 @@ export function ConnectionModelList({
                     checked={selected.has(row.id)}
                     onCheckedChange={() => onToggle(row.id)}
                   />
-                  <span className="min-w-0 flex-1 break-all text-sm leading-tight">
+                  <span
+                    data-model-name={true}
+                    className="min-w-0 break-all text-sm leading-tight"
+                  >
                     {row.name}
                     {row.name === row.id ? null : (
                       <span className="ml-2 text-xs text-muted-foreground">
@@ -176,11 +264,6 @@ export function ConnectionModelList({
                       </span>
                     )}
                   </span>
-                  {row.facts ? (
-                    <span className="shrink-0 whitespace-nowrap text-ui-11 text-muted-foreground/80">
-                      {row.facts}
-                    </span>
-                  ) : null}
                 </label>
               </li>
             ))
