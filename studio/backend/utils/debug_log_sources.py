@@ -17,6 +17,7 @@ FAMILIES: dict[str, tuple[str, str]] = {
     "server": ("logs/server", "server-*.log"),
     "llama-server": ("logs/llama-server", "llama-*.log"),
     "diffusion-server": ("logs/diffusion-server", "diffusion-*.log"),
+    "lemonade": ("logs/lemonade", "lemonade-*.log"),
     "desktop-backend": ("logs", "backend-*.log"),
     "desktop-install": ("logs", "install-*.log"),
     "desktop-update": ("logs", "update-*.log"),
