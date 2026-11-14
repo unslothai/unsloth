@@ -218,3 +218,8 @@ test("voice off waits for a detect in flight before unloading the detector", () 
   assert.match(vad, /return track\(startVadModel\(model, signal\)\);/);
   assert.match(vad, /await Promise\.all\(\[\.\.\.pendingLoads\]\);\s*await authFetch\("\/api\/inference\/audio\/vad\/unload"/);
 });
+
+test("the delayed stream close yields to a run that started inside the beat", () => {
+  assert.match(engine, /streamBegunRef\.current = true;\s*streamGenRef\.current\+\+;/);
+  assert.match(engine, /const gen = streamGenRef\.current;\s*setTimeout\(\(\) => \{[\s\S]{0,200}if \(gen !== streamGenRef\.current \|\| voiceModeRef\.current !== "active"\) return;/);
+});

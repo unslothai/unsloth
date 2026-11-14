@@ -276,6 +276,7 @@ export const VoiceEngine: FC = () => {
   const speakRef = useRef(speak);
   speakRef.current = speak;
   const streamBegunRef = useRef(false);
+  const streamGenRef = useRef(0);
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFallbackAtRef = useRef(0);
   // The filler model answered (say or quiet). A quiet vote is the answer, so the
@@ -970,6 +971,7 @@ export const VoiceEngine: FC = () => {
         if (composer.getState().dictation) composer.stopDictation();
         beginStreamRef.current();
         streamBegunRef.current = true;
+        streamGenRef.current++;
         _voicedThreadId = useChatRuntimeStore.getState().activeThreadId;
         runStartedAtRef.current = Date.now();
         spokenThisTurnRef.current = false;
@@ -1103,7 +1105,10 @@ export const VoiceEngine: FC = () => {
     spokenReplyRef.current = endTail?.role === "assistant" ? { id: endTail.id, text } : null;
     // Read again after a beat: the last token can land after isRunning flipped.
     if (streamBegun) {
+      const gen = streamGenRef.current;
       setTimeout(() => {
+        // A Regenerate or Continue inside the beat owns the stream now: closing it would speak this reply again.
+        if (gen !== streamGenRef.current || voiceModeRef.current !== "active") return;
         const final = latestAssistantText();
         const said = final.length >= text.length ? final : text;
         if (spokenReplyRef.current) spokenReplyRef.current = { ...spokenReplyRef.current, text: said };
