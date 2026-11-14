@@ -9,23 +9,47 @@ no /proc, entry not found) returns None and callers keep today's behaviour."""
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import sys
 from typing import Optional
 
 _PROC_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
+_TCP_ESTABLISHED = "01"
 
 
-def _port_of(field: str) -> Optional[int]:
+def _ip(value) -> Optional[ipaddress._BaseAddress]:
     try:
-        return int(field.rsplit(":", 1)[1], 16)
-    except (IndexError, ValueError):
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return mapped or addr
+
+
+def _endpoint(field: str):
+    """`0100007F:1F90` (tcp) or 32-hex-digit (tcp6) address:port, kernel byte order, as (ip, port)."""
+    try:
+        hexaddr, hexport = field.split(":")
+        raw = bytes.fromhex(hexaddr)
+        if len(raw) not in (4, 16):
+            return None
+        raw = b"".join(raw[i : i + 4][::-1] for i in range(0, len(raw), 4))
+        addr = ipaddress.IPv4Address(raw) if len(raw) == 4 else ipaddress.IPv6Address(raw)
+        return (getattr(addr, "ipv4_mapped", None) or addr), int(hexport, 16)
+    except (ValueError, TypeError):
         return None
 
 
-def loopback_peer_uid(client_port: Optional[int], server_port: Optional[int]) -> Optional[int]:
-    """UID owning the client end (local=client_port, remote=server_port), else None."""
-    if not sys.platform.startswith("linux") or not client_port or not server_port:
+def loopback_peer_uid(client, server) -> Optional[int]:
+    """UID owning the live client end (local=client, remote=server, ESTABLISHED), else None.
+
+    `client` and `server` are (host, port); the whole tuple must match so a stale entry that only
+    shares the ports (another loopback address, TIME_WAIT) cannot stand in for this connection."""
+    if not sys.platform.startswith("linux") or not client or not server:
+        return None
+    want = ((_ip(client[0]), client[1]), (_ip(server[0]), server[1]))
+    if None in (want[0][0], want[1][0]) or not want[0][1] or not want[1][1]:
         return None
     for table in _PROC_TABLES:
         try:
@@ -33,9 +57,9 @@ def loopback_peer_uid(client_port: Optional[int], server_port: Optional[int]) ->
                 next(fh, None)  # header
                 for line in fh:
                     parts = line.split()
-                    if len(parts) < 8:
+                    if len(parts) < 8 or parts[3] != _TCP_ESTABLISHED:
                         continue
-                    if _port_of(parts[1]) != client_port or _port_of(parts[2]) != server_port:
+                    if (_endpoint(parts[1]), _endpoint(parts[2])) != want:
                         continue
                     try:
                         return int(parts[7])
@@ -52,9 +76,9 @@ def peer_is_another_local_user(request) -> bool:
         client = getattr(request, "client", None)
         scope = getattr(request, "scope", None) or {}
         server = scope.get("server") if isinstance(scope, dict) else None
-        client_port = getattr(client, "port", None) if client is not None else None
-        server_port = server[1] if server and len(server) > 1 else None
-        uid = loopback_peer_uid(client_port, server_port)
+        client_ep = (client.host, client.port) if client is not None else None
+        server_ep = (server[0], server[1]) if server and len(server) > 1 else None
+        uid = loopback_peer_uid(client_ep, server_ep)
         if uid is None:
             return False
         # root can already read the 0600 password file, so it gains nothing here.

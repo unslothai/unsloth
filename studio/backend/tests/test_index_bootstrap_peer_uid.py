@@ -60,3 +60,54 @@ def test_unknown_peer_keeps_todays_behaviour():
     from main import _should_inject_bootstrap
     req = _request(("127.0.0.1", 1), ("127.0.0.1", 2))
     assert _should_inject_bootstrap(req) is True
+
+
+_HDR = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+
+
+def _row(local, remote, state, uid):
+    return f"   0: {local} {remote} {state} 00000000:00000000 00:00000000 00000000 {uid:>5} 0 0\n"
+
+
+def _tables(
+    tmp_path,
+    monkeypatch,
+    tcp = "",
+    tcp6 = "",
+):
+    import utils.loopback_peer as lp
+
+    paths = []
+    for name, body in (("tcp", tcp), ("tcp6", tcp6)):
+        p = tmp_path / name
+        p.write_text(_HDR + body)
+        paths.append(str(p))
+    monkeypatch.setattr(lp, "_PROC_TABLES", tuple(paths))
+    return lp
+
+
+def test_a_stale_entry_sharing_only_the_ports_cannot_stand_in_for_the_live_client(
+    tmp_path, monkeypatch
+):
+    # TIME_WAIT from 127.0.0.2 (owned by root) listed before the live 127.0.0.1 client of another user.
+    lp = _tables(
+        tmp_path,
+        monkeypatch,
+        tcp = _row("0200007F:C350", "0100007F:22B8", "06", 0)
+        + _row("0100007F:C350", "0100007F:22B8", "01", 65534),
+    )
+    assert lp.loopback_peer_uid(("127.0.0.1", 50000), ("127.0.0.1", 8888)) == 65534
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    req = _request(("127.0.0.1", 50000), ("127.0.0.1", 8888))
+    assert lp.peer_is_another_local_user(req) is True
+
+
+def test_only_established_entries_count(tmp_path, monkeypatch):
+    lp = _tables(tmp_path, monkeypatch, tcp = _row("0100007F:C350", "0100007F:22B8", "06", 0))
+    assert lp.loopback_peer_uid(("127.0.0.1", 50000), ("127.0.0.1", 8888)) is None
+
+
+def test_dual_stack_ipv4_mapped_entry_matches(tmp_path, monkeypatch):
+    mapped = "0000000000000000FFFF00000100007F"
+    lp = _tables(tmp_path, monkeypatch, tcp6 = _row(f"{mapped}:C350", f"{mapped}:22B8", "01", 4321))
+    assert lp.loopback_peer_uid(("127.0.0.1", 50000), ("::ffff:127.0.0.1", 8888)) == 4321
