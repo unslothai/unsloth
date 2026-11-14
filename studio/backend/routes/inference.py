@@ -25217,6 +25217,7 @@ async def _external_stt_transcription(
     encrypted_api_key: Optional[str],
     request: Request,
     timestamp_granularities: Optional[list[str]] = None,
+    prompt: Optional[str] = None,
 ) -> Response:
     provider_id = provider_id.strip()
     if not provider_id:
@@ -25285,6 +25286,7 @@ async def _external_stt_transcription(
             language = language,
             response_format = response_format,
             timestamp_granularities = timestamp_granularities,
+            **({"prompt": prompt} if prompt else {}),
         )
     )
     disconnect_watcher = asyncio.create_task(
@@ -26356,6 +26358,7 @@ async def _transcribe_audio_result(
     timestamps: bool = False,
     translate: bool = False,
     context_length: int = 0,
+    prompt: Optional[str] = None,
 ) -> dict:
     """source_path is read in place by audio.cpp; translate is honoured only by the Transformers sidecar."""
     if account_access.managed_account():
@@ -26401,7 +26404,7 @@ async def _transcribe_audio_result(
         functools.partial(sidecar.transcribe, task = "translate") if translate else sidecar.transcribe
     )
     if serving_engine == "mtmd":
-        transcribe = functools.partial(transcribe, context_length = context_length)
+        transcribe = functools.partial(transcribe, context_length = context_length, prompt = prompt)
     cancel_event = threading.Event() if request is not None or on_progress is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
@@ -26661,10 +26664,18 @@ def _source_transcript(result: dict, source, speakers: bool) -> dict:
     return out
 
 
+def _accent_refused() -> HTTPException:
+    return HTTPException(
+        status_code = 422,
+        detail = "This model cannot take a speaker accent hint. Clear it, or pick Qwen3-ASR "
+        "(llama.cpp) or a connection to a non-Whisper transcription model.",
+    )
+
+
 async def _external_source_transcript(
     body: TranscribeSourceRequest, source, request: Request
 ) -> dict:
-    from core.inference import audio_inputs, audio_metrics
+    from core.inference import audio_inputs, audio_metrics, stt_capabilities
 
     def _encode():
         path = audio_inputs.prepared_path(source, 16000)
@@ -26695,6 +26706,7 @@ async def _external_source_transcript(
         timestamp_granularities = ["segment", "word"] if body.timestamps else None,
         encrypted_api_key = None,
         request = request,
+        prompt = stt_capabilities.accent_prompt(body.speaker_accent),
     )
     data = json.loads(response.body) if "json" in response.media_type else {}
     if not isinstance(data, dict) or not isinstance(data.get("text"), str):
@@ -26753,7 +26765,10 @@ async def transcribe_audio_source(
     from core.inference import audio_inputs, stt_capabilities, stt_details
     from core.inference.transcript_stream import stream_transcript
 
+    accent_prompt = stt_capabilities.accent_prompt(body.speaker_accent)
     if body.provider_id is not None:
+        if accent_prompt and not stt_capabilities.connection_takes_accent_hint(body.model):
+            raise _accent_refused()
 
         def _resolve():
             source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
@@ -26777,6 +26792,8 @@ async def transcribe_audio_source(
     serving_engine = _resolve_serving_stt_engine(engine)
     caps = await asyncio.to_thread(stt_capabilities.capabilities_for, body.model, serving_engine)
     _refuse_stt_caps(caps, timestamps = body.timestamps, speakers = body.speakers)
+    if accent_prompt and not caps.get("accent_hint"):
+        raise _accent_refused()
     rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
     cap = stt_capabilities.max_seconds_for(serving_engine)
 
@@ -26803,6 +26820,7 @@ async def transcribe_audio_source(
             source_path = path,
             timestamps = body.timestamps,
             context_length = body.context_length,
+            prompt = accent_prompt,
         )
         return _source_transcript(result, source, body.speakers)
 
