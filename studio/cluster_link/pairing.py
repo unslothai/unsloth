@@ -46,6 +46,7 @@ MAX_ATTEMPTS = 20
 MAX_NAME = 64
 MAX_TC_PUB = 200
 NOT_APPROVED = "not approved on the master"
+OLD_WORKER = "runs an older Unsloth that cannot show approval words: update it, then pair again"
 
 WORDS = (
     "acid",
@@ -555,7 +556,7 @@ class PairingWindow:
             await self._pair(reader, writer)
         except (framing.FrameError, PairingError, ValueError) as exc:
             logger.info("pairing attempt refused: %s", exc)
-            reason = NOT_APPROVED if str(exc) == NOT_APPROVED else "pairing refused"
+            reason = str(exc) if str(exc) in (NOT_APPROVED, OLD_WORKER) else "pairing refused"
             try:
                 await framing.write_frame(writer, {"type": "pair_error", "reason": reason})
             except Exception:
@@ -614,13 +615,20 @@ class PairingWindow:
         )
         if not hmac.compare_digest(proof["proof"], _proof(self._secret, data)):
             raise PairingError("bad proof")
+        name = _clean_name(hello["name"])
+        if v2 is None and self._approve is not None:
+            # A pre-v2 worker shows no words to compare, and skipping approval would let anyone
+            # holding the code downgrade around it.
+            if self._done is not None and not self._done.done():
+                self._fail(PairingError(f"{name} {OLD_WORKER}"))
+            self.close()
+            raise PairingError(OLD_WORKER)
         async with self._lock:
             if self._used:
                 raise PairingError("invitation already used")
             self._used = self._claimed = True
         if self._expiry is not None:
             self._expiry.cancel()
-        name = _clean_name(hello["name"])
         if not await self._approved(name, approval_words(self._secret, data) if v2 else None):
             if self._done is not None and not self._done.done():
                 self._fail(PairingError(f"{name} was not approved"))
@@ -687,6 +695,10 @@ class PairingWindow:
                 with reg.transaction():
                     reg.add(peer)
             await framing.write_frame(writer, {"type": "pair_ok"})
+            if self._net is not None:
+                # Closing the window stops its tunnel: wait for the worker to hang up after pair_ok.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(reader.read(1), FRAME_TIMEOUT_S)
             if self._done is not None and not self._done.done():
                 self._done.set_result(peer)
             if self._expiry is not None:

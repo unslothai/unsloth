@@ -301,7 +301,7 @@ def pair(
         _fail(str(exc))
 
     def ask(name: str, words: Optional[List[str]]) -> bool:
-        seen = " ".join(words) if words else "an older Unsloth: no words to compare"
+        seen = " ".join(words or [])
         return typer.confirm(_printable(f"{name} wants to join ({seen}). Allow?"), default = True)
 
     window = PairingWindow(
@@ -460,6 +460,11 @@ def _unreachable_reason(st: Any) -> str:
     return raw or "no answer"
 
 
+def remote_relay_allowed() -> bool:
+    from studio.cluster_link import remote
+    return remote.relay_allowed()
+
+
 def _through_tailnet(peer: Any, ask: Any) -> Optional[Tuple[str, Any]]:
     """("direct" | "relayed", status) for a worker answering through its tailcat address, else None."""
     from studio.cluster_link import AGENT_PORT_DEFAULT, remote
@@ -568,15 +573,16 @@ def list_workers(
             line = _printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}")
             if not answered(st):
                 line += _printable(f"  unreachable ({_unreachable_reason(st)})")
-            elif via.get(peer.node_id) == "relayed":
+            elif via.get(peer.node_id) == "relayed" and not remote_relay_allowed():
                 line += "  relayed only: too slow to serve models"
             else:
                 state = "busy" if st.get("busy") else ("ready" if st.get("rpc_up") else "rpc down")
                 if state == "ready":
                     kind = via.get(peer.node_id)
-                    state += (
-                        " (direct internet connection)" if kind == "direct" else " (local network)"
-                    )
+                    state += {
+                        "direct": " (direct internet connection)",
+                        "relayed": " (through a relay: slow)",
+                    }.get(kind, " (local network)")
                 devices = ", ".join(str(d) for d in st.get("devices") or [])
                 line += f"  {state}" + (f"  [{devices}]" if devices else "")
                 if discovered:

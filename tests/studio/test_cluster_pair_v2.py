@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _fake_tailnet  # noqa: E402
+from studio import cluster_link  # noqa: E402
 from studio.cluster_link import identity, pairing, remote, tokens  # noqa: E402
 
 WORKER = textwrap.dedent(
@@ -58,6 +59,8 @@ def master_dir(tmp_path, monkeypatch):
 def fake(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_TAILNET_DIR", str(tmp_path / "tailnet"))
     monkeypatch.setitem(sys.modules, "studio.cluster_link.tailnet", _fake_tailnet)
+    # `from . import tailnet` reads the package attribute first once the real module was imported.
+    monkeypatch.setattr(cluster_link, "tailnet", _fake_tailnet, raising = False)
     return _fake_tailnet
 
 
@@ -217,18 +220,24 @@ async def test_a_new_worker_pairs_with_an_old_master(master_dir, tmp_path, fake,
 
 
 @_async
-async def test_an_old_worker_pairs_with_a_new_master_and_is_still_approved(
+async def test_an_old_worker_is_refused_by_an_approving_master_and_pairs_with_yes(
     master_dir, tmp_path, fake
 ):
     asked = []
     _, window, token = await _open(
         tailnet = False, approve = lambda name, words: asked.append(words) or True
     )
-    result = await _join(tmp_path / "w", token, OLD = "1")
+    result = await _join(tmp_path / "w1", token, "1", OLD = "1")
+    assert not result["ok"] and not result["paired"], result
+    with pytest.raises(pairing.PairingError, match = "older Unsloth"):
+        await window.wait(5)
+    assert asked == [] and _workers() == []
+
+    _, window, token = await _open(tailnet = False)
+    result = await _join(tmp_path / "w2", token, "2", OLD = "1")
     assert result["ok"], result
     peer = await window.wait(5)
-    assert asked == [None] and result["words"] == []
-    assert peer.tc_addr == "" and result["master_tc_pub"] == ""
+    assert result["words"] == [] and peer.tc_addr == ""
 
 
 @_async
