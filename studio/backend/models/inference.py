@@ -3239,7 +3239,10 @@ class ChatCompletionRequest(BaseModel):
             "a checkpoint on this request even when it still fits: older turns are "
             "archived and searchable, and the model keeps the newest turn plus standing "
             "instructions until the chat outgrows the window again. Needs "
-            "context_overflow=truncate_oldest and a saved thread; otherwise ignored."
+            "context_overflow=truncate_oldest and a saved thread; otherwise ignored. "
+            "On a cloud connection the turns before the newest one are summarised: "
+            "by the provider where it compacts server-side (Anthropic, OpenAI "
+            "Responses), otherwise by a summary call to the same model."
         ),
     )
     studio_tool_history: Optional[bool] = Field(
@@ -3412,11 +3415,23 @@ class ChatCompletionRequest(BaseModel):
             "`context_management:[{type:'compaction', compact_threshold:N}]` "
             "to /v1/responses. A deployment that answers `compact_threshold "
             "is not enabled` is retried without it.\n"
-            "Both cap the trigger at 200k.\n"
+            "Both cap the trigger at 200k unless compaction_uncapped is set.\n"
             "Every other provider and model ignores it unless context_overflow "
-            "is truncate_oldest, in which case Unsloth drops the oldest turns "
-            "so the prompt and the reply fit within it before forwarding. "
+            "is truncate_oldest, in which case Unsloth asks the same model to "
+            "summarise the oldest turns, keeps the recent ones verbatim and "
+            "reuses the summary on later turns of a saved thread, so the prompt "
+            "and the reply fit within it before forwarding. If the summary call "
+            "fails the oldest turns are dropped instead. "
             "Per-provider floors are enforced in the corresponding stream helpers."
+        ),
+    )
+    compaction_uncapped: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] compaction_threshold is the connection's own \"Auto-compact "
+            'after" setting rather than the default. Anthropic and OpenAI server-side '
+            "compaction then use it as given instead of capping it at 200k: it is still "
+            "raised to the provider's floor and never exceeds context_window."
         ),
     )
     context_window: Optional[int] = Field(

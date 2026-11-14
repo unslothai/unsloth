@@ -785,8 +785,12 @@ export interface OpenAIChatChunk {
     checkpoint_started?: boolean;
     // true while the checkpoint in force was started by /compact
     manual?: boolean;
-    // true when the provider summarized earlier turns instead of Unsloth dropping them
+    // true when earlier turns were summarized rather than dropped
     summarized?: boolean;
+    // "unsloth" when Unsloth asked the model for the summary; absent when the provider wrote it
+    summary_source?: "unsloth";
+    // cloud fits only: turns were dropped, after a summary call failed (true) or could not help (false)
+    summary_failed?: boolean;
     // boundary text lets the count be re-derived after deleting an already evicted prompt
     boundary_anchor?: string;
     // discard a replayed boundary when its trim used more headroom than the current request
