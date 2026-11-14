@@ -376,20 +376,27 @@ def get_visible_gpu_utilization(
         "utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
     )
     try:
-        result = gpu_query.run_nvidia_smi(
-            [
-                _nvidia_smi_executable(),
-                f"--query-gpu={query_fields}",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-            env = child_env_without_native_path_secret(),
-            **_windows_hidden_subprocess_kwargs(),
+        extended_fields = (
+            query_fields + ",memory.free,pcie.link.width.current,pcie.link.gen.current"
         )
+        for fields in (extended_fields, query_fields):
+            result = gpu_query.run_nvidia_smi(
+                [
+                    _nvidia_smi_executable(),
+                    f"--query-gpu={fields}",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 5,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            # Older drivers can reject a query containing an unsupported property.
+            if result.returncode != 2:
+                break
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_visible_gpu_utilization: %s", e)
         return {
@@ -441,6 +448,19 @@ def get_visible_gpu_utilization(
             continue
 
         visible_ordinal = visible_ordinals[idx] if visible_ordinals is not None else len(devices)
+        optional = {}
+        extra_fields = (
+            ("vram_free_bytes", 1024**2, 0),
+            ("pcie_link_width", 1, 1),
+            ("pcie_link_gen", 1, 1),
+        )
+        for (key, scale, minimum), raw in zip(extra_fields, parts[7 + field_offset :]):
+            try:
+                value = int(raw)
+            except ValueError:  # [N/A] on unsupported hardware.
+                continue
+            if value >= minimum:
+                optional[key] = value * scale
         devices.append(
             _build_gpu_metrics(
                 vram_used_mb = _parse_smi_value(parts[3 + field_offset]),
@@ -452,6 +472,7 @@ def get_visible_gpu_utilization(
                 visible_ordinal = visible_ordinal,
                 gpu_utilization_pct = _parse_smi_value(parts[1 + field_offset]),
                 temperature_c = _parse_smi_value(parts[2 + field_offset]),
+                **optional,
             )
         )
 

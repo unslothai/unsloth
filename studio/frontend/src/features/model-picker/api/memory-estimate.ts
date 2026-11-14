@@ -13,6 +13,14 @@ export type MemoryEstimateReason =
   | "unsupported_source"
   | "unsizable";
 
+export interface GpuMemoryEstimate {
+  gpuId: number;
+  layerCount: number;
+  outputLayer: boolean;
+  weightsBytes: number;
+  cacheBytes: number | null;
+}
+
 export interface MemoryEstimate {
   available: boolean;
   reason: MemoryEstimateReason | null;
@@ -32,6 +40,8 @@ export interface MemoryEstimate {
   adaptersUnsized: boolean;
   totalBytes: number;
   gpuBytes: number;
+  perGpu: GpuMemoryEstimate[];
+  perGpuBasis: "free_memory" | "tensor_split" | null;
   /** False when the GGUF header lacks attention dims; the numbers are then a lower bound. */
   kvEstimable: boolean;
   kvOnGpu: boolean;
@@ -83,6 +93,7 @@ export interface MemoryEstimateRequest {
   gpuLayers?: number | null;
   nCpuMoe?: number | null;
   selectedGpuIds?: number[] | null;
+  tensorSplit?: number[] | null;
   llamaExtraArgs?: string[] | null;
 }
 
@@ -100,6 +111,8 @@ const UNAVAILABLE: MemoryEstimate = {
   adaptersUnsized: false,
   totalBytes: 0,
   gpuBytes: 0,
+  perGpu: [],
+  perGpuBasis: null,
   kvEstimable: false,
   kvOnGpu: true,
   nCtx: 0,
@@ -131,6 +144,8 @@ interface ApiEstimateResponse {
   adapters_unsized?: boolean;
   total_bytes: number;
   gpu_bytes: number;
+  per_gpu?: unknown;
+  per_gpu_basis?: unknown;
   kv_estimable: boolean;
   kv_on_gpu: boolean;
   n_ctx: number;
@@ -177,6 +192,7 @@ function estimateRequestBody(
     gpu_layers: payload.gpuLayers ?? null,
     n_cpu_moe: payload.nCpuMoe ?? null,
     selected_gpu_ids: payload.selectedGpuIds ?? null,
+    tensor_split: payload.tensorSplit ?? null,
     llama_extra_args: payload.llamaExtraArgs ?? null,
   });
 }
@@ -217,6 +233,36 @@ function offloadableParts(value: unknown): MlxOffloadablePart[] {
     : [];
 }
 
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function perGpuEstimates(value: unknown): GpuMemoryEstimate[] {
+  if (!Array.isArray(value)) return [];
+  const rows: GpuMemoryEstimate[] = [];
+  for (const row of value) {
+    if (
+      !row ||
+      !isCount(row.gpu_id) ||
+      !isCount(row.layer_count) ||
+      typeof row.output_layer !== "boolean" ||
+      !isCount(row.weights_bytes) ||
+      (row.cache_bytes !== null && !isCount(row.cache_bytes)) ||
+      rows.some((gpu) => gpu.gpuId === row.gpu_id)
+    ) {
+      return [];
+    }
+    rows.push({
+      gpuId: row.gpu_id,
+      layerCount: row.layer_count,
+      outputLayer: row.output_layer,
+      weightsBytes: row.weights_bytes,
+      cacheBytes: row.cache_bytes,
+    });
+  }
+  return rows;
+}
+
 const ESTIMATE_REASONS: readonly MemoryEstimateReason[] = [
   "not_gguf",
   "not_downloaded",
@@ -251,6 +297,10 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     adaptersUnsized: flag(body.adapters_unsized, false),
     totalBytes: finiteBytes(body.total_bytes, 0),
     gpuBytes: finiteBytes(body.gpu_bytes, 0),
+    perGpu: perGpuEstimates(body.per_gpu),
+    perGpuBasis: body.per_gpu_basis === "free_memory" || body.per_gpu_basis === "tensor_split"
+      ? body.per_gpu_basis
+      : null,
     // Absent on an older backend: treat KV as unverified, the safe direction.
     kvEstimable: flag(body.kv_estimable, false),
     kvOnGpu: flag(body.kv_on_gpu, true),

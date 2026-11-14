@@ -230,6 +230,13 @@ function toGpuInfo(
   };
 }
 
+function deviceFreeMemory(device: GpuDevice) {
+  const freeBytes = finiteNonNegative(device.vram_free_bytes);
+  const freeGb =
+    freeBytes === null ? finiteNonNegative(device.vram_free_gb) : freeBytes / 2 ** 30;
+  return { memoryFreeGb: freeGb ?? 0, memoryFreeKnown: freeGb !== null };
+}
+
 function toGpuDevices(
   data: SystemInfoResponse | null,
   // Diffusion runs on torch, so it reads the torch inventory even on a Vulkan inference build.
@@ -248,9 +255,7 @@ function toGpuDevices(
         indexKind: d.index_kind === "vulkan" ? ("vulkan" as const) : null,
         name: d.name ?? `GPU ${d.index}`,
         memoryTotalGb: d.memory_total_gb ?? 0,
-        memoryFreeGb: d.vram_free_gb ?? 0,
-        memoryFreeKnown:
-          Number.isFinite(d.vram_free_gb) && (d.vram_free_gb as number) >= 0,
+        ...deviceFreeMemory(d),
         sharedMemory: d.shared_memory === true,
         sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
         unifiedMemory: d.unified_memory === true,
@@ -276,11 +281,11 @@ function toGpuDevices(
           : null,
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
-      memoryFreeGb: d.vram_free_gb ?? 0,
-      memoryFreeKnown:
-        Number.isFinite(d.vram_free_gb) && (d.vram_free_gb as number) >= 0,
+      ...deviceFreeMemory(d),
       sharedMemory: d.shared_memory === true,
       sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
+      pcieLinkWidth: d.pcie_link_width,
+      pcieLinkGen: d.pcie_link_gen,
       unifiedMemory: d.unified_memory === true,
       // The XPU ban covers torch-xpu ordinals, not Vulkan ones.
       pinnable:

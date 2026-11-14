@@ -1186,6 +1186,12 @@ class EstimateMemoryRequest(BaseModel):
         description = "GPUs the load is pinned to. Tensor mode replicates its compute "
         "buffers per device, so the pinned count changes the footprint.",
     )
+    tensor_split: Optional[List[float]] = Field(
+        None, description = "Relative shares in launch device order for a fixed manual layer split."
+    )
+    _reject_degenerate_tensor_split = field_validator("tensor_split")(
+        LoadRequest._reject_degenerate_tensor_split.__func__
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = "Pass-through llama-server flags. Read, not just carried: -c, "
@@ -1325,6 +1331,21 @@ class MlxOffloadEstimate(BaseModel):
     )
 
 
+GpuSplitBasis = Literal["free_memory", "tensor_split"]
+
+
+class GpuLayerEstimate(BaseModel):
+    """Target model tensors and live cache for one card in a manual layer split."""
+
+    gpu_id: int
+    layer_count: int = Field(description = "Number of transformer blocks on this GPU.")
+    output_layer: bool = Field(description = "Whether the output layer is on this GPU.")
+    weights_bytes: int
+    cache_bytes: Optional[int] = Field(
+        description = "Resident KV and recurrent state, or null if their placement is unknown."
+    )
+
+
 class EstimateMemoryResponse(BaseModel):
     """Itemized memory an inference load would occupy, or why it could not be sized."""
 
@@ -1384,6 +1405,13 @@ class EstimateMemoryResponse(BaseModel):
     total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
     gpu_bytes: int = Field(
         0, description = "The share of total_bytes that lands on the GPU under this offload"
+    )
+    per_gpu: Optional[list[GpuLayerEstimate]] = Field(
+        None,
+        description = "Target weights and live cache by GPU when layer placement can be estimated.",
+    )
+    per_gpu_basis: Optional[GpuSplitBasis] = Field(
+        None, description = "Whether this split uses a free-memory snapshot or an explicit ratio."
     )
     kv_estimable: bool = Field(
         True,
@@ -1518,6 +1546,8 @@ class MemoryEstimate(BaseModel):
         "back to summing segments and drawing VRAM pressure for a load that touches no "
         "card at all.",
     )
+    per_gpu: Optional[list[GpuLayerEstimate]] = None
+    per_gpu_basis: Optional[GpuSplitBasis] = None
     gpu_floor_bytes: Optional[int] = Field(
         None,
         description = "gpu_bytes at the shortest context the route prices: the Hub's 256, "

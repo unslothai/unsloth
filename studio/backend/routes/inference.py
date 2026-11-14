@@ -3521,6 +3521,8 @@ from models.inference import (
     ValidateModelResponse,
     EstimateMemoryRequest,
     EstimateMemoryResponse,
+    GpuLayerEstimate,
+    GpuSplitBasis,
     Int8PrefillAvailabilityRequest,
     Int8PrefillAvailabilityResponse,
     AnePrefillAvailabilityRequest,
@@ -14077,6 +14079,8 @@ class _GgufMemoryBreakdown(NamedTuple):
     kv_checkpoint_bytes: int = 0
     lookup_table_bytes: int = 0
     lookup_table_on_disk: bool = False
+    per_gpu: Optional[list[GpuLayerEstimate]] = None
+    per_gpu_basis: Optional[GpuSplitBasis] = None
 
 
 def _gguf_offloaded_layer_fraction(
@@ -14420,6 +14424,191 @@ def _cached_inference_devices() -> Optional[list[tuple[int, int, int]]]:
         return None
 
 
+class _ManualLayerSplit(NamedTuple):
+    ids: list[int]
+    shares: list[float]
+    basis: GpuSplitBasis
+
+
+def _manual_estimate_split(
+    request: EstimateMemoryRequest, gguf_path: str
+) -> Optional[_ManualLayerSplit]:
+    """Reconstruct the fixed layer split from the picker and /api/system's last inventory."""
+    from core.inference.llama_cpp import (
+        _CPU_FFN_COUNT_FLAGS,
+        _OVERRIDE_TENSOR_FLAGS,
+        _extra_args_main_device,
+        _extra_args_set_any_flag,
+    )
+    from core.inference.llama_server_args import (
+        _as_emitted,
+        _effective_tensor_parallel,
+        parse_gpu_layers_override,
+        parse_split_mode_override,
+        parse_tensor_split_override,
+    )
+
+    if request.gpu_memory_mode != "manual" or request.n_cpu_moe:
+        return None
+    args = request.llama_extra_args
+    try:
+        layers = parse_gpu_layers_override(args)
+        if layers is None:
+            layers = request.gpu_layers
+        if layers is None or layers <= 0:
+            return None
+        if _effective_tensor_parallel(args, bool(request.tensor_parallel)):
+            return None
+        if (parse_split_mode_override(args) or "layer").strip().lower() != "layer":
+            return None
+        # /load promotes these extras into the manual fields before stripping them.
+        ratio = parse_tensor_split_override(args, reserialized = True) or request.tensor_split
+    except ValueError:
+        return None
+
+    # Manual strips -ncmoe/-cmoe (the field owns them), but these options
+    # reach the child and can override its tensor layout or device list.
+    if _extra_args_set_any_flag(
+        args,
+        _OVERRIDE_TENSOR_FLAGS
+        | _CPU_FFN_COUNT_FLAGS
+        | {
+            "--override-kv",
+            "--rpc",
+            "--moe-cache-mib",
+            "--ple",
+            "--shard",
+            "-mv",
+            "--model-vocoder",
+        },
+    ) or any(
+        os.environ.get(key)
+        for key in (
+            "LLAMA_ARG_OVERRIDE_TENSOR",
+            "LLAMA_ARG_N_CPU_FFN",
+            "LLAMA_ARG_RPC",
+            "LLAMA_ARG_MOE_CACHE_MIB",
+        )
+    ):
+        return None
+    if request.native_path_lease:
+        # A leased GGUF only authorizes regular sibling shards in its directory.
+        # Check them before letting GGUFReader open any additional headers.
+        from core.inference.offload_layout import split_shard_paths
+        try:
+            for shard in split_shard_paths(gguf_path) or ():
+                _validate_native_gguf_companion(shard, gguf_path, "GGUF shard")
+        except HTTPException:
+            return None
+    pin = request.selected_gpu_ids
+    # An explicit pin strips the child's --device and LLAMA_ARG_DEVICE; otherwise
+    # it can change membership AND order, even if it preserves the device count.
+    if not pin and (
+        _extra_args_main_device(args) is not None or os.environ.get("LLAMA_ARG_DEVICE")
+    ):
+        return None
+    main = sys.modules.get("main")
+    cached = getattr(main, "_system_gpu_cache", None)
+    if not cached:
+        return None
+    sampled_at, (_, inventory) = cached
+    if not inventory or not inventory.get("available") or inventory.get("stale"):
+        return None
+    backend = inventory.get("backend")
+    if (
+        backend not in {"cuda", "rocm", "vulkan"}
+        # An unpinned ROCm child may drop GPUs unsupported by the installed llama.cpp build.
+        or (backend == "rocm" and not pin)
+        or not inventory.get("gguf_gpu_ids_supported")
+        or inventory.get("index_kind") not in {"physical", "vulkan", "cuda_device"}
+    ):
+        return None
+    devices = inventory.get("devices") or []
+    by_id = {d["index"]: d for d in devices if isinstance(d.get("index"), int)}
+    ids = list(pin or by_id)
+    if (
+        len(ids) < 2
+        or len(set(ids)) != len(ids)
+        or len(by_id) != len(devices)
+        or any(i not in by_id for i in ids)
+        or any(by_id[i].get("shared_memory") or by_id[i].get("unified_memory") for i in ids)
+    ):
+        return None
+    if ratio and len(ratio) == len(ids):
+        # Without a pin this count comes from torch at launch. A Vulkan inventory
+        # can have different devices, so its count cannot establish emission.
+        if not pin and backend == "vulkan":
+            return None
+        # An emitted ratio pins the child to the picker's order, including
+        # unpinned CUDA under a reordered parent mask (see _pin_visible_gpu_order_for_split).
+        rendered = [_as_emitted(v) for v in ratio]
+        try:
+            parse_tensor_split_override(["-ts", ",".join(str(v) for v in rendered)])
+        except ValueError:
+            return None
+        return _ManualLayerSplit(ids, rendered, "tensor_split")
+
+    if not pin:
+        # Without an emitted ratio the child keeps its inherited device order.
+        # For a numeric mask the picker can list physical PCI order instead.
+        if backend == "cuda" and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+            return None
+        ordinals = [d.get("visible_ordinal") for d in devices]
+        if set(ordinals) != set(range(len(ids))):
+            return None
+        ids = sorted(ids, key = lambda i: by_id[i]["visible_ordinal"])
+    if time.monotonic() - sampled_at >= getattr(main, "_SYSTEM_GPU_CACHE_TTL_SECONDS", 10.0):
+        return None
+    # llama.cpp weights the split by raw free bytes. Display headroom, total
+    # memory and rounded GiB can all put the boundary on a different block.
+    free = [by_id[i].get("vram_free_bytes") for i in ids]
+    if any(type(value) is not int or value < 0 for value in free) or not any(free):
+        return None
+    return _ManualLayerSplit(ids, free, "free_memory")
+
+
+@functools.lru_cache(maxsize = 16)
+def _estimate_layer_layout(gguf_path: str, shard_stats: tuple):
+    """The header-derived layout survives slider changes until any shard changes."""
+    from core.inference.offload_layout import layout_from_gguf
+    return layout_from_gguf(gguf_path, all_shards = True)
+
+
+def _estimate_gpu_layers(
+    gguf_path: str,
+    gpu_layers: int,
+    split: _ManualLayerSplit,
+    cache_bytes: Optional[int],
+    n_parallel: int,
+) -> Optional[list[GpuLayerEstimate]]:
+    from core.inference.offload_layout import split_shard_paths
+    from core.inference.offload_planner import estimate_layer_split
+
+    try:
+        paths = split_shard_paths(gguf_path) or [gguf_path]
+        stats = [os.stat(path) for path in paths]
+        layout = _estimate_layer_layout(gguf_path, tuple((s.st_size, s.st_mtime_ns) for s in stats))
+    except OSError:
+        return None
+    rows = estimate_layer_split(
+        layout, gpu_layers, split.shares, kv_bytes = cache_bytes, n_parallel = n_parallel
+    )
+    return [
+        GpuLayerEstimate(
+            gpu_id = gpu_id,
+            layer_count = row.layer_count,
+            output_layer = row.has_output_layer,
+            weights_bytes = row.weights_bytes,
+            cache_bytes = (
+                row.kv_bytes + row.recurrent_bytes
+                if row.kv_bytes is not None and row.recurrent_bytes is not None
+                else None
+            ),
+        )
+        for gpu_id, row in zip(split.ids, rows)
+    ] or None
+
+
 def _tensor_split_possible(requested_gpu_ids: Optional[list[int]]) -> bool:
     """Tensor split needs two usable GPUs, since load_model falls back to a layer split below that."""
     if requested_gpu_ids:
@@ -14678,6 +14867,7 @@ def _gguf_memory_breakdown(
     # A GPU pin owns placement: load_model strips device flags and env before launch.
     device_pin_governs: bool = False,
     selected_gpu_ids: Optional[list[int]] = None,
+    layer_split: Optional[_ManualLayerSplit] = None,
 ) -> Optional[_GgufMemoryBreakdown]:
     """None if nothing sizes. Files are cached; the KV and compute buffers are re-derived per call."""
     from core.inference.llama_server_args import (
@@ -15146,8 +15336,42 @@ def _gguf_memory_breakdown(
     kv_on_gpu = _kv_offload_from_args(llama_extra_args) and gpu_fraction > 0.0
     # Context checkpoints are host heap (--cache-ram); excluded from the GPU figure.
     gpu_kv_bytes = max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
-    # Cache follows its layer's device; scale linearly by offloaded fraction (exact at 0 and full).
-    gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
+    per_gpu = None
+    if (
+        layer_split
+        and gpu_layers is not None
+        and not tensor_parallel
+        and not (embedded_mtp or companion_bytes or host_drafter_bytes or drafter_kv_unsized)
+        and not (adapter_bytes or adapters_unsized or lookup_table_bytes or _lt_device_bytes)
+        and not getattr(probe, "is_diffusion", False)
+    ):
+        from core.inference.llama_cpp import (
+            _extra_args_n_parallel,
+            _kv_bytes_per_elem,
+            _planned_main_cache_types,
+        )
+
+        cache_bytes = None
+        if not kv_on_gpu:
+            cache_bytes = 0
+        elif runtime.kv_estimable:
+            # The aggregate budgets the wider type for K and V. A pass-through
+            # --parallel also supersedes the slot count used by the aggregate.
+            types = _planned_main_cache_types(cache_type_kv, extras)
+            slots = _extra_args_n_parallel(extras, {})
+            if len({_kv_bytes_per_elem(t) for t in types}) == 1 and slots in (
+                None,
+                runtime.n_parallel,
+            ):
+                cache_bytes = gpu_kv_bytes
+        per_gpu = _estimate_gpu_layers(
+            gguf_path, gpu_layers, layer_split, cache_bytes, runtime.n_parallel
+        )
+    if per_gpu and all(row.cache_bytes is not None for row in per_gpu):
+        # Each row already prices the exact suffix, output matrix and live cache.
+        gpu_bytes = sum(row.weights_bytes + row.cache_bytes for row in per_gpu)
+    else:
+        gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
     if gpu_fraction > 0.0:
         # Compute buffers land on the devices running layers.
         gpu_bytes += runtime.compute_bytes
@@ -15171,6 +15395,7 @@ def _gguf_memory_breakdown(
     ):
         # No GPU given or present: zero even for companions, which ignore --gpu-layers; a GPU pin overrides both readings.
         gpu_bytes = 0
+        per_gpu = None
         drafter_runtime_gpu_bytes = 0
     return _GgufMemoryBreakdown(
         weights_bytes = weights_bytes,
@@ -15193,6 +15418,8 @@ def _gguf_memory_breakdown(
         kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
         lookup_table_bytes = lookup_table_bytes,
         lookup_table_on_disk = lookup_table_on_disk,
+        per_gpu = per_gpu,
+        per_gpu_basis = layer_split.basis if per_gpu else None,
     )
 
 
@@ -21714,6 +21941,7 @@ async def estimate_memory(
             # A pin names the cards; the launch strips conflicting device flags.
             device_pin_governs = bool(request.selected_gpu_ids),
             selected_gpu_ids = pinned_gpu_ids,
+            layer_split = _manual_estimate_split(request, gguf_path),
         )
         breakdown = price(n_ctx = request.n_ctx or 0)
         if breakdown is None:

@@ -53,6 +53,8 @@ const props: Props = {
     gpuFloorBytes: null,
     floorCanOffload: false,
     gpuBytes: 4.75 * GIB,
+    perGpu: [],
+    perGpuBasis: null,
     kvEstimable: true,
     kvOnGpu: true,
     nCtx: 262144,
@@ -85,6 +87,62 @@ function render(overrides: Partial<Props> = {}): string {
 }
 
 const NBSP = " ";
+
+
+test("per-GPU subtotals follow load order and warn when one card overflows", () => {
+  const devices = [0, 1].map((index) => ({
+    index, name: index === 0 ? "Small" : "Large", indexKind: "physical" as const,
+    memoryFreeGb: index === 0 ? 0 : 18, memoryFreeKnown: true,
+    memoryTotalGb: index === 0 ? 16 : 24, sharedMemory: false,
+    diffusionPinnable: true, pinnable: true,
+  }));
+  const estimate = {
+    ...props.estimate!,
+    perGpu: [
+      { gpuId: 1, layerCount: 5, outputLayer: false, weightsBytes: 8 * GIB, cacheBytes: null },
+      { gpuId: 0, layerCount: 1, outputLayer: true, weightsBytes: 2 * GIB, cacheBytes: GIB },
+    ],
+  };
+  const placement = (overrides: Partial<Props> = {}) => render({
+    estimate, gpuDevices: devices, expanded: true, ...overrides,
+  }).replaceAll(NBSP, " ");
+  const html = placement();
+  assert.match(html, /6 repeating layers and the output layer on GPU/);
+  assert.doesNotMatch(html, /12 of 28 layers on GPU/);
+  const [rows, details] = html.split("<details");
+  assert.match(rows, /Weights \+ cache per GPU[\s\S]*GPU 1 · 24 GiB[\s\S]*≥ 8\.00 GiB[\s\S]*GPU 0 · 16 GiB[\s\S]*text-red-500[\s\S]*3\.00 GiB/);
+  assert.doesNotMatch(rows, /cache unknown|0\.00 GiB free/);
+  const summary = details.slice(0, details.indexOf("</summary>"));
+  assert.match(summary, /<summary\b[^>]*list-none[^>]*><span>Layer and memory details<\/span><svg\b[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(details.split(">")[0], /\bopen\b/);
+  assert.match(details, /GPU 1 · Large[\s\S]*5 repeating layers · 8\.00 GiB weights · cache unknown/);
+  assert.match(details, /GPU 0 · Small[\s\S]*1 repeating layer · output layer · 2\.00 GiB weights · 1\.00 GiB cache/);
+  assert.match(html, /GPU 0 needs more than its currently free VRAM/);
+  const reload = placement({ residentGpuIds: [0], reclaimableGpuBytes: 3 * GIB });
+  assert.doesNotMatch(reload, /GPU 0 needs more than its currently free VRAM|text-red-500/);
+  assert.match(reload, /0\.00 GiB free/);
+  assert.doesNotMatch(placement({ residentGpuIds: null }), /needs more than its currently free VRAM/);
+  assert.match(placement({ residentGpuIds: [1] }), /GPU 0 needs more than its currently free VRAM/);
+  assert.match(placement({ residentGpuIds: null, gpuDevices: devices.map((gpu) => ({ ...gpu, memoryTotalGb: 1 })) }), /GPU 1 needs more than its total VRAM/);
+  assert.match(html, /Compute buffers and other runtime allocations need additional memory/);
+  assert.doesNotMatch(html, /can change when a model unloads/);
+  assert.match(placement({ estimate: { ...estimate, perGpuBasis: "free_memory" } }), /can change when a model unloads/);
+  assert.doesNotMatch(placement({ stale: true }), /Weights \+ cache per GPU|GPU 0 · Small|needs more than/);
+  assert.doesNotMatch(placement({ gpuDevices: [] }), /needs more than|0.00 GiB free/);
+  const aggregatePressure = placement({ gpuDevices: [], freeGpuCapacityGb: 2 });
+  assert.match(aggregatePressure, /Little VRAM is free across the selected GPUs/);
+  assert.doesNotMatch(aggregatePressure, /Fits this GPU/);
+  assert.doesNotMatch(placement({ gpuDevices: devices.map((gpu) => ({ ...gpu, unifiedMemory: true })) }), /needs more than|GPU 0 · 16 GiB/);
+  assert.match(placement({ gpuDevices: devices.map((gpu) => ({ ...gpu, memoryTotalGb: 1 })) }), /GPU 1 needs more than its total VRAM/);
+});
+
+test("automatic multi-GPU placement explains when the split is decided", () => {
+  assert.match(render({ expanded: true, placementMode: "auto" }), /Per-GPU placement is determined at load time/);
+  assert.match(render({ expanded: true, placementMode: "manual" }), /Per-GPU placement is unavailable/);
+  assert.doesNotMatch(render({ expanded: true }), /Per-GPU placement/);
+  assert.match(render({ estimate: { ...props.estimate!, gpuLayers: 999 } }), /28 of 28 layers on GPU/);
+  assert.doesNotMatch(render({ estimate: { ...props.estimate!, gpuLayers: -1 } }), /of 28 layers on GPU/);
+});
 
 test("the title and figures occupy separate rows", () => {
   const html = render();

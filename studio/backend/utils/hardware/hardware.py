@@ -5217,6 +5217,8 @@ def _reconcile_cuda_integrated_memory(
             # A row torch does not enumerate, e.g. an NVIDIA NPU with no memory telemetry.
             continue
         total_gb = td["total_gb"]
+        # The framebuffer free counter covers only part of a unified pool.
+        dev.pop("vram_free_bytes", None)
         cli_total_gb = dev.get("vram_total_gb")
         cli_used_gb = dev.get("vram_used_gb")
         if not _integrated_total_is_understated(cli_total_gb, total_gb):
@@ -7284,6 +7286,7 @@ def _vulkan_inference_device(row: Dict[str, Any], apply_igpu_host_reserve_mib) -
         "memory_total_gb": round(budget_mib / 1024, 2),
         "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
         "vram_free_gb": round(free_mib / 1024, 2),
+        **({"vram_free_bytes": row["free_mib"] * 1024**2} if not shared_memory else {}),
         "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
         if used_mib is not None and total_mib > 0
         else None,
@@ -7378,7 +7381,15 @@ def _installed_llama_backend() -> Optional[str]:
 
 
 # Readings the utilization probes already return, passed through for the Live monitor's detailed view.
-LIVE_GPU_TELEMETRY_KEYS = ("gpu_utilization_pct", "temperature_c", "power_draw_w", "power_limit_w")
+LIVE_GPU_TELEMETRY_KEYS = (
+    "gpu_utilization_pct",
+    "temperature_c",
+    "power_draw_w",
+    "power_limit_w",
+    "vram_free_bytes",
+    "pcie_link_width",
+    "pcie_link_gen",
+)
 
 
 def _smi_inference_device(

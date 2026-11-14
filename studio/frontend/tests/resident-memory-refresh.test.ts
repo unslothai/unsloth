@@ -96,3 +96,100 @@ test("resident estimates wait for fresh probes and discard obsolete refreshes", 
   assert.equal(render(2048).stale, true);
   cleanup?.();
 });
+
+test("implicit layer placement tracks free memory and shares one probe across slider changes", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const refreshes: ((value: unknown) => void)[] = [];
+  let previous: unknown[] = [];
+  let cleanup: (() => void) | undefined;
+  let calls = 0;
+  const hook = loadWithStubs<typeof EstimateHook>(
+    new URL("../src/features/model-picker/hooks/use-memory-estimate.ts", import.meta.url),
+    {
+      react: {
+        useState: (state: unknown) => [state, () => {}],
+        useRef: (current: unknown) => ({ current }),
+        useEffect: (effect: () => () => void, deps: unknown[]) => {
+          if (deps.some((dep, i) => dep !== previous[i])) {
+            cleanup?.();
+            previous = deps;
+            cleanup = effect();
+          }
+        },
+      },
+      "../api/memory-estimate": { fetchMemoryEstimate: async () => { calls++; return {}; } },
+      "@/hooks/use-system": { fetchSystemInfo: (opts: { force: boolean; gpuMaxAgeMs: number }) => {
+        assert.ok(opts.force && opts.gpuMaxAgeMs < 10_000);
+        return new Promise((resolve) => refreshes.push(resolve));
+      } },
+    },
+    { relativePassthrough: true },
+  );
+  type Request = NonNullable<Parameters<typeof hook.useMemoryEstimate>[0]>;
+  const render = (free: number | null, request: Partial<Request> = {}, visible = [0, 1, 2]) => {
+    const gpuDevices = visible.map((index) => ({
+      index, name: `Card ${index}`, indexKind: "physical" as const, memoryTotalGb: 24,
+      memoryFreeKnown: index !== 0 || free !== null,
+      memoryFreeGb: index === 0 ? free ?? 0 : 10,
+      pinnable: true, diffusionPinnable: true, sharedMemory: false,
+    }));
+    hook.useMemoryEstimate({
+      modelPath: "model", gpuMemoryMode: "manual", gpuLayers: 10, selectedGpuIds: [1, 0], ...request,
+    }, { gpuDevices });
+    t.mock.timers.tick(250);
+  };
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  };
+  render(null);
+  render(0);
+  assert.equal(refreshes.length, 1);
+  assert.equal(calls, 0);
+  // A failed system probe still leaves the ordinary aggregate estimate available.
+  refreshes[0](null);
+  await settle();
+  assert.equal(calls, 1);
+  render(12);
+  await settle();
+  assert.equal(calls, 2);
+  render(12);
+  await settle();
+  assert.equal(calls, 2);
+  for (const fixed of [
+    { tensorSplit: [2, 1] },
+    { llamaExtraArgs: ["-ts", "2,1"] },
+    { selectedGpuIds: [1, 2] },
+    { gpuMemoryMode: "auto" },
+    { gpuLayers: null },
+  ]) {
+    render(12, fixed);
+    await settle();
+    const prior: number = calls;
+    render(8, fixed);
+    await settle();
+    assert.equal(calls, prior);
+  }
+  assert.equal(refreshes.length, 1);
+  // A saved ratio can reach the estimator before the first system inventory.
+  for (const fixed of [{ tensorSplit: [2, 1] }, { llamaExtraArgs: ["--tensor-split=2/1"] }]) {
+    render(8, fixed, []);
+    await settle();
+    const beforeDiscovery: number = calls;
+    render(8, fixed);
+    await settle();
+    assert.equal(calls, beforeDiscovery + 1);
+    render(6, fixed);
+    await settle();
+    assert.equal(calls, beforeDiscovery + 1);
+  }
+  assert.equal(refreshes.length, 1);
+  // A ratio saved for three cards falls back to free memory when two are selected.
+  const mismatch = { tensorSplit: [2, 1], llamaExtraArgs: ["-ts", "2/1", "--tensor-split=2/1/1"] };
+  render(12, mismatch);
+  await settle();
+  const beforeMemoryChange: number = calls;
+  render(1, mismatch);
+  await settle();
+  assert.equal(calls, beforeMemoryChange + 1);
+  cleanup?.();
+});

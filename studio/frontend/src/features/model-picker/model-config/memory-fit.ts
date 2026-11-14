@@ -53,6 +53,7 @@ export interface MemoryAdvisory {
 }
 
 export interface MemoryFitEstimate {
+  perGpu?: readonly { gpuId: number }[];
   gpuBytes: number;
   totalBytes: number;
   /** False when the GGUF header could not size the cache, so the figures are a floor. */
@@ -484,8 +485,10 @@ export function resolveMemoryAdvisory(
     return {
       tone: "muted",
       text: hasContextFloor(estimate)
-        ? `Fits this GPU, but little VRAM is free right now, so Auto may pick a shorter context${estimate.floorCanOffload ? " or run some layers on the CPU" : ""}. Free memory first.`
-        : "Fits this GPU, but little VRAM is free right now. Free memory or try Auto context.",
+        ? `${estimate.perGpu?.length ? "Little" : "Fits this GPU, but little"} VRAM is free right now, so Auto may pick a shorter context${estimate.floorCanOffload ? " or run some layers on the CPU" : ""}. Free memory first.`
+        : estimate.perGpu?.length
+          ? "Little VRAM is free across the selected GPUs. Free memory or try a shorter context."
+          : "Fits this GPU, but little VRAM is free right now. Free memory or try Auto context.",
     };
   }
   if (verdicts.contextShrinks) {
