@@ -132,30 +132,36 @@ def prefetch_for_pick(
     allow_network: bool = True,
 ) -> None:
     """Reads a picked single file's header off the Hub (range read, nothing cached) when name, path
-    and content gave no verdict; allow_network=False does nothing; hf_token passes through, False
+    and content gave no verdict, or an uncached GGUF of a whole-pipeline family; allow_network=False does nothing; hf_token passes through, False
     stays anonymous; fails open."""
-    if (
-        not allow_network
-        or family_override
-        or not is_hub_id(repo_id)
-        or not _is_single_file(filename)
-    ):
+    if not allow_network or not is_hub_id(repo_id) or not _is_single_file(filename):
         return
     repo_id = str(repo_id).strip()
     filename = str(filename)
     try:
         from .diffusion_compat import _local_gguf_path
-        from .diffusion_families import _family_from_hub_evidence, detect_family_for_pick
+        from .diffusion_families import (
+            _family_from_hub_evidence,
+            detect_family,
+            detect_family_for_pick,
+        )
 
         is_gguf = filename.lower().endswith(".gguf")
-        fam = detect_family_for_pick(repo_id, filename, None)
-        # Re-read a Hub-evidence answer, and an uncached whole-pipeline-family GGUF: it loads only if its header is whole.
-        if (
-            fam is not None
-            and _family_from_hub_evidence(repo_id, filename) is None
-            and not (
-                is_gguf and fam.single_file_is_pipeline and not _local_gguf_path(repo_id, filename)
-            )
+        fam = (
+            detect_family("", override = family_override)
+            if family_override
+            else detect_family_for_pick(repo_id, filename, None)
+        )
+        # An uncached whole-pipeline-family GGUF loads only if its header is whole, even under an override.
+        unread_whole_gguf = (
+            is_gguf
+            and fam is not None
+            and fam.single_file_is_pipeline
+            and not _local_gguf_path(repo_id, filename)
+        )
+        if not unread_whole_gguf and (
+            family_override
+            or (fam is not None and _family_from_hub_evidence(repo_id, filename) is None)
         ):
             return
         if is_gguf:

@@ -520,3 +520,17 @@ def test_lora_on_a_whole_pipeline_gguf_is_refused_before_the_load(tmp_path):
         )
     # Nothing started: the resident model was never evicted.
     assert backend._loading is None
+
+
+def test_an_sdxl_override_still_reads_an_uncached_gguf_header(hub_header):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
+
+    hub_header(_SHAPES)
+    repo, name = "someone/mystery-xl-GGUF", "mystery-Q4_K_S.gguf"
+    prefetch_for_pick(repo, name, "sdxl", None)
+    assert [r[:2] for r in hub_header.reads] == [(repo, name)]
+    fam = get_diffusion_backend().validate_load_request(
+        repo, gguf_filename = name, model_kind = "gguf", family_override = "sdxl"
+    )
+    assert fam.name == "sdxl"
