@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { joinWavBase64, pcmWavBase64 } from "../src/features/chat/utils/wav-chunks.ts";
@@ -159,4 +160,10 @@ test("the speaker resets only when crossing to or from the chat model's voice", 
   assert.equal(speakerCarriesOver(VOICE_CHAT_MODEL_VOICE, "audiocpp-kokoro"), false);
   assert.equal(speakerCarriesOver("audiocpp-kokoro", "audiocpp-other"), true);
   assert.equal(speakerCarriesOver(VOICE_CHAT_MODEL_VOICE, VOICE_CHAT_MODEL_VOICE), true);
+});
+
+test("the reply's player WAV is rejoined at doubling chunk counts and once the stream ends", () => {
+  const adapter = readFileSync(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url), "utf8");
+  assert.match(adapter, /\(\(spokenCount & \(spokenCount - 1\)\) === 0 \|\|\s*Boolean\(chunk\.choices\?\.\[0\]\?\.finish_reason\)\) &&\s*joinSpokenPart\(\)/);
+  assert.ok((adapter.match(/joinSpokenPart\(\);/g) ?? []).length >= 2);
 });

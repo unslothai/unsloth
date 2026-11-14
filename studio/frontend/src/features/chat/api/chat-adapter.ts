@@ -6257,6 +6257,16 @@ export function createOpenAIStreamAdapter(
       // A spoken reply's audio, kept apart from the text so the player renders on its own.
       let spokenReplyPart: { type: "text"; text: string } | null = null;
       const spokenAudioChunks: string[] = [];
+      let spokenJoinedCount = 0;
+      const joinSpokenPart = () => {
+        if (spokenAudioChunks.length === spokenJoinedCount) return false;
+        spokenJoinedCount = spokenAudioChunks.length;
+        spokenReplyPart = {
+          type: "text",
+          text: `<audio-player src="data:audio/wav;base64,${joinWavBase64(spokenAudioChunks)}" />`,
+        };
+        return true;
+      };
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -8046,10 +8056,14 @@ export function createOpenAIStreamAdapter(
               if (typeof spokenAudio === "string" && spokenAudio) {
                 spokenAudioChunks.push(spokenAudio);
                 publishVoiceSpokenAudio(resolvedThreadId ?? null, spokenAudio);
-                spokenReplyPart = {
-                  type: "text",
-                  text: `<audio-player src="data:audio/wav;base64,${joinWavBase64(spokenAudioChunks)}" />`,
-                };
+              }
+              // Rejoined at doubling counts and after the stream: joining on every chunk is quadratic.
+              const spokenCount = spokenAudioChunks.length;
+              if (
+                ((spokenCount & (spokenCount - 1)) === 0 ||
+                  Boolean(chunk.choices?.[0]?.finish_reason)) &&
+                joinSpokenPart()
+              ) {
                 replayStateChanged = true;
               }
               let geminiReplayStateChanged = false;
@@ -8721,6 +8735,7 @@ export function createOpenAIStreamAdapter(
             throw streamError;
           }
         }
+        joinSpokenPart();
         // Deep Research card replaces this reply, unless the user already pressed Stop.
         if (deepResearchHandoff.question !== null && !runSignal.aborted) {
           try {
@@ -9121,6 +9136,7 @@ export function createOpenAIStreamAdapter(
         // An explicit Stop is an abort too, but must persist its latched "cancelled" reason via the replacement yield below.
         if (!abortSignal.aborted || generationStopRequested) {
           closeReasoningContent();
+          joinSpokenPart();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
           const partialTiming = withPriorTiming(
