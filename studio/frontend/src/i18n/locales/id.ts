@@ -147,6 +147,9 @@ export const id = {
       scriptsDescription:
         "Pilih apakah model dapat menjalankan skrip di halaman. Anda melihat setiap skrip sebelum dijalankan",
       scriptsAllowDescription: "Model menjalankan skrip di halaman mana pun tanpa bertanya. Skrip dapat membaca dan mengubah apa pun di halaman",
+      scriptsConfirmTitle: "Izinkan semua skrip?",
+      scriptsConfirmDescription: "Model akan menjalankan skrip di setiap halaman tanpa menunjukkannya kepada Anda terlebih dahulu. Skrip dapat membaca dan mengubah apa pun di halaman, termasuk halaman tempat Anda masuk. Aktifkan hanya jika Anda memercayai model yang Anda gunakan.",
+      scriptsConfirmAction: "Izinkan semua skrip",
       cursor: "Tampilkan kursor",
       cursorDescription:
         "Tampilkan penunjuk di tempat model mengklik, mengetik, dan menyeret di halaman",

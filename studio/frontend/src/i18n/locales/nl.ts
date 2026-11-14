@@ -147,6 +147,9 @@ export const nl = {
       scriptsDescription:
         "Kies of modellen scripts op pagina's mogen uitvoeren. Je ziet elk script voordat het wordt uitgevoerd",
       scriptsAllowDescription: "Modellen voeren zonder te vragen scripts uit op elke pagina. Een script kan alles op de pagina lezen en wijzigen",
+      scriptsConfirmTitle: "Alle scripts toestaan?",
+      scriptsConfirmDescription: "Modellen voeren scripts uit op elke pagina zonder ze eerst aan je te tonen. Een script kan alles op de pagina lezen en wijzigen, ook op pagina's waar je bent ingelogd. Zet dit alleen aan als je de modellen die je gebruikt vertrouwt.",
+      scriptsConfirmAction: "Alle scripts toestaan",
       cursor: "Cursor weergeven",
       cursorDescription:
         "Toon een aanwijzer waar modellen op de pagina klikken, typen en slepen",

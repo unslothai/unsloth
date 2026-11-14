@@ -148,6 +148,9 @@ export const es419 = {
       scriptsDescription:
         "Elige si los modelos pueden ejecutar scripts en las páginas. Verás cada script antes de que se ejecute",
       scriptsAllowDescription: "Los modelos ejecutan scripts en cualquier página sin preguntar. Un script puede leer y cambiar cualquier cosa de la página",
+      scriptsConfirmTitle: "¿Permitir todos los scripts?",
+      scriptsConfirmDescription: "Los modelos ejecutarán scripts en cualquier página sin mostrártelos antes. Un script puede leer y cambiar cualquier cosa en la página, incluidas las páginas en las que iniciaste sesión. Actívalo solo si confías en los modelos que usas.",
+      scriptsConfirmAction: "Permitir todos los scripts",
       cursor: "Mostrar cursor",
       cursorDescription:
         "Muestra un puntero donde los modelos hacen clic, escriben y arrastran en la página",

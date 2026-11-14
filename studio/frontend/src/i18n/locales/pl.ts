@@ -147,6 +147,9 @@ export const pl = {
       scriptsDescription:
         "Określ, czy modele mogą uruchamiać skrypty na stronach. Każdy skrypt zobaczysz przed jego uruchomieniem",
       scriptsAllowDescription: "Modele uruchamiają skrypty na dowolnej stronie bez pytania. Skrypt może odczytać i zmienić wszystko na stronie",
+      scriptsConfirmTitle: "Zezwolić na wszystkie skrypty?",
+      scriptsConfirmDescription: "Modele będą uruchamiać skrypty na każdej stronie bez wcześniejszego pokazywania ich Tobie. Skrypt może odczytać i zmienić wszystko na stronie, w tym na stronach, na których jesteś zalogowany. Włącz to tylko wtedy, gdy ufasz używanym modelom.",
+      scriptsConfirmAction: "Zezwól na wszystkie skrypty",
       cursor: "Pokaż kursor",
       cursorDescription:
         "Pokazuj wskaźnik w miejscach, w których modele klikają, piszą i przeciągają na stronie",

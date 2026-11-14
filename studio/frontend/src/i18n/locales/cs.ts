@@ -147,6 +147,9 @@ export const cs = {
       scriptsDescription:
         "Zvolte, zda mohou modely na stránkách spouštět skripty. Každý skript uvidíte před jeho spuštěním",
       scriptsAllowDescription: "Modely spouštějí skripty na libovolné stránce bez ptaní. Skript může na stránce cokoli číst i měnit",
+      scriptsConfirmTitle: "Povolit všechny skripty?",
+      scriptsConfirmDescription: "Modely budou spouštět skripty na každé stránce, aniž by vám je nejdřív ukázaly. Skript může číst a měnit cokoli na stránce, včetně stránek, kde jste přihlášeni. Zapněte to jen tehdy, pokud modelům, které používáte, důvěřujete.",
+      scriptsConfirmAction: "Povolit všechny skripty",
       cursor: "Zobrazovat kurzor",
       cursorDescription:
         "Zobrazovat ukazatel v místech, kde modely na stránce klikají, píší a přetahují",

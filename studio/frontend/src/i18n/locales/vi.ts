@@ -147,6 +147,9 @@ export const vi = {
       scriptsDescription:
         "Chọn xem mô hình có được chạy tập lệnh trên trang hay không. Bạn sẽ thấy từng tập lệnh trước khi nó chạy",
       scriptsAllowDescription: "Mô hình chạy tập lệnh trên mọi trang mà không hỏi. Tập lệnh có thể đọc và thay đổi mọi thứ trên trang",
+      scriptsConfirmTitle: "Cho phép tất cả tập lệnh?",
+      scriptsConfirmDescription: "Các mô hình sẽ chạy tập lệnh trên mọi trang mà không cho bạn xem trước. Tập lệnh có thể đọc và thay đổi mọi thứ trên trang, kể cả những trang bạn đã đăng nhập. Chỉ bật tùy chọn này nếu bạn tin tưởng các mô hình mình sử dụng.",
+      scriptsConfirmAction: "Cho phép tất cả tập lệnh",
       cursor: "Hiển thị con trỏ",
       cursorDescription:
         "Hiển thị con trỏ tại nơi mô hình nhấp, nhập và kéo trên trang",
