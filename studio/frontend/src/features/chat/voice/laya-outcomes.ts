@@ -35,9 +35,10 @@ export function sharesMostWords(earlier: string, later: string): boolean {
   return hit / a.size >= 0.6;
 }
 
-/** The same request again: "a poem about cats instead" shares most of "a poem about dogs" but is a correction. */
+/** The same request again, adding no word of its own: "five minutes" for "ten minutes" is a correction. */
 export function isSameAsk(earlier: string, later: string): boolean {
-  return sharesMostWords(earlier, later) && sharesMostWords(later, earlier);
+  const before = contentWords(earlier);
+  return sharesMostWords(earlier, later) && [...contentWords(later)].every((w) => before.has(w));
 }
 
 const HOLD_ON =
