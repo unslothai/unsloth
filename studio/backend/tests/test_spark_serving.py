@@ -4600,6 +4600,43 @@ def test_a_rotated_key_keeps_the_replica_out_of_rotation_until_it_is_resynced(
     run(scenario())
 
 
+def test_a_regenerated_chat_template_is_copied_before_the_replica_restarts(monkeypatch, tmp_path):
+    """A respawn writes a new chat template file; the replica must get it before it is restarted."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ss.tempfile, "gettempdir", lambda: str(tmp_path))
+    old_t, new_t = (
+        tmp_path / "unsloth_chat_template_old.jinja",
+        tmp_path / "unsloth_chat_template_new.jinja",
+    )
+    old_t.write_text("old"), new_t.write_text("new")
+    launch = lambda t: [
+        "/l/llama-server",
+        "-m",
+        "/m.gguf",
+        "--port",
+        "9000",
+        "--chat-template-file",
+        str(t),
+    ]
+    state, events = _replica_state(
+        ss.replica_argv(
+            launch(old_t), binary = "/peer/llama-server", host = "192.168.200.13", port = 8081
+        )
+    )
+    copies = []
+
+    async def copy(peer_ip, files):
+        copies.append(list(files))
+        return "ssh refused" if len(copies) == 1 else None
+
+    monkeypatch.setattr(ss, "replicate_generated_files", copy)
+    assert not run(state._sync_replica(_primary(launch(new_t))))
+    assert events == []
+    assert run(state._sync_replica(_primary(launch(new_t))))
+    assert copies[-1] == [str(new_t)]
+    assert events[0] == "stop" and str(new_t) in events[1][1]
+
+
 def test_the_replica_drops_the_flags_the_mtp_fallback_dropped(monkeypatch, tmp_path):
     """After the MTP crash fallback the replica must drop the speculative flags too."""
     monkeypatch.chdir(tmp_path)
