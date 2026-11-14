@@ -144,15 +144,21 @@ def prefetch_for_pick(
     repo_id = str(repo_id).strip()
     filename = str(filename)
     try:
+        from .diffusion_compat import _local_gguf_path
         from .diffusion_families import _family_from_hub_evidence, detect_family_for_pick
 
-        # Skip only when the name, a local path or the content answered; an answer from Hub evidence is re-read.
+        is_gguf = filename.lower().endswith(".gguf")
+        fam = detect_family_for_pick(repo_id, filename, None)
+        # Re-read a Hub-evidence answer, and an uncached whole-pipeline-family GGUF: it loads only if its header is whole.
         if (
-            detect_family_for_pick(repo_id, filename, None) is not None
+            fam is not None
             and _family_from_hub_evidence(repo_id, filename) is None
+            and not (
+                is_gguf and fam.single_file_is_pipeline and not _local_gguf_path(repo_id, filename)
+            )
         ):
             return
-        if filename.lower().endswith(".gguf"):
+        if is_gguf:
             family = read_hub_gguf_family(repo_id, filename, hf_token)
         else:
             family = read_hub_checkpoint_family(repo_id, filename, hf_token)

@@ -273,9 +273,31 @@ def test_uncached_old_sdxl_convert_is_refused_as_before(hub_header):
     hub_header(_LEGACY)
     repo, name = "OlegSkutte/sdxl-turbo-GGUF", "sd_xl_turbo_1.0.q8_0.gguf"
     prefetch_for_pick(repo, name, None, None)
-    assert hub_header.reads == []
+    assert [r[:2] for r in hub_header.reads] == [(repo, name)]
     with pytest.raises(ValueError, match = "also carries the text encoders and VAE"):
         get_diffusion_backend().validate_load_request(repo, gguf_filename = name, model_kind = "gguf")
+
+
+def test_uncached_sdxl_named_whole_pipeline_gguf_is_read_from_its_header(hub_header):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
+
+    hub_header(_SHAPES)
+    repo, name = "kostakoff/stable-diffusion-xl-base-1.0-GGUF", "sd_xl_base_1.0_0_Q4_K.gguf"
+    prefetch_for_pick(repo, name, None, None)
+    assert [r[:2] for r in hub_header.reads] == [(repo, name)]
+    fam = get_diffusion_backend().validate_load_request(repo, gguf_filename = name, model_kind = "gguf")
+    assert fam.name == "sdxl" and fam.single_file_is_pipeline
+
+
+def test_a_cached_sdxl_named_gguf_is_not_read_again(hub_header, hub_cache):
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
+
+    repo, name = "kostakoff/stable-diffusion-xl-base-1.0-GGUF", "sd_xl_base_1.0_0_Q4_K.gguf"
+    hub_cache(repo, name, _SHAPES)
+    hub_header(_SHAPES)
+    prefetch_for_pick(repo, name, None, None)
+    assert hub_header.reads == []
 
 
 def test_the_load_branch_routes_whole_pipeline_ggufs_to_the_bundle_loader():
