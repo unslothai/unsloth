@@ -347,6 +347,42 @@ _PIP_LOCATION_FLAGS = (
 )
 
 
+# pip options that take a value (pip 26 install + general options, plus older pip's): their operand is no option.
+_PIP_VALUE_OPTIONS = (
+    "--abi --all-releases --build --build-constraint --build-option --cache-dir --cert --client-cert "
+    "--config-settings --constraint --default-timeout --download --editable --exists-action "
+    "--extra-index-url --find-links --global-option --group --home --implementation --index-url "
+    "--install-option --keyring-provider --local-log --log --log-file --no-binary --only-binary "
+    "--only-final --platform --prefix --progress-bar --proxy --pypi-url --python --python-version "
+    "--refresh-package --report --requirement --requirements-from-script --resume-retries --retries "
+    "--root --root-user-action --source --source-dir --source-directory --src --target --timeout "
+    "--trusted-host --upgrade-strategy --uploaded-prior-to --use-deprecated --use-feature"
+).split()
+_PIP_VALUE_SHORTS = "Ccefirt"
+
+
+def _pip_options():
+    # The option words of pip's command line, without the operands of options that take one (-C --prefix=x).
+    found, args, i = [], sys.argv[1:], 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg == "--":
+            break
+        if arg.startswith("--"):
+            found.append(arg)
+            name = arg.split("=", 1)[0]
+            if "=" not in arg and any(o.startswith(name) for o in _PIP_VALUE_OPTIONS):
+                i += 1
+        elif arg.startswith("-") and len(arg) > 1:
+            found.append(arg)
+            for j, flag in enumerate(arg[1:], 1):
+                if flag in _PIP_VALUE_SHORTS:
+                    i += j == len(arg) - 1  # -C VALUE; -CVALUE carries it
+                    break
+    return found
+
+
 def _chooses_location(arg):
     name = arg.split("=", 1)[0]
     if name.startswith("--"):
@@ -364,7 +400,7 @@ def _chooses_location(arg):
 def _cli_user():
     # --user / --no-user share one option, the last one given wins; None when neither is on the command line.
     chosen = None
-    for arg in sys.argv[1:]:
+    for arg in _pip_options():
         name = arg.split("=", 1)[0]
         if len(name) >= 6 and "--user".startswith(name):
             chosen = True
@@ -522,8 +558,9 @@ def _route_pip():
             is_pip = _is_pip_launch()
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             cli_user = _cli_user()
-            placed = cli_user is True or any(_chooses_location(a) for a in sys.argv[1:])
-            isolated = "--isolated" in sys.argv
+            options = _pip_options()
+            placed = cli_user is True or any(_chooses_location(a) for a in options)
+            isolated = "--isolated" in options
             if not isolated:
                 # --isolated makes pip ignore these, so then they choose nothing.
                 truthy = ("y", "yes", "t", "true", "on", "1")
@@ -537,7 +574,7 @@ def _route_pip():
             if is_pip and not placed:
                 os.environ["PIP_PREFIX"] = prefix
                 os.environ["PIP_IGNORE_INSTALLED"] = "1"
-                if "--isolated" in sys.argv and "install" in sys.argv:
+                if isolated and "install" in sys.argv:
                     # --isolated ignores PIP_* variables: pass the same options on the command line.
                     at = sys.argv.index("install") + 1
                     sys.argv[at:at] = ["--prefix", prefix, "--ignore-installed"]
@@ -1138,9 +1175,11 @@ def _after_pip(snapshot):
                 os.path.join(os.environ["PIP_PREFIX"], _INCOMPLETE), "a", encoding = "utf-8"
             ) as f:
                 f.writelines(lines)
+        _failed_installs().update((os.path.abspath(e), n, str(v)) for (e, n), v in failed.items())
         if _failed_wheels:
-            # Wheels that finished before the failing one: a same-version reinstall still drops its old files.
+            # Wheels that finished before the failing one are retired / pruned as on success.
             _retire_rewritten(snapshot, set(failed))
+            _prune_stale_dist_info()
     except Exception:  # noqa: BLE001
         pass
 

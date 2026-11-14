@@ -791,6 +791,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "config_user_no_user",
         "empty_env_target",
         "no_user_abbrev",
+        "option_operand",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -838,6 +839,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # --no-user on the command line cancels PIP_USER.
         "no_user": f"PIP_USER=1 {_PIP} --no-user {wheel} && {show}",
         "no_user_abbrev": f"PIP_USER=1 {_PIP} --no-u {wheel} && {show}",
+        # --prefix=... here is the build-backend setting -C carries, not pip's own --prefix.
+        "option_operand": f"{_PIP} -C --prefix=buildtmp {wheel} && {show}",
         # [install] overrides [global], as pip resolves it: user ends up off.
         "config_user_overridden": "printf '[global]\\nuser = true\\n[install]\\nuser = false\\n' > pip.ini && "
         f"PIP_CONFIG_FILE=pip.ini {_PIP} {wheel} && {show}",
@@ -893,6 +896,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "config_user_overridden": packages,
         "no_user": packages,
         "no_user_abbrev": packages,
+        "option_operand": packages,
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1499,6 +1503,7 @@ def test_a_failed_upgrade_keeps_the_old_versions_files(monkeypatch, tmp_path):
     assert "rc=0" not in out, out
     assert list(packages.rglob(f"{name}/old.py")), out
     assert not list(packages.rglob(f"{name}_gone.py")), out
+    assert not list(packages.rglob(f"{name}_ok-1.0.dist-info")), out
     # Nor does a later process take the half-written 2.0 for a finished replacement.
     later = tools._bash_exec(
         f"python -m pip --version; python -c \"import importlib.metadata as m; print('ok', m.version('{name}_ok'))\"",
