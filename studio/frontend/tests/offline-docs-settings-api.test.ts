@@ -6,14 +6,7 @@ import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-type OfflineDocsApi = {
-  loadOfflineDocsSettings: () => Promise<Record<string, unknown>>;
-  updateOfflineDocsSettings: (update: {
-    path?: string | null;
-    autoUpdate?: boolean;
-  }) => Promise<Record<string, unknown>>;
-  refreshOfflineDocs: () => Promise<Record<string, unknown>>;
-};
+type Api = Record<string, (arg?: object) => Promise<Record<string, unknown>>>;
 
 const API_STATUS = {
   path: "/home/user/Documents/Unsloth",
@@ -26,14 +19,13 @@ const API_STATUS = {
   refreshing: false,
 };
 
-function loadApi(
-  respond: (url: string, init?: RequestInit) => Response,
-): OfflineDocsApi {
-  return loadWithStubs<OfflineDocsApi>(
+function loadApi(respond: (url: string, init?: RequestInit) => Response): Api {
+  return loadWithStubs<Api>(
     new URL("../src/features/settings/api/offline-docs.ts", import.meta.url),
     {
       "@/features/auth": {
-        authFetch: async (url: string, init?: RequestInit) => respond(url, init),
+        authFetch: async (url: string, init?: RequestInit) =>
+          respond(url, init),
       },
       "@/lib/format-fastapi-error": {
         readFastApiError: async (_response: Response, fallback: string) =>
@@ -83,6 +75,9 @@ test("a refresh posts to the refresh route and surfaces failures", async () => {
     return new Response(null, { status: 502 });
   });
 
-  await assert.rejects(api.refreshOfflineDocs(), /Failed to download the Unsloth docs/);
+  await assert.rejects(
+    api.refreshOfflineDocs(),
+    /Failed to download the Unsloth docs/,
+  );
   assert.deepEqual(calls, ["POST /api/settings/offline-docs/refresh"]);
 });

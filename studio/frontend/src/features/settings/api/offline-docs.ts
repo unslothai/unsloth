@@ -15,78 +15,41 @@ export interface OfflineDocsSettings {
   refreshing: boolean;
 }
 
-interface ApiOfflineDocsSettings {
-  path: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
-  auto_update: boolean;
-  file: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
-  updated_at: string | null;
-  release: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
-  current_release: string;
-  error: string | null;
-  refreshing: boolean;
-}
-
-function fromApi(value: ApiOfflineDocsSettings): OfflineDocsSettings {
+async function call(
+  path: string,
+  fallback: string,
+  init?: RequestInit,
+): Promise<OfflineDocsSettings> {
+  const response = await authFetch(`/api/settings/offline-docs${path}`, init);
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response, fallback));
+  }
+  const v = await response.json();
   return {
-    path: value.path,
-    autoUpdate: value.auto_update,
-    file: value.file,
-    updatedAt: value.updated_at,
-    release: value.release,
-    currentRelease: value.current_release,
-    error: value.error,
-    refreshing: value.refreshing,
+    path: v.path,
+    autoUpdate: v.auto_update,
+    file: v.file,
+    updatedAt: v.updated_at,
+    release: v.release,
+    currentRelease: v.current_release,
+    error: v.error,
+    refreshing: v.refreshing,
   };
 }
 
-export async function loadOfflineDocsSettings(): Promise<OfflineDocsSettings> {
-  const response = await authFetch("/api/settings/offline-docs");
-  if (!response.ok) {
-    throw new Error(
-      await readFastApiError(
-        response,
-        "Failed to load the offline docs settings",
-      ),
-    );
-  }
-  return fromApi(await response.json());
-}
+export const loadOfflineDocsSettings = () =>
+  call("", "Failed to load the offline docs settings");
 
 /** Omitted fields stay as they are; `path: null` forgets the folder. */
-export async function updateOfflineDocsSettings(update: {
+export const updateOfflineDocsSettings = (update: {
   path?: string | null;
   autoUpdate?: boolean;
-}): Promise<OfflineDocsSettings> {
-  const body: Record<string, unknown> = {};
-  if (update.path !== undefined) body.path = update.path;
-  if (update.autoUpdate !== undefined) body.auto_update = update.autoUpdate;
-  const response = await authFetch("/api/settings/offline-docs", {
+}) =>
+  call("", "Failed to update the offline docs settings", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ path: update.path, auto_update: update.autoUpdate }),
   });
-  if (!response.ok) {
-    throw new Error(
-      await readFastApiError(
-        response,
-        "Failed to update the offline docs settings",
-      ),
-    );
-  }
-  return fromApi(await response.json());
-}
 
-export async function refreshOfflineDocs(): Promise<OfflineDocsSettings> {
-  const response = await authFetch("/api/settings/offline-docs/refresh", {
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw new Error(
-      await readFastApiError(response, "Failed to download the Unsloth docs"),
-    );
-  }
-  return fromApi(await response.json());
-}
+export const refreshOfflineDocs = () =>
+  call("/refresh", "Failed to download the Unsloth docs", { method: "POST" });
