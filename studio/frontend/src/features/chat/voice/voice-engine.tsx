@@ -449,6 +449,12 @@ export const VoiceEngine: FC = () => {
         clearTimeout(voiceCoalesceTimerRef.current);
         voiceCoalesceTimerRef.current = null;
       }
+      if (streamPollRef.current) {
+        clearInterval(streamPollRef.current);
+        streamPollRef.current = null;
+      }
+      // stop() drops the player's stream; a run ending after re-activation must speak, not close a dead stream.
+      streamBegunRef.current = false;
       clearHeldTurn();
       stop();
       const composer = auiRef.current.composer();

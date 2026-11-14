@@ -77,3 +77,9 @@ test("a short barge-in (\"stop\") that passed its probe is transcribed, not drop
 test("speech begun just before the reply ended keeps its opening frames", () => {
   assert.match(loop, /for \(const frame of preroll\.splice\(0\)\) \{[\s\S]{0,300}chunks\.push\(frame\);\s*chunkVoiced\.push\(loud\);/);
 });
+
+test("turning voice off forgets the open reply stream", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const off = engine.slice(engine.indexOf('if (next === "off") {'));
+  assert.match(off.slice(0, 600), /streamBegunRef\.current = false;[\s\S]*stop\(\);/);
+});
