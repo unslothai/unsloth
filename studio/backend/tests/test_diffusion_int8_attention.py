@@ -421,13 +421,15 @@ ORDERINGS = ("qkw", "pvw", "spread")
 
 def test_the_orderings_reach_the_kernel_as_defines():
     """qkw / pvw / spread are per-card config keys that become compile-time defines; a config without them
-    compiles the kernel as it was."""
-    config = dict(I.kernel_config((12, 0), 128), qkw = 1, pvw = 8, spread = 5)
-    defines = I.kernel_defines(128, config)
-    assert (defines["QKW"], defines["PVW"], defines["SPREAD"]) == (1, 8, 5)
-    assert not {name.upper() for name in ORDERINGS} & set(
-        I.kernel_defines(128, I.kernel_config((8, 0), 128))
-    )
+    compiles the kernel as it was. Head dim 128 on sm120 is the config that sets them."""
+    tuned = {((12, 0), 128): {"QKW": 1, "PVW": 8, "SPREAD": 5}}
+    for capability in sorted(SHARED_LIMIT):
+        for head_dim in I.HEAD_DIMS:
+            defines = I.kernel_defines(head_dim, I.kernel_config(capability, head_dim))
+            got = {
+                name.upper(): defines[name.upper()] for name in ORDERINGS if name.upper() in defines
+            }
+            assert got == tuned.get((capability, head_dim), {}), (capability, head_dim)
 
 
 @pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")

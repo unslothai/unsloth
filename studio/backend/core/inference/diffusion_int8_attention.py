@@ -72,7 +72,17 @@ KERNEL_CONFIGS: dict = {
         64: {"bn": 128, "wpc": 8, "nq": 2, "stages": 2, "qreg": 1},
     },
     (12, 0): {
-        128: {"bn": 128, "wpc": 12, "nq": 1, "stages": 2, "max_registers": 168, "flush_tail": 1},
+        128: {
+            "bn": 128,
+            "wpc": 12,
+            "nq": 1,
+            "stages": 2,
+            "max_registers": 168,
+            "flush_tail": 1,
+            "qkw": 1,
+            "pvw": 8,
+            "spread": 5,
+        },
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
 }
