@@ -448,10 +448,6 @@
 	/* (button - icon-size) / 2: a negative margin that aligns the first action icon with message text. */
 	--icon-btn-inset: calc((2rem * var(--ui-space-scale, 1) - var(--icon-size)) / 2);
 
-	/* Voice orb at rest (loop open, not started). Neutral on purpose -- every
-	   running state owns a hue -- but carrying the primary's green cast so it
-	   reads as part of the app rather than a grey blob dropped on the surface.
-	   Light: a pale pearl that still shows against the off-white page. */
 	--voice-orb-idle-from: #e8ebe9;
 	--voice-orb-idle-to: #b4bcb8;
 	--voice-orb-idle-glow: rgb(148 163 158 / 0.28);
@@ -498,7 +494,6 @@ html.client-mac {
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
 	--full-access: #ff8f30;
-	/* Idle orb on dark: a slate a clear step above the #181818 page, same green cast as the light pair. */
 	--voice-orb-idle-from: #5a6360;
 	--voice-orb-idle-to: #2b312f;
 	--voice-orb-idle-glow: rgb(90 99 96 / 0.35);
@@ -2258,7 +2253,7 @@ html[data-chat-font] .aui-root {
 	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[data-modal-lock-lower] .pointer-events-auto:not([data-radix-popper-content-wrapper] *) {
 		pointer-events: none !important;
 	}
-	/* The same for pointer-events-auto restorations in the page itself (toolbars, the Downloads card,
+	/* The same for pointer-events-auto restorations in the page itself (toolbars,
 	   floating monitors): with the body lock on, wheel over one scrolled what sits behind the modal.
 	   Left live: the top dialog (contained or portaled), every popper popup, the thread (its cover
 	   blocks it, and its many restorations would restyle on each toggle) and window chrome, toasts and
@@ -8131,4 +8126,12 @@ html[data-glass="liquid-3d"][data-glass-cpu] :is(.unsloth-composer-surface, .uns
 html.dark[data-glass="liquid-3d"][data-glass-cpu] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-rim: inset 0 1px 1px rgb(255 255 255 / .121);
   --glass-glow: linear-gradient(rgb(255 255 255 / .06), rgb(255 255 255 / .016) 12px, transparent 26px), linear-gradient(to top, rgb(255 255 255 / .032), transparent 24px);
+}
+
+/* Audio's settings rail shares the sidebar surface: a faint seam marks the boundary and fades out at both ends.
+   The Audio page sets the root attribute while it is shown (no :has() on the root). */
+html[data-audio-attached-rail] [data-sidebar="sidebar"] {
+	--audio-seam: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-seam-gain, 1)), var(--sidebar));
+	border-right: 1px solid transparent;
+	border-image: linear-gradient(to bottom, transparent, var(--audio-seam) 18%, var(--audio-seam) 82%, transparent) 1;
 }

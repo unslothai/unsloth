@@ -72,7 +72,6 @@ export interface LoadModelRequest {
 
   force_reload?: boolean;
   alongside?: boolean;
-  /** Voice mode's speaking model: kept next to the chat model even with multi-model off. */
   voice?: boolean;
   /** Set only after the user confirms: the load replaces the shared llama-server. */
   force_cancel_active?: boolean;
@@ -267,6 +266,7 @@ export interface LoadModelResponse {
   };
   requires_trust_remote_code?: boolean;
   context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
@@ -428,6 +428,7 @@ export interface InferenceStatusResponse {
   supports_tools?: boolean;
   chat_template?: string | null;
   context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;

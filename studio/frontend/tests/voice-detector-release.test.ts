@@ -9,7 +9,6 @@ import { readSrc } from "./helpers/kit.ts";
 const chatPage = readSrc("features/chat/chat-page.tsx");
 
 test("voice mode going off releases the speech detector, which has no idle unload", () => {
-  // Only on the change to off: a page that mounts with voice off sends no unload.
   assert.match(
     chatPage,
     /if \(voiceMode !== "off" \|\| was === "off"\) return;\s*unloadOwnVoice\(\);\s*void unloadSttModel\(\)\.catch\(\(\) => \{\}\);\s*void unloadVadModel\(\);/,

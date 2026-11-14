@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The small facts the loop reports back to the voice decision log, kept free of
-// imports so they can be tested on node. Which outcome contradicts which verdict
-// is decided on the backend (voice_log.ERROR_KINDS); this side only observes.
 
-/** A "finished" verdict followed by more speech inside this is a cut-off turn. */
 export const QUICK_CONTINUE_MS = 1500;
 /** An ignored or queued utterance said again inside this means the verdict was wrong. */
 export const REPEAT_WINDOW_MS = 15000;
@@ -30,7 +26,6 @@ export function contentWords(text: string): Set<string> {
   );
 }
 
-/** True when most of the earlier utterance's content words come back in the later one. */
 export function sharesMostWords(earlier: string, later: string): boolean {
   const a = contentWords(earlier);
   if (a.size === 0) return false;
@@ -43,7 +38,6 @@ export function sharesMostWords(earlier: string, later: string): boolean {
 const HOLD_ON =
   /^(?:(?:um|uh|oh|okay|ok|so|no|hey) )*(?:wait(?: wait)*|hold on|hang on|one sec(?:ond)?|one moment|just a sec(?:ond)?|give me a (?:sec(?:ond)?|minute|moment)|give me two minutes)$/;
 
-/** A bare stall said to the assistant ("hold on", "wait wait"): more is coming. */
 export function isHoldOn(text: string): boolean {
   return HOLD_ON.test(normalizePhrase(text));
 }
@@ -52,7 +46,6 @@ function normalizePhrase(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
 }
 
-/** Whether the reply repeated the filler phrase it was told it had already said. */
 export function replyEchoesFiller(reply: string, phrase: string): boolean {
   const p = normalizePhrase(phrase);
   if (!p) return false;
@@ -60,7 +53,6 @@ export function replyEchoesFiller(reply: string, phrase: string): boolean {
   return head.includes(p);
 }
 
-/** What the loop reports for an interrupt verdict once the next utterance (or the window's end) is known. */
 export function interjectOutcomeFor(
   verdict: "ignore" | "queue" | "restart",
   earlier: string,
@@ -72,8 +64,6 @@ export function interjectOutcomeFor(
   return verdict === "queue" ? "reasked" : "repeated";
 }
 
-/** A queued utterance waits for the reply to be heard, and a run parked on an Allow/Deny card
- *  has no reply coming until someone taps it: cut through instead of holding behind the card. */
 export function interjectUnderApproval<A extends "ignore" | "queue" | "restart" | null>(
   action: A,
   awaitingApproval: boolean,

@@ -29,9 +29,7 @@ import { type FC, useEffect, useMemo, useState } from "react";
 interface VoiceModelSelectorProps {
   value: string;
   onValueChange: (id: string) => void;
-  /** The voice is loaded on the backend, not only picked. */
   loaded?: boolean;
-  /** Called once a pick is made or the picker closes. */
   onClose?: () => void;
 }
 
@@ -45,10 +43,6 @@ const TTS_TASKS = ["text-to-speech", "text-to-audio"] as const;
 const speakRow = (row: Parameters<typeof audioRowMatchesWorkflow>[0]) =>
   audioRowMatchesWorkflow(row, "speak");
 
-/**
- * Voice mode's "Speak with" picker, inline in the voice panel: the Audio tab's model picker,
- * narrowed to the audio.cpp voices the loop can load. The Voice row picks the speaker.
- */
 export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   value,
   onValueChange,
@@ -131,7 +125,6 @@ interface BuiltinSpeakers {
   values: string[];
 }
 
-/** The built-in speakers the loaded voice lists on its status, once it is resident. */
 function useBuiltinSpeakers(loadedId: string): BuiltinSpeakers | null {
   const [speakers, setSpeakers] = useState<BuiltinSpeakers | null>(null);
   useEffect(() => {
@@ -158,7 +151,6 @@ function useBuiltinSpeakers(loadedId: string): BuiltinSpeakers | null {
           : [];
         if (!cancelled) setSpeakers({ family: status.audio_family ?? null, values });
       } catch {
-        // No speaker list: the model's default speaks.
       }
     })();
     return () => {
@@ -178,17 +170,13 @@ function speakerLabel(
 }
 
 export interface VoicePreset {
-  /** The saved voice, the built-in speaker, or null for the model's own. */
   label: string | null;
-  /** A voice that samples a new speaker per sentence, which a saved voice fixes. */
   randomEachSentence: boolean;
   speakers: BuiltinSpeakers | null;
   canClone: boolean;
-  /** Something to choose: built-in speakers or saved voices. */
   choosable: boolean;
 }
 
-/** What the voice panel's Voice row shows for the loaded speaking model. */
 export function useVoicePreset(modelId: string, loaded: boolean): VoicePreset {
   const t = useT();
   const savedVoiceId = useChatRuntimeStore((s) => s.selectedVoiceId);
@@ -210,7 +198,6 @@ export function useVoicePreset(modelId: string, loaded: boolean): VoicePreset {
   };
 }
 
-/** The voice panel's Voice drill-in: built-in speakers, then the model's own voice and saved voices. */
 export const VoicePresetPanel: FC<{
   preset: VoicePreset;
   labels: { modelsOwn: string; builtin: string; saved: string };

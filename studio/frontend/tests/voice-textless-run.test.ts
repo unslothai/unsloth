@@ -11,7 +11,7 @@ const engine = readFileSync(
 );
 
 test("a run that ends with no answer text closes the playback stream it opened", () => {
-  const end = engine.slice(engine.indexOf("const text = latestAssistantText();\n    const spokenRun"));
+  const end = engine.slice(engine.indexOf("const streamBegun = streamBegunRef.current;"));
   const start = end.indexOf("if (!text) {");
   const branch = end.slice(start, end.indexOf("const endMsgs", start));
   // Left open, the player polls forever: isSpeaking stays true and queued turns never send.

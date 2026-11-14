@@ -10,7 +10,6 @@ import {
   stripForSpeech,
 } from "../src/features/chat/voice/speech-text.ts";
 
-// use-tts-player's feedText/endStream: queue each newly complete sentence by index, flush the rest.
 function speak(reply: string, step = 1): string[] {
   const queued: string[] = [];
   for (let i = step; i < reply.length + step; i += step) {

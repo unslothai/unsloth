@@ -971,10 +971,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         )
         for name in names
     ),
-    # Voice mode's speech check. The browser's loudness gate decides when to cut; this says whether
-    # what it cut holds a voice at all.
     AudioCppFamily("pulsevad", "vad"),
-    # Bundled runtime assets (assets/framework/models/<family>) that the prebuilt does not ship.
     *(
         AudioCppFamily(
             name,

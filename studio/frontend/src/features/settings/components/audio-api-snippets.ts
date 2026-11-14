@@ -90,7 +90,6 @@ export function audioApiExampleFor(workflow: AudioCppWorkflow): {
   ) {
     return { tab: workflow, run: null };
   }
-  // Speech detection has no API example yet; the workflows tab opens on its default.
   return { tab: "workflows", run: workflow === "detect" ? null : workflow };
 }
 

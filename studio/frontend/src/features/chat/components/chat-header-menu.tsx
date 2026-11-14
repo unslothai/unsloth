@@ -217,12 +217,10 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const generating = useChatRuntimeStore((s) =>
     getSidebarItemThreadIds(menu.item).some((id) => Boolean(s.runningByThreadId[id])),
   );
-  // The voice decision log is keyed by thread id; a comparison's panes each have their own.
   const voiceLogOptOut = useVoiceSettingsStore((s) =>
     getSidebarItemThreadIds(menu.item).every((id) => s.voiceLogOptOutThreadIds.includes(id)),
   );
   const setVoiceLogOptOut = useVoiceSettingsStore((s) => s.setVoiceLogOptOut);
-  // The export endpoint is owner-only.
   const isOwner = useIsAccountOwner();
   const exportVoiceLog = async () => {
     try {

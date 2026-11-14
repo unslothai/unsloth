@@ -27,7 +27,6 @@ test("typing something else during a reveal is still a typed send", () => {
     isTypedVoiceSubmit({ box: "Actually never mind", shown: "", paused: false, revealing }),
     true,
   );
-  // No reveal running: unchanged behaviour.
   assert.equal(isRevealPrefix("What is the weath", null), false);
   assert.equal(isTypedVoiceSubmit({ box: "What is the weath", shown: "", paused: false }), true);
 });
@@ -39,7 +38,6 @@ test("the engine rushes the reveal instead of sending the box, and the loop hono
   assert.ok(rush > 0, "Enter mid-reveal must rush the reveal");
   assert.ok(rush < handler.indexOf("submitTranscript(box, true)"), "rush comes before a typed send");
   const adapter = read("adapters/studio-voice-loop-adapter.ts");
-  // The typing loop stops at the rush and falls through to the full-transcript send.
   assert.match(adapter, /for \(let i = stepChars; i < total && !mine\.rush; i \+= stepChars\)/);
   assert.match(adapter, /if \(reveal === mine\) reveal = null;/);
 });

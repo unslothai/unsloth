@@ -2455,7 +2455,6 @@ fn main() {
     info!("Native saved app layout restore enabled: {restore_initial_layout}");
     let mut window_state = tauri_plugin_window_state::Builder::new()
         .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
-        // The floating voice orb places itself (orb-widget-host.ts).
         .with_denylist(&[orb_widget::LABEL]);
     if !restore_initial_layout {
         window_state = window_state.skip_initial_state("main");
@@ -2741,7 +2740,6 @@ fn main() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
-            // The Dock icon brings the app back from the floating orb too.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } if orb_widget::is_floating() => show_main_window(app),
             #[cfg(target_os = "macos")]

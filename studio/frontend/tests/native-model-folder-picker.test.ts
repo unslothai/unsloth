@@ -86,7 +86,6 @@ test("a native dialog that fails to open falls back to the in-app browser", asyn
 });
 
 test("every model folder Browse button goes through the native picker", () => {
-  // The picker's Custom Folders section, shared with the voice Decide list.
   const pickers = readSrc(
     "features/model-picker/components/model-selector/custom-folders.tsx",
   );

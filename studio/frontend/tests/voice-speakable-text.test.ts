@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What reaches the TTS endpoint for a streamed reply: speakableReply, then
-// splitIntoSentences, then stripForSpeech per sentence, the same chain the player runs.
-// A string with no words in it is voiced by OmniVoice as noise.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -64,7 +61,6 @@ test("a streamed prefix splits like the finished reply", () => {
   const done = splitIntoSentences(speakableReply(full));
   for (let n = 1; n <= full.length; n++) {
     const part = splitIntoSentences(speakableReply(full.slice(0, n)));
-    // Every complete sentence of a prefix is the same sentence in the final split.
     for (let i = 0; i < part.length - 1; i++) assert.equal(part[i], done[i], `prefix ${n}`);
   }
 });
@@ -85,8 +81,6 @@ test("decimals and abbreviations survive streaming, token by token", () => {
   assert.deepEqual(splitStreaming("Ask Dr. ").complete, []);
 });
 
-// OmniVoice's clip shape: 100 ms of digital zero, a ramp onto a -0.06 DC offset with
-// hiss ~55 dB down, the voice on top, a ramp back to zero.
 function omniLikeClip(sr: number, voice = 0.1): Float32Array {
   const x = new Float32Array(Math.round(sr * 1.2));
   let seed = 7;
@@ -102,7 +96,6 @@ function omniLikeClip(sr: number, voice = 0.1): Float32Array {
 }
 
 function lowBandShare(x: Float32Array, sr: number, hz = 40): number {
-  // Energy left after a 25 ms moving average, against the total.
   const w = Math.round(sr / hz);
   let total = 0;
   let low = 0;
@@ -122,7 +115,6 @@ test("clip cleaning removes the DC bump and trims to the voice", () => {
   const [y] = cleanTtsClip([x], sr)!;
   assert.ok(y);
   assert.ok(lowBandShare(y, sr) < 0.02, `cleaned: ${lowBandShare(y, sr)}`);
-  // Voice runs 0.35-0.9 s: the zeros, the ramps and the hiss around it are cut.
   assert.ok(y.length < sr * 0.7, `trimmed to ${y.length / sr} s`);
   assert.ok(y.length > sr * 0.55, `voice kept: ${y.length / sr} s`);
   assert.equal(Math.abs(y[0]!), 0);

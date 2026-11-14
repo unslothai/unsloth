@@ -206,10 +206,8 @@ def test_a_voice_load_keeps_its_slot_with_multi_model_off(backends, monkeypatch)
     voice = _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True))
     assert voice is not None and voice.voice
     model_slots.slots.append(voice)
-    # Swapping the chat model sweeps idle kept models, but not voice mode's.
     assert _selected(LoadRequest(model_path = "org/D-GGUF")) is None
     assert model_slots.slots == [voice]
-    # Nothing to speak for: the voice takes the empty primary instead.
     inf._llama_cpp_backend.unload_model()
     assert _selected(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True)) is None
 
@@ -254,11 +252,9 @@ def test_a_second_voice_replaces_the_first_of_its_role(backends, monkeypatch):
 
     kokoro = kept("audio-cpp/Kokoro-82M-GGUF")
     stt = kept("audio-cpp/parakeet-GGUF")
-    # Loading B while A speaks unloads A; the listening model and the chat model stay.
     omni = kept("audio-cpp/OmniVoice-GGUF")
     assert model_slots.slots == [extra, stt, omni]
     assert kokoro not in model_slots.slots
-    # Reloading the voice already kept reuses its slot and unloads nothing.
     assert _selected(LoadRequest(model_path = "audio-cpp/OmniVoice-GGUF", voice = True)) is omni
     assert model_slots.slots == [extra, stt, omni]
 
@@ -281,7 +277,6 @@ def test_only_voice_models_may_load_as_the_voice(monkeypatch):
     assert inf._is_voice_model(LoadRequest(model_path = "audio-cpp/Kokoro-82M-GGUF", voice = True))
     assert inf._is_voice_model(LoadRequest(model_path = "audio-cpp/parakeet-GGUF", voice = True))
     assert not inf._is_voice_model(LoadRequest(model_path = "audio-cpp/music-GGUF", voice = True))
-    # Any other model would otherwise keep a second slot with multi-model off: refused before a slot is picked.
     picked = []
     monkeypatch.setattr(inf, "_select_load_slot", lambda request: picked.append(request))
     with pytest.raises(HTTPException) as refused:

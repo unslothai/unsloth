@@ -125,7 +125,6 @@ if (isTauri && /Mac/.test(navigator.platform)) {
 const APP_SHELL_READY_EVENT = "unsloth:app-shell-ready";
 const CHAT_PREFETCH_FALLBACK_MS = 3000;
 
-// The floating voice orb's own window (orb-widget-host.ts): the ball and nothing else.
 const isOrbWidget =
   isTauri && new URLSearchParams(window.location.search).has(ORB_WIDGET_QUERY);
 if (isOrbWidget) {
@@ -164,9 +163,7 @@ function renderApp(): void {
   }
 }
 
-// No locale or interface zoom for the widget: the main window sends its few strings already
-// translated (orb-widget-host.ts), and a webview zoom would make its CSS pixels stop
-// matching the window's logical size.
+// No locale or zoom for the widget: its strings come translated, and a zoom would break CSS px = logical px.
 const localeInitialization = isOrbWidget ? "en" : initializeLocale();
 const interfaceScaleInitialization = isOrbWidget
   ? Promise.resolve()

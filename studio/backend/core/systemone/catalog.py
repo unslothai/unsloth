@@ -622,9 +622,7 @@ def fine_tunes() -> list[Checkpoint]:
     return [c for name in folders if (c := _fine_tune_in(root, name)) is not None]
 
 
-# A decision model in one of the picker's custom folders, named by its absolute path.
 FOLDER_PREFIX = "decision-folder:"
-# Files a trained decision folder carries, beside the weights each layout's loader checks.
 DECISION_FOLDER_MARKERS = {"unsloth_decision_config.json": "clef", "rl_agent_config.json": "laya"}
 
 
@@ -652,7 +650,6 @@ def _folder_checkpoint(folder: Path) -> Checkpoint | None:
 
 
 def _custom_roots() -> list[tuple[Path, bool]]:
-    # The owner's folders: the decision model is installation-wide, like the Decision API's.
     from storage.studio_db import list_scan_folders
     from utils.account_context import OWNER, run_as
 

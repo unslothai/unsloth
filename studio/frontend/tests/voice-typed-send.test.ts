@@ -14,7 +14,6 @@ import {
 const SRC = new URL("../src/", import.meta.url);
 const read = (relative: string) => readFileSync(new URL(relative, SRC), "utf8");
 
-// The composer's voice branch of handleSubmit, with the engine's handler behind it.
 function composer(state: { paused: boolean; held?: string; parked?: string }) {
   const sent: string[] = [];
   let stopped = 0;

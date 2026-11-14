@@ -23,12 +23,10 @@ import { useT } from "@/i18n";
 import { StopIcon } from "@/lib/media-control-icons";
 import { cn } from "@/lib/utils";
 
-// The ring that fills while the button is held, drawn just inside the button's edge.
 const SIZE = 36;
 const RING_R = 15.5;
 const RING_C = 2 * Math.PI * RING_R;
 
-// Two slim bars: lucide's filled pause reads as a block at this size.
 const PauseBars: FC = () => (
   <svg aria-hidden={true} viewBox="0 0 16 16" className="size-4" fill="currentColor">
     <rect x="3.5" y="2.5" width="2.6" height="11" rx="1.3" />
@@ -36,12 +34,6 @@ const PauseBars: FC = () => (
   </svg>
 );
 
-/**
- * Voice mode's one composer control. Tap: pause or resume. Hold: a ring fills
- * over HOLD_TO_STOP_MS while the glyph turns into a square; release once it is
- * full to stop everything (reply, run, held speech) and listen again. Releasing
- * before it fills is a tap or nothing, never a stop.
- */
 export const VoicePauseStopButton: FC = () => {
   const t = useT();
   const paused = useChatRuntimeStore((s) => s.voicePaused);
@@ -112,7 +104,6 @@ export const VoicePauseStopButton: FC = () => {
           onBlur={cancel}
           onClick={(e) => e.preventDefault()}
         >
-          {/* Both glyphs share the cell; the square fades in as the ring fills. */}
           <span className="relative grid size-full place-items-center">
             <span
               className="col-start-1 row-start-1 grid place-items-center transition-opacity"
@@ -137,7 +128,6 @@ export const VoicePauseStopButton: FC = () => {
               <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
             </span>
           </span>
-          {/* The button styles every svg to size-4; the ring has to cover the button. */}
           <svg
             aria-hidden={true}
             className="pointer-events-none absolute inset-0 !size-full"

@@ -11014,6 +11014,7 @@ class DiffusionBackend:
                         ),
                         logger = logger,
                         target = target,
+                        requested = attention_backend,
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.
@@ -14587,6 +14588,7 @@ class DiffusionBackend:
             ),
             logger = logger,
             target = target,
+            requested = state.attention_request,
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
         identity = getattr(state.pipe, "_unsloth_peak_identity", None)

@@ -48,7 +48,6 @@ import {
 import { SPECTRUM_BANDS } from "@/features/chat/voice/voice-spectrum";
 import { cn } from "@/lib/utils";
 
-// The latest frame streamed from the main window, where the analysers live.
 const remote = {
   bands: new Float32Array(SPECTRUM_BANDS),
   level: 0,
@@ -77,12 +76,7 @@ async function screenAreas(): Promise<Area[]> {
   });
 }
 
-/**
- * Moves the window by hand rather than through startDragging: the system drag keeps
- * a window below the menu bar, and a desktop widget should reach the top of the screen.
- * One fire-and-forget setPosition per frame, from screen coordinates, so it never waits
- * on a round trip.
- */
+// By hand, not startDragging: the system drag keeps a window below the menu bar.
 function useWindowDrag(pad: { current: number }) {
   const screens = useRef<Area[]>([]);
   const drag = useRef<{
@@ -156,12 +150,6 @@ const decide = (id: string, decision: "allow" | "deny") => {
   void emitTo("main", ORB_WIDGET_APPROVAL_EVENT, { id, decision }).catch(() => undefined);
 };
 
-/**
- * Grows the window to hold the approval popup and shrinks it back once the call is
- * answered. Returns how far the page is pushed down: the popup's height when it sits
- * above the ball, else 0. The ball keeps its place on screen either way.
- */
-/** The monitors' visible frames (menu bar and dock excluded), in physical pixels. */
 async function visibleFrames(): Promise<Area[]> {
   const monitors = await availableMonitors().catch(() => []);
   return monitors.map((m) => ({
@@ -172,11 +160,7 @@ async function visibleFrames(): Promise<Area[]> {
   }));
 }
 
-/**
- * Grows the window to hold the approval card and shrinks it back once the call is
- * answered. Placed in physical pixels, so a pair of monitors at different scales still
- * keeps the card inside the visible frame of the one the widget is on.
- */
+// Placed in physical pixels, so monitors at different scales keep the card inside the widget's frame.
 function useApprovalRoom(
   showing: boolean,
   pad: { current: number },
@@ -199,7 +183,6 @@ function useApprovalRoom(
         pad.current = next.pad;
         setPlace(next);
       } else {
-        // Undo the sideways shift near a screen edge as well as the vertical one.
         const moved = shift.current;
         shift.current = { x: 0, y: 0 };
         pad.current = 0;
@@ -218,7 +201,6 @@ function useApprovalRoom(
   return place;
 }
 
-/** A tool call waiting for an answer: its line, Allow and Deny. The persistent grant stays in the app. */
 const PILL = "h-[calc(26px*var(--ui-space-scale,1))] rounded-full px-2.5 text-ui-11";
 
 const ApprovalPopup: FC<{
@@ -273,12 +255,9 @@ const BarButton: FC<{
   </button>
 );
 
-/** The floating orb window's whole page: the ball, draggable, and a slim bar on hover. */
 export const OrbWidgetView: FC = () => {
   const [state, setState] = useState<OrbWidgetSnapshot | null>(null);
-  // How far the page sits below the window's top while the popup is above the ball.
   const pad = useRef(0);
-  // How far the window moved to hold the popup (physical px), undone when it goes.
   const shift = useRef<Point>({ x: 0, y: 0 });
 
   useEffect(() => {
@@ -328,7 +307,6 @@ export const OrbWidgetView: FC = () => {
     };
   }, []);
 
-  // Remember where it was dropped, in logical pixels, for the next time it opens.
   useEffect(() => {
     const win = getCurrentWindow();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -340,7 +318,6 @@ export const OrbWidgetView: FC = () => {
         timer = setTimeout(() => {
           void win.scaleFactor().then((k) => {
             try {
-              // The ball's own spot: a window moved to hold the popup is `shift` off it.
               localStorage.setItem(
                 ORB_WIDGET_POSITION_KEY,
                 JSON.stringify({
@@ -349,7 +326,6 @@ export const OrbWidgetView: FC = () => {
                 }),
               );
             } catch {
-              // Storage blocked: it opens in the default corner next time.
             }
           });
         }, 250);
@@ -365,7 +341,6 @@ export const OrbWidgetView: FC = () => {
     };
   }, []);
 
-  // The hidden prewarmed window loaded once; the main window pushes every theme change.
   const dark = state?.theme?.dark;
   const palette = state?.theme?.palette ?? null;
   useEffect(() => {
@@ -384,7 +359,6 @@ export const OrbWidgetView: FC = () => {
     <div className="relative h-full w-full select-none">
       {approval && place ? <ApprovalPopup approval={approval} place={place} /> : null}
       <div className="group absolute inset-x-0" style={{ top: offset, height: ORB_WIDGET_HEIGHT }}>
-        {/* Centred under the ball, which is drawn in front of it. */}
         <div
           className={cn(
             "absolute left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-border/60 bg-background/85 px-1 py-0.5 shadow-sm",

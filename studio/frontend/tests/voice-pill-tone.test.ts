@@ -11,7 +11,6 @@ test("the Voice pill icon turns green only when every role is loaded", () => {
     voicePillIconClass(["loaded", "loaded", "loaded", "loaded", "loaded"]),
     green,
   );
-  // A role with no state (Decide for a non-owner) does not hold it back.
   assert.equal(
     voicePillIconClass(["loaded", "loaded", null, "loaded", "loaded"]),
     green,

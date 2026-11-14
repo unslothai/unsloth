@@ -24,7 +24,6 @@ test("every combination of arcs and chip keeps the same gap down the whole stack
   for (const arcs of [true, false]) {
     for (const chip of [true, false]) {
       const l = orbStackLayout({ arcs, chip, card: true });
-      // Ball (or its ring) to status.
       assert.equal(
         l.status,
         (arcs ? ORB_RING_EXTENT : ORB_BALL_EXTENT) + ORB_STACK_GAP,
@@ -36,7 +35,6 @@ test("every combination of arcs and chip keeps the same gap down the whole stack
           (l.chip as number) + ORB_CHIP_HEIGHT + ORB_STACK_GAP,
         );
       } else {
-        // The card takes the chip's slot.
         assert.equal(l.chip, null);
         assert.equal(l.card, l.status + ORB_STATUS_HEIGHT + ORB_STACK_GAP);
       }
@@ -72,8 +70,6 @@ test("the approval card shows while a voiced call waits and goes once it is answ
   const voiced = { autoAllowKey: "s:A" };
   assert.deepEqual(pendingApproval({ a: voiced, b: voiced }, "A", () => false), { id: "a", more: 1 });
   assert.equal(pendingApproval({}, "A", () => false), null);
-  // The overlay's wiring: the card's slot follows the filtered approval (behaviour in
-  // voice-orb-approval-decide.test.ts and voice-orb-widget-approval.test.ts).
   assert.match(orb, /pendingApproval\(confirmations, voiceThreadId, \(id\) => describeToolCall\(id\) !== null\)/);
   assert.match(orb, /card: showOverlay && approval !== null/);
   assert.match(

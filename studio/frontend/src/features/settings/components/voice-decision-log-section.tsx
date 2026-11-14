@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings > Voice > Voice mode: the decision log toggle, one card per voice model
-// from /voice/laya/stats, the JSONL export and the clear button.
 
 import {
   AlertDialog,
@@ -42,7 +40,6 @@ import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
 const MODELS: LayaModel[] = ["judge", "interject", "filler"];
-// The backend's voice_log.ERROR_KINDS, two per model.
 const ERROR_KINDS = [
   "finished_but_continued",
   "held_but_flushed",
@@ -109,7 +106,6 @@ function ModelCard({
 
 export function VoiceDecisionLogSection() {
   const t = useT();
-  // Stats, export and clear are owner-only on the backend (403 for anyone else).
   const isOwner = useIsAccountOwner();
   const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
   const setShowArcs = useVoiceSettingsStore((s) => s.setShowVoiceArcs);

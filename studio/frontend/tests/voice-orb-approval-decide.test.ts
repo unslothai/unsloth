@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The orb's approval surfaces driven for real: decideToolCall against a stubbed backend and
-// store, the orb's card with its buttons pressed, and the floating widget's host with its
-// Tauri events fired. Nothing here reads the source as text.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -95,7 +92,6 @@ test("a call already answered elsewhere is missing and posts nothing", async () 
   assert.deepEqual(log, []);
 });
 
-// --- the orb's card ---
 
 function renderCard(opts: { name: string | null; disclosure?: boolean }) {
   const calls: unknown[][] = [];
@@ -143,7 +139,6 @@ function renderCard(opts: { name: string | null; disclosure?: boolean }) {
 }
 
 test("the orb card's buttons make the chat card's decision, with no Always allow", () => {
-  // Its line can be a cut-down view of the call, so a lasting grant is left to the chat card.
   const card = renderCard({ name: "web_search" });
   assert.deepEqual(card.labels, ["browser.agent.allow", "browser.agent.deny"]);
   card.press("browser.agent.allow");
@@ -154,9 +149,7 @@ test("the orb card's buttons make the chat card's decision, with no Always allow
   ]);
 });
 
-// --- the floating widget's host ---
 
-// The host reads the theme off <html> on every push, decisions included.
 const g = globalThis as { document?: unknown };
 if (!("document" in g)) {
   g.document = {
@@ -231,7 +224,6 @@ async function loadHost(confirmations: Record<string, Entry>, inVoiceThread: str
   assert.equal(await host.prewarmOrbWidget(), true);
   const last = () => emitted.filter((e) => e.event === orbWidget.ORB_WIDGET_STATE_EVENT).at(-1)
     ?.payload as orbWidget.OrbWidgetSnapshot;
-  // Closing the widget tears the host down, its spectrum timer included.
   test.after(() => onces.get("tauri://destroyed")?.());
   return { listeners, last, decided, state };
 }

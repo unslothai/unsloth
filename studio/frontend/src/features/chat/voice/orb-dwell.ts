@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Minimum time each orb state stays on screen.
- *
- * deriveOrbState is exact about the loop's phase, and some phases are over in
- * under 100 ms (a short transcription, a thinking model that answers at once).
- * Shown raw, the icon and colour flash for a frame or two, which reads as a
- * glitch. So a displayed state holds for ORB_DWELL_MS before the next raw state
- * replaces it, with the exceptions that matter to the ear: "hearing" and
- * "speaking" always land at once, since they track something the user can hear,
- * and the loop stopping (null) clears at once.
- *
- * Pure and timer-injected so the ordering is unit-testable without a browser.
- */
 
 import type { VoiceOrbState } from "./orb-state";
 
@@ -27,12 +14,10 @@ export interface OrbDwellTimers {
   clearTimer: (handle: unknown) => void;
 }
 
+// States hold ORB_DWELL_MS so sub-100 ms phases do not flash; "hearing", "speaking" and null land at once.
 export interface OrbDwell {
-  /** Feed the newest raw state; emits the displayed state now or once the dwell is up. */
   push: (state: VoiceOrbState | null) => void;
-  /** What is on screen right now. */
   shown: () => VoiceOrbState | null;
-  /** Drop any pending switch. The displayed state is left as is. */
   dispose: () => void;
 }
 
@@ -68,7 +53,6 @@ export function createOrbDwell(
   return {
     push(state) {
       if (state === displayed) {
-        // Back to what is on screen: any switch away from it is off.
         cancel();
         return;
       }
@@ -77,7 +61,6 @@ export function createOrbDwell(
         show(state);
         return;
       }
-      // Only the newest raw state is ever pending; an older one is already stale.
       cancel();
       pending = timers.setTimer(() => {
         pending = null;

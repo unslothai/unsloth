@@ -2360,6 +2360,18 @@ export const hi = {
         deviceGpu: "GPU",
         deviceLocked: "{name} द्वारा सेट।",
         deviceSaveError: "एम्बेडिंग डिवाइस नहीं बदला जा सका",
+        offlineDocs: {
+          folderLabel: "ऑफ़लाइन Unsloth दस्तावेज़",
+          folderDescription: "पूरे Unsloth दस्तावेज़ किसी फ़ोल्डर में सहेजें ताकि वे बिना इंटरनेट के भी काम करें।",
+          folderHint: "Unsloth इस फ़ोल्डर में unsloth.ai/docs/llms-full.txt को \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" नाम से डाउनलोड करता है और पिछली कॉपी को बदल देता है। ऑफ़लाइन चैट में दस्तावेज़ खोजने के लिए फ़ोल्डर को किसी नॉलेज बेस से जोड़ें। अपडेट के बाद भी फ़ोल्डर बना रहता है।",
+          choose: "चुनें",
+          autoUpdateLabel: "हर रिलीज़ के साथ दस्तावेज़ अपडेट करें",
+          autoUpdateDescription: "नया Unsloth संस्करण पहली बार शुरू होने पर नई कॉपी डाउनलोड करें।",
+          downloadNow: "अभी डाउनलोड करें",
+          downloading: "दस्तावेज़ डाउनलोड हो रहे हैं…",
+          notDownloaded: "अभी डाउनलोड नहीं हुए",
+          lastUpdated: "{release} के लिए {date} को अपडेट किया गया",
+        },
       },
       storage: {
         sectionTitle: "स्टोरेज",

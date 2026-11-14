@@ -1,18 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// OmniVoice clips sit on a DC offset (about -0.06, -24 dBFS) that ramps in from digital
-// zero and back out at the end: 75-95% of a clip's energy is below 40 Hz, a thump at both
-// edges of every sentence. Under it, the first 0.1-0.7 s and the last ~0.3 s are breath
-// and hiss 30-40 dB below the voice. Remove the offset, gate to the voice, fade the cuts.
 
 const BASELINE_MS = 50;
 const FRAME_MS = 20;
-// A frame this far under the loudest one starts the voice; neighbours down to EXTEND_DB
-// stay with it, so soft onsets and releases are kept.
+// Neighbours down to EXTEND_DB stay with the onset frame, so soft onsets and releases are kept.
 const ONSET_DB = 24;
 const EXTEND_DB = 30;
-// Below this the clip holds no speech at all (bare punctuation voiced as a mumble).
 const SILENT_DBFS = -45;
 const PRE_MS = 30;
 const POST_MS = 60;
@@ -33,7 +27,6 @@ function removeBaseline(x: Float32Array, win: number): Float32Array {
   return out;
 }
 
-/** Cleaned copies of the channels, or null when nothing in the clip is speech. */
 export function cleanTtsClip(
   channels: readonly Float32Array[],
   sampleRate: number,

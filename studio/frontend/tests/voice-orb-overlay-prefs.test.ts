@@ -16,7 +16,6 @@ test("the decision arcs and caption are hidden by default", () => {
     showVoiceArcs: false,
     showVoiceCaption: false,
   });
-  // A store saved before these settings existed, or a corrupt one, keeps both off.
   for (const saved of [undefined, null, {}, { showVoiceArcs: "no", showVoiceCaption: 0 }]) {
     assert.deepEqual(readVoiceOrbOverlayPrefs(saved), DEFAULT_VOICE_ORB_OVERLAY_PREFS);
   }

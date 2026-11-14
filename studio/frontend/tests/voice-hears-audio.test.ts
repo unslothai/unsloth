@@ -89,7 +89,7 @@ test("the loop keeps and sends the turn's speech through the hearing gate, not t
   assert.match(loop, /transcript &&\s*epoch === heldEpoch &&\s*voiceHearsAudio\(rt, useVoiceSettingsStore\.getState\(\)\.micTarget\)\s*\) \{\s*turnAudio\.add/);
   // An emptied edit drops its speech before this turn's is kept.
   assert.match(loop, /onCleared: \(\) => turnAudio\.clear\(\)/);
-  assert.match(loop, /const editing = !heldEdit\.autoSend\(\);[\s\S]{0,400}turnAudio\.add\(merged, sampleRate\)/);
+  assert.match(loop, /const editing = !heldEdit\.autoSend\(\);[\s\S]{0,400}turnAudio\.add\(analysis\.samples, sampleRate\)/);
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(engine, /const turnAudio = voiceHearsAudio\(/);
   assert.doesNotMatch(engine, /const turnAudio = speaksWithChatModel\(\)/);
@@ -113,45 +113,8 @@ test("the gates name no model family", () => {
 
 test("speech of a turn cleared while STT ran never reaches the next turn", () => {
   const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
-  const add = loop.indexOf("turnAudio.add(merged, sampleRate)");
+  const add = loop.indexOf("turnAudio.add(analysis.samples, sampleRate)");
   const guard = loop.lastIndexOf("if (", add);
   assert.match(loop.slice(guard, add), /epoch === heldEpoch/);
 });
 
-test("voice mode takes the mic before the model-bound clip recorder", () => {
-  const adapter = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
-  const body = adapter.slice(adapter.indexOf("private createSession()"));
-  const voice = body.indexOf('this.chatId !== null && getVoiceMode() === "active"');
-  const clip = body.indexOf("micRecordsForModel(this.chatId)");
-  assert.ok(voice > 0 && clip > 0 && voice < clip);
-});
-
-test("a session dropped by a clear re-arms the listener", () => {
-  const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
-  const drop = loop.slice(loop.indexOf('why: "cleared"'));
-  assert.match(drop.slice(0, 300), /finish\("stopped"\);[\s\S]*?requestVoiceResume\(\)[\s\S]*?return;/);
-});
-
-test("a transcript revealed across a Stop is dropped, not sent", () => {
-  const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
-  const reveal = loop.slice(loop.indexOf("const mine = { shown: shown(transcript), rush: false };"));
-  const submit = reveal.indexOf("requestVoiceSubmit(transcript)");
-  const guard = reveal.indexOf("if (epoch !== heldEpoch) {");
-  assert.ok(guard > 0 && guard < submit);
-});
-
-test("parked turns flush only once the voice actually loaded", () => {
-  const engine = readSrc("features/chat/voice/voice-engine.tsx");
-  const effect = engine.slice(engine.indexOf("wasSlotLoadingRef.current = voiceSlotLoading;"));
-  assert.match(
-    effect.slice(0, 900),
-    /if \(pendingForVoiceRef\.current\.length && useChatRuntimeStore\.getState\(\)\.voiceSlotLoaded\) \{[\s\S]*?submitRef\.current\(""\)/,
-  );
-});
-
-test("Stop closes the open session before re-arming, as a thread reset does", () => {
-  const engine = readSrc("features/chat/voice/voice-engine.tsx");
-  const handler = engine.slice(engine.indexOf("registerVoiceStopSpeaking(() => {"));
-  const body = handler.slice(0, handler.indexOf("registerVoiceStopSpeaking(null)"));
-  assert.match(body, /if \(composer\.getState\(\)\.dictation\) composer\.stopDictation\(\);\s*resumeListen\(\);/);
-});

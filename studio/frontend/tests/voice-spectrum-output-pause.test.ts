@@ -64,7 +64,6 @@ test("voice off stops the output clock and the next clip restarts it", () => {
   assert.equal(clock.links.size, 0, "clock detached from the graph");
   assert.ok(analyser.links.has(ctx.destination), "playback path is untouched");
 
-  // Next clip on the same context: same analyser, a fresh clock.
   const again = outputSpectrumNode(ctx as unknown as AudioContext) as unknown as FakeNode;
   assert.equal(again, analyser);
   const clocks = made.filter((n) => n.kind === "clock");
@@ -72,7 +71,6 @@ test("voice off stops the output clock and the next clip restarts it", () => {
   assert.ok(analyser.links.has(clocks[1] as FakeNode));
   assert.equal(typeof clocks[1]?.onaudioprocess, "function");
 
-  // Repeated plays do not stack clocks; a second pause is a no-op.
   outputSpectrumNode(ctx as unknown as AudioContext);
   assert.equal(made.filter((n) => n.kind === "clock").length, 2);
   pauseOutputSpectrum();

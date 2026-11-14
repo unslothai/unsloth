@@ -492,6 +492,12 @@ import { ProjectIcon } from "@/lib/project-icon";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
+  NewChatNonceContext,
+  clearTemporaryQueryDraft,
+  temporaryQueryDraft,
+} from "@/features/chat/query-draft";
+import { isQueryDraftId } from "@/features/chat/utils/composer-draft";
+import {
   ArrowDownIcon,
   ArrowUpIcon,
   Loader2Icon,
@@ -688,11 +694,7 @@ function resetPromptQueues() {
   syncPromptQueueUI();
 }
 
-// Drop the queued prompts of ONE thread and nothing else. The voice loop calls
-// this when a spoken utterance supersedes that thread's queue; a global reset
-// there would silently discard prompts queued in background chats too. Delete
-// only, no target cancel, matching resetPromptQueues -- the caller has already
-// cancelled the run it means to cancel.
+// Only this thread's queue: a global reset would drop prompts queued in background chats.
 export function resetPromptQueuesForThread(threadId: string) {
   for (const run of getPromptQueueRunsForThreadIds([threadId])) {
     deletePromptQueueRun(run);
@@ -2126,12 +2128,6 @@ export const Thread: FC<{
     context: autoScrollContext,
   } = useIntentAwareAutoScroll();
 
-  // Force the docked composer (and suppress the centered welcome) only once the
-  // full orb is ACTIVE -- including its warmup -- so the empty-thread orb view
-  // always has a bottom input bar above it (z-40) instead of the orb-covered
-  // welcome composer. Deliberately NOT keyed on merely "configuring": pressing the
-  // Voice toggle should leave you in the normal chat/welcome with a grey mini orb;
-  // opening the full orb is exclusively the mini-orb button's job.
   const voiceActive = useChatRuntimeStore((s) => s.voiceMode === "active");
   const effectiveHideWelcome = hideWelcome || voiceActive;
   const voiceRequested = useVoiceRequested();
@@ -2458,7 +2454,6 @@ export const Thread: FC<{
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
           />
-          {/* Only the pane with the composer voices; a Compare pane has none. */}
           {voiceRequested && !hideComposer && (
             <Suspense fallback={null}>
               <VoiceOrb />
@@ -3031,11 +3026,6 @@ const Composer: FC<{
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
-  // In voice mode the orb is the entire mic interface. The loop keeps a dictation
-  // session open continuously, so the composer's recording bar would sit there
-  // counting from the moment voice starts -- reading as "recording you" during
-  // every pause and every reply. The session is real and must stay open; only its
-  // UI is wrong here, so hide the presentation and leave the state alone.
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   const showDictationUi = isDictating && !voiceEngaged;
   const pageDragging = useContext(PageDragContext);
@@ -4162,9 +4152,14 @@ const Composer: FC<{
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
   const incognito = useChatRuntimeStore((s) => s.incognito);
-  const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
+  // A `?q=` chat keeps its own slot until saved, so the link never overwrites another unsent draft.
+  const newChatNonce = useContext(NewChatNonceContext);
+  const draftQueryId =
+    !threadListItemRemoteId && isQueryDraftId(newChatNonce) ? newChatNonce : null;
+  const shareDraft =
+    useChatPreferencesStore((s) => s.shareComposerDraft) && !draftQueryId;
   // Route and active IDs can lead the runtime switch; drafts belong to the composer on screen.
-  const draftThreadId = threadListItemRemoteId ?? NEW_CHAT_DRAFT_ID;
+  const draftThreadId = threadListItemRemoteId ?? draftQueryId ?? NEW_CHAT_DRAFT_ID;
   const restoredDraftScopeRef = useRef<string | undefined>(undefined);
   const previousDraftIdentityRef = useRef({
     draftThreadId,
@@ -4201,15 +4196,17 @@ const Composer: FC<{
     if (!composer.getState().isEditing) return;
     if (
       restoredDraftScopeRef.current === draftScope &&
-      previous.threadListItemId === threadListItemId
+      previous.threadListItemId === threadListItemId &&
+      // A temporary chat's scope never changes, so a link opened onto its empty composer checks the id.
+      (previous.draftThreadId === draftThreadId || !isQueryDraftId(draftThreadId))
     ) return;
     restoredDraftScopeRef.current = draftScope;
     // First persistence names the same conversation; navigation must still restore its own draft.
     if (
       !incognito &&
       !previous.incognito &&
-      !shareDraft &&
-      previous.draftThreadId === NEW_CHAT_DRAFT_ID &&
+      (isQueryDraftId(previous.draftThreadId) ||
+        (!shareDraft && previous.draftThreadId === NEW_CHAT_DRAFT_ID)) &&
       aui.threadListItem().getState().remoteId === draftThreadId &&
       previous.threadListItemId === threadListItemId &&
       previous.draftThreadId !== draftThreadId
@@ -4220,15 +4217,20 @@ const Composer: FC<{
         justSentRef.current = { ...justSentRef.current, draftKey };
       }
       const text = latestDraft(previousKey);
-      writeComposerDraft(draftKey, text);
-      stageComposerDraft(draftKey, text);
-      writePasteDraft(pasteDraftKey, latestPasteDraft(previousPasteKey));
+      const pastes = latestPasteDraft(previousPasteKey);
+      // With sharing on, only a query chat's follow-up moves into the shared slot (read from memory here).
+      if (!shareDraft || text || pastes.length > 0) {
+        if (shareDraft) publishDraft(text, draftSource);
+        writeComposerDraft(draftKey, text);
+        stageComposerDraft(draftKey, text);
+        writePasteDraft(pasteDraftKey, pastes);
+        pasteKeyShownRef.current = draftKey;
+      }
       writeComposerDraft(previousKey, "");
       writePasteDraft(previousPasteKey, []);
-      pasteKeyShownRef.current = draftKey;
     }
     if (draftScope === INCOGNITO_DRAFT_SCOPE) {
-      composer.setText("");
+      composer.setText(temporaryQueryDraft(draftKey));
       return;
     }
     remoteDraftRef.current = null;
@@ -4254,6 +4256,7 @@ const Composer: FC<{
     draftKey,
     pasteDraftKey,
     shareDraft,
+    draftSource,
     draftThreadId,
     threadListItemId,
     incognito,
@@ -4427,7 +4430,10 @@ const Composer: FC<{
       draftSaveTimerRef.current = null;
     }
     // A temporary chat's send was never the stored draft.
-    if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) return;
+    if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) {
+      clearTemporaryQueryDraft(draftKeyRef.current);
+      return;
+    }
     if (shareDraftRef.current) publishDraft("", draftSource);
     if (draftKeyRef.current) writeComposerDraft(draftKeyRef.current, "");
     writePasteDraft(pasteDraftKeyRef.current, []);
@@ -5723,8 +5729,7 @@ const Composer: FC<{
     }
     wasDictatingRef.current = false;
     if (!sendAfterDictationRef.current) return;
-    // Voice mode's turn ends through the loop (requestVoiceSubmit), which appends the utterance
-    // itself; submitting the box too would queue a copy behind the running reply.
+    // The loop appends the utterance itself; submitting the box too would queue a copy behind the reply.
     if (voiceEngaged) {
       sendAfterDictationRef.current = false;
       heldTextRef.current = null;
@@ -5782,9 +5787,7 @@ const Composer: FC<{
         event.preventDefault();
         return;
       }
-      // Enter or Send while the voice loop is listening ends the turn; the loop
-      // delivers the words. Sending or queueing the box here too doubled them.
-      // Typed words are the exception: the loop sends the box itself, paused or not.
+      // The loop delivers the spoken words (sending the box too doubled them); typed words it sends itself.
       if (voiceEngaged && isDictating) {
         event.preventDefault();
         if (requestVoiceTypedSubmit(composerText)) return;
@@ -6134,8 +6137,6 @@ const Composer: FC<{
           {!showDictationUi ? pills : null}
         </div>
         {showDictationUi ? (
-          // The recording UI replaces the input and send controls; only the
-          // left plus stays visible alongside it.
           <ChatDictationBar
             onSend={sendAfterDictation}
             // Every state handleSubmit would reject after transcription; text comes from the transcript.
@@ -7612,10 +7613,6 @@ const ComposerRightControls: FC<{
         !controlsRef.current.closest('[aria-hidden="true"], [inert]'),
     },
   );
-  // While voice mode is engaged, the mini orb is the mic control; hide the raw
-  // Dictate / Stop-dictation buttons (the loop drives dictation internally via
-  // the composer runtime's startDictation()/stopDictation(), not by clicking
-  // these). Kept mounted (display:none) only so composer state stays consistent.
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   const voiceRequested = useVoiceRequested();
   return (
@@ -7631,11 +7628,6 @@ const ComposerRightControls: FC<{
           <VoiceControlButton />
         </Suspense>
       )}
-      {/* Starts dictation; the recording bar then covers the input row and owns
-          the stop and send actions. Hidden while voice mode is engaged: the mini
-          orb is the mic control there, and the loop drives dictation through the
-          composer runtime rather than by clicking this. Kept mounted so composer
-          state stays consistent across entering and leaving voice mode. */}
       <div className={cn(voiceEngaged ? "hidden" : "contents")}>
         <ComposerPrimitive.If dictation={false}>
           {audioUpload.busy ? (

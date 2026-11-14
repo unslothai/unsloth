@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The clips on the playback timeline. onended used to be the only way a clip left
-// the set, so a source started into a context whose clock never moved (WebKit parks
-// it around a mic reopen) stayed "playing" forever: the orb stuck on speaking and
-// every later aside, the approval prompt included, was dropped behind it.
 
 export const CLIP_WATCHDOG_GRACE_MS = 2000;
 
@@ -36,11 +32,8 @@ interface Entry extends LedgerClip {
 
 export interface ClipLedgerDeps {
   ctx(): LedgerContext | null;
-  /** Paused or held on purpose: a frozen clock is expected, not a fault. */
   frozen(): boolean;
-  /** The first clip went on the timeline. */
   onBusy(): void;
-  /** The last clip left it, by ending or being reaped. */
   onIdle(): void;
   trace(event: string, detail: Record<string, unknown>): void;
   now(): number;
@@ -52,9 +45,8 @@ export interface ClipLedger {
   readonly size: number;
   clips(): Iterable<LedgerClip>;
   add(clip: LedgerClip): void;
-  /** A clip is on the speaker right now: started, not finished, clock running. */
   audible(): boolean;
-  /** Force out clips that cannot be playing (clock parked, or past their end). */
+  /** onended alone left a clip on a parked clock "playing" forever, blocking every later aside. */
   reapStale(): number;
   clear(): void;
 }
@@ -100,7 +92,6 @@ export function createClipLedger(deps: ClipLedgerDeps): ClipLedger {
     if (!entries.has(e)) return;
     const ctx = deps.ctx();
     if (deps.frozen()) return arm(e);
-    // Still playing on a clock that moves (a late start, a short interruption): wait it out.
     if (ctx && ctx.state === "running" && ctx.currentTime > e.seenTime && ctx.currentTime < e.start + e.duration) {
       return arm(e);
     }
@@ -158,10 +149,7 @@ export function createClipLedger(deps: ClipLedgerDeps): ClipLedger {
   };
 }
 
-/**
- * Whether an aside may play now. A patient one (the approval prompt) is dropped only
- * for something actually audible; a stuck or stale clip is reaped instead.
- */
+// A patient aside is dropped only for something actually audible; a stuck clip is reaped instead.
 export function asideBlocked(ledger: ClipLedger, opts: { patient: boolean; replySynth: boolean }): boolean {
   if (!opts.patient) return ledger.size > 0 || opts.replySynth;
   if (ledger.audible()) return true;

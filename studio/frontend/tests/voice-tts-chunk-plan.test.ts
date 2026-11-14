@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// How many pending sentences go into one synth request: one for a fast start,
-// then merged up to a budget, with a bounded wait for more while nothing plays.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -29,16 +27,12 @@ test("the first chunk is the first sentence alone", () => {
 });
 
 test("later sentences merge up to the target", () => {
-  // 100 + 1 + 100 = 201 < target, the third one crosses it and is still taken.
   assert.equal(plan({ pending: [s(100), s(100), s(100), s(100)] }), 3);
-  // Once over the target the next sentence waits for its own chunk.
   assert.equal(plan({ pending: [s(TTS_CHUNK_TARGET_CHARS), s(10), s(10)] }), 1);
 });
 
 test("the hard cap closes a chunk and never splits a sentence", () => {
-  // 200 + 1 + 150 would pass the cap, so the second sentence starts the next chunk.
   assert.equal(plan({ pending: [s(200), s(150), s(10)] }), 1);
-  // A sentence longer than the cap goes alone, whole.
   assert.equal(plan({ pending: [s(TTS_CHUNK_MAX_CHARS + 50), s(10)] }), 1);
   assert.equal(plan({ pending: [s(TTS_CHUNK_MAX_CHARS + 50)], final: true }), 1);
 });

@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Sentence chunking for the voice loop. Each chunk becomes one synth request, so
- * a bad boundary is audible: the codec is handed a fragment, and the next clip
- * starts mid-thought after a gap.
- *
- * Worth real tests because this is the one part of the voice path that needs no
- * microphone, no GPU and no loaded model.
- */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -71,8 +63,7 @@ test("newlines are boundaries, so a list speaks a line at a time", () => {
 });
 
 test("stripForSpeech keeps the newlines the splitter needs", () => {
-  // Regression: this used to collapse every \s+ to a space, which erased the
-  // paragraph breaks and made a whole multi-paragraph reply one synth request.
+  // Regression: collapsing every \s+ merged paragraphs into one synth request.
   const reply = 'Sure! Here it is:\n\n**"Lice, lice, lice."**\n\nLet me know!';
   const spoken = stripForSpeech(reply);
   assert.ok(spoken.includes("\n"), "paragraph breaks must survive stripping");
@@ -86,4 +77,10 @@ test("stripForSpeech keeps the newlines the splitter needs", () => {
 
 test("stripForSpeech still drops markup and emoji", () => {
   assert.equal(stripForSpeech("**bold** and `code` 😀"), "bold and code");
+});
+
+test("a Unicode minus before a number survives as a minus", () => {
+  assert.equal(stripForSpeech("The temperature is −5 degrees."), "The temperature is -5 degrees.");
+  assert.equal(stripForSpeech("The result is −2."), "The result is -2.");
+  assert.equal(stripForSpeech("Paris — the capital."), "Paris the capital.");
 });

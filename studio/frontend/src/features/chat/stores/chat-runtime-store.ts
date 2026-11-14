@@ -2448,6 +2448,7 @@ type ChatRuntimeStore = {
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
+  loadedNpuContextFit: number | null;
   loadedContextBudget: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
@@ -2668,60 +2669,22 @@ type ChatRuntimeStore = {
   activeNativePathToken: string | null;
   // The desktop host prunes file leases on a TTL, so an expired token forces re-selection.
   activeNativePathExpiresAtMs: number | null;
-  /**
-   * Voice conversation mode state (set by the composer voice control).
-   * - "off"         — inactive
-   * - "configuring" — armed, voice picker visible, loop NOT started
-   * - "active"      — loop running (mic auto-start enabled)
-   * Not persisted — resets to "off" on page load.
-   */
   voiceMode: "off" | "configuring" | "active";
-  /** The audio.cpp voice the loop speaks with. Persisted. */
   selectedVoiceModelId: string;
-  /** A saved Audio voice for a voice that can clone; "" is the model's own. Persisted. */
   selectedVoiceId: string;
-  /** A built-in speaker of a voice that lists several; "" is the model's default. Persisted. */
   selectedVoiceSpeaker: string;
-  /** The transcription model the loop listens with. Persisted. */
   selectedSttModelId: string;
-  /** The audio.cpp voice activity detector that checks each clip for a voice. Persisted. */
   selectedVadModelId: string;
-  /** The detector is resident on the backend. Not persisted. */
   vadSlotLoaded: boolean;
-  /** True while the voice slot (TTS) is loading, so the orb can show a loading
-   *  state instead of appearing ready to listen. Not persisted. */
   voiceSlotLoading: boolean;
-  /** True only when the backend voice slot is actually loaded with the selected
-   *  voice (synced from /voice/status), so the top-bar speak icon goes green.
-   *  Distinct from a mere selection, which persists but doesn't load the slot.
-   *  Not persisted. */
   voiceSlotLoaded: boolean;
-  /** True while a batch STT engine is turning an utterance into text, so the orb
-   *  shows a processing state instead of appearing idle. The streaming engine the
-   *  loop runs on today never sets it; it is the hook a batch engine needs. Not
-   *  persisted. */
   voiceTranscribing: boolean;
-  /** True while the mic is actively hearing your voice (VAD above the floor), so
-   *  the orb shows a distinct "hearing you" colour -- immediate feedback that your
-   *  speech is being captured. Not persisted. */
   voiceHearing: boolean;
-  /** The user clicked into a held voice fragment: the turn waits for their send. */
   voiceHeldForEdit: boolean;
-  /** The loop keeps running but the mic frames are dropped. */
   voiceMuted: boolean;
-  /** The composer's pause: mic muted and playback frozen until resumed. */
   voicePaused: boolean;
-  /** Derived orb state written by the voice control; consumed by VoiceOrb. The
-   *  union lives with deriveOrbState, which is what produces every value here. */
   voiceOrbState: VoiceOrbState | null;
-  /** When voice mode is active, whether the full-screen orb is minimized so the
-   *  chat is visible while speech-to-speech keeps running. Not persisted. */
   voiceOrbCollapsed: boolean;
-  /** Reloads the backend voice slot if a voice is selected but the slot is
-   *  unloaded (after a remount, auth bounce, or backend relaunch). Set by
-   *  ChatPage; called by the TTS player to self-heal a 400 (slot gone). Resolves
-   *  true once a matching slot is loaded. Null until ChatPage mounts. Not
-   *  persisted. */
   ensureVoiceSlotLoaded: (() => Promise<boolean>) | null;
   setEnsureVoiceSlotLoaded: (fn: (() => Promise<boolean>) | null) => void;
   hydratePersistedSettings: () => Promise<void>;
@@ -4335,6 +4298,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedContextEnforced: null,
   loadedContextUnboundedWhenBatched: false,
   loadedParallelSlots: null,
+  loadedNpuContextFit: null,
   loadedContextBudget: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
@@ -4519,7 +4483,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   voiceMode: "off" as const,
-  // An Orpheus pick from the llama-server voice slot falls back to the default voice.
   selectedVoiceModelId: migrateVoiceTtsModel(loadString(CHAT_VOICE_MODEL_ID_KEY, "")),
   selectedVoiceId: loadString(CHAT_VOICE_SAVED_ID_KEY, ""),
   selectedVoiceSpeaker: loadString(CHAT_VOICE_SPEAKER_KEY, ""),
@@ -4728,11 +4691,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return { loadingModelPick: null };
     }),
+  // Clears the orb's last state too: a stale "listening" came back over the welcome composer on reopen.
   setVoiceMode: (voiceMode) =>
-    // Leaving voice mode always resets the minimized/collapsed orb view so the
-    // next session starts expanded, and clears any lingering "hearing" state and
-    // the orb's last state: a stale "listening" came back over the welcome
-    // composer when voice was reopened to "configuring".
     set(
       voiceMode === "off"
         ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false, voiceOrbState: null, voicePaused: false }

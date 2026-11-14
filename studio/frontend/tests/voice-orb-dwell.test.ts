@@ -11,7 +11,6 @@ import {
 } from "../src/features/chat/voice/orb-dwell.ts";
 import type { VoiceOrbState } from "../src/features/chat/voice/orb-state.ts";
 
-/** A fake clock whose timers fire only when the test advances it. */
 function clock() {
   let t = 0;
   let nextId = 1;
@@ -115,7 +114,6 @@ test("returning to the displayed state cancels the pending switch", () => {
   advance(1000);
   dwell.push("speaking");
   advance(50);
-  // A brief gap between two clips: synthesizing was queued, then playback resumed.
   dwell.push("synthesizing");
   dwell.push("speaking");
   assert.equal(pending(), 0);
@@ -133,7 +131,6 @@ test("the loop stopping clears the orb at once and drops anything pending", () =
   dwell.push(null);
   assert.equal(pending(), 0);
   assert.deepEqual(emitted, ["listening", "transcribing", null]);
-  // A fresh loop starts clean: no dwell carried over from before the stop.
   advance(10);
   dwell.push("loading");
   assert.deepEqual(emitted, ["listening", "transcribing", null, "loading"]);

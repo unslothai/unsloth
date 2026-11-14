@@ -24,10 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-# Each model is a Hugging Face repo <hub>/voice-<name> with the same layout as a local
-# <dir>/<name>/ folder. Neither is set by default, so nothing is fetched: the app keeps its word
-# rules until UNSLOTH_VOICE_MODELS_DIR or UNSLOTH_VOICE_MODELS_HUB (or a Decision checkpoint) is set.
-# A local dir wins when it holds the files; otherwise the needed files come from the hub.
+# Neither env var is set by default, so nothing is fetched; a local dir wins when it holds the files.
 ENV_DIR = "UNSLOTH_VOICE_MODELS_DIR"
 ENV_HUB = "UNSLOTH_VOICE_MODELS_HUB"
 BUNDLED_PHRASES = Path(__file__).with_name("voice_phrases.json")
@@ -54,7 +51,6 @@ def models_hub() -> Optional[str]:
     return (os.environ.get(ENV_HUB) or "").strip() or None
 
 
-# What each loader reads, relative to its model dir: the hub download is limited to these.
 HUB_FILES = {
     "judge": [f"models/{JUDGE_ONNX}/*", f"models/{JUDGE_ONNX}/onnx/*"],
     "filler": [
@@ -66,9 +62,7 @@ HUB_FILES = {
     ],
     "interject": ["models/tfidf_lr/*"],
 }
-# Files that say the local folder really holds the model (a stray empty dir does not); any one is enough.
 _MARKER = {
-    # _Judge falls back to the first-pass torch weights when the int8 export is absent.
     "judge": (f"models/{JUDGE_ONNX}/onnx/model_int8.onnx", "models/modernbert_base/config.json"),
     "filler": ("phrases.json",),
     "interject": ("models/tfidf_lr/model.pkl",),
@@ -87,9 +81,6 @@ def resolve_model_dir(name: str, root: Optional[Path], hub: Optional[str]) -> Pa
     from huggingface_hub import snapshot_download
 
     return Path(snapshot_download(f"{hub}/voice-{name}", allow_patterns = HUB_FILES[name]))
-
-
-# ---------------------------------------------------------------- filler: featurize + echo slot
 
 
 def featurize(text: str, prev_q: bool = False) -> str:
@@ -248,7 +239,6 @@ _FLIP = {
     "i've": "you've",
     "we": "you",
     "us": "you",
-    # The other direction: "what's your skill level" echoes as "my skill level".
     "your": "my",
     "yours": "mine",
     "yourself": "myself",
@@ -444,9 +434,7 @@ class _OnnxClassifier:
         return self.classes[i], float(p[i])
 
 
-# The TF-IDF pickles can come from the Hub (UNSLOTH_VOICE_MODELS_HUB), so unpickling resolves only
-# classes from sklearn/scipy/numpy and numpy's array rebuilders: a class rebuilds an estimator, while
-# a function such as os.system or numpy.testing's runstring is refused.
+# The pickles can come from the Hub, so unpickling resolves only these packages' classes, never a function.
 _PICKLE_PACKAGES = ("sklearn", "scipy", "numpy")
 _PICKLE_CALLABLES = {
     ("numpy.core.multiarray", "_reconstruct"),
@@ -484,8 +472,7 @@ class _SklearnUnpickler(pickle.Unpickler):
             return super().find_class(module, name)
         if module == "collections" and name in ("OrderedDict", "defaultdict"):
             return super().find_class(module, name)
-        # A dotted name walks attributes ("subprocess.Popen" off a module that imports it), and a
-        # class re-exported from elsewhere is not one of these packages' own: both are refused.
+        # Dotted names walk attributes ("subprocess.Popen") and re-exports are not the package's own: both refused.
         if "." not in name and module.split(".")[0] in _PICKLE_PACKAGES:
             found = super().find_class(module, name)
             home = str(getattr(found, "__module__", "") or "").split(".")[0]
@@ -638,8 +625,6 @@ class _Filler:
         out["ms"] = round((time.perf_counter() - t0) * 1000, 2)
         return out
 
-
-# ---------------------------------------------------------------- interject: hand features + bias
 
 _IJ_STOP = set(
     "a an the to of in on for and or but so um uh like you know i me my we our it its this that these those is are was were be been do does did can could would should will please just really very some any with at by from as about what which who how why when where into onto up down out over if then than there here yeah yes no ok okay oh hmm well right".split()
@@ -816,9 +801,6 @@ class _Interject:
         }
 
 
-# ---------------------------------------------------------------- judge
-
-
 class _OnnxJudge:
     backend = "onnx"
 
@@ -869,14 +851,10 @@ class _TorchJudge:
 
 
 def _Judge(root: Path):
-    # The full-data int8 export when present (4 ms), else the first-pass torch weights.
     onnx = root / "models" / JUDGE_ONNX
     if (onnx / "onnx" / "model_int8.onnx").exists():
         return _OnnxJudge(onnx)
     return _TorchJudge(root / "models" / "modernbert_base")
-
-
-# ---------------------------------------------------------------- singleton
 
 
 class VoiceModels:
@@ -892,7 +870,6 @@ class VoiceModels:
         self._models: dict[str, Any] = {}
         self._errors: dict[str, str] = {}
         self._dirs: dict[str, Path] = {}
-        # (checkpoint, message) from the last warm-up that the runtime refused before loading anything.
         self._decision_error: Optional[tuple[str, str]] = None
 
     _loaders = {"judge": _Judge, "filler": _Filler, "interject": _Interject}
@@ -958,7 +935,6 @@ class VoiceModels:
             return voice_decisions.DecisionJudge(voice)
         if name == "interject":
             return voice_decisions.DecisionInterject(voice)
-        # The phrase bank and echo tagger stay; only the class comes from the checkpoint.
         if self.root is None and not self.hub:
             filler = _Filler.bank_only()
         else:

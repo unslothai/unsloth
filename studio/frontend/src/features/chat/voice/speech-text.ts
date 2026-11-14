@@ -1,19 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Turning assistant text into what the voice actually speaks, and into the chunks
-// it speaks one at a time. Dependency-free: these are the only part of the voice
-// path testable without a mic or a GPU.
 
 const SPEECH_STRIP_RE =
   /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{20E3}\u{FE00}-\u{FE0F}\u{200D}]/gu;
 
-// Normalize text for TTS: some characters derail Orpheus (like the colon it reads
-// as a speaker tag) or get voiced literally by any TTS model. Em/en dashes and the
-// single-char ellipsis are the main offenders (an em dash breaks the voice), and
-// markdown/markup symbols get read out ("asterisk asterisk"). All of these are just
-// dropped (replaced with a space, not a comma, so no phantom pauses are inserted);
-// smart quotes are normalized. Speech ONLY -- the on-screen chat text keeps everything.
 export function stripForSpeech(text: string): string {
   const out = text
     .replace(/\[([^\]\n]*)\]\([^)\s]*\)/g, "$1") //               [text](url) -> text
@@ -27,26 +18,22 @@ export function stripForSpeech(text: string): string {
     .replace(/(?<!\d)\/|\/(?!\d)/g, " ") //                          "and/or", "/s"; not 1/2
     .replace(SPEECH_STRIP_RE, "")
     .replace(/−(?=\d)/g, "-") //                                 a numeric minus is not a dash
-    .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ") // — – ― ‒ −  -> drop
-    .replace(/[^\S\n]*…[^\S\n]*/g, " ") //                 …  -> drop
-    .replace(/\.{2,}/g, " ") //                                 ... -> drop
-    .replace(/[‐‑]/g, "-") //                          unicode hyphens -> ASCII
-    .replace(/[*_`~^|#<>\\{}[\]]/g, " ") //                      markdown / markup -> space
-    .replace(/[‘’‚‛]/g, "'") //             smart single quotes
-    .replace(/[“”„‟]/g, '"') //             smart double quotes
-    // Collapse horizontal whitespace only. Newlines are sentence boundaries to
-    // splitIntoSentences, and flattening them here (as this used to) made a
-    // multi-paragraph reply one enormous sentence: the loop then waited on a
-    // single long synth instead of speaking the first line straight away.
+    .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ")
+    .replace(/[^\S\n]*…[^\S\n]*/g, " ")
+    .replace(/\.{2,}/g, " ")
+    .replace(/[‐‑]/g, "-")
+    .replace(/[*_`~^|#<>\\{}[\]]/g, " ")
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[“”„‟]/g, '"')
+    // Horizontal only: newlines are sentence boundaries for splitIntoSentences.
     .replace(/[^\S\n]+/g, " ")
     .replace(/ ([.,!?;:])/g, "$1")
     .replace(/\n{2,}/g, "\n")
     .trim();
-  // Nothing to say: a TTS model handed bare punctuation voices it as noise.
+  // A TTS model handed bare punctuation voices it as noise.
   return /[\p{L}\p{N}]/u.test(out) ? out : "";
 }
 
-// A tool call or JSON written as text: its keys and quotes are not words.
 const JSON_OPEN_RE = /^[ \t]*(?:\{|\[[ \t]*(?:[{["]|$))/;
 const JSON_KEY_LINE_RE =
   /^[ \t]*"[^"\n]+"[ \t]*:[ \t]*(?:"[^"\n]*"|-?\d[\d.eE+-]*|true|false|null|\{\}|\[\]|[{[])[ \t]*,?[ \t]*$/;
@@ -70,8 +57,6 @@ function bracketDepth(line: string): number {
   return depth;
 }
 
-/** Blanks JSON lines: a block from its opening line to its matching close (or the end,
- *  mid-stream), and lone `"key": value,` lines. */
 function dropJsonLines(): (line: string, i: number, lines: string[]) => string {
   let depth = 0;
   return (line, i, lines) => {
@@ -89,11 +74,7 @@ function dropJsonLines(): (line: string, i: number, lines: string[]) => string {
   };
 }
 
-/**
- * The part of a reply that is meant to be heard, applied to the whole text before it is
- * split. Every rule only looks backwards or drops to the end, so a streamed prefix splits
- * the same way the finished reply does.
- */
+// Every rule only looks backwards or drops to the end, so a streamed prefix splits as the finished reply does.
 export function speakableReply(text: string): string {
   return text
     .replace(/<(think|thinking|reasoning|tool_call)>[\s\S]*?(<\/\1>|$)/gi, " ")
@@ -102,9 +83,7 @@ export function speakableReply(text: string): string {
     .split("\n")
     .map(dropJsonLines())
     .join("\n")
-    // List markers: "1." on its own reads as a one-word sentence.
     .replace(/^[ \t]*(?:\d{1,2}[.)]|[-*+•])(?=[ \t]|$)[ \t]*/gm, "")
-    // A line with no words (")$.") would be glued onto the sentence before it and voiced as noise.
     .split("\n")
     .map((line) => (speakable(line) ? line : ""))
     .join("\n");
@@ -122,12 +101,9 @@ const SENTENCE_FINAL_ABBREVIATIONS = new Set(["etc", "inc", "ltd", "co", "jr", "
 
 const speakable = (s: string) => /[\p{L}\p{N}]/u.test(s);
 
-/** The streamed text stops right after this sentence's period, which may not end it yet:
- *  "about 2." becomes "about 2.5 inches", "Dr." becomes "Dr. Smith". */
 export function sentenceMayContinue(sentence: string, textEndsWithSpace: boolean): boolean {
   if (!textEndsWithSpace) return true;
   const tail = sentence.replace(/["')\]]+$/, "");
-  // "in the U.S." may go on ("U.S. about it"); the splitter only joins it once the next word is in.
   if (/(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail)) return true;
   const word = /(?:^|\s)([A-Za-z]+)\.$/.exec(tail)?.[1];
   return word !== undefined && (word.length === 1 || SPEECH_ABBREVIATIONS.has(word.toLowerCase()));
@@ -181,8 +157,6 @@ export function splitIntoSentences(text: string): string[] {
   return out;
 }
 
-// While the LLM is still writing, only terminated sentences are safe to speak;
-// the trailing chunk is the sentence in progress.
 export function splitStreaming(raw: string): {
   complete: string[];
   partial: string;
@@ -190,8 +164,7 @@ export function splitStreaming(raw: string): {
   const text = speakableReply(raw);
   const parts = splitIntoSentences(text);
   if (parts.length === 0) return { complete: [], partial: "" };
-  // "about 2." may be "2.5" and "Dr." may be "Dr. Smith" mid-stream: speaking either as a
-  // sentence drops what the split later merges into it and shifts every later index.
+  // "about 2." may be "2.5" mid-stream: speaking it as a sentence shifts every later index.
   const last = parts[parts.length - 1] ?? "";
   if (/[.!?]["')\]]?\s*$/.test(text) && !sentenceMayContinue(last, /\s$/.test(text))) {
     return { complete: parts, partial: "" };

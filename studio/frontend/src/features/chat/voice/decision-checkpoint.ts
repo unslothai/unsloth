@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Decision checkpoint voice mode decides with (turn end, filler, interrupt). A switch is
-// stored installation-wide and starts loading at once; the next decision uses it.
 
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
@@ -36,7 +34,6 @@ async function read(res: Response): Promise<VoiceDecisionStatus> {
     try {
       detail = ((await res.json()) as { detail?: string }).detail ?? detail;
     } catch {
-      // keep the status line
     }
     throw new Error(detail);
   }
@@ -47,7 +44,6 @@ export async function fetchVoiceDecision(): Promise<VoiceDecisionStatus> {
   return read(await authFetch(URL));
 }
 
-/** null clears the pick, so the launch default applies again. */
 export async function setVoiceDecision(
   name: string | null,
 ): Promise<VoiceDecisionStatus> {
@@ -62,15 +58,11 @@ export async function setVoiceDecision(
 
 const POLL_MS = 1500;
 
-/** The current pick, refreshed on `refreshKey` and polled while it loads. null until read or when refused. */
 export function useVoiceDecision(refreshKey: unknown): {
   status: VoiceDecisionStatus | null;
-  /** The load state to show: a switch still starting reads as loading. */
   state: VoiceLoadState | null;
-  /** Take a switch's answer and poll until the new pick has loaded or failed. */
   switched: (s: VoiceDecisionStatus) => void;
   failed: boolean;
-  /** Read it again, e.g. after a custom folder was added. */
   reload: () => void;
 } {
   const [status, setStatus] = useState<VoiceDecisionStatus | null>(null);

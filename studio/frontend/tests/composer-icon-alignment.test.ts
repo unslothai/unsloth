@@ -39,7 +39,6 @@ test("every isolated composer stop square draws at size-3.5, about a third of it
     .flatMap((source) => tags(source, "HugeiconsIcon"))
     .filter((tag) => /icon=\{StopIcon\}/.test(tag) && /\bsize-3\.5(?![\w.-])/.test(tag));
 
-  // Six run/queue/research stops plus the square the voice button holds into.
   assert.equal(stops.length, 7);
 });
 

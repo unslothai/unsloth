@@ -1155,7 +1155,6 @@ assert.equal(
 );
 
 
-// Every audio group carries a task tag (vad: voice mode's speech check); the other catalogs carry none.
 for (const group of AUDIO_CATALOG) {
   assert.ok(
     group.task === "tts" || group.task === "stt" || group.task === "vad",

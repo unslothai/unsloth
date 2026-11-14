@@ -1012,7 +1012,6 @@ async def delete_threads(
     # Archives and uploads are keyed by thread id; drop them so each deleted chat does not leak a scope.
     await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
     await run_in_threadpool(chat_originals.sweep)
-    # The voice decision log keeps transcripts keyed by thread id; a deleted chat's rows go with it.
     await run_in_threadpool(_remove_voice_log_rows, payload.ids)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
@@ -2062,7 +2061,6 @@ async def clear_history(
         _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
     await run_in_threadpool(chat_originals.sweep)
-    # The voice decision log keeps transcripts by thread id; the cleared chats' rows go too.
     await run_in_threadpool(_remove_voice_log_rows, list(dict.fromkeys(thread_ids + cleared)))
     # delete_files off by default, as in DELETE /threads: the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)

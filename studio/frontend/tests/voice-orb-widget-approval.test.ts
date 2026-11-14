@@ -41,7 +41,6 @@ test("a call parked in another chat (a Compare pane, a background run) is not th
   };
   assert.deepEqual(pendingApproval(store, "A", nowhere), { id: "call-voice-thread-A", more: 0 });
   assert.equal(pendingApproval({ "call-compare-pane-B": entry("B") }, "A", nowhere), null);
-  // A thread id that is only the tail of another's is not the same thread.
   assert.equal(pendingApproval({ x: entry("xA") }, "A", nowhere), null);
 });
 
@@ -184,11 +183,9 @@ test("placed in physical pixels at 2x, it still lands inside the frame", () => {
 test("a ball at the left edge gets its x back once the approval is answered", () => {
   const pos = clampToScreens({ x: -200, y: 300 }, [screen]);
   const p = placeApprovalPopup(pos, [screen], 1);
-  // Held on screen while the card shows: the window moved right to fit it.
   assert.ok(p.at.x > pos.x);
   assert.deepEqual(p.shift, { x: p.at.x - pos.x, y: p.at.y - pos.y });
   assert.deepEqual(restoreAfterPopup(p.at, p.shift), pos);
-  // The ball's centre returns too, not only the window.
   assert.equal(restoreAfterPopup(p.at, p.shift).x + ORB_WIDGET_CENTER.x, pos.x + ORB_WIDGET_CENTER.x);
 });
 
@@ -206,7 +203,6 @@ test("every shift, sideways or up, is undone on dismiss, at 1x and 2x", () => {
       assert.deepEqual(restoreAfterPopup(p.at, p.shift), pos, JSON.stringify({ pos, scale }));
     }
   }
-  // Nothing moved, nothing to undo.
   const still = placeApprovalPopup({ x: 600, y: 300 }, [screen]);
   assert.deepEqual(still.shift, { x: 0, y: 0 });
 });

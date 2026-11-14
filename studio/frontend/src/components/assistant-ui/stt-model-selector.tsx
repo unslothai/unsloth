@@ -20,19 +20,15 @@ import { toast } from "@/lib/toast";
 import { type FC, useMemo } from "react";
 
 interface SttModelSelectorProps {
-  /** The transcription model the loop listens with (a dictation key or an audio.cpp folder id). */
   value: string;
   onValueChange: (id: string) => void;
-  /** The listener is loaded, so the row shows as resident. */
   ready?: boolean;
-  /** Called once a pick is made or the picker closes. */
   onClose?: () => void;
 }
 
 const transcribeRow = (row: Parameters<typeof audioRowMatchesWorkflow>[0]) =>
   audioRowMatchesWorkflow(row, "transcribe");
 
-/** The picker row for a saved dictation key: the Transcribe tab lists repos, dictation saves keys. */
 export function sttRepoForKey(key: string): string {
   if (isAudioCppFolderId(key)) return key;
   if (key.startsWith("audiocpp-"))
@@ -42,7 +38,6 @@ export function sttRepoForKey(key: string): string {
   return sttRepoIdForSidecarKey(key, "transformers");
 }
 
-/** Voice mode's "Listen with" picker, inline in the voice panel: the Audio tab's Transcribe picker, saving the dictation key. */
 export const SttModelSelector: FC<SttModelSelectorProps> = ({
   value,
   onValueChange,
