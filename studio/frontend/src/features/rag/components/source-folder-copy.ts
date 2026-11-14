@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const SOURCE_FOLDER_DESCRIPTION =
-  "Keep supported documents in sync for chats to search. Linking does not grant access to edit the original files.";
+  "Keep supported documents in sync for chats to search. The row counts files ready for search in the folder; the chip counts files already added to this project. Linking does not grant access to edit the original files.";
 
 export function sourceFolderUnavailableMessage(isDesktop: boolean): string {
   return isDesktop

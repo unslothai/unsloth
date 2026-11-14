@@ -26,6 +26,10 @@ import {
 import { LinkedFoldersManager } from "./linked-folders-manager";
 import { ProjectSourceChip } from "./project-source-chip";
 import {
+  linkedFolderChipLabel,
+  linkedFolderChipTitle,
+} from "./source-folder-progress";
+import {
   RAG_SOURCE_UPLOAD_ACCEPT,
   SUPPORTED_SOURCES_HINT,
   isSupportedSourceName,
@@ -259,7 +263,8 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               return (
                 <DocumentStatusChip
                   key={`folder:${folderId}`}
-                  filename={`${name} · ${docs.length} file${docs.length === 1 ? "" : "s"}`}
+                  filename={linkedFolderChipLabel(name, docs.length, indexing)}
+                  title={linkedFolderChipTitle(name, docs.length, indexing)}
                   status={indexing > 0 ? "running" : "completed"}
                   progress={
                     indexing > 0 ? (docs.length - indexing) / docs.length : null
