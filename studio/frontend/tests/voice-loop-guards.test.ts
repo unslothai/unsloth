@@ -86,4 +86,7 @@ test("a turn queued behind a reply that already ended is sent, not parked", () =
     engine,
     /const replyGone =\s*!auiRef\.current\.thread\(\)\.getState\(\)\.isRunning && !isSpeakingRef\.current && !isPlayingRef\.current;\s*if \(action === "ignore" \|\| \(action === "queue" && !replyGone\)\) \{/,
   );
+test("the barge-in probe is judged on the shorter bar its clip can meet", () => {
+  assert.match(loop, /const BARGE_VAD_MIN_SPEECH_MS = 200;/);
+  assert.match(loop, /BARGE_VAD_MIN_SPEECH_MS,?\s*\)\.then\(\(voiced\) => \{/);
 });
