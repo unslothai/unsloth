@@ -78,3 +78,9 @@ test("stripForSpeech keeps the newlines the splitter needs", () => {
 test("stripForSpeech still drops markup and emoji", () => {
   assert.equal(stripForSpeech("**bold** and `code` 😀"), "bold and code");
 });
+
+test("a Unicode minus before a number survives as a minus", () => {
+  assert.equal(stripForSpeech("The temperature is −5 degrees."), "The temperature is -5 degrees.");
+  assert.equal(stripForSpeech("The result is −2."), "The result is -2.");
+  assert.equal(stripForSpeech("Paris — the capital."), "Paris the capital.");
+});
