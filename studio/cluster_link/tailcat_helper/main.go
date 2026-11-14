@@ -10,6 +10,9 @@
 //
 // "unsloth-link genkey --kind server|client --path P [--fixed-region]" writes a
 // key file (tailcat's genkey JSON format, mode 0600) and prints its public key.
+//
+// "unsloth-link devderp" (tests only) runs a loopback DERP + STUN server and
+// prints the URL of a DERP map naming it; it exits when stdin closes.
 package main
 
 import (
@@ -40,6 +43,8 @@ import (
 
 const protocolVersion = 1
 
+const dialTimeout = 15 * time.Second
+
 var tailcatVersion = "dev"
 
 var (
@@ -66,6 +71,9 @@ type response map[string]any
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "genkey" {
 		os.Exit(runGenkey(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "devderp" {
+		os.Exit(runDevDERPMap())
 	}
 	if len(os.Args) < 2 || os.Args[1] != "stdio" {
 		fmt.Fprintln(os.Stderr, "usage: unsloth-link stdio [--derpmap-url URL] | genkey --kind server|client --path P [--fixed-region]")
@@ -485,7 +493,8 @@ func (c *client) forward(port uint16) (int, error) {
 				return
 			}
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				// tailcat drops a refused client silently: give up soon so callers see EOF, not a hang.
+				ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 				remote, err := c.tc.DialTCPPort(ctx, port)
 				cancel()
 				if err != nil {
@@ -679,4 +688,28 @@ func runDevDERP() *tailcfg.DERPRegion {
 			InsecureForTests: true,
 		}},
 	}
+}
+
+// runDevDERPMap shares one loopback DERP between test processes through a DERP map URL, so keys
+// with a fixed region take the same path as with the public map.
+func runDevDERPMap() int {
+	region := runDevDERP()
+	region.RegionID, region.Nodes[0].RegionID = 900, 900
+	body, err := json.Marshal(&tailcfg.DERPMap{Regions: map[tailcfg.DERPRegionID]*tailcfg.DERPRegion{900: region}})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "devderp:", err)
+		return 1
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "devderp:", err)
+		return 1
+	}
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+	}))
+	fmt.Printf("http://%s/derpmap.json\n", ln.Addr())
+	io.Copy(io.Discard, os.Stdin)
+	return 0
 }
