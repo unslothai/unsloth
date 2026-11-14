@@ -549,6 +549,12 @@ export const VoiceEngine: FC = () => {
         }
         return;
       }
+      // A phrase begun inside the window joins this turn: starting the run now would stop its recorder mid-word.
+      const rt = useChatRuntimeStore.getState();
+      if ((rt.voiceHearing || rt.voiceTranscribing) && attempt < VOICE_COALESCE_MAX_RETRIES) {
+        voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_MS);
+        return;
+      }
       const msgs = t.getState().messages;
       if (msgs.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES) {
         voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_POLL_MS);

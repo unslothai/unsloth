@@ -39,6 +39,7 @@ import {
 import {
   getVoiceParkedText,
   getVoiceReplyText,
+  getVoiceMode,
   isVoicePlaybackActive,
   requestVoiceBargeAbort,
   requestVoiceBargeIn,
@@ -633,6 +634,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           throw error;
         } finally {
           store.setVoiceTranscribing(false);
+        }
+        // Voice was turned off while this clip was heard: its words are discarded, never held for the next session.
+        if (getVoiceMode() === "off") {
+          finish("cancelled");
+          return;
         }
         if (transcript && isHallucinatedTranscript(transcript)) {
           publishSttDecision(false, "repeated word");
