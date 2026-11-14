@@ -1017,6 +1017,7 @@ export const tr = {
       customizeSidebar: "Kenar çubuğunu özelleştir",
       newBadge: "Yeni",
       export: "Dışa aktar",
+      pinned: "Sabitlenenler",
       recents: "Son kullanılanlar",
       noChatsYet: "Henüz sohbet yok",
       noChats: "Sohbet yok",
@@ -1101,6 +1102,10 @@ export const tr = {
       deleteProjectsFilesDescription:
         "Her projenin çalışma alanı klasörü diskten kaldırılır.",
       countSelected: "{count} seçildi",
+      selectChats: "Sohbetleri seç",
+      selectAllChats: "Tüm sohbetleri seç",
+      deselectAllChats: "Tüm sohbetlerin seçimini kaldır",
+      clearSelection: "Seçimi temizle",
       pinChats: "Sohbetleri sabitle",
       unpinChats: "Sohbetlerin sabitlemesini kaldır",
       archiveChats: "Sohbetleri arşivle",

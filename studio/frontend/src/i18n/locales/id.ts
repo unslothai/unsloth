@@ -1021,6 +1021,7 @@ export const id = {
       customizeSidebar: "Sesuaikan bilah sisi",
       newBadge: "Baru",
       export: "Ekspor",
+      pinned: "Disematkan",
       recents: "Terbaru",
       noChatsYet: "Belum ada chat",
       noChats: "Tidak ada chat",
@@ -1104,6 +1105,10 @@ export const id = {
       deleteProjectsFilesDescription:
         "Folder ruang kerja setiap proyek akan dihapus dari disk.",
       countSelected: "{count} dipilih",
+      selectChats: "Pilih chat",
+      selectAllChats: "Pilih semua chat",
+      deselectAllChats: "Batalkan pilihan semua chat",
+      clearSelection: "Hapus pilihan",
       pinChats: "Sematkan chat",
       unpinChats: "Lepas sematan chat",
       archiveChats: "Arsipkan chat",

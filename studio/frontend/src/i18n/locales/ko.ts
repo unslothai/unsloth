@@ -919,6 +919,7 @@ export const ko = {
       customizeSidebar: "사이드바 사용자 지정",
       newBadge: "신규",
       export: "내보내기",
+      pinned: "고정됨",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
       noChats: "채팅 없음",
@@ -1001,6 +1002,10 @@ export const ko = {
       deleteProjectsFilesDescription:
         "각 프로젝트의 작업 공간 폴더가 디스크에서 삭제됩니다.",
       countSelected: "{count}개 선택됨",
+      selectChats: "채팅 선택",
+      selectAllChats: "모든 채팅 선택",
+      deselectAllChats: "모든 채팅 선택 해제",
+      clearSelection: "선택 지우기",
       pinChats: "채팅 고정",
       unpinChats: "채팅 고정 해제",
       archiveChats: "채팅 보관",

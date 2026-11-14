@@ -128,7 +128,7 @@ test("sidebar rows and chat rows navigate through the coalescer", async () => {
   }
   assert.match(
     source,
-    /function openChatItem\(item: SidebarItem\) \{[\s\S]*?navigateFromRow\(\{\s*to: "\/chat",/,
+    /function openChatItem\(item: SidebarItem, opts: \{ keepSelection\?: boolean \} = \{\}\) \{[\s\S]*?navigateFromRow\(\{\s*to: "\/chat",/,
   );
   assert.match(
     source,

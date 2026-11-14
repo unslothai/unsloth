@@ -2399,6 +2399,19 @@ html[data-chat-font] .aui-root {
 	.sidebar-header-action:hover {
 		background-color: var(--nav-surface-hover);
 	}
+	/* A live selection keeps its toggle in view even once the pointer leaves the header. */
+	.sidebar-header-action[data-active="true"] {
+		@apply opacity-100 pointer-events-auto;
+		background-color: var(--nav-surface-hover);
+	}
+	/* Roomier than the row actions would leave it: the section label stays on one line. */
+	.sidebar-header-action.is-selection-toggle {
+		@apply size-4;
+	}
+	.sidebar-header-action.is-selection-toggle .size-icon {
+		width: calc(var(--icon-size) - 2px);
+		height: calc(var(--icon-size) - 2px);
+	}
 	@media (pointer: coarse) {
 		.sidebar-header-action {
 			@apply opacity-100 pointer-events-auto;

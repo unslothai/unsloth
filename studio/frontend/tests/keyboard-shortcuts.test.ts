@@ -1572,7 +1572,7 @@ test("the published chat lists stop where the sidebar stops", async () => {
   assert.ok(selectAll !== -1, "selectRenderedChats moved");
   assert.match(
     APP_SIDEBAR.slice(selectAll, APP_SIDEBAR.indexOf("\n  }, [", selectAll)),
-    /const ids = renderedChatItems\.map\(\(item\) => item\.id\);/,
+    /const ids = sectionChatItems\.map\(\(item\) => item\.id\);/,
   );
   assert.match(
     APP_SIDEBAR,

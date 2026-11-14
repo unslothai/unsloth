@@ -1028,6 +1028,7 @@ export const pl = {
       customizeSidebar: "Dostosuj pasek boczny",
       newBadge: "Nowość",
       export: "Eksport",
+      pinned: "Przypięte",
       recents: "Ostatnie",
       noChatsYet: "Nie ma jeszcze czatów",
       noChats: "Brak czatów",
@@ -1112,6 +1113,10 @@ export const pl = {
       deleteProjectsFilesDescription:
         "Folder obszaru roboczego każdego projektu zostanie usunięty z dysku.",
       countSelected: "Zaznaczone: {count}",
+      selectChats: "Wybierz czaty",
+      selectAllChats: "Wybierz wszystkie czaty",
+      deselectAllChats: "Odznacz wszystkie czaty",
+      clearSelection: "Wyczyść zaznaczenie",
       pinChats: "Przypnij czaty",
       unpinChats: "Odepnij czaty",
       archiveChats: "Archiwizuj czaty",
