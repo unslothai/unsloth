@@ -141,7 +141,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     messages: list[dict] = []
     inherited = 0
     open_calls: dict[str, dict] = {}
-    read_items = False
+    reread: set[str] = set()
     for position, (origin, ordinal, line) in enumerate(_records(path)):
         payload = line.get("payload")
         if not isinstance(payload, dict):
@@ -179,7 +179,8 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             continue
         if parts[0]["type"] == "text" and not parts[0]["text"]:
             continue
-        read_items |= item is not None
+        if item is not None:
+            reread.add(message_id)
         timestamp = iso_ms(line.get("timestamp"))
         inherited += origin != revision
         messages.append(
@@ -201,8 +202,9 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
         messages = messages,
         # Imports before completed items were read missed their turns: re-read them.
-        revision = f"{revision}:items" if read_items else revision,
+        revision = f"{revision}:items" if reread else revision,
         inherited = inherited,
+        reread = frozenset(reread),
     )
 
 

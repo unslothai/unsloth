@@ -54,9 +54,10 @@ class Transcript:
     messages: list[dict]
     # Which physical file the messages came from; a change (Codex revert) re-bases the ledger
     # at ``inherited``, the count of leading messages carried over from the previous revision.
-    # A ``:<tag>`` suffix names the reader; a stored mark with another tag re-reads from 0.
+    # A ``:<tag>`` suffix names the reader; ``reread`` holds the ids an untagged reader skipped.
     revision: str = ""
     inherited: int = 0
+    reread: frozenset[str] = frozenset()
 
 
 @dataclass(frozen = True)
@@ -217,6 +218,31 @@ def _thread_row(transcript: Transcript, existing: dict, project_id: str) -> dict
     }
 
 
+def _reread_messages(
+    transcript: Transcript, turns: int, revision: str, stored: list[dict]
+) -> list[dict]:
+    """Backfill what an older reader skipped; rows it imported keep their Studio edits and
+    deletions and only move under their backfilled parent."""
+    old = [m for m in transcript.messages if m["id"] not in transcript.reread]
+    if revision.partition(":")[0] == transcript.revision.partition(":")[0]:
+        start = turns
+    else:
+        start = sum(
+            m["id"] not in transcript.reread for m in transcript.messages[: transcript.inherited]
+        )
+    fresh = transcript.reread | {m["id"] for m in old[start:]}
+    rows = {m["id"]: m for m in stored}
+    pending = []
+    for message in transcript.messages:
+        row = rows.get(message["id"])
+        if row is None:
+            if message["id"] in fresh:
+                pending.append(message)
+        elif row.get("parentId") != message.get("parentId"):
+            pending.append({**row, "parentId": message.get("parentId")})
+    return pending
+
+
 def _pending_messages(
     source: Source, transcript: Transcript, existing: bool, stored: list[dict]
 ) -> list[dict]:
@@ -229,13 +255,11 @@ def _pending_messages(
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
     turns, revision = mark
-    if revision == transcript.revision:
-        start = turns
-    elif revision.partition(":")[2] != transcript.revision.partition(":")[2]:
-        start = 0  # a newer reader sees turns the old one skipped, inherited ones too
+    if revision.partition(":")[2] != transcript.revision.partition(":")[2]:
+        pending = _reread_messages(transcript, turns, revision, stored)
     else:
-        start = transcript.inherited
-    pending = transcript.messages[start:]
+        start = turns if revision == transcript.revision else transcript.inherited
+        pending = transcript.messages[start:]
     # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
     # does not orphan it (the frontend refuses a thread with a missing parent).
     present = {message["id"] for message in stored}
@@ -304,7 +328,13 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
     stored = studio_db.list_chat_messages(thread_id) if existing else []
     pending = _pending_messages(source, transcript, bool(existing), stored)
     if existing:
-        pending = _late_tool_results(transcript, stored) + pending
+        late = {m["id"]: m for m in _late_tool_results(transcript, stored)}
+        # A re-parented row carries its stored content: take the late result onto it.
+        pending = [
+            {**m, "content": late.pop(m["id"])["content"]} if m["id"] in late else m
+            for m in pending
+        ]
+        pending = list(late.values()) + pending
     mark = studio_db.ExternalImportMark(
         source = source.key,
         session_id = session_id,

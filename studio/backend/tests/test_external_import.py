@@ -943,6 +943,45 @@ def test_codex_reimport_brings_turns_an_older_import_missed(codex_home):
     assert _turns(_PAGINATED_SID) == [*_PAGINATED_TURNS, ("user", "One more")]
 
 
+def _old_import(home):
+    _paginated_rollout(home, keep = lambda r: r["payload"].get("type") != "item_completed")
+    run_import(codex.SOURCE)
+    _paginated_rollout(home)
+    tid = thread_id_for(codex.SOURCE, _PAGINATED_SID)
+    return tid, _messages(codex.SOURCE, _PAGINATED_SID)[0]
+
+
+def _parent_texts(sid):
+    rows = {m["id"]: m for m in _messages(codex.SOURCE, sid)}
+
+    def label(m):
+        return m["content"][0].get("text") or m["content"][0]["toolName"]
+
+    return {label(m): label(rows[m["parentId"]]) if m["parentId"] else None for m in rows.values()}
+
+
+def test_codex_backfill_keeps_an_edited_turn_and_moves_it_under_its_prompt(codex_home):
+    tid, shell = _old_import(codex_home)
+    edited = [{**shell["content"][0], "result": "edited in Studio"}]
+    studio_db.sync_chat_messages(tid, [{**shell, "content": edited}], prune_missing = True)
+
+    run_import(codex.SOURCE)
+    rows = {m["id"]: m for m in _messages(codex.SOURCE, _PAGINATED_SID)}
+    assert rows[shell["id"]]["content"] == edited
+    assert _parent_texts(_PAGINATED_SID)["shell"] == "[RUN] run the cart tests MARK-N2"
+    assert _turns(_PAGINATED_SID) == _PAGINATED_TURNS
+
+
+def test_codex_backfill_leaves_a_deleted_turn_deleted(codex_home):
+    tid, shell = _old_import(codex_home)
+    studio_db.sync_chat_messages(tid, [], prune_missing = True)
+
+    assert run_import(codex.SOURCE).messages == 6
+    assert _turns(_PAGINATED_SID) == [t for t in _PAGINATED_TURNS if t[1] != "shell"]
+    parents = _parent_texts(_PAGINATED_SID)
+    assert parents["Codex reply to MARK-N2 after tool"] == "[RUN] run the cart tests MARK-N2"
+
+
 def test_an_empty_tool_output_still_completes_the_call(claude_home):
     path = _session(
         claude_home,
