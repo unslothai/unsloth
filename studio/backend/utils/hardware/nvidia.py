@@ -376,7 +376,9 @@ def get_visible_gpu_utilization(
         "utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
     )
     try:
-        extended_fields = query_fields + ",memory.free,pcie.link.width.current,pcie.link.gen.current"
+        extended_fields = (
+            query_fields + ",memory.free,pcie.link.width.current,pcie.link.gen.current"
+        )
         for fields in (extended_fields, query_fields):
             result = gpu_query.run_nvidia_smi(
                 [
