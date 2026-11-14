@@ -57,7 +57,8 @@ _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe
 # Mixture-of-experts CausalLMs whose router auxiliary loss PipelineParallel carries between stages: every stage
 # adds its layers' load-balancing statistics to the ones it received and the last stage forms the loss
 # (tests/test_pp_moe_aux_gloo.py proves each against one process). Every other MoE family stays refused.
-_PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM",)
+# Qwen4ExpForCausalLM: same router output (logits first) and load_balancing_loss_func as Qwen3-MoE.
+_PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM")
 _PP_MOE_AUX_SCHEDULES = ("gpipe", "1f1b")
 _PP_MOE_COMPOSED = (
     "Unsloth: pipeline parallelism carries the mixture-of-experts router auxiliary loss on a pp-only mesh; "
@@ -70,7 +71,13 @@ _CROSS_LAYER_CONFIG_KEYS = (
     "hidden_size_per_layer_input",
     "kv_lora_rank",
 )
+# Modules registered after the layer list that reduce the layers' output before the lm_head (run once, on the
+# last stage, like the final norm). Qwen4Exp's hyper_connection_mixer folds its hc_count residual streams.
+_POST_LAYER_MODULES = ("hyper_connection_mixer",)
 _ATTENTION_LAYER_TYPES = {"full_attention", "sliding_attention", "chunked_attention", "attention"}
+# Hybrid stacks proven by a parity test: gated delta net "linear_attention" and QSA "indexed_attention" layers keep
+# state only across tokens inside one layer, never across layers, so a stage boundary cuts nothing.
+_PP_HYBRID_FAMILIES = {"Qwen4ExpForCausalLM": {"linear_attention", "indexed_attention"}}
 _STEP_KWARGS = ("attention_mask", "position_ids")
 _STAGE_IDS = "_unsloth_pp_input_ids"  # the batch's token ids, for stages after the first
 _MULTI_STAGE_DP = (
@@ -299,6 +306,22 @@ def _has_params(module):
     return next(module.parameters(), None) is not None
 
 
+def _stage_width(model, hidden):
+    """Width of the hidden states between decoder layers: hidden_size, or hidden_size * streams for models that
+    carry several residual streams flattened on the last dim (Qwen4Exp hyper-connections: hc_count). A model
+    class may set `_unsloth_pp_stage_width(config) -> int` instead."""
+    text = _text_config(model)
+    for obj in (_unwrap(model), _decoder_of(_unwrap(model))):
+        fn = getattr(type(obj), "_unsloth_pp_stage_width", None) if obj is not None else None
+        if callable(fn):
+            return int(fn(text))
+    if str(getattr(text, "model_type", "")).startswith("qwen4_exp"):
+        streams = getattr(text, "hc_count", None)
+        if isinstance(streams, int) and streams > 1:
+            return hidden * streams
+    return hidden
+
+
 def _find_parts(model) -> _Parts:
     inner = _unwrap(model)
     decoder = _decoder_of(inner)
@@ -375,6 +398,8 @@ def _find_parts(model) -> _Parts:
             and order.index(name) < order.index(layers_name)
         )
         if positional:
+            continue
+        if name in _POST_LAYER_MODULES and order.index(name) > order.index(layers_name):
             continue
         if not norm_like or too_big:
             others.append(name)
@@ -736,7 +761,8 @@ def _refuse_unsupported(
             )
     layer_types = getattr(text, "layer_types", None)
     if isinstance(layer_types, (list, tuple)):
-        odd = sorted({t for t in layer_types if t not in _ATTENTION_LAYER_TYPES})
+        allowed = _ATTENTION_LAYER_TYPES | _PP_HYBRID_FAMILIES.get(type(inner).__name__, set())
+        odd = sorted({t for t in layer_types if t not in allowed})
         if odd:
             raise ValueError(
                 f"Unsloth: pipeline parallelism v1 does not support hybrid layer stacks (layer_types {odd})."
@@ -1409,7 +1435,7 @@ class PipelineParallel:
         self.activation_dtype = dtype
         self.ctx = _StageContext(self.start, self.end, self.is_first, self.is_last, tuple_format)
         hidden = getattr(_text_config(model), "hidden_size", None) or parts.embed.weight.shape[-1]
-        self.hidden_size = int(hidden)
+        self.hidden_size = _stage_width(model, int(hidden))
         self.module = _PPStageModule(model, self.ctx, dtype, self.hidden_size)
         self.stage_modules = [self.module]  # one per local stage (set by apply_pipeline_parallel)
         self._global_ranks = [dist.get_global_rank(self.group, i) for i in range(self.num_stages)]

@@ -80,6 +80,10 @@ COLWISE = "colwise"
 ROWWISE = "rowwise"
 HEAD_NORM = "replicated_with_grad_allreduce"
 ELEMENTWISE = "elementwise_replicated"  # scalar-parameter activations inside an MLP
+# A child of an attention region that reads only the block input (identical on every tp rank) and returns
+# something every head uses alike, e.g. Qwen4Exp's QSA indexer (index_qk_proj + norms -> a block mask):
+# kept whole on every rank; trainable parameters (an opted-in adapter) get their gradients summed over tp.
+INPUT_REPLICATED = "replicated_block_input"
 # A key / value projection when num_key_value_heads < tp: kept whole on every rank (Replicate DTensors, 4-bit:
 # the rows of this rank's key / value head), each rank computing the one key / value head its query heads use.
 KV_REPLICATED = "kv_replicated"
@@ -101,6 +105,7 @@ _STYLES = {
 # Outside the decoder regions (embeddings, lm_head, final norm): replicated in v1.
 _REPLICATED_STYLES = {
     "embedding_rowwise",
+    "embedding_colwise",  # transformers 5.22+ (Qwen4Exp PLE n-gram table): replicated like any embedding
     "gather",
     "sequence_parallel",
     "all_reduce",
@@ -120,6 +125,7 @@ _MOE_STYLES = {
 _MLA_STYLES = {"mla_kv_a_proj"}
 
 _ATTN_NAMES = ("self_attn", "attention", "attn", "self_attention")
+_ATTN_INPUT_SIDE = ("indexer",)
 _MLP_NAMES = ("mlp", "feed_forward", "ffn")
 _Q, _K, _V = ("q_proj", "query"), ("k_proj", "key"), ("v_proj", "value")
 _FUSED_QKV = ("qkv_proj",)  # [q, k, v] along the output dim (Phi3)
@@ -181,6 +187,9 @@ class _Region:
     kind: str  # "attention" / "mlp"
     projs: list
     norms: list  # per-head norms inside the region: replicated, gradients summed over tp
+    replicated: list = dataclasses.field(
+        default_factory = list
+    )  # INPUT_REPLICATED children, kept whole
     heads: int = 0
     kv_heads: int = 0
     head_dim: int = 0
@@ -394,6 +403,8 @@ def _classify(region_path, name, child, kind, compiled):
             return ROWWISE, None
         if name in _HEAD_NORMS:
             return HEAD_NORM, None
+        if name in _ATTN_INPUT_SIDE:
+            return INPUT_REPLICATED, None
     else:
         if name in _MLP_COL:
             return COLWISE, None
@@ -433,6 +444,10 @@ def _attention_sizes(module, projs, text):
     if q is not None and k is not None:
         heads = _logical_shape(*_weight(q.module))[0] // head_dim
         kv_heads = _logical_shape(*_weight(k.module))[0] // head_dim
+        if heads_cfg and heads == 2 * heads_cfg and kv_heads == kv_cfg:
+            # Gated attention (Qwen3-Next / Qwen3.5 / Qwen4Exp): q_proj emits [q, gate] per head, 2 * head_dim
+            # contiguous per head, so a column split on head boundaries keeps both halves on the same rank.
+            heads = heads_cfg
     else:
         heads, kv_heads = heads_cfg, kv_cfg
     return heads, kv_heads, head_dim
@@ -518,7 +533,7 @@ def derive_tp_plan(
 
 
 def _region(path, module, kind, compiled, text, tp):
-    projs, norms = [], []
+    projs, norms, replicated = [], [], []
     for name, param in module.named_parameters(recurse = False):
         raise ValueError(
             f"Unsloth: tensor parallelism cannot shard '{path}': it owns the parameter '{name}' directly "
@@ -537,6 +552,9 @@ def _region(path, module, kind, compiled, text, tp):
         if style in (HEAD_NORM, ELEMENTWISE):
             norms.append((name, child))
             continue
+        if style == INPUT_REPLICATED:
+            replicated.append((name, child))
+            continue
         weight, _ = _weight(child)
         if weight is None or getattr(weight, "ndim", 0) != 2:
             raise ValueError(
@@ -551,7 +569,7 @@ def _region(path, module, kind, compiled, text, tp):
             f"Unsloth: '{path}' needs column and row sharded projections for tensor parallelism; found "
             f"{[(p.name, p.style) for p in projs]}."
         )
-    region = _Region(path, module, kind, projs, norms)
+    region = _Region(path, module, kind, projs, norms, replicated = replicated)
     if kind == "attention":
         heads, kv_heads, head_dim = _attention_sizes(module, projs, text)
         region.heads, region.kv_heads, region.head_dim = heads, kv_heads, head_dim
@@ -1820,7 +1838,7 @@ def apply_tensor_parallel(
         )
         for proj in region.projs:
             _shard_projection(region, proj, tp_mesh, rank, tp)
-        for _, norm in region.norms:
+        for _, norm in [*region.norms, *region.replicated]:
             for p in norm.parameters():
                 if p.requires_grad and id(p) not in hooked_norms:
                     hooked_norms.add(id(p))
@@ -2084,7 +2102,7 @@ def check_tp_dp_composition(model, dp_mesh):
         (m.__dict__["_unsloth_tp_plan"] for m in chain if "_unsloth_tp_plan" in m.__dict__), None
     )
     for region in plan.regions if plan is not None else ():
-        for name, norm in region.norms:
+        for name, norm in [*region.norms, *region.replicated]:
             if any(p.requires_grad for p in norm.parameters()):
                 # Their tp sum is a hook on the Parameter, and FSDP2 replaces the Parameter objects.
                 raise ValueError(
