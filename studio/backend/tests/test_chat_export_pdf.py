@@ -147,6 +147,32 @@ def test_a_wide_table_shrinks_only_its_own_page():
     assert any(max(page) < 10.5 for page in sizes if page)
 
 
+def test_links_keep_their_addresses():
+    columns = "".join(f"<th>column{index}</th>" for index in range(13))
+    paragraphs = "".join(f"<p>para {index}</p>" for index in range(90))
+    body = (
+        '<p><a href="https://example.com/x">Example</a> <a href="#fn1">note</a></p>'
+        '<p><a href="https://example.com/r">one</a> gap <a href="https://example.com/r">two</a></p>'
+        f'{paragraphs}<table><tr>{columns}<th><a href="https://example.com/t">cell</a></th></tr></table>'
+        f'{paragraphs}<p><a href="mailto:a@example.com">mail</a></p>'
+    )
+    response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
+    assert response.status_code == 200
+    with pymupdf.open("pdf", response.content) as document:
+        links = [
+            (link["uri"], page.get_textbox(link["from"] + (-1, -1, 1, 1)).strip())
+            for page in document
+            for link in page.get_links()
+        ]
+    assert links == [
+        ("https://example.com/x", "Example"),
+        ("https://example.com/r", "one"),
+        ("https://example.com/r", "two"),
+        ("https://example.com/t", "cell"),
+        ("mailto:a@example.com", "mail"),
+    ]
+
+
 def test_only_data_images_embed(tmp_path):
     png = io.BytesIO()
     pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 4, 4), False)
