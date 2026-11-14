@@ -637,10 +637,18 @@ def cpu_generator(seed: int) -> Any:
     return torch.Generator("cpu").manual_seed(int(seed))
 
 
-def initial_noise(shape: Sequence[int], seed: int) -> Any:
-    """The starting latent: float32 standard normal from a CPU generator seeded with the request seed."""
+def initial_noise(
+    shape: Sequence[int],
+    seed: int,
+    batch_index: int = 0,
+) -> Any:
+    """The starting latent: float32 standard normal from a CPU generator seeded with the request seed. Images that
+    share one generator take successive slices of one batch draw, so each gets its own noise."""
     import torch
-    return torch.randn(tuple(shape), generator = cpu_generator(seed), dtype = torch.float32)
+
+    batch = (int(batch_index) + 1,) + tuple(shape)[1:]
+    noise = torch.randn(batch, generator = cpu_generator(seed), dtype = torch.float32)
+    return noise[int(batch_index) : int(batch_index) + 1]
 
 
 def reference_noise(rows: Any, seed: int) -> Any:
@@ -1570,7 +1578,8 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 "MiniMax-H3-Image needs a prompt (an empty one conditions on the references only)."
             )
         jobs = [p for p in prompts for _ in range(max(1, int(num_images_per_prompt or 1)))]
-        generators = generator if isinstance(generator, list) else [generator] * len(jobs)
+        shared = not isinstance(generator, list)
+        generators = [generator] * len(jobs) if shared else generator
         if len(generators) != len(jobs):
             raise ValueError(f"got {len(generators)} generators for {len(jobs)} images")
         vae_refs, vision_refs = self.prepare_references(image)
@@ -1595,6 +1604,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 callback_on_step_end,
                 callback_on_step_end_tensor_inputs or ["latents"],
                 output_type,
+                batch_index = index if shared else 0,
             )
             if pixels is None:
                 break
@@ -1619,6 +1629,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         callback: Optional[Callable],
         callback_inputs: list,
         output_type: str,
+        batch_index: int = 0,
     ) -> Optional[list]:
         import torch
 
@@ -1638,7 +1649,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         seed = request_seed(generator)
         stats["seed"] = seed
         if latents is None:
-            noise = initial_noise(shape, seed).to(device)
+            noise = initial_noise(shape, seed, batch_index).to(device)
         else:
             noise = latents.to(device, torch.float32).reshape(shape)
         target_rows = patchify(noise, patch)

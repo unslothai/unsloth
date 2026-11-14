@@ -126,6 +126,31 @@ def test_the_initial_noise_is_the_seeded_cpu_stream(h3i, pipe, monkeypatch, requ
     assert pipe._unsloth_h3_last_stats["seed"] == seed
 
 
+def test_images_sharing_one_generator_take_successive_batch_noise(h3i, pipe, monkeypatch, request):
+    """num_images_per_prompt > 1 with one generator: image i starts from slice i of one seeded batch draw, so the
+    images differ and each is reproducible."""
+    import torch
+
+    seen = _first_forward(pipe, request)
+    seed = 77
+    pipe(
+        prompt = "a cat",
+        height = 256,
+        width = 256,
+        num_images_per_prompt = 2,
+        generator = torch.Generator().manual_seed(seed),
+        min_generation_area = 1024,
+        output_type = "latent",
+    )
+    with torch.random.fork_rng(devices = []):
+        g = torch.manual_seed(seed)
+        batch = torch.randn([2, 24, 1, 16, 16], dtype = torch.float32, generator = g, device = "cpu")
+    assert len(seen) % 2 == 0 and seen
+    first, second = seen[0]["hidden_states"][0], seen[len(seen) // 2]["hidden_states"][0]
+    assert torch.equal(first, _reference_patchify(batch[0:1]))
+    assert torch.equal(second, _reference_patchify(batch[1:2]))
+
+
 def test_reference_rows_use_the_seed42_posterior_and_per_reference_restarted_noise(
     h3i, pipe, monkeypatch, request
 ):

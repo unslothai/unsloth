@@ -220,6 +220,26 @@ export function h3ImageSourceSize(width: number, height: number): { width: numbe
   };
 }
 
+/** ``width`` x ``height`` scaled down as one pair (aspect kept, sides floored to the grid) until both the side and
+ *  pixel limits hold; sizes already inside them only snap to the grid. */
+export function boundedSize(
+  width: number,
+  height: number,
+  limits: SizeLimits,
+): { width: number; height: number } {
+  const scale = Math.min(
+    1,
+    limits.maxSide / Math.max(width, height),
+    Math.sqrt(limits.maxPixels / (width * height)),
+  );
+  if (scale >= 1) return fitSize(width, height, limits);
+  const m = limits.multiple;
+  return {
+    width: Math.max(m, Math.floor((width * scale) / m) * m),
+    height: Math.max(m, Math.floor((height * scale) / m) * m),
+  };
+}
+
 export function resolveEditSize(
   sizing: EditSizing,
   source: { width: number; height: number } | null,
@@ -231,7 +251,7 @@ export function resolveEditSize(
   if (sizing === "source" && source && source.width > 0 && source.height > 0) {
     if (isMinimaxH3Image(family)) {
       const native = h3ImageSourceSize(source.width, source.height);
-      return fitSize(native.width, native.height, limits);
+      return boundedSize(native.width, native.height, limits);
     }
     return matchSourceSize(
       source.width,
