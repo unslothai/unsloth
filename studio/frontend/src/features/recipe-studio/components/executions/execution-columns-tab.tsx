@@ -20,7 +20,7 @@ export function ExecutionColumnsTab({
   analysisColumns,
 }: ExecutionColumnsTabProps): ReactElement {
   return (
-    <div className="mt-3 rounded-xl border p-3">
+    <div className="mt-3 rounded-lg border p-3">
       <p className="mb-2 text-sm font-semibold">Column statistics</p>
       {analysisColumns.length === 0 ? (
         <p className="text-xs text-muted-foreground">No column statistics yet.</p>

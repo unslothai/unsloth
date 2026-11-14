@@ -7,8 +7,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { type Ref, useMemo } from "react";
 import { EDIT_DIFF_MAX_WORDS, countChanges, diffSegments } from "../edit-diff";
 import { EDIT_COPY } from "../edit-policy";
+import { FieldLabel } from "./field";
 
-/** ② the transcript's editable copy, each change marked below it (with sr-only text too). */
 export function TranscriptDiffEditor({
   value,
   onChange,
@@ -40,14 +40,14 @@ export function TranscriptDiffEditor({
   const diffId = `${id}-diff`;
 
   return (
-    <div className="grid gap-1.5" data-tour={dataTour}>
+    <div className="grid gap-2" data-tour={dataTour}>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <label
+        <FieldLabel
           htmlFor={id}
           className="whitespace-nowrap text-ui-13 font-medium text-foreground"
         >
           {EDIT_COPY.changesLabel}
-        </label>
+        </FieldLabel>
         <div className="flex shrink-0 items-center gap-1.5">
           {changes === null ? (
             <Badge variant="outline">Too long</Badge>
@@ -80,7 +80,7 @@ export function TranscriptDiffEditor({
         <p
           id={diffId}
           aria-label="Changes from the transcript"
-          className="rounded-xl bg-muted/50 px-3 py-2 text-ui-13 leading-relaxed text-foreground [overflow-wrap:anywhere]"
+          className="rounded-lg bg-muted/50 px-3 py-2 text-ui-13 leading-relaxed text-foreground [overflow-wrap:anywhere]"
         >
           {segments.map((segment, index) => {
             return (
@@ -109,7 +109,7 @@ export function TranscriptDiffEditor({
       )}
       <p
         id={hintId}
-        className="min-w-0 text-ui-11p5 leading-snug text-muted-foreground"
+        className="min-w-0 text-ui-12 leading-normal text-muted-foreground"
       >
         {changes === null
           ? `Diff shown for up to ${EDIT_DIFF_MAX_WORDS} words.`

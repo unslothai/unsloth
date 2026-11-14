@@ -13,7 +13,6 @@ import pytest
 import core.inference.audio_gallery as gallery
 from core.inference import audio_inputs, audio_voices
 
-# pytest inserts rootdir, not this dir, so sibling imports need it on the path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_audio_inputs import _clip, _save, _tmp_gallery, client, encode, wav_bytes  # noqa: E402,F401

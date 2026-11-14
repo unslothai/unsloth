@@ -1,22 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// There is a genuine import cycle here, and the barrel's export order is what
-// keeps it harmless:
-//
-//   loaded-models/index -> loaded-models-indicator -> features/settings/index
-//     -> settings-dialog -> tabs/general-tab -> loaded-models/index
-//
-// general-tab's reset list dereferences LOADED_MODELS_PREFERENCE_KEYS at module
-// scope, so if the barrel hands control to the indicator before the preference
-// module has initialised, that read hits the temporal dead zone and startup
-// fails with "Cannot access 'LOADED_MODELS_PREFERENCE_KEYS' before
-// initialization". Reproduced in Vite dev, which serves native ESM: entering
-// the loaded-models barrel first threw exactly that.
-//
-// Exporting the preference module first evaluates the constant before the
-// indicator is touched, so either entry order is safe. A bundler may hide this,
-// which is why it is pinned here rather than left to the build.
+// Import cycle: loaded-models/index -> indicator -> settings -> general-tab -> loaded-models.
+// Exporting the preference module first avoids a TDZ error on its top-level const. The indicator now
+// imports the settings dialog store itself, which breaks the cycle; the order stays as a guard.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -39,17 +26,14 @@ test("the preference module is exported before the indicator", () => {
   );
 });
 
-test("the cycle this order defends against is still present", () => {
-  // If any of these three links is ever cut the ordering stops mattering, but
-  // while they hold, the order above is the only thing making startup safe.
-  assert.match(INDICATOR, /from "@\/features\/settings"/);
+test("the indicator does not import the settings index, the half of the cycle it closed", () => {
+  assert.doesNotMatch(INDICATOR, /from "@\/features\/settings"/);
+  assert.match(INDICATOR, /from "@\/features\/settings\/stores\/settings-dialog-store"/);
   assert.match(GENERAL_TAB, /from "@\/features\/loaded-models"/);
   assert.match(GENERAL_TAB, /LOADED_MODELS_PREFERENCE_KEYS\./);
 });
 
 test("general-tab reads the keys at module scope, not inside a component", () => {
-  // A read inside a component body would run long after both modules settled,
-  // and the ordering would be cosmetic. It is not: this is a top-level const.
   const keysAt = GENERAL_TAB.indexOf("LOADED_MODELS_PREFERENCE_KEYS.show");
   const firstComponent = GENERAL_TAB.search(/\nexport function |\nfunction \w+\(/);
   assert.ok(keysAt !== -1, "expected the reset list to name the keys");

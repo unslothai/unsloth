@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import type * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import {
-  MoreHorizontalCircle01Icon,
-} from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 
 function Pagination({ className, ...props }: React.ComponentProps<"nav">) {
   return (
@@ -81,7 +76,7 @@ function PaginationPrevious({
       className={cn("pl-2!", className)}
       {...props}
     >
-      <ChevronLeftIcon
+      <HugeiconsIcon icon={ChevronLeftStandardIcon}
         strokeWidth={2}
         data-icon="inline-start"
       />
@@ -102,7 +97,7 @@ function PaginationNext({
       {...props}
     >
       <span className="hidden sm:block">Next</span>
-      <ChevronRightIcon
+      <HugeiconsIcon icon={ChevronRightStandardIcon}
         strokeWidth={2}
         data-icon="inline-end"
       />
@@ -124,7 +119,7 @@ function PaginationEllipsis({
       )}
       {...props}
     >
-      <HugeiconsIcon icon={MoreHorizontalCircle01Icon} strokeWidth={2} />
+      <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} />
       <span className="sr-only">More pages</span>
     </span>
   );

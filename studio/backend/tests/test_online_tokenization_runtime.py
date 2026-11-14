@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the mechanism does once it is running, not what the gate decided.
-
-Three claims a gate test cannot reach, each a property of real DataLoader worker
-processes pulling real rows through the lazy view:
-
-1. the prewarm barrier does not consume rows training then never sees,
-2. the loader the barrier filled is the one ``train()`` uses,
-3. those workers are gone once training is over.
-
-Asserted against a real ``DataLoader`` with forked workers over a real
-``datasets.Dataset``. No model, no GPU, and a stand-in tokenizer: none of these
-claims is about tokenization.
-"""
+"""Prewarm must not consume unseen rows, must reuse the loader it fills, and must free its workers."""
 
 import multiprocessing
 import sys
@@ -75,12 +63,7 @@ def _view():
 
 
 class _FakeTrainer:
-    """Only the surface the mechanism touches: one loader factory, counted.
-
-    Each call builds a new loader, as ``Trainer.get_train_dataloader`` does:
-    transformers rebuilds the train loader every time, which is why
-    ``memoize_train_dataloader`` exists.
-    """
+    """Rebuilds the loader per call, as transformers does; that is why memoize_train_dataloader exists."""
 
     def __init__(
         self,
@@ -146,12 +129,7 @@ def _no_leaked_workers():
 
 
 def test_the_prewarm_re_iterates_from_the_start_rather_than_continuing():
-    """The barrier pulls microbatches; training must not begin where it stopped.
-
-    A sequential sampler makes it exact: had the prewarm left the iterator where
-    it finished, training would start at row 16 and come up ``PREWARM * BATCH``
-    rows short.
-    """
+    """The prewarm must re-iterate from the start, or training begins a prewarm's worth of rows short."""
     trainer = _FakeTrainer(_view())
     _prewarm(trainer, PREWARM)
 
@@ -178,8 +156,7 @@ def test_a_shuffled_pass_after_prewarming_still_covers_every_row():
 
 
 def test_train_uses_the_loader_the_barrier_filled():
-    """Without the memo the barrier forks workers, fills them, and train()
-    throws them away and forks a second set."""
+    """Reuse the memo or the barrier's filled workers are discarded and forked a second time."""
     trainer = _FakeTrainer(_view())
     memoize_train_dataloader(trainer)
     first = trainer.get_train_dataloader()
@@ -192,8 +169,7 @@ def test_train_uses_the_loader_the_barrier_filled():
 
 
 def test_the_workers_are_gone_once_training_is_over():
-    """Persistent workers survive train() by design, so something has to end
-    them; otherwise Unsloth merges, quantizes and exports alongside them."""
+    """Persistent workers outlive train(), so release must end them before merge/export."""
     before = len(multiprocessing.active_children())
     trainer = _FakeTrainer(_view())
     _prewarm(trainer, PREWARM)
@@ -209,8 +185,7 @@ def test_the_workers_are_gone_once_training_is_over():
 
 
 def test_releasing_puts_the_real_getter_back_and_is_idempotent():
-    """It is called from a finally that two paths reach twice, and a trainer
-    reused afterwards must rebuild rather than be handed a dead loader."""
+    """Called twice from a finally; a reused trainer must rebuild, not receive a dead loader."""
     trainer = _FakeTrainer(_view())
     _prewarm(trainer, PREWARM)
 
@@ -247,10 +222,7 @@ def test_a_wrapped_loader_reports_its_workers_once():
 
 
 def test_the_memoized_eval_workers_are_released_too():
-    """`dataloader_num_workers` is a TrainingArguments setting, so the eval loader
-    forks the same workers and transformers parks it in `_eval_dataloaders`; torch
-    keeps its `_iterator` alive after the eval loop drains it, so those workers
-    outlive train() just as the train ones do."""
+    """Memoized eval loaders keep forked workers alive after the eval loop, so release them too."""
     before = len(multiprocessing.active_children())
     trainer = _FakeTrainer(_view())
     _prewarm(trainer, PREWARM)
@@ -263,7 +235,7 @@ def test_the_memoized_eval_workers_are_released_too():
         persistent_workers = True,
         collate_fn = _collate,
     )
-    list(eval_loader)  # the eval loop drains it; torch retains the iterator
+    list(eval_loader)
     trainer._eval_dataloaders = {"eval": eval_loader}
 
     assert eval_loader._iterator is not None, "torch dropped the persistent iterator"

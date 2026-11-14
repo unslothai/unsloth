@@ -211,12 +211,8 @@ def test_an_unset_variable_answers_rather_than_aborts_under_a_callers_strict_mod
 @pytest.mark.parametrize("variable", ["UV_OFFLINE", "UV_NO_CONFIG", "UV_NO_INDEX"])
 @pytest.mark.parametrize(("value", "expected"), BOOLISH_TABLE, ids = TABLE_IDS)
 def test_every_uv_variable_gets_the_same_table(variable, value, expected):
-    """One function, so the variable cannot change the answer.
-
-    Asserted rather than assumed: the bug being fixed was three sites reading three
-    variables through three inline copies of one idiom, and a later site added the same
-    way would read differently again.
-    """
+    """One shared function so the variable cannot change the answer; the bug was three inline copies
+    of one idiom that could drift."""
     assert _ps_flag(SETUP_PS1, "Test-UvEnvFlag", variable, value) is expected
 
 
@@ -252,9 +248,8 @@ def test_pips_rule_is_checked_against_pip_itself():
 
 
 def test_the_pip_reader_is_a_separate_function_from_the_uv_one():
-    """Not a style point. PIP_NO_INDEX is pip's variable and uv never reads it, so a single
-    shared function would mean a correction to uv's parsing silently changing what the pip
-    fallback does with an index."""
+    """Not style: PIP_NO_INDEX is pip's variable and uv never reads it, so one shared function would
+    let a uv parsing fix silently change the pip fallback."""
     for source, uv_name, pip_name in (
         (INSTALL_SRC, "Test-UvEnvFlag", "Test-PipEnvFlag"),
         (SETUP_SRC, "Test-UvEnvFlag", "Test-PipEnvFlag"),
@@ -278,8 +273,7 @@ PS1_FILES = sorted(
 # Matched as text so a new site written the old way fails.
 OLD_IDIOM = '-notin @("", "0", "false")'
 
-# (Get-Item Env:X).Value throws PropertyNotFoundException under Set-StrictMode 2+ when X is unset;
-# -ErrorAction SilentlyContinue does not cover the property access.
+# (Get-Item Env:X).Value throws under Set-StrictMode 2+ if unset; -ErrorAction does not help.
 _STRICT_UNSAFE_ENV_READ = re.compile(r"\(\s*Get-Item\s+[\"']?Env:[^)]*\)\s*\.Value")
 
 
@@ -487,3 +481,13 @@ def test_a_no_index_set_to_a_false_value_still_names_an_index(script, variable, 
     got = _ps_last(snippet, env = _env(variable, value))
     assert got != "[]", f"{variable}={value!r} is false, so an index must still be named"
     assert "https://pypi.org/simple" in got, got
+
+
+def test_setup_defines_the_uv_reader_before_its_first_mirror_probe():
+    """A PowerShell function exists only once its definition has run. setup.ps1 probes mirrors
+    (Test-MirrorConfigured reads UV_NO_CONFIG) from `Invoke-MirrorFallback -SpareOnly` early on,
+    so a reader defined later is undefined there, which is what pushed a copy of it inline."""
+    define = re.search(r"(?m)^function Test-UvEnvFlag\b", SETUP_SRC)
+    first_call = re.search(r"(?m)^Invoke-MirrorFallback\b", SETUP_SRC)
+    assert define and first_call
+    assert define.start() < first_call.start()

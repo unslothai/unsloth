@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Import before structlog/rich: Anaconda's ``|...|`` metadata in sys.version makes
-platform._sys_version() raise (cpython#102396, wontfix), so seed its cache first."""
+"""Import before structlog/rich to seed platform's cache; Anaconda's sys.version breaks _sys_version()."""
 
 import platform
 import re

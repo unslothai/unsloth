@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The install's download transport preference: HTTPS, Xet, or Auto.
-
-Stored so the choice follows the install rather than one browser's localStorage. Nothing picked
-means Auto, which is what downloads ran on before this setting existed.
-"""
+"""Download transport (HTTPS, Xet or Auto) saved per install, not browser localStorage; default Auto."""
 
 from __future__ import annotations
 

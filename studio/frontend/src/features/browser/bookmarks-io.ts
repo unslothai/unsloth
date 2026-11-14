@@ -93,6 +93,6 @@ ${entries("other")}
 }
 
 /** Saves the bookmarks as an HTML file other browsers can import. */
-export function exportBookmarksFile(): Promise<void> {
-  return downloadFile(bookmarksHtml(), "unsloth-bookmarks.html", "text/html");
+export async function exportBookmarksFile(): Promise<void> {
+  await downloadFile(bookmarksHtml(), "unsloth-bookmarks.html", "text/html");
 }

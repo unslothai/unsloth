@@ -35,6 +35,8 @@ const choice = (value: unknown, values: readonly unknown[]): boolean =>
 const boolean: Validator = (value) => typeof value === "boolean";
 
 const gpuId: Validator = (value) => integer(value, 0, 255);
+// Mirrors LoadRequest.engram_precision.
+const ENGRAM_PRECISION = /^[A-Za-z0-9_]{1,32}$/;
 const cacheType = nullable(
   (value) => value === "f16" || choice(value, KV_CACHE_DTYPES),
 );
@@ -47,6 +49,10 @@ export type SharedConfigKey = Exclude<
   | "maxSeqLength"
   | "mlxKvQuant"
   | "mlxInt8Prefill"
+  | "mlxAnePrefill"
+  | "mlxFastVerify"
+  | "mlxPleOffload"
+  | "mlxExpertOffload"
   | "engine"
   | "enginePrecision"
   | "engineParallelism"
@@ -114,6 +120,16 @@ export const SHARED_CONFIG_FIELDS: Record<SharedConfigKey, Field> = {
   },
   tensorParallel: { label: "Tensor parallel", valid: boolean },
   disableVision: { label: "Disable vision", valid: boolean },
+  engramPrecision: {
+    label: "Engram table",
+    // A link spells null as "null", which must not read as a precision of that name.
+    valid: nullable(
+      (value) =>
+        typeof value === "string" &&
+        value !== "null" &&
+        ENGRAM_PRECISION.test(value),
+    ),
+  },
   llamaExtraArgs: {
     label: "Extra arguments",
     valid: nullable(validSharedExtraArgs),
@@ -145,7 +161,10 @@ export const SHARED_CONFIG_FIELDS: Record<SharedConfigKey, Field> = {
   },
   selectedGpuIndexKind: {
     label: "GPU device index type",
-    valid: nullable((value) => value === "physical" || value === "vulkan"),
+    valid: nullable(
+      (value) =>
+        value === "physical" || value === "vulkan" || value === "cuda_device",
+    ),
   },
 };
 

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the cache-aware disk-space preflight in ``LlamaCppBackend.load_model``.
-
-The preflight used to compare the repo's total GGUF size against free disk
-without counting bytes already in the HF cache, so re-loading a cached large
-model failed cold even though nothing needed downloading. These tests exercise
-the preflight arithmetic in isolation (no network/GPU/subprocess).
-"""
+"""The disk preflight must not count cached GGUF bytes as needing download, or cached loads fail."""
 
 from __future__ import annotations
 
@@ -19,23 +13,17 @@ from unittest.mock import patch
 
 import pytest
 
-# Stub heavy / unavailable deps before importing the module under test.
-# Same pattern as test_kv_cache_estimation.py.
-
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# loggers
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx
 _httpx_stub = _types.ModuleType("httpx")
 for _exc_name in (
     "ConnectError",
@@ -63,20 +51,12 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# only when httpx is absent: a stub without Response breaks starlette.testclient later
 try:
     import httpx  # noqa: F401
 except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 GIB = 1024**3
 
@@ -96,32 +76,26 @@ def _preflight(
     hf_repo = "unsloth/Example-GGUF",
     hf_token = None,
 ):
-    """Run the llama_cpp.py preflight arithmetic; return the decision as a dict.
-
-    ``repo_files``: list of (filename, remote_bytes).
-    ``cached_files``: {filename: on_disk_bytes} for files already cached.
-    ``free_bytes``: shutil.disk_usage(cache_dir).free.
-    """
+    """Mirrors the disk preflight over (name, bytes) repo_files and cached_files; returns a dict."""
     import os
     import shutil
 
     path_infos = [_FakePathInfo(name, size) for name, size in repo_files]
 
     with tempfile.TemporaryDirectory() as tmp:
-        # Sparse files so exists/getsize pass without allocating bytes on disk
-        # (critical for multi-GB models).
+        # sparse files: exists/getsize pass without allocating multi-GB on disk
         cache_paths = {}
         for name, sz in cached_files.items():
             p = Path(tmp) / name.replace("/", "_")
             with open(p, "wb") as fh:
                 if sz > 0:
-                    fh.truncate(sz)  # sparse: no data blocks written
+                    fh.truncate(sz)
             cache_paths[name] = str(p)
 
         def fake_try_to_load_from_cache(repo_id, filename):
             return cache_paths.get(filename)
 
-        # Mirror the real code's names and control flow so drift is caught.
+        # mirrors the real code's names and control flow so drift is caught
         total_bytes = sum((p.size or 0) for p in path_infos)
         already_cached_bytes = 0
         for p in path_infos:
@@ -146,15 +120,9 @@ def _preflight(
         }
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 class TestCacheAwarePreflight:
     def test_fully_cached_model_does_not_require_disk(self):
-        """The MiniMax case: 131 GB weights cached, only 36 GB free.
-        Preflight must not raise."""
+        """MiniMax case: 131 GB weights cached, only 36 GB free; preflight must not raise."""
         shards = [(f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)]
         cached = {name: size for name, size in shards}
         out = _preflight(
@@ -183,8 +151,7 @@ class TestCacheAwarePreflight:
         assert out["would_raise_disk_error"] is False
 
     def test_partial_cache_insufficient_disk_for_rest_still_raises(self):
-        """Two of four shards cached; remaining 70 GB still exceeds free
-        disk -> preflight correctly wants to raise."""
+        """Two of four shards cached; 70 GB still exceeds free disk, so preflight should raise."""
         shards = [(f"UD-Q4_K_XL/shard-{i}.gguf", 35 * GIB) for i in range(4)]
         cached = {
             shards[0][0]: shards[0][1],
@@ -211,8 +178,7 @@ class TestCacheAwarePreflight:
         assert out["would_raise_disk_error"] is False
 
     def test_incomplete_cached_blob_is_not_credited(self):
-        """A partial file on disk (e.g. interrupted download) isn't counted
-        as cached -- we still require bytes for it."""
+        """A partial file on disk (e.g. an interrupted download) is not credited as cached."""
         shards = [("UD-Q4_K_XL/shard-0.gguf", 40 * GIB)]
         partial = {"UD-Q4_K_XL/shard-0.gguf": 10 * GIB}
         out = _preflight(
@@ -225,8 +191,7 @@ class TestCacheAwarePreflight:
         assert out["would_raise_disk_error"] is False
 
     def test_zero_size_path_infos_do_not_crash(self):
-        """A path_info with size=0 must not be credited or break the
-        arithmetic."""
+        """A path_info with size=0 must not be credited or break the arithmetic."""
         shards = [("mmproj.gguf", 0), ("UD-Q4_K_XL/shard-0.gguf", 40 * GIB)]
         out = _preflight(
             repo_files = shards,

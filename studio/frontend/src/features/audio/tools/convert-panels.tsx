@@ -15,6 +15,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
+import { FieldLabel } from "../components/field";
 import {
   CHATTERBOX_CONVERT_GUIDANCE_RANGE,
   CHATTERBOX_CONVERT_STEPS_RANGE,
@@ -49,7 +50,7 @@ function PanelSection({
       <div className="grid gap-0.5">
         <h3 className="text-ui-13 font-medium text-foreground">{title}</h3>
         {hint ? (
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {hint}
           </p>
         ) : null}
@@ -101,13 +102,13 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
         hint={singing ? "Singing uses the V1 singing engine." : undefined}
       >
         {singing ? null : (
-          <div className="grid gap-1.5">
-            <label
+          <div className="grid gap-2">
+            <FieldLabel
               htmlFor="convert-seed-vc-engine"
               className="text-ui-13 font-medium text-foreground"
             >
               Engine
-            </label>
+            </FieldLabel>
             <Select
               value={value.engine}
               onValueChange={(engine) =>
@@ -195,8 +196,8 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
             onChange={(steps) => onChange({ ...value, steps })}
           />
           {v2 ? (
-            <div className="grid gap-1.5">
-              <label
+            <div className="grid gap-2">
+              <FieldLabel
                 htmlFor="convert-seed-vc-anonymize"
                 className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
               >
@@ -209,8 +210,8 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
                     onChange({ ...value, anonymize })
                   }
                 />
-              </label>
-              <p className="text-ui-11p5 leading-snug text-muted-foreground">
+              </FieldLabel>
+              <p className="text-ui-12 leading-normal text-muted-foreground">
                 Makes the voice hard to recognise instead of copying the target.
               </p>
             </div>
@@ -293,7 +294,6 @@ export const chatterboxConvertPanel: AudioToolPanel<ChatterboxConvertValue> = {
 };
 
 // ---- Vevo2 -----------------------------------------------------------------------------------
-
 const VEVO2_HINTS = {
   singing: "Singing keeps the recording's own style.",
   target:

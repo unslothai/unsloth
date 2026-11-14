@@ -8,7 +8,6 @@ import { readSrc } from "./helpers/kit.ts";
 
 const CSS = readSrc("index.css");
 
-/** Every rule as [selector, body], comments stripped. */
 function rules(): [string, string][] {
   const css = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
   const out: [string, string][] = [];
@@ -18,12 +17,11 @@ function rules(): [string, string][] {
   return out;
 }
 
-const SURFACE = /chat-composer-surface|unsloth-composer-surface|\[data-sonner-toast\]\[data-styled='true'\]/;
+const SURFACE = /(chat-composer-surface|unsloth-composer-surface|\[data-sonner-toast\]\[data-styled='true'\])\s*(,|$)/;
 
 test("toasts and the composer read one shadow variable", () => {
   const shadows = rules()
     .filter(([selector, body]) => SURFACE.test(selector) && /(^|[\s;])box-shadow:/.test(body))
-    // Focus glows and the docked composer are composer-only states.
     .filter(([selector]) => !selector.includes(":focus-within") && !selector.includes("chat-full-view-dock"))
     .map(([selector, body]) => [selector, /box-shadow:\s*([^;]+);/.exec(body)?.[1].replace(/\s*!important$/, "").trim()]);
   assert.ok(shadows.length >= 3, "the composers and the toast set a shadow");

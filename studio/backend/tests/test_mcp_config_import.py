@@ -1,12 +1,4 @@
-"""Tests for MCP config-file import (issue #5936).
-
-Covers the round-trip-safe command join/split inverse (join_stdio_command ↔
-parse_stdio_command, on both posix and win32 using the issue's Windows
-fixtures), the pure config parser (parse_mcp_config), and the POST /import
-route (stdio gate on/off, url dedup, one bad entry not sinking the batch).
-
-Run from studio/backend:  python -m pytest tests/test_mcp_config_import.py -q
-"""
+"""join_stdio_command and parse_stdio_command must round-trip on posix and win32 fixtures."""
 
 import sys
 
@@ -28,9 +20,6 @@ def _enable(monkeypatch):
 
 def _disable(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising = False)
-
-
-# ── 1. join_stdio_command ↔ parse_stdio_command round-trip ──────────
 
 
 @pytest.mark.parametrize(
@@ -62,8 +51,6 @@ def test_join_parse_roundtrip_posix(monkeypatch, parts):
 @pytest.mark.parametrize(
     "parts",
     [
-        # Issue #5936's literal Windows examples: absolute .exe with a path, and
-        # backslash drive/dir args must survive the join→split round-trip intact.
         [
             "C:\\Users\\user\\Documents\\Office-Word-MCP-Server\\.venv\\Scripts\\python.exe",
             "C:\\Users\\user\\Documents\\Office-Word-MCP-Server\\word_mcp_server.py",
@@ -79,7 +66,6 @@ def test_join_parse_roundtrip_posix(monkeypatch, parts):
             "D:\\",
             "O:\\",
         ],
-        # A command path with spaces is the case that actually needs quoting.
         ["C:\\Program Files\\node\\node.exe", "server.js"],
         ["C:\\Program Files\\Foo\\", "server.js"],
         ["C:\\Program Files\\Foo\\", '{"foo":"bar"}'],
@@ -146,9 +132,6 @@ def test_parse_rejects_unterminated_windows_double_quote(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(ValueError):
         mcp_client.parse_stdio_command('node "C:\\path with spaces')
-
-
-# ── 2. parse_mcp_config ─────────────────────────────────────────────
 
 
 def test_parse_stdio_entry():
@@ -254,7 +237,6 @@ def test_parse_rejects_unrepresentable_imports(server):
 
 
 def test_servers_alias_key():
-    # VS Code uses "servers" instead of "mcpServers".
     cfg = {"servers": {"fs": {"command": "node", "args": ["x.js"]}}}
     entries, errors = parse_mcp_config(cfg)
     assert errors == []
@@ -310,9 +292,6 @@ def test_servers_alias_error_names_actual_key():
     assert errors == ["'servers' must be an object mapping name -> server."]
 
 
-# ── 3. POST /import route ───────────────────────────────────────────
-
-
 def test_import_route_creates_and_dedups(tmp_path, monkeypatch):
     import asyncio
 
@@ -355,7 +334,6 @@ def test_import_route_creates_and_dedups(tmp_path, monkeypatch):
     disabled = next(c for c in res.created if c.display_name == "disabled")
     assert disabled.is_enabled is False
 
-    # Re-importing the same config skips both by url.
     res2 = asyncio.run(
         routes_mcp.import_mcp_servers(McpServerImportRequest(config = cfg), current_subject = "u")
     )
@@ -380,7 +358,6 @@ def test_import_route_gates_stdio_when_disabled(tmp_path, monkeypatch):
     res = asyncio.run(
         routes_mcp.import_mcp_servers(McpServerImportRequest(config = cfg), current_subject = "u")
     )
-    # Remote still imports; the stdio entry is rejected per-entry (gate off).
     assert {c.display_name for c in res.created} == {"remote"}
     assert any("fs" in err for err in res.errors)
     assert len(mcp_servers_db.list_servers()) == 1

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The user's choice of where an audio model's weights go.
-
-Audio loads pick an accelerator on their own. These cover the option that
-overrides that: CPU RAM must win over a working GPU, "auto" must still detect,
-and a resident model loaded under the other preference must be reloaded rather
-than reused where it is.
-"""
+"""Audio placement preference: CPU RAM beats a working GPU; a changed preference reloads the model."""
 
 import sys
 import threading
@@ -27,12 +21,7 @@ from core.inference.audio_device import (  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def _neutral_audio_device_env(monkeypatch):
-    """A server-wide default must not decide the outcome of these tests.
-
-    Placement here is asserted against no opinion, so a host that sets
-    UNSLOTH_AUDIO_DEVICE would fail these on correct behaviour, and that host is
-    exactly the one most likely to run them.
-    """
+    """Clears UNSLOTH_AUDIO_DEVICE so a host-wide placement default cannot change these outcomes."""
     monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
 
 
@@ -69,7 +58,6 @@ def test_the_environment_supplies_the_default_for_a_request_that_names_none(monk
     assert audio_device_default() == "cpu"
     assert audio_device_forces_cpu(None)
 
-    # An explicit request still outranks it, in both directions.
     assert not audio_device_forces_cpu("auto")
     assert audio_device_forces_cpu("cpu")
 
@@ -78,6 +66,32 @@ def test_without_the_environment_variable_nothing_is_forced_to_cpu(monkeypatch):
     monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
     assert audio_device_default() == "auto"
     assert not audio_device_forces_cpu(None)
+
+
+def test_saved_voice_settings_device_is_the_stt_default_when_env_is_unset(monkeypatch, tmp_path):
+    """Cold /v1/audio/transcriptions must honour Voice Settings "Load into" (#15280)."""
+    from core.inference.audio_device import stt_device_default, stt_device_forces_cpu
+    from storage import studio_db
+    from utils import stt_device_settings as sds
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    sds.forget_cached_stt_device()
+
+    assert stt_device_default() == "auto"
+    sds.set_stt_device("cpu")
+    assert stt_device_default() == "cpu"
+    assert stt_device_forces_cpu(None)
+    assert not stt_device_forces_cpu("gpu")
+    # The STT choice does not move TTS / native audio, which read the env-only default.
+    assert audio_device_default() == "auto"
+    assert not audio_device_forces_cpu(None)
+
+    # Env still outranks the saved choice (headless/CLI).
+    monkeypatch.setenv("UNSLOTH_AUDIO_DEVICE", "auto")
+    assert stt_device_default() == "auto"
+    assert not stt_device_forces_cpu(None)
 
 
 def _torch_with_cuda(monkeypatch):
@@ -139,7 +153,6 @@ def test_a_resident_model_on_the_other_device_is_reloaded_not_reused(monkeypatch
         sidecar,
         "_ensure_model_downloaded",
         lambda model_id, use_resident = True: stt_sidecar._CachedSttSnapshot(
-            # The resident shortcut answers with no path; a replacement load needs one.
             path = None if use_resident else "/snapshots/small",
             is_multilingual = True,
         ),
@@ -279,9 +292,9 @@ def test_a_caller_that_sends_no_device_leaves_the_placement_alone(monkeypatch):
         ),
     )
 
-    sidecar.load("small", device = "cpu")  # Voice settings: the user picked CPU
-    sidecar.load("small", device = None)  # OpenAI-compatible route: no opinion
-    sidecar.load("small", device = "cpu")  # the next dictation
+    sidecar.load("small", device = "cpu")
+    sidecar.load("small", device = None)
+    sidecar.load("small", device = "cpu")
 
     assert builds == ["cpu"], "only the first load should have built anything"
     assert sidecar._device == "cpu"
@@ -334,6 +347,8 @@ def test_the_mtmd_reuse_branch_still_records_the_choice(monkeypatch):
     sidecar._model_id = "m"
     sidecar._binary_path_revision = 1
     sidecar._active_requests = 0
+    sidecar._context_preference = 0
+    sidecar._context_length = 4096
     monkeypatch.setattr(sidecar, "_process_alive", lambda: True)
     monkeypatch.setattr(sidecar, "_schedule_idle_unload_locked", lambda: None)
     monkeypatch.setattr(stt_mtmd_sidecar, "_training_active", lambda: True)
@@ -344,8 +359,7 @@ def test_the_mtmd_reuse_branch_still_records_the_choice(monkeypatch):
 
 
 def test_stt_unload_can_skip_a_sidecar_that_is_mid_transcription():
-    """The Voice device switch is an early release, not a reclaim: draining a
-    live transcription for 30s and then killing it loses the recording."""
+    """Early release, not reclaim: killing a mid-transcription sidecar loses the recording."""
     import inspect
 
     from core.inference import stt_registry
@@ -354,7 +368,5 @@ def test_stt_unload_can_skip_a_sidecar_that_is_mid_transcription():
 
     assert "wait" in inspect.signature(ri.stt_unload).parameters
     assert inspect.signature(ri.stt_unload).parameters["wait"].default is True
-    # Both halves of _stt_lifecycle have to take it, or the route raises TypeError
-    # for whichever one is live.
     assert "wait" in inspect.signature(InferenceOrchestrator.unload_stt_model).parameters
     assert "wait" in inspect.signature(stt_registry.unload).parameters

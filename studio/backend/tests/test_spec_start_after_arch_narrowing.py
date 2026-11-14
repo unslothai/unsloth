@@ -1,18 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""The drafterless retry must survive the arch gate narrowing the argv (#7670).
-
-`_spec_start` is captured as a positional index just before the speculative
-flags are appended. The arch gate added in #7670 rebinds `cmd` with tokens
-REMOVED from the prefix (`--split-mode` / `--tensor-split`), which slides the
-spec block left and leaves the stored index pointing past it.
-
-Before the fix the fallback then kept `spec_flags[:N]`, re-running the drafter
-that had just failed, and sliced N tokens out of the middle of the tail. With
-the four-token narrowing that included `--api-key`, so the retry would have
-launched llama-server unauthenticated. There is no AMD hardware on any runner,
-so this drives the real helpers over a fabricated argv.
-"""
+"""The drafterless retry locates the spec block by content, since the arch gate shifts it left."""
 
 from core.inference.llama_cpp import _subsequence_index, LlamaCppBackend
 
@@ -75,8 +63,7 @@ def test_the_hint_still_works_when_nothing_narrowed():
 
 
 def test_the_api_key_survives_the_four_token_narrowing():
-    """The forced-CPU arm drops 4 tokens. A stale index ate --api-key SECRET,
-    so the retry would have served an unauthenticated llama-server."""
+    """The 4-token drop must keep --api-key, or the retry serves an unauthenticated server."""
     fb = _fallback(_narrowed("--split-mode", "-sm", "--tensor-split", "-ts"))
     assert fb[fb.index("--api-key") + 1] == "SECRET"
     assert "--chat-template-file" in fb and "t.jinja" in fb
@@ -104,18 +91,15 @@ def test_no_token_is_lost_by_any_narrowing():
     ):
         narrowed = _narrowed(*flags)
         fb = _fallback(narrowed)
-        # Everything except the spec block itself must still be present, in order.
         kept = [t for t in narrowed if t not in _SPEC_FLAGS]
         assert [t for t in fb if t != "--spec-default"] == kept, flags
 
 
 def test_the_block_is_found_even_if_it_moved_right():
-    """Defensive: the hint is a hint. A future site that INSERTS ahead of the
-    block must not corrupt the slice either."""
+    """The index is only a hint; the block must still be found if an insert moves it right."""
     padded = ["--threads", "8", *_CMD]
     fb = _fallback(padded)
-    # The whole block goes and nothing else does: asserting only that --spec-type
-    # left would pass on a slice cut two tokens early, which eats --split-mode.
+    # Compare the whole list: a slice cut two tokens early would eat --split-mode.
     assert [t for t in fb if t != "--spec-default"] == [t for t in padded if t not in _SPEC_FLAGS]
     assert fb.count("--spec-default") == 1
     assert fb[fb.index("--api-key") + 1] == "SECRET"

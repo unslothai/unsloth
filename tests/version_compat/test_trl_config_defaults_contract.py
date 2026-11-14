@@ -17,6 +17,8 @@ if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed", allow_module_level = True)
 
 INTENDED = {
+    # transformers 5.23 renamed gradient_checkpointing_kwargs; the old name is now its alias.
+    "activation_checkpointing_kwargs",
     "auto_find_batch_size",
     "beta",
     "bf16",
@@ -130,6 +132,20 @@ def test_only_intended_defaults_differ_from_trl(name):
         and not _same(getattr(ours, f.name, None), getattr(theirs, f.name, None))
     }
     assert not moved, f"{name} defaults moved away from TRL's (unsloth, trl): {moved}"
+
+
+@pytest.mark.parametrize("name", ["SFTConfig", "GRPOConfig"])
+def test_activation_checkpointing_kwargs_carry_the_reentrant_pin(name):
+    """Both checkpointing kwargs names hold Unsloth's use_reentrant=True pin, so neither is a silent drift."""
+    cls = _config_cls(name)
+    if cls is None or _pristine(cls) is cls:
+        pytest.skip(f"Unsloth does not patch {name} on this TRL")
+    ours = cls(output_dir = "unused")
+    if not getattr(ours, "gradient_checkpointing", False):
+        pytest.skip(f"{name} does not turn gradient checkpointing on by default")
+    assert ours.gradient_checkpointing_kwargs.get("use_reentrant") is True
+    if hasattr(ours, "activation_checkpointing_kwargs"):
+        assert ours.activation_checkpointing_kwargs == ours.gradient_checkpointing_kwargs
 
 
 @pytest.mark.parametrize("name", ["GRPOConfig", "RLOOConfig", "OnlineDPOConfig"])

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// use-sidebar-pin reads the lg media query when it is imported. #11660 made that read
-// unconditional, and every test whose import graph reaches the window titlebar supplies a
-// partial `window` with no matchMedia, so the import threw and took the whole file down
-// (training-dataset-source-transitions.test.ts, on main).
+// use-sidebar-pin reads matchMedia at import, and many tests supply a partial window.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -37,7 +34,6 @@ test("the pin module imports, holds and releases where there is no matchMedia", 
   stubWindow();
   const pin = await load();
   pin.holdSidebarPinned();
-  // Release re-derives the width default, the second place the query is read.
   pin.releaseSidebarPinned();
 });
 

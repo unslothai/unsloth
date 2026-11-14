@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Full scheduler catch-up and settlement are tested in generation-tool-recovery.test.ts.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -20,7 +18,6 @@ const {
 const INTERVAL_MS = 8_000;
 
 test("a live follow renders every event but saves at checkpoint pace", () => {
-  // The live trace: attached with 1,595 events of history, then followed at ~35 events/s for 55 s.
   let clock = 0;
   const schedule = createRecoveryPublishSchedule(INTERVAL_MS, () => clock);
   schedule.attach(1595);
@@ -50,7 +47,6 @@ test("a live follow renders every event but saves at checkpoint pace", () => {
   }
 
   assert.equal(published, 3508 - 1595 + 1, "history folds, live events all render");
-  // One at the live edge, one per elapsed interval, and the settled end.
   assert.ok(saved.length <= Math.ceil(55_100 / INTERVAL_MS) + 2, `saved ${saved.length} times`);
   assert.equal(saved.at(-1), "completed", "the settled end is always saved");
 });
@@ -63,7 +59,6 @@ test("Stop reaches the run a recovery is replaying, and only while it is", () =>
   assert.equal(stopRecoveredRun("thread-a"), true);
   assert.deepEqual(stopped, ["run-1"]);
 
-  // Old cleanup must preserve the newer registration.
   const unregisterNewer = registerRecoveredRunStop("thread-a", () => stopped.push("run-2"));
   unregister();
   assert.equal(stopRecoveredRun("thread-a"), true);
@@ -73,7 +68,6 @@ test("Stop reaches the run a recovery is replaying, and only while it is", () =>
 });
 
 test("the composer Stop and the recovery are wired to that handle", () => {
-  // Inspect wiring directly because this harness cannot mount the composer.
   const provider = readText("../src/features/chat/runtime-provider.tsx");
   const recovery = provider.slice(
     provider.indexOf("function scheduleGenerationRecovery("),

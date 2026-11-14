@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A loaded GGUF reports image input only when its projector has a vision tower.
-
-An mmproj is attached for audio input too (ultravox, Voxtral, Qwen3-ASR), so reporting
-``_is_vision`` as image support offers an image button the model cannot honour and sends
-the image to llama-server instead of returning the typed 400.
-"""
+"""Image input is reported only when the mmproj has a vision tower; audio-only projectors attach too."""
 
 from __future__ import annotations
 
@@ -68,7 +63,7 @@ def _backend():
 )
 def test_projector_modality_decides_reported_image_input(accepts_image, expected):
     backend = _backend()
-    backend._is_vision = True  # a projector is attached, which is what the launch asks
+    backend._is_vision = True
     backend._mmproj_accepts_image = accepts_image
     assert backend.is_vision is expected
 
@@ -81,9 +76,7 @@ def test_a_model_without_a_projector_takes_no_image():
 
 
 def test_the_load_reads_both_capabilities_from_the_projector_it_attaches():
-    """The read cannot be reached without spawning llama-server, so pin it in the source:
-    both flags must come from one call on the same probed path, or the pair can describe
-    two files."""
+    """Reaching the read needs llama-server, so pin it in source: both flags must share one probed path."""
     with _stub_modules_ctx():
         from core.inference.llama_cpp import LlamaCppBackend
     src = inspect.getsource(LlamaCppBackend.load_model)

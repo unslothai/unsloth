@@ -56,9 +56,6 @@ def subject_of(token):
     return asyncio.run(get_current_subject(credentials))
 
 
-# --- validate_api_key (storage layer) ---------------------------------------
-
-
 def test_unexpired_key_validates():
     seed_user()
     assert (
@@ -97,9 +94,6 @@ def test_unknown_key_rejected():
     assert storage.validate_api_key(storage.API_KEY_PREFIX + secrets.token_hex(16)) is None
 
 
-# --- get_current_subject (route dependency) ---------------------------------
-
-
 def test_dependency_accepts_unexpired_key():
     seed_user()
     assert subject_of(make_key(iso_from_now(days = 1))) == storage.DEFAULT_ADMIN_USERNAME
@@ -111,9 +105,6 @@ def test_dependency_rejects_expired_key_as_401():
         subject_of(make_key(iso_from_now(seconds = -1)))
     assert exc.value.status_code == 401
     assert exc.value.detail == "Invalid or expired API key"
-
-
-# --- JWT access-token expiry ------------------------------------------------
 
 
 def test_dependency_accepts_unexpired_jwt():
@@ -131,13 +122,10 @@ def test_dependency_rejects_expired_jwt_as_401():
     assert exc.value.detail == "Invalid or expired token"
 
 
-# --- derivation cache: speeds repeats without bypassing checks --------------
-
-
 def test_cache_skips_pbkdf2_on_repeat(monkeypatch):
     seed_user()
     raw = make_key(iso_from_now(days = 1))
-    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # warms cache
+    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
 
     calls = {"n": 0}
     real = storage._pbkdf2_api_key
@@ -149,7 +137,7 @@ def test_cache_skips_pbkdf2_on_repeat(monkeypatch):
     monkeypatch.setattr(storage, "_pbkdf2_api_key", counting)
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
-    assert calls["n"] == 0  # served from cache, KDF not re-run
+    assert calls["n"] == 0
 
 
 def test_cache_does_not_bypass_revocation():
@@ -159,25 +147,22 @@ def test_cache_does_not_bypass_revocation():
         name = "revoke-after-cache",
         expires_at = iso_from_now(days = 1),
     )
-    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # cached
+    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
     storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, int(row["id"]))
-    assert storage.validate_api_key(raw) is None  # cache hit still re-checks is_active
+    assert storage.validate_api_key(raw) is None
 
 
 def test_cache_does_not_bypass_expiry():
-    # Same shape as test_cache_does_not_bypass_revocation: warm the cache on a key that is
-    # comfortably valid, then expire it in the row and re-validate. Expiring it by wall
-    # clock instead would race the first call against the KDF, which on a loaded runner can
-    # outlast any margin short enough to keep the sleep cheap.
+    # Expire via the row, not wall clock, to avoid racing the KDF.
     seed_user()
     raw, row = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME,
         name = "expire-after-cache",
         expires_at = iso_from_now(days = 1),
     )
-    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # cached
+    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
     cache_id = storage._api_key_cache_id(raw)
-    assert cache_id in storage._api_key_hash_cache  # the second call takes the cache path
+    assert cache_id in storage._api_key_hash_cache
 
     conn = storage.get_connection()
     try:
@@ -189,7 +174,7 @@ def test_cache_does_not_bypass_expiry():
     finally:
         conn.close()
 
-    assert storage.validate_api_key(raw) is None  # cache hit still re-checks expires_at
+    assert storage.validate_api_key(raw) is None
 
 
 def test_unknown_key_not_cached():
@@ -197,7 +182,7 @@ def test_unknown_key_not_cached():
     bogus = storage.API_KEY_PREFIX + secrets.token_hex(16)
     assert storage.validate_api_key(bogus) is None
     cache_id = storage._api_key_cache_id(bogus)
-    assert cache_id not in storage._api_key_hash_cache  # spam can't grow the cache
+    assert cache_id not in storage._api_key_hash_cache
 
 
 def test_create_api_key_route_stores_tz_aware_expiry():
@@ -210,5 +195,5 @@ def test_create_api_key_route_stores_tz_aware_expiry():
         expires_at = iso_from_now(days = 30),
     )
     parsed = _dt.fromisoformat(row["expires_at"])
-    assert parsed.tzinfo is not None  # tz-aware: comparison in validate_api_key won't raise
+    assert parsed.tzinfo is not None
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME

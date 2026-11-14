@@ -6,7 +6,7 @@ import { useT, type TranslationKey } from "@/i18n";
 import {
   LaptopIcon,
   Moon02Icon,
-  Sun02Icon,
+  Sun03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
@@ -15,9 +15,9 @@ import { useTheme, type Theme } from "../stores/theme-store";
 const OPTIONS: {
   value: Theme;
   labelKey: TranslationKey;
-  icon: typeof Sun02Icon;
+  icon: typeof Sun03Icon;
 }[] = [
-  { value: "light", labelKey: "settings.appearance.theme.light", icon: Sun02Icon },
+  { value: "light", labelKey: "settings.appearance.theme.light", icon: Sun03Icon },
   { value: "dark", labelKey: "settings.appearance.theme.dark", icon: Moon02Icon },
   { value: "system", labelKey: "settings.appearance.theme.system", icon: LaptopIcon },
 ];

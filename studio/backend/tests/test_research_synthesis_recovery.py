@@ -16,8 +16,7 @@ from storage import studio_db
 
 FIRST_DRAFT = "## Findings\n\n" + ("The evidence says a great deal. " * 120).strip()
 SHORTER_DRAFT = "## Findings\n\nToo little."
-# One gathered source: a run that gathers nothing fails before synthesis, which is not what
-# these tests are about.
+# One gathered source: a run that gathers nothing fails before synthesis.
 SEARCH_RESULT = (
     "Title: What happened\nURL: https://example.test/what-happened\n"
     "Snippet: It happened on a Tuesday."
@@ -104,7 +103,6 @@ def _run_synthesis(monkeypatch, *, synthesis, recovery) -> dict:
             return synthesis
         if phase == "synthesis_recovery":
             return recovery
-        # Unparseable, so the step falls back to the plan's one seed action.
         return "not json", "", "stop", None
 
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
@@ -185,9 +183,7 @@ def test_attempts_emptied_by_validation_still_fail_the_run(research_home, monkey
 
 
 def test_a_complete_recovery_beats_a_longer_truncated_first_draft(research_home, monkeypatch):
-    """`length` is the one finish reason that means the text is unfinished, so size is
-    the wrong tiebreak: picking the longer draft delivered a truncated report, and
-    labelled it incomplete, while a finished one was in hand."""
+    """A length finish is unfinished text, so a complete recovery beats a longer truncated draft."""
     complete = "## Findings\n\nDemand outran supply.\n\n## Conclusion\n\nDone."
 
     finished = _run_synthesis(
@@ -253,13 +249,13 @@ def test_a_recovery_padded_with_a_source_list_does_not_win_on_length(research_ho
 @pytest.mark.parametrize(
     "tail",
     [
-        "```python\nctx = 32768,\nrope_scaling =",  # unterminated top-level fence
-        "  ```python\n  ctx = 32768,",  # indented, still top level
-        "> ```python\n> ctx = 32768,",  # fence inside a quote
-        "- step one\n\n  ```python\n  ctx = 32768,",  # fence inside a list
-        "```python `example`\n\nand then",  # backticks in the info string
-        "| model | ctx |\n|---|---|\n| gemma |",  # cut off mid-table
-        "Demand outran supply because the",  # cut off mid-sentence
+        "```python\nctx = 32768,\nrope_scaling =",
+        "  ```python\n  ctx = 32768,",
+        "> ```python\n> ctx = 32768,",
+        "- step one\n\n  ```python\n  ctx = 32768,",
+        "```python `example`\n\nand then",
+        "| model | ctx |\n|---|---|\n| gemma |",
+        "Demand outran supply because the",
     ],
     ids = [
         "fence",
@@ -300,7 +296,6 @@ def test_a_recovery_padded_with_invented_citations_does_not_win_on_length(
         recovery = (SHORTER_DRAFT + "\n\n" + invented, "", "length", {"completion_tokens": 16384}),
     )
 
-    # The padded recovery would win a raw-length tiebreak, which is the point.
     assert len(SHORTER_DRAFT + "\n\n" + invented) > len(FIRST_DRAFT)
     assert finished["status"] == "completed"
     assert FIRST_DRAFT in finished["report"]

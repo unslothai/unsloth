@@ -43,9 +43,7 @@ class _Recorder:
 
     def install(self, behaviour_for):
         for name, cls in ENGINES["text"].items():
-            # __init__ too: building a real engine reaches ddgs's HTTP client, which on the py<3.10
-            # pin raises `Invalid impersonate: "safari_15.6.1"`, so these selection tests would fail
-            # there for an unrelated reason on the one version whose fallback the resolver prevents.
+            # Stub __init__: a real engine raises Invalid impersonate on the py<3.10 ddgs pin.
             self._monkeypatch.setattr(cls, "__init__", lambda self, *a, **k: None, raising = False)
             self._monkeypatch.setattr(cls, "search", self._search_for(name, behaviour_for(name)))
 
@@ -99,6 +97,29 @@ def test_tier_two_runs_only_after_tier_one_finds_nothing(engine_calls):
     assert "URL: https://" in result
 
 
+def test_a_lone_wikipedia_hit_still_reaches_tier_two(monkeypatch, engine_calls):
+    _require_two_tiers()
+    engine_calls.install(lambda name: "empty" if name in TIER1 else "results")
+
+    def wikipedia(engine, query, **kwargs):
+        engine_calls.calls.append(("wikipedia", query))
+        return [
+            TextResult(
+                title = "The Bitcoin President",
+                href = "https://en.wikipedia.org/wiki/The_Bitcoin_President",
+                body = "A 2021 documentary film.",
+            )
+        ]
+
+    monkeypatch.setattr(ENGINES["text"]["wikipedia"], "search", wikipedia)
+
+    result = tools.execute_tool("web_search", {"query": "Bitcoin price"})
+
+    assert set(_names(engine_calls)) & set(TIER2), "tier 2 was never reached"
+    assert "https://en.wikipedia.org/wiki/The_Bitcoin_President" in result
+    assert any(f"https://{name}.example/source" in result for name in TIER2)
+
+
 def test_a_tier_one_refusal_falls_through_to_tier_two(engine_calls):
     _require_two_tiers()
     engine_calls.install(lambda name: "raise" if name in TIER1 else "results")
@@ -134,8 +155,7 @@ def test_an_engine_absent_from_the_registry_does_not_reopen_auto(
 
     contacted = set(_names(engine_calls))
     assert "yandex" not in contacted
-    # Equality, not a subset: as a subset this passed intermittently on the pre-allowlist code, whose
-    # shuffle sometimes kept the dispatched engines inside the tiers anyway.
+    # Equality, not a subset: a subset passed intermittently on the shuffling code.
     assert (
         contacted == expected
     ), f"expected exactly the resolved tier 1 {expected}, got {contacted}"
@@ -161,8 +181,7 @@ def test_disabled_engines_are_dropped_from_a_tier(monkeypatch, engine_calls):
 
     contacted = set(_names(engine_calls))
     assert "duckduckgo" not in contacted
-    # Subset, not just "no yandex": absence of one engine passed 1 run in 10 on the pre-allowlist
-    # code, because its shuffle sometimes filled the result budget before reaching Yandex.
+    # Subset, not just "no yandex", which passed intermittently on the shuffling code.
     assert contacted <= set(TIER1) - {"duckduckgo"}, f"an engine outside tier 1 ran: {contacted}"
     assert "yandex" not in contacted
 

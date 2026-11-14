@@ -1,5 +1,6 @@
 "use client";
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   memo,
   useCallback,
@@ -24,15 +25,14 @@ import {
   useToolPaneScope,
   useUnresolvedToolPaneScope,
 } from "@/features/chat/tool-output-scope";
-import { ChevronDownIcon } from "lucide-react";
-import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  UnmeasuredCollapsible as Collapsible,
+  UnmeasuredCollapsibleContent as CollapsibleContent,
+  UnmeasuredCollapsibleTrigger as CollapsibleTrigger,
+  CLOSE_FALLBACK_MARGIN_MS,
+} from "@/components/ui/unmeasured-collapsible";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
@@ -44,16 +44,17 @@ import {
 } from "./tool-activity-open-state";
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import { foldIsActive } from "@/features/chat/utils/display-visibility";
+import { WrenchIcon } from "@/lib/wrench-icon";
 
 const ANIMATION_DURATION = 200;
 
 const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
   variants: {
     variant: {
-      outline: "corner-squircle rounded-lg border py-3",
+      outline: "corner-squircle rounded-xl border py-3",
       ghost: "",
       muted:
-        "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
+        "corner-squircle rounded-xl border border-muted-foreground/30 bg-muted/30 py-3",
     },
   },
   defaultVariants: { variant: "ghost" },
@@ -79,9 +80,7 @@ function ToolGroupRoot({
   ...props
 }: ToolGroupRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
-  // Same treatment as ToolFallbackRoot. ToolGroupImpl passes `undefined` whenever it is not forcing
-  // the group open, so this uncontrolled state is what is on screen for most of a group's life --
-  // without the sync, a group expanded by hand stays open while every card inside it closes.
+  // Without this sync, a hand-expanded group stays open while every card inside it closes.
   const visibility = useChatPreferencesStore((state) => state.toolVisibility);
   const [uncontrolledState, setUncontrolledState] = useState(() => ({
     visibility,
@@ -96,7 +95,7 @@ function ToolGroupRoot({
   if (syncedUncontrolledState !== uncontrolledState) {
     setUncontrolledState(syncedUncontrolledState);
   }
-  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled
@@ -169,8 +168,7 @@ function ToolGroupTrigger({
     <CollapsibleTrigger
       data-slot="tool-group-trigger"
       className={cn(
-        // Muted like the tool rows it summarises, so only the answer is at full foreground,
-        // and it brightens on hover like the Thinking trigger above it.
+        // Muted like the tool rows it summarises, so only the answer is at full foreground.
         "aui-tool-group-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-trace-foreground text-sm transition-colors hover:text-foreground",
         "group-data-[variant=outline]/tool-group-root:px-4",
         "group-data-[variant=muted]/tool-group-root:px-4",
@@ -183,9 +181,8 @@ function ToolGroupTrigger({
         <Spinner className="aui-tool-group-trigger-loader" />
       ) : (
         <HugeiconsIcon
-          icon={Wrench01Icon}
+          icon={WrenchIcon}
           data-slot="tool-group-trigger-wrench"
-          // Full foreground, like the glyph on the rows this group summarises.
           className="size-4 shrink-0 text-foreground"
           strokeWidth={2}
         />
@@ -207,7 +204,8 @@ function ToolGroupTrigger({
           </span>
         )}
       </span>
-      <ChevronDownIcon
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
         data-slot="tool-group-trigger-chevron"
         className={cn(
           "aui-tool-group-trigger-chevron size-3.5 shrink-0",
@@ -228,15 +226,12 @@ function ToolGroupContent({
   return (
     <CollapsibleContent
       data-slot="tool-group-content"
+      closeDurationMs={ANIMATION_DURATION}
       className={cn(
         "aui-tool-group-content relative overflow-hidden text-sm outline-none",
         "group/collapsible-content ease-out",
-        "data-[state=closed]:animate-collapsible-up",
-        "data-[state=open]:animate-collapsible-down",
-        "data-[state=closed]:fill-mode-forwards",
         "data-[state=closed]:pointer-events-none",
-        "data-[state=open]:duration-(--animation-duration)",
-        "data-[state=closed]:duration-(--animation-duration)",
+        "duration-(--animation-duration)",
         className,
       )}
       {...props}
@@ -272,8 +267,7 @@ const ToolGroupImpl: FC<
       message.parts.slice(startIndex, endIndex + 1).some(holdsOwnOutput),
     [startIndex, endIndex],
   );
-  // A blocking allow/deny prompt must never be hidden inside a collapsed
-  // group, so force the group open while any of its calls awaits confirmation.
+  // Force the group open while any call awaits confirmation, so the prompt is never hidden.
   const toolConfirmations = useChatRuntimeStore((s) => s.toolConfirmations);
   const hasPendingConfirmation = useMessageMemo(
     (message) =>
@@ -303,7 +297,6 @@ const ToolGroupImpl: FC<
   const collapseByDefault = useChatPreferencesStore(
     (state) => state.toolVisibility === "collapsed",
   );
-  // Force the group open when any call is receiving tool_output events.
   const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
   const paneScope = useToolPaneScope();
   const unresolvedScope = useUnresolvedToolPaneScope();
@@ -314,8 +307,7 @@ const ToolGroupImpl: FC<
         .some(
           (part) =>
             part.type === "tool-call" &&
-            // Either scope: a first turn writes under the unresolved one for its whole
-            // life, even after the autosave assigns the id (see useToolOutputFor).
+            // Either scope: a first turn writes under the unresolved scope for its whole life.
             (Object.prototype.hasOwnProperty.call(
               toolLiveOutput,
               toolOutputKey(paneScope, part.toolCallId),
@@ -327,10 +319,8 @@ const ToolGroupImpl: FC<
         ),
     [startIndex, endIndex, toolLiveOutput, paneScope, unresolvedScope],
   );
-  // Keep the group open once a confirmation or live output forced it (so an
-  // allow/deny doesn't snap it shut between calls); reverts once the turn ends.
-  // Only latch what could have forced it open: a latch set while collapsed is
-  // a force nobody saw, and turning the preference off would snap them all open.
+  // Keep the group open once forced so allow/deny does not snap it shut between calls. Only latch
+  // what could have forced it, or turning collapsed off would snap them all open.
   const forcedOpenRef = useRef(false);
   if (hasPendingConfirmation || (hasLiveOutput && !collapseByDefault)) {
     forcedOpenRef.current = true;
@@ -341,9 +331,8 @@ const ToolGroupImpl: FC<
       ((hasLiveOutput && messageRunning) ||
         (forcedOpenRef.current && messageRunning)));
 
-  // With the fold preference on, this run belongs to the turn's first thinking block and shows
-  // only while it is open. Calls holding their own output, and any awaiting an allow or deny, are
-  // never folded away. Nor is anything while tool calls are always expanded (see foldIsActive).
+  // With the fold preference on, this run shows only while the turn's first thinking block is open;
+  // own-output and awaiting calls are never folded.
   const foldToolActivity = useChatPreferencesStore((state) =>
     foldIsActive(state.foldToolActivityIntoThinking, state.toolVisibility),
   );
@@ -367,8 +356,7 @@ const ToolGroupImpl: FC<
     [endIndex],
   );
 
-  // Render single calls, canvases, Python scripts, and calls that created files
-  // directly so their persistent content never hides in a collapsed group.
+  // Render these directly so their persistent content never hides in a collapsed group.
   const group =
     toolCount <= 1 || containsUngroupedTool ? (
       <>{children}</>
@@ -383,10 +371,7 @@ const ToolGroupImpl: FC<
     return group;
   }
 
-  // Hidden rather than unmounted: a folded run keeps its cards, its scroll positions and any
-  // output still streaming into it, so opening the block is instant and loses nothing. The
-  // wrapper stays while the run is under a block, exempt or not, so an approval arriving or
-  // clearing only changes visibility and never remounts the cards.
+  // Hidden rather than unmounted, so opening keeps cards, scroll positions and live output intact.
   return (
     <div
       data-slot="tool-run-under-thinking"

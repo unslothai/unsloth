@@ -55,7 +55,8 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
       const status = (await res.json()) as AuthStatus;
       authStatusCheckedAt = Date.now();
       setLoginMode(status.login_mode ?? "single", status.full_access);
-      if (status.login_mode === "multi") {
+      // Desktop never saw the seeded password, so the seeded-password setup page is no way back in.
+      if (status.login_mode === "multi" || isTauri) {
         return { ...status, requires_password_change: mustChangePassword() };
       }
       // Server truth wins; keep localStorage in sync both ways.
@@ -76,11 +77,11 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
   return request;
 }
 
-function authRedirect(to: "/login" | "/change-password"): never {
-  throw redirect({ to });
+function authRedirect(to: "/login" | "/change-password", q?: string): never {
+  throw redirect({ to, search: { q } });
 }
 
-export async function requireAuth(): Promise<void> {
+export async function requireAuth(q?: string): Promise<void> {
   if (isTauri && !isTauriLoginRequired()) {
     // AppProvider owns backend startup + desktop auth; route guards run before it mounts.
     return;
@@ -92,7 +93,7 @@ export async function requireAuth(): Promise<void> {
     if (mustChangePassword() || !hasFreshAuthStatus()) {
       const { requires_password_change } = await fetchAuthStatus();
       if (requires_password_change || mustChangePassword()) {
-        authRedirect("/change-password");
+        authRedirect("/change-password", q);
       }
     }
     return;
@@ -100,30 +101,29 @@ export async function requireAuth(): Promise<void> {
 
   const status = await fetchAuthStatus();
   if (status.requires_password_change || mustChangePassword()) {
-    authRedirect("/change-password");
+    authRedirect("/change-password", q);
   }
-  authRedirect(status.initialized ? "/login" : "/change-password");
+  authRedirect(status.initialized ? "/login" : "/change-password", q);
 }
 
-export async function requireGuest(): Promise<void> {
+export async function requireGuest(q?: string): Promise<void> {
   if (isTauri && !isTauriLoginRequired()) {
-    throw redirect({ to: "/chat" });
+    throw redirect({ to: "/chat", search: { q } });
   }
   if (!(await hasActiveSession())) return;
-  // Reconcile localStorage before routing.
   await fetchAuthStatus();
-  throw redirect({ to: getPostAuthRoute() });
+  throw redirect({ to: getPostAuthRoute(), search: { q } });
 }
 
-export async function requirePasswordChangeFlow(): Promise<void> {
+export async function requirePasswordChangeFlow(q?: string): Promise<void> {
   if (isTauri && !isTauriLoginRequired()) {
-    throw redirect({ to: "/chat" });
+    throw redirect({ to: "/chat", search: { q } });
   }
 
   const status = await fetchAuthStatus();
   if (status.requires_password_change || mustChangePassword()) return;
   if (await hasActiveSession()) {
-    throw redirect({ to: getPostAuthRoute() });
+    throw redirect({ to: getPostAuthRoute(), search: { q } });
   }
-  authRedirect(status.initialized ? "/login" : "/change-password");
+  authRedirect(status.initialized ? "/login" : "/change-password", q);
 }
