@@ -798,6 +798,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "isolated_terminator",
         "pip_home_env",
         "isolated_as_log_operand",
+        "config_default_per_file",
+        "config_python",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -852,6 +854,14 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "upgrade_isolated": f"python -m pip install -q --no-index --no-deps --upgrade --isolated {wheel} && {show}",
         # pip --isolated -- install: the word after a leading -- is still the subcommand.
         "isolated_terminator": f"python -m pip --isolated -- install -q --no-index --no-deps {wheel} && {show}",
+        # A [DEFAULT] counts inside its own file only: the env file's user=true never reaches the global [install].
+        "config_default_per_file": "mkdir -p xdg/pip && printf '[DEFAULT]\\nuser = false\\n[install]\\n' > xdg/pip/pip.conf"
+        " && printf '[DEFAULT]\\nuser = true\\n[uninstall]\\n' > env.ini && "
+        f'XDG_CONFIG_DIRS="$PWD/xdg" PIP_CONFIG_FILE=env.ini {_PIP} {wheel} && {show}',
+        # A configured python re-runs pip there, like --python: it installs into that venv.
+        "config_python": f"python -m venv venv && printf '[global]\\npython = %s\\n' \"$PWD/venv/bin/python\" > pip.ini"
+        f" && PIP_CONFIG_FILE=pip.ini python -m pip --isolated install -q --no-index --no-deps {wheel}"
+        f" && env -u PYTHONPATH venv/bin/{show}",
         # pip isolates on the raw word, even when it is --log's operand.
         "isolated_as_log_operand": f"{_PIP} --log --isolated {wheel} && {show}",
         # PIP_HOME is no pip option (no --home): it chooses nothing.
@@ -923,6 +933,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "isolated_terminator": packages,
         "pip_home_env": packages,
         "isolated_as_log_operand": packages,
+        "config_default_per_file": packages,
+        "config_python": str(workdir / "venv"),
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1703,6 +1715,7 @@ def test_a_failed_upgrade_keeps_the_old_versions_files(monkeypatch, tmp_path):
     assert not list(packages.rglob(f"{name}_gone.py")), out
     assert not list(packages.rglob(f"{name}_ok-1.0.dist-info")), out
     assert not list(packages.glob(".unsloth-installing-*")), out
+    assert not list(packages.glob(".unsloth-old-files-*")), out
     # Nor does a later process take the half-written 2.0 for a finished replacement.
     later = tools._bash_exec(
         f"python -m pip --version; python -c \"import importlib.metadata as m; print('ok', m.version('{name}_ok'))\"",
@@ -1885,6 +1898,30 @@ def test_a_saved_old_file_list_is_rechecked_before_use(tmp_path):
         [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
     )
     assert out.stdout.strip() == repr([os.path.normcase(str(inside))]), out.stderr
+
+
+def test_a_killed_reinstall_keeps_its_old_file_list(tmp_path):
+    """SIGKILL after RECORD was rewritten: the run's on-disk inventory still feeds the next retirement."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    info = _dist(site_dir, "unsloth_killed_same", "1.0", 2, module = "kept.py")
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    site = os.path.abspath(site_dir)
+    (prefix / f".unsloth-installing-{dead.pid}").write_text(f"{site}\t{info.name}\t{10**9}\n")
+    gone = os.path.normcase(str(site_dir / "gone.py"))
+    (prefix / f".unsloth-old-files-{dead.pid}").write_text(f"{site}\t{info.name}\t{gone}\n")
+    code = "import sitecustomize as s; print(sorted(p for v in s._saved_inventory().values() for p in v))"
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": os.pathsep.join([tools._SANDBOX_SITE_DIR, str(site_dir)]),
+        "PIP_PREFIX": str(prefix),
+    }
+    out = subprocess.run(
+        [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
+    )
+    assert out.stdout.strip() == repr([gone]), out.stderr
+    assert not (prefix / f".unsloth-old-files-{dead.pid}").exists()
 
 
 def test_an_unfinished_install_retires_nothing(tmp_path):

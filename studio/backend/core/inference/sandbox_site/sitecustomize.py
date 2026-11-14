@@ -531,11 +531,16 @@ def _config_chooses_location(isolated = False, use_user = True):
         import locale
     finally:
         sys.path[:] = saved
-    parser = configparser.RawConfigParser()
+    # One parser per file as pip's Configuration._load_file: a [DEFAULT] applies inside its own file only.
+    merged = {}
     try:
         # pip's Configuration._construct_parser: UTF-8 only in UTF-8 mode, else the locale's encoding.
         encoding = "utf-8" if sys.flags.utf8_mode else locale.getpreferredencoding(False)
-        parser.read(files, encoding = encoding)
+        for name in files:
+            parser = configparser.RawConfigParser()
+            parser.read(name, encoding = encoding)
+            for section in parser.sections():
+                merged.setdefault(section, {}).update(parser.items(section))
     except (configparser.Error, UnicodeDecodeError):
         return False
 
@@ -546,17 +551,17 @@ def _config_chooses_location(isolated = False, use_user = True):
         if env.strip() and env != os.environ.get("_UNSLOTH_PIP_PREFIX"):
             return env
         for section in ("install", "global"):
-            found = parser.get(section, key, fallback = "")
+            found = merged.get(section, {}).get(key, "")
             if found.strip():
                 return found
         return ""
 
-    if any(value(k).strip() for k in ("target", "prefix", "root")):
+    # python: pip re-runs itself in that interpreter, as --python does, which installs there.
+    if any(value(k).strip() for k in ("target", "prefix", "root", "python")):
         return True
     items = []
     for section in ("global", "install"):
-        if parser.has_section(section):
-            items += [(k.replace("_", "-"), v) for k, v in parser.items(section)]
+        items += [(k.replace("_", "-"), v) for k, v in merged.get(section, {}).items()]
     return use_user and _user_site(items, isolated)
 
 
@@ -1050,9 +1055,24 @@ def _killed_installs():
                 with open(os.path.join(prefix, _INCOMPLETE), "a", encoding = "utf-8") as f:
                     f.writelines(lines)
             found.update(tuple(line.rstrip("\n").split("\t")) for line in lines)
+            # The killed run's pre-install file lists, so a later reinstall still retires the old-only files.
+            changed = {(e, n) for (e, n), v in now.items() if before.get((e, n)) != v}
+            inventory = os.path.join(prefix, f"{_SAVED}-{pid}")
+            if changed and os.path.exists(inventory):
+                with open(inventory, encoding = "utf-8") as f:
+                    rows = [line for line in f if tuple(line.split("\t")[:2]) in changed]
+                with open(os.path.join(prefix, _SAVED), "a", encoding = "utf-8") as f:
+                    f.writelines(rows)
             os.remove(path)
         except OSError:
             pass
+    for name in os.listdir(prefix):
+        pid = name[len(_SAVED) + 1 :] if name.startswith(_SAVED + "-") else ""
+        if pid.isdigit() and int(pid) != os.getpid() and not _alive(int(pid)):
+            try:
+                os.remove(os.path.join(prefix, name))
+            except OSError:
+                pass
     return found
 
 
@@ -1414,12 +1434,31 @@ def _start_cleanup(is_pip):
 _pip_tracked = []
 
 
+def _discard(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _track_pip():
     import atexit
 
     _pip_tracked.append(True)
     sys.meta_path.insert(0, _PipStatusFinder())
-    atexit.register(_after_pip, _record_snapshot())
+    snapshot = _record_snapshot()
+    # The file lists on disk too: a SIGKILL mid-reinstall leaves only what is written down.
+    prefix = os.environ["PIP_PREFIX"]
+    inventory = os.path.join(prefix, f"{_SAVED}-{os.getpid()}")
+    if snapshot and os.path.isdir(prefix):
+        try:
+            with open(inventory, "w", encoding = "utf-8") as f:
+                for (entry, name), (_, files, _) in snapshot.items():
+                    f.writelines(f"{os.path.abspath(entry)}\t{name}\t{p}\n" for p in sorted(files))
+            atexit.register(_discard, inventory)
+        except OSError:
+            pass
+    atexit.register(_after_pip, snapshot)
 
 
 if os.environ.get("PIP_PREFIX"):
