@@ -9319,16 +9319,20 @@ class VideoBackend:
         return roots
 
     @staticmethod
-    def _key_partials(folder: Path, etag: str) -> list[Path]:
-        """``<etag>.<8 hex>.incomplete``, the partials huggingface_hub >= 1.18 writes for ``etag``."""
+    def _unique_partials(folder: Path) -> dict[str, list[Path]]:
+        """``{key: [<key>.<8 hex>.incomplete, ...]}`` (huggingface_hub >= 1.18) from one listing of ``folder/blobs``."""
+        import os
+
+        out: dict[str, list[Path]] = {}
         try:
-            return [
-                path
-                for path in (folder / "blobs").glob(f"{etag}.*.incomplete")
-                if incomplete_blob_hash(path.name) == etag
-            ]
+            with os.scandir(folder / "blobs") as entries:
+                for item in entries:
+                    key = incomplete_blob_hash(item.name)
+                    if key and item.name != f"{key}.incomplete":
+                        out.setdefault(key, []).append(Path(item.path))
         except OSError:
-            return []
+            pass
+        return out
 
     @staticmethod
     def _plan_blob_keys(plan: dict[str, "_PlannedFetch"]) -> set[tuple[str, str]]:
@@ -9351,11 +9355,13 @@ class VideoBackend:
                 repo = (entry.repo or "").strip()
                 if not repo:
                     continue
-                folder = root / ("models--" + repo.replace("/", "--"))
+                partials = VideoBackend._unique_partials(
+                    root / ("models--" + repo.replace("/", "--"))
+                )
                 for _name, etag, _size in entry.files:
                     if not etag or (repo.lower(), etag) in skip:
                         continue
-                    for path in VideoBackend._key_partials(folder, etag):
+                    for path in partials.get(etag, ()):
                         try:
                             out[str(path)] = blob_bytes_present(path)
                         except OSError:
@@ -9376,6 +9382,7 @@ class VideoBackend:
         import os
 
         roots = VideoBackend._plan_cache_roots()
+        partials: dict[Path, dict[str, list[Path]]] = {}
         total = 0
         seen: set[tuple[str, str]] = set()
         for entry in plan.values():
@@ -9405,7 +9412,9 @@ class VideoBackend:
                         for path in candidates:
                             if path.is_file():
                                 best = max(best, os.path.getsize(path))
-                        for path in VideoBackend._key_partials(folder, etag) if etag else ():
+                        if etag and folder not in partials:
+                            partials[folder] = VideoBackend._unique_partials(folder)
+                        for path in partials[folder].get(etag, ()) if etag else ():
                             best = max(
                                 best,
                                 blob_bytes_present(path) - (baseline or {}).get(str(path), 0),

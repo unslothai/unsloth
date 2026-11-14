@@ -759,6 +759,24 @@ def test_progress_counts_a_process_unique_partial_past_the_load_baseline(empty_c
     assert backend.load_progress()["downloaded_bytes"] == 25
 
 
+def test_a_poll_lists_each_planned_blobs_dir_once(empty_cache, monkeypatch):
+    """Partials are found from one listing per repo per poll, not one per planned file (polled every 0.5 s)."""
+    mirror = "unsloth/LTX-2-FP8"
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
+    keys = [f"{i:02x}" * 32 for i in range(30)]
+    _blob(empty_cache, mirror, f"{keys[0]}.1a2b3c4d", b"t" * 7, incomplete = True)
+    plan = {"base": _plan(mirror, [(f"f{i}.safetensors", k, 10) for i, k in enumerate(keys)])}
+    listed = []
+    real = video_mod.VideoBackend._unique_partials
+    monkeypatch.setattr(
+        video_mod.VideoBackend,
+        "_unique_partials",
+        staticmethod(lambda folder: listed.append(folder) or real(folder)),
+    )
+    assert video_mod.VideoBackend._planned_bytes(plan, {}) == 7
+    assert len(listed) == len(set(listed)) == len(video_mod.VideoBackend._plan_cache_roots())
+
+
 def test_progress_reads_the_fallback_cache_root(empty_cache, monkeypatch):
     """Fetches pass reuse_other_cache_root; an upstream complete only in the import-time root counts."""
     monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(empty_cache))
