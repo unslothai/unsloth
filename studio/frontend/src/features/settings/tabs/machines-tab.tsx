@@ -118,19 +118,26 @@ function AddMachineDialog({
   const [left, setLeft] = useState(0);
   const pairingRef = useRef<Pairing | null>(null);
   pairingRef.current = pairing;
+  const generation = useRef(0);
 
   const begin = useCallback(async () => {
+    const mine = ++generation.current;
     setError(null);
     setCopied(false);
     setBusy(true);
     try {
       const { code: fresh, ...state } = await startPairing();
+      if (mine !== generation.current) {
+        // The dialog closed or restarted while the window was opening (first use downloads the helper).
+        void answerPairing(state.id, "cancel").catch(() => undefined);
+        return;
+      }
       setCode(fresh);
       setPairing(state);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (mine === generation.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      if (mine === generation.current) setBusy(false);
     }
   }, []);
 
@@ -138,6 +145,7 @@ function AddMachineDialog({
     if (!open) return;
     void begin();
     return () => {
+      generation.current += 1;
       const current = pairingRef.current;
       if (current && (current.state === "waiting" || current.state === "approval")) {
         void answerPairing(current.id, "cancel").catch(() => undefined);
