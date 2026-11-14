@@ -190,6 +190,9 @@ async def start_pairing() -> Dict[str, Any]:
     except ImportError:
         raise HTTPException(status_code = 501, detail = "Pairing needs the cryptography package.")
 
+    from studio.cluster_link import remote
+
+    await asyncio.to_thread(remote.ensure_helper)
     pairing_id = secrets.token_hex(8)
     holder: Dict[str, _Pairing] = {}
 

@@ -144,6 +144,15 @@ def test_a_new_pairing_cancels_the_open_one(client):
     assert client.get(f"/api/cluster/pair/{first['id']}").status_code == 404
 
 
+def test_pairing_from_studio_installs_the_helper_like_the_cli(client, monkeypatch):
+    from studio.cluster_link import remote
+
+    calls = []
+    monkeypatch.setattr(remote, "ensure_helper", lambda *a: calls.append(a) or False)
+    assert client.post("/api/cluster/pair").status_code == 200
+    assert calls == [()]
+
+
 def test_checked_list_reports_each_status(client, monkeypatch):
     from studio.cluster_link import identity, status
 
