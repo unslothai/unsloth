@@ -321,7 +321,7 @@ def pair(
         _say(f"    {token}")
         _say("")
         where = "on this network or another one" if window.tc else "on this network"
-        _say(f"It works once, for {ttl}, from {where}. Keep it private: it lets a machine join.")
+        _say(f"It works once, for {ttl}, {where}. Keep it private: it lets a machine join.")
         _say("Waiting for the worker to join (Ctrl-C to cancel)...")
         try:
             return await window.wait(seconds)

@@ -108,6 +108,7 @@ class _Proxy:
                 continue
             try:
                 up = socket.create_connection(("127.0.0.1", self.remote_port), timeout = 5)
+                up.settimeout(None)
             except OSError:
                 conn.close()
                 continue
