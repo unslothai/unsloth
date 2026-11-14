@@ -35,6 +35,11 @@ export function sharesMostWords(earlier: string, later: string): boolean {
   return hit / a.size >= 0.6;
 }
 
+/** The same request again: "a poem about cats instead" shares most of "a poem about dogs" but is a correction. */
+export function isSameAsk(earlier: string, later: string): boolean {
+  return sharesMostWords(earlier, later) && sharesMostWords(later, earlier);
+}
+
 const HOLD_ON =
   /^(?:(?:um|uh|oh|okay|ok|so|no|hey) )*(?:wait(?: wait)*|hold on|hang on|one sec(?:ond)?|one moment|just a sec(?:ond)?|give me a (?:sec(?:ond)?|minute|moment)|give me two minutes)$/;
 

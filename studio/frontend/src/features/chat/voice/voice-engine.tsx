@@ -36,7 +36,7 @@ import {
   interjectUnderApproval,
   isHoldOn,
   replyEchoesFiller,
-  sharesMostWords,
+  isSameAsk,
 } from "@/features/chat/voice/laya-outcomes";
 import { ORB_IDLE_GRADIENT, orbConfig } from "@/features/chat/voice/orb-config";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
@@ -463,26 +463,45 @@ export const VoiceEngine: FC = () => {
       return;
     }
 
+    const before = thread.getState().messages.length;
     let appended = false;
-    try {
-      auiRef.current.thread().append({
-        role: "user",
-        content: [{ type: "text", text }],
-        ...(turnAudio
-          ? {
-              attachments: [
-                voiceTurnAttachment(
-                  coalescedTurnAudio(auiRef.current.thread().getState().messages, turnAudio),
-                  `voice-${Date.now()}`,
-                ),
-              ],
-            }
-          : {}),
-        createdAt: new Date(),
-        startRun: false,
-      } as never);
+    if (composer.getState().attachments.length > 0) {
+      // The composer's send carries its attachments; it lands asynchronously, so the window waits for it.
+      const send = () => {
+        composer.setText(text);
+        composer.send({ startRun: false });
+      };
+      if (turnAudio) {
+        const bytes = Uint8Array.from(atob(turnAudio), (c) => c.charCodeAt(0));
+        void composer
+          .addAttachment(new File([bytes], "voice.wav", { type: "audio/wav" }))
+          .catch((error: unknown) => voiceTrace("engine.turnAudioAttachFailed", { message: String(error) }))
+          .then(send);
+      } else {
+        send();
+      }
       appended = true;
-    } catch {
+    } else {
+      try {
+        auiRef.current.thread().append({
+          role: "user",
+          content: [{ type: "text", text }],
+          ...(turnAudio
+            ? {
+                attachments: [
+                  voiceTurnAttachment(
+                    coalescedTurnAudio(auiRef.current.thread().getState().messages, turnAudio),
+                    `voice-${Date.now()}`,
+                  ),
+                ],
+              }
+            : {}),
+          createdAt: new Date(),
+          startRun: false,
+        } as never);
+        appended = true;
+      } catch {
+      }
     }
 
     if (!appended) {
@@ -515,6 +534,10 @@ export const VoiceEngine: FC = () => {
         return;
       }
       const msgs = t.getState().messages;
+      if (msgs.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES) {
+        voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_POLL_MS);
+        return;
+      }
       const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
       if (!last || last.role !== "user") return;
       // A new run while the old one is still "cancelling" is refused outright: ask the server, not the local state.
@@ -756,7 +779,7 @@ export const VoiceEngine: FC = () => {
   function overrideInterject(text: string, verdict: InterjectAction | null) {
     const repeated = queuedUtteranceRef.current.includes(text);
     // Re-asking the pending question is impatience: restarting threw the thinking away and lengthened the wait.
-    const sameAsk = sharesMostWords(lastUserPrompt(), text);
+    const sameAsk = isSameAsk(lastUserPrompt(), text);
     // Something is already held for after this reply, so this is the rest of it
     // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
     // on its own, and the two go as one when the reply ends.

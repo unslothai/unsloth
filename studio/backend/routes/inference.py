@@ -18343,6 +18343,7 @@ async def load_model_gated(
                                 exc.short_mib,
                                 exc.gpu_indices,
                                 exc.discrete,
+                                request.voice,
                             )
                             # Named before the drop, while their public ids are still live.
                             reports = await asyncio.to_thread(
