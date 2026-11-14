@@ -1,75 +1,157 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CFG batching: both guidance branches of a step through ONE forward of an offloaded denoiser.
-
-A denoiser streamed from host memory (group / sequential offload) uploads its weights once per call, and a guided step
-calls it twice (conditional, then unconditional), so it pays the upload twice. ComfyUI batches the two branches into
-one call (``comfy/samplers.py`` ``calc_cond_batch``); diffusers pipelines call the transformer once per branch. This
-router batches them for the classes whose forward keeps no state between calls:
-
-- the first branch of a step builds the second branch's arguments from the previous step's second call (same latent
-  object, the first branch's per-step tensors, the second branch's constants), runs both as one call of twice the
-  batch, returns the first half and keeps the second;
-- the second call is verified against what was batched (every argument bitwise) and gets the kept half; anything
-  else (a changed argument, no second call, a third call) reruns that branch plain and counts as a miss.
-
-Priced by measurement, per request shape: a plain pair is timed on the second step of a shape (the first warms up),
-the batched pair (concatenate, forward, split, verify) on the next two, and batching stays on only when the faster
-batched pair beats the plain pair by ``_MEASURED_FRACTION``. Memory: the doubled call is attempted only when the card
-has room for twice the activations a plain call allocated; an out-of-memory reruns plain and turns the shape off.
-
-Not bit-exact: a doubled batch can pick other GEMM / attention tiles (FLUX.2-klein-base, offloaded: LPIPS ~0.01 vs two
-calls). ``UNSLOTH_DIFFUSION_CFG_BATCH=0`` keeps the exact one-branch-per-call path; ``force`` also batches a resident
-denoiser and an unlisted class. Declined for per-call activation scaling (NVFP4 without frozen global scales), whose
-scale would change with the doubled batch, and for denoisers already wrapped by another forward layer.
-"""
+"""Batches CFG branches into one forward for stateless denoisers only (offloaded: whenever the doubled call fits;
+resident: where a per-shape timing trial measured a win); a second call differing from the batched inputs reruns
+that branch plain; not always bit-exact; UNSLOTH_DIFFUSION_CFG_BATCH=0 keeps one branch per call, =timed times
+offloaded loads too; UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED=0 keeps a compiled resident denoiser plain"""
 
 from __future__ import annotations
 
 import os
+import sys
 import time
 import weakref
 from typing import Any, Optional
 
 CFG_BATCH_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH"
+COMPILED_RESIDENT_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED"
+# 0: any graph a paired call compiles turns pairing off for the load, the first render included
+CFG_PAIR_COMPILE_WARMUP_ENV = "UNSLOTH_DIFFUSION_CFG_PAIR_COMPILE_WARMUP"
 
-# Forward keeps no state between calls, both branches share every per-step input but the text conditioning. Z-Image is
-# absent on purpose: its pipeline already batches the branches (a list of latents, one call per step).
+# The CFG policy of every denoiser class Studio loads (test_diffusion_cfg_batch_policy pins it to diffusion_families
+# and video_families): exactly one of the three tables below.
+#
+# Batched by this router: the forward keeps no state between calls and both branches share every per-step input but
+# the text conditioning (diffusers 0.42.1 pipelines: same latent object, cond then uncond call). FLUX.3 batches only
+# when both prompts land in the same 80-token window (its transformer attends the padding, so a padded branch would
+# not be the same computation); a shorter negative keeps that shape plain.
 STATELESS_CLASSES = frozenset(
     {
         "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
         "FluxTransformer2DModel",
+        "HunyuanImageTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
+        "Krea2Transformer2DModel",
         "QwenImageTransformer2DModel",
         "WanTransformer3DModel",
     }
 )
 
+# The pipeline already runs both branches in one call (nothing for the router to pair).
+PIPELINE_BATCHED: dict[str, str] = {
+    "ZImageTransformer2DModel": "the pipeline batches the branches (a list of latents, one call per step)",
+    "HiDreamImageTransformer2DModel": "the pipeline batches the branches (torch.cat([latents] * 2))",
+    "LTX2VideoTransformer3DModel": "the pipeline batches the branches (torch.cat([latents] * 2))",
+    "UNet2DConditionModel": "the pipeline batches the branches (torch.cat([latents] * 2))",
+}
+
+# Two calls per step that are not the same computation on a doubled batch.
+NOT_BATCHABLE: dict[str, str] = {
+    "QwenImage21Transformer2DModel": "each branch passes its own prefix KV cache object",
+    "Ideogram4Transformer2DModel": "the negative branch runs a separate unconditional transformer on image-only tokens",
+    "MOSSImageTransformer": "the negative branch skips block 22 (uncond_skip_layers): per-branch compute",
+    "Cosmos3OmniTransformer": "each branch packs its own variable-length token sequence",
+    "MiniMaxH3Transformer3DModel": "one denoiser call per step (no guidance pair to batch)",
+    "MiniMaxH3ImageTransformer2DModel": "guidance-distilled: one denoiser call per step, guidance_scale must be 1 "
+    "(no guidance pair to batch)",
+    "ChromaTransformer2DModel": "not measured batched: each branch passes its own T5 attention mask, and Chroma "
+    "runs eager",
+    "CosmosTransformer3DModel": "Anima's modular guider runs each branch as its own guider batch "
+    "(prepare_models before each call)",
+    # Measured (Colab L4, 1024x1024, 8 steps): 1.817 vs 1.454 s/step eager, 1.312 vs 1.078 compiled. A single call
+    # packs each prompt at its own caption length with no mask; the doubled call pads both to the longer one and runs
+    # masked attention.
+    "Lumina2Transformer2DModel": "measured slower batched: the doubled call pads both captions and runs masked "
+    "attention (L4 +25% eager, +22% compiled)",
+}
+
 # Arguments that are one entry per sample (a doubled call needs both branches' entries); compared, not concatenated.
 _PER_SAMPLE_LISTS = ("img_shapes",)
 # (embeddings, mask) pairs a branch pads to its own prompt length: padded to the longer one with masked zeros.
-_PADDED_TEXT = (("encoder_hidden_states", "encoder_hidden_states_mask"),)
+_PADDED_TEXT = (
+    ("encoder_hidden_states", "encoder_hidden_states_mask"),
+    ("encoder_hidden_states", "encoder_attention_mask"),
+)
+
+# Compiled + resident, batched with no trial (measured: Wan 1-2% on an L4). A batch-2 graph per compiled block is
+# compiled once, in the shape's warm-up render; later prompts of that shape compile nothing.
+COMPILED_RESIDENT_CLASSES = frozenset({"WanTransformer3DModel"})
+
+# Measured slower batched than two calls: (class, card-name substring, "eager" | "compiled") -> measurement. Only
+# these keep two calls under the default; =force still batches them.
+MEASURED_SLOWER: dict[tuple[str, str, str], str] = {}
 
 _MEASURED_FRACTION = 0.92
 _BATCHED_SAMPLES = 2
+_PLAIN_STEPS = 2
+# Compute-bound resident pair: skip the trial (B200 winners 0.03-0.06 s/pair; T4 FLUX.2-klein ~4.2 s, trial +17 s).
+_RESIDENT_MAX_PAIR_S = 0.25
 _MISS_LIMIT = 3
 _OFF_TRANSIENT = "transient"
 
 
+def cfg_pair_compile_warmup() -> bool:
+    """A paired call may compile lazily during the first render of its request shape and cache mode."""
+    raw = (os.environ.get(CFG_PAIR_COMPILE_WARMUP_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no", "disable", "disabled")
+
+
 def cfg_batch_mode() -> str:
-    """``off`` / ``auto`` (default: an offloaded denoiser of a listed class) / ``force``. Independent of the multi-GPU
-    switches: a single card is the usual case."""
+    """``off`` / ``auto`` (default: a listed class; offloaded, batched whenever the doubled call fits; resident, after the
+    per-shape timing trial) / ``timed`` (the trial for offloaded loads too) / ``force`` (no trial, any class).
+    Independent of the multi-GPU switches: a single card is the usual case."""
     raw = (os.environ.get(CFG_BATCH_ENV) or "").strip().lower()
     if raw in ("0", "off", "false", "no", "disable", "disabled"):
         return "off"
-    if raw == "force":
-        return "force"
+    if raw in ("force", "timed"):
+        return raw
     return "auto"
+
+
+def cfg_policy(denoiser: Any) -> tuple[str, Optional[str]]:
+    """(``batch`` | ``pipeline`` | ``never`` | ``unlisted``, reason) for ``denoiser``'s class."""
+    name = type(denoiser).__name__
+    if name in PIPELINE_BATCHED:
+        return "pipeline", PIPELINE_BATCHED[name]
+    if name in NOT_BATCHABLE:
+        return "never", NOT_BATCHABLE[name]
+    if name in STATELESS_CLASSES and type(denoiser).__module__.startswith("diffusers."):
+        return "batch", None
+    return (
+        "unlisted",
+        f"{name} is not on the stateless-forward list ({CFG_BATCH_ENV}=force opts it in)",
+    )
+
+
+def measured_slower(denoiser: Any, card: Optional[str], compiled: bool) -> Optional[str]:
+    """The measurement that keeps this class on this card plain under the default, else None."""
+    name = type(denoiser).__name__
+    kind = "compiled" if compiled else "eager"
+    for (cls, card_part, k), why in MEASURED_SLOWER.items():
+        if cls == name and k == kind and card and card_part.lower() in card.lower():
+            return why
+    return None
+
+
+def compiled_resident_batch(denoiser: Any) -> bool:
+    """A compiled denoiser kept on the card that still batches its guidance branches (one doubled call per step)."""
+    raw = (os.environ.get(COMPILED_RESIDENT_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no", "disable", "disabled"):
+        return False
+    return type(denoiser).__name__ in COMPILED_RESIDENT_CLASSES and type(
+        denoiser
+    ).__module__.startswith("diffusers.")
 
 
 def _torch():
     import torch
     return torch
+
+
+def _cuda_latent(latent: Any) -> bool:
+    return getattr(getattr(latent, "device", None), "type", None) == "cuda"
 
 
 def _mg():
@@ -102,6 +184,56 @@ def _foreign_hook(module: Any) -> Optional[str]:
     return None
 
 
+# Set on a denoiser whose blocks Studio compiled (regional compile; also read when the compile moves below an
+# offload hook, which clears the block's ``_compiled_call_impl``).
+_COMPILE_MARKS = ("_unsloth_regional_compile_kwargs", "_unsloth_compile_guard")
+
+
+def _compiled_callable(fn: Any) -> bool:
+    for _ in range(4):
+        if fn is None:
+            return False
+        if hasattr(fn, "_torchdynamo_orig_callable") or hasattr(fn, "_unsloth_compile_guard"):
+            return True
+        fn = getattr(fn, "__wrapped__", None)
+    return False
+
+
+def compiled_denoiser(module: Any) -> Optional[str]:
+    """Why ``module`` runs compiled code, else None. A doubled batch there is a new input shape: the batch 1 -> 2 change
+    compiles a second graph per compiled block, which is only acceptable inside the warm-up render of a shape."""
+    try:
+        subs = list(module.named_modules())
+    except Exception:  # noqa: BLE001 - not a torch module (fakes): nothing compiled
+        return None
+    for mark in _COMPILE_MARKS:
+        if mark in getattr(module, "__dict__", {}):
+            return "the denoiser is compiled"
+    for name, sub in subs:
+        if getattr(sub, "_compiled_call_impl", None) is not None:
+            return f"{name or 'the denoiser'} is compiled"
+        registry = getattr(sub, "__dict__", {}).get("_diffusers_hook")
+        for ref in list(getattr(registry, "_fn_refs", None) or ()):
+            if _compiled_callable(getattr(ref, "forward", None)):
+                return f"{name or 'the denoiser'} runs a compiled forward below its hooks"
+    return None
+
+
+def _offloaded(denoiser: Any, offload_policy: str) -> bool:
+    return offload_policy in ("group", "streaming", "sequential") and _streamed(denoiser)
+
+
+def _graph_count() -> int:
+    """Dynamo's compiled-graph count (0 before Dynamo was ever imported)."""
+    dynamo_utils = sys.modules.get("torch._dynamo.utils")
+    try:
+        return (
+            int(dynamo_utils.counters["stats"]["unique_graphs"]) if dynamo_utils is not None else 0
+        )
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _foreign_layer(module: Any) -> Optional[str]:
     """A non-offload diffusers hook (a step cache) or a root forward override that is not offload machinery."""
     mg = _mg()
@@ -132,11 +264,24 @@ def per_call_scaled(module: Any) -> Optional[str]:
     return None
 
 
-def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
-    """Why both guidance branches cannot share one forward on this load, else None."""
+def _speed_off_requested(speed_mode: Optional[str]) -> bool:
+    """The request asked for ``speed_mode="off"`` (unset is not a request): the bit-identical reference path."""
+    return speed_mode is not None and str(speed_mode).strip().lower() == "off"
+
+
+def cfg_batch_decline(
+    pipe: Any,
+    *,
+    offload_policy: str,
+    speed_mode: Optional[str] = None,
+) -> Optional[str]:
+    """Why both guidance branches cannot share one forward on this load, else None. ``speed_mode`` is the request's own
+    value: an explicit ``off`` keeps one branch per call (a doubled batch can pick other tiles); ``force`` overrides."""
     mode = cfg_batch_mode()
     if mode == "off":
         return f"{CFG_BATCH_ENV}=0"
+    if mode != "force" and _speed_off_requested(speed_mode):
+        return f"speed_mode=off keeps one branch per call ({CFG_BATCH_ENV}=force batches anyway)"
     torch = _torch()
     denoiser = getattr(pipe, "transformer", None)
     if not isinstance(denoiser, torch.nn.Module):
@@ -145,6 +290,13 @@ def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
         return "two-expert denoiser"
     if getattr(denoiser, "_compiled_call_impl", None) is not None:
         return "denoiser is compiled whole"
+    compiled = compiled_denoiser(denoiser)
+    if (
+        compiled is not None
+        and not _offloaded(denoiser, offload_policy)
+        and not compiled_resident_batch(denoiser)
+    ):
+        return f"{compiled} and resident"
     if getattr(pipe, "_unsloth_cuda_graphs", None):
         return "the denoiser replays CUDA graphs"
     foreign = _foreign_layer(denoiser)
@@ -155,30 +307,226 @@ def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
         return f"per-call activation scaling ({scaled})"
     if mode == "force":
         return None
-    if type(denoiser).__name__ not in STATELESS_CLASSES or not type(denoiser).__module__.startswith(
-        "diffusers."
-    ):
-        return f"{type(denoiser).__name__} is not on the stateless-forward list ({CFG_BATCH_ENV}=force opts it in)"
-    if offload_policy not in ("group", "streaming", "sequential") or not _streamed(denoiser):
-        return "denoiser is resident (two calls upload nothing)"
+    policy, why = cfg_policy(denoiser)
+    if policy != "batch":
+        return why
+    if offload_policy == "model":
+        # diffusers rebuilds model-offload hooks between renders, evicting the router: later renders would differ.
+        return "model offload re-hooks the denoiser every render"
     return None
 
 
+def cfg_pair_decline(
+    pipe: Any,
+    *,
+    offload_policy: Optional[str] = None,
+    graphs: bool = True,
+) -> Optional[str]:
+    """Why guidance branches cannot pair per streamed block, else None. ``graphs=False`` ignores armed CUDA graphs."""
+    from .diffusion_cfg_pair import pair_decline
+
+    torch = _torch()
+    denoiser = getattr(pipe, "transformer", None)
+    if not isinstance(denoiser, torch.nn.Module):
+        return "no DiT denoiser"
+    if getattr(pipe, "transformer_2", None) is not None:
+        return "two-expert denoiser"
+    if getattr(denoiser, "_compiled_call_impl", None) is not None:
+        return "denoiser is compiled whole"
+    if not _streamed(denoiser) or (
+        offload_policy is not None and not _offloaded(denoiser, offload_policy)
+    ):
+        return "the denoiser stays on the card"
+    if graphs and getattr(pipe, "_unsloth_cuda_graphs", None):
+        return "the denoiser replays CUDA graphs"
+    foreign = _foreign_layer(denoiser)
+    if foreign is not None:
+        return foreign
+    return pair_decline(denoiser, denoiser.forward)
+
+
 def _usable_free_mib(device: Any) -> Optional[int]:
-    """Driver free plus this process's reserved-but-unallocated cache on ``device``."""
+    """Driver free plus reusable cache (graph pools excluded) on ``device``, less the VRAM Budget reserve."""
     torch = _torch()
     try:
-        free, _total = torch.cuda.mem_get_info(device)
-        idle = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-        return int(free + max(0, idle)) >> 20
+        from .diffusion_memory import _user_budget_reserve_mib, cuda_reusable_cache_bytes
+
+        free, total = torch.cuda.mem_get_info(device)
+        idle = cuda_reusable_cache_bytes(device)
+        return (int(free + idle) >> 20) - _user_budget_reserve_mib(int(total) >> 20)
     except Exception:  # noqa: BLE001 - unreadable: the out-of-memory backstop decides
         return None
+
+
+VERDICTS_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS"
+VERDICTS_FILE_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE"
+_VERDICTS_FILE = "diffusion_cfg_batch_verdicts.json"
+_VERDICTS_MAX = 512
+# v1 keyed a bf16 load and its torchao INT8 / FP8 load alike
+_VERDICTS_VERSION = 2
+_BATCH = "batch"
+_PLAIN = "plain"
+
+
+def _verdicts_path() -> Optional[Any]:
+    """The timing verdict store (next to the learned peaks), None when turned off or nowhere safe to write."""
+    if (os.environ.get(VERDICTS_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    from pathlib import Path
+
+    explicit = (os.environ.get(VERDICTS_FILE_ENV) or "").strip()
+    if explicit:
+        return Path(explicit)
+    from . import diffusion_measured_peaks as peaks
+
+    base = peaks.store_path()
+    return None if base is None else base.parent / _VERDICTS_FILE
+
+
+def _read_verdicts(path: Any) -> dict:
+    import json
+
+    from . import diffusion_measured_peaks as peaks
+
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001 - absent or corrupt: an empty store
+        return {}
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != _VERDICTS_VERSION
+        or data.get("runtime") != peaks.runtime_stamp()
+    ):
+        return {}
+    entries = data.get("entries")
+    return entries if isinstance(entries, dict) else {}
+
+
+def _stored(entries: dict, key: str) -> Optional[dict]:
+    entry = entries.get(key)
+    if isinstance(entry, dict) and entry.get("verdict") in (_BATCH, _PLAIN):
+        return entry
+    return None
+
+
+def stored_verdict(key: str) -> Optional[dict]:
+    path = _verdicts_path()
+    if path is None:
+        return None
+    try:
+        return _stored(_read_verdicts(path), key)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _settle_verdict(key: str, verdict: dict) -> dict:
+    """First writer wins: the stored verdict for ``key`` if any process measured one, else ``verdict`` (stored).
+    A store that cannot be read or written leaves this process with its own measurement."""
+    path = _verdicts_path()
+    if path is None:
+        return verdict
+    from . import diffusion_measured_peaks as peaks
+
+    try:
+        with peaks._lock, peaks._file_lock(path):
+            entries = _read_verdicts(path)
+            stored = _stored(entries, key)
+            if stored is not None:
+                return stored
+            entries[key] = verdict
+            for stale in list(entries)[: max(0, len(entries) - _VERDICTS_MAX)]:
+                entries.pop(stale, None)
+            import json
+            import tempfile
+
+            path.parent.mkdir(parents = True, exist_ok = True)
+            fd, tmp = tempfile.mkstemp(prefix = ".cfg_batch.", dir = str(path.parent))
+            try:
+                with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+                    json.dump(
+                        {
+                            "version": _VERDICTS_VERSION,
+                            "runtime": peaks.runtime_stamp(),
+                            "entries": entries,
+                        },
+                        handle,
+                        indent = 1,
+                    )
+                os.replace(tmp, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        pass
+    return verdict
+
+
+def _card_name(latent: Any) -> Optional[str]:
+    """The CUDA card a verdict was timed on (None off CUDA: nothing timed, nothing stored)."""
+    if getattr(latent.device, "type", None) != "cuda":
+        return None
+    from .diffusion_measured_peaks import device_name
+
+    return device_name(latent.device)
+
+
+def _weight_kind(p: Any) -> str:
+    """torchao ``quantize_`` keeps ``nn.Linear`` and a bf16 ``.dtype``: only the tensor class tells the loads apart."""
+    data = getattr(p, "data", p)
+    kind = type(data) if type(p).__name__ == "Parameter" else type(p)
+    names = list(getattr(kind, "tensor_attribute_names", None) or ()) + list(
+        getattr(kind, "optional_tensor_attribute_names", None) or ()
+    )
+    attrs = [f"{n}={getattr(data, n, None)!r}" for n in names if n != "block_size"]
+    return f"{kind.__module__}.{kind.__qualname__}" + (f"({','.join(attrs)})" if attrs else "")
+
+
+def _load_identity(
+    denoiser: Any,
+    offload_policy: str,
+    speed_mode: Optional[str],
+    transformer_quant: Optional[str] = None,
+) -> Optional[str]:
+    """What a doubled call's timing depends on in the load. Hashed: it is a store key, never read back."""
+    import hashlib
+    import json
+
+    try:
+        config = getattr(denoiser, "config", None)
+        layers = sorted({f"{type(m).__module__}.{type(m).__name__}" for m in denoiser.modules()})
+        params = list(denoiser.parameters())
+        dtypes = sorted({str(p.dtype) for p in params})
+        weights = sorted({_weight_kind(p) for p in params})
+        blob = json.dumps(
+            [
+                f"{type(denoiser).__module__}.{type(denoiser).__name__}",
+                dict(config) if config is not None else None,
+                layers,
+                dtypes,
+                weights,
+                None if transformer_quant is None else str(transformer_quant),
+                offload_policy,
+                speed_mode,
+            ],
+            sort_keys = True,
+            default = str,
+        )
+    except Exception:  # noqa: BLE001 - unidentifiable: the verdict stays per load
+        return None
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 
 
 class _Shape:
     """Per request shape: warm-up, timing, verdict and the run of misses."""
 
-    def __init__(self) -> None:
+    def __init__(self, key: Any = None) -> None:
+        self.key = key
+        # the timing verdict (_BATCH / _PLAIN), latched for the load and persisted: memory pressure never re-times it
+        self.verdict: Optional[str] = None
+        self.doubled_ran = False
         self.steps = 0
         self.plain_pair_s: Optional[float] = None
         self.batched_s: list[float] = []
@@ -186,10 +534,14 @@ class _Shape:
         self.off: Optional[str] = None
         self.off_kind: Optional[str] = None
         self.misses = 0
+        self.judged = False
+        self.compiled_at_trial = False
+        self.trial_render = 0
+        self.render_steps = 0  # steps of this shape in the current render
 
 
 class CfgBatchRouter:
-    """Offloaded denoiser ``forward`` running both guidance branches of a step through one forward."""
+    """Denoiser ``forward`` running both guidance branches of a step through one forward."""
 
     def __init__(
         self,
@@ -199,14 +551,27 @@ class CfgBatchRouter:
         logger: Any = None,
     ) -> None:
         self.module_ref = weakref.ref(module)
+        # Under Dynamo tracing: pass straight through (no graph breaks, no doubled-shape recompile).
+        self._is_compiling = getattr(getattr(_torch(), "compiler", None), "is_compiling", None) or (
+            lambda: False
+        )
         self.orig_forward = module.forward
+        self._mirror_signature()
         self.had_override = "forward" in module.__dict__
         self.prev_override = module.__dict__.get("forward")
         self.reason = reason
         self.logger = logger
         self.disabled: Optional[str] = None
         self.shapes: dict = {}
-        self.stats = {"batched_steps": 0, "hits": 0, "misses": 0, "plain_calls": 0}
+        self.stats = {
+            "batched_steps": 0,
+            "paired_steps": 0,
+            "hits": 0,
+            "misses": 0,
+            "plain_calls": 0,
+        }
+        self.paired: Any = None
+        self._logged_paired = 0
         self._reset_step()
         self.template: Optional[tuple] = None
         self.prev_latent: Any = None
@@ -214,21 +579,32 @@ class CfgBatchRouter:
         self.last_shape: Optional[_Shape] = None
         self.render_off: Optional[str] = None
         self.render_checked = False
+        self.offloaded = False
+        self.pending_disable: Optional[str] = None
+        # _pair_key (request shape, cache mode, compiled) -> the render its paired calls may compile in
+        self.pair_warm: dict = {}
+        self.pair_t0: Optional[float] = None
+        self.renders = 0  # completed renders: a doubled-batch compile is warm-up only in a shape's trial render
+        self.render_compiled: Optional[str] = None
+        self.compiled_resident = False
+        self.identity: Optional[str] = (
+            None  # the load's verdict-store identity (None: verdicts stay per load)
+        )
 
     def _reset_step(self) -> None:
         self.branch = 0
         self.b0: Optional[tuple] = None
         self.kept: Optional[dict] = None
         self.shape: Optional[_Shape] = None
-        self.pending_t0: Optional[float] = None
-        self.pending_plain: Optional[float] = None
 
     def describe(self) -> dict[str, Any]:
         shape = self.shape or self.last_shape
         return {
             "armed_for": self.reason,
+            "mode": "pair" if self.paired is not None else "batch",
             "disabled_reason": self.disabled,
             "shape_off": None if shape is None else shape.off,
+            "verdict": None if shape is None else shape.verdict,
             "plain_pair_s": None
             if shape is None or shape.plain_pair_s is None
             else round(shape.plain_pair_s, 4),
@@ -236,11 +612,29 @@ class CfgBatchRouter:
             if shape is None or not shape.batched_s
             else round(min(shape.batched_s), 4),
             "displaced": self._displaced(),
+            "compiled_resident": self.compiled_resident,
+            "render_off": self.render_off,
             **self.stats,
         }
 
     def end_render(self) -> None:
         """Drop every tensor held between calls (the kept half, the template's constants, the latent)."""
+        paired = self.stats["paired_steps"] - self._logged_paired
+        if paired and self.logger is not None:
+            self._logged_paired = self.stats["paired_steps"]
+            self.logger.info(
+                "diffusion.cfg_pair: %d guided step(s) ran both branches through each streamed block "
+                "(one upload per step); %d paired so far",
+                paired,
+                self._logged_paired,
+            )
+        if self.render_checked:
+            self.renders += 1
+        if self._displaced():
+            self._retake_slot()
+        if self.pending_disable is not None:
+            self.disable(self.pending_disable)
+        self.pair_t0 = None
         self.kept = None
         self.template = None
         self.prev_latent = None
@@ -249,10 +643,11 @@ class CfgBatchRouter:
         self.render_checked = False
         self._reset_step()
         for shape in self.shapes.values():
-            if (
-                shape.off_kind == _OFF_TRANSIENT
-            ):  # memory pressure is per render: retry on the next one
+            shape.render_steps = 0
+            if shape.off_kind == _OFF_TRANSIENT:
+                # memory pressure is per render: retry on the next one, keeping a timing verdict already reached
                 shape.off = shape.off_kind = None
+                shape.judged = shape.verdict == _BATCH
 
     def disable(self, reason: str) -> None:
         if self.disabled is None:
@@ -278,7 +673,41 @@ class CfgBatchRouter:
         module = self.module_ref()
         return module is None or module.__dict__.get("forward") is not self
 
+    def _mirror_signature(self) -> None:
+        """FLUX.3's modular denoise step passes only the kwargs named in ``transformer.forward``'s signature
+        (``img_ids``): a bare ``**kwargs`` signature here would drop them."""
+        import inspect
+        try:
+            self.__signature__ = inspect.signature(self.orig_forward)
+        except (TypeError, ValueError):
+            pass
+
+    def _retake_slot(self) -> bool:
+        """Back in the forward slot after a diffusers hook removal wrote the class forward over it. A streamed
+        (``use_stream``) group offload drops its lazy-prefetch hook from the root after the first forward and restores
+        ``module.forward`` to the bound class forward, which bypassed the router for the rest of the load. Only that
+        exact slot is retaken (a CUDA graph or another layer that took the slot is left alone)."""
+        module = self.module_ref()
+        if module is None:
+            return False
+        slot = module.__dict__.get("forward")
+        if slot is self or getattr(slot, "__self__", None) is not module:
+            return False
+        if getattr(slot, "__func__", None) is not getattr(type(module), "forward", None):
+            return False
+        self.orig_forward = slot
+        self._mirror_signature()
+        module.__dict__["forward"] = self
+        self.stats["retaken"] = self.stats.get("retaken", 0) + 1
+        if self.logger is not None:
+            self.logger.info(
+                "diffusion.cfg_batch: back in the forward slot (a removed offload hook restored the class forward)"
+            )
+        return True
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self._is_compiling():
+            return self.orig_forward(*args, **kwargs)
         mg = _mg()
         latent = mg._latent_arg(args, kwargs)
         if self.disabled is not None or latent is None or self._displaced():
@@ -287,6 +716,26 @@ class CfgBatchRouter:
             # first call of a render: a request-time step cache may have hooked the blocks since install
             module = self.module_ref()
             self.render_off = _foreign_hook(module) if module is not None else None
+            self.render_compiled = compiled_denoiser(module) if module is not None else None
+            self.compiled_resident = (
+                self.render_compiled is not None
+                and not self.offloaded
+                and compiled_resident_batch(module)
+            )
+            if self.render_compiled is not None:
+                if not self.offloaded and not self.compiled_resident:
+                    self.render_off = f"{self.render_compiled} and resident"
+                rejudge = self._untimed_mode() and (self.offloaded or self.compiled_resident)
+                for shape in self.shapes.values():
+                    if shape.judged and not shape.compiled_at_trial and shape.off is None:
+                        if rejudge:
+                            # compiled after an eager render (the deferred profile): this render is the shape's
+                            # compile warm-up, so its batch-2 graph is compiled here, once
+                            shape.judged = False
+                        else:
+                            self._shape_off(
+                                shape, "the denoiser was compiled after this shape's trial"
+                            )
             self.render_checked = True
         if self.render_off is not None:
             return self._plain(args, kwargs)
@@ -295,25 +744,119 @@ class CfgBatchRouter:
         else:
             self._new_step(args, kwargs, latent)
         shape = self.shape
+        if self.branch == 0 and self.paired is not None:
+            # the first plain pair records the second call's template
+            if self.template is not None and shape.off is None and shape.render_steps > 1:
+                out = self._pair(args, kwargs, latent, shape)
+                if out is not None:
+                    return out
+            return self._plain(args, kwargs)
         if self.branch == 0:
-            if self.template is not None and shape.off is None and shape.plain_pair_s is not None:
+            if (
+                self.template is not None
+                and shape.off is None
+                and shape.judged
+                and shape.render_steps > self._plain_steps()
+            ):
                 out = self._batched(args, kwargs, latent, shape)
                 if out is not None:
                     return out
-            if shape.off is None and shape.plain_pair_s is None and shape.steps >= 2:
-                return self._timed_first(args, kwargs, latent, shape)
+            if shape.off is None and not shape.judged and shape.render_steps == _PLAIN_STEPS:
+                self.pair_t0 = time.perf_counter() if self._sync(latent) else None
+            if shape.off is None and not shape.judged and shape.activation_mib is None:
+                return self._measured_plain(args, kwargs, latent, shape)
             return self._plain(args, kwargs)
         if self.branch == 1:
             if self.kept is not None:
                 out = self._take(args, kwargs, shape)
                 if out is not None:
                     return out
+            if shape.off is not None:
+                # skip recording on a plain shape: it is a host sync per step (2.5-3.5% on B200)
+                return self._plain(args, kwargs)
             self._record_template(args, kwargs, latent)
-            if self.pending_t0 is not None:
-                return self._timed_second(args, kwargs, latent, shape)
-            return self._plain(args, kwargs)
+            out = self._plain(args, kwargs)
+            if self.paired is not None:
+                return out
+            if self._untimed_mode():
+                if not shape.judged and self.disabled is None:
+                    self._untimed(shape, latent)
+                return out
+            if not shape.judged and self.disabled is None and shape.render_steps == _PLAIN_STEPS:
+                t0, self.pair_t0 = self.pair_t0, None
+                if shape.verdict is None:
+                    stored = self._stored_verdict(shape, latent)
+                    if stored is not None:
+                        self._apply_verdict(shape, stored, stored = True)
+                if shape.verdict == _BATCH:
+                    # already priced (this load, or any process on this model, shape and card): never re-timed, so
+                    # a borderline shape cannot flip; only the memory gate below can keep this render plain
+                    if self._memory_ok(latent, shape):
+                        self._judge(shape)
+                    else:
+                        self._shape_off(shape, "no room for a doubled call", _OFF_TRANSIENT)
+                    return out
+                if shape.off is not None:
+                    return out
+                if t0 is not None and not self.offloaded and self._sync(latent):
+                    live = time.perf_counter() - t0
+                    if live >= _RESIDENT_MAX_PAIR_S:
+                        shape.plain_pair_s = live
+                        self._decide(
+                            shape,
+                            latent,
+                            _PLAIN,
+                            f"compute-bound: a plain pair takes {live:.3f}s, where one doubled call cannot win "
+                            f"{round((1 - _MEASURED_FRACTION) * 100)}%",
+                        )
+                        return out
+                self._trial((args, kwargs), latent, shape)
+            return out
         self.disable("more than two denoiser calls per step")
         return self._plain(args, kwargs)
+
+    def _untimed_mode(self) -> bool:
+        """No timing trial: an offloaded denoiser batches whenever the doubled call fits (it saves one weight upload
+        per step), and so does a compiled resident one (a trial would compile the batch-2 graph anyway). A resident
+        eager load keeps the trial: measured speed-neutral on L4 / T4, so it batches only where it wins. ``timed``
+        puts offloaded loads back on the trial; ``force`` skips it everywhere."""
+        mode = cfg_batch_mode()
+        if mode == "force":
+            return True
+        if mode == "timed":
+            return self.compiled_resident
+        return self.compiled_resident or self.offloaded
+
+    def _plain_steps(self) -> int:
+        """Plain steps per render: step 1 records the template; the timed path also prices step 2."""
+        return 1 if self._untimed_mode() else _PLAIN_STEPS
+
+    def _untimed(self, shape: _Shape, latent: Any) -> None:
+        """No trial: batched from step 2 under the memory gate. A resident denoiser off CUDA has no memory gate (and
+        was never measured there), so it stays plain unless forced."""
+        forced = cfg_batch_mode() == "force"
+        if not _cuda_latent(latent) and not self.offloaded and not forced:
+            self._shape_off(
+                shape,
+                f"resident batching is measured on CUDA only ({CFG_BATCH_ENV}=force batches anyway)",
+            )
+            return
+        module = self.module_ref()
+        slower = (
+            None
+            if forced or module is None or not _cuda_latent(latent)
+            else measured_slower(module, _card_name(latent), self.render_compiled is not None)
+        )
+        if slower is not None:
+            self._shape_off(shape, f"measured slower batched on this card ({slower})")
+            return
+        shape.verdict = _BATCH
+        # reached under compile: a render that had no room re-judges the shape at its end (end_render)
+        shape.compiled_at_trial = self.render_compiled is not None
+        if self._memory_ok(latent, shape):
+            self._judge(shape)
+        else:
+            self._shape_off(shape, "no room for a doubled call", _OFF_TRANSIENT)
 
     def _new_step(self, args: tuple, kwargs: dict, latent: Any) -> None:
         if self.kept is not None:
@@ -329,63 +872,170 @@ class CfgBatchRouter:
         key = tuple(tuple(t.shape) for t in mg._iter_tensors((args, kwargs)))
         shape = self.shapes.get(key)
         if shape is None:
-            shape = self.shapes[key] = _Shape()
+            shape = self.shapes[key] = _Shape(key)
         if shape is not self.last_shape:
             self.template = (
                 None  # a template predicts its own shape's second call: one plain pair first
             )
         shape.steps += 1
+        shape.render_steps += 1
         self.shape = self.last_shape = shape
 
     def _plain(self, args: tuple, kwargs: dict) -> Any:
         self.stats["plain_calls"] += 1
-        return self.orig_forward(*args, **kwargs)
+        out = self.orig_forward(*args, **kwargs)
+        if self.offloaded and self.stats["plain_calls"] <= 2 and self._displaced():
+            self._retake_slot()
+        return out
 
     def _sync(self, latent: Any) -> bool:
         if getattr(latent.device, "type", None) != "cuda":
             return False
-        _torch().cuda.synchronize(latent.device)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(latent.device)
         return True
 
-    def _timed_first(self, args: tuple, kwargs: dict, latent: Any, shape: _Shape) -> Any:
+    def _measured_plain(self, args: tuple, kwargs: dict, latent: Any, shape: _Shape) -> Any:
+        """A plain first-branch call that records the activations it allocated (the doubled call's memory gate)."""
         torch = _torch()
-        if not self._sync(latent):
-            shape.plain_pair_s = 0.0  # no device timer: batch on the memory gate alone
+        if getattr(latent.device, "type", None) != "cuda":
             return self._plain(args, kwargs)
         # never reset the peak counters (other measurements own them); a call that stayed under an
         # earlier peak leaves its activations unknown
         base = torch.cuda.memory_allocated(latent.device)
         before = torch.cuda.max_memory_allocated(latent.device)
-        t0 = time.perf_counter()
         out = self._plain(args, kwargs)
-        self._sync(latent)
-        self.pending_t0 = time.perf_counter() - t0
         peak = torch.cuda.max_memory_allocated(latent.device)
-        shape.activation_mib = (int(peak - base) >> 20) if peak > before else None
+        if peak > before:
+            shape.activation_mib = int(peak - base) >> 20
         return out
 
-    def _timed_second(self, args: tuple, kwargs: dict, latent: Any, shape: _Shape) -> Any:
-        self._sync(latent)
-        t0 = time.perf_counter()
-        out = self._plain(args, kwargs)
-        self._sync(latent)
-        shape.plain_pair_s = self.pending_t0 + (time.perf_counter() - t0)
-        self.pending_t0 = None
-        return out
-
-    def _judge(self, shape: _Shape) -> None:
-        if len(shape.batched_s) < _BATCHED_SAMPLES or shape.plain_pair_s in (None, 0.0):
+    def _trial(self, second: tuple, latent: Any, shape: _Shape) -> None:
+        """Price this shape once on the step's warm arguments; outputs are discarded so renders keep one path."""
+        torch = _torch()
+        first = self.b0
+        if first is None:
+            return
+        if not self._sync(latent):
+            if not self.offloaded and cfg_batch_mode() != "force":
+                # A resident denoiser off CUDA (CPU, MPS): nothing can time the doubled call, and the gate only turns
+                # batching on where it was measured to win, so the shape stays plain unless forced.
+                self._shape_off(
+                    shape,
+                    f"no device timer on {getattr(latent.device, 'type', 'this device')} to price the doubled call "
+                    f"({CFG_BATCH_ENV}=force batches anyway)",
+                )
+                return
+            shape.verdict = _BATCH  # untimed (offloaded off CUDA): the same verdict every time, nothing to store
+            self._judge(shape)
+            return
+        if not self._memory_ok(latent, shape):
+            self._shape_off(shape, "no room for a doubled call", _OFF_TRANSIENT)
+            return
+        batch = int(latent.shape[0])
+        plain_s: list[float] = []
+        try:
+            graphs = _graph_count()
+            for _ in range(_BATCHED_SAMPLES):
+                t0 = time.perf_counter()
+                self.orig_forward(*first[0], **first[1])
+                self.orig_forward(*second[0], **second[1])
+                self._sync(latent)
+                plain_s.append(time.perf_counter() - t0)
+                t0 = time.perf_counter()
+                predicted = self._predict(latent) if self.template is not None else second
+                b_args, b_kwargs = merge_branches(first, predicted, batch)
+                snapshots = _snapshot(predicted)
+                split_output(self.orig_forward(*b_args, **b_kwargs), batch)
+                _matches(snapshots, second)
+                self._sync(latent)
+                shape.batched_s.append(time.perf_counter() - t0)
+                shape.doubled_ran = True
+                del b_args, b_kwargs, snapshots, predicted
+            shape.plain_pair_s = min(plain_s)
+            if _graph_count() != graphs and self.render_compiled is None and not self.offloaded:
+                self.disable(
+                    "the doubled batch compiled a new graph (the denoiser runs compiled code)"
+                )
+                return
+        except _NotBatchable as exc:
+            self._shape_off(shape, f"not batchable: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 - the shape stays plain; the render's own calls already ran
+            if _is_oom(exc):
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._shape_off(shape, "out of memory on the timed doubled call", _OFF_TRANSIENT)
+                return
+            self.disable(f"the doubled call failed ({type(exc).__name__}: {exc})")
             return
         batched = min(shape.batched_s)
-        if batched > _MEASURED_FRACTION * shape.plain_pair_s:
-            self._shape_off(
+        if shape.plain_pair_s and batched > _MEASURED_FRACTION * shape.plain_pair_s:
+            self._decide(
                 shape,
+                latent,
+                _PLAIN,
                 f"measured no gain: batched pair {batched:.4f}s vs plain pair {shape.plain_pair_s:.4f}s",
             )
+            return
+        self._decide(
+            shape,
+            latent,
+            _BATCH,
+            f"measured gain: batched pair {batched:.4f}s vs plain pair {shape.plain_pair_s or 0:.4f}s",
+        )
+
+    def _verdict_key(self, shape: _Shape, latent: Any) -> Optional[str]:
+        """Store key of a timing verdict: the load's identity, the card, compiled or eager, the request shape.
+        None off CUDA or for an unidentified load (the verdict then holds for this load only)."""
+        card = None if self.identity is None else _card_name(latent)
+        if not card:
+            return None
+        compiled = "compiled" if self.render_compiled is not None else "eager"
+        module = self.module_ref()
+        # Read live: set_attention_backend() changes neither the module classes nor the config.
+        attention = (
+            getattr(module, "_unsloth_attention_backend", None) if module is not None else None
+        )
+        return f"{self.identity}|{card}|{compiled}|{attention}|{shape.key}"
+
+    def _stored_verdict(self, shape: _Shape, latent: Any) -> Optional[dict]:
+        key = self._verdict_key(shape, latent)
+        return None if key is None else stored_verdict(key)
+
+    def _apply_verdict(self, shape: _Shape, entry: dict, *, stored: bool) -> None:
+        shape.verdict = entry["verdict"]
+        if shape.verdict == _PLAIN:
+            reason = str(entry.get("reason") or "measured no gain")
+            self._shape_off(shape, f"stored verdict: {reason}" if stored else reason)
+
+    def _decide(self, shape: _Shape, latent: Any, verdict: str, reason: str) -> None:
+        """Latch a measured verdict; the first one stored for this model, shape and card wins across processes."""
+        entry = {"verdict": verdict, "reason": reason}
+        key = self._verdict_key(shape, latent)
+        settled = entry if key is None else _settle_verdict(key, entry)
+        self._apply_verdict(shape, settled, stored = settled is not entry)
+        if shape.verdict == _BATCH:
+            if self._memory_ok(latent, shape):
+                self._judge(shape)
+            else:
+                self._shape_off(shape, "no room for a doubled call", _OFF_TRANSIENT)
+
+    def _judge(self, shape: _Shape) -> None:
+        shape.judged = True
+        shape.compiled_at_trial = self.render_compiled is not None
+        shape.trial_render = self.renders
 
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         """How the second call's arguments relate to the first's: the latent, a first-branch tensor (same object, or a
         small per-call scalar recomputed with equal bytes), or a constant of the second branch."""
+        if getattr(kwargs.get("unsloth_cond"), "pending", False):
+            # FLUX.3 conditioning still computing (diffusion_cond_blocks): later steps pass its states instead
+            self.template = None
+            return
         mg = _mg()
         torch = _torch()
         b0_leaves = dict(mg._leaves(self.b0)) if self.b0 is not None else {}
@@ -436,12 +1086,10 @@ class CfgBatchRouter:
 
     def _batched(self, args: tuple, kwargs: dict, latent: Any, shape: _Shape) -> Any:
         torch = _torch()
-        timing = len(shape.batched_s) < _BATCHED_SAMPLES and shape.plain_pair_s not in (None, 0.0)
         if not self._memory_ok(latent, shape):
+            # plain for the rest of this render (not one step here and there), batched again on the next one
+            self._shape_off(shape, "no room for a doubled call", _OFF_TRANSIENT)
             return None
-        if timing:
-            self._sync(latent)
-            t0 = time.perf_counter()
         try:
             second = self._predict(latent)
             b_args, b_kwargs = merge_branches((args, kwargs), second, int(latent.shape[0]))
@@ -458,6 +1106,7 @@ class CfgBatchRouter:
                 pass
             self._shape_off(shape, "out of memory preparing the doubled call", _OFF_TRANSIENT)
             return None
+        graphs = _graph_count()
         try:
             out = self.orig_forward(*b_args, **b_kwargs)
             mine, other = split_output(out, int(latent.shape[0]))
@@ -475,24 +1124,91 @@ class CfgBatchRouter:
                 return None
             self.disable(f"the doubled call failed ({type(exc).__name__}: {exc})")
             return None
+        if not shape.doubled_ran:
+            # a stored verdict skipped the trial: this render's first doubled call is the shape's warm-up
+            shape.doubled_ran = True
+            shape.trial_render = self.renders
+            if _graph_count() != graphs and self.render_compiled is None and not self.offloaded:
+                self.pending_disable = (
+                    "the doubled batch compiled a new graph (the denoiser runs compiled code)"
+                )
+        elif _graph_count() != graphs and self.renders > shape.trial_render:
+            self.pending_disable = "the doubled batch compiled a graph after its warm-up render"
         self.kept = {
             "out": other,
             "snapshots": snapshots,
-            "t0": t0 if timing else None,
             "latent": latent,
         }
         self.stats["batched_steps"] += 1
         return mine
+
+    def _pair(self, args: tuple, kwargs: dict, latent: Any, shape: _Shape) -> Any:
+        from .diffusion_cfg_pair import NotPairable, SkipStep, root_forward
+
+        torch = _torch()
+        module = self.module_ref()
+        root_fn = root_forward(module, self.orig_forward) if module is not None else None
+        if root_fn is None:
+            self.disable("the denoiser's own forward is no longer reachable below its hooks")
+            return None
+        try:
+            second = self.paired.align((args, kwargs), self._predict(latent))
+            snapshots = _snapshot(second)
+        except _NotBatchable as exc:
+            self._shape_off(shape, f"not pairable: {exc}")
+            return None
+        graphs = _graph_count()
+        try:
+            mine, other = self.paired.run(
+                module, self.orig_forward, root_fn, (args, kwargs), second
+            )
+        except SkipStep:
+            return None
+        except NotPairable as exc:
+            self._shape_off(shape, f"not pairable: {exc}")
+            return None
+        except Exception as exc:  # noqa: BLE001 - the branch reruns plain
+            if _is_oom(exc):
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._shape_off(shape, "out of memory on the paired call", _OFF_TRANSIENT)
+                return None
+            self.disable(f"the paired call failed ({type(exc).__name__}: {exc})")
+            return None
+        if _graph_count() != graphs:
+            if not cfg_pair_compile_warmup():
+                self.pending_disable = "the paired call compiled a new graph"
+            elif (
+                self.pair_warm.setdefault(self._pair_key(shape, second), self.renders)
+                != self.renders
+            ):
+                # lazy compilation is the warm-up of a shape's first paired render; a graph after it is churn
+                self.pending_disable = "the paired call compiled a graph after its warm-up render"
+        else:
+            self.pair_warm.setdefault(self._pair_key(shape, second), self.renders)
+        self.kept = {"out": other, "snapshots": snapshots, "latent": latent}
+        self.stats["paired_steps"] += 1
+        return mine
+
+    def _pair_key(self, shape: _Shape, second: tuple) -> tuple:
+        """Request shape, second-branch shapes, cache mode and compiled flag: each combination compiles its own graphs."""
+        mg = _mg()
+        branch_cache = getattr(self.paired, "branch_cache", None)
+        mode = None if branch_cache is None else second[1].get(branch_cache[2])
+        return (
+            shape.key,
+            tuple(tuple(t.shape) for t in mg._iter_tensors(second)),
+            mode if isinstance(mode, (str, type(None))) else repr(mode),
+            self.render_compiled,
+        )
 
     def _take(self, args: tuple, kwargs: dict, shape: _Shape) -> Any:
         kept, self.kept = self.kept, None
         if not _matches(kept["snapshots"], (args, kwargs)):
             self._miss(shape, "the second branch differed from what was batched")
             return None
-        if kept["t0"] is not None:
-            self._sync(kept["latent"])
-            shape.batched_s.append(time.perf_counter() - kept["t0"])
-            self._judge(shape)
         self.stats["hits"] += 1
         shape.misses = 0
         return kept["out"]
@@ -530,28 +1246,33 @@ def _matches(snapshots: list, call: tuple) -> bool:
     actual = mg._leaves(call)
     if len(actual) != len(snapshots):
         return False
+    tensors = []
     for (pa, va), (ps, vs) in zip(actual, snapshots):
         if pa != ps:
             return False
         if isinstance(vs, torch.Tensor):
-            if not mg._bitwise_equal(va, vs):
-                return False
+            tensors.append((va, vs))
         elif not mg._same_value(va, vs):
             return False
-    return True
+    # Every tensor argument under one host read per device (once per guided step), not one torch.equal each.
+    return mg._bitwise_equal_all(tensors)
 
 
 def _pad_text(first: dict, second: dict) -> None:
     """Pad the shorter prompt's embeddings (and its mask) with masked zeros so both branches stack (Qwen-Image pads
     each prompt to its own length; the masked keys leave every image token's attention unchanged)."""
     torch = _torch()
+    masks: dict = {}
     for emb_key, mask_key in _PADDED_TEXT:
+        masks.setdefault(emb_key, []).append(mask_key)
+    for emb_key, mask_keys in masks.items():
         a, b = first.get(emb_key), second.get(emb_key)
         if not (isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)) or a.dim() < 3:
             continue
         if a.shape[1] == b.shape[1]:
             continue
-        if mask_key not in first and mask_key not in second:
+        mask_key = next((k for k in mask_keys if k in first or k in second), None)
+        if mask_key is None:
             raise _NotBatchable(f"{emb_key}: prompt lengths differ and the model takes no mask")
         length = max(a.shape[1], b.shape[1])
         given = [
@@ -662,12 +1383,20 @@ def install_cfg_batch(
     pipe: Any,
     *,
     offload_policy: str,
+    speed_mode: Optional[str] = None,
+    transformer_quant: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
     """Arm :class:`CfgBatchRouter` on ``pipe.transformer``; the decline reason, or None when armed. An optional lever:
-    it never fails a load."""
+    it never fails a load. ``speed_mode`` is the request's value (None = unset)."""
     try:
-        return _install(pipe, offload_policy = offload_policy, logger = logger)
+        return _install(
+            pipe,
+            offload_policy = offload_policy,
+            speed_mode = speed_mode,
+            transformer_quant = transformer_quant,
+            logger = logger,
+        )
     except Exception as exc:  # noqa: BLE001
         if logger is not None:
             logger.info("diffusion.cfg_batch: not armed (%s: %s)", type(exc).__name__, exc)
@@ -678,9 +1407,23 @@ def _install(
     pipe: Any,
     *,
     offload_policy: str,
+    speed_mode: Optional[str] = None,
+    transformer_quant: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    reason = cfg_batch_decline(pipe, offload_policy = offload_policy)
+    if cfg_pair_decline(pipe, offload_policy = offload_policy) is None:
+        from .diffusion_cfg_pair import PairedForward
+
+        denoiser = pipe.transformer
+        router = CfgBatchRouter(
+            denoiser,
+            reason = f"offloaded denoiser ({offload_policy}): both branches run each streamed block",
+            logger = logger,
+        )
+        router.offloaded = True
+        router.paired = PairedForward(denoiser)
+        return _arm(pipe, denoiser, router, logger)
+    reason = cfg_batch_decline(pipe, offload_policy = offload_policy, speed_mode = speed_mode)
     if reason is not None:
         if logger is not None:
             logger.info("diffusion.cfg_batch: not armed (%s)", reason)
@@ -690,9 +1433,25 @@ def _install(
         denoiser,
         reason = "forced"
         if cfg_batch_mode() == "force"
-        else f"offloaded denoiser ({offload_policy})",
+        else (
+            f"offloaded denoiser ({offload_policy})"
+            if _offloaded(denoiser, offload_policy)
+            else "resident denoiser"
+        ),
         logger = logger,
     )
+    router.offloaded = _offloaded(denoiser, offload_policy)
+    if (
+        cfg_batch_mode() != "force"
+        and not router.offloaded
+        and compiled_denoiser(denoiser) is not None
+    ):
+        router.reason = "compiled resident denoiser: one doubled call per guided step from step 2"
+    router.identity = _load_identity(denoiser, offload_policy, speed_mode, transformer_quant)
+    return _arm(pipe, denoiser, router, logger)
+
+
+def _arm(pipe: Any, denoiser: Any, router: CfgBatchRouter, logger: Any) -> Optional[str]:
     try:
         _ROUTERS[pipe] = router
     except TypeError:

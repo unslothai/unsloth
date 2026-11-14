@@ -11,7 +11,10 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "../src/features/chat/mcp-server-form.ts";
-import { normalizeMcpUrl } from "../src/features/chat/mcp-server-url.ts";
+import {
+  normalizeMcpUrl,
+  UNSLOTH_STUDIO_TOOLS_MCP_URL,
+} from "../src/features/chat/mcp-server-url.ts";
 import {
   readAfterPendingMcpServerMutations,
   readMcpServerMutationSnapshot,
@@ -289,7 +292,7 @@ test("dialog actions and reconciliation stop when the dialog closes", () => {
   );
   assert.match(
     CHAT_MCP_SERVERS_DIALOG,
-    /<Button size="sm" onClick=\{startCreate\} disabled=\{importing\}>/,
+    /<Button variant="secondary" size="sm" onClick=\{startCreate\} disabled=\{importing\}>/,
   );
 });
 
@@ -499,8 +502,6 @@ test("open-time reconciliation waits for every mutation across component lifetim
     "the first pending mutation must hold refresh",
   );
 
-  // Simulate another API mutation starting after the opening component has
-  // already captured and begun waiting on the first batch.
   trackMcpServerMutation(second.promise);
   first.resolve();
   await Promise.resolve();
@@ -858,6 +859,24 @@ test("the Decisions row stays hidden while the Decision API is off", () => {
     MCP_COMPOSER_BUTTON,
     /const enabledCount = servers\.filter\([\s\S]*decisionsUrl !== null \|\| normalizeMcpUrl\(s\.url\) !== "studio:decisions"/,
   );
+});
+
+test("Unsloth Studio is the first preset, any loopback port, and never a custom row", () => {
+  const url = "http://127.0.0.1/mcp/studio-tools";
+  assert.equal(UNSLOTH_STUDIO_TOOLS_MCP_URL, url);
+  const urls = [
+    url,
+    "http://localhost:8889/mcp/studio-tools/",
+    "http://[::1]:8888/mcp/studio-tools",
+    url.replace("http", "https"),
+    url.replace("127.0.0.1", "example.com"),
+    `${url}/extra`,
+  ];
+  const studio = urls.map((u) => normalizeMcpUrl(u) === "studio:tools");
+  assert.deepEqual(studio, [true, true, true, false, false, false]);
+  const presetThenFilter =
+    /const MCP_PRESETS: readonly McpPreset\[\] = \[\s*\{\s*id: "unsloth-studio",\s*displayName: "Unsloth",\s*url: UNSLOTH_STUDIO_TOOLS_MCP_URL,[\s\S]*const customServers = servers\.filter\([^;]*normalizeMcpUrl\(s\.url\) !== "studio:tools"/;
+  assert.match(MCP_COMPOSER_BUTTON, presetThenFilter);
 });
 
 test("an older Decision API settings response cannot replace a newer one", () => {

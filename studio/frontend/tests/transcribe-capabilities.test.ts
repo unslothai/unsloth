@@ -7,6 +7,9 @@ import test from "node:test";
 import {
   type SttCapabilities,
   type TranscribeSwitch,
+  connectionTranscribeModels,
+  connectionTranscribeSwitches,
+  transcribeSourceHint,
   transcribeSwitches,
 } from "../src/features/audio/transcribe-capabilities.ts";
 import {
@@ -115,4 +118,126 @@ test("languages are ISO codes with Auto first; a saved one the model lacks is se
   assert.equal(transcribeLanguageFor("ja", canary), "");
   assert.equal(transcribeLanguageFor("de", canary), "de");
   assert.equal(transcribeLanguageFor("de", transcribeLanguagesFor(["en"])), "");
+});
+
+test("a connection lists its speech-to-text models and the one dictation uses", () => {
+  const custom = {
+    providerType: "custom",
+    models: ["llama-3.1-8b", "whisper-1"],
+    availableModels: ["Systran/faster-whisper-small", "unsloth/Qwen3-ASR-0.6B-GGUF", "whisper-1"],
+  };
+  assert.deepEqual(connectionTranscribeModels(custom), [
+    "whisper-1",
+    "Systran/faster-whisper-small",
+    "unsloth/Qwen3-ASR-0.6B-GGUF",
+  ]);
+  assert.deepEqual(connectionTranscribeModels({ ...custom, models: [], availableModels: [] }, "large-v3"), [
+    "large-v3",
+  ]);
+  assert.deepEqual(connectionTranscribeModels({ providerType: "openai", models: ["gpt-5.5"] }), [
+    "whisper-1",
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+  ]);
+});
+
+test("on a connection, timestamps follow the switch and speakers stay off", () => {
+  const result = connectionTranscribeSwitches({ timestamps: true }, "whisper-1");
+  assert.deepEqual(result.request, { timestamps: true, speakers: false });
+  assert.equal(result.timestamps.disabled, false);
+  assert.equal(result.speakers.disabled, true);
+  assert.equal(result.speakers.suggestSpeakersModel, undefined);
+  assert.equal(
+    connectionTranscribeSwitches({ timestamps: false }, "whisper-1").request.timestamps,
+    false,
+  );
+});
+
+test("OpenAI's gpt-4o transcribe models never ask for timestamps", () => {
+  for (const model of ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"]) {
+    const result = connectionTranscribeSwitches({ timestamps: true }, model);
+    assert.equal(result.timestamps.disabled, true);
+    assert.equal(result.timestamps.checked, false);
+    assert.equal(result.request.timestamps, false);
+  }
+});
+
+test("dated and newer GPT transcription models never ask for timestamps either", () => {
+  for (const model of [
+    "gpt-4o-mini-transcribe-2025-12-15",
+    "gpt-4o-mini-transcribe-2025-03-20",
+    "gpt-4o-transcribe-2025-03-20",
+    "gpt-transcribe",
+    "gpt-4o-transcribe-diarize",
+  ]) {
+    const result = connectionTranscribeSwitches({ timestamps: true }, model);
+    assert.equal(result.timestamps.disabled, true, model);
+    assert.equal(result.request.timestamps, false, model);
+  }
+  for (const model of ["whisper-1", "whisper-large-v3", "parakeet-tdt", "my-gpt-transcriber"]) {
+    assert.equal(connectionTranscribeSwitches({ timestamps: true }, model).request.timestamps, true, model);
+  }
+});
+
+test("an owner-shared connection lists only the models the owner allowed", () => {
+  const shared = { providerType: "openai", models: ["gpt-5.5", "whisper-1"], sharedByOwner: true };
+  assert.deepEqual(connectionTranscribeModels(shared, "gpt-4o-transcribe"), ["whisper-1"]);
+  assert.deepEqual(connectionTranscribeModels({ ...shared, models: ["gpt-5.5"] }), []);
+});
+
+test("an OpenAI-typed Azure connection offers its deployments, not OpenAI's model IDs", () => {
+  const azure = {
+    providerType: "openai",
+    baseUrl: "https://contoso.openai.azure.com/openai/v1",
+    models: ["gpt-5.5", "whisper-deploy"],
+  };
+  assert.deepEqual(connectionTranscribeModels(azure), ["whisper-deploy"]);
+  assert.deepEqual(
+    connectionTranscribeModels({ ...azure, baseUrl: "https://api.openai.com/v1", models: [] }),
+    ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
+  );
+});
+
+test("a connection's Voxtral TTS model stays out of Transcribe; its realtime ASR does not", () => {
+  const custom = {
+    providerType: "custom",
+    models: [
+      "voxtral-mini-tts-latest",
+      "voxtral-small-latest",
+      "voxtral-mini-latest",
+      "voxtral-mini-transcribe-realtime",
+    ],
+  };
+  assert.deepEqual(connectionTranscribeModels(custom), [
+    "voxtral-mini-latest",
+    "voxtral-mini-transcribe-realtime",
+  ]);
+});
+
+test("the source hint names how long this model's audio can run", () => {
+  assert.equal(
+    transcribeSourceHint(4 * 3600),
+    "Up to 4 hours with this model. Drop a file, record, or reuse a clip.",
+  );
+  assert.equal(
+    transcribeSourceHint(30 * 60),
+    "Up to 30 minutes with this model. Drop a file, record, or reuse a clip.",
+  );
+  assert.equal(
+    transcribeSourceHint(90 * 60),
+    "Up to 90 minutes with this model. Drop a file, record, or reuse a clip.",
+  );
+  const today = "Up to 30 minutes. Drop a file, record, or reuse a clip.";
+  assert.equal(transcribeSourceHint(null), today);
+  assert.equal(transcribeSourceHint(), today);
+  assert.equal(
+    switches({ max_seconds: 14400 }).sourceHint,
+    transcribeSourceHint(14400),
+  );
+  assert.equal(switches({}).sourceHint, today);
+  assert.equal(switches(null).sourceHint, today);
+  assert.equal(
+    connectionTranscribeSwitches({ timestamps: true }, "whisper-1").sourceHint,
+    today,
+  );
 });

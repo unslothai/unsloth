@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression: the lease sweep must not cancel a different account's live run.
-
-Run ids are client chosen and the run rows live in per-account databases, so two accounts
-can legitimately hold the same id. The supervisor keys its tasks, cancel events and
-reservations by bare run id, so flattening every account's reconciled ids into one list and
-calling supervisor.cancel(run_id) lets one account's aged row stop another account's live
-generation.
-"""
+"""Lease sweep must cancel by account, not bare run id, since two accounts can share one run id."""
 
 from __future__ import annotations
 
@@ -115,8 +108,6 @@ async def test_sweep_does_not_cancel_another_accounts_run_with_the_same_id(
         )
         policy.invalidate_account_cache()
 
-        # Alice's row committed but her producer was never registered (supervisor.start
-        # never ran, or the process restarted), so nothing live holds the id.
         run_as(alice, lambda: _running_run("alice"))
         clock.advance_ms(11 * _MINUTE_MS)
 
@@ -135,8 +126,6 @@ async def test_sweep_does_not_cancel_another_accounts_run_with_the_same_id(
 
         monkeypatch.setattr(supervisor, "_produce", _produce)
 
-        # Bob may reuse the client-chosen id: the route only refuses ids held by a LIVE
-        # registration, and Alice's stale row has none.
         assert [e for e in active_generations.snapshot() if e["run_id"] == "run-1"] == []
 
         def _start_bob():

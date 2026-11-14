@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the model is TOLD about its environment under Full access.
-
-permission_mode='full' folds to bypass_permissions=True, which the tool loops
-pass on as disable_sandbox=True: the static analysis, the command blocklist and
-the rlimit pre-exec are all skipped and absolute host paths resolve. The
-python/terminal schemas used to be module constants describing the sandboxed
-run regardless, and the tool nudge never mentioned the mode at all, so the model
-was told it was isolated from a machine it could in fact read. Asked "are you
-able to see the files on my laptop", it answered "no, I operate in a sandboxed
-environment" without ever calling a tool.
-
-These tests pin the two halves of the fix: the schemas swap under Full access,
-and the nudge states the mode so the model checks instead of guessing. Every
-other mode keeps the sandboxed wording verbatim.
-"""
+"""Full access swaps the tool schemas and nudge to host wording; other modes keep the sandbox text."""
 
 import asyncio
 import json
@@ -38,6 +24,7 @@ from routes.inference import (
     _append_to_codex_instructions,
     _build_tool_action_nudge,
     _full_access_tip,
+    _project_folder_tip,
     _select_request_tools,
 )
 
@@ -48,9 +35,6 @@ def _desc(tool: dict) -> str:
 
 def _named(tools: list[dict], name: str) -> dict:
     return next(t for t in tools if t["function"]["name"] == name)
-
-
-# ── Schemas ───────────────────────────────────────────────────────────
 
 
 def test_sandboxed_descriptions_are_unchanged():
@@ -68,27 +52,21 @@ def test_sandboxed_descriptions_are_unchanged():
 def test_full_access_descriptions_drop_the_isolation_claim(tool):
     description = _desc(tool)
     assert "in a sandbox" not in description
-    # The one claim that is outright false with the sandbox off.
+    # Outright false with the sandbox off.
     assert "do not exist" not in description
     assert "sandbox is disabled" in description
     assert "wherever Unsloth Studio is running" in description
-    # Docker is a documented deployment, where only mounted paths are visible,
-    # so the reach is the Unsloth process's, not a whole machine's.
+    # Docker deployments see only mounted paths, so reach is the process's, not the machine's.
     assert "container with only some paths mounted" in description
-    # The remote modes (--secure / -H 0.0.0.0, README) put the tools on the host
-    # serving Unsloth, not on the device the user is looking at, so the prompt
-    # must not claim the two are the same.
+    # Remote modes (--secure, -H 0.0.0.0) run tools on the server, not the user's device.
     assert "user's own machine" not in description
-    # The workdir really is still the per-session dir in bypass mode
-    # (_build_bypass_env repoints HOME at it and TMPDIR/TEMP/TMP just inside it),
-    # so the relative path advice and the download-link note both have to survive.
+    # Bypass mode still uses the per-session workdir (_build_bypass_env repoints HOME/TMPDIR).
     assert "persists for this conversation" in description
     assert "download link" in description
 
 
 def test_full_access_schemas_keep_name_and_parameters():
-    """Only the description changes: a differing name or schema would break the
-    dispatcher and every caller that matches on them."""
+    """Only descriptions may differ; a changed name or schema breaks dispatcher matching."""
     for sandboxed, full in (
         (PYTHON_TOOL, PYTHON_TOOL_FULL_ACCESS),
         (TERMINAL_TOOL, TERMINAL_TOOL_FULL_ACCESS),
@@ -101,11 +79,7 @@ def test_full_access_schemas_keep_name_and_parameters():
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 @pytest.mark.parametrize("tool_name", ["python", "terminal"])
 def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_name):
-    """The module constants are built once for the host platform, so a Linux
-    runner would never exercise the Windows branch. Rebuild the note per
-    platform and re-derive, which is also the guard against a rewording of
-    _build_sandbox_paths_note silently turning the substitutions into no-ops:
-    the sandboxed markers would survive into the result below."""
+    """Rebuild the sandbox note per platform: module constants are built once for the host platform."""
     monkeypatch.setattr(sys, "platform", platform)
     sandboxed = "Execute Python code in a sandbox and return stdout/stderr." + (
         tools._build_sandbox_paths_note()
@@ -119,35 +93,19 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
     assert "do resolve" in full
     assert "user's own machine" not in full
     assert "wherever Unsloth Studio is running" in full
-    # _build_bypass_env keeps _SANDBOX_SITE_DIR on PYTHONPATH, so sitecustomize
-    # still heals these onto the workdir under Full access. A blanket "absolute
-    # paths resolve" would have the model report a write that went elsewhere.
-    # The clause is per tool on BOTH platforms: the split is the shim, not the OS.
-    # sitecustomize is a CPython startup hook, so it patches python (and any
-    # python the terminal launches) wherever it runs, while a plain shell gets
-    # nothing. Measured: parent exists -> real path; parent missing -> <cwd>/base,
-    # unless that name is taken, where it raises.
+    # sitecustomize stays on PYTHONPATH under Full access, so python (not a plain shell) still
+    # remaps missing-parent paths onto the workdir; the split is per tool, not per OS.
     if tool_name == "python":
         assert "absolute paths under a directory that exists do resolve" in full
-        # Two branches, measured: an absent convention prefix keeps the SUFFIX
-        # (/mnt/data/reports/out.csv -> ./reports/out.csv) and overwrites an
-        # existing file; any other missing parent keeps only the base name and
-        # raises when that name is taken. Describing one as both was wrong.
+        # Convention prefixes overwrite; other missing parents raise if the basename is taken.
         assert "the rest of the path is kept relative to the working directory" in full
         assert "replacing any file already sitting there" in full
         assert "only the base name is kept" in full
-        # Measured: a DIFFERENT invented path with the same basename raises, but
-        # rewriting the SAME invented path is permitted via the remap sidecar.
+        # A different invented path with the same basename raises; the same path is allowed (remap sidecar).
         assert "fails outright if that name is taken by an unrelated file" in full
         assert "rewriting the same absolute path just replaces" in full
-        # Only open/io.open/os.open and the mkdir family are wrapped. Measured:
-        # os.rename and os.symlink raise, and shutil.copy writes the rewritten
-        # file through open and then raises in copymode.
-        # Measured: os.makedirs under a missing parent OUTSIDE the convention
-        # prefixes targets the REAL host path, because _makedirs calls _remap only
-        # and never the generic fallback, so the two rewrites do NOT cover the same
-        # APIs. Inside a prefix _remap still rewrites, so the clause is scoped:
-        # makedirs("/mnt/data/reports") with no /mnt/data created ./reports.
+        # Only open/io.open/os.open and mkdir are wrapped; os.makedirs outside convention prefixes
+        # hits the real host path because _makedirs only calls _remap.
         assert "The convention rewrite covers open() and the mkdir calls" in full
         assert "the other covers open() alone" in full
         assert "os.makedirs under a missing parent outside those prefixes" in full
@@ -156,20 +114,13 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
         assert "shutil.copy can write the rewritten file and still raise" in full
     else:
         assert "absolute paths do resolve as the shell resolves them" in full
-        # _build_bypass_env sets PYTHONPATH for the terminal subprocess too, so
-        # python launched from a shell command carries the same shim.
+        # PYTHONPATH also reaches terminal subprocesses, so python launched from a shell gets the shim.
         assert "Python you launch from here is the exception" in full
         assert "gets the same rewrites" in full
-    # No categorical claim about the convention paths in either: on a host where
-    # /mnt/data is a real mount the shim never shadows it, so "not real" is wrong,
-    # and the parent-directory rule already covers the absent case.
-    # /mnt/data may be named, but only inside the conditional describing what
-    # happens while it is ABSENT; a real mount is never shadowed, so no
-    # categorical "not real" claim may survive.
+    # A real /mnt/data mount is never shadowed, so no categorical 'not real' claim may appear.
     assert "not real there" not in full
     if tool_name == "python":
         assert "when the directory does not exist" in full
-    # True in both modes, so untouched.
     assert "persists for this conversation" in full
     assert "download link" in full
     if platform == "win32":
@@ -177,16 +128,12 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
 
 
 def test_python_full_access_description_still_omits_the_shell():
-    """Same reason as the sandboxed one: naming a shell there points a model at
-    subprocess/os.system instead of the terminal tool."""
+    """Naming a shell would send the model to subprocess/os.system, not the terminal tool."""
     assert "shell" not in _desc(PYTHON_TOOL_FULL_ACCESS).lower()
 
 
 def test_full_access_drops_the_local_desktop_promise(monkeypatch):
-    """The Git Bash branch of the shell note says a detached program opens a
-    window on the user's desktop, which only holds while Unsloth is local. The
-    Full access text now says it may be remote or containerized, so the two
-    would contradict each other."""
+    """Full access must not promise a desktop window for Git Bash: Unsloth may be remote."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\bash.exe")
     note = tools._build_terminal_shell_note()
@@ -194,13 +141,11 @@ def test_full_access_drops_the_local_desktop_promise(monkeypatch):
     full = tools._to_full_access("X." + note, "terminal")
     assert "opens a window on the user's desktop" not in full
     assert "on that machine's desktop" in full
-    # The shell-selection guidance itself has to survive.
     assert "The shell is bash (Git for Windows)" in full
 
 
 def test_terminal_full_access_keeps_the_shell_note():
-    """The shell note is platform-derived and applies in either mode; dropping
-    it on Windows brings back the cmd/bash confusion it exists to prevent."""
+    """Platform-derived shell note must stay in both modes, else cmd/bash confusion returns."""
     for marker in ("cmd, not bash", "bash (Git for Windows)"):
         assert (marker in _desc(TERMINAL_TOOL)) == (marker in _desc(TERMINAL_TOOL_FULL_ACCESS))
 
@@ -212,7 +157,7 @@ def test_swap_leaves_other_tools_alone_and_does_not_mutate():
     assert _named(swapped, "terminal") is TERMINAL_TOOL_FULL_ACCESS
     for name in ("web_search", "render_html", "search_knowledge_base"):
         assert _named(swapped, name) is _named(ALL_TOOLS, name)
-    # The module global is shared across requests, so the swap must not touch it.
+    # ALL_TOOLS is shared across requests; the swap must not mutate it.
     assert ALL_TOOLS == before
     assert _desc(_named(ALL_TOOLS, "python")) == _desc(PYTHON_TOOL)
 
@@ -221,9 +166,6 @@ def test_swap_is_a_no_op_without_the_sandboxed_builtins():
     tools = [t for t in ALL_TOOLS if t["function"]["name"] == "web_search"]
     assert apply_full_access_tool_descriptions(tools) is tools
     assert apply_full_access_tool_descriptions([]) == []
-
-
-# ── Request-level selection ───────────────────────────────────────────
 
 
 def _select(**payload_kwargs) -> list[dict]:
@@ -263,8 +205,6 @@ def test_full_access_selection_swaps_the_schemas(payload_kwargs):
     assert _named(tools, "web_search") is _named(ALL_TOOLS, "web_search")
 
 
-# ── Nudge ─────────────────────────────────────────────────────────────
-
 _CODE_TOOLS = [PYTHON_TOOL, TERMINAL_TOOL]
 _WEB_ONLY = [t for t in ALL_TOOLS if t["function"]["name"] == "web_search"]
 
@@ -282,14 +222,9 @@ def test_nudge_states_the_environment_under_full_access():
     nudge = _build_tool_action_nudge(tools = _CODE_TOOLS, model_name = "test-8B", full_access = True)
     assert "where Unsloth Studio is running" in nudge
     assert "code sandbox and the approval prompts disabled" in nudge
-    # Containerized Unsloth sees only its mounts, so the claim is scoped to what
-    # the process can reach rather than to the machine.
     assert "whatever that process can reach" in nudge
     assert "container that mounts only some" in nudge
-    # Scoped to the two local tools: execute_tool passes disable_sandbox to
-    # python/terminal only, web_search is a network call, and an MCP tool may run
-    # on a remote server, so an unqualified "tool calls run here" is wrong when
-    # any of those are enabled alongside.
+    # Only python/terminal get disable_sandbox; web_search and MCP tools may run elsewhere.
     assert nudge.count("The python and terminal tools run where") == 1
 
 
@@ -299,7 +234,7 @@ def test_nudge_states_the_environment_under_full_access():
         (["python"], "The python tool runs where"),
         (["terminal"], "The terminal tool runs where"),
         (["python", "terminal"], "The python and terminal tools run where"),
-        # Order comes from _LOCAL_CODE_TOOLS, not from the caller's list.
+        # Order comes from _LOCAL_CODE_TOOLS, not the caller's list.
         (["terminal", "python"], "The python and terminal tools run where"),
     ],
     ids = ["python_only", "terminal_only", "both", "reversed"],
@@ -313,17 +248,12 @@ def test_the_tip_names_only_the_selected_code_tools(enabled, expected):
     for absent in {"python", "terminal"} - set(enabled):
         assert f"The {absent} tool runs where" not in nudge
         assert f"and {absent} tools run where" not in nudge
-    # Unsloth can be served remotely, so the tools' host is not necessarily the
-    # device in front of the user.
     assert "not necessarily the device the user is viewing this on" in nudge
-    # The actual reported failure: the model asserted isolation instead of
-    # checking, so the nudge has to redirect that guess to a tool call.
     assert "check with a tool call" in nudge
 
 
 def test_full_access_only_returns_the_sentence_alone():
-    """The Codex studio-tools path has never carried the general tool nudge, so
-    it takes the Full access sentence without the date or the base guidance."""
+    """Codex studio tools never got the general nudge, so they get just the Full access tip."""
     only = _build_tool_action_nudge(
         tools = _CODE_TOOLS, model_name = "test-8B", full_access = True, full_access_only = True
     )
@@ -346,18 +276,105 @@ def test_full_access_only_is_empty_when_it_does_not_apply(kwargs):
 
 
 def test_full_access_tip_needs_a_code_tool():
-    """web_search alone runs nothing locally, so the sandbox sentence would be
-    noise (and false)."""
+    """web_search alone runs nothing locally, so a sandbox sentence would be false noise."""
     nudge = _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B", full_access = True)
     assert "where Unsloth Studio is running" not in nudge
     assert nudge == _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B")
 
 
+_FOLDER_MARKER = "the current working directory is the folder the user chose for it"
+
+
+@pytest.mark.parametrize("full_access", [False, True], ids = ["sandboxed", "full_access"])
+def test_a_chosen_project_folder_is_named_in_every_mode(full_access):
+    """In Ask/Approve for me the tools run in the user's folder (_prepare_tool_launch's
+    user_working_folder), yet the schemas still say sandbox: without this sentence a model
+    answers "What project/files?", as reported on Reddit. Full access runs there too."""
+    plain = _build_tool_action_nudge(
+        tools = _CODE_TOOLS, model_name = "test-8B", full_access = full_access
+    )
+    nudge = _build_tool_action_nudge(
+        tools = _CODE_TOOLS, model_name = "test-8B", full_access = full_access, user_folder = True
+    )
+    assert _FOLDER_MARKER not in plain
+    assert _FOLDER_MARKER in nudge
+    assert "list and read them with the terminal or python tool first" in nudge
+    assert "rather than asking the user to upload or paste them" in nudge
+    # A read can fail or an approval be denied: the model reports that, not a blanket "no access".
+    assert "if a read fails or is denied, say what failed" in nudge
+    # Additive: nothing the nudge said before is dropped.
+    assert nudge == plain + " " + _project_folder_tip({"python", "terminal"})
+    assert ("where Unsloth Studio is running" in nudge) == full_access
+
+
+@pytest.mark.parametrize("names", [{"web_search"}, {"edit_file"}, {"web_search", "edit_file"}])
+def test_the_folder_sentence_needs_a_tool_that_can_read(names):
+    """Neither web_search nor edit_file can list or read the folder, so the sentence would ask
+    for a look the model cannot take."""
+    tools = [t for t in ALL_TOOLS if t["function"]["name"] in names]
+    nudge = _build_tool_action_nudge(tools = tools, model_name = "test-8B", user_folder = True)
+    assert _FOLDER_MARKER not in nudge
+    assert nudge == _build_tool_action_nudge(tools = tools, model_name = "test-8B")
+
+
+@pytest.mark.parametrize(
+    ("names", "reader", "web"),
+    [
+        ({"terminal"}, "with the terminal tool first", False),
+        ({"python", "edit_file"}, "with the python tool first", False),
+        ({"python", "terminal", "web_search"}, "with the terminal or python tool first", True),
+    ],
+)
+def test_the_folder_sentence_names_the_tools_that_can_read(names, reader, web):
+    """Told only "a tool call", Qwen3.5-4B listed the folder and then web-searched how to read
+    app.py until it gave up with an empty answer."""
+    tip = _project_folder_tip(names)
+    assert reader in tip
+    assert ("web_search cannot see them" in tip) == web
+
+
+@pytest.mark.parametrize("full_access", [False, True], ids = ["sandboxed", "full_access"])
+def test_the_studio_tool_loop_paths_carry_the_folder_sentence(full_access):
+    """External providers and Codex run python/terminal in the same workdir, with only the
+    environment sentences."""
+    only = _build_tool_action_nudge(
+        tools = _CODE_TOOLS,
+        model_name = "test-8B",
+        full_access = full_access,
+        full_access_only = True,
+        user_folder = True,
+    )
+    assert _FOLDER_MARKER in only
+    assert "Tools are available when they materially improve" not in only
+    assert ("where Unsloth Studio is running" in only) == full_access
+
+
+def test_every_nudge_call_site_passes_the_folder_flag():
+    """Structural on purpose: the eight call sites are completions and counts on different
+    backends, and one that drops the flag silently loses the sentence or skews the count."""
+    import ast
+    from pathlib import Path
+
+    import routes.inference as inference
+
+    tree = ast.parse(Path(inference.__file__).read_text(encoding = "utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "_build_tool_action_nudge"
+    ]
+    assert len(calls) >= 8
+    for call in calls:
+        assert "user_folder" in {kw.arg for kw in call.keywords}, ast.unparse(call)
+
+
+def test_count_request_carries_the_session():
+    assert _count_request(session_id = "project-p1").session_id == "project-p1"
+
+
 def test_full_access_tip_needs_tools_at_all():
     assert _build_tool_action_nudge(tools = [], model_name = "test-8B", full_access = True) == ""
-
-
-# ── Token count parity ────────────────────────────────────────────────
 
 
 def _count_request(**kwargs) -> ChatCountTokensRequest:
@@ -370,14 +387,8 @@ def _count_request(**kwargs) -> ChatCountTokensRequest:
     )
 
 
-# ── Codex studio-tools instructions ───────────────────────────────────
-
-
 def test_codex_instructions_skip_a_developer_message():
-    """_responses_input folds only `system` turns into the Responses
-    instructions and drops every other role bar user/assistant/tool, so a nudge
-    appended to a `developer` turn would never reach the model. `developer` is an
-    accepted ChatMessage role, so this shape is reachable."""
+    """Only system turns fold into Responses instructions; a developer turn would drop the nudge."""
     messages = [
         {"role": "developer", "content": "house style"},
         {"role": "user", "content": "hi"},
@@ -424,8 +435,7 @@ def test_count_request_leaves_other_modes_alone(mode):
 
 
 def test_count_request_selection_matches_the_completion():
-    """The whole point of carrying the flag: the counted tool list is the one
-    the completion will render."""
+    """Counted tool list must match the one the completion renders, carrying the flag."""
     counted = asyncio.run(
         _select_request_tools(
             _count_request(permission_mode = "full"), tools_on = True, mcp_allowed = False
@@ -439,30 +449,15 @@ def _sandbox_site_dir():
     return Path(tools.__file__).resolve().parent / "sandbox_site"
 
 
-# hasattr, not the win32 marker above: a marker's argument is evaluated when the decorator
-# is applied, so os.geteuid() runs at import on a platform that has no geteuid and takes the
-# whole module down at collection, every test in it, not just this one.
+# skipif args evaluate at import; calling os.geteuid() there breaks collection on Windows.
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX directory modes")
 @pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason = "root ignores a mode-500 directory",
 )
 def test_the_mkdir_clause_promises_an_attempt_not_a_created_directory(tmp_path):
-    """The unrewritten mkdir path is an attempt, and the clause may not promise more.
-
-    Full access keeps _SANDBOX_SITE_DIR on PYTHONPATH, so ``os.makedirs`` is
-    wrapped -- but ``_makedirs`` calls ``_remap`` alone, so outside a convention
-    prefix nothing is rewritten and the real host path is what the syscall gets.
-    A process that cannot create that path (a non-root write under a root-owned
-    directory, a read-only mount) raises instead, creating nothing anywhere. The
-    subprocess below is that measurement, not an assumption about os.makedirs:
-    the same shim the model runs under, a mode-500 parent, and a check that
-    neither the host path nor a workdir fallback appeared.
-
-    The clause is held to the standard the rest of this comment block already
-    keeps -- see the convention-prefix branch, which names /mnt/data only inside
-    a conditional and never categorically.
-    """
+    """The mkdir clause promises only an attempt: os.makedirs is wrapped, but _makedirs calls only
+    _remap, so an unwritable path outside convention prefixes raises and creates nothing."""
     import subprocess
 
     workdir = tmp_path / "work"

@@ -18,23 +18,23 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
-  Copy01Icon,
   Download01Icon,
-  SentIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type Ref, useEffect, useState } from "react";
+import { type ReactNode, type Ref, useEffect, useState } from "react";
 import type { AudioGalleryClip } from "../api";
 import { RECORDING_MAX_SECONDS } from "../audio-workspace-constants";
 import { formatClipDuration } from "../audio-workspace-utils";
+import { CLIPS_TOP_ROW } from "../components/clips-card";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
   type AudioSourceInputHandle,
 } from "../components/audio-source-input";
 import { SendToItems } from "../components/clip-card";
-import { Field } from "../components/field";
+import { Field, FieldLabel } from "../components/field";
 import { TranscriptView } from "../components/transcript-view";
 import {
   TranscriptExportItems,
@@ -55,7 +55,16 @@ import { transcribeLanguageFor } from "../transcribe-languages";
 import type { TranscriptExportFormat } from "../transcript-export";
 import { formatTimestamp } from "../transcript-model";
 import type { TranscriptProgress } from "../transcript-stream";
-import { GenerateActions, type GenerateBlocker } from "./tts-workspace";
+import {
+  AUDIO_ACTION_BUTTON,
+  AUDIO_GO_BUTTON,
+  AUDIO_NOTE_SLOT,
+  AUDIO_STOP_BUTTON,
+  BlockerNote,
+  GenerateActions,
+  type GenerateBlocker,
+} from "./tts-workspace";
+import { ArrowUpIcon } from "lucide-react";
 
 // Radix Select cannot hold an empty value, so "detect" travels as this.
 const AUTO = "__auto__";
@@ -75,8 +84,8 @@ function SwitchRow({
 }) {
   const id = `transcribe-${name}`;
   return (
-    <div className="grid gap-1.5">
-      <label
+    <div className="grid gap-2">
+      <FieldLabel
         htmlFor={id}
         className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
       >
@@ -99,10 +108,10 @@ function SwitchRow({
             aria-describedby={`${id}-hint`}
           />
         )}
-      </label>
+      </FieldLabel>
       <p
         id={`${id}-hint`}
-        className="text-ui-11p5 leading-snug text-muted-foreground"
+        className="text-ui-12 leading-normal text-muted-foreground"
       >
         {value.hint}
         {value.suggestSpeakersModel && onUseSpeakersModel ? (
@@ -147,7 +156,7 @@ export function TranscribeRail({
         <AudioSourceInput
           id="transcribe-source"
           label="Audio"
-          hint="Up to 30 minutes. Drop a file, record, or reuse a clip."
+          hint={switches.sourceHint}
           value={source}
           onChange={(next) => useAudioTranscribeStore.setState({ source: next })}
           disabled={disabled}
@@ -200,7 +209,6 @@ export function TranscribeRail({
           label={name === "timestamps" ? "Timestamps" : "Speakers"}
           value={switches[name]}
           disabled={disabled}
-          // One "Use" link when both switches would offer the same model.
           onUseSpeakersModel={
             name === "speakers" && switches.timestamps.suggestSpeakersModel
               ? undefined
@@ -277,120 +285,129 @@ export function TranscribeOutput({
     source: transcriptDetails.source ?? transcriptRecord?.source,
     duration: duration ?? null,
   });
-  return (
-    <>
-      <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
-        {transcriptionStartedAt !== null && (
-          <TranscriptionProgress
-            startedAt={transcriptionStartedAt}
-            finishedAt={transcriptionFinishedAt}
-            stopping={transcriptionStopping}
-            progress={transcriptionProgress}
-            onCancel={() => {
-              setTranscriptionStopping(true);
-              transcriptionAbort.current?.abort();
-            }}
-          />
+  const iconAction =
+    "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground";
+  // A finished run that failed shows its error, not a stopped progress row.
+  const top = (currentMenu: ReactNode) =>
+    transcriptionStartedAt !== null &&
+    !transcript &&
+    (transcriptionFinishedAt === null || !transcriptError) ? (
+      <div className={CLIPS_TOP_ROW}>
+        <TranscriptionProgress
+          startedAt={transcriptionStartedAt}
+          finishedAt={transcriptionFinishedAt}
+          stopping={transcriptionStopping}
+          progress={transcriptionProgress}
+          onCancel={() => {
+            setTranscriptionStopping(true);
+            transcriptionAbort.current?.abort();
+          }}
+        />
+      </div>
+    ) : transcript ? (
+      <section
+        id="transcribe-result"
+        tabIndex={-1}
+        aria-label="Transcript"
+        aria-busy={busy === "loading" ? true : undefined}
+        className={cn(
+          CLIPS_TOP_ROW,
+          "gap-3 transition-opacity duration-150 focus-visible:outline-none motion-reduce:transition-none",
+          busy === "loading" && "opacity-50",
         )}
-        {transcript ? (
-          // Focused and announced by the host after a run.
-          <section
-            id="transcribe-result"
-            tabIndex={-1}
-            aria-label="Transcript"
-            aria-busy={busy === "loading" ? true : undefined}
-            className={cn(
-              "flex flex-col gap-3 transition-opacity duration-150 focus-visible:outline-none motion-reduce:transition-none",
-              busy === "loading" && "opacity-50",
-            )}
-          >
-            <TranscriptView
-              text={transcript}
-              details={transcriptDetails}
-              names={speakerNames}
-              onRename={renameSpeaker}
-              durationS={duration ?? null}
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleCopyTranscript}
-                >
-                  <HugeiconsIcon icon={Copy01Icon} className="mr-2 size-3.5" />
-                  Copy
-                </Button>
+      >
+        <TranscriptView
+          text={transcript}
+          details={transcriptDetails}
+          names={speakerNames}
+          onRename={renameSpeaker}
+          durationS={duration ?? null}
+          title={transcribedName}
+          meta={
+            <>
+              <span title={transcriptModel}>
+                {transcriptModel.split("/").pop() || transcriptModel}
+              </span>
+              {language ? ` · ${language}` : ""}
+              {duration ? (
+                <>
+                  {" · "}
+                  <span className="font-mono tabular-nums">
+                    {formatTimestamp(duration)}
+                  </span>
+                </>
+              ) : null}
+              {!transcriptRecord && !transcriptExported ? " · Not saved" : ""}
+            </>
+          }
+          actions={
+            <div className="flex shrink-0 items-center">
+              <Button
+                variant="ghost"
+                size="icon"
+                className={iconAction}
+                aria-label="Copy transcript"
+                title="Copy"
+                onClick={handleCopyTranscript}
+              >
+                <HugeiconsIcon icon={Copy01Icon} className="size-4" />
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={iconAction}
+                    aria-label="Download transcript"
+                    title="Download"
+                  >
+                    <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <TranscriptExportItems
+                    timed={transcriptDetails.segments.length > 0}
+                    label={(format) => <span>{FORMAT_LABELS[format]}</span>}
+                    onExport={(format) => void handleDownloadTranscript(format)}
+                  />
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {Object.keys(sendHandlers).length > 0 ? (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild={true}>
-                    <Button variant="secondary" size="sm">
-                      <HugeiconsIcon
-                        icon={Download01Icon}
-                        className="mr-2 size-3.5"
-                      />
-                      Download
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className={iconAction}
+                      aria-label="Send transcript to"
+                      title="Send to"
+                    >
+                      <ArrowUpIcon className="size-4" />
                     </Button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    <TranscriptExportItems
-                      timed={transcriptDetails.segments.length > 0}
-                      label={(format) => <span>{FORMAT_LABELS[format]}</span>}
-                      onExport={(format) =>
-                        void handleDownloadTranscript(format)
-                      }
-                    />
+                  <DropdownMenuContent align="end">
+                    <SendToItems handlers={sendHandlers} />
                   </DropdownMenuContent>
                 </DropdownMenu>
-                {Object.keys(sendHandlers).length > 0 ? (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild={true}>
-                      <Button variant="secondary" size="sm">
-                        <HugeiconsIcon icon={SentIcon} className="mr-2 size-3.5" />
-                        Send to
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start">
-                      <SendToItems handlers={sendHandlers} />
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                ) : null}
-              </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-ui-11p5 text-muted-foreground">
-                <span className="min-w-0 truncate">{transcribedName}</span>
-                <span>·</span>
-                <span className="min-w-0 truncate" title={transcriptModel}>
-                  {transcriptModel.split("/").pop() || transcriptModel}
-                </span>
-                {language ? <span>· {language}</span> : null}
-                {duration ? (
-                  <span>
-                    ·{" "}
-                    <span className="font-mono tabular-nums">
-                      {formatTimestamp(duration)}
-                    </span>
-                  </span>
-                ) : null}
-                {!transcriptRecord && !transcriptExported && (
-                  <span>· Not saved</span>
-                )}
-              </div>
-            </TranscriptView>
-          </section>
-        ) : transcriptError ? (
-          <div className="flex flex-col gap-1" role="alert">
-            <p className="text-ui-13 font-medium text-destructive">
-              Could not transcribe {transcribedName ?? "that audio"}.
-            </p>
-            <p className="text-ui-13 text-muted-foreground">{transcriptError}</p>
-          </div>
-        ) : busy !== "transcribing" ? (
-          <p className="text-ui-13 text-muted-foreground">
-            Record or upload audio to transcribe. Completed transcripts are saved
-            to history.
-          </p>
-        ) : null}
+              ) : null}
+              {currentMenu}
+            </div>
+          }
+        />
+      </section>
+    ) : transcriptError ? (
+      <div className={cn(CLIPS_TOP_ROW, "gap-1 ps-4")} role="alert">
+        <p className="text-ui-13 font-medium text-destructive">
+          Could not transcribe {transcribedName ?? "that audio"}.
+        </p>
+        <p className="text-ui-13 text-muted-foreground">{transcriptError}</p>
       </div>
-      <div className="shrink-0 pt-4">
+    ) : null;
+  return (
+    <>
         <TranscriptGallery
+          top={top}
+          emptyText="Record or upload audio to transcribe. Completed transcripts are saved here."
           autoSelect={!transcript && !transcribedName && busy === null}
           active={active && mode === "transcribe"}
           currentId={transcriptRecord?.id ?? null}
@@ -408,7 +425,6 @@ export function TranscribeOutput({
               clearTranscript();
           }}
         />
-      </div>
     </>
   );
 }
@@ -457,7 +473,7 @@ export function TranscribeFooter({
           ? "Stopping…"
           : "Transcribing…";
   return (
-    <div className="flex w-full max-w-sm flex-col gap-2">
+    <div className="flex w-full flex-col gap-2.5">
       {working ? (
         <>
           <output
@@ -477,12 +493,15 @@ export function TranscribeFooter({
           />
         </>
       ) : null}
-      <div className="flex flex-wrap items-center justify-center gap-2">
+      <div className="flex items-center justify-center gap-2">
         <Button
-          className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className={cn(
+            AUDIO_ACTION_BUTTON,
+            running ? AUDIO_STOP_BUTTON : AUDIO_GO_BUTTON,
+          )}
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
-          variant={running ? "destructive" : "default"}
+          variant={running ? "outline" : "primary"}
           aria-describedby={
             blocker
               ? "transcribe-blocker"
@@ -505,15 +524,18 @@ export function TranscribeFooter({
           )}
         </Button>
       </div>
-      {(blocker || notice) && !running ? (
-        <p
-          id={blocker ? "transcribe-blocker" : "transcribe-notice"}
-          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
-        >
-          {blocker ? blocker.reason : notice}
-          <GenerateActions actions={blocker?.actions} />
-        </p>
-      ) : null}
+      <div className={AUDIO_NOTE_SLOT}>
+        {blocker && !running ? (
+          <BlockerNote id="transcribe-blocker" blocker={blocker} />
+        ) : notice && !running ? (
+          <p
+            id="transcribe-notice"
+            className="text-center text-ui-12 leading-normal text-muted-foreground"
+          >
+            {notice}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }

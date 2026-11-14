@@ -23,7 +23,6 @@ def test_a_launch_without_autofill_prints_the_password():
     body = "\n".join(_lines(autofill_available = False))
 
     assert f"password: {PASSWORD}" in body
-    # Still say where it lives: the operator may come back after the log has scrolled.
     assert f"also saved to: {PATH}" in body
 
 
@@ -60,9 +59,8 @@ def _banner_guard():
 
 
 def test_the_banner_guard_does_not_key_only_on_this_call_creating_the_admin():
-    """run_server's pre-bind gate calls ensure_default_admin() before the lifespan on a
-    tunnel launch, so its return value is False there and a guard keyed on it alone skips
-    the banner on exactly the launch that has no autofill to fall back on."""
+    """On a tunnel launch run_server's pre-bind gate calls ensure_default_admin() before the
+    lifespan, so its return is False; a banner keyed on it alone is skipped there."""
     guard = _banner_guard()
 
     assert "admin_created_this_process" in guard
@@ -82,7 +80,6 @@ def test_the_creation_flag_survives_a_later_call_that_creates_nothing(monkeypatc
     assert storage.ensure_default_admin() is True
     assert storage.admin_created_this_process() is True
 
-    # The gate's call is first; the lifespan's is this one, and it creates nothing.
     monkeypatch.setattr(storage, "get_user_and_secret", lambda *a, **k: object())
     monkeypatch.setattr(storage, "_load_bootstrap_password", lambda: PASSWORD)
 

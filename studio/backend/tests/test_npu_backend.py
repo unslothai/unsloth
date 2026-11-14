@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Exercise NPU lifecycle and API calls against a fake lemond child process.
-
-POSIX only: the stub executable is a shell script.
-"""
+"""Fake lemond child is a shell script, so these NPU lifecycle tests run on POSIX only."""
 
 from __future__ import annotations
 
@@ -118,7 +115,6 @@ def test_config_is_private_and_quiet(npu):
     assert config["broadcast"] is False
     assert config["auto_check_model_updates"] is False
     assert config["host"] == "127.0.0.1"
-    # Not "auto", which scans the user's Hugging Face cache for GGUFs.
     assert config["models_dir"] == str(npu.root / "cache" / "models")
     assert config["flm"]["prefer_system"] is False
 
@@ -157,7 +153,7 @@ def test_an_npu_left_off_is_refused_with_the_flag_named(tmp_path, monkeypatch, c
         lambda: {"present": True, "enabled": False, "supported": False, "family": "XDNA2"},
     )
     backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
-    with pytest.raises(nb.NpuError, match = "UNSLOTH_STUDIO_ENABLE_NPU=1"):
+    with pytest.raises(nb.NpuError, match = "UNSLOTH_STUDIO_ENABLE_NPU. Unset it"):
         getattr(backend, call)()
     assert installer.installs == 0
     assert backend.status()["supported"] is False
@@ -176,8 +172,31 @@ def test_catalog_keeps_flm_chat_models_only(npu):
     assert by_id["qwen3-0.6b-FLM"].model_path == "lemonade:qwen3-0.6b-FLM"
 
 
+def test_catalog_rows_name_their_model_card_repo(npu):
+    npu.enable()
+    (npu._flm_binary().parent / "model_list.json").write_text(
+        json.dumps(
+            {
+                "model_path": "models",
+                "models": {
+                    "qwen3": {
+                        "0.6b": {
+                            "name": "Qwen3-0.6B-NPU2",
+                            "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2/resolve/v2",
+                        }
+                    }
+                },
+            }
+        )
+    )
+    by_id = {model.id: model.to_json() for model in npu.catalog()}
+    assert by_id["qwen3-0.6b-FLM"]["hf_repo"] == "FastFlowLM/Qwen3-0.6B-NPU2"
+    assert by_id["qwen3-0.6b-FLM"]["hf_revision"] == "v2"
+    assert by_id["gemma3-4b-FLM"]["hf_repo"] is None
+    assert by_id["gemma3-4b-FLM"]["hf_revision"] is None
+
+
 def test_download_relays_progress_then_completes(npu):
-    # No FastFlowLM file list to read, so lemond downloads the model and its events are relayed.
     npu.enable()
     events = list(npu.download("qwen3-0.6b-FLM"))
     assert events[0]["percent"] == 40
@@ -256,7 +275,6 @@ def test_studio_downloads_the_files_and_lemond_only_registers_them(npu, flm_mani
     folder = npu.root / "flm" / "models" / "Qwen3-0.6B-NPU2"
     assert (folder / "model.q4nx").read_bytes() == WEIGHTS
     percents = [event["percent"] for event in events]
-    # lemond's own percent (40, for one file) never reaches the stream.
     assert percents == sorted(percents) and percents[-1] == 100
     assert events[-1] == {"event": "complete", "model": "qwen3-0.6b-FLM", "percent": 100}
     pulls = [r for r in _requests(npu) if r["path"] in ("/v1/delete", "/v1/pull")]
@@ -314,13 +332,12 @@ def test_load_reports_the_context_lemond_started_with(npu, monkeypatch):
     list(npu.download("qwen3-0.6b-FLM"))
     npu.load("qwen3-0.6b-FLM")
     assert npu.is_loaded
-    # Not the model's 40960 maximum: an unset length loads at the default.
     assert npu.loaded_context_length == nb.DEFAULT_CONTEXT_LENGTH
     load = [r["body"] for r in _requests(npu) if r["path"] == "/v1/load"][-1]
     assert load == {"model_name": "qwen3-0.6b-FLM", "ctx_size": 8192, "save_options": False}
 
     npu.load("qwen3-0.6b-FLM", 100_000)
-    assert npu.loaded_context_length == 40960
+    assert npu.loaded_context_length == 32768
     upstream = npu.upstream()
     assert upstream.model == "qwen3-0.6b-FLM"
     assert upstream.public_model == "lemonade:qwen3-0.6b-FLM"
@@ -334,7 +351,7 @@ def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, mon
     npu.enable()
     by_id = {model.id: model for model in npu.catalog()}
     assert by_id["qwen3.8-mtp-27b-FLM"].max_context_length == 8192
-    assert by_id["qwen3-0.6b-FLM"].max_context_length == 40960
+    assert by_id["qwen3-0.6b-FLM"].max_context_length == 32768
 
     npu.load("qwen3.8-mtp-27b-FLM", 16384)
     load = [r["body"] for r in _requests(npu) if r["path"] == "/v1/load"][-1]
@@ -348,7 +365,8 @@ def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, mon
 )
 def test_a_runtime_limit_caps_whatever_lemond_reports(reported, expected):
     assert nb._max_context_length("qwen3.8-mtp:27b", reported) == expected
-    assert nb._max_context_length("qwen3:0.6b", reported) == (reported or None)
+    assert nb._max_context_length("qwen3.8-dflash2:27b", reported) == expected
+    assert nb._max_context_length("unlisted:tag", reported) == (reported or None)
 
 
 def test_the_resident_reports_what_its_load_asked_for(npu):
@@ -369,7 +387,6 @@ def test_a_reader_racing_an_unload_does_not_crash(npu):
     alive = server.is_alive
 
     def _unloaded_meanwhile():
-        # unload() clears the record between a reader's liveness check and its read.
         npu._loaded = None
         return alive()
 
@@ -403,7 +420,6 @@ def test_unload_then_delete(npu):
 
 @pytest.mark.parametrize("failure", ["1", "200"])
 def test_a_rejected_unload_stops_lemond(npu, monkeypatch, failure):
-    # "200": lemond's HTTP 200 answer with an error body.
     monkeypatch.setenv("FAKE_LEMOND_UNLOAD_FAILS", failure)
     monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
     npu.enable()
@@ -717,7 +733,6 @@ def test_a_load_refused_before_touching_the_npu_keeps_the_resident(npu):
 
 
 def test_a_cancel_during_the_final_health_check_wins(npu, monkeypatch):
-    # The cancel stops lemond; the download must outlive the restart, as files on disk do.
     monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
     npu.enable()
     resident_context = npu._resident_context
@@ -748,7 +763,6 @@ def test_a_cancel_landing_as_the_load_starts_is_kept(npu, monkeypatch):
 
     class _CancelledAsTheLoadStarts:
         def clear(self):
-            # A cancel from another thread lands while the load is publishing itself.
             thread = threading.Thread(
                 target = lambda: results.append(npu.cancel_load("qwen3-0.6b-FLM"))
             )
@@ -805,10 +819,8 @@ def test_stop_ends_the_process(npu):
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PR_SET_PDEATHSIG is Linux")
 def test_lemond_dies_with_a_killed_owner_even_if_it_ignores_sigterm(tmp_path):
-    """A SIGKILLed Unsloth must not leave lemond (and the model FastFlowLM holds) behind.
-
-    The death signal is SIGKILL, not SIGTERM: this lemond ignores SIGTERM outright, and the real one
-    took about 9 s over it with a model loaded."""
+    """A SIGKILLed Unsloth must not leave lemond behind; lemond ignores SIGTERM, so the signal is
+    SIGKILL."""
     import signal
     import subprocess
     import time

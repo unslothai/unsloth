@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Which stored row the picker reads its pass-through arguments from.
-//
-// This has to agree with the server, because the two act on the same data from
-// different ends: the panel hydrates from a row and then sends what it found as an
-// EXPLICIT list, while an API auto-switch resolves the row itself. Where they
-// disagree, a model launches with one set of flags from the picker and another from
-// the API, which is the kind of difference nobody thinks to look for.
-//
-// The rules mirrored here are resolve_model_override_key and _folded_override_matches
-// in utils/openai_auto_switch_settings.py.
+// Mirrors resolve_model_override_key and _folded_override_matches in
+// utils/openai_auto_switch_settings.py; picker and API auto-switch must agree.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -47,8 +39,7 @@ test("an exact key wins", () => {
 });
 
 test("a repo id and its quant fold by case", () => {
-  // The browser lowercases the quant before storing, so a row written with the
-  // upstream spelling still has to be found.
+  // The browser lowercases the quant before storing.
   assert.deepEqual(
     resolveStoredExtraArgs(
       { "unsloth/Model-GGUF:Q4_K_M": { llama_extra_args: ARGS } },
@@ -59,8 +50,7 @@ test("a repo id and its quant fold by case", () => {
 });
 
 test("a POSIX path stays case-sensitive", () => {
-  // /models/Foo.gguf and /models/foo.gguf are two real files, and folding them
-  // would replay one model's arguments on the other.
+  // Distinct case-sensitive POSIX files must not share arguments.
   assert.deepEqual(
     resolveStoredExtraArgs({ "/models/Foo.gguf": { llama_extra_args: ARGS } }, [
       "/models/foo.gguf",
@@ -90,8 +80,6 @@ test("a Windows path folds", () => {
 });
 
 test("a separator and a trailing slash do not make a different key", () => {
-  // _fold_case_insensitive_path replaces backslashes, then trims trailing
-  // separators down to the root, so all of these name one file to the server.
   for (const key of [
     "C:\\Models\\Foo.gguf",
     "c:/models/foo.gguf",
@@ -108,8 +96,7 @@ test("a separator and a trailing slash do not make a different key", () => {
 });
 
 test("a UNC share folds however it is spelled", () => {
-  // Written with forward slashes it still starts "//", which is the shape the
-  // server tests; reading it as an ordinary POSIX path made it case-sensitive.
+  // A forward-slash UNC path still starts with //, which the server treats as Windows.
   assert.deepEqual(
     resolveStoredExtraArgs(
       { "\\\\Server\\Share\\Foo.gguf": { llama_extra_args: ARGS } },
@@ -120,9 +107,7 @@ test("a UNC share folds however it is spelled", () => {
 });
 
 test("a WSL drive mount folds like the Windows volume it is", () => {
-  // _fold_case_insensitive_path treats /mnt/<letter> as a Windows path, because it
-  // is one seen through Linux. Leaving it under the POSIX rule stranded an override
-  // the server does apply, and a cold picker load then omitted the arguments.
+  // /mnt/<letter> is a Windows path seen through Linux, so the server folds its case.
   assert.deepEqual(
     resolveStoredExtraArgs(
       { "/mnt/c/models/foo.gguf": { llama_extra_args: ARGS } },
@@ -130,7 +115,6 @@ test("a WSL drive mount folds like the Windows volume it is", () => {
     ),
     { tokens: ARGS, explicit: true },
   );
-  // Not every /mnt path: /mnt/storage is an ordinary POSIX mount point.
   assert.deepEqual(
     resolveStoredExtraArgs(
       { "/mnt/storage/models/foo.gguf": { llama_extra_args: ARGS } },
@@ -141,8 +125,7 @@ test("a WSL drive mount folds like the Windows volume it is", () => {
 });
 
 test("two keys that fold together resolve to nothing", () => {
-  // resolve_model_override_key returns None here on purpose: picking one of them at
-  // enumeration order applies another model's settings half the time.
+  // Ambiguous on purpose: picking by enumeration order would apply another model's settings.
   assert.deepEqual(
     resolveStoredExtraArgs(
       {
@@ -156,10 +139,7 @@ test("two keys that fold together resolve to nothing", () => {
 });
 
 test("the first entry that exists is the one read, fields and all", () => {
-  // The auto-switch loader breaks on the first non-empty override and reads its
-  // fields from there. Falling through to the bare repo because the variant row
-  // happens to carry no arguments would launch the picker with flags an API load
-  // would not use.
+  // The server stops at the first non-empty override, even if it has no arguments.
   assert.deepEqual(
     resolveStoredExtraArgs(
       {
@@ -173,7 +153,6 @@ test("the first entry that exists is the one read, fields and all", () => {
 });
 
 test("an empty entry is skipped rather than stopping the search", () => {
-  // `if override: break` on the server: a row with no fields is not a match.
   assert.deepEqual(
     resolveStoredExtraArgs(
       {
@@ -194,10 +173,7 @@ test("no row at all is no arguments, not an error", () => {
 });
 
 test("a row that carries an empty list is explicit, not absent", () => {
-  // The tombstone the settings page writes when the box is cleared for a quant
-  // whose bare-repository row still holds arguments. Read as "nothing stored" the
-  // panel omits the field on Load, and /load carries the resident model's
-  // arguments over: the flags the user had just cleared come back.
+  // [] is the tombstone for a cleared box; reading it as absent lets /load resurrect old flags.
   assert.deepEqual(
     resolveStoredExtraArgs(
       {
@@ -211,8 +187,6 @@ test("a row that carries an empty list is explicit, not absent", () => {
 });
 
 test("a matched row with other fields but no arguments is not explicit", () => {
-  // It stopped the search, as the server's `if override: break` does, but it said
-  // nothing about arguments, so there is no clear to honour.
   assert.deepEqual(
     resolveStoredExtraArgs({ "unsloth/model-gguf": { max_seq_length: 4096 } }, [
       "unsloth/model-gguf",
@@ -276,12 +250,10 @@ test("a server physical GPU pin replaces a local Vulkan pin", () => {
 });
 
 test("a server row states which index space its pin is in", () => {
-  // The row carries the namespace now, so a Vulkan ordinal saved on one host is read
-  // back as one rather than being relabelled a physical device id.
   const vulkan = fromApiOverride({ gpu_ids: [1], gpu_index_kind: "vulkan" });
   assert.deepEqual(vulkan.selectedGpuIds, [1]);
   assert.equal(vulkan.selectedGpuIndexKind, "vulkan");
-  // Absent stays physical, or every row written before the field reads back unusable.
+  // Absent stays physical so rows written before the field still read back.
   const legacy = fromApiOverride({ gpu_ids: [1] });
   assert.equal(legacy.selectedGpuIndexKind, "physical");
 });
@@ -292,7 +264,6 @@ test("a pin travels to the server with its index space", () => {
     selectedGpuIds: [1],
     selectedGpuIndexKind: "physical",
   });
-  // Byte-identical to what a physical pin sent before the field existed.
   assert.deepEqual(physical.gpu_ids, [1]);
   assert.equal("gpu_index_kind" in physical, false);
 
@@ -306,10 +277,7 @@ test("a pin travels to the server with its index space", () => {
 });
 
 test("a row that carries less than the local config does not erase the rest", () => {
-  // The mirror is best-effort: a PUT that never landed, a legacy config migrated
-  // into this browser, a field the backend normalizer refused. Hydration adopting
-  // the row wholesale wrote those gaps back over the local copy and persisted it,
-  // so a remembered context disappeared on the next panel open.
+  // The server mirror is best-effort, so hydration must not overwrite local fields it lacks.
   const local = fromApiOverride({
     custom_context_length: 4096,
     kv_cache_dtype: "q8_0",
@@ -327,8 +295,7 @@ test("the row still wins for every field it does carry", () => {
 });
 
 test("a cleared extra-arguments box survives a row that carries no arguments", () => {
-  // [] is a decision (the box was emptied) and stops the fallback to a broader row,
-  // so it must not come back as "never read" because the row said nothing.
+  // [] is a decision that stops fallback to a broader row.
   const local = fromApiOverride({ llama_extra_args: [] });
   assert.deepEqual(local.llamaExtraArgs, []);
   const config = fromApiOverride({ kv_cache_dtype: "q8_0" }, local);

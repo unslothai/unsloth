@@ -405,3 +405,35 @@ def test_a_decision_adapter_loads_only_the_authorized_base(env, tmp_path):
     ok, message = backend.load_checkpoint(str(folder), base_model = "unsloth/Qwen3.5-0.8B")
     assert not ok and "two different base models" in message
     assert _exports(lib) == []
+
+
+def test_a_decision_adapter_whose_base_changed_after_loading_does_not_export(env, tmp_path):
+    mod, lib = env
+    folder = _clef_adapter(tmp_path)
+    backend = mod.ExportBackend()
+    ok, message = backend.load_checkpoint(str(folder), base_model = "unsloth/Qwen3.5-0.8B")
+    assert ok, message
+    (folder / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "owner/private-model"}), encoding = "utf-8"
+    )
+    ok, message, _ = backend.export_gguf("x", "q8_0")
+    assert not ok and "changed after it was loaded" in message
+    assert _exports(lib) == []
+
+
+def test_a_decision_adapter_whose_local_base_index_escapes_does_not_export(env, tmp_path):
+    mod, lib = env
+    base = _write(
+        tmp_path / "base",
+        {"model.safetensors.index.json": {"weight_map": {"w": "../victim/model.safetensors"}}},
+    )
+    folder = _clef_adapter(tmp_path)
+    (folder / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": str(base)}), encoding = "utf-8"
+    )
+    backend = mod.ExportBackend()
+    ok, message = backend.load_checkpoint(str(folder), base_model = str(base))
+    assert ok, message
+    ok, message, _ = backend.export_gguf("x", "q8_0")
+    assert not ok and "outside its folder" in message
+    assert _exports(lib) == []

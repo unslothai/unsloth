@@ -13,9 +13,7 @@
 #   docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
-# Studio image: relink its code into the home (maybe an earlier image's volume) before
-# anything reads the venv, as entrypoint.sh does on the CUDA image. Fatal on failure
-# (a half-linked home); no-op on the base image, which has no linker.
+# Relink the Studio code into the home before anything reads the venv; fatal on failure.
 if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
     /usr/local/bin/unsloth-studio-home || {
         echo "ERROR: could not link Unsloth Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}; see the messages above" >&2
@@ -35,10 +33,8 @@ err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
 warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 note() { printf "\033[1;36mNOTE:\033[0m %s\n"  "$*" >&2; }
 
-# UNSLOTH_DEV_ROOT prefixes the /dev probes (DESTDIR idiom) so the regression
-# tests can stage a device tree; leave it unset in normal use.
+# UNSLOTH_DEV_ROOT prefixes /dev probes for the regression tests; unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
-# What the image was built with; written by Dockerfile.rocm.
 BUILD_INFO="${UNSLOTH_ROCM_BUILD_INFO:-/etc/unsloth-rocm-build}"
 IMAGE_ROCM=""
 IMAGE_GFX=""
@@ -46,9 +42,8 @@ if [[ -r "$BUILD_INFO" ]]; then
     IMAGE_ROCM="$(sed -n 's/^ROCM_VERSION=//p' "$BUILD_INFO")"
     IMAGE_GFX="$(sed -n 's/^ROCM_GFX=//p' "$BUILD_INFO")"
 fi
-# A per-arch image has native kernels for its gfx; a leftover
-# HSA_OVERRIDE_GFX_VERSION (the generic-wheel workaround) would make ROCr present
-# an arch this image has no kernels for. install.sh clears it the same way.
+# A per-arch image has native kernels; a leftover HSA_OVERRIDE_GFX_VERSION would present
+# an arch the image lacks.
 case "$IMAGE_GFX" in
     gfx1150|gfx1151|gfx1152|gfx1200|gfx1201)
         if [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
@@ -57,28 +52,18 @@ case "$IMAGE_GFX" in
         fi ;;
 esac
 
-# The skip flag bypasses the diagnostics only; the override cleanup above
-# still applies, since it changes what the command sees.
+# The skip flag bypasses diagnostics only; the override cleanup above still applies.
 if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
     sync_notebooks
     exec "$@"
 fi
 
-# --- Check 1: a device node the HSA runtime can open ------------------------
-# Two ways in, and only one of them is /dev/kfd:
-#   KFD  the AMD Kernel Fusion Driver node, from the Linux amdgpu driver. Must
-#        exist AND be readable before any HIP call can succeed.
-#   DXG  WSL2, where amdgpu is not loaded and there is no /dev/kfd at all. The
-#        standard hsa-rocr runtime reaches the card through librocdxg over
-#        /dev/dxg when HSA_ENABLE_DXG_DETECTION=1. Same evidence install.sh
-#        gates a WSL host on (_infer_linux_amd_gfx_arch).
-# The DXG path takes the rest of the checks unchanged: check 3 asks torch, which
-# is the only gate that has ever mattered.
+# Check 1: /dev/kfd (amdgpu), or /dev/dxg on WSL2 via librocdxg with
+# HSA_ENABLE_DXG_DETECTION=1. Check 3 (torch) is the real gate.
 UNSLOTH_ROCM_DEV_PATH=kfd
 if [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]; then
     _dxg_lib=""
-    # UNSLOTH_ROCM_DXG_LIBDIRS pins the search for the regression tests, which must
-    # not answer for whatever ROCm the machine running them happens to have.
+    # Pins the search for the regression tests.
     for _d in ${UNSLOTH_ROCM_DXG_LIBDIRS:-/opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib \
               /opt/rocm-*/lib64 /usr/lib/x86_64-linux-gnu}; do
         if [[ -e "$_d/librocdxg.so" || -e "$_d/librocdxg.so.1" ]]; then
@@ -88,8 +73,7 @@ if [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]; then
     done
     if [[ -n "$_dxg_lib" ]]; then
         UNSLOTH_ROCM_DEV_PATH=dxg
-        # Only the runtime reads this, and only when asked; exporting it here means
-        # a plain `docker run --device /dev/dxg` works without the caller knowing.
+        # Exported so a plain `docker run --device /dev/dxg` works.
         export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
         note "no /dev/kfd, but /dev/dxg and librocdxg are present: using the WSL2 DXG bridge."
     else
@@ -153,12 +137,7 @@ MSG
     exit 1
 fi
 
-# --- Check 2: what rocm-smi sees (advisory) --------------------------------
-# rocm-smi does not list every APU (measured on gfx1151: no GPU[..] line inside
-# the container), so it cannot be the gate; check 3 asks torch itself. It reads
-# the amdgpu sysfs, which the DXG bridge has no equivalent of (measured: "Driver
-# not initialized"), and its advice below is about /dev/dri and group ids, which
-# do not exist on WSL: skip it there.
+# Check 2 (advisory): rocm-smi misses some APUs and has nothing to read under DXG.
 if [[ "$UNSLOTH_ROCM_DEV_PATH" == "dxg" ]]; then
     note "skipping rocm-smi: it reads the amdgpu sysfs, which the DXG bridge does not expose."
 elif ! command -v rocm-smi >/dev/null 2>&1; then
@@ -172,9 +151,65 @@ else
     rocm-smi --showid 2>/dev/null | grep 'GPU\[' | head -4 >&2
 fi
 
-# --- Check 3: a HIP torch that can see the device ---------------------------
-# ROCm maps the CUDA Python API, so torch.cuda.is_available() is the test;
-# torch.version.hip first, so a CUDA or CPU torch is named, not the host driver.
+# Generic wheels carry gfx1030 but not its RDNA 2 siblings, which segfault on the first kernel
+# unless run as gfx1030 (#17147). KFD, not torch: the override cannot spoof it. Never on a mixed
+# host (a global override misreports the other cards) or for gfx1033, which check 4 refuses.
+# A gfx1035/gfx1036 iGPU counts only on an APU-only host; beside a card it counts as mixed, since
+# a spoofed iGPU reads as covered and Studio would then select it.
+if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DEV_PATH" == "kfd" ]]; then
+    _gfx_all=()
+    _gfx103x=()
+    _gfx_igpu=()
+    _gfx_other=()
+    for _props in "${UNSLOTH_KFD_TOPOLOGY:-/sys/class/kfd/kfd/topology/nodes}"/*/properties; do
+        [[ -r "$_props" ]] || continue
+        _vendor=""
+        _gtv=0
+        while read -r _key _val; do
+            case "$_key" in
+                vendor_id) _vendor="$_val" ;;
+                gfx_target_version) _gtv="$_val" ;;
+            esac
+        done < "$_props"
+        [[ "$_vendor" == "4098" && "$_gtv" =~ ^[0-9]+$ && "$_gtv" -gt 0 ]] || continue
+        _gfx="$(printf 'gfx%d%d%x' $((_gtv / 10000 % 100)) $((_gtv / 100 % 100)) $((_gtv % 100)))"
+        _gfx_all+=("$_gfx")
+        case "$_gfx" in
+            gfx1030) ;;
+            gfx1031|gfx1032|gfx1034) _gfx103x+=("$_gfx") ;;
+            gfx1035|gfx1036) _gfx_igpu+=("$_gfx") ;;
+            *) _gfx_other+=("$_gfx") ;;
+        esac
+    done
+    if [[ ${#_gfx103x[@]} -gt 0 ]]; then
+        _gfx_other+=("${_gfx_igpu[@]}")
+    elif [[ ${#_gfx_igpu[@]} -eq ${#_gfx_all[@]} ]]; then
+        _gfx103x=("${_gfx_igpu[@]}")
+    fi
+    if [[ ${#_gfx103x[@]} -gt 0 ]]; then
+        _wheel_archs=" $(python - 2>/dev/null <<'PY' || true
+import torch
+print(" ".join(torch.cuda.get_arch_list()))
+PY
+) "
+        _missing=()
+        for _gfx in "${_gfx103x[@]}"; do
+            [[ "$_wheel_archs" == *" $_gfx "* ]] || _missing+=("$_gfx")
+        done
+        if [[ ${#_missing[@]} -gt 0 && "$_wheel_archs" == *" gfx1030 "* ]]; then
+            if [[ ${#_gfx_other[@]} -eq 0 ]]; then
+                export HSA_OVERRIDE_GFX_VERSION=10.3.0
+                note "${_missing[*]} has no kernels in this image's torch, which carries gfx1030: running it as"
+                note "gfx1030 (HSA_OVERRIDE_GFX_VERSION=10.3.0). Set HSA_OVERRIDE_GFX_VERSION yourself to change this."
+            else
+                warn "${_missing[*]} has no kernels in this image's torch; not setting HSA_OVERRIDE_GFX_VERSION=10.3.0"
+                warn "for it, because it would also apply to ${_gfx_other[*]}."
+            fi
+        fi
+    fi
+fi
+
+# Check 3: torch.cuda.is_available() on a HIP build; check torch.version.hip first.
 IMAGE_ROCM="$IMAGE_ROCM" UNSLOTH_ROCM_DEV_PATH="$UNSLOTH_ROCM_DEV_PATH" python - >&2 <<'PY' || exit 1
 import os
 import sys
@@ -239,9 +274,7 @@ print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
 sys.exit(1)
 PY
 
-# --- Check 4: the card's gfx arch against this image's wheels ---------------
-# gcnArchName carries the gfx code (e.g. "gfx1100:sramecc+"). Not a gate (ROCm
-# often runs unlisted arches), but where the user learns which build to use.
+# Check 4 (not a gate): the card's gfx arch vs this image's wheels.
 IMAGE_ROCM="$IMAGE_ROCM" IMAGE_GFX="$IMAGE_GFX" python - >&2 <<'PY' || exit 1
 import os
 import sys
@@ -370,7 +403,7 @@ for i in range(torch.cuda.device_count()):
         print("        fixes the generic rocm index lacks. Build that image with:")
         print(f"          ROCM_GFX={arch} bash docker/build.sh --rocm")
         print("        This generic image may still work; if training crashes, that is the fix.")
-    elif fam:
+    elif fam and arch in (set(getattr(torch.cuda, "get_arch_list", list)()) or {arch}):
         print(f"  -> {fam}")
     else:
         print(f"  NOTE: {arch} is not in the list of arches these wheels are built for.")

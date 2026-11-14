@@ -9,7 +9,7 @@ import { PillTabs } from "@/features/model-picker/components/model-selector/pill
 import type { ComponentProps } from "react";
 import type { AudioGalleryClip } from "../api";
 import { AudioHistoryProvider } from "../components/audio-source-input";
-import { Field } from "../components/field";
+import { Field, FieldLabel } from "../components/field";
 import { LyricsEditor } from "../components/lyrics-editor";
 import { MusicEditInputs } from "../components/music-edit-inputs";
 import type { MusicGeneration } from "../hooks/use-music-generation";
@@ -50,7 +50,7 @@ function ExamplesOrHint({
 }) {
   if (!empty) {
     return (
-      <p className="text-ui-11p5 leading-snug text-muted-foreground">{hint}</p>
+      <p className="text-ui-12 leading-normal text-muted-foreground">{hint}</p>
     );
   }
   return (
@@ -126,7 +126,7 @@ function VariationsSlider({
   const max = variationsMax(rule);
   if (max === null) return null;
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <ParamSlider
         label="Variations"
         value={Math.min(max, Math.max(1, value))}
@@ -140,7 +140,7 @@ function VariationsSlider({
         info="Several takes of the same request, kept together in history."
       />
       {notice ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           {notice}
         </p>
       ) : null}
@@ -172,11 +172,8 @@ function SongInputs({
     <>
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1.5">
         <Field
-          label={
-            rule.description === "required"
-              ? "Description"
-              : "Description (optional)"
-          }
+          label="Description"
+          optional={rule.description !== "required"}
           htmlFor={MUSIC_DESCRIPTION_FIELD_ID}
         >
           <Textarea
@@ -212,7 +209,7 @@ function SongInputs({
       </div>
       {instrumental.shown ? (
         <div className="grid gap-1">
-          <label
+          <FieldLabel
             htmlFor="music-instrumental"
             className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
           >
@@ -225,17 +222,18 @@ function SongInputs({
                 patch("song", { instrumental: checked })
               }
             />
-          </label>
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          </FieldLabel>
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {instrumental.reason ?? "No vocals; the lyrics are kept for later."}
           </p>
         </div>
       ) : null}
       {showLyrics ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <LyricsEditor
             id={MUSIC_LYRICS_FIELD_ID}
-            label={rule.lyrics === "required" ? "Lyrics" : "Lyrics (optional)"}
+            label="Lyrics"
+            optional={rule.lyrics !== "required"}
             value={lyrics}
             onChange={setLyrics}
             sectionCase={rule.section_case}
@@ -249,14 +247,14 @@ function SongInputs({
           {lyrics.trim() ? (
             <p
               id="music-lyrics-hint"
-              className="text-ui-11p5 leading-snug text-muted-foreground"
+              className="text-ui-12 leading-normal text-muted-foreground"
             >
               Section tags shape the song.
             </p>
           ) : (
             <p
               id="music-lyrics-hint"
-              className="text-ui-11p5 leading-snug text-muted-foreground"
+              className="text-ui-12 leading-normal text-muted-foreground"
             >
               Section tags shape the song.{" "}
               <Button
@@ -367,8 +365,9 @@ export function MusicStudioInputs({
   const modes = capabilities.modes.map((mode) => mode.id);
   return (
     <AudioHistoryProvider value={historyClips}>
+      {/* One mode has nothing to pick, and the page subtitle already says what it makes. */}
       {modes.length > 1 ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <PillTabs
             ariaLabel="What to make"
             value={rule.id}
@@ -382,20 +381,15 @@ export function MusicStudioInputs({
               label: musicModeLabel(mode),
             }))}
           />
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {musicModeHint(rule)}
           </p>
         </div>
-      ) : (
-        <div className="grid gap-0.5">
-          <span className="text-ui-13 font-medium text-foreground">
-            {musicModeLabel(rule)}
-          </span>
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
-            {musicModeHint(rule)}
-          </p>
-        </div>
-      )}
+      ) : rule.id === "song" && rule.instrumental === "always" ? (
+        <p className="text-ui-12 leading-normal text-muted-foreground">
+          {musicModeHint(rule)}
+        </p>
+      ) : null}
       {rule.id === "song" ? (
         <SongInputs
           rule={rule}
@@ -442,7 +436,6 @@ export function MusicRail({
   return (
     <TtsRailFields
       {...props}
-      // Length lives in the page's fields, so Advanced keeps only the model's options.
       musicGeneration={false}
       samplingControls={false}
       inputs={
@@ -462,17 +455,33 @@ export function MusicRail({
 
 export function MusicOutput({
   modelReady,
+  loading,
+  onChooseModel,
   ...props
-}: Omit<ComponentProps<typeof TtsOutput>, "emptyText"> & {
+}: Omit<ComponentProps<typeof TtsOutput>, "emptyTitle" | "emptyText" | "emptyActions"> & {
   modelReady: boolean;
+  loading: boolean;
+  onChooseModel: () => void;
 }) {
   return (
     <TtsOutput
       {...props}
+      emptyTitle={
+        modelReady ? "Your music will appear here" : loading ? undefined : "Create music"
+      }
       emptyText={
         modelReady
-          ? "Generated music lands here. Write lyrics or a description, then press Generate."
-          : "Generated music lands here. Load a music model, write lyrics or a description, and press Generate."
+          ? "Add a description or lyrics on the left, then select Generate."
+          : loading
+            ? "Loading your music model…"
+            : "Describe a sound or add lyrics. Choose a model to get started."
+      }
+      emptyActions={
+        !modelReady && !loading ? (
+          <Button type="button" variant="outline" size="sm" onClick={onChooseModel}>
+            Choose music model
+          </Button>
+        ) : undefined
       }
     />
   );

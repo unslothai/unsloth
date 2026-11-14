@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Upgrade, downgrade and contract tests for the per-connection ``max_output_tokens``.
-
-Three things a happy-path test cannot reach:
-
-* an existing studio.db, written before this column existed, opened by this code;
-* the same database opened AGAIN by a build that has never heard of the column,
-  which is what a user who reverts to the previous release does;
-* the route contract, where an explicit null has to be accepted on every provider type:
-  the dialog sends null for a blank field rather than omitting it, so rejecting it broke
-  every unrelated edit of a row that carries no override.
-
-No network, no GPU, no server: the routes are driven as plain coroutines and every
-database is a per-test temporary file.
-"""
+"""max_output_tokens: upgrade old studio.db files, survive downgrade, accept explicit null."""
 
 from __future__ import annotations
 
@@ -34,8 +21,7 @@ from models.providers import ProviderCreate, ProviderUpdate
 from storage import credential_secrets, providers_db
 
 
-# routes/providers.py imports its siblings as ``routes.*``. Loading it by path under
-# a private name is the pattern test_credential_routes.py already uses.
+# routes/providers.py imports siblings as routes.*; load it by path under a private name.
 def _load_route_module(module_name: str, path: Path):
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
@@ -65,12 +51,9 @@ finally:
 
 CREDENTIAL = ("alice", None)
 
-# From the registry, so a provider added later is covered without an edit here.
 NON_CUSTOM_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "custom")
 OVERRIDABLE_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "openai_codex")
 
-# The schema as it stood before this column, including the two columns earlier
-# releases added by ALTER. A database in this shape is what an upgrading user has.
 _PRE_PR_TABLE_DDL = """
     CREATE TABLE llm_providers (
         id TEXT NOT NULL PRIMARY KEY,
@@ -170,9 +153,6 @@ def _write_pre_pr_database(db_path: Path) -> None:
         conn.close()
 
 
-# ── Upgrade ───────────────────────────────────────────────────────
-
-
 def test_a_pre_column_database_migrates_and_keeps_its_rows(isolated_providers_db: Path):
     """The upgrade case: an existing home opened by this build."""
     _write_pre_pr_database(isolated_providers_db)
@@ -184,7 +164,6 @@ def test_a_pre_column_database_migrates_and_keeps_its_rows(isolated_providers_db
     assert row["available_models"] == ["vendor/model", "vendor/other"]
     assert {p["id"] for p in providers_db.list_providers()} == {"old-custom", "old-openai"}
 
-    # And the migrated row now accepts one.
     assert providers_db.update_provider(id = "old-custom", max_output_tokens = 262144)
     assert _raw_override(isolated_providers_db, "old-custom") == 262144
     assert _raw_override(isolated_providers_db, "old-openai") is None
@@ -200,20 +179,15 @@ def test_the_migration_is_idempotent(isolated_providers_db: Path):
 
 
 def test_a_missing_table_is_created_then_migrated(isolated_providers_db: Path):
-    """A fresh home has no table at all: CREATE TABLE never lists the column, so the
-    new install reaches it through the same ALTER an upgrade does."""
+    """CREATE TABLE omits the column on a fresh home, so the same ALTER must run."""
     assert providers_db.list_providers() == []
     assert "max_output_tokens" in _columns(isolated_providers_db)
-
-
-# ── Downgrade ─────────────────────────────────────────────────────
 
 
 def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     isolated_providers_db: Path,
 ):
-    """The revert case. The old code selects * and inserts without naming the column,
-    so a migrated file must stay readable and writable by it."""
+    """Old code selects all columns and inserts unnamed, so a migrated file must still work."""
     providers_db.create_provider(
         id = "new-custom",
         provider_type = "custom",
@@ -226,13 +200,11 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     conn = sqlite3.connect(str(isolated_providers_db))
     conn.row_factory = sqlite3.Row
     try:
-        # Exactly what the previous release's get_provider does.
         row = dict(
             conn.execute("SELECT * FROM llm_providers WHERE id = ?", ("new-custom",)).fetchone()
         )
         assert row["display_name"] == "New Custom"
         assert row["models_json"] == '["vendor/model"]'
-        # An INSERT that never mentions the column, as the old code writes.
         conn.execute(
             "INSERT INTO llm_providers (id, provider_type, display_name, base_url, "
             "is_enabled, models_json, available_models_json, created_at, updated_at) "
@@ -250,12 +222,8 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     finally:
         conn.close()
 
-    # Back on this build: the old row reads as no override, the new one kept its value.
     assert providers_db.get_provider("downgrade-written")["max_output_tokens"] is None
     assert providers_db.get_provider("new-custom")["max_output_tokens"] == 384000
-
-
-# ── Route contract ────────────────────────────────────────────────
 
 
 def _create(payload: ProviderCreate):
@@ -276,9 +244,7 @@ def _update(provider_id: str, payload: ProviderUpdate):
 def test_a_non_custom_provider_accepts_an_explicit_null_override(
     provider_routes: Path, provider_type: str
 ):
-    """A blank Max Tokens limit field serialises as null rather than as an omission, so
-    an unrelated edit of a row with no override -- a rename, a model change, a key
-    rotation -- sends the null along and rejecting it failed the whole edit."""
+    """A blank limit field serialises as null, so an unrelated edit must not be rejected for it."""
     providers_db.create_provider(
         id = f"{provider_type}-1",
         provider_type = provider_type,
@@ -313,8 +279,7 @@ def test_every_provider_type_but_codex_takes_a_real_override(
 
 
 def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
-    """Codex routing, model list and output cap are fixed, so a stored override would
-    never be read."""
+    """Codex routing, models and output cap are fixed, so a stored override is never read."""
     providers_db.create_provider(
         id = "openai_codex-1",
         provider_type = "openai_codex",
@@ -326,8 +291,6 @@ def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
     assert error.value.status_code == 400
     assert _raw_override(provider_routes, "openai_codex-1") is None
 
-    # Create takes the same contract, and reaches it before the auth one, so the caller
-    # is told which rule stopped them.
     with pytest.raises(HTTPException) as created:
         _create(
             ProviderCreate(
@@ -355,7 +318,6 @@ def test_a_custom_connection_can_set_preserve_and_clear_its_override(provider_ro
 
     assert _update(created.id, ProviderUpdate(max_output_tokens = 65536)).max_output_tokens == 65536
 
-    # An unrelated edit must leave it alone: omitted is not the same as null.
     preserved = _update(created.id, ProviderUpdate(display_name = "Renamed Custom"))
     assert preserved.display_name == "Renamed Custom"
     assert _raw_override(provider_routes, created.id) == 65536
@@ -379,8 +341,7 @@ def test_an_override_only_update_is_recognised_as_a_metadata_request(provider_ro
 
 
 def test_the_largest_accepted_value_round_trips_exactly(provider_routes: Path):
-    """SQLite INTEGER is 8 bytes, so the top of the accepted range must come back
-    identical rather than as a float."""
+    """SQLite INTEGER is 8 bytes, so the top value must come back identical, not as a float."""
     value = 9007199254740991
     created = _create(
         ProviderCreate(

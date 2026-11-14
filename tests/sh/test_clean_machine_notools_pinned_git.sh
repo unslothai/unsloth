@@ -65,8 +65,26 @@ git\tsubmodule update --recursive --init
 xcode-select\t-p
 "
 
+# uv 0.13 (the pinned release): git-v1, and the pinned commit fetched by its own refspec.
+CACHE1=$UV_CACHE/git-v1
+UV13_CLONE="git\t--version
+git\t-c remote.origin.url=$REMOTE submodule update --init
+git\tclone --local $CACHE1/db/76e25d04238765dd $CACHE1/checkouts/76e25d04238765dd/${SHA:0:9}
+git\tfetch --force --update-head-ok $REMOTE +$SHA:refs/commit/$SHA
+git\tinit
+git\treset --hard $SHA
+git\trev-parse
+git\trev-parse --short $SHA
+git\trev-parse $SHA^0
+git\trev-parse HEAD
+git\tsubmodule update --recursive --init
+xcode-select\t-p
+"
+
 echo "=== pinned git+ remotes ==="
 expect_rc "uv cloning the pinned Diffusers build passes" 0 "$PIN" "$UV_CLONE"
+expect_rc "uv 0.13 cloning it through git-v1 passes" 0 "$PIN" "$UV13_CLONE" "$CACHE1/checkouts/76e25d04238765dd/${SHA:0:9}"
+expect_rc "the uv 0.13 trace fails with no allowance" 1 "" "$UV13_CLONE" "$CACHE1/checkouts/76e25d04238765dd/${SHA:0:9}"
 expect_rc "the same trace fails with no allowance, as before" 1 "" "$UV_CLONE"
 expect_rc "an allowance file that does not exist allows nothing" 1 "$ROOT/missing.txt" "$UV_CLONE"
 expect_rc "the installer's git --version probe alone passes" 0 "$PIN" "git\t--version\n"

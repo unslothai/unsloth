@@ -22,20 +22,7 @@ _path_revision = 0
 
 
 def expanded_user_path(value: Path | str) -> Path:
-    """``~`` and ``~name`` expanded, never raising on a name that does not resolve.
-
-    ``Path.expanduser()`` raises ``RuntimeError`` when the home cannot be
-    determined, which includes every unknown named user: ``~deleted-user/llama.cpp``
-    left in a service unit or a ``.env`` after an account rename took runtime
-    discovery down with it, so a model operation reported the expansion error
-    rather than falling through to another runtime or saying none was found.
-
-    ``os.path.expanduser`` is the reader that does not raise: it hands an
-    unresolvable name straight back, which is also what the desktop's pinning does
-    with one, so the two halves of a launch still agree about the value. An
-    unexpandable override then reaches the search as an ordinary path, finds
-    nothing, and the documented order continues.
-    """
+    """Uses os.path.expanduser: Path.expanduser raises on an unknown ~user, and the desktop matches that."""
     return Path(os.path.expanduser(str(value)))
 
 
@@ -60,10 +47,7 @@ def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
 
 @contextmanager
 def llama_cpp_path_selection_guard() -> Iterator[None]:
-    """Serialize a runtime path snapshot with a settings write.
-
-    Model loads and UI saves share this lock so reload status sees one snapshot.
-    """
+    """Model loads and settings saves share this lock, so reload status sees one consistent snapshot."""
     with _settings_lock:
         yield
 
@@ -118,8 +102,7 @@ _WINDOWS_VENDOR_DLLS = {
     "intel": ("ze_intel_gpu64.dll", "igdrcl64.dll"),
 }
 _DRM_ROOT = "/sys/class/drm"
-# WSL2 reaches the GPU through /dev/dxg (no DRM card, no /dev/kfd or /dev/nvidiactl): the
-# vendor is the runtime that drives it, librocdxg for AMD and the WSL libcuda for NVIDIA.
+# WSL2 uses /dev/dxg; the vendor is the runtime: librocdxg (AMD) or WSL libcuda (NVIDIA).
 _WSL_ROCM_LIB_DIRS = ("/opt/rocm/lib", "/opt/rocm/lib64")
 _WSL_CUDA_LIB_DIR = "/usr/lib/wsl/lib"
 _HOST: Any = object()  # prefer_gpu_capable's default: read the vendors from this host
@@ -160,10 +143,7 @@ def _amd_mask_hides_all() -> bool:
 
 
 def host_gpu_vendors() -> Optional[set[str]]:
-    """GPU vendors this process can reach: DRM sysfs vendors whose device node is present and
-    whose visibility mask is not empty on Linux, the vendors' driver DLLs on Windows. None when
-    nothing was detected at all (an unknown host filters nothing); an empty set when GPUs were
-    detected but none is reachable, so only vendor-agnostic backends fit."""
+    """None means unknown and filters nothing; an empty set means GPUs exist but none is reachable."""
     vendors: set[str] = set()
     if sys.platform == "darwin":
         return {"apple"}
@@ -191,8 +171,7 @@ def host_gpu_vendors() -> Optional[set[str]]:
         wsl_nvidia = wsl and any(Path(_WSL_CUDA_LIB_DIR).glob("libcuda.so*"))
         vendors |= {v for v, on in (("amd", wsl_amd), ("nvidia", wsl_nvidia)) if on}
         detected = set(vendors)
-        # A container that exposes only one vendor's device nodes, or a mask hiding a vendor,
-        # must not make its backend look runnable on a hybrid box.
+        # Hidden device nodes or a masking env var must not make a backend look runnable.
         if "nvidia" in vendors and (
             not (os.path.exists("/dev/nvidiactl") or wsl_nvidia)
             or _mask_hides_all("CUDA_VISIBLE_DEVICES")
@@ -217,10 +196,7 @@ def prefer_gpu_capable(
     usable: Callable[[Path], bool],
     vendors: Any = _HOST,
 ) -> list[Path]:
-    """Search order, except that a first hit proven CPU-only, or proven built for a GPU vendor
-    this host lacks, yields to a later usable build shipping a GPU backend this host's vendor
-    runs (#5941: a CPU build/ beside build-cuda/; a stale build-cuda/ must not shadow
-    build-hip/ on an AMD box, whether or not a build/ precedes it). Unknown layouts stay put."""
+    """A first hit proven CPU-only or for an absent vendor yields to a later GPU build (stale build-cuda must not shadow build-hip); unknown layouts stay put."""
     ordered = list(candidates)
     first = next((c for c in ordered if usable(c)), None)
     if first is None:

@@ -88,3 +88,39 @@ def test_a_managed_account_sees_only_the_configured_fine_tune(client):
 
     assert view(owner) == (served, [private, served], private)
     assert view(bob) == (served, [served], None)
+
+
+def test_a_managed_account_cannot_swap_in_another_catalog_checkpoint(client, monkeypatch):
+    loads = []
+    monkeypatch.setattr(
+        laya_runtime,
+        "_load_checkpoint",
+        lambda checkpoint: (loads.append(checkpoint.name), (SimpleNamespace(), "cpu"))[1],
+    )
+    owner, alice = _login(client, "unsloth"), _login(client, "alice")
+    saved = client.put(
+        "/api/settings/systemone",
+        json = {"enabled": True, "model": "laya-multilingual"},
+        headers = owner,
+    )
+    assert saved.status_code == 200, saved.text
+
+    def decide(model, headers):
+        return client.post(
+            "/v1/systemone",
+            json = {"model": model, "state": "x", "questions": QUESTIONS},
+            headers = headers,
+        )
+
+    assert decide("laya-multilingual", owner).status_code == 200
+    # The configured model, by name or alias, still answers a managed account.
+    assert decide("laya-multilingual", alice).status_code == 200
+    assert decide("default", alice).status_code == 200
+    swap = decide("laya-english", alice)
+    assert swap.status_code == 403, swap.text
+    assert swap.json()["detail"]["error_type"] == "permission_error"
+    assert laya_runtime._loaded.name == "laya-multilingual"
+    assert "laya-english" not in loads
+    # The owner still picks any catalog entry.
+    assert decide("laya-english", owner).status_code == 200
+    assert laya_runtime._loaded.name == "laya-english"

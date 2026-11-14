@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// NPU context settings must work before loading and when reloading.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -18,7 +17,7 @@ const npuLoad = runtime.slice(
 const pickers = source("features/model-picker/components/model-selector/pickers.tsx");
 const npuRow = pickers.slice(
   pickers.indexOf("const renderNpuRow = "),
-  pickers.indexOf("const npuBrowseForcedOpen = "),
+  pickers.indexOf("const showNpuBrowse ="),
 );
 const configPage = source("features/model-picker/components/model-config-page.tsx");
 
@@ -36,12 +35,34 @@ test("NPU run settings pin customContextLength and offer nothing FastFlowLM igno
   assert.match(configPage, /const targetIsNpu = isNpuModelId\(target\.id\);/);
   assert.match(configPage, /const pinsContextLength = targetIsMlx \|\| targetIsNpu;/);
   assert.match(configPage, /contextPinPatch\(value, pinsContextLength\)/);
-  // Both edit paths must write customContextLength.
   const writers = configPage.match(/contextPinPatch\(/g) ?? [];
   const npuAware = configPage.match(/contextPinPatch\(\w+, pinsContextLength\)/g) ?? [];
   assert.ok(writers.length > 0);
   assert.equal(npuAware.length, writers.length);
   assert.match(configPage, /!target\.isGguf && !targetIsMlx && !targetIsNpu && /);
-  // Leave unset context lengths to FastFlowLM.
   assert.match(configPage, /target\.isGguf \|\| pinsContextLength\s+\? effectiveRuntimeConfig/);
+});
+
+test("the NPU footer's setup path keeps the setup notice while a search is active", () => {
+  const browse = pickers.slice(pickers.indexOf("const showNpuBrowse ="));
+  assert.match(browse, /\(!showHfSection \|\| !npuCatalog\.ready \|\| npuBrowseRows\.length > 0\)/);
+  assert.match(browse, /\{showHfSection && npuCatalog\.ready \? null : \(\s*<NpuSetupNotice/);
+});
+
+test("NPU run settings show Auto until a load sizes the window, then the resident one", () => {
+  assert.doesNotMatch(configPage, /NPU_DEFAULT_CONTEXT_LENGTH/);
+  assert.match(
+    configPage,
+    /const npuServedWindow =\s+targetIsNpu && isActiveModel \? servedWindow\(loadedContextLength\) : null;/,
+  );
+  assert.match(configPage, /unknownLabel=\{targetIsNpu \? "Auto" : undefined\}/);
+  assert.match(configPage, /displayValue=\{isMlx && windowUnknown && !dragging \? unknownLabel : undefined\}/);
+});
+
+test("a pinned or Auto window above the known NPU fit warns", () => {
+  const warning = configPage.slice(configPage.indexOf("{targetIsNpu &&\n              isActiveModel &&"));
+  assert.doesNotMatch(warning.split("</p>")[0], /savedContextPin/);
+  assert.match(warning, /npuContextFit != null/);
+  assert.match(warning, /maxSeqLengthValue > npuContextFit/);
+  assert.match(warning, /free-memory estimate/);
 });

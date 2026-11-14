@@ -3,11 +3,9 @@
 
 import type { LocalModelInfo } from "@/features/hub";
 import type { LoraModelOption } from "@/features/model-picker";
+import { isDiffusionTask } from "@/features/model-picker/components/model-selector/model-capabilities";
 
-/** The device-inventory sources Chat lists as local models, deliberately the same set as the
- *  picker's `PICKER_LOCAL_SOURCES`. `/api/hub/local` scans read-only, so an Ollama row's id is an
- *  opaque `ollama-manifest:` reference; POST /load resolves it through
- *  `materialize_ollama_model_ref`, which creates the `.gguf` link on demand. */
+/** Same set as `PICKER_LOCAL_SOURCES`. Ollama ids are resolved to a `.gguf` link by /load. */
 const CHAT_LOCAL_SOURCES: ReadonlySet<LocalModelInfo["source"]> = new Set([
   "lmstudio",
   "omlx",
@@ -34,18 +32,19 @@ function baseModelLabel(source: LocalModelInfo["source"]): string {
   }
 }
 
-/** Chat's local model options, one per load id. The shared inventory keys a row on (format, path),
- *  so a directory holding both GGUF and safetensors weights arrives as two rows with distinct
- *  `inventory_id` but the SAME `id`. The selector keys on `id`, so both rows would collide on a
- *  React key and render as selected together. The compat endpoint returned one row per directory,
- *  so collapsing on `id` keeps that behaviour. */
+/** One option per `id`: GGUF and safetensors in one dir would otherwise collide on React keys. */
 export function chatLocalModelOptions(
   rows: readonly LocalModelInfo[],
 ): LoraModelOption[] {
   const options: LoraModelOption[] = [];
   const seen = new Set<string>();
   for (const model of rows) {
-    if (!CHAT_LOCAL_SOURCES.has(model.source) || seen.has(model.id)) {
+    // Image and video checkpoints belong to Images / Video.
+    if (
+      !CHAT_LOCAL_SOURCES.has(model.source) ||
+      seen.has(model.id) ||
+      isDiffusionTask(model.task)
+    ) {
       continue;
     }
     seen.add(model.id);
@@ -57,8 +56,10 @@ export function chatLocalModelOptions(
       baseModel: baseModelLabel(model.source),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
-      isGguf: isDirectGguf ? true : undefined,
+      // A GGUF directory needs no `gguf` in its name: the scan's format says so.
+      isGguf: isDirectGguf || model.model_format === "gguf" ? true : undefined,
       isDirectGguf: isDirectGguf ? true : undefined,
+      audioType: model.audio_type ?? undefined,
     });
   }
   return options;

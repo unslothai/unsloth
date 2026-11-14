@@ -10,6 +10,7 @@ import base64
 import binascii
 import json
 import math
+import threading
 import time
 from typing import Any, Optional, Union
 from uuid import uuid4
@@ -18,9 +19,6 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
-from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
-from fastmcp.server.middleware import Middleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject, security
@@ -30,7 +28,7 @@ from core.systemone import catalog, laya_runtime
 from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
 from utils import systemone_settings
-from utils.account_context import OWNER, arun_as, run_as
+from utils.account_context import OWNER, arun_as, is_owner_context, run_as
 
 MAX_QUESTIONS = 64
 MAX_CHOICES = 255
@@ -155,14 +153,21 @@ async def system_one(
 
     # Same rule as the OpenAI routes: a keyless caller never downloads or swaps in another model.
     # Checked before the unknown-model answer, so it cannot tell which owner fine-tunes exist.
-    if checkpoint != await asyncio.to_thread(
-        catalog.default_checkpoint
-    ) and await asyncio.to_thread(request_admitted_without_credential, request):
-        raise _error(
-            403,
-            "permission_error",
-            "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
-        )
+    if checkpoint != await asyncio.to_thread(catalog.default_checkpoint):
+        if await asyncio.to_thread(request_admitted_without_credential, request):
+            raise _error(
+                403,
+                "permission_error",
+                "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
+            )
+        # Another checkpoint downloads into the shared cache and evicts the owner's resident model,
+        # which the owner-only settings, unload and resolve routes already keep from other accounts.
+        if not is_owner_context():
+            raise _error(
+                403,
+                "permission_error",
+                "Only the Studio owner can pick a Decision API model other than the configured one.",
+            )
     if checkpoint is None:
         raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
     result = await _decide(
@@ -179,7 +184,7 @@ def _require_enabled() -> None:
         raise _error(
             404,
             "api_usage_error",
-            "The Decision API is off. The Studio owner can turn it on in Settings > API.",
+            "The Decision API is off. The Unsloth owner can turn it on in Settings > API.",
         )
 
 
@@ -333,8 +338,7 @@ async def _decide(
 async def _connection_decide(
     connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
 ) -> dict:
-    # The connection and its key are the owner's; the URL check and the request run as the caller,
-    # so a managed account keeps its egress policy.
+    # Connection and key are the owner's; the URL check and request run as the caller (egress policy).
     provider_id = connection.provider_id
     config = await asyncio.to_thread(run_as, OWNER, providers_db.get_provider, provider_id)
     if config is None or catalog.decision_models(config) is None:
@@ -360,7 +364,13 @@ async def _connection_decide(
     except ValueError as exc:
         raise _error(503, "api_usage_error", str(exc)) from None
     api_key = await arun_as(OWNER, _connection_key(provider_id, config))
-    client = ExternalProviderClient(config["provider_type"], base_url, api_key)
+    headers = config.get("extra_headers")
+    client = ExternalProviderClient(
+        config["provider_type"],
+        base_url,
+        api_key,
+        **({"extra_headers": headers} if headers else {}),
+    )
     try:
         result = await client.create_decision(connection.model, state, questions)
     except httpx.HTTPStatusError as exc:
@@ -377,7 +387,7 @@ async def _connection_decide(
 
 
 async def _connection_key(provider_id: str, config: dict) -> str:
-    routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
+    routing_fields = ("provider_type", "base_url", "api_type", "is_enabled", "extra_headers")
     async with provider_config_guard(provider_id):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         if current is None or any(current.get(f) != config.get(f) for f in routing_fields):
@@ -412,7 +422,13 @@ async def refresh_listed_decision_models() -> None:
                 None,
                 prefer_saved_key = True,
             )
-            client = ExternalProviderClient(row["provider_type"], row["base_url"], api_key, 10.0)
+            client = ExternalProviderClient(
+                row["provider_type"],
+                row["base_url"],
+                api_key,
+                10.0,
+                **({"extra_headers": row["extra_headers"]} if row.get("extra_headers") else {}),
+            )
             models = await arun_as(OWNER, client.list_decision_models())
         except Exception:
             models = []
@@ -465,18 +481,6 @@ def _upstream_error(name: str, response: httpx.Response) -> HTTPException:
     return _error(502, "api_error", message)
 
 
-class DecisionsAvailability(Middleware):
-    async def on_list_tools(self, context, call_next):
-        if not await asyncio.to_thread(systemone_settings.get_enabled):
-            return []
-        return await call_next(context)
-
-
-decisions_mcp = FastMCP("Unsloth Decisions")
-decisions_mcp.add_middleware(DecisionsAvailability())
-
-
-@decisions_mcp.tool
 async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[str, Any]:
     """Ask Unsloth's decision model typed questions about a state (text or JSON).
     questions maps a name you pick to {"type", "instructions", "criteria"}, for example
@@ -490,7 +494,38 @@ async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[s
         result.pop("_backend", None)
         return result
     except HTTPException as exc:
+        from fastmcp.exceptions import ToolError
         raise ToolError(exc.detail["message"]) from None
+
+
+def _build_decisions_mcp():
+    from fastmcp import FastMCP
+    from fastmcp.server.middleware import Middleware
+
+    class DecisionsAvailability(Middleware):
+        async def on_list_tools(self, context, call_next):
+            if not await asyncio.to_thread(systemone_settings.get_enabled):
+                return []
+            return await call_next(context)
+
+    mcp = FastMCP("Unsloth Decisions")
+    mcp.add_middleware(DecisionsAvailability())
+    mcp.tool(decide)
+    return mcp
+
+
+_decisions_mcp_lock = threading.Lock()
+
+
+def __getattr__(name: str) -> Any:
+    if name != "decisions_mcp":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    with _decisions_mcp_lock:
+        mcp = globals().get("decisions_mcp")
+        if mcp is None:
+            mcp = _build_decisions_mcp()
+            globals()["decisions_mcp"] = mcp
+    return mcp
 
 
 class RequireStudioAuth:

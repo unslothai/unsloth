@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { AudioGalleryClip } from "../api";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
@@ -27,16 +27,16 @@ export function VariationGroupRow({
       aria-expanded={open}
       onClick={onToggle}
       className={cn(
-        "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui-13 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "flex w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-ui-13 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         selected && !open && "bg-muted",
       )}
     >
       <HugeiconsIcon
-        icon={open ? ArrowDown01Icon : ArrowRight01Icon}
+        icon={open ? ChevronDownStandardIcon : ChevronRightStandardIcon}
         className="size-3.5 shrink-0 text-muted-foreground"
       />
       <span className="min-w-0 flex-1 truncate">{first.prompt}</span>
-      <span className="shrink-0 rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground">
+      <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground">
         {variationLabel(clips.length)}
       </span>
       <span
@@ -77,12 +77,13 @@ export function VariationChips({
             key={clip.id}
             type="button"
             aria-pressed={current}
+            title={`Variation ${index + 1}`}
             aria-label={`Variation ${index + 1} of ${siblings.length}`}
             onClick={() => onSelect(clip.id)}
             className={cn(
               "flex size-[calc(24px*var(--ui-space-scale,1))] items-center justify-center rounded-full font-mono text-ui-11p5 tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               current
-                ? "bg-foreground text-background"
+                ? "bg-action text-background"
                 : "bg-muted text-muted-foreground hover:text-foreground",
             )}
           >

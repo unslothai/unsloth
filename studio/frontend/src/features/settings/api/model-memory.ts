@@ -14,13 +14,11 @@ export type ModelMemorySettings = {
   noRamReserve: boolean;
   defaultKeepResident: boolean;
   defaultNoRamReserve: boolean;
-  /** Whether --mlock applies; false when noRamReserve vetoes it. */
   mlockActive: boolean;
-  /** False when the loaded model is fully on a discrete GPU, so there is nothing in host RAM to lock. */
+  /** False when the model is fully on a discrete GPU, so nothing in host RAM to lock. */
   mlockApplicable: boolean;
-  /** A model is loaded whose --mlock state differs from the saved one. */
   reloadRequired: boolean;
-  /** Soft RLIMIT_MEMLOCK when finite; null means unlimited or N/A. */
+  /** Soft RLIMIT_MEMLOCK; null means unlimited or N/A. */
   memlockLimitBytes: number | null;
 };
 
@@ -44,8 +42,7 @@ type ApiModelMemorySettings = {
 };
 
 let inFlightModelMemory: Promise<ModelMemorySettings> | null = null;
-// Bumped by every forced read, so a displaced one can tell it is no longer the current
-// answer. It still resolves for its own caller; it just stops speaking for everyone else.
+// Bumped by every forced read so a displaced read stops publishing to other subscribers.
 let modelMemoryGeneration = 0;
 
 export function subscribeModelMemorySettings(
@@ -65,16 +62,14 @@ function fromApi(settings: ApiModelMemorySettings): ModelMemorySettings {
     defaultKeepResident: settings.default_keep_resident,
     defaultNoRamReserve: settings.default_no_ram_reserve,
     mlockActive: settings.mlock_active,
-    // Absent from an older backend: keep today's behaviour rather than claim nothing is lockable.
+    // Older backends omit this; do not claim nothing is lockable.
     mlockApplicable: settings.mlock_applicable ?? true,
     reloadRequired: settings.reload_required,
     memlockLimitBytes: settings.memlock_limit_bytes,
   };
 }
 
-// No read-through cache on purpose: the response carries runtime state
-// (reloadRequired, memlockLimitBytes) that goes stale as soon as a model is
-// loaded or swapped. This only fans the latest value out to subscribers.
+// No cache: reloadRequired and memlockLimitBytes go stale on any load or swap.
 function publishModelMemory(settings: ModelMemorySettings) {
   window.dispatchEvent(
     new CustomEvent(MODEL_MEMORY_EVENT, { detail: settings }),
@@ -85,8 +80,7 @@ function publishModelMemory(settings: ModelMemorySettings) {
 async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
   const res = await authFetch("/api/settings/model-memory");
   if (res.status === 404) {
-    // Told apart from a failed read: a caller deciding whether it may skip a load has to
-    // treat "this backend has no such setting" and "could not ask" oppositely.
+    // A caller deciding whether to skip a load treats "no such setting" and "could not ask" oppositely.
     throw new SettingsRouteAbsentError("/api/settings/model-memory");
   }
   if (!res.ok) {
@@ -97,15 +91,8 @@ async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
   return fromApi(await res.json());
 }
 
-/**
- * Always refetches: `reloadRequired` and `memlockLimitBytes` describe the
- * currently loaded process, so a cached copy goes stale as soon as a model is
- * loaded or swapped. Concurrent calls still share one request.
- *
- * `force` drops that sharing, as the VRAM budget's reader does: a read that started
- * before a save or a model transition answers about the state being replaced, and a
- * caller deciding whether to reload for a policy change must not be handed it.
- */
+/** Always refetches; concurrent calls share one request unless `force`, which a caller deciding
+ * whether to reload needs so it never gets a read that predates a save or model change. */
 export async function loadModelMemorySettings(
   options: { force?: boolean } = {},
 ) {
@@ -116,17 +103,13 @@ export async function loadModelMemorySettings(
   const generation = modelMemoryGeneration;
   inFlightModelMemory ??= fetchModelMemorySettings()
     .then((settings) =>
-      // A displaced read describes the state its replacement was issued because of, so
-      // publishing it would repaint every subscriber with the answer that was already
-      // known to be stale, and in whichever order the two land.
+      // A displaced read is already known stale; publishing it would repaint subscribers out of order.
       generation === modelMemoryGeneration
         ? publishModelMemory(settings)
         : settings,
     )
     .finally(() => {
-      // Only the current request owns the slot. Clearing it from a displaced one drops
-      // the newer promise's sharing handle while it is still in flight, so the next
-      // caller opens a third request rather than joining the second.
+      // Only the current request owns the slot, or the next caller opens a third request.
       if (generation === modelMemoryGeneration) {
         inFlightModelMemory = null;
       }
@@ -134,7 +117,6 @@ export async function loadModelMemorySettings(
   return inFlightModelMemory;
 }
 
-/** Partial update: omitted fields keep their stored value. */
 export async function updateModelMemorySettings(
   patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
 ): Promise<ModelMemorySettings> {
@@ -155,8 +137,7 @@ export async function updateModelMemorySettings(
       await readFastApiError(res, "Failed to update model memory settings"),
     );
   }
-  // Residency vetoes the idle-unload TTL, so the auto-switch endpoint's
-  // idleUnloadActive changed too and its own cache is now stale.
+  // Residency vetoes the idle-unload TTL, so the auto-switch cache's idleUnloadActive is stale.
   invalidateOpenAIAutoSwitchSettings();
   return publishModelMemory(fromApi(await res.json()));
 }

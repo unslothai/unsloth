@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Waits for the Windows Docker daemon on a hosted runner, starting the service if
-# it is installed but not running.
-# Docker is installed on every windows-2022 image (runner-images uses Microsoft's
-# install-docker-ce.ps1 without -HyperV, so the daemon serves WINDOWS containers) but is
-# not always RUNNING at job start: a spike run died 21s in with "failed to connect to the
-# docker API at npipe:////./pipe/docker_engine" while a sibling job was fine. Without the
-# wait that flake reads as "Windows containers are unavailable on hosted runners".
+# Waits for the Windows Docker daemon, starting the service if installed but not running.
 
 [CmdletBinding()]
 param([int] $TimeoutMinutes = 5)
@@ -32,8 +26,6 @@ while ($true) {
     Start-Sleep -Seconds 5
 }
 
-# Failing `docker info` probes leave $LASTEXITCODE non-zero and the runner appends
-# `exit $LASTEXITCODE` to every pwsh step (actions/runner#351), so a successful wait
-# would still fail the step.
+# The runner appends `exit $LASTEXITCODE` to pwsh steps, so failed probes would fail the step.
 $global:LASTEXITCODE = 0
 exit 0

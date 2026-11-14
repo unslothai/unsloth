@@ -37,10 +37,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   BookOpen02Icon,
   ColumnInsertIcon,
-  Delete02Icon,
   Download01Icon,
   MoreHorizontalIcon,
   NewReleasesIcon,
@@ -53,6 +53,10 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html-format";
+import {
   deleteChatItem,
   renameChatItem,
   useChatSidebarItems,
@@ -64,15 +68,17 @@ import {
   exportConversationCsv,
   exportConversationShareGPT,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
-  COMBINED_EXPORT_FORMATS_LIST,
-  EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { BulkExportItems } from "./components/bulk-export-items";
+import { ExportFormatItems } from "./components/export-format-items";
 
 const EXPORT_FORMATS = [
   { label: "Training JSONL", fn: exportConversationRawJsonl },
@@ -80,6 +86,8 @@ const EXPORT_FORMATS = [
   { label: "CSV", fn: exportConversationCsv },
   { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
   { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
+  { label: CONVERSATION_HTML_LABEL, fn: exportConversationHtml },
+  { label: CONVERSATION_PDF_LABEL, fn: exportConversationPdf },
 ] as const;
 
 async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {
@@ -213,14 +221,13 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="flex-1 px-4">
-          {/* Recents label with export-all menu */}
           <div className="flex items-center justify-between px-2 py-1.5">
             <span className="text-xs font-medium text-muted-foreground/80">Recents</span>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent focus:outline-none focus-visible:ring-0"
+                  className="flex items-center justify-center rounded-full p-0.5 text-muted-foreground hover:bg-accent focus:outline-none focus-visible:ring-0"
                   title="Export options"
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
@@ -233,17 +240,7 @@ export function ThreadSidebar({
                     Export Recents
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
-                        {label} — combined
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`r-s-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, false)}>
-                        {label} — per chat
-                      </DropdownMenuItem>
-                    ))}
+                    <BulkExportItems onExport={(fmt, merged) => void handleBulkExport("recents", fmt, merged)} />
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
                 <DropdownMenuSub>
@@ -252,17 +249,7 @@ export function ThreadSidebar({
                     Export Recents + Projects
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
-                        {label} — combined
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                      <DropdownMenuItem key={`a-s-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, false)}>
-                        {label} — per chat
-                      </DropdownMenuItem>
-                    ))}
+                    <BulkExportItems onExport={(fmt, merged) => void handleBulkExport("all", fmt, merged)} />
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
               </DropdownMenuContent>
@@ -278,7 +265,7 @@ export function ThreadSidebar({
                   >
                     {item.isFork ? (
                       <span
-                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-semibold uppercase tracking-wide text-primary"
+                        className="mr-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-ui-10 font-semibold uppercase tracking-wide text-primary"
                         title="Forked from another chat"
                       >
                         fork
@@ -304,14 +291,13 @@ export function ThreadSidebar({
                           Export
                         </DropdownMenuSubTrigger>
                         <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                          {EXPORT_FORMATS.map(({ label, fn }) => (
-                            <DropdownMenuItem
-                              key={label}
-                              onSelect={() => handleExport(item, fn)}
-                            >
-                              {label}
-                            </DropdownMenuItem>
-                          ))}
+                          <ExportFormatItems
+                            options={EXPORT_FORMATS.map(({ label }) => ({ key: label, label }))}
+                            onSelect={(label) => {
+                              const format = EXPORT_FORMATS.find((f) => f.label === label);
+                              if (format) handleExport(item, format.fn);
+                            }}
+                          />
                         </DropdownMenuSubContent>
                       </DropdownMenuSub>
                       <DropdownMenuSeparator />
@@ -319,7 +305,7 @@ export function ThreadSidebar({
                         className="text-destructive focus:text-destructive"
                         onSelect={() => void handleDelete(item)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={TrashIcon} className="mr-2 size-4" />
                         Delete
                       </DropdownMenuItem>
                     </DropdownMenuContent>
@@ -340,7 +326,7 @@ export function ThreadSidebar({
           href="https://unsloth.ai/docs/new/studio/chat"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 corner-squircle rounded-md px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 transition-colors hover:bg-primary/20"
+          className="flex items-center gap-2 rounded-full px-2 py-1.5 text-xs font-medium text-foreground bg-wash-10 transition-colors hover:bg-wash-20"
         >
           <HugeiconsIcon icon={BookOpen02Icon} className="size-4 shrink-0" strokeWidth={2} />
           <span>Learn more in docs</span>
@@ -349,14 +335,13 @@ export function ThreadSidebar({
           href="https://unsloth.ai/docs/new/changelog"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="flex items-center gap-2 rounded-full px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <HugeiconsIcon icon={NewReleasesIcon} className="size-4 shrink-0" strokeWidth={2} />
           <span>What&apos;s new</span>
         </a>
       </SidebarFooter>
 
-      {/* Rename dialog */}
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
         <DialogContent
           className="corner-squircle dialog-soft-surface sm:max-w-sm"

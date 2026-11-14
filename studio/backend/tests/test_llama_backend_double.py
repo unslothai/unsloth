@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The shared backend double keeps up with the real backend, in both directions.
-
-Downward: the double must not claim attributes ``LlamaCppBackend`` lacks, or the tests pass against
-a backend that cannot exist.
-
-Upward, the one that bit: the route must still serve a request driven by a bare double. #8700 added
-an unguarded ``context_length`` read and updated five of eight test files, giving 19 failures split
-between ``AttributeError`` and 20-second timeouts, neither naming the attribute. The canaries below
-fail in one place instead, with the attribute in the message: one drives /chat/completions, and one
-checks that /status can answer every runtime field it mirrors off the backend.
-"""
+"""The shared double must not claim attributes LlamaCppBackend lacks, and routes must tolerate it."""
 
 from __future__ import annotations
 
@@ -28,16 +18,9 @@ from .llama_backend_double import FakeLlamaCppBackend
 
 
 def test_status_runtime_fields_survive_a_double_that_answers_none():
-    """A runtime field that rejects None needs a real value on the shared double.
-
-    The chat-completions canary does not reach /status, the one route that mirrors every
-    `_InferenceRuntimeFields` name off the backend, so a field added to that model and nowhere
-    else is served as None and rejected by its own response. That arrived as three red
-    multi-account tests asserting `{"detail":"Failed to get status"}`, naming neither the field
-    nor the double. This fails here instead, with the field in the message.
-    """
+    """Runtime fields that reject None need a real value on the double, since /status mirrors them all."""
     fields = inference_route._llama_runtime_fields(FakeLlamaCppBackend())
-    # Supplied by the route, not the backend; _llama_runtime_fields excuses it for that reason.
+    # supplied by the route, not the backend, so _llama_runtime_fields excuses it
     fields["requires_trust_remote_code"] = False
 
     try:

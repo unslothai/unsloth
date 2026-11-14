@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Where the API monitor panel puts itself when the Live resource monitor is
-// already in the corner it wants. The reported bug: both default to bottom
-// right, so the monitor covered this panel's header and Close button, and a
-// monitor resized across the viewport hid it completely.
+// The API monitor panel and Live resource monitor both default to bottom right.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -23,10 +20,8 @@ import {
 const W = 1440;
 const H = 900;
 const VIEWPORT = { width: W, height: H };
-/** The panel as it ships: w-[400px], four rows and two buttons tall. */
 const PANEL: PanelSize = { width: 400, height: 300 };
 
-/** The Live monitor where it opens by default: bottom-right, w-64, inset-4. */
 function monitorCorner(height = 300): PanelRect {
   return {
     left: W - PANEL_MARGIN - 256,
@@ -57,7 +52,6 @@ test("with nothing in the way the panel keeps the corner it shipped in", () => {
   });
 });
 
-// The collision itself.
 test("a monitor in the shared corner is stepped over, not sat on", () => {
   const monitor = monitorCorner();
   const anchor = placeFloatingPanel(PANEL, [monitor], VIEWPORT);
@@ -85,7 +79,6 @@ test("a monitor dragged out of the corner leaves the panel where it was", () => 
 });
 
 test("a monitor too tall to step over sends the panel to the other side", () => {
-  // Full-height, but only as wide as the monitor gets: the left half is free.
   const monitor: PanelRect = {
     left: W - PANEL_MARGIN - 500,
     top: PANEL_MARGIN,
@@ -99,7 +92,6 @@ test("a monitor too tall to step over sends the panel to the other side", () => 
 
 test("every published box is dodged, not just the first", () => {
   const monitor = monitorCorner(200);
-  // The docked chat composer publishes too, and it is wide.
   const composer: PanelRect = {
     left: 200,
     top: H - 260,
@@ -111,10 +103,8 @@ test("every published box is dodged, not just the first", () => {
   assert.ok(!overlaps(anchor, PANEL, composer), "composer still covered");
 });
 
-// The rescue case, and the reason the fallback order is not the same as the
-// preference order: with the monitor over everything, the panel has to land
-// somewhere that leaves the monitor's own close button and resize grip -- both
-// on its right-hand edge -- clickable.
+// Fallback order differs from preference: the monitor's close and resize grip on its right
+// edge must stay clickable.
 test("a monitor filling the viewport pushes the panel off the right edge", () => {
   const monitor: PanelRect = {
     left: PANEL_MARGIN,
@@ -127,10 +117,8 @@ test("a monitor filling the viewport pushes the panel off the right edge", () =>
   assert.equal(anchor.top, H - PANEL_MARGIN - PANEL.height);
 });
 
-// The same rescue, in a window narrow enough that the right-hand anchor's own
-// left coordinate falls left of the midpoint. Reading the side back out of the
-// coordinates called that a left-hand refuge, so it tied with the real one,
-// won on order, and left the panel over the controls it was moving to clear.
+// Narrow window: the right anchor's left coord falls left of midpoint, so side is not
+// derived from coordinates.
 test("a narrow window still sends the panel off the right edge", () => {
   for (const width of [768, 800, 832]) {
     const viewport = { width, height: 700 };
@@ -173,15 +161,13 @@ test("the panel always lands fully on screen", () => {
   }
 });
 
-// A viewport shorter than the panel has no anchor that fits. The header is the
-// part that has to survive, because it holds the drag handle and Close.
+// The header must survive: it holds the drag handle and Close.
 test("a viewport too small for the panel keeps its header on screen", () => {
   const anchor = placeFloatingPanel(PANEL, [], { width: 320, height: 200 });
   assert.deepEqual(anchor, { left: PANEL_MARGIN, top: PANEL_TOP_MARGIN });
 });
 
-// The top chrome -- the navbar, and on desktop the titlebar carrying the
-// window's own close button -- publishes no box and sits under this layer.
+// The top chrome publishes no box and sits under this layer.
 test("stepping over a tall box never reaches the top chrome", () => {
   const tall: PanelRect = {
     left: 400,
@@ -207,10 +193,7 @@ test("a box that swallows the panel whole is reported", () => {
   assert.equal(isFullyCovered(anchor, PANEL, [whole]), true);
 });
 
-// Partly covered is not covered: a sliver is enough to click, and raising the
-// panel for a sliver would fight a user who dragged the monitor over it. One
-// case per edge, because a containment test that drops one edge still passes
-// every other example.
+// A visible sliver is clickable; one case per edge since dropping one edge passes the rest.
 test("a box that leaves any edge of the panel showing is not reported", () => {
   const anchor = { left: 100, top: 100 };
   const whole: PanelRect = {
@@ -225,7 +208,6 @@ test("a box that leaves any edge of the panel showing is not reported", () => {
     right: { ...whole, right: whole.right - 1 },
     bottom: { ...whole, bottom: whole.bottom - 1 },
   };
-  // The reference box, one pixel bigger on every side, does cover it.
   assert.equal(isFullyCovered(anchor, PANEL, [whole]), true);
   for (const [edge, box] of Object.entries(shy)) {
     assert.equal(
@@ -236,9 +218,7 @@ test("a box that leaves any edge of the panel showing is not reported", () => {
   }
 });
 
-// A panel the user has placed stops being re-placed, but it still has to be
-// pulled back onto a viewport that has shrunk under it: the panel keeps no
-// position across reloads, so one stranded off the edge is unreachable.
+// The panel keeps no position across reloads, so one stranded off-screen is unreachable.
 test("a hand-placed panel is pulled back onto a shrunken viewport", () => {
   const landed = clampPanelToViewport({ left: 1200, top: 700 }, PANEL, {
     width: 800,

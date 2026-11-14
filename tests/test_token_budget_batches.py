@@ -630,12 +630,11 @@ dist.destroy_process_group()
 
 @pytest.mark.parametrize("other, expected", [("8,8", (1, 1)), ("4,5,3,6,2,4,6,4,6", (3, 3))])
 def test_ddp_ranks_split_only_when_every_rank_needs_the_same_count(tmp_path, other, expected):
-    import socket
     import subprocess
 
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+
+    port = free_port()
     env = dict(
         __import__("os").environ,
         MASTER_ADDR = "127.0.0.1",

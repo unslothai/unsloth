@@ -599,7 +599,6 @@ def test_the_gguf_sliding_window_config_is_read_without_a_refused_token(monkeypa
 
 
 def test_a_private_repo_after_a_public_recovery_is_reported_as_refused():
-    # A public adapter recovered anonymously, then a private base no one can read.
     calls = []
 
     def private(token):

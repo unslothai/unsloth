@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import ast
+from pathlib import Path
+
 import pytest
 from datasets import Dataset
 
@@ -31,6 +34,17 @@ _GPT_OSS_TEMPLATE = """
 {{- '<|start|>' + message.role + '<|message|>' + message.content + '<|end|>' }}
 {%- endfor %}
 """
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _unsloth_template(name):
+    source = (_REPO_ROOT / "unsloth" / "chat_templates.py").read_text(encoding = "utf-8")
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == name:
+            return ast.literal_eval(node.value)
+    raise AssertionError(name)
+
 
 _THINKING = "The user asks in French about the capital. It is Paris."
 
@@ -81,6 +95,12 @@ def test_dataset_thinking_trains_inside_qwen_think_block():
     text = _training_text(_QWEN3_TEMPLATE)
 
     assert f"<|im_start|>assistant\n<think>\n{_THINKING}\n</think>\n\nParis.<|im_end|>" in text
+
+
+def test_dataset_thinking_trains_inside_gemma4_thought_channel():
+    text = _training_text(_unsloth_template("gemma4_template"))
+
+    assert f"<|turn>model\n<|channel>thought\n{_THINKING}\n<channel|>Paris.<turn|>" in text
 
 
 def test_dataset_thinking_renders_once_on_a_template_reading_thinking():

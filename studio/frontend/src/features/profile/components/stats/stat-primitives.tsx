@@ -4,7 +4,6 @@
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 
-/** Bordered surface every stats block sits on, matching the profile card. */
 export function StatsCard({
   title,
   description,
@@ -36,7 +35,17 @@ export function StatsCard({
               <p className="text-xs text-muted-foreground">{description}</p>
             ) : null}
           </div>
-          {action ? <div className="max-w-full shrink-0">{action}</div> : null}
+          {action ? (
+            <div
+              className={cn(
+                "max-w-full shrink-0",
+                // Top edge on the h3's cap top (text-sm at its default leading; Hellix: 0.336em).
+                description && "mt-[calc(var(--text-sm)*0.336)]",
+              )}
+            >
+              {action}
+            </div>
+          ) : null}
         </header>
       ) : null}
       {children}
@@ -44,7 +53,6 @@ export function StatsCard({
   );
 }
 
-/** Big number + caption, used across the highlight and training rows. */
 export function StatTile({
   value,
   label,
@@ -73,7 +81,6 @@ export function StatTile({
   );
 }
 
-/** Label left, value right: the "Activity insights" rows. */
 export function StatRow({
   label,
   value,
@@ -103,7 +110,6 @@ export function StatRow({
   );
 }
 
-/** Thin progress track (level bar, achievement progress, model share). */
 export function StatMeter({
   progress,
   className,

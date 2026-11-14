@@ -11,10 +11,7 @@ from hub.utils.hf_cache_state import resolve_destructive_case_matches
 
 
 def resolve_destructive_repo_ids(repo_id: str, candidates: Iterable[str], *, noun: str) -> set[str]:
-    """Cache-dir repo ids a destructive op on *repo_id* may target.
-
-    Refuses with 409 on ambiguous case-only matches so a delete never removes
-    the wrong casing. *noun* is the plural shown to the user."""
+    """Refuses with 409 on ambiguous case-only matches, so a delete never removes the wrong casing."""
     resolved = resolve_destructive_case_matches(repo_id, candidates)
     if resolved is None:
         from fastapi import HTTPException

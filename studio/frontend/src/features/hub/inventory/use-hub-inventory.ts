@@ -198,6 +198,7 @@ function shouldSurfaceLiveJob(
   if (isDatasetMode !== (job.kind === "dataset")) return false;
   if (job.state === "running" || job.state === "cancelling") return true;
   if (job.state !== "cancelled" && job.state !== "error") return false;
+  if (job.retained) return false;
   return Math.max(job.downloadedBytes, job.completedBytes) > 0;
 }
 
@@ -282,7 +283,6 @@ function liveDownloadInventoryRows(
           load_id: job.repoId,
           model_format: modelFormat,
           size_bytes: job.displayBytes,
-          // live jobs already use epoch milliseconds
           last_modified: job.startedAt,
           partial: true,
           partial_transport: null,

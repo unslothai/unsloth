@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The curated default models must survive a re-detection.
-
-Detection is not once-per-process: on Apple Silicon with a missing MLX stack the first pass
-is chat-only, then the autorepair installs MLX, re-detects, and CHAT_ONLY flips.
-get_default_models() reads that state and the warm snapshots it before the repair runs, so
-without a staleness check the host serves the chat-only list for the rest of the process.
-"""
+"""Re-detection flips CHAT_ONLY after an MLX repair, so the warm default snapshot must be rechecked."""
 
 from __future__ import annotations
 
@@ -34,7 +28,6 @@ def test_defaults_refresh_when_hardware_is_redetected(monkeypatch):
     orch = _orchestrator(monkeypatch, ["chat-only-gguf"])
     assert orch.default_models == ["chat-only-gguf"]
 
-    # The MLX repair succeeds and re-detects: CHAT_ONLY flips, the curated list is full.
     monkeypatch.setattr(defaults_mod, "get_default_models", lambda: ["full-a", "full-b"])
     monkeypatch.setattr(hw, "DETECTION_GENERATION", 2)
 
@@ -72,10 +65,7 @@ def test_detection_generation_advances_on_every_settled_detection():
 
 
 def test_a_forced_redetect_unpublishes_while_it_runs(monkeypatch):
-    """Health must not read a forced pass's intermediate globals as settled. The pass resets
-    CHAT_ONLY and CHAT_ONLY_REASON before re-probing, so with the event left set a health
-    request landing mid-repair reports that as authoritative and the sidebar's MLX recovery
-    poll stops, the reason no longer being "mlx_unavailable"."""
+    """Unpublish detection during a forced pass, or health reads the reset CHAT_ONLY state as settled."""
     seen = []
 
     def _mid_pass():
@@ -92,11 +82,7 @@ def test_a_forced_redetect_unpublishes_while_it_runs(monkeypatch):
 
 
 def test_a_failed_forced_redetect_does_not_leave_detection_unpublished(monkeypatch):
-    """Clearing the event must not be able to strand health forever.
-
-    start_background_detection() declines once DEVICE is set, so nothing would republish and
-    health would answer provisionally for the life of the process -- worse than the
-    intermediate state the clear protects against. A raising pass restores what it found."""
+    """A failed forced pass must restore the detected state, or health answers provisionally forever."""
 
     def _boom():
         raise RuntimeError("probe exploded mid-pass")

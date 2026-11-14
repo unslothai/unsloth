@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""PR 9057 review simulation: every axis a video attachment can travel.
-
-Not part of the PR. Written during review to answer "does this break anything,
-and does the fix actually work", covering: the common no-video-capability model,
-a swap from a capable model to a non-capable one, the external-provider and
-non-GGUF passthroughs, an oversized clip, a data-URI wrapper, an llama.cpp build
-too old to declare modalities at all, and the shape of the runtime fields old
-clients read.
-"""
+"""Review-time simulation of every path a video attachment can travel; not part of the PR."""
 
 from __future__ import annotations
 
@@ -32,7 +24,7 @@ from routes.inference import (  # noqa: E402
     _video_b64_rejection,
 )
 
-LIMIT = 64 * 1024 * 1024
+LIMIT = 256 * 1024 * 1024
 
 
 def _props_backend(props):
@@ -42,41 +34,33 @@ def _props_backend(props):
     return b
 
 
-# --------------------------------------------------------------------------
-# A. the base64 ceiling, measured against the real encoder
-# --------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("n", [0, 1, 2, 3, 4, 5, 6, 1023, 1024, 3000, 3001, 3002])
 def test_the_ceiling_formula_matches_what_base64_actually_produces(n):
     assert len(base64.b64encode(b"x" * n)) == 4 * math.ceil(n / 3)
 
 
 def test_a_clip_of_exactly_the_composer_limit_is_admitted():
-    # 67108864 = 3*22369621 + 1, so the last byte costs a full padded quad.
-    assert _MAX_VIDEO_B64_CHARS == 89478488
-    assert 4 * math.ceil(LIMIT / 3) == 89478488
-    exact = "A" * 89478488
+    # 268435456 = 3*89478485 + 1, so the last byte costs a full padded quad.
+    assert _MAX_VIDEO_B64_CHARS == 357913944
+    assert 4 * math.ceil(LIMIT / 3) == 357913944
+    exact = "A" * 357913944
     assert _video_b64_rejection(exact)[1] is None
 
 
 def test_the_old_floor_expression_would_have_refused_it():
-    # What the review flagged: floor(64MiB * 4 / 3) == 89478485, three characters
-    # short, so the largest file the composer offers 413s.
     floored = (LIMIT * 4) // 3
-    assert floored == 89478485
+    assert floored == 357913941
     assert floored < 4 * math.ceil(LIMIT / 3)
 
 
 def test_one_character_over_the_ceiling_is_refused_413():
     assert _video_b64_rejection("A" * (_MAX_VIDEO_B64_CHARS + 1))[1] == (
         413,
-        "Video file is too large (max 64 MB).",
+        "Video file is too large (max 256 MB).",
     )
 
 
 def test_the_data_uri_header_is_not_counted_against_the_cap():
-    # A composer that sends a data URI must not lose bytes to its own header.
     payload = "A" * _MAX_VIDEO_B64_CHARS
     stripped, rejection = _video_b64_rejection(f"data:video/mp4;base64,{payload}")
     assert rejection is None
@@ -102,14 +86,8 @@ def test_a_bare_payload_with_no_header_is_passed_through_untouched():
     assert _video_b64_rejection("QUJD") == ("QUJD", None)
 
 
-# --------------------------------------------------------------------------
-# B. capability read: old builds, odd payloads, and swaps
-# --------------------------------------------------------------------------
-
-
 def test_a_build_too_old_to_declare_modalities_reports_no_video():
-    """The key backwards-compat case: llama.cpp only grew `modalities` in /props
-    recently, and every older build simply omits the key."""
+    """Older llama.cpp builds omit /props modalities, so a missing key must read as no video."""
     b = _props_backend({"default_generation_settings": {"n_ctx": 4096}})
     assert b._query_server_n_ctx() == 4096
     assert b._has_video_input is False
@@ -124,7 +102,7 @@ def test_a_build_too_old_to_declare_modalities_reports_no_video():
         {"modalities": {"vision": True}},
         {"modalities": {"video": None}},
         {"modalities": {"video": 0}},
-        {"modalities": {"video": "false"}},  # a non-empty string is truthy: see below
+        {"modalities": {"video": "false"}},
         {},
     ],
 )
@@ -142,8 +120,7 @@ def test_only_a_real_json_true_turns_the_capability_on():
 
 
 def test_a_swap_to_a_model_without_video_does_not_inherit_the_old_answer():
-    """A stale True here would offer video on a model that cannot take it, and
-    llama-server would refuse the completion after the upload."""
+    """A stale True offers video on a model that cannot take it; the completion then fails."""
     b = _props_backend(
         {"modalities": {"video": True}, "default_generation_settings": {"n_ctx": 8192}}
     )
@@ -161,7 +138,6 @@ def test_an_unreachable_props_leaves_the_capability_off_rather_than_guessing():
     b = _props_backend(None)
     b._has_video_input = True
     assert b._query_server_n_ctx() is None
-    # Nothing clears it here, which is why the load path clears it explicitly:
     assert "self._has_video_input = False" in _llama_cpp_source()
 
 
@@ -217,8 +193,7 @@ def _live_backend(api_key = None):
 
 @pytest.mark.parametrize("junk", [[1, 2], "props", 7, None, 3.5])
 def test_a_props_body_that_is_not_an_object_is_rejected_not_crashed(monkeypatch, junk):
-    """A proxy or a future build could answer with a list; the readback must
-    degrade to "cannot tell", not raise into the load path."""
+    """A proxy or future build may answer with a list; the readback must give None, not raise."""
     b = _live_backend()
     _stub_props_http(monkeypatch, _Resp(200, junk))
     assert b._query_server_props() is None
@@ -247,9 +222,8 @@ def test_a_dead_server_is_swallowed(monkeypatch):
 
 
 def test_the_props_request_carries_the_child_api_key_when_direct_stream_set_one(monkeypatch):
-    """llama-server's api-key middleware protects /props (it is not in the
-    public_endpoints set), so an unauthenticated read 401s and the capability
-    silently reads False under UNSLOTH_DIRECT_STREAM=1."""
+    """llama-server api-key middleware 401s keyless /props; under UNSLOTH_DIRECT_STREAM=1 the child
+    key must be sent, else the video capability silently reads False."""
     record: dict = {}
     b = _live_backend(api_key = "secret-token")
     _stub_props_http(monkeypatch, _Resp(200, {"modalities": {"video": True}}), record = record)
@@ -265,14 +239,8 @@ def test_the_props_request_sends_no_auth_header_when_there_is_no_child_key(monke
     assert record.get("headers") is None
 
 
-# --------------------------------------------------------------------------
-# C. the wire shape old and new clients see
-# --------------------------------------------------------------------------
-
-
 def test_the_runtime_field_is_declared_and_defaults_off_for_every_non_gguf_model():
-    """A transformers or MLX model never sets it, so the composer must read
-    False and refuse video rather than offering it."""
+    """Non-GGUF models never set has_video_input, so it must default to False and refuse video."""
     assert "has_video_input" in _InferenceRuntimeFields.model_fields
     assert InferenceStatusResponse().has_video_input is False
 
@@ -310,9 +278,7 @@ def test_an_old_client_that_sends_no_video_field_is_unaffected():
 
 
 def test_an_old_backend_would_ignore_the_new_field_rather_than_422():
-    """`extra: allow`, so a newer desktop app talking to an older backend loses
-    the clip silently instead of breaking every message. Worth knowing; not
-    something this PR can fix from the new side."""
+    """ChatCompletionRequest uses extra: allow, so an older backend silently drops a newer app's clip."""
     assert ChatCompletionRequest.model_config["extra"] == "allow"
 
 
@@ -323,11 +289,6 @@ def test_the_field_round_trips_through_json_unchanged():
     )
     assert req.video_base64 == payload
     assert req.model_dump()["video_base64"] == payload
-
-
-# --------------------------------------------------------------------------
-# D. injection, on every message shape a real session produces
-# --------------------------------------------------------------------------
 
 
 def test_an_empty_message_list_is_a_no_op():
@@ -402,15 +363,10 @@ def _routes_source() -> str:
 @pytest.mark.parametrize(
     "needle",
     [
-        # external provider (OpenAI / Anthropic / any proxied backend)
         "raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)",
-        # local non-GGUF: served on a backend reporting video input, refused elsewhere
-        "_video_clip = _local_video_clip(payload, model_info)",
-        # GGUF that cannot take video
+        "_video_clips = _local_video_clips(payload, model_info)",
         'if not getattr(llama_backend, "_has_video_input", False):',
-        # tool / guided-decoding passthrough
         '"Video input is not supported together with guided decoding or client-supplied tools yet."',
-        # token counting
         '"Cannot count tokens for messages containing video."',
     ],
 )

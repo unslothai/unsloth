@@ -16,8 +16,7 @@ import pytest
 
 _BACKEND = Path(__file__).resolve().parent.parent
 
-# Load directly, like test_llama_server_args.py: importing the package would
-# drag in the whole inference chain.
+# Load directly: importing the package drags in the whole inference chain.
 _spec = importlib.util.spec_from_file_location(
     "_lsa_model_memory_test_only", _BACKEND / "core" / "inference" / "llama_server_args.py"
 )
@@ -66,14 +65,12 @@ def policy(monkeypatch):
 
 class TestFlagPolicy:
     def test_both_off_is_a_pure_pass_through(self, policy):
-        # Pre-feature contract: hand-typed flags survive, nothing is added.
         extras = ["--mlock", "--no-mmap", "--temp", "0.7"]
         managed, out = policy(False, False, extras)
         assert managed == []
         assert out == extras
 
     def test_keep_resident_emits_mlock(self, policy):
-        # Legacy build: --mlock is deprecated upstream but still accepted.
         managed, out = policy(True, False, ["--temp", "0.7"])
         assert managed == ["--mlock"]
         assert out == ["--temp", "0.7"]
@@ -84,8 +81,7 @@ class TestFlagPolicy:
         assert out == ["--temp", "0.7"]
 
     def test_load_mode_is_stripped_from_extras(self, policy):
-        # A user --load-mode would last-wins-override the managed one, and
-        # "--load-mode mlock" is a RAM reservation no-reserve must veto.
+        # A user --load-mode would override the managed one, and mlock mode is a RAM reservation.
         _, out = policy(
             True, False, ["--load-mode", "none", "--temp", "0.7"], supports_load_mode = True
         )
@@ -94,12 +90,10 @@ class TestFlagPolicy:
         assert out == ["--temp", "0.7"]
 
     def test_load_mode_strip_is_not_boolean(self, policy):
-        # It takes a value, so the value must go with the flag, not survive.
         _, out = policy(False, True, ["--load-mode", "mmap+mlock"])
         assert out == []
 
     def test_keep_resident_does_not_double_emit_mlock(self, policy):
-        # A user --mlock folds into the managed one, not a second copy.
         managed, out = policy(True, False, ["--mlock", "--temp", "0.7"])
         assert managed == ["--mlock"]
         assert "--mlock" not in out
@@ -107,7 +101,6 @@ class TestFlagPolicy:
     def test_no_ram_reserve_strips_both_reservation_flags(self, policy):
         managed, out = policy(False, True, ["--mlock", "--no-mmap", "-ngl", "99"])
         assert managed == []
-        # Unrelated flags (and their values) survive untouched.
         assert out == ["-ngl", "99"]
 
     def test_no_ram_reserve_wins_over_keep_resident(self, policy):
@@ -121,9 +114,7 @@ class TestFlagPolicy:
         assert policy(False, False, None) == ([], [])
 
     def test_caller_extras_are_not_mutated(self, policy):
-        # load_model reads extra_args after this: None must stay None (inherit
-        # previous) rather than becoming [] (clear), and the user's saved flags
-        # must survive, so the policy only ever returns a launch-only copy.
+        # None must stay None (inherit), not [] (clear); the policy returns a launch-only copy.
         original = ["--mlock", "--no-mmap", "--temp", "0.7"]
         passed = list(original)
         _, out = policy(True, True, passed)
@@ -161,7 +152,6 @@ class TestIdleUnloadVeto:
 
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         assert aus.get_auto_unload_idle_seconds() == 0
-        # The stored value survives, so turning residency off restores it.
         assert aus.get_stored_auto_unload_idle_seconds() == 300
 
 
@@ -177,7 +167,6 @@ class TestPersistence:
 
         assert mm.set_model_memory_settings(keep_resident = True) == (True, False)
         assert mm.set_model_memory_settings(no_ram_reserve = True) == (True, True)
-        # Only keep_resident is sent; no_ram_reserve must not reset.
         assert mm.set_model_memory_settings(keep_resident = False) == (False, True)
 
     @pytest.mark.parametrize("value", ["banana", 2.5, object()])
@@ -267,9 +256,9 @@ class TestMemoryEnv:
         ("var", "value"),
         [
             ("LLAMA_ARG_MLOCK", "1"),
-            ("LLAMA_ARG_MMAP", "off"),  # mmap disabled -> mode none
+            ("LLAMA_ARG_MMAP", "off"),
             ("LLAMA_ARG_NO_MMAP", "0"),  # presence alone -> mode none
-            ("LLAMA_ARG_DIO", "off"),  # DirectIO disabled -> mode none
+            ("LLAMA_ARG_DIO", "off"),
             ("LLAMA_ARG_NO_DIO", "0"),
             ("LLAMA_ARG_LOAD_MODE", "none"),
             ("LLAMA_ARG_LOAD_MODE", "mlock"),
@@ -286,12 +275,12 @@ class TestMemoryEnv:
     @pytest.mark.parametrize(
         ("var", "value"),
         [
-            ("LLAMA_ARG_MLOCK", "0"),  # measured: falsy does not lock
-            ("LLAMA_ARG_MMAP", "1"),  # mmap: maps, holds no full copy
-            ("LLAMA_ARG_DIO", "1"),  # DirectIO: streams
+            ("LLAMA_ARG_MLOCK", "0"),
+            ("LLAMA_ARG_MMAP", "1"),
+            ("LLAMA_ARG_DIO", "1"),
             ("LLAMA_ARG_LOAD_MODE", "mmap"),
             ("LLAMA_ARG_LOAD_MODE", "dio"),
-            ("LLAMA_ARG_LOAD_MODE", "future-mode"),  # unknown: leave it alone
+            ("LLAMA_ARG_LOAD_MODE", "future-mode"),
         ],
     )
     def test_a_non_reserving_loader_choice_survives(self, toggles, var, value):
@@ -337,8 +326,8 @@ class TestEffectiveMemoryState:
             (["--no-mmap"], {}, (False, True)),
             (["--load-mode", "mmap+mlock"], {}, (True, False)),
             (["--load-mode=mmap+mlock"], {}, (True, False)),
-            (["-lm", "mlock"], {}, (True, True)),  # mlock without mmap
-            (["--load-mode", "dio"], {}, (False, False)),  # DirectIO streams
+            (["-lm", "mlock"], {}, (True, True)),
+            (["--load-mode", "dio"], {}, (False, False)),
             (["--load-mode", "none"], {}, (False, True)),
             ([], {"LLAMA_ARG_MLOCK": "1"}, (True, False)),
             ([], {"LLAMA_ARG_MMAP": "off"}, (False, True)),
@@ -346,8 +335,7 @@ class TestEffectiveMemoryState:
             # argv beats env, matching llama.cpp.
             (["--load-mode", "mmap"], {"LLAMA_ARG_MLOCK": "1"}, (False, False)),
             (["--mlock", "--load-mode", "mmap"], {}, (False, False)),
-            # --no-mmap is the deprecated selector for the whole "none" mode, so
-            # it clears the mlock. Both orderings measured against the binary.
+            # --no-mmap selects the whole "none" mode, so it clears the mlock (measured).
             (["--mlock", "--no-mmap"], {}, (False, True)),
             (["--no-mmap", "--mlock"], {}, (True, True)),
             (["--mlock", "--mmap"], {}, (False, False)),
@@ -360,7 +348,6 @@ class TestEffectiveMemoryState:
     def test_degenerate_inputs(self):
         assert resolve_effective_memory_state(None, None) == (False, False)
         assert resolve_effective_memory_state(["--load-mode"], {}) == (False, False)
-        # A following flag is not swallowed as the value.
         assert resolve_effective_memory_state(["--load-mode", "--mlock"], {}) == (True, False)
 
 
@@ -401,14 +388,11 @@ class TestReloadRequired:
     @pytest.mark.parametrize(
         ("keep", "no_res", "state", "expected"),
         [
-            # no_ram_reserve: neither reservation may survive, whoever asked.
-            (False, True, (True, False), True),  # user --mlock still live
-            (False, True, (False, True), True),  # user --no-mmap still live
+            (False, True, (True, False), True),
+            (False, True, (False, True), True),
             (False, True, (False, False), False),
-            # keep_resident: satisfied by any mlock, including a user one.
             (True, False, (True, False), False),
             (True, False, (False, False), True),
-            # Both off after the policy changed the launch: it has to be undone.
             (False, False, (True, True), True),
             (False, False, (False, False), True),
         ],
@@ -471,8 +455,7 @@ class TestManagedFlagIsNotReset:
             ["--load-mode", "mmap"],
             ["--load-mode=none"],
             ["--mlock"],
-            # Deprecated load-mode selectors: measured to reset the mode in BOTH
-            # polarities, so all four spellings must go.
+            # Deprecated load-mode selectors reset the mode in both polarities, so all four must go.
             ["--direct-io"],
             ["-dio"],
             ["--no-direct-io"],
@@ -483,8 +466,7 @@ class TestManagedFlagIsNotReset:
         managed, extras = policy(
             True, False, preset + ["--temp", "0.7"], supports_load_mode = load_mode
         )
-        assert managed  # residency emitted something
-        # The resolved state of the full argv must still be mlock.
+        assert managed
         mlock, _ = resolve_effective_memory_state(managed + extras, {})
         assert mlock is True, (managed, extras)
         assert extras == ["--temp", "0.7"], extras
@@ -503,21 +485,17 @@ class TestDuplicateLoadComparator:
     @pytest.mark.parametrize(
         ("launched", "policy_active", "keep", "no_res", "satisfied"),
         [
-            ((False, False), False, True, False, False),  # turn residency on
-            ((True, False), True, False, True, False),  # no-reserve on, mlocked
-            ((False, True), False, False, True, False),  # no-reserve on, no-mmap
-            ((True, False), True, True, False, True),  # already pinned
-            ((False, False), False, False, True, True),  # already clean
-            # Both off: anything the policy did must be undone, but a launch it
-            # never touched is left alone.
-            ((True, False), True, False, False, False),  # our flag still live
-            ((True, False), False, False, False, True),  # user's own flag
-            ((False, False), True, False, False, False),  # it suppressed theirs
-            ((False, False), False, False, False, True),
-            # DirectIO is not a RAM reservation, so no-reserve is satisfied.
+            ((False, False), False, True, False, False),
+            ((True, False), True, False, True, False),
+            ((False, True), False, False, True, False),
+            ((True, False), True, True, False, True),
             ((False, False), False, False, True, True),
-            # A process this policy does not govern (diffusion) always matches,
-            # else every identical /load would tear it down and reload.
+            ((True, False), True, False, False, False),
+            ((True, False), False, False, False, True),
+            ((False, False), True, False, False, False),
+            ((False, False), False, False, False, True),
+            ((False, False), False, False, True, True),
+            # An ungoverned process (diffusion) always matches, else every /load would reload it.
             (None, False, True, False, True),
             (None, False, False, True, True),
             (None, True, True, True, True),
@@ -661,7 +639,6 @@ class TestHostResidencyGate:
         assert managed == ["--mlock"]
 
     def test_no_ram_reserve_still_strips_a_user_flag_off_a_discrete_gpu(self, policy):
-        # The gate only suppresses what the policy ADDS. Removal is unchanged.
         managed, out = policy(
             False, True, ["--mlock", "--temp", "0.7"], weights_in_host_memory = False
         )
@@ -731,7 +708,7 @@ class TestRacingReadReturnsTheNewValue:
 
         def get_app_setting(key, fallback = None):
             reads.append(key)
-            mm._invalidate(key)  # a write lands during every read
+            mm._invalidate(key)
             return True
 
         monkeypatch.setattr("storage.studio_db.get_app_setting", get_app_setting)
@@ -764,7 +741,6 @@ class TestMlockApplicability:
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         state = resolve_effective_memory_state([], {})
         assert state == (False, False)
-        # The regression: without the applicability flag this reads as unsatisfied.
         assert memory_state_satisfies_settings(state, True, True) is False
         assert memory_state_satisfies_settings(state, True, False) is True
 
@@ -867,8 +843,7 @@ class TestFullOffloadDetection:
             assert self._check(32, "auto", None, ["-ngl", "99", flag, "x"]) is False
 
     def test_every_unknown_answers_no(self):
-        # No block count, no extras, unparseable -ngl: all keep the old behaviour
-        # of page-locking rather than guessing a full offload.
+        # Missing count/extras or unparseable -ngl keeps page-locking, never guesses full offload.
         assert self._check(None, "manual", 33) is False
         assert self._check(0, "manual", 33) is False
         assert self._check(32, "auto", None, None) is False
@@ -876,7 +851,6 @@ class TestFullOffloadDetection:
         assert self._check(32, "auto", None, ["-ngl", "abc"]) is False
 
     def test_manual_auto_layers_falls_back_to_the_extras(self):
-        # gpu_layers < 0 means manual did not pin a count.
         assert self._check(32, "manual", -1, ["-ngl", "99"]) is True
         assert self._check(32, "manual", -1, []) is False
 
@@ -899,8 +873,7 @@ class TestFullOffloadDetection:
             in ast.unparse(node.test).replace("'", '"')
         ]
         assert manual_branches, "the manual offload branch moved"
-        # Only the branch body: its orelse holds the auto branch, which is the
-        # one place that does set the flag.
+        # Branch body only: its orelse is the auto branch, which sets the flag.
         assigned = {
             target.id
             for branch in manual_branches
@@ -939,7 +912,6 @@ class TestNegativeDirectIoIsARamReservation:
 
     @pytest.mark.parametrize("flag", ["--direct-io", "-dio"])
     def test_no_ram_reserve_leaves_the_affirmative_ones(self, policy, flag):
-        # DirectIO streams, so it is not a reservation and nothing has to go.
         _, out = policy(False, True, [flag, "--temp", "0.7"])
         assert out == [flag, "--temp", "0.7"]
 
@@ -970,11 +942,9 @@ class TestEnvVarsAssignTheWholeMode:
                 {"LLAMA_ARG_MMAP": "off", "LLAMA_ARG_LOAD_MODE": "mmap+mlock"},
                 (True, False),
             ),
-            # Each still works alone.
             ({"LLAMA_ARG_MLOCK": "1"}, (True, False)),
             ({"LLAMA_ARG_DIO": "1"}, (False, False)),
             ({"LLAMA_ARG_DIO": "0"}, (False, True)),
-            # An unset or unparseable value assigns nothing.
             ({"LLAMA_ARG_DIO": ""}, (False, False)),
             ({"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_MMAP": "banana"}, (True, False)),
         ],
@@ -1021,9 +991,7 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
         mlock_applicable,
         state = None,
     ):
-        # A host-resident load with residency on carries the lock, so its state
-        # says so; a gated one carries nothing. Keeping the two in step matters,
-        # because the response reads the launched state rather than the flag.
+        # The response reads the launched state, so the stub state must match the flag.
         if state is None:
             state = (True, False) if mlock_applicable else (False, False)
         return type(
@@ -1071,7 +1039,6 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
         assert resp.memlock_limit_bytes == 8 * 1024 * 1024
 
     def test_with_nothing_loaded_the_intent_is_reported(self, monkeypatch):
-        # No launch to read, so fall back to what the toggles ask for.
         resp = self._response(True, False, self._backend(False, False), monkeypatch)
         assert resp.mlock_active is True
 
@@ -1297,7 +1264,6 @@ class TestLegacyNegativeEnvAliases:
 
     def test_mlock_has_no_negative_form_so_the_alias_is_inert(self):
         assert resolve_effective_memory_state([], {"LLAMA_ARG_NO_MLOCK": "1"}) == (False, False)
-        # And it cannot cancel the affirmative one.
         assert resolve_effective_memory_state(
             [], {"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_NO_MLOCK": "1"}
         ) == (True, False)
@@ -1671,8 +1637,7 @@ class TestCpuMoeCountIsParsed:
             (["--n-cpu-moe=4"], True),
             (["--n-cpu-moe", "-1"], False),
             (["--n-cpu-moe", "nonsense"], False),
-            (["--n-cpu-moe"], False),  # trailing, no value
-            # No value to parse: presence is the whole signal.
+            (["--n-cpu-moe"], False),
             (["--cpu-moe"], True),
             (["-cmoe"], True),
             (["-ot", "blk.*=CPU"], True),
@@ -1714,8 +1679,7 @@ class TestCpuMoeCountIsParsed:
         fn = tree.body[0]
         if ast.get_docstring(fn) is not None:
             fn.body = fn.body[1:]
-        # unparse drops comments and the docstring, so only real code is left;
-        # either would otherwise name the flags without being a second copy.
+        # ast.unparse drops comments and docstrings, which would otherwise name the flags.
         code = ast.unparse(fn)
         assert "_args_place_tensors_on_cpu" in code
         for flag in ("-ncmoe", "--n-cpu-moe", "--override-tensor"):
@@ -1834,7 +1798,6 @@ class TestADefaultLaunchRecordsItsApplicability:
 
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
-        # What the gate records for a discrete full offload.
         assert memory_state_satisfies_settings((False, False), False, False) is True
 
     def test_a_partial_offload_still_demands_the_reload(self, monkeypatch):
@@ -1937,7 +1900,6 @@ class TestThePolicyReadsOneSnapshot:
     saved --mlock in the extras."""
 
     def test_a_save_between_the_two_reads_is_not_observable(self, monkeypatch):
-        # Start at (keep_resident=True, no_ram_reserve=False).
         import utils.model_memory_settings as mm
 
         store = {
@@ -1953,7 +1915,6 @@ class TestThePolicyReadsOneSnapshot:
         mm._cache.clear()
         mm._generation.clear()
 
-        # Flip to (False, True) the moment keep_resident has been read.
         real = mm.get_keep_resident
         fired: list[bool] = []
 
@@ -1969,7 +1930,6 @@ class TestThePolicyReadsOneSnapshot:
         monkeypatch.setattr(mm, "get_keep_resident", flip_after_first_read)
         keep_resident, no_ram_reserve = mm.get_model_memory_settings()
         assert fired, "the write never landed, so this proves nothing"
-        # (True, True) was never stored: the old pair or the new one, not a mix.
         assert (keep_resident, no_ram_reserve) in {(True, False), (False, True)}
 
     def test_the_policy_derives_both_from_one_call(self):
@@ -2354,7 +2314,6 @@ class TestFitOffRetryClearsPolicyActivity:
 
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
-        # The retry child: lock dropped, so no lock and no reservation.
         return memory_state_satisfies_settings((False, False), policy_active, False)
 
     def test_an_untouched_child_is_left_alone(self, monkeypatch):
@@ -2371,9 +2330,7 @@ class TestFitOffRetryClearsPolicyActivity:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        # Whitespace-normalised, or pre-commit.ci's reflow reads as a behaviour change.
-        # No longer bare bool(_mem_managed): a pair a later mmap shadows changes nothing
-        # observable, so it is not activity. The other half is what the retry reuses.
+        # Whitespace-normalised so a pre-commit reflow is not read as a behaviour change.
         flat = "".join(src.split())
         assert (
             "self._memory_policy_active=_mem_managed_is_effectiveor_mem_policy_touched_extras"
@@ -2419,8 +2376,7 @@ class TestNoDeadMemoryBookkeeping:
             except (SyntaxError, UnicodeDecodeError, OSError):
                 continue
             read |= attrs(tree, ast.Load)
-            # routes read some of these dynamically:
-            # getattr(backend, "_memory_policy_active", False).
+            # routes read some of these via getattr(backend, "_memory_policy_active", False).
             read |= {
                 n.args[1].value
                 for n in ast.walk(tree)
@@ -2608,9 +2564,9 @@ class TestTheDioPolicy:
     @pytest.mark.parametrize(
         "kwargs",
         [
-            {"no_reserve": False},  # the setting is off
-            {"supports": False},  # a build with no --load-mode
-            {"confirmed": False},  # placement not established, incl. host-resident
+            {"no_reserve": False},
+            {"supports": False},
+            {"confirmed": False},
         ],
         ids = ["toggle-off", "legacy-build", "unconfirmed"],
     )
@@ -2626,9 +2582,7 @@ class TestTheDioPolicy:
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_mem_gpu_offload_confirmed=self._gpu_offload_confirmed(" in flat
         assert "binary,_mem_env,_mem_compact_indices,_mem_host_resident," in flat
-        # and host residency was priced against those SAME ordinals
         assert "gpu_indices=_mem_physical_indices," in flat
-        # and the owner declines on host residency before probing anything
         owner = "".join(inspect.getsource(LlamaCppBackend._gpu_offload_confirmed).split())
         assert owner.index("ifnotdio_possibleorhost_resident:returnFalse") < owner.index(
             "_enumerated_gpu_devices("
@@ -2652,7 +2606,6 @@ class TestTheDioPolicy:
         scrub, and argv beats the environment in llama.cpp."""
         assert _lsa.scrub_memory_env(dict(env), (False, True)) == []
         emitted, effective = _dio(env = env)
-        # The pair stands aside for any of them; only an inherited dio still streams.
         assert emitted is False
         assert effective is (env.get("LLAMA_ARG_DIO") == "1")
 
@@ -2662,7 +2615,6 @@ class TestTheDioPolicy:
         assert _dio(env = scrubbed) == (True, True)
 
     def test_a_per_model_mmap_wins_by_last_arg(self):
-        # The policy still emits; the user's selector wins the resolve.
         assert _dio(requested = "mmap") == (True, False)
 
     def test_a_per_model_reserving_mode_is_dropped_and_dio_stands(self):
@@ -2751,11 +2703,8 @@ class TestTheLaunchAsksTheSameQuestionTwice:
         flat = "".join(src.split())
         assert "self._memory_dio_applicable=_hypo_emittedand_hypo_effective" in flat
         assert "_ask((_mem_keep_resident,True),_mem_env_view_no_reserve)" in flat
-        # activity asks the same way, for the toggles-off child
         assert "_ask((False,False),_off_view)" in flat
-        # the hypothetical env view is scrubbed for the hypothetical toggle
         assert "scrub_memory_env(_mem_env_view_no_reserve,(_mem_keep_resident,True))" in flat
-        # and the machinery it replaced is gone
         for retired in (
             "managed_dio_applies",
             "_mem_dio_survives_chain",
@@ -2784,11 +2733,10 @@ class TestTheLaunchWithdrawsTheDio:
             self._src(),
             inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch),
         )
-        # --fit on retry, arch-crash retry and the proactive arch gate here, CPU replay in
-        # the builder. The gate strips as well as adds, or a narrowed set keeps the pair.
+        # --fit retry, arch-crash retry, arch gate here; CPU replay in the builder. The gate also
+        # strips, or a narrowed set keeps the pair.
         assert launch.count("self._drop_managed_dio(") == 3
         assert replay.count("self._drop_managed_dio(") == 1
-        # Only the rung that strips `cmd` itself may forget the tokens.
         assert launch.count("clear_record = False") == 1
         assert replay.count("clear_record = False") == 1
 
@@ -2810,7 +2758,6 @@ class TestTheLaunchWithdrawsTheDio:
         arm = arm[: arm.index("self._record_memory_state(cmd, env)")]
         assert "_dio_decision_for(" in arm
         assert "_remaining" in arm
-        # and the restore still precedes any bookkeeping the strip would clear
         assert src.index(") = _mem_policy_for_cmd") < src.index("_dio_left_cmd = False")
 
     def test_a_copy_strip_leaves_the_tokens_nameable(self):
@@ -2824,7 +2771,6 @@ class TestTheLaunchWithdrawsTheDio:
         cmd = ["--model", "m.gguf", *_lsa.MANAGED_DIO_FLAGS]
         assert b._drop_managed_dio(list(cmd), "copy", clear_record = False) == ["--model", "m.gguf"]
         assert b._memory_dio_flags == list(_lsa.MANAGED_DIO_FLAGS)
-        # ...and the pair was this policy's only mark, so the child is unmanaged now.
         assert b._memory_policy_active is False
         assert b._drop_managed_dio(cmd, "cmd") == ["--model", "m.gguf"]
         assert b._memory_dio_flags == []
@@ -2906,7 +2852,7 @@ class TestEveryDeviceSetChangeReAsks:
 
     def test_all_three_rungs_use_the_one_decision(self):
         src = self._src()
-        assert src.count("_dio_decision_for(") == 4  # 1 def + 3 rungs
+        assert src.count("_dio_decision_for(") == 4
         flat = "".join(src.split())
         assert "_dio_decision_for(_survivors,fully_offloaded=False,child_env=env)" in flat
         assert "_dio_decision_for(gpu_indices,fully_offloaded=True,child_env=env)" in flat
@@ -2923,7 +2869,6 @@ class TestEveryDeviceSetChangeReAsks:
         arm = arm[: arm.index("return pair,")]
         flat = "".join(arm.split())
         assert "host_resident=self._weights_in_host_memory(" in flat
-        # residency is carried INTO the confirmation, and the rung probes its OWN visibility
         assert "_rung_env=_mem_env_for(child_env)" in flat
         assert (
             "self._gpu_offload_confirmed(binary,_rung_env,_rung_compact,host_resident,"
@@ -2936,9 +2881,9 @@ class TestEveryDeviceSetChangeReAsks:
         arm = src[src.index("def _dio_decision_for(") :]
         arm = arm[: arm.index("return pair,")]
         flat = "".join(arm.split())
-        assert "_for(_mem_settings,_fit_load_mode_env_view)" in flat  # live
-        assert "_for((_mem_keep_resident,True),_mem_env_view_no_reserve)" in flat  # forced on
-        assert "_for((False,False),_off_view)" in flat  # toggles off
+        assert "_for(_mem_settings,_fit_load_mode_env_view)" in flat
+        assert "_for((_mem_keep_resident,True),_mem_env_view_no_reserve)" in flat
+        assert "_for((False,False),_off_view)" in flat
 
     def test_the_reactive_gate_can_gain_the_pair_not_only_lose_it(self):
         """Narrowing onto the surviving discrete card can gain a full offload the
@@ -2953,8 +2898,7 @@ class TestEveryDeviceSetChangeReAsks:
         """A pair redundant with a loader the user picked changes nothing a
         relaunch could undo, so appending it is not activity."""
         src = self._src()
-        # Each dio rung ORs its answer in rather than asserting True. (A fourth OR is the
-        # pre-existing mlock re-arm.)
+        # Each dio rung ORs its answer in; a fourth OR is the mlock re-arm.
         for marker in ("_gate_active", "_retry_active", "_arch_active"):
             assert f"{marker} or self._memory_policy_active" in src, marker
 
@@ -3026,8 +2970,7 @@ class TestTheSnapshotCarriesTheDioTokens:
         src = inspect.getsource(LlamaCppBackend.load_model)
         # One snapshot helper, copying in so a later strip cannot reach back into it.
         assert "list(self._memory_dio_flags)," in src
-        assert "self._memory_dio_flags,\n" in src  # the restore
-        # every site that takes the snapshot goes through the helper
+        assert "self._memory_dio_flags,\n" in src
         assert src.count("_mem_policy_for_cmd = _snapshot_policy_for_cmd()") >= 4
 
 
@@ -3047,8 +2990,6 @@ class TestASaveDuringPlacementIsAnswered:
             'capture_model_memory_settings(lambdapair:setattr(self,"_memory_pending_launch",pair))'
             in src
         )
-        # and nothing re-publishes it before the placement work; the recovery rungs
-        # further down legitimately re-arm after a failed attempt
         head = src[
             src.index("capture_model_memory_settings(") : src.index("_arm_load_probe_memo()")
         ]
@@ -3091,7 +3032,6 @@ class TestTheMarkerIsReleasedWithTheLoadLock:
 
         src = inspect.getsource(LlamaCppBackend._serial_load_scope)
         assert "self._memory_pending_launch = None" in src
-        # released beside the markers that already had this treatment
         assert "self._vram_fraction_pending = None" in src
 
     def test_the_load_call_no_longer_owns_it(self):
@@ -3123,7 +3063,6 @@ class TestAReplacementLoadIsNotAnsweredByTheOldChild:
         import routes.settings as rs
         import utils.model_memory_settings as mm
 
-        # the killed child's state is still present and non-None
         monkeypatch.setattr(
             rs,
             "_active_launch_placement",
@@ -3170,7 +3109,6 @@ class TestARetryKeepsThePlacementWindowOpen:
         drop = src.index("# is_active covers it from here, so drop the pre-spawn flag.")
         rearm = src.index("self._memory_pending_launch = _mem_settings", drop)
         crashed = src.index("_crashed_proc = self._process", drop)
-        # re-armed before the crash is even classified, so every rung inherits it
         assert drop < rearm < crashed
 
     def test_the_lock_still_owns_the_release(self):
@@ -3189,10 +3127,10 @@ class TestThePendingCompareIsByEffect:
     @pytest.mark.parametrize(
         "live,pending,reload_required",
         [
-            ((True, True), (False, True), False),  # residency flip under no-reserve
-            ((False, True), (True, True), False),  # ...either direction
-            ((False, True), (False, False), True),  # no-reserve itself changed
-            ((True, False), (False, False), True),  # the page-lock changed
+            ((True, True), (False, True), False),
+            ((False, True), (True, True), False),
+            ((False, True), (False, False), True),
+            ((True, False), (False, False), True),
             ((False, False), (False, False), False),
         ],
     )
@@ -3296,7 +3234,6 @@ class TestThePendingWindowHasNoGaps:
         ]
         assert armed, "the launch must publish its pending window"
         for line in armed:
-            # either it arms WITH the captured pair, or it clears
             assert line.endswith("= _mem_settings") or line.endswith("= None"), line
 
     def test_the_spawn_caller_clears_only_on_success(self):
@@ -3361,20 +3298,16 @@ class TestOneLaunchReadsOneSettingsSnapshot:
             monkeypatch.setattr(model_memory_settings, "get_keep_resident", lambda: keep_resident)
             monkeypatch.setattr(model_memory_settings, "get_no_ram_reserve", lambda: no_ram_reserve)
 
-        # Live settings own placement, but the snapshot says neither toggle was on, so
-        # this launch leaves the inherited value alone.
         _live(True, False)
         env = {"LLAMA_ARG_MLOCK": "1"}
         assert scrub_memory_env(env, (False, False)) == []
         assert env == {"LLAMA_ARG_MLOCK": "1"}
 
-        # and the converse: the snapshot owns placement even though the live pair does not
         _live(False, False)
         env = {"LLAMA_ARG_MLOCK": "1"}
         assert scrub_memory_env(env, (True, False)) == ["LLAMA_ARG_MLOCK"]
         assert env == {}
 
-        # with no snapshot it falls back to the live pair, as the other scrub sites do
         _live(True, False)
         env = {"LLAMA_ARG_MLOCK": "1"}
         assert scrub_memory_env(env) == ["LLAMA_ARG_MLOCK"]
@@ -3469,9 +3402,7 @@ class TestAnyInstalledGpuPluginMustBeLoadable:
         return [str(libs)]
 
 
-# Real `llama-server --list-devices` output, captured not invented: a CUDA build with
-# two cards, and the two ways a build with nothing prints it. The noise above the
-# header is what ggml_cuda_init writes.
+# Real `llama-server --list-devices` output; the noise above the header is ggml_cuda_init's.
 _LIST_DEVICES_GPU = """ggml_cuda_init: found 2 CUDA devices (Total VRAM: 72627 MiB):
   Device 0: NVIDIA RTX 6000 Ada Generation, compute capability 8.9, VMM: yes, VRAM: 48504 MiB
   Device 1: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24123 MiB
@@ -3730,7 +3661,6 @@ class TestTheCaptureAndThePublicationAreOneAct:
         monkeypatch.setattr(mm, "_pair_generations", lambda: gens.pop(0))
         seen = []
         final = mm.capture_model_memory_settings(seen.append)
-        # published stale, then corrected, and both values agree at the end
         assert seen == [(True, False), (False, True)]
         assert final == (False, True) == seen[-1]
 
@@ -3794,7 +3724,6 @@ class TestTheProbeSeesWhatTheChildWillSee:
             stdout = "Available devices:\n"
 
         monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: seen.update(kw) or _R())
-        # the caller's view dropped the pin, so the probe drops it too
         m.LlamaCppBackend._run_list_devices("llama-server", {"PATH": "ignored"})
         assert "CUDA_VISIBLE_DEVICES" not in seen["env"]
         assert seen["env"]["PATH"] == "/venv/torch/lib"
@@ -3937,7 +3866,6 @@ class TestTheDeviceMemoFollowsVisibility:
         m._arm_load_probe_memo()
         try:
             assert m.LlamaCppBackend._enumerated_gpu_devices("b", {}) is None
-            # the gate masks the bad adapter; the narrowed child is a new question
             assert m.LlamaCppBackend._enumerated_gpu_devices(
                 "b", {"ROCR_VISIBLE_DEVICES": "1"}
             ) == ["CUDA0"]
@@ -4030,7 +3958,6 @@ class TestTheStripNeverEatsAUserAuthoredPair:
         b = self._backend()
         b._memory_dio_user_tokens = ["--load-mode", "dio"]
         argv = ["llama-server", "--load-mode", "dio"]
-        # only the user's occurrence is left, so there is nothing of ours to take
         assert b._drop_managed_dio(argv, "test") == argv
 
     def test_ours_goes_and_theirs_stays_when_both_are_present(self):
@@ -4226,11 +4153,9 @@ class TestOneEffectiveDeviceSetFeedsEveryConsumer:
         from core.inference.llama_cpp import LlamaCppBackend
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # main path: resolved once, then used for residency AND confirmation
         assert "_mem_physical_indices,_mem_compact_indices=self._effective_gpu_selection(" in flat
         assert "gpu_indices=_mem_physical_indices," in flat
         assert "binary,_mem_env,_mem_compact_indices,_mem_host_resident," in flat
-        # the rung resolves its own narrowed set the same way
         assert (
             "_rung_physical,_rung_compact=self._effective_gpu_selection(binary,_rung_env,"
             "devices,_mem_extra_args,_mem_dio_possible,is_vulkan_backend,)" in flat
@@ -4251,13 +4176,12 @@ class TestTheSnapshotIsRetakenAfterEveryCmdMutation:
     def test_the_snapshot_comes_from_one_helper(self):
         src = self._src()
         assert "def _snapshot_policy_for_cmd():" in src
-        assert "_mem_policy_for_cmd = (" not in src  # no inline copies left
+        assert "_mem_policy_for_cmd = (" not in src
 
     def test_the_proactive_gate_retakes_it_on_both_arms(self):
         src = self._src()
         gate = src[src.index("the arch gate's surviving GPU(s) no longer confirm a") :]
         gate = gate[: gate.index("_gated_carveout_need")]
-        # once for the removal arm, once for the addition arm
         assert gate.count("_mem_policy_for_cmd = _snapshot_policy_for_cmd()") == 2
 
     def test_every_mutation_before_the_restore_retakes_it(self):
@@ -4466,7 +4390,7 @@ class TestAnUnreadDeviceTypeIsNotDiscreteEvidence:
         declines rather than being trusted."""
         from core.inference.llama_cpp import LlamaCppBackend as B
 
-        assert B._vulkan_offload_is_discrete.__doc__  # predicate still documented
+        assert B._vulkan_offload_is_discrete.__doc__
         row = {"index": 0, "is_igpu": False}
         assert row.get("type_known") is None
 
@@ -4499,7 +4423,6 @@ class TestThePerModelPairIsUserAuthoredToo:
 
         b = LlamaCppBackend.__new__(LlamaCppBackend)
         b._memory_dio_flags = ["--load-mode", "dio"]
-        # extras empty, but the per-model selection put one pair on the command
         b._memory_dio_user_tokens = ["--load-mode", "dio"]
         b._memory_dio_applicable = True
         b._memory_policy_active = True
@@ -4667,11 +4590,8 @@ class TestTheSelectionCarriesBothOrdinalSpaces:
         from core.inference.llama_cpp import LlamaCppBackend
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # residency classifies physical ids
         assert "gpu_indices=_mem_physical_indices," in flat
-        # the confirmation matches the build's compact device list
         assert "binary,_mem_env,_mem_compact_indices,_mem_host_resident," in flat
-        # and the rung does the same with its narrowed set
         assert "gpu_indices=_rung_physical," in flat
         assert "self._gpu_offload_confirmed(binary,_rung_env,_rung_compact,host_resident," in flat
 
@@ -4758,8 +4678,6 @@ class TestAForcedProbeKeepsMlockConservative:
 
         monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: []))
         assert B._vulkan_probe_answered("llama-server") is False
-        # and the iGPU question still answers False for the same empty probe, which is
-        # why it cannot be read as a measurement
         assert B._vulkan_targets_are_igpus("llama-server", None) is False
 
         monkeypatch.setattr(

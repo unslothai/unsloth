@@ -196,9 +196,10 @@ def _run_cpu_note(
     tegra: str,
     pinned: bool = False,
     cuda: str = "",
+    root: "Path | None" = None,
 ) -> str:
     """install.sh's "PyTorch wheel index note" block for a CPU index, on a fake root."""
-    root = _host(tmp_path, tegra = tegra, gpu = False)
+    root = root or _host(tmp_path, tegra = tegra, gpu = False)
     src = INSTALL_SH.read_text(encoding = "utf-8")
     start = src.index("# ── PyTorch wheel index note ──")
     block = src[start : src.index("\nesac\n", start) + 6]
@@ -238,6 +239,32 @@ def test_install_sh_cpu_note_leaves_thor_off_the_jetson_diagnosis(tmp_path):
     out = _run_cpu_note(tmp_path, "release", cuda = "13.0")
     assert "NVIDIA Jetson detected" not in out and "No GPU detected" in out
     assert "NVIDIA Jetson detected" in _run_cpu_note(tmp_path / "jp6", "release", cuda = "12.6")
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    "release, compatible, jetson",
+    [
+        (None, b"nvidia,tegra264\0", False),  # Thor, GPU-less container
+        ("# R38 (release), REVISION: 2.0\n", b"nvidia,tegra264\0", False),
+        ("# R39 (release), REVISION: 0.0\n", b"nvidia,tegra234\0", False),  # JetPack 7.2 Orin
+        ("# R36 (release), REVISION: 4.3\n", b"nvidia,tegra234\0", True),
+        (None, b"nvidia,tegra234\0", True),
+    ],
+)
+def test_install_sh_cpu_note_without_a_driver_answer_follows_the_l4t_release(
+    tmp_path, release, compatible, jetson
+):
+    # No CUDA version (GPU-less container): JetPack 7 is not told the generic wheels do not run on it.
+    root = tmp_path / "host"
+    (root / "etc").mkdir(parents = True)
+    (root / "dt").mkdir()
+    if release is not None:
+        (root / "etc" / "nv_tegra_release").write_text(release)
+    (root / "dt" / "compatible").write_bytes(compatible)
+    out = _run_cpu_note(tmp_path, "", root = root)
+    assert ("NVIDIA Jetson detected" in out) is jetson
+    assert ("No GPU detected" in out) is not jetson
 
 
 @_POSIX

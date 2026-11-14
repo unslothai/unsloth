@@ -502,6 +502,40 @@ def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_leaves_an_explicit_is_causal_beside_a_mask_to_sdpa():
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    dtype = _cuda_dtype()
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    allowed = torch.ones(1, 1, 24, 24, device = "cuda", dtype = torch.bool)
+    before = LH.LARGE_HEAD_ENGAGED["calls"]
+    assert router(_Module(), q, kv, kv, allowed, is_causal = True)[0] == "original"
+    assert calls[-1]["is_causal"] is True and LH.LARGE_HEAD_ENGAGED["calls"] == before
+    causal = _causal(24).cuda()[None, None]
+    assert router(_Module(), q, kv, kv, causal)[0] != "original"
+    assert router(_Module(), q, kv, kv, causal, is_causal = False)[0] != "original"
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 2 and len(calls) == 1
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_falls_back_to_sdpa_on_mask_scan_oom(monkeypatch):
+    def oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
+
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    monkeypatch.setattr(LH, "intervals_from_mask", oom)
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    before = LH.LARGE_HEAD_ENGAGED["fallback"]
+    assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
+    assert LH.LARGE_HEAD_ENGAGED["fallback"] == before + 1 and len(calls) == 1
+
+
 def test_pre_ampere_keeps_sdpa_without_compiling(monkeypatch):
     def kernel(*args, **kwargs):
         raise AssertionError("kernel compiled on sm75")
@@ -653,3 +687,141 @@ def test_router_uses_the_kernel_for_masks_made_under_inference_mode():
     assert not isinstance(out, str) and len(calls) == 0
     assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 2
     torch.testing.assert_close(out, reference)
+
+
+class _FakeCudaOperand:
+    """A meta tensor that reports CUDA, so `_shapes_qualify` can be checked without a GPU."""
+
+    def __init__(
+        self,
+        shape,
+        stride,
+        dtype = torch.float16,
+    ):
+        self._t = torch.empty_strided(shape, stride, device = "meta", dtype = dtype)
+        self.shape, self.dtype, self.is_cuda, self.device = self._t.shape, dtype, True, "cuda:0"
+
+    def dim(self):
+        return self._t.dim()
+
+    def numel(self):
+        return self._t.numel()
+
+    def stride(self, dim = None):
+        return self._t.stride() if dim is None else self._t.stride(dim)
+
+
+def test_shapes_qualify_bounds_the_reachable_row_offset():
+    # 2,560 elements, but row 4 starts 2**31 elements in: int32 row offsets wrap in the kernel.
+    dense = _FakeCudaOperand((1, 1, 5, 512), (2560, 2560, 512, 1))
+    wide = _FakeCudaOperand((1, 1, 5, 512), (0, 0, 1 << 29, 1))
+    assert LH._shapes_qualify(dense, dense, dense)
+    assert not LH._shapes_qualify(wide, dense, dense)
+    assert not LH._shapes_qualify(dense, wide, dense)
+    assert not LH._shapes_qualify(dense, dense, wide)
+    # Batch and head offsets are int64 in the kernels, so a wide batch stride still qualifies.
+    batch = _FakeCudaOperand((2, 1, 5, 512), (1 << 31, 2560, 512, 1))
+    assert LH._shapes_qualify(batch, batch, batch)
+    # The last row's last element at exactly 2**31 - 1 is the largest offset that still fits.
+    edge = _FakeCudaOperand((1, 1, 2, 512), (0, 0, LH._INT32_MAX - 511, 1))
+    dense_k = _FakeCudaOperand((1, 1, 2, 512), (1024, 1024, 512, 1))
+    assert LH._shapes_qualify(edge, dense_k, dense_k)
+    over = _FakeCudaOperand((1, 1, 2, 512), (0, 0, LH._INT32_MAX - 510, 1))
+    assert not LH._shapes_qualify(over, dense_k, dense_k)
+
+
+def _wide_row_stride(shape, dtype, seed):
+    # The storage runs to the last row's offset: 2**29 elements per row, over 4 GiB for five rows.
+    need = ((shape[-2] - 1) * (1 << 29) + shape[-1]) * torch.empty((), dtype = dtype).element_size()
+    if torch.cuda.mem_get_info()[0] < need + (1 << 30):
+        pytest.skip(reason = f"needs {need / 2**30:.1f} GiB free for a 2**29 element row stride")
+    gen = torch.Generator(device = "cuda").manual_seed(seed)
+    x = torch.empty_strided(shape, (0, 0, 1 << 29, 1), device = "cuda", dtype = dtype)
+    x.copy_(torch.randn(shape, device = "cuda", dtype = dtype, generator = gen))
+    return x
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_sends_a_wide_row_stride_query_to_sdpa():
+    dtype = _cuda_dtype()
+    S = 5
+    q = _wide_row_stride((1, 1, S, 512), dtype, 0)
+    k = torch.randn(1, 1, S, 512, device = "cuda", dtype = dtype)
+    v = torch.randn_like(k)
+
+    def original(module, query, key, value, attention_mask, **kwargs):
+        out = torch.nn.functional.scaled_dot_product_attention(query, key, value, is_causal = True)
+        return out.transpose(1, 2).contiguous(), None
+
+    router = LH._make_router(original)
+    before = LH.LARGE_HEAD_ENGAGED["calls"]
+    out, _ = router(_Module(), q, k, v, None)
+    torch.cuda.synchronize()
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before
+    ref = _reference(q.float(), k.float(), v.float(), _causal(S).cuda())
+    assert torch.isfinite(out).all()
+    assert (out.float() - ref).abs().max() <= 0.03 * ref.abs().max() + 0.02
+    del q
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_backward_copies_a_wide_row_stride_grad():
+    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+    S = 5
+    torch.manual_seed(1)
+    q, k, v = [torch.randn(1, 1, S, 512, device = "cuda", dtype = dtype) for _ in range(3)]
+    lo, hi = LH._dense_intervals(1, S, True, q.device)
+    ours_in = [x.clone().requires_grad_() for x in (q, k, v)]
+    out = LH.large_head_attention(*ours_in, lo, hi)
+    grad = _wide_row_stride((1, 1, S, 512), dtype, 2)  # [B, H, S, D], as the kernel reads dO
+    out.backward(grad.transpose(1, 2))
+    torch.cuda.synchronize()
+    ref_in = [x.detach().float().requires_grad_() for x in (q, k, v)]
+    _reference(*ref_in, _causal(S).cuda()).backward(grad.float().transpose(1, 2))
+    for a, b in zip([x.grad for x in ours_in], [x.grad for x in ref_in]):
+        assert torch.isfinite(a).all()
+        assert (a.float() - b).abs().max() <= 0.03 * b.abs().max() + 0.02
+    del grad
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_captures_into_a_cuda_graph_with_an_inference_mask():
+    # The mask scan syncs the host ("operation not permitted when stream is capturing"), and a graph
+    # would replay one scan's verdict for whatever the mask buffer holds later, so capture uses SDPA.
+    def original(module, query, key, value, attention_mask, **kwargs):
+        key, value = key.repeat_interleave(2, 1), value.repeat_interleave(2, 1)
+        out = torch.nn.functional.scaled_dot_product_attention(
+            query, key, value, attn_mask = attention_mask
+        )
+        return out.transpose(1, 2).contiguous(), None
+
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    with torch.inference_mode():
+        q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+        kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+        mask = _causal(24).cuda()[None, None]
+        eager_masked = router(_Module(), q, kv, kv, mask)[0]
+        eager_dense = router(_Module(), q, kv, kv, None)[0]
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                router(_Module(), q, kv, kv, mask)
+                router(_Module(), q, kv, kv, None)
+        stream.synchronize()
+        before = LH.LARGE_HEAD_ENGAGED["calls"]
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream = stream):
+            masked = router(_Module(), q, kv, kv, mask)[0]
+            dense = router(_Module(), q, kv, kv, None)[0]
+        # The unmasked call still runs the kernel inside the graph; the masked one runs SDPA.
+        assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1
+        graph.replay()
+        torch.cuda.synchronize()
+    assert LH._SELF_CHECK[(str(device), dtype)] is True
+    torch.testing.assert_close(masked, eager_masked, atol = 2e-2, rtol = 2e-2)
+    torch.testing.assert_close(dense, eager_dense)

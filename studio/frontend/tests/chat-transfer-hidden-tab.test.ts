@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The model-load toast polls on a 2s interval, clamped to about once a minute
-// while hidden. Those gaps time the poller, not the transfer, and the estimator
-// reads gaps as the burst cadence, so progress stopping near the moment the user
-// returns left a stale rate on screen for a minute. The hub and voice pollers
-// already drop hidden samples; this pins that the chat one does too.
+// Hidden-tab poll gaps time the poller, not the transfer, so hidden samples must be dropped.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -53,12 +49,10 @@ test("throttled hidden samples do not hold a stale rate once progress stops", ()
       bytes = t * 50 * MB;
       poll(t, bytes, false);
     }
-    // Hidden: the 2s interval is clamped to a minute, still downloading.
     for (; t <= 660; t += 60) {
       bytes = t * 50 * MB;
       poll(t, bytes, true);
     }
-    // Progress stops just as the tab is shown again.
     let held = 0;
     for (const end = t + 300; t <= end; t += 2) {
       poll(t, bytes, false);

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The one toast announcing a download start, and the one place it is dismissed. Chat used to raise
-// its own alongside the Xet notice, so one download produced two stacked toasts; callers now hand
-// their message over instead. The 8s duration says nothing about the transfer, so the id is derived
-// from the job key and finalize() dismisses it (nothing can be stored: teardownRuntime runs first).
+// The single start toast; its id derives from the job key so finalize() can dismiss it.
 
 import { toast } from "@/lib/toast";
 
@@ -16,13 +13,11 @@ import {
   XET_NOTICE_DURATION_MS,
 } from "./xet-progress-notice";
 
-/** Stable per-job toast id, so `finalize` can dismiss without carrying state. */
 export function startToastId(jobKey: string): string {
   return `download-start:${jobKey}`;
 }
 
-// Id -> the route and download kind it was raised for. Kind-scoping matters because
-// a Chat model pick must not erase an unrelated dataset notice on the same /hub route.
+// Kind-scoped so a Chat model pick cannot erase an unrelated dataset notice on /hub.
 const liveStartToasts = new Map<
   string,
   { route: string; kind: DownloadKind }
@@ -36,13 +31,11 @@ function downloadKindOfJobKey(jobKey: string): DownloadKind {
     : DOWNLOAD_KIND.MODEL;
 }
 
-/** The route to hold a start against. Captured when the start begins, since the
- * preflight and the reservation are round trips a raise can outlive. */
+/** Captured at start, since the preflight round trips can outlive the route. */
 export function currentRoute(): string {
   return typeof window === "undefined" ? "" : window.location.pathname;
 }
 
-/** Captured with the route so an async preflight cannot raise after another pick. */
 export function currentStartToastSelectionEpoch(): number {
   return modelSelectionEpoch;
 }
@@ -54,8 +47,7 @@ export function showStartToast(
   originSelectionEpoch: number = currentStartToastSelectionEpoch(),
 ): void {
   const kind = downloadKindOfJobKey(jobKey);
-  // Raised late, surface or selected model gone: the corresponding sweep already
-  // ran. Dataset notices are independent of Chat's model-selection epoch.
+  // Raised late: the sweep already ran. Dataset notices ignore Chat's selection epoch.
   if (
     originRoute !== currentRoute() ||
     (kind === DOWNLOAD_KIND.MODEL &&
@@ -72,7 +64,6 @@ export function showStartToast(
   });
 }
 
-/** The caller's message if it still describes something true, else nothing. */
 export function liveCallerToast(
   message: CallerToast | undefined,
 ): CallerToast | undefined {
@@ -80,9 +71,7 @@ export function liveCallerToast(
   return (message.stillValid?.() ?? true) ? message : undefined;
 }
 
-/** The caller's own message, when the notice is not carrying it: HTTP transport,
- * the three spent, an attached job, or a lost reservation. A Hub start passes
- * nothing and stays silent, and so does a `noticeOnly` caller. */
+/** Shown only when the notice is not carrying the caller's message. */
 export function showCallerToast(
   jobKey: string,
   message: CallerToast | undefined,
@@ -93,18 +82,14 @@ export function showCallerToast(
   showStartToast(jobKey, message, originRoute, originSelectionEpoch);
 }
 
-/** Drop the start toast once the transfer is over. Safe for a job that never raised
- * one: sonner ignores an unknown id. */
+/** Safe for a job that never raised one: sonner ignores an unknown id. */
 export function dismissStartToast(jobKey: string): void {
   const id = startToastId(jobKey);
   liveStartToasts.delete(id);
   toast.dismiss(id);
 }
 
-/** Drop the ones whose surface the user just left. The Toaster is root-level and
- * these live 8s, so chat's composed form (measured 167px tall against a hub filter
- * row at 158px, 1500x1000) would otherwise land on the toolbar, which is the overlap
- * #9293 reverted. Only ids raised here, so other toasts survive the navigation. */
+/** Drop toasts for the surface just left, or chat's 8s toast covers the hub toolbar. */
 export function dismissStartToasts(): void {
   const here = currentRoute();
   for (const [id, context] of liveStartToasts) {
@@ -114,8 +99,6 @@ export function dismissStartToasts(): void {
   }
 }
 
-/** A model pick can change while the route stays put. Drop every prior start
- * disclosure so it cannot describe the newly selected model. */
 export function dismissStartToastsForModelSelection(): void {
   modelSelectionEpoch += 1;
   for (const [id, context] of liveStartToasts) {

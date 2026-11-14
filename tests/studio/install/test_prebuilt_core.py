@@ -1096,11 +1096,9 @@ def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
 
 @pytest.mark.skipif(not hasattr(core.os, "chown"), reason = "os.chown is POSIX only")
 def test_a_live_marker_rewrite_keeps_the_group_when_the_owner_is_refused(tmp_path, monkeypatch):
-    """A non-root member of a group-shared install can hand the temp file to the
-    marker's group, but not to its owner; asking for both refuses the call before the
-    group is applied and os.replace installs the member's primary group instead. So the
-    combined call is tried first, for the root case that can honour it, and the group-only
-    call is the fallback."""
+    """Non-root members can set the group but not the owner; the combined chown is tried first for
+    root, and group-only is the fallback, since a refused combined call would leave the primary
+    group."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"a": 1}', encoding = "utf-8")
     original = marker.stat()
@@ -1119,9 +1117,8 @@ def test_a_live_marker_rewrite_keeps_the_group_when_the_owner_is_refused(tmp_pat
 
 
 def test_a_walk_back_is_recorded_with_the_host_version_that_decided_it():
-    """prebuilt_core.WalkBack: the marker-only re-check may hold an install on a Mac
-    below the newest release's floor current only while the newest release is the one
-    skipped AND the host is the macOS version that skipped it."""
+    """prebuilt_core WalkBack: a marker-only re-check keeps a Mac below the newest release's floor
+    current only if the newest release was skipped on the same macOS version."""
     mac = SimpleNamespace(is_macos = True, macos_version = (14, 7))
     assert core.macos_version_label(mac) == "14.7"
     assert core.macos_version_label(SimpleNamespace(is_macos = True, macos_version = None)) is None

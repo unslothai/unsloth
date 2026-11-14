@@ -18,6 +18,24 @@ def _plugin(tmp_path):
     return start.write_claude_subagent_plugin(tmp_path, {"UNSLOTH_CLAUDE_SUBAGENT_MODEL": "m"})
 
 
+@pytest.fixture(params = ["exec", "shell"])
+def hook_form(request, monkeypatch):
+    # Claude Code before 2.1.139 has no exec form, so it gets the shell string.
+    version = start._CLAUDE_HOOK_ARGS_MIN_VERSION if request.param == "exec" else (2, 1, 100)
+    monkeypatch.setattr(start, "_claude_version", lambda: version)
+    return request.param
+
+
+def _run_hook(hook, payload):
+    if "args" in hook:
+        argv, shell = [hook["command"], *hook["args"]], False
+    else:
+        argv, shell = hook["command"], True
+    return subprocess.run(
+        argv, input = payload, shell = shell, capture_output = True, text = True, timeout = 60
+    )
+
+
 def _run_gate(script, payload):
     return subprocess.run(
         [sys.executable, str(script)],
@@ -28,7 +46,7 @@ def _run_gate(script, payload):
     )
 
 
-def test_plugin_registers_a_pretooluse_hook_on_the_editing_tool(tmp_path):
+def test_plugin_registers_a_pretooluse_hook_on_the_editing_tool(tmp_path, hook_form):
     plugin = _plugin(tmp_path)
 
     hooks = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
@@ -38,12 +56,16 @@ def test_plugin_registers_a_pretooluse_hook_on_the_editing_tool(tmp_path):
     assert start._CLAUDE_SUBAGENT_PLAN_TOOL not in json.dumps(hooks)
     [hook] = entry["hooks"]
     assert hook["type"] == "command"
-    assert sys.executable in hook["command"]
-    assert f'"{sys.executable}"' in hook["command"]
-    encoded = start._b64_path(plugin / "hooks" / "plan_gate.py")
-    assert encoded in hook["command"]
-    assert str(plugin / "hooks" / "plan_gate.py") not in hook["command"]
     assert 0 < hook["timeout"] <= 30
+    gate = plugin / "hooks" / "plan_gate.py"
+    if hook_form == "exec":
+        assert hook["command"] == sys.executable
+        assert hook["args"][-1] == str(gate)
+        return
+    assert "args" not in hook
+    assert f'"{sys.executable}"' in hook["command"]
+    assert start._b64_path(gate) in hook["command"]
+    assert str(gate) not in hook["command"]
 
 
 def test_gate_script_is_written_and_compiles(tmp_path):
@@ -109,52 +131,31 @@ def test_wsl_run_clears_a_gate_left_by_an_earlier_windows_run(tmp_path, monkeypa
     assert not hooks.exists()
 
 
-def test_hook_command_survives_a_missing_gate_and_a_path_with_spaces(tmp_path):
+def test_hook_command_survives_a_missing_gate_and_a_path_with_spaces(tmp_path, hook_form):
     # A missing gate must exit 1 (fails open), not 2 (denies the tool in every mode).
     plugin = _plugin(tmp_path / "dir with space")
     hook = json.loads((plugin / "hooks" / "hooks.json").read_text())
-    command = hook["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    hook = hook["hooks"]["PreToolUse"][0]["hooks"][0]
 
-    denied = subprocess.run(
-        command,
-        input = json.dumps({"permission_mode": "plan"}),
-        shell = True,
-        capture_output = True,
-        text = True,
-        timeout = 30,
-    )
+    denied = _run_hook(hook, json.dumps({"permission_mode": "plan"}))
     assert denied.returncode == 0
     assert json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     (plugin / "hooks" / "plan_gate.py").unlink()
-    gone = subprocess.run(
-        command,
-        input = json.dumps({"permission_mode": "default"}),
-        shell = True,
-        capture_output = True,
-        text = True,
-        timeout = 30,
-    )
+    gone = _run_hook(hook, json.dumps({"permission_mode": "default"}))
     assert gone.returncode != 2, "exit 2 blocks the tool in every mode"
     assert gone.stdout.strip() == ""
 
 
 @pytest.mark.parametrize("hostile", ["sub$(echo X)", "tick`echo X`", "var$HOME", "pct%TEMP%pct"])
-def test_gate_survives_shell_metacharacters_in_its_path(tmp_path, hostile):
+def test_gate_survives_shell_metacharacters_in_its_path(tmp_path, hostile, hook_form):
     # These expand under sh (or cmd, %VAR%) before Python sees the path.
     plugin = _plugin(tmp_path / hostile)
-    command = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"][0][
+    hook = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"][0][
         "hooks"
-    ][0]["command"]
+    ][0]
 
-    denied = subprocess.run(
-        command,
-        input = json.dumps({"permission_mode": "plan"}),
-        shell = True,
-        capture_output = True,
-        text = True,
-        timeout = 60,
-    )
+    denied = _run_hook(hook, json.dumps({"permission_mode": "plan"}))
 
     assert denied.returncode == 0, denied.stderr
     decision = json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"]

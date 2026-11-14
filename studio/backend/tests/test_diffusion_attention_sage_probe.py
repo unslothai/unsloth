@@ -51,7 +51,6 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
     monkeypatch.setattr(att, "_install_sage_dispatch_guard", lambda: True)
     monkeypatch.setattr(att, "_sage_version_too_old", lambda: None)
-    # The pip SageAttention 2 path; the hub path is in test_diffusion_attention_install.py.
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: True, raising = False)
     monkeypatch.setattr(att, "_install_fa4_dispatch_guard", lambda: True)
     monkeypatch.setattr(att, "_fa4_kernel_runs", lambda *a, **k: True)
