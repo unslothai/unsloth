@@ -29,8 +29,8 @@ the race, unset races it where INT8 attention is already wanted (an INT8 checkpo
 
 Where the CUDA kernel cannot be built or loaded on an NVIDIA card (no NVRTC, as on a Windows install without the CUDA
 runtime wheels, or a failed compile, module load or first launch), the same calls run the Triton kernel of
-``diffusion_int8_attention_triton`` instead, when Triton imports and ``TRITON_KERNEL_CONFIGS`` has the card. That path
-passes its own accuracy check and race before it engages. ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL``: ``auto`` (default),
+``diffusion_int8_attention_triton`` instead (int8 Q.K^T, 16-bit P.V), when Triton imports and ``TRITON_KERNEL_CONFIGS``
+has the card. That path passes its own accuracy check and race before it engages. ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL``: ``auto`` (default),
 ``cuda`` (never Triton on NVIDIA) or ``triton`` (skip the CUDA kernel).
 """
 
@@ -98,23 +98,23 @@ ROCM_KERNEL_CONFIGS: dict = {
     },
 }
 # NVIDIA cards whose CUDA kernel cannot be built or loaded run the Triton kernel: block shape and P.V mode per CUDA
-# capability and head dim; a missing capability keeps native (sm75: Triton has no int8 tensor-core dot there).
+# capability and head dim, measured on A100 (sm80), L4 (sm89) and RTX PRO 6000 (sm120) under Triton 3.7 and 3.8; sm86
+# takes the sm80 entry (it fits sm86's 99 KB of shared memory). 16-bit P.V reading V in place was faster than int8 P.V
+# on every card. A missing capability keeps native (sm75: no Triton config).
+_TRITON_SM80: dict = {
+    128: {"bm": 128, "bn": 32, "warps": 4, "stages": 3, "pv": "half_strided", "kscale": "tile"},
+    64: {"bm": 64, "bn": 64, "warps": 4, "stages": 2, "pv": "half_strided", "kscale": "tile"},
+}
 TRITON_KERNEL_CONFIGS: dict = {
-    (8, 0): {
-        128: {"bm": 128, "bn": 64, "warps": 8, "stages": 3, "pv": "int8_t", "kscale": "tile"},
-        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "int8_t", "kscale": "tile"},
-    },
-    (8, 6): {
-        128: {"bm": 128, "bn": 64, "warps": 8, "stages": 3, "pv": "int8_t", "kscale": "tile"},
-        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "int8_t", "kscale": "tile"},
-    },
+    (8, 0): _TRITON_SM80,
+    (8, 6): _TRITON_SM80,
     (8, 9): {
-        128: {"bm": 128, "bn": 64, "warps": 8, "stages": 3, "pv": "int8_t", "kscale": "tile"},
-        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+        128: {"bm": 128, "bn": 64, "warps": 4, "stages": 2, "pv": "half_strided", "kscale": "tile"},
+        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "half_strided", "kscale": "tile"},
     },
     (12, 0): {
-        128: {"bm": 128, "bn": 64, "warps": 8, "stages": 3, "pv": "int8_t", "kscale": "tile"},
-        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "int8_t", "kscale": "tile"},
+        128: {"bm": 128, "bn": 32, "warps": 4, "stages": 3, "pv": "half_strided", "kscale": "tile"},
+        64: {"bm": 128, "bn": 64, "warps": 4, "stages": 3, "pv": "half_strided", "kscale": "tile"},
     },
 }
 QUANT_ROWS = 64  # the padded Q length is a multiple of this
