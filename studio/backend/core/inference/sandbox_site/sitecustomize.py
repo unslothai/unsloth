@@ -824,7 +824,8 @@ class _SessionPackagesFinder:
     ):
         self._entries = entries
         self._editable = editable
-        self._chat_paths = set(entries) | set(chat_paths)
+        self._added = set(chat_paths)
+        self._chat_paths = set(entries) | self._added
 
     def find_spec(
         self,
@@ -836,6 +837,13 @@ class _SessionPackagesFinder:
         for entry in self._entries:
             if entry in cache and cache[entry] is None and os.path.isdir(entry):
                 del cache[entry]
+        if path is None and self._added and name in _stdlib_names():
+            # A path-line editable root must not supply a stdlib name either (msvcrt.py on Linux).
+            rest = [e for e in sys.path if e not in self._added]
+            spec = self._path_finder.find_spec(name, rest, target)
+            if spec is None:
+                raise ModuleNotFoundError(f"No module named {name!r}", name = name)
+            return spec
         for finder in () if name.partition(".")[0] in _stdlib_names() else self._editable:
             spec = finder.find_spec(name, path, target)
             if spec is not None and spec.loader is not None:
@@ -1308,6 +1316,8 @@ def _after_pip(snapshot):
 
 def _start_cleanup(is_pip):
     import atexit
+
+    _failed_installs()  # a killed pip's note is read before anything else changes the prefix
     _prune_stale_dist_info()
     if is_pip:
         sys.meta_path.insert(0, _PipStatusFinder())

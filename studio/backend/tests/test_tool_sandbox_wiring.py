@@ -1495,14 +1495,18 @@ def test_a_path_line_editable_never_shadows_the_stdlib(monkeypatch, tmp_path):
     source = tmp_path / "src"
     source.mkdir()
     marker = tmp_path / "payload_ran"
-    (source / "shutil.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+    for module in ("shutil", "msvcrt"):  # msvcrt: a stdlib name with no file on Linux to come first
+        (source / f"{module}.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
     site_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / os_sandbox._PIP_PREFIX_LIB_DIRS[0]
     site_dir.mkdir(parents = True)
     (site_dir / "__editable__.planted-1.0.pth").write_text(f"{source}\n")
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
-    command = "python -m pip --version; python -c 'import shutil; print(shutil.__file__)'"
+    command = (
+        "python -m pip --version; python -c 'import shutil; print(shutil.__file__)'; "
+        "python -c 'import msvcrt' 2>/dev/null || echo no-msvcrt"
+    )
     out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
-    assert "pip" in out and str(source) not in out, out
+    assert "pip" in out and str(source) not in out and "no-msvcrt" in out, out
     assert not marker.exists()
 
 
@@ -1729,6 +1733,22 @@ def test_a_killed_install_retires_nothing(tmp_path):
     assert (
         not note.exists() and "unsloth_killed-2.0" in (prefix / ".unsloth-incomplete").read_text()
     )
+
+
+def test_a_killed_reinstall_note_is_read_before_the_next_upgrade(tmp_path):
+    """A dead note with nothing to prune yet is consumed at startup, so a later finished upgrade still counts."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    old = _dist(site_dir, "unsloth_noted", "1.0", 1, module = "old.py")
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    note = prefix / f".unsloth-installing-{dead.pid}"
+    note.write_text(f"{os.path.abspath(site_dir)}\t{old.name}\t{10**9}\n")
+    _prune(prefix, site_dir)
+    assert not note.exists()
+    _dist(site_dir, "unsloth_noted", "2.0", 2, module = "new.py")
+    _prune(prefix, site_dir)
+    assert not old.exists()
 
 
 def test_an_unfinished_install_retires_nothing(tmp_path):
