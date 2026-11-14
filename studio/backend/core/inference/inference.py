@@ -39,6 +39,7 @@ from core.inference.runtime_context import (
     runtime_context_length,
 )
 from core.inference.message_content import content_to_text, named_turn
+from core.inference.speech_wav import join_speech, speech_item
 from core.inference.model_ids import is_deepseek_ocr
 from core.inference.lfm3_conv_fallback import disable_lfm3_triton_conv_where_unsupported
 from core.inference.chat_eos import (
@@ -854,21 +855,6 @@ class _SpeechStopped(Exception):
     pass
 
 
-def _speech_stop_streamer(cancel_event):
-    """LFM3's generate refuses stopping_criteria; a streamer raising on put ends it."""
-    from transformers.generation.streamers import BaseStreamer
-
-    class _StopOnCancel(BaseStreamer):
-        def put(self, value):
-            if cancel_event.is_set():
-                raise _SpeechStopped
-
-        def end(self):
-            pass
-
-    return _StopOnCancel()
-
-
 def _speech_event_streamers(events, cancel_event, stopped):
     """LFM3 streamers queueing ("text", id) / ("frame", codes); the text streamer's first put is the prompt."""
     from transformers.generation.streamers import BaseStreamer
@@ -908,14 +894,14 @@ _SPEECH_CHUNK_FRAMES = 12
 
 
 class _SpeechChunker:
-    """Chunked decode through LiquidCodecStreamingCache: the chunks join into the whole decode."""
+    """Chunked decode through LiquidCodecStreamingCache: the chunks join into the whole decode.
+    Placed before generate starts, and decoded on a side CUDA stream so it overlaps the next frames."""
 
     def __init__(self, codec, model):
-        self.codec, self.model = codec, model
+        self.codec = codec
         self.pending: list = []
         self.streamed = False
         self.cache = None
-        self._placed = False
         cache_cls = getattr(
             sys.modules.get(type(codec).__module__), "LiquidCodecStreamingCache", None
         )
@@ -925,21 +911,20 @@ class _SpeechChunker:
             takes_cache = False
         if cache_cls is not None and takes_cache:
             self.cache = cache_cls(codec.config)
-
-    def _place(self):
-        if self._placed:
-            return
-        self._placed = True
-        device = next(self.model.parameters()).device
-        if next(self.codec.parameters()).device != device:
-            self.codec.to(device = device)
+        self.device = next(model.parameters()).device
+        if next(codec.parameters()).device != self.device:
+            codec.to(device = self.device)
+        self.stream = torch.cuda.Stream(self.device) if self.device.type == "cuda" else None
 
     def _decode(self, codes, **kwargs):
-        self._place()
-        device = next(self.codec.parameters()).device
+        codes = codes.to(self.device)
         with torch.inference_mode():
-            out = self.codec.decode(codes.to(device), **kwargs)
-        return out.audio_values[0].float().cpu().numpy()
+            if self.stream is None:
+                return self.codec.decode(codes, **kwargs).audio_values[0].float().cpu().numpy()
+            self.stream.wait_stream(torch.cuda.current_stream(self.device))
+            with torch.cuda.stream(self.stream):
+                audio = self.codec.decode(codes, **kwargs).audio_values[0].float()
+                return audio.cpu().numpy()
 
     def add(self, frame):
         if self.cache is None:
@@ -966,24 +951,6 @@ class _SpeechChunker:
 
     def whole(self, codes):
         return self._decode(codes)
-
-
-def _speech_item(samples, sample_rate) -> dict:
-    """Clipped, not peak-normalised, so chunks of one reply keep the same loudness."""
-    import base64
-    import io
-    import wave
-
-    import numpy as np
-
-    pcm = (np.clip(samples.reshape(-1), -1.0, 1.0) * 32767).astype(np.int16)
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm.tobytes())
-    return {"speech": base64.b64encode(buf.getvalue()).decode("ascii"), "sample_rate": sample_rate}
 
 
 def _processor_takes_text_first(processor) -> bool:
@@ -3050,6 +3017,8 @@ class InferenceBackend:
             worker = threading.Thread(target = run, name = "lfm3-spoken-reply", daemon = True)
             worker.start()
             text_ids: list = []
+            # Detokenised from the last emitted boundary, not from the start, so each token costs O(1).
+            prefix = read = 0
             said = ""
             finished = False
             try:
@@ -3063,19 +3032,21 @@ class InferenceBackend:
                     kind, value = item
                     if kind == "text":
                         text_ids.append(value)
-                        full = raw_tokenizer.decode(text_ids, skip_special_tokens = True).lstrip()
+                        seen = raw_tokenizer.decode(text_ids[prefix:read], skip_special_tokens = True)
+                        now = raw_tokenizer.decode(text_ids[prefix:], skip_special_tokens = True)
                         # A trailing U+FFFD is a character split over byte tokens (an emoji): wait for the rest.
-                        if (
-                            not full.endswith("\ufffd")
-                            and full.startswith(said)
-                            and len(full) > len(said)
-                        ):
-                            yield full[len(said) :]
-                            said = full
+                        if len(now) > len(seen) and not now.endswith("\ufffd"):
+                            delta = now[len(seen) :]
+                            prefix, read = read, len(text_ids)
+                            if not said:
+                                delta = delta.lstrip()
+                            if delta:
+                                yield delta
+                                said += delta
                     else:
                         wav = decoder.add(value)
                         if wav is not None:
-                            yield _speech_item(wav, sample_rate)
+                            yield speech_item(wav, sample_rate)
             finally:
                 # The worker can still be alive just after queueing `done`; only an early exit stops it.
                 if not finished:
@@ -3101,7 +3072,7 @@ class InferenceBackend:
         elif said and text.startswith(said) and len(text) > len(said):
             yield text[len(said) :]
         if wav is not None:
-            yield _speech_item(wav, sample_rate)
+            yield speech_item(wav, sample_rate)
         self._record_generation_stats(
             prompt_tokens = prompt_len,
             completion_tokens = int(out.sequences.shape[1]) - prompt_len,
@@ -3140,71 +3111,18 @@ class InferenceBackend:
             {"role": "system", "content": _tts_system_prompt(language, audio_options)},
             {"role": "user", "content": text},
         ]
-        result = self._generate_speech(
-            conversation, "<|audio_start|>", max_new_tokens, use_adapter, cancel_event
-        )
-        if result is None:
-            raise AudioGenerationCancelledError("Audio generation cancelled")
-        _, wav, sample_rate = result
-        if not wav:
-            raise RuntimeError("The model returned no speech.")
-        return wav, sample_rate
-
-    def _generate_speech(self, conversation, prefill, max_new_tokens, use_adapter, cancel_event):
-        """Render ``conversation`` with the assistant turn opened by ``prefill`` and generate.
-        Returns ``(text, wav_bytes or None, sample_rate)``, or None once stopped."""
-        from core.inference.audio_codecs import _numpy_to_wav_bytes
-
-        model_info = self.models[self.active_model_name]
-        model = model_info["model"]
-        processor = model_info.get("processor") or model_info.get("tokenizer")
-        codec = _speech_codec(model, processor)
-        if codec is None:
-            raise RuntimeError("The loaded model cannot answer in speech.")
-        inputs, prompt_len, max_new_tokens = self._speech_inputs(
-            model, processor, conversation, prefill, max_new_tokens
-        )
-        kwargs = dict(
-            **inputs,
-            max_new_tokens = max_new_tokens,
-            do_sample = False,
-            return_dict_in_generate = True,
-        )
-        if cancel_event is not None:
-            stopper = _speech_stop_streamer(cancel_event)
-            kwargs.update(streamer = stopper, audio_streamer = stopper)
-        timer = GenerationTimer()
-        with self._generation_lock, self._adapter_scope(use_adapter):
-            if cancel_event is not None and cancel_event.is_set():
-                return None
-            timer.start()
-            try:
-                out = model.generate(**kwargs)
-            except _SpeechStopped:
-                return None
-            finally:
-                timer.finish()
-            lengths = getattr(out, "audio_lengths", None)
-            frames = int(lengths[0]) if lengths is not None else 0
-            wav, sample_rate = None, int(getattr(codec.config, "sampling_rate", None) or 24000)
-            if frames > 0:
-                device = next(model.parameters()).device
-                if next(codec.parameters()).device != device:
-                    codec.to(device = device)
-                with torch.inference_mode():
-                    waveform = codec.decode(out.audio_codes[:1, :, :frames]).audio_values[0]
-                wav = _numpy_to_wav_bytes(waveform.float().cpu().numpy(), sample_rate)
+        speech = [
+            item
+            for item in self._stream_speech(
+                conversation, "<|audio_start|>", max_new_tokens, use_adapter, cancel_event
+            )
+            if isinstance(item, dict)
+        ]
         if cancel_event is not None and cancel_event.is_set():
-            return None
-        raw_tokenizer = getattr(processor, "tokenizer", processor)
-        text = raw_tokenizer.decode(out.sequences[0, prompt_len:], skip_special_tokens = True)
-        self._record_generation_stats(
-            prompt_tokens = prompt_len,
-            completion_tokens = int(out.sequences.shape[1]) - prompt_len,
-            max_new_tokens = max_new_tokens,
-            timer = timer,
-        )
-        return text.strip(), wav, sample_rate
+            raise AudioGenerationCancelledError("Audio generation cancelled")
+        if not speech:
+            raise RuntimeError("The model returned no speech.")
+        return join_speech(speech)
 
     def generate_whisper_response(
         self,

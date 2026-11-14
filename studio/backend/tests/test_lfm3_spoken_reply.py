@@ -496,7 +496,7 @@ def test_closing_a_streamed_spoken_reply_frees_the_generation_lock():
 
 def test_non_streamed_route_joins_speech_chunks_into_one_wav():
     import routes.inference as route
-    from core.inference.inference import _speech_item
+    from core.inference.speech_wav import speech_item as _speech_item
 
     chunks = [_speech_item(np.full(n, 0.25, dtype = np.float32), 24000) for n in (1920, 3840)]
     joined = route._joined_speech_reply(chunks)

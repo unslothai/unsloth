@@ -1511,23 +1511,16 @@ def _speech_reply_audio(item: dict) -> dict:
 
 
 def _joined_speech_reply(items: list) -> dict:
-    if len(items) < 2:
-        return _speech_reply_audio(items[0]) if items else {}
+    if not items:
+        return {}
     import base64
-    import io
-    import wave
 
-    pcm, params = [], None
-    for item in items:
-        with wave.open(io.BytesIO(base64.b64decode(item.get("speech") or ""))) as clip:
-            params = params or clip.getparams()
-            pcm.append(clip.readframes(clip.getnframes()))
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as out:
-        out.setparams(params)
-        out.writeframes(b"".join(pcm))
-    joined = base64.b64encode(buf.getvalue()).decode("ascii")
-    return _speech_reply_audio({"speech": joined, "sample_rate": items[-1].get("sample_rate")})
+    from core.inference.speech_wav import join_speech
+
+    wav, sample_rate = join_speech(items)
+    return _speech_reply_audio(
+        {"speech": base64.b64encode(wav).decode("ascii"), "sample_rate": sample_rate}
+    )
 
 
 def _chat_reasoning_chunk(completion_id, created, model_name, text) -> str:
