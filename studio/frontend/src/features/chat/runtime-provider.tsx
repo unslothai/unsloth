@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { readGenerationProgress } from "./lib/generation-progress";
+import { NewChatNonceContext } from "./query-draft";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { isMcpToolOnly, mcpImageMappingsEnabled } from "./api/mcp-image";
@@ -4540,7 +4541,9 @@ export function ChatRuntimeProvider({
         )}
         {/* The view stays mounted (only CSS-hidden) while off-route so the run stays attached and the
             stream alive; unmounting aborts generation. */}
-        {children}
+        <NewChatNonceContext.Provider value={initialThreadId ? null : newThreadNonce ?? null}>
+          {children}
+        </NewChatNonceContext.Provider>
         </ComparePaneContext.Provider>
       </ToolPaneScopeContext.Provider>
       </ChatProjectScopeContext.Provider>

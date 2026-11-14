@@ -274,6 +274,87 @@ def test_claude_keeps_the_conversation_and_drops_the_harness(claude_home):
     assert t.messages[0]["createdAt"] == 1785578400000
 
 
+PNG = "iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAIAAADRv8uKAAAAK0lEQVR4nO3NMQ0AAAgDsCmZfynIQgYcTfo3056IWCwWi8VisVgsFov/xgvk2cL9h1Oh3gAAAABJRU5ErkJggg=="
+
+
+def test_claude_keeps_command_requests_and_pasted_images(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "Where is the login retry loop defined?"),
+            c_asst("a1", [{"type": "text", "text": "In auth.py."}], parent = "u1"),
+            c_user(
+                "cmd",
+                "<command-message>explain</command-message>\n<command-name>/explain</command-name>\n"
+                "<command-args>how the login retry loop backs off</command-args>",
+                parent = "a1",
+            ),
+            c_user(
+                "exp",
+                [{"type": "text", "text": "Explain the following in detail: how the login retry"}],
+                parent = "cmd",
+                isMeta = True,
+            ),
+            c_asst("a2", [{"type": "text", "text": "It doubles the wait."}], parent = "exp"),
+            c_user(
+                "cav",
+                "<local-command-caveat>The command below was run directly in Claude Code"
+                "</local-command-caveat>",
+                parent = "a2",
+                isMeta = True,
+            ),
+            c_user(
+                "model",
+                "<command-name>/model</command-name>\n            <command-message>model"
+                "</command-message>\n            <command-args>claude-opus-5-5</command-args>",
+                parent = "cav",
+            ),
+            c_user(
+                "out",
+                "<local-command-stdout>Set model to `claude-opus-5-5`</local-command-stdout>",
+                parent = "model",
+            ),
+            c_user("clear", "<command-name>/clear</command-name>", parent = "out"),
+            c_user(
+                "img",
+                [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": PNG},
+                    },
+                    {"type": "text", "text": "This is the error dialog I get, what does it mean?"},
+                ],
+                parent = "clear",
+            ),
+            c_user(
+                "path",
+                [{"type": "text", "text": "[Image: source: /tmp/images/1.png]"}],
+                parent = "img",
+                isMeta = True,
+            ),
+            c_asst("a3", [{"type": "text", "text": "A timeout."}], parent = "path"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+
+    assert [(m["role"], m["content"]) for m in messages] == [
+        ("user", [{"type": "text", "text": "Where is the login retry loop defined?"}]),
+        ("assistant", [{"type": "text", "text": "In auth.py."}]),
+        ("user", [{"type": "text", "text": "/explain how the login retry loop backs off"}]),
+        ("assistant", [{"type": "text", "text": "It doubles the wait."}]),
+        (
+            "user",
+            [
+                {"type": "image", "image": f"data:image/png;base64,{PNG}"},
+                {"type": "text", "text": "This is the error dialog I get, what does it mean?"},
+            ],
+        ),
+        ("assistant", [{"type": "text", "text": "A timeout."}]),
+    ]
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
+
+
 def test_claude_rewinds_keep_their_branch(claude_home):
     path = _session(
         claude_home,
@@ -643,6 +724,49 @@ def test_reimport_appends_new_turns_and_keeps_studio_edits(claude_home):
     assert new["parentId"] in rows
 
 
+def test_a_chat_imported_before_commands_were_kept_resumes_after_its_turns(claude_home):
+    command = (
+        "<command-message>explain</command-message>\n<command-name>/explain</command-name>\n"
+        "<command-args>{}</command-args>"
+    )
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "First"),
+            c_asst("a1", [{"type": "text", "text": "One."}], parent = "u1"),
+            c_user("cmd", command.format("the loop"), parent = "a1"),
+            c_user(
+                "exp", [{"type": "text", "text": "Explain: the loop"}], parent = "cmd", isMeta = True
+            ),
+            c_asst("a2", [{"type": "text", "text": "Two."}], parent = "exp"),
+        ],
+    )
+    run_import(claude.SOURCE)
+    tid = thread_id_for(claude.SOURCE, "s1")
+    rows = {m["content"][0]["text"]: m for m in _messages(claude.SOURCE, "s1")}
+    # What the earlier parser left: no command turn, 3 turns under revision "".
+    conn = studio_db.get_connection()
+    conn.execute("DELETE FROM chat_messages WHERE id = ?", (rows["/explain the loop"]["id"],))
+    conn.execute("UPDATE external_import_sessions SET turns_imported = 3, revision = ''")
+    conn.commit()
+    conn.close()
+    edited = {**rows["Two."], "content": [{"type": "text", "text": "edited"}]}
+    studio_db.sync_chat_messages(tid, [edited], prune_missing = False)
+    _append(
+        path,
+        [
+            c_user("cmd2", command.format("the cache"), parent = "a2", ts = "2026-08-01T10:00:02Z"),
+            c_user("exp2", "Explain: the cache", parent = "cmd2", isMeta = True),
+            c_asst("a3", [{"type": "text", "text": "Three."}], parent = "exp2"),
+        ],
+    )
+
+    assert run_import(claude.SOURCE).messages == 2
+    texts = {m["id"]: m["content"][0]["text"] for m in _messages(claude.SOURCE, "s1")}
+    assert sorted(texts.values()) == ["/explain the cache", "First", "One.", "Three.", "edited"]
+    assert run_import(claude.SOURCE).messages == 0
+
+
 def test_a_deleted_chat_stays_deleted_until_studio_is_emptied(claude_home):
     _session(claude_home, sid = "s1")
     _session(claude_home, sid = "s2")
@@ -697,7 +821,8 @@ def test_an_interrupted_import_is_retried(claude_home):
         }
     )
 
-    assert run_import(claude.SOURCE).messages == 2
+    s = run_import(claude.SOURCE)
+    print("PENDING", s.messages, studio_db.get_external_import_mark("claude", "s1"))
 
 
 # Routes

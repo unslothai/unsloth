@@ -730,6 +730,20 @@ export function saveConnectionsEnabled(enabled: boolean): void {
   }
 }
 
+const NEW_CONNECTION_PREFIX = "new:";
+
+/** A Settings > Connections request that opens the add form, preset to `providerType` when given. */
+export function newConnectionRequest(providerType?: string | null): string {
+  return `${NEW_CONNECTION_PREFIX}${providerType ?? ""}`;
+}
+
+/** The provider type a `newConnectionRequest` asks for: "" for any, null when it is not one. */
+export function newConnectionRequestType(request: string): string | null {
+  return request.startsWith(NEW_CONNECTION_PREFIX)
+    ? request.slice(NEW_CONNECTION_PREFIX.length)
+    : null;
+}
+
 const NEW_MODEL_CHECKS_AT_KEY = "unsloth_chat_connections_new_model_checked_at";
 
 export const NEW_MODEL_CHECK_INTERVALS: readonly NewModelCheckInterval[] = [

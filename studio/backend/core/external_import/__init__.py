@@ -58,6 +58,8 @@ class Transcript:
     revision: str = ""
     inherited: int = 0
     reread: frozenset[str] = frozenset()
+    # {older revision: index after its n-th turn}; resuming at turns would re-send edited ones.
+    earlier: dict[str, list[int]] = field(default_factory = dict)
 
 
 @dataclass(frozen = True)
@@ -239,6 +241,7 @@ def _reread_messages(
             if message["id"] in fresh:
                 pending.append(message)
         elif row.get("parentId") != message.get("parentId"):
+            row = next(iter(_late_tool_results(transcript, [row])), row)
             pending.append({**row, "parentId": message.get("parentId")})
     return pending
 
@@ -255,11 +258,15 @@ def _pending_messages(
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
     turns, revision = mark
-    if revision.partition(":")[2] != transcript.revision.partition(":")[2]:
+    if revision == transcript.revision:
+        pending = transcript.messages[turns:]
+    elif revision in transcript.earlier:
+        ends = transcript.earlier[revision]
+        pending = transcript.messages[ends[min(turns, len(ends) - 1)] :]
+    elif transcript.reread and revision.partition(":")[2] != transcript.revision.partition(":")[2]:
         pending = _reread_messages(transcript, turns, revision, stored)
     else:
-        start = turns if revision == transcript.revision else transcript.inherited
-        pending = transcript.messages[start:]
+        pending = transcript.messages[transcript.inherited :]
     # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
     # does not orphan it (the frontend refuses a thread with a missing parent).
     present = {message["id"] for message in stored}
@@ -328,13 +335,7 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
     stored = studio_db.list_chat_messages(thread_id) if existing else []
     pending = _pending_messages(source, transcript, bool(existing), stored)
     if existing:
-        late = {m["id"]: m for m in _late_tool_results(transcript, stored)}
-        # A re-parented row carries its stored content: take the late result onto it.
-        pending = [
-            {**m, "content": late.pop(m["id"])["content"]} if m["id"] in late else m
-            for m in pending
-        ]
-        pending = list(late.values()) + pending
+        pending = _late_tool_results(transcript, stored) + pending
     mark = studio_db.ExternalImportMark(
         source = source.key,
         session_id = session_id,
