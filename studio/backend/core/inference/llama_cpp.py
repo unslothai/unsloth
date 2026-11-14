@@ -7594,7 +7594,7 @@ def _effective_lazy_mode(
         return "off"
     if value:
         mode = value.strip().lower()
-    return mode if mode in ("auto", "on") else "off"
+    return mode if mode in ("auto", "on", "on-direct") else "off"
 
 
 def _lazy_read_bytes(
@@ -11565,7 +11565,7 @@ class LlamaCppBackend:
                 extra_args, _env, flag = str(caps.get("lazy_mode_flag") or "--lazy-mode")
             )
             if mode != "auto":
-                return mode == "on"
+                return mode in ("on", "on-direct")
             tensor = (
                 _effective_tensor_parallel(extra_args, False, _env)
                 if tensor_parallel is None
@@ -12726,6 +12726,95 @@ class LlamaCppBackend:
             return any(_i in unified for _i in gpu_indices)
         except Exception:
             return False
+
+    def _windows_rocm_apu_carve_out_credit(
+        self,
+        model_size: int,
+        *,
+        model_path: Optional[str],
+        caps: Optional[Mapping[str, object]],
+        gpu_indices,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+        gpu_memory_mode: Optional[str] = None,
+        gpu_layers: Optional[int] = None,
+        n_cpu_moe: int = 0,
+        cpu_child: bool = False,
+    ) -> int:
+        """Weight bytes a full-offload Windows ROCm APU load puts in the BIOS carve-out, which
+        Windows does not count as RAM; 0 unless the placement and carve-out are both known.
+
+        The carve-out comes from the registry, never the HIP total: PAL adds 50-75% of the WDDM
+        shared heap (Windows RAM) to it. Host-pinned inputs (token_embd, per-layer tables) get no credit."""
+        if sys.platform != "win32" or not model_size or model_size <= 0 or not model_path:
+            return 0
+        if cpu_child or not self._amd_apu_wants_unified_memory(gpu_indices):
+            return 0
+        argv = [str(arg) for arg in extra_args or ()]
+        # Mirrors the launch: manual -1 is Auto and stays with the fitter.
+        if gpu_memory_mode == "manual" and gpu_layers is not None and gpu_layers >= 0:
+            moe = self._resolve_cpu_moe_flag(
+                n_cpu_moe, self.n_moe_layers, self._leading_dense_block_count or 0
+            )
+            argv = [
+                "--gpu-layers",
+                str(gpu_layers),
+                "--fit",
+                "off",
+                *(["--n-cpu-moe", str(moe)] if moe is not None else []),
+                *argv,
+            ]
+        if not self._launch_forces_full_offload(argv, env):
+            return 0
+        try:
+            carve_out = self._igpu_dedicated_memory_bytes(gpu_indices, rocm_fallback = False)
+            scan = self._gguf_tensor_scan(model_path) if carve_out else None
+            used = self._windows_apu_gpu_used_bytes() if scan is not None else None
+        except Exception:
+            return 0
+        if not carve_out or carve_out <= 0 or scan is None or used is None:
+            return 0
+        lazy_mode = (
+            _effective_lazy_mode(
+                argv, env, flag = str((caps or {}).get("lazy_mode_flag") or "--lazy-mode")
+            )
+            if (caps or {}).get("supports_lazy_mode")
+            else "off"
+        )
+        on_device = int(model_size) - _host_pinned_input_bytes(scan, argv, env, lazy_mode = lazy_mode)
+        # Managed (GGML_CUDA_ENABLE_UNIFIED_MEMORY) allocations are host-backed, not carve-out.
+        source_env = os.environ if env is None else env
+        if not self._unified_memory_opted_out(source_env) and (
+            "GGML_CUDA_ENABLE_UNIFIED_MEMORY" in source_env
+            or self._unified_memory_for_launch(
+                gpu_indices, on_device, opted_in = self._unified_memory_opted_in(source_env)
+            )
+        ):
+            return 0
+        # Used (dedicated + shared) fills the carve-out first, so this never over-credits.
+        credit = max(0, min(int(carve_out) - int(used), on_device))
+        if credit:
+            logger.info(
+                "Windows ROCm APU full offload: %.1f GiB of weights sit in the %.1f GiB "
+                "carve-out, not Windows RAM.",
+                credit / (1024**3),
+                carve_out / (1024**3),
+            )
+        return credit
+
+    @staticmethod
+    def _windows_apu_gpu_used_bytes() -> Optional[float]:
+        """System-wide APU bytes in use from the WDDM counters; an idle adapter under the counter
+        floor reads as the floor; None when unreadable or ambiguous."""
+        from utils.hardware import hardware as hw
+
+        dedicated = hw._rocm_windows_perf_counter_vram_by_adapter()
+        if not dedicated:
+            return None
+        used = hw._rocm_windows_unified_used_bytes(dedicated)
+        if used is None and all(v < hw._ROCM_WIN_ADAPTER_MIN_BYTES for _n, v in dedicated):
+            return float(hw._ROCM_WIN_ADAPTER_MIN_BYTES)
+        return used
 
     # PHYSICAL integrated ids, keyed per visibility mask; integratedness cannot change under a fixed mask.
     _INTEGRATED_CUDA_IDS: dict[tuple, set[int]] = {}
@@ -15721,7 +15810,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _igpu_dedicated_memory_bytes(
-        gpu_indices = None, *, ordinals_are_vulkan = False
+        gpu_indices = None,
+        *,
+        ordinals_are_vulkan = False,
+        rocm_fallback = True,
     ) -> Optional[int]:
         """Dedicated iGPU bytes: Windows registry first (cheap), then the ROCm pool; None rather
         than guess."""
@@ -15755,9 +15847,10 @@ class LlamaCppBackend:
             if adapters:
                 # Two adapters need a LUID join to attribute; staying silent beats advising the wrong GPU.
                 return None
-        if ordinals_are_vulkan:
+        if ordinals_are_vulkan or not rocm_fallback:
             # No Linux reading for Vulkan: gpu_indices are Vulkan ordinals, not HIP ids, and probing
-            # would create a HIP context (~800 MiB) in this process.
+            # would create a HIP context (~800 MiB) in this process. rocm_fallback=False: the HIP
+            # total on Windows includes shared RAM, so it is not a carve-out.
             return None
         pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
         return int(pool_mib) * 1024 * 1024 if pool_mib and pool_mib > 0 else None
@@ -29309,9 +29402,28 @@ class LlamaCppBackend:
                         is_vulkan_backend = False,
                         cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
                     )
+                    _apu_cpu_child = sys.platform == "win32" and self._child_runs_on_cpu(
+                        binary,
+                        _apu_lazy_extras,
+                        _apu_lazy_env,
+                        cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                        tensor_parallel = tensor_parallel,
+                    )
                     _apu_resident_model_size = max(
                         1,
                         model_size
+                        - self._windows_rocm_apu_carve_out_credit(
+                            model_size,
+                            model_path = model_path,
+                            caps = server_caps,
+                            gpu_indices = _apu_child_order,
+                            extra_args = _apu_lazy_extras,
+                            env = _apu_lazy_env,
+                            gpu_memory_mode = gpu_memory_mode,
+                            gpu_layers = gpu_layers,
+                            n_cpu_moe = n_cpu_moe,
+                            cpu_child = _apu_cpu_child,
+                        )
                         - self._lazy_read_host_bytes(
                             model_path,
                             caps = server_caps,
@@ -32830,6 +32942,16 @@ class LlamaCppBackend:
                             _apu_resident_model_size = max(
                                 1,
                                 model_size
+                                - self._windows_rocm_apu_carve_out_credit(
+                                    model_size,
+                                    model_path = model_path,
+                                    caps = server_caps,
+                                    gpu_indices = _remaining,
+                                    extra_args = cmd,
+                                    env = env,
+                                    cpu_child = sys.platform == "win32"
+                                    and self._child_runs_on_cpu(binary, cmd, env),
+                                )
                                 - self._lazy_read_host_bytes(
                                     model_path,
                                     caps = server_caps,
