@@ -19,8 +19,13 @@ converted once, streamed one layer at a time, into this implementation's own lay
 
 * DeepSeek key names -> module names (the same table ``register_deepseek_v41`` gives transformers 5);
 * per-expert ``w1`` / ``w3`` / ``w2`` -> stacked ``gate_up_proj`` [E, 2I, H] / ``down_proj`` [E, H, I];
-* fp8 e4m3 32x32-block (or 128x128) linears and int8-packed fp4 (e2m1, low nibble first) experts dequantized to
-  bf16 exactly as inference/convert.py reads them (fp32 product, one rounding);
+* fp8 e4m3 32x32-block (or 128x128) linears dequantized to bf16 exactly as inference/convert.py reads them (fp32
+  product, one rounding);
+* int8-packed fp4 experts (e2m1, low nibble first, one e8m0 scale per 32: inference/convert.py:28-36) kept packed.
+  That is the MXFP4 layout, so they are stored as ``gate_up_blocks`` [E, 2I, H/32, 16] / ``gate_up_scales``
+  [E, 2I, H/32] (uint8 biased exponents) and ``down_blocks`` / ``down_scales``, which the native experts load as
+  unsloth_zoo ``Mxfp4ExpertParam`` stacks (``"unsloth_experts_format": "mxfp4"`` in config.json), a quarter of
+  their bf16 size. ``UNSLOTH_DSV41_FP4_EXPERTS=bf16`` dequantizes them to bf16 instead (full finetuning);
 * the engram tables kept as fp8 rows (their e8m0 scales widened to fp32, exact), for the frozen table store to bind;
 * ``mtp.*``, ``vision.*``, ``aligner.*``, ``image_*`` dropped; ``quantization_config`` removed from config.json.
 """
@@ -34,6 +39,7 @@ import shutil
 import torch
 
 __all__ = [
+    "keep_fp4_experts_packed",
     "native_key",
     "convert_released_checkpoint",
     "released_needs_conversion",
@@ -108,6 +114,50 @@ def _dequant_fp4(
     return x.view(rows, -1).to(torch.bfloat16)
 
 
+def keep_fp4_experts_packed():
+    """fp4 experts stay MXFP4-packed unless UNSLOTH_DSV41_FP4_EXPERTS=bf16 (or 0) asks for a bf16 copy."""
+    return os.environ.get("UNSLOTH_DSV41_FP4_EXPERTS", "mxfp4").strip().lower() not in (
+        "bf16",
+        "0",
+        "dense",
+    )
+
+
+def _e8m0_bytes(scale):
+    """The release's per-32 e8m0 scales as uint8 biased exponents (2^(b - 127)), the MXFP4 scale encoding."""
+    e8m0 = getattr(torch, "float8_e8m0fnu", None)
+    if e8m0 is not None and scale.dtype == e8m0:
+        return scale.view(torch.uint8)
+    if scale.dtype == torch.uint8:
+        return scale
+    s = scale.float()
+    exponent = torch.log2(s)
+    if not torch.equal(exponent, exponent.round()):
+        raise ValueError("Unsloth: DeepSeek-V4.1 fp4 expert scales are not powers of two")
+    return (exponent.round() + 127).clamp(0, 254).to(torch.uint8)
+
+
+def _pack_fp4(
+    packed,
+    scale,
+    block = 32,
+):
+    """int8 [out, in / 2] + scale [out, in / 32] -> MXFP4 blocks [out, in / 32, 16] and uint8 scales [out, in / 32]."""
+    u = packed.view(torch.uint8)
+    rows = u.shape[0]
+    return u.reshape(rows, -1, block // 2).contiguous(), _e8m0_bytes(scale).reshape(
+        rows, -1
+    ).contiguous()
+
+
+def _transformers_major():
+    try:
+        import transformers
+        return int(transformers.__version__.split(".")[0])
+    except Exception:
+        return 0
+
+
 def _read_index(src):
     index = os.path.join(src, "model.safetensors.index.json")
     if os.path.isfile(index):
@@ -169,9 +219,10 @@ def _target_dir(src):
         if f.endswith((".safetensors", ".json")):
             st = os.stat(os.path.join(src, f))
             stamp.append(f"{f}:{st.st_size}:{int(st.st_mtime)}")
-    digest = hashlib.sha256((os.path.realpath(src) + "|" + "|".join(stamp)).encode()).hexdigest()[
-        :16
-    ]
+    mode = "fp4packed" if keep_fp4_experts_packed() else "bf16"
+    digest = hashlib.sha256(
+        (os.path.realpath(src) + "|" + "|".join(stamp) + "|" + mode).encode()
+    ).hexdigest()[:16]
     return os.path.join(root, digest)
 
 
@@ -182,6 +233,11 @@ def convert_released_checkpoint(path, **hub_kwargs):
 
     src = _source_dir(path, **hub_kwargs)
     dst = _target_dir(src)
+    if _transformers_major() < 5:
+        print(
+            "Unsloth: recent transformers 5.x releases load the release directly (fp8 linears and fp4 experts stay "
+            "quantized, no converted copy on disk). `pip install -U transformers` is recommended for DeepSeek-V4.1."
+        )
     done = os.path.join(dst, ".unsloth_converted")
     if os.path.isfile(done):
         return dst
@@ -197,6 +253,21 @@ def convert_released_checkpoint(path, **hub_kwargs):
             handles[f] = safe_open(os.path.join(src, f), "pt")
         return handles[f].get_tensor(name)
 
+    pack_fp4 = keep_fp4_experts_packed()
+    has_fp4 = any(
+        _EXPERT.match(n) and n.endswith(".scale") and n[: -len("scale")] + "weight" in weight_map
+        for n in weight_map
+    )
+    print(
+        "Unsloth: converting the released DeepSeek-V4.1 checkpoint once into Unsloth's layout"
+        + (
+            "; fp4 experts stay MXFP4-packed, fp8 linears become bf16"
+            if pack_fp4 and has_fp4
+            else "; fp4 / fp8 weights become bf16"
+        )
+        + f" ({dst})."
+    )
+    packed_experts = False
     groups = {}
     for name in weight_map:
         m = re.match(r"^layers\.(\d+)\.", name)
@@ -215,6 +286,9 @@ def convert_released_checkpoint(path, **hub_kwargs):
                     layer, e, which = int(em.group(1)), int(em.group(2)), em.group(3)
                     w = get(name)
                     scale_name = name[: -len("weight")] + "scale"
+                    if w.dtype == torch.int8 and scale_name in weight_map and pack_fp4:
+                        experts.setdefault(layer, {})[(e, which)] = _pack_fp4(w, get(scale_name))
+                        continue
                     if w.dtype == torch.int8 and scale_name in weight_map:
                         w = _dequant_fp4(w, get(scale_name))
                     elif w.dtype == torch.float8_e4m3fn and scale_name in weight_map:
@@ -239,6 +313,21 @@ def convert_released_checkpoint(path, **hub_kwargs):
                 out[key] = t.contiguous()
             for layer, parts in experts.items():
                 n = 1 + max(e for e, _ in parts)
+                if isinstance(parts[(0, "w1")], tuple):
+                    # MXFP4 stacks: rows [w1; w3] per expert, like the bf16 gate_up_proj
+                    packed_experts = True
+                    prefix = f"model.layers.{layer}.mlp.experts."
+                    for kind, idx in (("blocks", 0), ("scales", 1)):
+                        out[prefix + f"gate_up_{kind}"] = torch.stack(
+                            [
+                                torch.cat([parts[(e, "w1")][idx], parts[(e, "w3")][idx]], 0)
+                                for e in range(n)
+                            ]
+                        )
+                        out[prefix + f"down_{kind}"] = torch.stack(
+                            [parts[(e, "w2")][idx] for e in range(n)]
+                        )
+                    continue
                 gate_up = torch.stack(
                     [torch.cat([parts[(e, "w1")], parts[(e, "w3")]], 0) for e in range(n)]
                 )
@@ -256,6 +345,10 @@ def convert_released_checkpoint(path, **hub_kwargs):
     with open(os.path.join(src, "config.json")) as f:
         config = json.load(f)
     config.pop("quantization_config", None)
+    if packed_experts:
+        config["unsloth_experts_format"] = "mxfp4"
+        if isinstance(config.get("text_config"), dict):
+            config["text_config"]["unsloth_experts_format"] = "mxfp4"
     with open(os.path.join(tmp, "config.json"), "w") as f:
         json.dump(config, f, indent = 1)
     for f in os.listdir(src):

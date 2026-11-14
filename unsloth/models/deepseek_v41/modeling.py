@@ -31,6 +31,7 @@ renaming table and existing Unsloth / unsloth_zoo hooks (non-reentrant checkpoin
 ``shared`` group state, grouped LoRA for ``o_a_proj``, the engram table store) apply unchanged.
 """
 
+import json
 import math
 import os
 from functools import lru_cache
@@ -40,6 +41,13 @@ import torch.nn.functional as F
 from torch import nn
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
+
+from .packed_experts import (
+    converted_experts_format,
+    packed_experts_load_pre_hook,
+    packed_experts_state_dict_hook,
+    zoo_saves_mxfp4_dense,
+)
 
 try:
     from transformers.generation import GenerationMixin
@@ -97,6 +105,7 @@ DSV41_STATS = {
     "sparse_attn_torch": 0,
     "experts_sorted_loop": 0,
     "o_a_ungrouped": 0,
+    "experts_mxfp4_packed": 0,
 }
 
 
@@ -630,15 +639,73 @@ class _DeepseekV41Experts(nn.Module):
         self.num_experts = n_experts
         self.hidden_dim = config.hidden_size
         self.intermediate_dim = config.moe_intermediate_size
-        self.gate_up_proj = nn.Parameter(
-            torch.zeros(n_experts, 2 * self.intermediate_dim, self.hidden_dim)
-        )
-        self.down_proj = nn.Parameter(
-            torch.zeros(n_experts, self.hidden_dim, self.intermediate_dim)
-        )
         self.limit = config.swiglu_limit
         self.has_gate = True
         self.has_bias = False
+        E, H, I = n_experts, self.hidden_dim, self.intermediate_dim
+        self._mxfp4 = getattr(config, "unsloth_experts_format", None) == "mxfp4"
+        if self._mxfp4:
+            # The release's fp4 experts kept packed (convert.py): raw MXFP4 bytes as loaded, turned into
+            # unsloth_zoo Mxfp4ExpertParam gate_up_proj [E, 2I, H] / down_proj [E, H, I] (same logical shapes) by
+            # finalize_packed() after loading. Frozen, like every quantized base weight.
+            def raw(*shape):
+                return nn.Parameter(torch.zeros(shape, dtype = torch.uint8), requires_grad = False)
+
+            self.gate_up_blocks = raw(E, 2 * I, H // 32, 16)
+            self.gate_up_scales = raw(E, 2 * I, H // 32)
+            self.down_blocks = raw(E, H, I // 32, 16)
+            self.down_scales = raw(E, H, I // 32)
+            self._register_state_dict_hook(packed_experts_state_dict_hook)
+            self._register_load_state_dict_pre_hook(packed_experts_load_pre_hook, with_module = True)
+            return
+        self.gate_up_proj = nn.Parameter(torch.zeros(E, 2 * I, H))
+        self.down_proj = nn.Parameter(torch.zeros(E, H, I))
+
+    def finalize_packed(self):
+        """Raw MXFP4 blocks / scales -> Mxfp4ExpertParam gate_up_proj / down_proj (idempotent)."""
+        if "gate_up_blocks" not in self._parameters:
+            return self
+        if any(
+            self._parameters[n].is_meta
+            for n in ("gate_up_blocks", "gate_up_scales", "down_blocks", "down_scales")
+        ):
+            return self
+        from unsloth_zoo.mxfp4_dequant import Mxfp4ExpertParam
+
+        for name in ("gate_up", "down"):
+            blocks = self._parameters.pop(f"{name}_blocks")
+            scales = self._parameters.pop(f"{name}_scales")
+            self.register_parameter(
+                f"{name}_proj",
+                Mxfp4ExpertParam(
+                    blocks.data,
+                    mxfp4_scales = scales.data,
+                    mxfp4_transposed = False,
+                    mxfp4_dtype = torch.bfloat16,
+                ),
+            )
+        _count("experts_mxfp4_packed")
+        device = self.gate_up_proj.device
+        if device.type == "cuda":
+            # The fused MXFP4 grouped GEMM probes itself on first use; probing here, eagerly, keeps that probe out of
+            # the compiled MoE forward (a graph break per traced layer otherwise).
+            try:
+                from unsloth_zoo.mxfp4_gemm import mxfp4_grouped_mm_available
+                mxfp4_grouped_mm_available(device)
+            except Exception:
+                pass
+        return self
+
+    def _expert_weight(self, param, idx, dtype):
+        if getattr(param, "mxfp4_scales", None) is not None:
+            from unsloth_zoo.mxfp4_dequant import mxfp4_dequantize
+            return mxfp4_dequantize(
+                param.data[idx : idx + 1],
+                param.mxfp4_scales.to(param.device)[idx : idx + 1],
+                dtype = dtype,
+                transpose = False,
+            )[0]
+        return param[idx].to(dtype)
 
     def _apply_gate(self, gate_up):
         gate, up = gate_up.chunk(2, dim = -1)
@@ -653,6 +720,7 @@ class _DeepseekV41Experts(nn.Module):
         """Eager fallback (transformers' / Unsloth's experts backends replace it when configured): routes sorted by
         expert, counts by scatter_add_, one host read of the counts per layer to split the groups."""
         _count("experts_sorted_loop")
+        self.finalize_packed()
         n_tok, top_k = top_k_index.shape
         flat = top_k_index.reshape(-1)
         order = torch.argsort(flat, stable = True)
@@ -663,9 +731,13 @@ class _DeepseekV41Experts(nn.Module):
         x = hidden_states[token_idx]
         outs = []
         for expert_idx, chunk in enumerate(torch.split(x, counts.tolist())):
-            gate_up = F.linear(chunk, self.gate_up_proj[expert_idx].to(chunk.dtype)).float()
+            gate_up = F.linear(
+                chunk, self._expert_weight(self.gate_up_proj, expert_idx, chunk.dtype)
+            ).float()
             act = self._apply_gate(gate_up).to(chunk.dtype)
-            outs.append(F.linear(act, self.down_proj[expert_idx].to(chunk.dtype)).float())
+            outs.append(
+                F.linear(act, self._expert_weight(self.down_proj, expert_idx, chunk.dtype)).float()
+            )
         final = torch.zeros(
             n_tok, hidden_states.shape[-1], dtype = torch.float32, device = hidden_states.device
         )
@@ -1394,9 +1466,23 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
 
     def save_pretrained(self, *args, **kwargs):
         _ENGRAM_FULL_SAVE[0] += 1
+        # unsloth_zoo's save patch writes packed MXFP4 experts dequantized: the saved config then describes dense
+        # experts. Without it the packed blocks + scales are written (state_dict hook) and the flag stays.
+        dense_save = zoo_saves_mxfp4_dense()
+        configs = [
+            c for c in (self.config, getattr(self.config, "text_config", None)) if c is not None
+        ]
+        dropped = []
+        if dense_save:
+            for c in configs:
+                if getattr(c, "unsloth_experts_format", None) is not None:
+                    dropped.append((c, c.unsloth_experts_format))
+                    del c.unsloth_experts_format
         try:
             return super().save_pretrained(*args, **kwargs)
         finally:
+            for c, value in dropped:
+                c.unsloth_experts_format = value
             _ENGRAM_FULL_SAVE[0] -= 1
 
     @classmethod
@@ -1428,16 +1514,27 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
                 if _is_fp8_quant_config(kwargs.get("quantization_config")):
                     kwargs.pop("quantization_config")
                 config = kwargs.get("config")
+                experts_format = converted_experts_format(pretrained_model_name_or_path)
                 if config is not None and not isinstance(config, (str, os.PathLike)):
                     for c in (config, getattr(config, "text_config", None)):
-                        if c is not None and _is_fp8_quant_config(
-                            getattr(c, "quantization_config", None)
-                        ):
+                        if c is None:
+                            continue
+                        if _is_fp8_quant_config(getattr(c, "quantization_config", None)):
                             try:
                                 del c.quantization_config
                             except AttributeError:
                                 c.quantization_config = None
+                        # A config read from the original repo must build the experts the converted files hold.
+                        if experts_format is not None:
+                            c.unsloth_experts_format = experts_format
+                        elif getattr(c, "unsloth_experts_format", None) is not None:
+                            del c.unsloth_experts_format
         model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        target = model[0] if isinstance(model, tuple) else model
+        for module in target.modules():
+            # duck-typed: unsloth_zoo's compiler re-creates these classes in its compiled module
+            if callable(getattr(module, "finalize_packed", None)):
+                module.finalize_packed()
         # The engram hashes need the tokenizer's compressed token map; the checkpoint ships the tokenizer.
         target = model[0] if isinstance(model, tuple) else model
         if hasattr(target, "_autobind_tokenizer"):
@@ -1516,7 +1613,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
             nn.init.normal_(module.fn, mean = 0.0, std = std)
             nn.init.zeros_(module.base)
             nn.init.ones_(module.scale)
-        elif isinstance(module, _DeepseekV41Experts):
+        elif isinstance(module, _DeepseekV41Experts) and not getattr(module, "_mxfp4", False):
             nn.init.normal_(module.gate_up_proj, mean = 0.0, std = std)
             nn.init.normal_(module.down_proj, mean = 0.0, std = std)
         elif isinstance(module, DeepseekV41TopKRouter):

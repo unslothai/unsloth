@@ -323,6 +323,143 @@ def test_released_layout_converts_to_the_native_layout_on_any_transformers(tmp_p
     assert os.listdir(tmp_path / "converted") == stamp
 
 
+def _fp4_release(tmp_path, model):
+    """The tiny model's released files with real fp4 experts (int8 e2m1 pairs + e8m0 per 32); the model's experts are
+    set to their exact dequantization, so the release and the model hold the same function."""
+    from safetensors.torch import save_file
+    from unsloth.models.deepseek_v41 import convert
+
+    gen = torch.Generator().manual_seed(7)
+    released = _released_state_dict(model)
+    text = model.config.text_config
+    for name in list(released):
+        if ".ffn.experts." not in name:
+            continue
+        out_dim, in_dim = released[name].shape
+        packed = torch.randint(
+            0, 256, (out_dim, in_dim // 2), generator = gen, dtype = torch.uint8
+        ).view(torch.int8)
+        exps = torch.randint(-4, 2, (out_dim, in_dim // 32), generator = gen).float()
+        scale = torch.exp2(exps)
+        if hasattr(torch, "float8_e8m0fnu"):
+            scale = scale.to(torch.float8_e8m0fnu)
+        released[name] = packed
+        released[name[: -len("weight")] + "scale"] = scale
+    for layer in range(text.num_hidden_layers):
+        mlp = model.model.layers[layer].mlp
+        deq = lambda e, w: convert._dequant_fp4(
+            released[f"layers.{layer}.ffn.experts.{e}.{w}.weight"],
+            released[f"layers.{layer}.ffn.experts.{e}.{w}.scale"],
+        ).float()
+        n = mlp.experts.gate_up_proj.shape[0]
+        with torch.no_grad():
+            mlp.experts.gate_up_proj.copy_(
+                torch.stack([torch.cat([deq(e, "w1"), deq(e, "w3")]) for e in range(n)])
+            )
+            mlp.experts.down_proj.copy_(torch.stack([deq(e, "w2") for e in range(n)]))
+    src = tmp_path / "released"
+    model.config.save_pretrained(src)
+    save_file(released, os.path.join(src, "model.safetensors"))
+    return src
+
+
+def test_released_fp4_experts_stay_mxfp4_packed(tmp_path, monkeypatch, capsys):
+    """transformers 4.57 path: the release's fp4 experts load as MXFP4 stacks (a quarter of bf16, no dequantized copy
+    on disk) and give the same logits as the bf16 conversion; save / reload keeps them packed."""
+    pytest.importorskip("unsloth_zoo.mxfp4_dequant")
+    from unsloth_zoo.mxfp4_dequant import is_mxfp4_expert_param
+
+    model = _tiny_model().to(torch.bfloat16).float().eval()
+    src = _fp4_release(tmp_path, model)
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    ids = torch.randint(0, 512, (1, 20))
+    with torch.no_grad():
+        want = model(input_ids = ids).logits
+
+    def load(path):
+        m = dsv41.DeepseekV41ForCausalLM.from_pretrained(path, dtype = torch.float32).eval()
+        m.bind_token_map([i % 97 for i in range(512)])
+        return m
+
+    packed = load(src)
+    from unsloth.models.deepseek_v41 import convert
+
+    if convert._transformers_major() < 5:
+        assert "pip install -U transformers" in capsys.readouterr().out
+    experts = packed.model.layers[0].mlp.experts
+    assert is_mxfp4_expert_param(experts.gate_up_proj) and is_mxfp4_expert_param(experts.down_proj)
+    assert tuple(experts.gate_up_proj._original_shape) == tuple(
+        model.model.layers[0].mlp.experts.gate_up_proj.shape
+    )
+    bf16_bytes = model.model.layers[0].mlp.experts.gate_up_proj.numel() * 2
+    assert experts.gate_up_proj.numel() * experts.gate_up_proj.element_size() * 4 == bf16_bytes
+    with torch.no_grad():
+        got = packed(input_ids = ids).logits
+    assert torch.equal(got, want)
+    # a config object read from the original repo (what Unsloth's loader passes) still builds packed experts
+    via_config = dsv41.DeepseekV41ForCausalLM.from_pretrained(
+        src, config = type(model.config).from_pretrained(src), dtype = torch.float32
+    )
+    assert is_mxfp4_expert_param(via_config.model.layers[0].mlp.experts.gate_up_proj)
+
+    monkeypatch.setenv("UNSLOTH_DSV41_FP4_EXPERTS", "bf16")
+    dense = load(src)
+    assert not is_mxfp4_expert_param(dense.model.layers[0].mlp.experts.gate_up_proj)
+    with torch.no_grad():
+        assert torch.equal(dense(input_ids = ids).logits, want)
+    assert len(os.listdir(tmp_path / "converted")) == 2  # one cached copy per expert format
+    monkeypatch.delenv("UNSLOTH_DSV41_FP4_EXPERTS")
+
+    # save / reload: blocks + scales on disk, packed again after loading
+    # save / reload. Under unsloth_zoo's save patch a full save writes the experts dequantized (and a config
+    # without the packed flag); without it, the blocks + scales are written and reload packed.
+    from safetensors import safe_open
+    from transformers import PreTrainedModel
+
+    dense_save = getattr(PreTrainedModel.save_pretrained, "_unsloth_mxfp4_patched", False)
+    packed.save_pretrained(tmp_path / "saved")
+    keys = set()
+    for f in os.listdir(tmp_path / "saved"):
+        if f.endswith(".safetensors"):
+            with safe_open(os.path.join(tmp_path / "saved", f), "pt") as h:
+                keys |= set(h.keys())
+    blocks_key = "model.layers.0.mlp.experts.gate_up_blocks"
+    assert (blocks_key not in keys) if dense_save else (blocks_key in keys)
+    assert is_mxfp4_expert_param(experts.gate_up_proj)  # restored after the save
+    assert packed.config.text_config.unsloth_experts_format == "mxfp4"
+    reloaded = load(tmp_path / "saved")
+    assert is_mxfp4_expert_param(reloaded.model.layers[0].mlp.experts.gate_up_proj) != dense_save
+    with torch.no_grad():
+        assert torch.equal(reloaded(input_ids = ids).logits, want)
+    # transformers' own save_pretrained (no zoo save patch): packed blocks + scales on disk, reloaded packed
+    plain = PreTrainedModel.save_pretrained
+    while hasattr(plain, "__wrapped__"):
+        plain = plain.__wrapped__
+    monkeypatch.setattr(PreTrainedModel, "save_pretrained", plain)
+    packed.save_pretrained(tmp_path / "saved_packed")
+    keys = set()
+    for f in os.listdir(tmp_path / "saved_packed"):
+        if f.endswith(".safetensors"):
+            with safe_open(os.path.join(tmp_path / "saved_packed", f), "pt") as h:
+                keys |= set(h.keys())
+    assert blocks_key in keys and "model.layers.0.mlp.experts.gate_up_proj" not in keys
+    again = load(tmp_path / "saved_packed")
+    assert is_mxfp4_expert_param(again.model.layers[0].mlp.experts.gate_up_proj)
+    with torch.no_grad():
+        assert torch.equal(again(input_ids = ids).logits, want)
+    # load_state_dict into an already packed model
+    fresh = load(src)
+    assert is_mxfp4_expert_param(fresh.model.layers[0].mlp.experts.gate_up_proj)
+    with torch.no_grad():
+        for p in fresh.model.layers[0].mlp.experts.parameters():
+            p.data.zero_()
+            p.mxfp4_scales.zero_()
+    fresh.load_state_dict(packed.state_dict())
+    with torch.no_grad():
+        assert torch.equal(fresh(input_ids = ids).logits, want)
+
+
 def test_released_fp4_and_fp8_blocks_dequantize_like_the_reference_converter():
     """inference/convert.py: fp4 e2m1 two per byte, low nibble first; fp8 e4m3 times one scale per 32x32 block."""
     from unsloth.models.deepseek_v41 import convert
