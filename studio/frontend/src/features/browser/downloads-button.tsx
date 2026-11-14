@@ -302,7 +302,7 @@ function DownloadingIcon() {
         cy="10"
         r="8.5"
         strokeDasharray="17 36.4"
-        className="animate-spin [animation-duration:1.4s] [transform-box:view-box] [transform-origin:12px_10px]"
+        className="animate-spin animation-duration-[1.4s] transform-view origin-[12px_10px]"
       />
     </svg>
   );

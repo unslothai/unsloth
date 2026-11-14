@@ -357,8 +357,8 @@ function CopyableCode({
       <LineBox
         as="code"
         className={cn(
-          "block min-w-0 whitespace-pre-wrap border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
-          breakAll ? "break-all" : "break-words",
+          "block min-w-0 whitespace-pre-wrap border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11/relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.05*var(--contrast-wash-gain,1)))]",
+          breakAll ? "break-all" : "wrap-break-word",
         )}
         data-reload-snapshot-sensitive={sensitive ? "" : undefined}
       >
@@ -413,7 +413,7 @@ function SubagentSection({
         >
           {t("settings.agents.subagent.title")}
         </span>
-        <p className="text-ui-11 leading-relaxed text-muted-foreground">
+        <p className="text-ui-11/relaxed text-muted-foreground">
           {t("settings.agents.subagent.description", { agent: agent.name })}
         </p>
       </div>
@@ -1076,7 +1076,7 @@ export function AgentsTab() {
 
       <p
         data-settings-label={t("settings.agents.intro")}
-        className="text-sm text-muted-foreground leading-relaxed"
+        className="text-sm/relaxed text-muted-foreground"
       >
         {/* No aria-label: it would replace the visible "unsloth start" as the
             accessible name, leaving voice control unable to target it. */}
@@ -1085,7 +1085,7 @@ export function AgentsTab() {
           target="_blank"
           rel="noopener noreferrer"
           title={t("settings.agents.readDocs")}
-          className="rounded-full bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
+          className="rounded-full bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-[rgb(255_255_255/calc(0.08*var(--contrast-wash-gain,1)))]"
         >
           unsloth start
         </a>{" "}
@@ -1206,7 +1206,7 @@ export function AgentsTab() {
                 {/* Seven 36px rows plus the 4px surface padding. */}
                 <SelectContent
                   align="start"
-                  className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
+                  className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] **:data-[slot=select-scroll-down-button]:hidden **:data-[slot=select-scroll-up-button]:hidden"
                 >
                   {agents.map((agentId) => {
                     const agent = detailsFor(agentId);
@@ -1261,7 +1261,7 @@ export function AgentsTab() {
                     aria-label={t("settings.agents.model")}
                     aria-expanded={modelPickerOpen}
                     title={selectedModel}
-                    className="flex h-9 w-full items-center justify-between gap-2 rounded-full border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-full border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
                   >
                     <span className="min-w-0 truncate font-mono text-xs">
                       {labelFor(selectedModel)}
@@ -1276,7 +1276,7 @@ export function AgentsTab() {
                 <PopoverContent
                   align="start"
                   sideOffset={4}
-                  className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
+                  className="w-(--radix-popover-trigger-width) max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
                 >
                   <Command
                     shouldFilter={false}
@@ -1413,7 +1413,7 @@ export function AgentsTab() {
         </div>
 
         {variantsFailed ? (
-          <p className="text-ui-11 leading-relaxed text-amber-700 dark:text-amber-400">
+          <p className="text-ui-11/relaxed text-amber-700 dark:text-amber-400">
             {t("settings.agents.quantizationLoadError")}
           </p>
         ) : null}
@@ -1422,7 +1422,7 @@ export function AgentsTab() {
           <span className="text-xs font-medium text-foreground">
             {t("settings.agents.generatedCommand")}
           </span>
-          <p className="text-ui-11 leading-relaxed text-muted-foreground">
+          <p className="text-ui-11/relaxed text-muted-foreground">
             {t("settings.agents.automaticSettingsNote")}
           </p>
           <CopyableCode
@@ -1433,11 +1433,11 @@ export function AgentsTab() {
             sensitive={freshApiKey !== null}
           />
           {selectedAgent === "vscode" && (
-            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+            <p className="text-ui-11/relaxed text-muted-foreground">
               {t("settings.agents.vscodeNote")}
             </p>
           )}
-          <p className="text-ui-11 leading-relaxed text-muted-foreground">
+          <p className="text-ui-11/relaxed text-muted-foreground">
             {t("settings.agents.configurationNote")}{" "}
             <a
               href={FLAGS_DOCS_URL}
@@ -1458,7 +1458,7 @@ export function AgentsTab() {
           sensitive={freshApiKey !== null}
         />
 
-        <p className="text-ui-11 leading-relaxed text-muted-foreground">
+        <p className="text-ui-11/relaxed text-muted-foreground">
           {t("settings.agents.modelNote")}
         </p>
       </section>
@@ -1473,10 +1473,10 @@ export function AgentsTab() {
               key={row.flag}
               className="grid grid-cols-[minmax(0,11rem)_1fr] items-start gap-x-5 gap-y-1 py-2.5 max-sm:grid-cols-1"
             >
-              <code className="min-w-0 break-words font-mono text-xs font-medium text-foreground">
+              <code className="min-w-0 wrap-break-word font-mono text-xs font-medium text-foreground">
                 {row.flag}
               </code>
-              <span className="text-xs leading-relaxed text-muted-foreground">
+              <span className="text-ui-12/relaxed text-muted-foreground">
                 {t(row.descKey)}
               </span>
             </div>
@@ -1518,7 +1518,7 @@ export function AgentsTab() {
 
       <SettingsSection title={t("settings.mcp.title")}>
         <McpAccessSection apiKey={freshApiKey} />
-        <p className="pt-1 text-xs leading-snug text-muted-foreground">
+        <p className="pt-1 text-ui-12/snug text-muted-foreground">
           {t("settings.mcp.keyHint")}{" "}
           <button
             type="button"

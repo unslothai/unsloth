@@ -43,7 +43,7 @@ export const CompactionDivider: FC<
         className={className}
         label={cloud ? "Summary on next message" : undefined}
       >
-        <p className="max-w-72 text-xs leading-snug">
+        <p className="max-w-72 text-ui-12/snug">
           {cloud
             ? "Your next message is sent with a summary of this conversation in place of the older messages. They stay visible and saved here."
             : "Your next message starts a fresh context. Older messages stay here, and the parts relevant to each question are brought back automatically."}

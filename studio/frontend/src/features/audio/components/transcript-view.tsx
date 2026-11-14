@@ -155,7 +155,7 @@ function SpeakerChip({
             }
           }}
         />
-        <p className="text-ui-12 leading-normal text-muted-foreground">
+        <p className="text-ui-12/normal text-muted-foreground">
           Renames every line by this speaker.
         </p>
         <div className="flex justify-end gap-2">
@@ -273,7 +273,7 @@ export function TranscriptView({
           <ClipsIconTile icon={ClosedCaptionIcon} />
         )}
         <div className="grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between">
-          <p className="truncate text-ui-15 font-medium leading-snug text-foreground">
+          <p className="truncate text-ui-15/snug font-medium text-foreground">
             {title}
           </p>
           <div className="truncate text-ui-12 text-muted-foreground">{meta}</div>
@@ -282,7 +282,7 @@ export function TranscriptView({
       </div>
       <div className={cn("flex flex-col gap-3", CLIPS_TITLE_INSET)}>
       {!source ? null : audio.status === "missing" ? (
-        <p className="text-ui-12 leading-normal text-muted-foreground">
+        <p className="text-ui-12/normal text-muted-foreground">
           The audio for this transcript is no longer available. Timestamps still
           export.
         </p>
@@ -320,7 +320,7 @@ export function TranscriptView({
           />
           </span>
           {tabsHint ? (
-            <p className="text-ui-12 leading-normal text-muted-foreground">
+            <p className="text-ui-12/normal text-muted-foreground">
               {tabsHint}
             </p>
           ) : null}
@@ -363,7 +363,7 @@ export function TranscriptView({
                     {speakersOn && segment.speaker
                       ? chip(segment.speaker)
                       : null}
-                    <p className="min-w-0 flex-1 basis-[calc(160px*var(--ui-space-scale,1))] text-sm leading-relaxed text-foreground">
+                    <p className="min-w-0 flex-1 basis-[calc(160px*var(--ui-space-scale,1))] text-sm/relaxed text-foreground">
                       {segment.text}
                     </p>
                   </div>
@@ -380,14 +380,14 @@ export function TranscriptView({
                 className="flex flex-col items-start gap-1"
               >
                 {paragraph.speaker ? chip(paragraph.speaker) : null}
-                <p className="text-sm leading-relaxed text-foreground">
+                <p className="text-sm/relaxed text-foreground">
                   {paragraph.text}
                 </p>
               </div>
             ))}
           </div>
         ) : (
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+          <p className="whitespace-pre-wrap text-sm/relaxed text-foreground">
             {text}
           </p>
         )}

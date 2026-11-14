@@ -206,7 +206,7 @@ export const ChatDictationBar: FC<{
       <div
         ref={rowRef}
         aria-hidden="true"
-        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2 [mask-image:linear-gradient(to_right,transparent,#000_28%)]"
+        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2 mask-[linear-gradient(to_right,transparent,#000_28%)]"
         style={{
           gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(2px, 3px))`,
           justifyContent: "space-between",
@@ -243,7 +243,7 @@ export const ChatDictationBar: FC<{
           variant="ghost"
           onClick={stop}
           // Neutral grey: --secondary is brand green on light and too close to --card on dark.
-          className="size-9 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.16*var(--contrast-wash-gain,1)))]"
+          className="size-9 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.16*var(--contrast-wash-gain,1)))]"
         >
           {transcribing === "stop" ? (
             <Spinner className="size-3.5" />

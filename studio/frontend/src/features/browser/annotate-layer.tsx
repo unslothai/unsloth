@@ -684,7 +684,7 @@ export function AnnotateLayer({
       {shownHover ? (
         <div
           className={cn(
-            "absolute rounded-md border-[1.5px] border-wash-70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-[scrolling]/annotate:transition-none motion-reduce:transition-none",
+            "absolute rounded-md border-[1.5px] border-wash-70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-scrolling/annotate:transition-none motion-reduce:transition-none",
             hoverBox && !area ? "opacity-100" : "opacity-0",
           )}
           style={shownHover}

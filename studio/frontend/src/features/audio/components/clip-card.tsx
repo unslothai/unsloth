@@ -116,7 +116,7 @@ export function ClipCard({
         )}
         <div className="grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between">
           <p
-            className="line-clamp-2 text-ui-15 font-medium leading-snug text-foreground"
+            className="line-clamp-2 text-ui-15/snug font-medium text-foreground"
             title={title}
           >
             {title}
@@ -183,7 +183,7 @@ export function PendingClipCard({
           <Spinner className="size-4" />
         </span>
         <div className="grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between">
-          <p className="line-clamp-2 text-ui-14 font-medium leading-snug text-muted-foreground">
+          <p className="line-clamp-2 text-sm/snug font-medium text-muted-foreground">
             {title}
           </p>
           {/* No live region: the footer already announces progress. */}

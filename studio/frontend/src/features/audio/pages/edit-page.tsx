@@ -98,7 +98,7 @@ function EditInputs({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+            className="h-auto gap-1 p-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
             disabled={!sourceUsable || transcriber.transcribing || disabled}
             onClick={() => void transcriber.transcribe(source)}
           >
@@ -124,7 +124,7 @@ function EditInputs({
         {transcriber.error ? (
           <p
             role="alert"
-            className="text-ui-11p5 leading-snug text-destructive"
+            className="text-ui-11p5/snug text-destructive"
           >
             {transcriber.error}{" "}
             <Button
@@ -137,7 +137,7 @@ function EditInputs({
             </Button>
           </p>
         ) : (
-          <p className="text-ui-12 leading-normal text-muted-foreground">
+          <p className="text-ui-12/normal text-muted-foreground">
             {EDIT_COPY.transcriptHint}
           </p>
         )}
@@ -213,13 +213,13 @@ function EditInputs({
             onChange={(pitchSteps) => setDelivery({ pitchSteps })}
             commitWhileDragging
           />
-          <p className="text-ui-12 leading-normal text-muted-foreground">
+          <p className="text-ui-12/normal text-muted-foreground">
             {EDIT_COPY.pitchHint}
           </p>
         </div>
       ) : null}
       {adapter?.family === "vevo2" ? (
-        <p className="text-ui-12 leading-normal text-muted-foreground">
+        <p className="text-ui-12/normal text-muted-foreground">
           {EDIT_COPY.vevo2SwitchNote}
         </p>
       ) : null}

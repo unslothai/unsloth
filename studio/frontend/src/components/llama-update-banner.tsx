@@ -488,7 +488,7 @@ export function LlamaUpdateBanner({
     <div
       className={cn(
         positioned
-          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
+          ? "fixed bottom-4 right-4 z-9998 w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
               "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
               // the desktop floor plus 22px for the details toggle; each bundled row adds one text-xs line.
@@ -505,7 +505,7 @@ export function LlamaUpdateBanner({
       data-testid="llama-update-banner"
     >
       {/* fill the height floor even when the changelog content is short. */}
-      <div className="toast-surface relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+      <div className="toast-surface relative flex max-h-[calc(100dvh-2rem-var(--studio-window-chrome-top,0))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {/* Hides the card until the app is reopened, the same skip What's new offers. */}
         {applying ? null : (
           <button
@@ -671,7 +671,7 @@ function SkippedNotice({
       className={cn(
         "w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]",
         positioned
-          ? "fixed bottom-4 right-4 z-[9998]"
+          ? "fixed bottom-4 right-4 z-9998"
           : "pointer-events-auto shrink-0",
       )}
       onMouseEnter={() => setHovered(true)}

@@ -630,7 +630,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="mt-[var(--ui-title-cap-inset)] shrink-0"
+                  className="mt-(--ui-title-cap-inset) shrink-0"
                   disabled={archivedExporting}
                 >
                   {archivedExporting ? (
@@ -1066,7 +1066,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             </SelectContent>
           </Select>
         </SettingsRow>
-        <p className="pb-3 text-xs leading-relaxed text-muted-foreground">
+        <p className="pb-3 text-ui-12/relaxed text-muted-foreground">
           {t("settings.data.projectFilesKept")}
         </p>
         <div className="border-t border-border/60">

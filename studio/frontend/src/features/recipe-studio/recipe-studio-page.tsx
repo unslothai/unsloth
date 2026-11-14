@@ -491,7 +491,7 @@ export function RecipeStudioPage({
   const scheduleFitView = useCallback(
     ({ delayMs = 0 }: { delayMs?: number } = {}) => {
       if (!reactFlowInstance) {
-        // eslint-disable-next-line @typescript-eslint/no-empty-function
+         
         return () => {
           /* no-op: instance not available */
         };
@@ -659,7 +659,7 @@ export function RecipeStudioPage({
         nodesConnectable={canvasInteractive}
         elementsSelectable={canvasInteractive}
         fitView={false}
-        className="@container/canvas h-full w-full rounded-t-none"
+        className="@container/canvas size-full rounded-t-none"
       >
         <LayoutControls
           direction={layoutDirection}
@@ -675,7 +675,7 @@ export function RecipeStudioPage({
         />
         {nodes.length === 0 && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4">
-            <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-dashed border-border/70 bg-background/80 px-6 py-6 text-center shadow-border backdrop-blur-[1px]">
+            <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-dashed border-border/70 bg-background/80 p-6 text-center shadow-border backdrop-blur-[1px]">
               <div className="mx-auto flex size-12 items-center justify-center corner-squircle rounded-md border border-border/70 bg-muted/40">
                 <HugeiconsIcon
                   icon={DocumentAttachmentIcon}
@@ -752,7 +752,7 @@ export function RecipeStudioPage({
         {islandExecution &&
           (isExecutionInProgress(islandExecution.status) ||
             islandExecution.status === "completed") && (
-            <Panel position="top-center" className="!m-0">
+            <Panel position="top-center" className="m-0!">
               <ExecutionProgressIsland
                 execution={islandExecution}
                 currentColumnIcon={currentColumnIcon}

@@ -247,7 +247,7 @@ function ValidationResultPanel({
       {!validateResult.valid && validateResult.errors.length > 0 && (
         <div className="space-y-1">
           {validateResult.errors.map((error) => (
-            <p key={error} className="break-words text-xs text-destructive">
+            <p key={error} className="wrap-break-word text-xs text-destructive">
               {error}
             </p>
           ))}
@@ -256,7 +256,7 @@ function ValidationResultPanel({
       {validateResult.rawDetail && (
         <p
           className={cn(
-            "break-words text-xs",
+            "wrap-break-word text-xs",
             validateResult.valid ? "text-muted-foreground" : "text-destructive",
           )}
         >
@@ -438,7 +438,7 @@ function RunDialogBody({
                   </p>
                 </div>
                 <Switch
-                  className="mt-[var(--ui-title-cap-inset)]"
+                  className="mt-(--ui-title-cap-inset)"
                   checked={settings.batchEnabled}
                   onCheckedChange={(checked) =>
                     onSettingsChange({ batchEnabled: Boolean(checked) })
@@ -532,7 +532,7 @@ function RunDialogBody({
                       </p>
                     </div>
                     <Switch
-                      className="mt-[var(--ui-title-cap-inset)]"
+                      className="mt-(--ui-title-cap-inset)"
                       checked={settings.mergeBatches}
                       onCheckedChange={(checked) =>
                         onSettingsChange({ mergeBatches: Boolean(checked) })
@@ -633,7 +633,7 @@ function RunDialogBody({
                   </p>
                 </div>
                 <Switch
-                  className="mt-[var(--ui-title-cap-inset)]"
+                  className="mt-(--ui-title-cap-inset)"
                   checked={settings.disableEarlyShutdown}
                   onCheckedChange={(checked) =>
                     onSettingsChange({
@@ -665,7 +665,7 @@ function RunDialogBody({
               </Badge>
             </div>
             {errors.map((error) => (
-              <p key={error} className="break-words text-xs text-destructive">
+              <p key={error} className="wrap-break-word text-xs text-destructive">
                 {error}
               </p>
             ))}

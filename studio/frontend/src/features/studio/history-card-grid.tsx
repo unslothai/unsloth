@@ -484,7 +484,7 @@ export function HistoryCardGrid({
               key={run.id}
               className={cn(
                 "elevated-card group relative h-[calc(11.5rem*var(--ui-space-scale,1))] cursor-pointer bg-card transition-colors hover:bg-accent/30",
-                isRunning && "!border-blue-400/50 dark:!border-blue-500/30",
+                isRunning && "border-blue-400/50! dark:border-blue-500/30!",
               )}
             >
               <button
@@ -492,7 +492,7 @@ export function HistoryCardGrid({
                 aria-labelledby={`${cardId}-title`}
                 aria-describedby={`${cardId}-status ${cardId}-details ${cardId}-metrics`}
                 className={cn(
-                  "relative z-0 flex h-full w-full cursor-pointer select-text flex-col gap-3 rounded-[inherit] border-0 bg-transparent p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  "relative z-0 flex size-full cursor-pointer select-text flex-col gap-3 rounded-[inherit] border-0 bg-transparent p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                   (canResume || canCopyPreview) && "gap-2",
                 )}
                 onClick={(event) => {
@@ -522,7 +522,7 @@ export function HistoryCardGrid({
                     )}
                   </span>
                   {artifactsMissing && (
-                    <span className="inline-flex items-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] px-2 py-0.5 text-ui-10 font-medium text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+                    <span className="inline-flex items-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] px-2 py-0.5 text-ui-10 font-medium text-muted-foreground dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]">
                       {t("studio.history.filesDeleted")}
                     </span>
                   )}

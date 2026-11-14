@@ -60,7 +60,7 @@ function GlassChip() {
   return (
     <span
       aria-hidden="true"
-      className="size-6 shrink-0 rounded-full border border-black/20 bg-[#d9dfe8] bg-[linear-gradient(135deg,rgb(255_255_255_/_0.95),rgb(255_255_255_/_0.2)_55%,rgb(255_255_255_/_0.7))] shadow-[inset_0_1px_0_rgb(255_255_255_/_0.9)] dark:border-white/20 dark:bg-transparent dark:bg-[linear-gradient(135deg,rgb(255_255_255_/_0.35),rgb(255_255_255_/_0.05)_55%,rgb(255_255_255_/_0.18))]"
+      className="size-6 shrink-0 rounded-full border border-black/20 bg-[#d9dfe8] bg-[linear-gradient(135deg,rgb(255_255_255/0.95),rgb(255_255_255/0.2)_55%,rgb(255_255_255/0.7))] shadow-[inset_0_1px_0_rgb(255_255_255/0.9)] dark:border-white/20 dark:bg-transparent dark:bg-[linear-gradient(135deg,rgb(255_255_255/0.35),rgb(255_255_255/0.05)_55%,rgb(255_255_255/0.18))]"
     />
   );
 }
@@ -144,7 +144,7 @@ export function ColorThemeSelect() {
         <button
           type="button"
           aria-label={t("settings.appearance.palette.label")}
-          className="flex h-control w-60 cursor-pointer items-center gap-2 rounded-full border border-border bg-background pl-1.5 pr-3 text-sm outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring data-[state=open]:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+          className="flex h-control w-60 cursor-pointer items-center gap-2 rounded-full border border-border bg-background pl-1.5 pr-3 text-sm outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring data-[state=open]:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255/calc(0.12*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
         >
           <ThemeChip colors={COLOR_THEMES[palette][resolved]} />
           <span className="min-w-0 flex-1 truncate text-left">

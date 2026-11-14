@@ -570,7 +570,7 @@ function PendingImageThumb({
       data-composer-attachment="image"
       className="relative size-14 shrink-0 overflow-hidden rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
     >
-      <img src={src} alt={file.name} className="h-full w-full object-cover" />
+      <img src={src} alt={file.name} className="size-full object-cover" />
       <button
         type="button"
         onClick={onRemove}
@@ -3480,7 +3480,7 @@ export function SharedComposer({
                     stop();
                   }}
                   aria-label="Stop prompt queue"
-                  className="btn-fill flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground "
+                  className="btn-fill flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground"
                 >
                   <HugeiconsIcon icon={StopIcon} className="size-2.5 shrink-0 fill-current" />
                   <span className="tabular-nums">

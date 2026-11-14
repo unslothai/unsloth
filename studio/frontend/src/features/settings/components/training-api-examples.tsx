@@ -127,11 +127,11 @@ export function TrainingApiExamples({
             {t("settings.apiKeys.trainingApi.title")}
           </h2>
         )}
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-ui-12/relaxed text-muted-foreground">
           {t("settings.apiKeys.trainingApi.description")}
         </p>
       </div>
-      <div className="flex min-w-0 flex-col gap-1 text-ui-11 leading-relaxed text-muted-foreground">
+      <div className="flex min-w-0 flex-col gap-1 text-ui-11/relaxed text-muted-foreground">
         {notes.map((note) => (
           <p key={note}>{note}</p>
         ))}
@@ -156,7 +156,7 @@ export function TrainingApiExamples({
         <h3 className="text-sm font-medium text-foreground">
           {t("settings.apiKeys.trainingApi.cancelTitle")}
         </h3>
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-ui-12/relaxed text-muted-foreground">
           {t("settings.apiKeys.trainingApi.cancelDescription")}
         </p>
       </div>

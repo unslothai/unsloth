@@ -210,7 +210,7 @@ export function ParamSlider({
     return (
       <div className="flex items-center gap-3">
         <div className="flex min-w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5">
-          <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="text-ui-13/tight font-medium tracking-nav text-nav-fg">
             {label}
           </span>
           {info && <InfoHint>{info}</InfoHint>}
@@ -242,7 +242,7 @@ export function ParamSlider({
     <div className="space-y-2">
       <div className="flex min-h-8 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg">
             {label}
           </span>
           {info && <InfoHint>{info}</InfoHint>}
@@ -346,7 +346,7 @@ function CollapsibleSection({
   return (
     <div
       className={cn(
-        !first && "border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]",
+        !first && "border-t border-[rgb(0_0_0/calc(0.13*var(--contrast-edge-gain,1)))] dark:border-[rgb(255_255_255/calc(0.09*var(--contrast-edge-gain,1)))]",
       )}
     >
       {labelHref ? (
@@ -1101,14 +1101,14 @@ export function ChatSettingsPanel({
     <>
       <div className="hint-on-hover flex h-full min-h-0 flex-col">
       {/* Header outside the scroll area so the scrollbar never shifts the close button. */}
-      <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[calc(18px*var(--ui-space-scale,1))] pr-[calc(18px*var(--ui-space-scale,1))] pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div className="flex h-(--studio-chat-header-height,48px) shrink-0 items-start gap-2 bg-panel-surface px-[calc(18px*var(--ui-space-scale,1))] pt-(--studio-chat-header-padding-top,11px)">
         {isCompact ? (
-          <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+          <span className="flex h-(--studio-chat-control-height,34px) flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
           </span>
         ) : (
           <>
-            <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            <span className="flex h-(--studio-chat-control-height,34px) flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
               Run settings
             </span>
             <Tooltip key={open ? "open" : "closed"}>
@@ -1152,7 +1152,7 @@ export function ChatSettingsPanel({
             <div className="flex flex-col gap-5">
               {modelConfig}
               {showSpecFallback && (
-                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
+                <div className="rounded-lg bg-amber-500/8 px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
                   <p>
                     {specFallbackMessage({
                       reason: specFallbackReason,
@@ -1175,7 +1175,7 @@ export function ChatSettingsPanel({
                 </div>
               )}
               {mlxSpecFallback && (
-                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
+                <div className="rounded-lg bg-amber-500/8 px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
                   <p>{mlxSpecFallback}</p>
                 </div>
               )}
@@ -1255,7 +1255,7 @@ export function ChatSettingsPanel({
                       maxLength={80}
                       autoComplete="off"
                       className={cn(
-                        "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13",
+                        "h-9! min-h-0 min-w-0 self-stretch pl-3.5! pr-2! py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13",
                         presetSaveState.isSaveReady &&
                           "placeholder:text-foreground/50",
                       )}
@@ -1263,10 +1263,10 @@ export function ChatSettingsPanel({
                     />
                     <InputGroupAddon
                       align="inline-end"
-                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0 !cursor-pointer"
+                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 pr-1! has-[>button]:mr-0 cursor-pointer!"
                     >
                       <span
-                        className="!h-7 min-h-7 !w-7 min-w-7 shrink-0 self-center inline-flex items-center justify-center rounded-full border-0 px-0 text-[#a0a097] dark:text-nav-fg pointer-events-none"
+                        className="size-7! min-h-7 min-w-7 shrink-0 self-center inline-flex items-center justify-center rounded-full border-0 px-0 text-[#a0a097] dark:text-nav-fg pointer-events-none"
                         aria-hidden="true"
                       >
                         <HugeiconsIcon
@@ -1301,7 +1301,7 @@ export function ChatSettingsPanel({
                     </DropdownMenuItem>
                     {index === BUILTIN_PRESETS.length - 1 &&
                       presets.length > BUILTIN_PRESETS.length && (
-                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
+                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-[rgb(0_0_0/calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255/calc(0.08*var(--contrast-wash-gain,1)))]" />
                       )}
                   </Fragment>
                 ))}
@@ -1344,7 +1344,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Provider" defaultOpen={true}>
             <div className="flex min-h-8 items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg">
                   Prompt caching
                 </span>
                 <InfoHint>
@@ -1367,7 +1367,7 @@ export function ChatSettingsPanel({
             {showPromptCacheTtlControl && promptCachingEnabled ? (
               <div className="flex min-h-8 items-center justify-between gap-3 pt-5">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                  <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg">
                     Cache TTL
                   </span>
                   <InfoHint>
@@ -1407,7 +1407,7 @@ export function ChatSettingsPanel({
             {showFastModeControl ? (
               <div className="flex min-h-8 items-center justify-between gap-3 pt-5">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                  <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg">
                     Fast mode
                   </span>
                   <InfoHint>
@@ -1494,7 +1494,7 @@ export function ChatSettingsPanel({
               placeholder="Example: You are a helpful assistant..."
               aria-label="System prompt"
               className={cn(
-                "block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-ui-13 font-medium leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground",
+                "block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-ui-13/relaxed font-medium text-nav-fg outline-none placeholder:text-muted-foreground",
                 systemPromptOverflows && "cursor-pointer",
               )}
             />
@@ -1622,7 +1622,7 @@ export function ChatSettingsPanel({
             {showSeed ? (
               <div className="flex min-h-8 items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                  <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg">
                     Seed
                   </span>
                   <InfoHint>
@@ -1820,7 +1820,7 @@ export function ChatSettingsPanel({
                 onChange={(event) => setSystemPromptDraft(event.target.value)}
                 placeholder="You are a helpful assistant..."
                 fieldSizing="fixed"
-                className="min-h-[min(calc(20rem*var(--ui-space-scale,1)),48dvh)] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
+                className="min-h-[min(calc(20rem*var(--ui-space-scale,1)),48dvh)] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm/ui-24 focus-visible:ring-0"
                 rows={14}
               />
             </div>
@@ -1923,7 +1923,7 @@ export function ChatSettingsPanel({
       ) : null}
       <div
         className={cn(
-          "h-full w-full overflow-hidden",
+          "size-full overflow-hidden",
           open && "border-l border-panel-edge",
         )}
       >
@@ -1989,7 +1989,7 @@ function AutoHealToolCallsToggle() {
   return (
     <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg">
           Auto-Healing Tool Calls
         </span>
         <InfoHint>
@@ -2013,7 +2013,7 @@ function NudgeToolCallsToggle() {
   return (
     <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg">
           Nudge Tool Calls
         </span>
         <InfoHint>
@@ -2041,7 +2041,7 @@ function DeduplicateToolCallsToggle() {
   return (
     <div className="flex min-h-8 items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg">
           Deduplicate Tool Calls
         </span>
         <InfoHint>
@@ -2073,7 +2073,7 @@ function ConfirmToolCallsToggle() {
     >
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg">
             Confirm tool calls
           </span>
           <InfoHint>
@@ -2118,7 +2118,7 @@ function BypassPermissionsToggle() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="whitespace-nowrap text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="whitespace-nowrap text-ui-13/tight font-medium tracking-nav text-nav-fg">
           Tool permissions
         </span>
         <InfoHint>

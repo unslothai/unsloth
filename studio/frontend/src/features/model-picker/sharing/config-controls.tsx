@@ -59,7 +59,7 @@ export function SharedRunConfigReview({
       {isRunConfigVariantUnresolved(target) && (
         <p
           role="status"
-          className="mb-5 border-b border-border pb-5 text-pretty text-ui-12 leading-relaxed text-muted-foreground"
+          className="mb-5 border-b border-border pb-5 text-pretty text-ui-12/relaxed text-muted-foreground"
         >
           The GGUF variant could not be resolved. You can edit and share these
           settings offline. Reopen the link when the Hugging Face model is

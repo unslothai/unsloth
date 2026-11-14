@@ -59,7 +59,7 @@ export function LanguageSelect({
         </SelectContent>
       </Select>
       {hint ? (
-        <p className="text-ui-12 leading-normal text-muted-foreground">
+        <p className="text-ui-12/normal text-muted-foreground">
           {hint}
         </p>
       ) : null}

@@ -64,7 +64,7 @@ export function TransformersUpgradeDialog() {
       }}
     >
       {/* A plain max-w loses to the size rule, whose 28rem can't fit a dev version's button row. */}
-      <AlertDialogContent className="sm:!max-w-[calc(34rem*var(--ui-space-scale,1))]">
+      <AlertDialogContent className="sm:max-w-[calc(34rem*var(--ui-space-scale,1))]!">
         <AlertDialogHeader className="min-w-0">
           <div className="flex w-full min-w-0 items-start gap-3">
             <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400">

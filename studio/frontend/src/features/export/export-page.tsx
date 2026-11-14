@@ -1157,7 +1157,7 @@ export function ExportPage() {
   }, [showPanel]);
 
   return (
-    <div data-wallpaper-page-canvas="" className="flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] flex-col bg-background">
+    <div data-wallpaper-page-canvas="" className="flex min-h-[calc(100dvh-var(--studio-titlebar-height,0))] flex-col bg-background">
       <main className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 
@@ -2049,7 +2049,7 @@ export function ExportPage() {
                                   </div>
                                 </div>
                                 <Switch
-                                  className="mt-[var(--ui-title-cap-inset)]"
+                                  className="mt-(--ui-title-cap-inset)"
                                   aria-label="Importance matrix (imatrix)"
                                   checked={effectiveImatrix}
                                   onCheckedChange={setUseImatrix}
@@ -2104,7 +2104,7 @@ export function ExportPage() {
                                     </div>
                                   </div>
                                   <Switch
-                                    className="mt-[var(--ui-title-cap-inset)]"
+                                    className="mt-(--ui-title-cap-inset)"
                                     aria-label="Also convert to Q4NX (AMD NPU)"
                                     checked={effectiveNpuQ4nx}
                                     onCheckedChange={setNpuQ4nx}
@@ -2238,7 +2238,7 @@ export function ExportPage() {
                       })
                     }
                     aria-label="Scroll to export output"
-                    className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
+                    className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full bg-background/90 text-foreground shadow-md backdrop-blur-sm transition-colors hover:bg-muted"
                   >
                     <HugeiconsIcon
                       icon={ChevronDownStandardIcon}
@@ -2265,7 +2265,7 @@ export function ExportPage() {
                         className={cn(
                           "w-full justify-center rounded-full text-ui-13p5 font-semibold tracking-tight",
                           "bg-action text-background shadow-sm hover:opacity-90",
-                          "disabled:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+                          "disabled:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]",
                         )}
                       >
                         Export Model

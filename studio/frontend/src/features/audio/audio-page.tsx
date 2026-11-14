@@ -1854,7 +1854,7 @@ export function AudioPage({
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
       ref={pageRootRef}
-      className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar pt-[var(--studio-content-top-inset,0px)]"
+      className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar pt-(--studio-content-top-inset,0px)"
     >
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
@@ -1889,12 +1889,12 @@ export function AudioPage({
             ? "pl-12"
             : // Collapsed desktop sidebar: clear the titlebar buttons, as Chat does.
               !pinned && isTauri
-              ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-              : "pl-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:pl-2",
+              ? "pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
+              : "pl-(--studio-media-header-left-inset,1.5rem) @[50rem]:pl-2",
           )}
         >
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
-          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))]">
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-(--studio-chat-header-padding-top,11px) @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))]">
             <ModelSelector
               triggerDataTour="audio-model"
               models={selectorModels}
@@ -1955,7 +1955,7 @@ export function AudioPage({
                   : undefined
               }
               variant="ghost"
-              className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
+              className="ml-1.5 max-w-full overflow-hidden pl-2.5! pr-1.5! h-(--studio-chat-control-height,34px)!"
               task={HUB_TASKS_BY_MODE[mode]}
               // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
               hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
@@ -1971,7 +1971,7 @@ export function AudioPage({
           </div>
         </div>
         <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
-          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-(--studio-chat-header-padding-top,11px) @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))]">
             <PillTabs
               ariaLabel="Page mode"
               // Always "create": Train navigates away, so the pill never latches.
@@ -1992,7 +1992,7 @@ export function AudioPage({
                 void navigateSelf({ to: "/studio" });
               }}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 [[data-media-header-tight]_&]:[&>button]:px-3 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 in-data-media-header-tight:[&>button]:px-3 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 {
                   value: "create",
@@ -2035,7 +2035,7 @@ export function AudioPage({
         </div>
       </div>
       {/* Below 50rem the panes stack and the page scrolls as one column, as on Images and Video. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden pb-3 @[50rem]:-mt-[calc(64px*var(--ui-space-scale,1))] @[50rem]:flex-row @[50rem]:gap-0 @[50rem]:overflow-hidden @[50rem]:pb-0">
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden pb-3 @[50rem]:mt-[calc(-64px*var(--ui-space-scale,1))] @[50rem]:flex-row @[50rem]:gap-0 @[50rem]:overflow-hidden @[50rem]:pb-0">
         <div
           data-tour="audio-settings"
           className="flex w-full shrink-0 flex-col @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden"
@@ -2044,7 +2044,7 @@ export function AudioPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-initial flex-col gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[calc(60px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto @[50rem]:pt-2 @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*6-var(--classic-scrollbar-width,0px))]",
+              "hover-scrollbar flex min-h-0 flex-initial flex-col gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[calc(60px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto @[50rem]:pt-2 @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*6-var(--classic-scrollbar-width,0))]",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
@@ -2058,11 +2058,11 @@ export function AudioPage({
                   workflow={pageWorkflow}
                   onSelect={transitionWorkflow}
                 />
-                <p className="text-ui-13 leading-normal text-muted-foreground">
+                <p className="text-ui-13/normal text-muted-foreground">
                   {workflowTab.hint}
                 </p>
                 {capabilityReady ? null : (
-                  <p className="mt-1 text-ui-12 leading-normal text-muted-foreground/80">
+                  <p className="mt-1 text-ui-12/normal text-muted-foreground/80">
                     {capabilityLine}
                   </p>
                 )}

@@ -136,7 +136,7 @@ const FileCardBody: FC<{
   icon?: ReactNode;
   preview?: ReactNode;
 }> = ({ name, kind, center, icon, preview }) => (
-  <span className="flex h-full w-full flex-col">
+  <span className="flex size-full flex-col">
     {preview ? (
       <span className="min-h-0 flex-1 overflow-hidden">{preview}</span>
     ) : (
@@ -144,7 +144,7 @@ const FileCardBody: FC<{
     )}
     <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-[calc(var(--spacing)*1.75-1px)]", preview && "pt-[calc(var(--spacing)*1.75-3px)]")}>
       {icon ?? <AttachmentKindIcon kind={kind} className="size-3.25" />}
-      <span className="min-w-0 truncate text-ui-11p5 leading-ui-15 text-foreground">
+      <span className="min-w-0 truncate text-ui-11p5/ui-15 text-foreground">
         {name}
       </span>
     </span>
@@ -168,7 +168,7 @@ const CardImageOrBody: FC<{
           const { naturalWidth, naturalHeight } = event.currentTarget;
           if (naturalWidth > 0 && naturalHeight > 0) onRatio?.(naturalWidth / naturalHeight);
         }}
-        className="h-full w-full object-cover object-top"
+        className="size-full object-cover object-top"
       />
     );
   }
@@ -280,7 +280,7 @@ const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer
                   </span>
                 </span>
                 <span className="truncate text-ui-13 text-muted-foreground">{item.quote}</span>
-                <span className="whitespace-pre-wrap break-words text-ui-14 text-foreground">{item.request}</span>
+                <span className="whitespace-pre-wrap wrap-break-word text-ui-14 text-foreground">{item.request}</span>
               </div>
             ))}
           </div>
@@ -492,7 +492,7 @@ const AttachmentCardRemove: FC = () => {
         variant="ghost"
         size="icon"
         aria-label="Remove file"
-        className="aui-attachment-card-remove absolute top-1.5 right-1.5 size-5 rounded-full bg-white p-0 opacity-0 shadow-sm ring-1 ring-black/15 transition-opacity hover:bg-white! dark:bg-black dark:ring-white/20 dark:hover:bg-black! focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100 [&_svg]:text-black dark:[&_svg]:text-white"
+        className="aui-attachment-card-remove absolute top-1.5 right-1.5 size-5 rounded-full bg-white p-0 opacity-0 shadow-sm ring-1 ring-black/15 transition-opacity hover:bg-white! dark:bg-black dark:ring-white/20 dark:hover:bg-black! focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 pointer-coarse:opacity-100 [&_svg]:text-black dark:[&_svg]:text-white"
       >
         <HugeiconsIcon icon={Cancel01Icon} className="aui-attachment-remove-icon size-3 stroke-[2.5px]" />
       </Button>
@@ -602,12 +602,12 @@ const SentImageThumb: FC<{ name: string; kind: AttachmentFileKind }> = ({
       <img
         src={src}
         alt={name || "Attachment preview"}
-        className="h-full w-full object-cover"
+        className="size-full object-cover"
       />
     );
   }
   return (
-    <span className="flex h-full w-full items-center justify-center bg-muted">
+    <span className="flex size-full items-center justify-center bg-muted">
       <AttachmentKindIcon kind={kind} className="size-6" />
     </span>
   );

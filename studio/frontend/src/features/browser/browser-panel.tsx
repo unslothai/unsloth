@@ -306,7 +306,7 @@ function IconButton({
         {shortcut ? (
           <span className="flex items-center gap-1.5">
             {label}
-            <kbd className="rounded-full bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
+            <kbd className="rounded-full bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255/calc(0.15*var(--contrast-wash-gain,1)))]">
               {shortcut}
             </kbd>
           </span>
@@ -663,7 +663,7 @@ function TabStrip({
     // Above the desktop titlebar's drag strip (z-40), which would swallow tab clicks.
     <div
       data-tauri-drag-region={true}
-      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]"
+      className="browser-chrome relative z-40 flex h-(--studio-chat-header-height,48px) min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]"
     >
       <div
         ref={listRef}
@@ -711,12 +711,12 @@ function TabStrip({
                 {renamingTabId === tab.id ? (
                   <TabRenameInput tab={tab} title={title} />
                 ) : (
-                  <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,black_calc(100%_-_0.625rem),transparent)]">
+                  <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap mask-[linear-gradient(to_right,black_calc(100%-0.625rem),transparent)]">
                     {title}
                   </span>
                 )}
                 {local ? (
-                  <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] px-1.5 text-ui-10 font-medium leading-4 text-muted-foreground">
+                  <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] px-1.5 text-ui-10/ui-16 font-medium text-muted-foreground">
                     {t("browser.local")}
                   </span>
                 ) : null}
@@ -833,7 +833,7 @@ function AddressBar({
         inputRef.current?.blur();
       }}
     >
-      <div className={cn("flex h-8 items-center gap-0.5 rounded-full pl-1 pr-1 transition-colors", URLBAR)}>
+      <div className={cn("flex h-8 items-center gap-0.5 rounded-full px-1 transition-colors", URLBAR)}>
         {/* Icons step aside while typing and come back after. */}
         {editing ? null : (leading ?? <SiteIdentity address={address} tab={tab} />)}
         <div className="relative min-w-0 flex-1">
@@ -1026,7 +1026,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                   <p className="text-sm font-medium text-foreground">
                     {t(secure ? "browser.siteInfo.secureTitle" : "browser.siteInfo.insecureTitle")}
                   </p>
-                  <p className="mt-0.5 text-ui-13 leading-relaxed text-muted-foreground">
+                  <p className="mt-0.5 text-ui-13/relaxed text-muted-foreground">
                     {t(secure ? "browser.siteInfo.secureDescription" : "browser.siteInfo.insecureDescription")}{" "}
                     <button
                       type="button"
@@ -1278,7 +1278,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
         <DropdownMenuContent
           align="end"
           sideOffset={6}
-          className="browser-menu min-w-72 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+          className="browser-menu min-w-72 rounded-lg p-1 **:data-[slot=dropdown-menu-separator]:mx-3 **:data-[slot=dropdown-menu-separator]:my-1.5"
           onCloseAutoFocus={(event) => {
             // A click outside that took focus (the address bar) keeps it.
             const active = document.activeElement;
@@ -1377,7 +1377,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
           <DropdownMenuSeparator />
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>{t("browser.pages.bookmarks")}</DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="browser-menu min-w-60 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5">
+            <DropdownMenuSubContent className="browser-menu min-w-60 rounded-lg p-1 **:data-[slot=dropdown-menu-separator]:mx-3 **:data-[slot=dropdown-menu-separator]:my-1.5">
               <DropdownMenuItem
                 disabled={!webUrl}
                 onSelect={() => {
@@ -1714,7 +1714,7 @@ function BrowserFileToolbar({
   const consoleLabel = t("browser.file.console");
   const errorBadge =
     view.errorCount > 0 ? (
-      <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
+      <span className="rounded-full bg-destructive px-1.5 text-ui-10/ui-16 font-medium text-destructive-foreground">
         {view.errorCount}
       </span>
     ) : null;
@@ -1858,7 +1858,7 @@ function BrowserFileToolbar({
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
-            <span className="min-w-0 break-words">{entry.name}</span>
+            <span className="min-w-0 wrap-break-word">{entry.name}</span>
           </div>
           <DropdownMenuSeparator />
           {/* A blob URL can't be handed to another app from the desktop app. */}
@@ -1975,7 +1975,7 @@ function FloatingFileToolbar({
         <DropdownMenuContent
           align="start"
           sideOffset={6}
-          className="browser-menu w-80 max-w-[calc(100vw-2rem)] rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+          className="browser-menu w-80 max-w-[calc(100vw-2rem)] rounded-lg p-1 **:data-[slot=dropdown-menu-separator]:mx-3 **:data-[slot=dropdown-menu-separator]:my-1.5"
         >
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon
@@ -1984,7 +1984,7 @@ function FloatingFileToolbar({
               className="mt-0.5 size-4.5"
               mono={true}
             />
-            <span className="min-w-0 break-words">{entry.name}</span>
+            <span className="min-w-0 wrap-break-word">{entry.name}</span>
           </div>
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled={!blob} onSelect={copyContents}>
@@ -2121,7 +2121,7 @@ function FloatingFileToolbar({
 const SPLIT_PILL = cn(
   PILL,
   "flex h-8 shrink-0 items-center rounded-full",
-  "has-[[data-state=open]]:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
+  "has-data-[state=open]:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
 );
 const SPLIT_PART =
   "flex h-full cursor-pointer items-center rounded-full text-ui-13p5 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
@@ -2554,7 +2554,7 @@ export const BrowserPanel = memo(function BrowserPanel({
       }}
       className={cn(
         "side-pane-lock-cover relative flex h-full min-h-0 flex-col overflow-hidden bg-muted",
-        floating ? "rounded-[inherit]" : "pt-[var(--studio-content-top-inset,0px)]",
+        floating ? "rounded-[inherit]" : "pt-(--studio-content-top-inset,0px)",
         documentShown
           ? "[--browser-surface:color-mix(in_oklab,var(--muted)_55%,var(--card))]"
           : "[--browser-surface:var(--card)]",
@@ -2586,12 +2586,12 @@ export const BrowserPanel = memo(function BrowserPanel({
         <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} floatable={floatable} />
       )}
       {/* Not on the section: before Safari 18.5 container-type makes a stacking context, sinking the strip under the macOS drag strip. */}
-      <div className="browser-panel-body @container/browser relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
+      <div className="browser-panel-body @container/browser relative flex min-h-0 flex-1 flex-col overflow-hidden bg-(--browser-surface)">
         <div
           className={cn(
             "browser-chrome @container flex shrink-0 items-center gap-2 px-2.5",
             // Kept mounted, so its shortcuts still reach the page.
-            floating && "!hidden",
+            floating && "hidden!",
             (!activeEntry || activeEntry.kind !== "file") && "browser-web-toolbar flex-wrap",
             floatingFileControls
               ? "browser-file-toolbar pointer-events-none absolute inset-x-0 top-0 z-20 py-2 *:pointer-events-auto"

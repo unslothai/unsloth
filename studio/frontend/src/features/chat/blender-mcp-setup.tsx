@@ -143,14 +143,14 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
           {!config ? "Loading…" : config.is_enabled ? "Enabled" : !config.available ? "Unavailable" : "Disabled"}
         </span>
       </div>
-      {!config?.is_enabled && <p className="text-sm leading-relaxed text-muted-foreground">
+      {!config?.is_enabled && <p className="text-sm/relaxed text-muted-foreground">
         Unsloth downloads and sets up MCP on first use. Internet is needed once; the Blender add-on is installed separately.
       </p>}
-      {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom Blender server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
+      {duplicate && <p className="text-ui-12/relaxed text-amber-600">A custom Blender server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
       {config && !config.is_enabled && (
         <div className="flex items-start gap-3">
           <Checkbox id="blender-mcp-consent" className="mt-0.5" checked={consent} disabled={locked} onCheckedChange={(checked) => setConsent(checked === true)} />
-          <Label htmlFor="blender-mcp-consent" className="text-xs font-normal leading-relaxed">
+          <Label htmlFor="blender-mcp-consent" className="text-ui-12/relaxed font-normal">
             Allow unsandboxed Python, scene changes and background Blender tool processes. Results may be sent to your model provider. Cancelling may not undo changes.
           </Label>
         </div>
@@ -169,7 +169,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
           <HugeiconsIcon icon={ChevronDownStandardIcon} aria-hidden="true" className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
         </CollapsibleTrigger>
         <CollapsibleContent className="[--duration:200ms] motion-reduce:animate-none">
-        <div className="space-y-4 pt-4 text-sm leading-relaxed text-muted-foreground">
+        <div className="space-y-4 pt-4 text-sm/relaxed text-muted-foreground">
           <p>Use Blender {config?.min_blender_version ?? "5.1.0"}+ on the Unsloth backend machine.</p>
           <Button size="sm" variant="outline" onClick={() => openLink("https://www.blender.org/lab/mcp-server/")}>Download Blender add-on</Button>
           <ol className="list-decimal space-y-3 pl-5">
@@ -189,7 +189,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
         </CollapsibleTrigger>
         <CollapsibleContent className="[--duration:200ms] motion-reduce:animate-none">
         <div className="space-y-4 pt-4">
-          <p className="text-xs leading-relaxed text-muted-foreground">Loopback only (127.0.0.1). Match the add-on’s port. Unsloth needs Python 3.10+.</p>
+          <p className="text-ui-12/relaxed text-muted-foreground">Loopback only (127.0.0.1). Match the add-on’s port. Unsloth needs Python 3.10+.</p>
           <div className="grid gap-3 sm:grid-cols-[100px_1fr]">
             <div className="space-y-1">
               <Label htmlFor="blender-mcp-port">Port</Label>

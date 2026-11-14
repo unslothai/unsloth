@@ -52,7 +52,7 @@ function SliderRow({
       )}
     >
       <div className="flex min-h-8 items-center justify-between">
-        <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="text-ui-13/tight font-medium tracking-nav text-nav-fg">
           {label}
         </span>
         <span className="text-ui-13 tabular-nums text-muted-foreground">
@@ -95,7 +95,7 @@ export function RetrievalSettingsSection() {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
-        <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="text-ui-13/tight font-medium tracking-nav text-nav-fg">
           Search mode
         </span>
         <Select
@@ -120,7 +120,7 @@ export function RetrievalSettingsSection() {
 
       <div className="flex flex-col gap-2">
         <div className="flex min-h-8 items-center justify-between">
-          <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="text-ui-13/tight font-medium tracking-nav text-nav-fg">
             Passages (top K)
           </span>
           <span className="text-ui-13 tabular-nums text-muted-foreground">
@@ -139,7 +139,7 @@ export function RetrievalSettingsSection() {
 
       <div className="flex flex-col gap-2">
         <div className="flex flex-col">
-          <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="flex items-center gap-1.5 text-ui-13/tight font-medium tracking-nav text-nav-fg">
             Auto-retrieve documents
             <InfoHint>
               Auto turns retrieval on for smaller models (9B and below), which
@@ -176,7 +176,7 @@ export function RetrievalSettingsSection() {
 
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col">
-          <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="flex items-center gap-1.5 text-ui-13/tight font-medium tracking-nav text-nav-fg">
             OCR scanned pages
             <InfoHint>
               Read scanned or image-only PDF pages at upload time using the
@@ -199,7 +199,7 @@ export function RetrievalSettingsSection() {
 
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col">
-          <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="flex items-center gap-1.5 text-ui-13/tight font-medium tracking-nav text-nav-fg">
             Describe figures &amp; charts
             <InfoHint>
               Caption PDF figures, charts, tables and diagrams at upload with

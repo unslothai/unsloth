@@ -169,12 +169,12 @@ function ModelSelectorTrigger({
         className={cn(
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
-            "rounded-full border border-border hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
+            "rounded-full border border-border hover:bg-accent has-[[data-eject-hit]:hover]:bg-transparent!",
           // Header rows: same corners and hover wash as the icon buttons beside it.
           variant === "ghost" &&
-            "rounded-[10px] hover:bg-nav-surface-hover has-[[data-eject-hit]:hover]:!bg-transparent",
+            "rounded-[10px] hover:bg-nav-surface-hover has-[[data-eject-hit]:hover]:bg-transparent!",
           variant === "muted" &&
-            "rounded-full bg-muted hover:bg-muted has-[[data-eject-hit]:hover]:!bg-muted",
+            "rounded-full bg-muted hover:bg-muted has-[[data-eject-hit]:hover]:bg-muted!",
           "h-9 pl-4 pr-2 text-sm",
           className,
         )}
@@ -192,7 +192,7 @@ function ModelSelectorTrigger({
                 event.stopPropagation();
                 onEject();
               }}
-              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
             >
               <HugeiconsIcon
                 icon={CheckmarkCircle02Icon}
@@ -215,13 +215,13 @@ function ModelSelectorTrigger({
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
           <span className="flex min-w-0 items-baseline">
-            <span className="flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
+            <span className="flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading text-base/tight font-medium text-black dark:text-foreground">
               <span className="min-w-0 truncate">{triggerTitle}</span>
             </span>
             {subtitle && (
               <span
                 className={cn(
-                  "min-w-0 shrink-[1000] truncate text-xs leading-tight text-muted-foreground",
+                  "min-w-0 shrink-1000 truncate text-ui-12/tight text-muted-foreground",
                   GAP_BEFORE,
                 )}
               >
@@ -232,7 +232,7 @@ function ModelSelectorTrigger({
           {currentModel?.descriptionSuffix && (
             <span
               className={cn(
-                "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground",
+                "min-w-0 shrink-1000000 truncate whitespace-nowrap text-ui-12/tight text-muted-foreground",
                 !subtitle && GAP_BEFORE,
               )}
             >
@@ -513,7 +513,7 @@ function ModelSelectorContent({
           ? // Clips, never scrolls: as the scroller, the always-on scrollbar squared off its corners.
             // !px-0: the list view's snapped inline padding would hold the scrollbar 8px off the edge.
             cn(
-              "max-h-[var(--radix-popover-content-available-height)] overflow-hidden p-0 !px-0",
+              "max-h-(--radix-popover-content-available-height) overflow-hidden p-0 px-0!",
               hasExternal
                 ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))]"
                 : "w-[min(var(--picker-panel-w),calc(100vw-1rem))]",
@@ -534,7 +534,7 @@ function ModelSelectorContent({
       >
         {visibleConfigTarget ? (
           // 28px sides like the list's text; the right is 20px plus the bar, an overlay strip capped at 8px.
-          <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
+          <div className="min-h-0 w-full overflow-y-auto py-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0),var(--spacing)*2))] pl-7 [scrollbar-gutter:stable]">
             <ModelConfigPage
               key={modelConfigInstanceKey(
                 visibleConfigTarget.configId ?? visibleConfigTarget.id,
@@ -589,7 +589,7 @@ function ModelSelectorContent({
               sectionToggle={
                 <PillTabs
                   // The panel reserves --picker-tab-pad per pill, so keep the two in step.
-                  className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
+                  className="**:[[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)+var(--picker-tab-pad)/2)]"
                   ariaLabel={t("picker.hubSectionAriaLabel")}
                   tabs={hubSectionTabs}
                   value={effectiveHubSection}

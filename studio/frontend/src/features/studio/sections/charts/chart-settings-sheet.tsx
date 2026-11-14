@@ -67,7 +67,7 @@ function SettingRow({
       </div>
       <div
         className={
-          description ? "mt-[var(--ui-title-cap-inset)] shrink-0" : "shrink-0"
+          description ? "mt-(--ui-title-cap-inset) shrink-0" : "shrink-0"
         }
       >
         {control}

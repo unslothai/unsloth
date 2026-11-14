@@ -269,7 +269,7 @@ function SandboxMediaFigure({
         ) : null}
       </div>
       {caption ? (
-        <figcaption className="line-clamp-4 w-full whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+        <figcaption className="line-clamp-4 w-full whitespace-pre-wrap wrap-break-word text-xs leading-5 text-muted-foreground">
           {caption}
         </figcaption>
       ) : null}
@@ -511,7 +511,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
               <div
                 // Out of find-in-page's reach: these actions are invisible until hover from `sm` up.
                 {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
-                className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100"
+                className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-linear-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100"
               >
                 <Button
                   type="button"
@@ -540,7 +540,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                 <div
                   ref={captionRef}
                   className={cn(
-                    "whitespace-pre-wrap break-words",
+                    "whitespace-pre-wrap wrap-break-word",
                     shouldClampPrompt && "max-h-20 overflow-hidden",
                   )}
                 >

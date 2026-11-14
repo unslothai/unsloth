@@ -71,7 +71,7 @@ export function NpuCatalogList({
   return (
     <div
       data-testid="hub-npu-catalog"
-      className="mx-auto flex min-h-0 w-full max-w-[var(--hub-measure)] flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3"
+      className="mx-auto flex min-h-0 w-full max-w-(--hub-measure) flex-1 flex-col gap-0.5 overflow-y-auto p-3"
     >
       {body()}
     </div>

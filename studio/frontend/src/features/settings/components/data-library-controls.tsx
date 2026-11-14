@@ -86,7 +86,7 @@ export function LibraryToolbar({
       <div className="relative min-w-48 flex-1">
         <HugeiconsIcon
           icon={Search01Icon}
-          className="pointer-events-none absolute start-3 top-3 size-4 text-muted-foreground"
+          className="pointer-events-none absolute inset-s-3 top-3 size-4 text-muted-foreground"
         />
         <Input
           type="search"
@@ -108,7 +108,7 @@ export function LibraryToolbar({
             className="h-10 gap-2 rounded-full"
             aria-label={t("settings.data.library.filterSort")}
           >
-            <HugeiconsIcon icon={FilterMailIcon} className="size-4 shrink-0 -translate-y-[0.5px]" />
+            <HugeiconsIcon icon={FilterMailIcon} className="size-4 shrink-0 translate-y-[-0.5px]" />
             {projects
               ? t(TYPE_LABELS[filters.type])
               : filters.sort === "default"

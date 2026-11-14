@@ -417,7 +417,7 @@ export function DecisionApiSection({
             <span className="text-ui-11">{docsLink}</span>
           </div>
         )}
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-ui-12/relaxed text-muted-foreground">
           {t("settings.apiKeys.decisionApi.description")}
           {showHeading ? null : <span className="ml-1.5 inline-flex align-baseline">{docsLink}</span>}
         </p>
@@ -453,7 +453,7 @@ export function DecisionApiSection({
     </div>
   );
   const errorLine = error ? (
-    <p className="py-2.5 text-xs leading-snug text-destructive">{error}</p>
+    <p className="py-2.5 text-ui-12/snug text-destructive">{error}</p>
   ) : null;
 
   if (!settings) {
@@ -740,7 +740,7 @@ export function DecisionApiSection({
                 </Select>
               </SettingsRow>
               <p
-                className="pb-3 text-xs text-muted-foreground leading-relaxed"
+                className="pb-3 text-ui-12/relaxed text-muted-foreground"
                 data-decision-backend
               >
                 {t("settings.apiKeys.decisionApi.backendStatus", {

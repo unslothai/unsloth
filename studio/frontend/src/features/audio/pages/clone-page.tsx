@@ -94,7 +94,7 @@ function CloneInputs({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+              className="h-auto gap-1 p-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
               disabled={
                 !referenceUsable || transcriber.transcribing || disabled
               }
@@ -116,7 +116,7 @@ function CloneInputs({
           {transcriber.error ? (
             <p
               role="alert"
-              className="text-ui-11p5 leading-snug text-destructive"
+              className="text-ui-11p5/snug text-destructive"
             >
               {transcriber.error}{" "}
               <Button
@@ -129,7 +129,7 @@ function CloneInputs({
               </Button>
             </p>
           ) : (
-            <p className="text-ui-12 leading-normal text-muted-foreground">
+            <p className="text-ui-12/normal text-muted-foreground">
               {transcriptField === "required"
                 ? "This model matches the voice using the clip's words."
                 : "Helps the model match the voice."}
@@ -280,7 +280,7 @@ function SaveReferenceVoice({
         type="button"
         variant="ghost"
         size="sm"
-        className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+        className="h-auto gap-1 p-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
         disabled={!canSave}
         onClick={() => setSaving(true)}
       >

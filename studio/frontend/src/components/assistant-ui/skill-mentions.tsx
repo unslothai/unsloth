@@ -277,7 +277,7 @@ export function SkillMentionPopover({
                       {item.label}
                     </span>
                     {item.description ? (
-                      <span className="line-clamp-2 max-h-8 overflow-hidden break-words text-xs leading-4 text-muted-foreground">
+                      <span className="line-clamp-2 max-h-8 overflow-hidden wrap-break-word text-ui-12/ui-16 text-muted-foreground">
                         {item.description}
                       </span>
                     ) : null}
@@ -444,7 +444,7 @@ export function useTextareaSkillMentions({
               <span className="block truncate text-sm font-medium">
                 {skill.name}
               </span>
-              <span className="line-clamp-2 max-h-8 overflow-hidden break-words text-xs leading-4 text-muted-foreground">
+              <span className="line-clamp-2 max-h-8 overflow-hidden wrap-break-word text-ui-12/ui-16 text-muted-foreground">
                 {skill.description}
               </span>
             </span>

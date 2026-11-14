@@ -150,7 +150,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
         </span>
       </div>
       {snippet.length > 0 ? (
-        <div className="min-w-0 overflow-x-auto bg-background py-2 font-mono text-xs leading-relaxed">
+        <div className="min-w-0 overflow-x-auto bg-background py-2 font-mono text-ui-12/relaxed">
           {snippet.map((row) => (
             <SnippetLine key={row.number} row={row} severity={finding.severity} />
           ))}

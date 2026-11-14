@@ -733,7 +733,7 @@ export function ProjectsPage({
             <div key={`wrap-${project.id}`}>
             <div
               key={project.id}
-              className="group/project-row relative flex items-center gap-3 rounded-md px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
+              className="group/project-row relative flex items-center gap-3 rounded-md px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255/calc(0.055*var(--contrast-wash-gain,1)))]"
             >
               <span className="flex min-w-0 flex-1 items-center gap-2">
                 {/* A real button holding only text. Giving the whole row the button role made
@@ -763,7 +763,7 @@ export function ProjectsPage({
                     toggleProjectChats(project.id);
                   }}
                   className={cn(
-                    "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 pointer-coarse:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
+                    "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 pointer-coarse:opacity-100 dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]",
                     chatsOpen ? "opacity-100" : "opacity-0",
                   )}
                 >
@@ -793,7 +793,7 @@ export function ProjectsPage({
                   e.stopPropagation();
                   togglePinProject(project.id);
                 }}
-                className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
                   icon={pinned ? PinOffIcon : PinIcon}
@@ -810,7 +810,7 @@ export function ProjectsPage({
                   e.stopPropagation();
                   newChatInProject(project.id);
                 }}
-                className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
               </button>
@@ -821,7 +821,7 @@ export function ProjectsPage({
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label={t("projectsPage.projectOptions")}
-                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground data-[state=open]:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
                     >
                       <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
                     </button>
@@ -870,7 +870,7 @@ export function ProjectsPage({
                       return (
                       <div
                         key={chat.id}
-                        className="group/chat-row flex items-center gap-3 rounded-full py-1.5 pl-5 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
+                        className="group/chat-row flex items-center gap-3 rounded-full py-1.5 px-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255/calc(0.055*var(--contrast-wash-gain,1)))]"
                       >
                         <button
                           type="button"
@@ -900,7 +900,7 @@ export function ProjectsPage({
                             togglePinChat(chat.id);
                           }}
                           className={cn(
-                            "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/chat-row:opacity-100 pointer-coarse:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
+                            "flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/chat-row:opacity-100 pointer-coarse:opacity-100 dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]",
                             chatPinned ? "opacity-100" : "opacity-0",
                           )}
                         >
@@ -919,7 +919,7 @@ export function ProjectsPage({
                                 type="button"
                                 onClick={(e) => e.stopPropagation()}
                                 aria-label={t("projectsPage.chatOptions")}
-                                className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/chat-row:opacity-100 pointer-coarse:opacity-100 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                                className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/chat-row:opacity-100 pointer-coarse:opacity-100 data-[state=open]:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
                               >
                                 <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
                               </button>

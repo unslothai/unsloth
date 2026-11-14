@@ -148,7 +148,7 @@ export function ResearchMessage(): ReactElement | null {
       className={cn(
         "rounded-2xl border border-border/70 bg-card/65 p-4",
         needsApproval && "border-amber-500/25 bg-amber-500/[0.035]",
-        failed && "border-destructive/25 bg-destructive/[0.025]",
+        failed && "border-destructive/25 bg-destructive/2.5",
       )}
     >
       <div className="flex items-start gap-3">
@@ -176,7 +176,7 @@ export function ResearchMessage(): ReactElement | null {
                   ? "Your research plan is ready"
                   : researchStatusLabel(run.status)}
           </p>
-          <p className="mt-1 text-ui-12p5 leading-relaxed text-muted-foreground">
+          <p className="mt-1 text-ui-12p5/relaxed text-muted-foreground">
             {session?.error
               ? session.error
               : failed

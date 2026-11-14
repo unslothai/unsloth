@@ -258,7 +258,7 @@ function LearningRecipeCards({
             type="button"
             disabled={isDisabled}
             onClick={() => onSelect(template)}
-            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70`}
+            className={`group shadow-border relative overflow-hidden rounded-2xl bg-linear-to-br dark:bg-[rgb(255_255_255/calc(0.05*var(--contrast-wash-gain,1)))] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70`}
           >
             <ShineBorder
               borderWidth={1.2}
@@ -281,7 +281,7 @@ function LearningRecipeCards({
                 />
               </div>
               <div className="space-y-1">
-                <p className="line-clamp-2 text-sm font-semibold leading-tight text-foreground">
+                <p className="line-clamp-2 text-sm/tight font-semibold text-foreground">
                   {template.title}
                 </p>
                 <p className="line-clamp-2 text-xs text-muted-foreground dark:text-zinc-300">
@@ -434,7 +434,7 @@ export function DataRecipesPage(): ReactElement {
   const isBusy = creatingRecipe || Boolean(loadingTemplateId);
 
   return (
-    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
+    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0))] bg-background">
       <main className="mx-auto w-full max-w-7xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] px-5 py-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
         <div className="flex items-center justify-between gap-4">

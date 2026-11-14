@@ -422,7 +422,7 @@ export function KeyboardShortcutsTab() {
           </div>
         </div>
         {note ? (
-          <p className="text-xs leading-snug text-muted-foreground">{note}</p>
+          <p className="text-ui-12/snug text-muted-foreground">{note}</p>
         ) : null}
       </div>
     );

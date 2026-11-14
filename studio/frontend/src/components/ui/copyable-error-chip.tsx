@@ -79,7 +79,7 @@ export function CopyableErrorChip({
             {copied ? "Copied" : "Copy"}
           </button>
         </div>
-        <p className="max-h-64 overflow-y-auto select-text whitespace-pre-wrap break-words text-xs text-destructive">
+        <p className="max-h-64 overflow-y-auto select-text whitespace-pre-wrap wrap-break-word text-xs text-destructive">
           {message}
         </p>
       </PopoverContent>

@@ -185,7 +185,7 @@ export function TitleTooltipLayer() {
       ref={tipRef}
       role="tooltip"
       data-title-tooltip=""
-      className="tooltip-compact pointer-events-none fixed line-clamp-[12] w-fit max-w-xs break-words whitespace-pre-line"
+      className="tooltip-compact pointer-events-none fixed line-clamp-12 w-fit max-w-xs wrap-break-word whitespace-pre-line"
       style={{
         left: pos?.left ?? 0,
         top: pos?.top ?? 0,

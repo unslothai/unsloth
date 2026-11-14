@@ -126,7 +126,7 @@ export const CompactOnReturnChip: FC = () => {
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={8} variant="rich">
-        <p className="max-w-64 text-xs leading-snug">
+        <p className="max-w-64 text-ui-12/snug">
           {on
             ? `This chat holds about ${tokens} tokens and the provider's prompt cache has likely expired, so sending now re-reads all of it at full price. Your message will be sent after a summary of the history. Click to keep the full history for this message.`
             : "The full history will be sent with this message. Click to summarize it first."}

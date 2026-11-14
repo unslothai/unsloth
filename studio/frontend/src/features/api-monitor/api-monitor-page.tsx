@@ -380,7 +380,7 @@ function Stat({
       <span className="truncate text-ui-12 text-muted-foreground">{label}</span>
       <span
         className={cn(
-          "truncate font-heading text-ui-21 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground",
+          "truncate font-heading text-ui-21/tight font-semibold tracking-[-0.02em] tabular-nums text-foreground",
           value === "–" && "text-muted-foreground/70",
           tone === "error" && "text-red-600 dark:text-red-400",
           tone === "active" && "text-blue-600 dark:text-blue-400",
@@ -388,7 +388,7 @@ function Stat({
       >
         {value}
       </span>
-      <span className="min-h-[1lh] truncate text-ui-11 text-muted-foreground">
+      <span className="min-h-lh truncate text-ui-11 text-muted-foreground">
         {hint}
       </span>
     </div>
@@ -497,7 +497,7 @@ function Banner({
         singleLine ? "rounded-full" : "rounded-xl",
       )}
     >
-      <span className="min-w-0 flex-1 break-words">{children}</span>
+      <span className="min-w-0 flex-1 wrap-break-word">{children}</span>
       {onDismiss ? (
         <button
           type="button"
@@ -522,7 +522,7 @@ function ContextUsageBar({ value }: { value?: number | null }): ReactElement {
   }
   const pct = Math.max(0, Math.min(100, Math.round(value * 100)));
   return (
-    <div className="flex h-[1lh] items-center gap-2">
+    <div className="flex h-lh items-center gap-2">
       <span className="shrink-0">{pct}%</span>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
         <div
@@ -589,7 +589,7 @@ const RequestRow = memo(function RequestRow({
           // Backend error text can quote the request, so keep it out too.
           <div
             data-reload-snapshot-sensitive
-            className="min-w-0 break-words pl-3.5 text-ui-11 text-red-600 dark:text-red-400"
+            className="min-w-0 wrap-break-word pl-3.5 text-ui-11 text-red-600 dark:text-red-400"
           >
             {entry.error}
           </div>
@@ -722,7 +722,7 @@ function PayloadBlock({
           ref={boxRef}
           data-reload-snapshot-sensitive
           className={cn(
-            "max-h-72 overflow-auto whitespace-pre-wrap break-words scroll-rounded p-3 text-ui-11 leading-[1.55]",
+            "max-h-72 overflow-auto whitespace-pre-wrap wrap-break-word scroll-rounded p-3 text-ui-11 leading-[1.55]",
             singleLine ? "rounded-full" : "rounded-lg",
             copyable && "pr-11",
             tone === "error"
@@ -1506,16 +1506,16 @@ export function ApiMonitorPage(): ReactElement {
       <div
         data-page-model-header=""
         className={cn(
-          "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+          "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-(--studio-chat-header-padding-top,11px)",
           !isMobileShell &&
-            "-mt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-content-top-inset,0px))]",
+            "-mt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0))-var(--studio-content-top-inset,0))]",
           isMobileShell
             ? "pl-12"
             : pinned
               ? "pl-2"
               : isTauri
-                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                ? "pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
+                : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0)-var(--sidebar-width-icon,3rem)))]",
         )}
       >
         <div data-tour="api-toolbar" className="pointer-events-auto flex min-w-0 max-w-full">
@@ -1535,7 +1535,7 @@ export function ApiMonitorPage(): ReactElement {
         <div
           aria-hidden={true}
           data-slot="api-toolbar-fade"
-          className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
+          className="pointer-events-none absolute inset-x-0 top-full h-6 bg-linear-to-b from-background to-transparent"
         />
       </div>
       <main className="api-monitor-page @container/page mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
@@ -1687,7 +1687,7 @@ export function ApiMonitorPage(): ReactElement {
             {reload.error ? (
               <span
                 role="alert"
-                className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
+                className="basis-full wrap-break-word text-ui-12 text-red-600 dark:text-red-400"
               >
                 {reload.error}
               </span>
@@ -1715,18 +1715,18 @@ export function ApiMonitorPage(): ReactElement {
                       key={model.checkpoint}
                       className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-10"
                     >
-                      <span className="order-1 flex min-w-0 flex-1 items-center gap-1 text-ui-12 @max-3xl/served:basis-full @max-3xl/served:items-start @3xl/served:order-none">
+                      <span className="order-1 flex min-w-0 flex-1 items-center gap-1 text-ui-12 @max-3xl/served:basis-full @max-3xl/served:items-start @3xl/served:order-0">
                         <span
                           className="size-1.5 shrink-0 rounded-full bg-emerald-500 @max-3xl/served:mt-1.5"
                           aria-hidden={true}
                         />
-                        <span className="ml-1 min-w-0 truncate font-mono text-foreground @max-3xl/served:whitespace-normal @max-3xl/served:[overflow-wrap:anywhere]">
+                        <span className="ml-1 min-w-0 truncate font-mono text-foreground @max-3xl/served:whitespace-normal @max-3xl/served:wrap-anywhere">
                           {servedName(model)}
                         </span>
                         {exampleButton(model)}
                       </span>
                       {rowFacts(model)}
-                      <span className="order-3 ml-auto flex shrink-0 items-center gap-0.5 justify-self-end @3xl/served:order-none @3xl/served:ml-0">
+                      <span className="order-3 ml-auto flex shrink-0 items-center gap-0.5 justify-self-end @3xl/served:order-0 @3xl/served:ml-0">
                         {settingsButton(model)}
                         {reloadButton(model)}
                         {ejectButton(model)}
@@ -1835,7 +1835,7 @@ export function ApiMonitorPage(): ReactElement {
                     className={cn(
                       "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 font-heading text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
                       active &&
-                        "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
+                        "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
                     )}
                   >
                     {option.label}

@@ -32,7 +32,7 @@ function Logo() {
         src="/sticker.png"
         alt=""
         aria-hidden="true"
-        className="h-[calc(60px*var(--ui-space-scale,1))] w-[calc(60px*var(--ui-space-scale,1))] object-contain"
+        className="size-[calc(60px*var(--ui-space-scale,1))] object-contain"
       />
       <span
         className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
@@ -95,12 +95,12 @@ export function UpdateScreen({
     status === "downloading" ? progress : backendDownload?.percent;
 
   return (
-    <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
+    <div className="box-border flex size-full flex-col items-center overflow-y-auto bg-background pb-6 pt-(--studio-startup-top-inset,0px)">
       {shouldUseNativeMacWindowTitlebar() && (
         <div
           data-tauri-drag-region={true}
           aria-hidden="true"
-          className="pointer-events-auto modal-pe-live fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+          className="pointer-events-auto modal-pe-live fixed inset-x-0 top-0 z-50 h-(--studio-mac-titlebar-height,34px) select-none"
         />
       )}
       <div className="flex min-h-0 w-full max-w-md flex-1 items-center justify-center px-6">
@@ -108,7 +108,7 @@ export function UpdateScreen({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.2, ease: EASE_OUT_QUART }}
-          className="flex h-full w-full flex-col items-center text-center"
+          className="flex size-full flex-col items-center text-center"
         >
           <div className="flex flex-1 items-center">
             <Logo />
@@ -131,7 +131,7 @@ export function UpdateScreen({
 
             {backendDownload && (
               <div className="mt-2 w-full max-w-sm text-xs text-muted-foreground">
-                <p className="break-words">
+                <p className="wrap-break-word">
                   {t("desktopUpdate.downloadingFile", { file: backendDownload.file })}
                 </p>
                 <p>{backendDownload.detail}</p>

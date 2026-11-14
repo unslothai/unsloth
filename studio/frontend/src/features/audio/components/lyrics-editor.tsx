@@ -71,7 +71,7 @@ export function LyricsEditor({
               variant="ghost"
               size="sm"
               disabled={disabled}
-              className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+              className="h-auto gap-1 p-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
             >
               <HugeiconsIcon icon={PlusSignIcon} className="size-3" />
               Add section

@@ -87,7 +87,7 @@ export function McpImageMappings({
           </span>
         </span>
         <Switch
-          className="mt-[var(--ui-title-cap-inset)]"
+          className="mt-(--ui-title-cap-inset)"
           id="mcp-image-attachments"
           checked={enabled}
           disabled={disabled}
@@ -110,7 +110,7 @@ export function McpImageMappings({
               className="flex items-center justify-between gap-3 text-xs"
             >
               {/* Wraps instead of truncating: a nowrap name widens the whole dialog grid to its length. */}
-              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+              <span className="min-w-0 flex-1 wrap-anywhere">
                 {mapping.tool} / {mapping.field}
               </span>
               <Select
@@ -190,7 +190,7 @@ export function McpImageMappings({
                     <SelectItem
                       key={`${option.tool}:${option.field}`}
                       value={String(index)}
-                      className="[overflow-wrap:anywhere]"
+                      className="wrap-anywhere"
                     >
                       {option.tool} / {option.field}
                     </SelectItem>

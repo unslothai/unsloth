@@ -178,7 +178,7 @@ export function MarkdownTable({
           overlayClassName="bg-black/70"
           overlayTone="dense"
           // The whole window below the desktop titlebar, so a click beside the panel closes it.
-          className="top-[var(--studio-window-chrome-top,0px)] right-0 bottom-0 left-0 flex h-auto max-h-none w-auto max-w-none translate-none items-center justify-center gap-0 overflow-hidden rounded-none bg-transparent p-4 ring-0 sm:max-w-none sm:p-16 max-sm:h-auto"
+          className="top-(--studio-window-chrome-top,0px) inset-x-0 bottom-0 flex size-auto max-h-none max-w-none translate-none items-center justify-center gap-0 overflow-hidden rounded-none bg-transparent p-4 ring-0 sm:max-w-none sm:p-16 max-sm:h-auto"
           onClick={(event) => {
             if (event.target === event.currentTarget) {
               setExpanded(false);

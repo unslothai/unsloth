@@ -95,7 +95,7 @@ function MemoryFigure({
   }, [candidates]);
   return (
     <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
-      <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+      <span className="text-ui-13/tight font-medium tracking-nav text-muted-foreground">
         {label}
       </span>
       <Tooltip>
@@ -104,7 +104,7 @@ function MemoryFigure({
             ref={buttonRef}
             type="button"
             aria-label={`${label}: ${value}`}
-            className={`relative inline-flex h-8 w-auto min-w-[calc(64px*var(--ui-space-scale,1))] max-w-full shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium leading-none tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${tone ?? "text-foreground"}`}
+            className={`relative inline-flex h-8 w-auto min-w-[calc(64px*var(--ui-space-scale,1))] max-w-full shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-(--panel-input-surface) px-3.5 text-ui-13 font-medium leading-none tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${tone ?? "text-foreground"}`}
           >
             <span aria-hidden="true" className="min-w-0 truncate">
               {candidates[displayIndex] ?? value}
@@ -146,7 +146,7 @@ function MemoryBreakdownLine({
         {value}
       </span>
       {note ? (
-        <span className="col-span-2 min-w-0 text-ui-11 leading-relaxed text-muted-foreground/80">
+        <span className="col-span-2 min-w-0 text-ui-11/relaxed text-muted-foreground/80">
           {glueNoteItems(note)}
         </span>
       ) : null}
@@ -244,10 +244,10 @@ export function MemoryEstimateRow({
         className="group flex min-h-8 w-full items-center justify-between gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
+          <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-foreground">
             Estimated Memory Usage
           </span>
-          <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+          <span className="shrink-0 rounded-md bg-[rgb(0_0_0/calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
             Beta
           </span>
         </span>
@@ -343,7 +343,7 @@ export function MemoryEstimateRow({
       {advisory && (
         <p
           data-memory-advisory=""
-          className={`mt-1.5 text-pretty text-ui-12 leading-relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
+          className={`mt-1.5 text-pretty text-ui-12/relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
         >
           {advisory.text}
         </p>

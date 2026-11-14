@@ -113,12 +113,12 @@ function Row({
               <button
                 type="button"
                 aria-label={hint}
-                className="inline-flex rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="inline-flex rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <HugeiconsIcon icon={InformationCircleIcon} className="size-[var(--ui-icon-size-hint)]" />
+                <HugeiconsIcon icon={InformationCircleIcon} className="size-(--ui-icon-size-hint)" />
               </button>
             </TooltipTrigger>
-            <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+            <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11/snug">
               {hint}
             </TooltipContent>
           </Tooltip>
@@ -575,7 +575,7 @@ export function TaskDialog({
                         "h-8 min-w-11 cursor-pointer rounded-full px-2.5 text-ui-13 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
                         selected
                           ? "bg-primary text-primary-foreground"
-                          : "bg-muted text-muted-foreground hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:text-foreground/75",
+                          : "bg-muted text-muted-foreground hover:text-foreground dark:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:text-foreground/75",
                       )}
                     >
                       {weekdayName(day, locale, "short")}

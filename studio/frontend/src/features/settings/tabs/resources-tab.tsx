@@ -203,7 +203,7 @@ function MetricTile({
         <span
           title={value}
           className={cn(
-            "truncate font-mono text-ui-14 font-medium leading-tight tabular-nums",
+            "truncate font-mono text-sm/tight font-medium tabular-nums",
             showUsage && !percentKnown
               ? "text-muted-foreground/70"
               : "text-foreground",
@@ -229,7 +229,7 @@ function MetricTile({
         <Progress
           value={percentKnown ? safePercent : 0}
           aria-label={label}
-          className="mt-auto h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
+          className="mt-auto h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0/calc(0.4*var(--contrast-wash-gain,1)))]"
           indicatorClassName={usageIndicatorClass(safePercent)}
         />
       )}

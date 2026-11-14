@@ -2412,7 +2412,7 @@ export const Thread: FC<{
       </IntentAwareScrollProvider>
       <ThreadPrimitive.Root
         ref={watchWidthSteps}
-        className="aui-root aui-thread-root relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [contain:style]"
+        className="aui-root aui-thread-root relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden contain-[style]"
         style={{
           ["--thread-max-width" as string]: "var(--custom-chat-max-width, 48rem)",
           ["--thread-content-max-width" as string]:
@@ -2428,10 +2428,10 @@ export const Thread: FC<{
           <div
             ref={composedViewportRef}
             className={cn(
-              "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+              "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-auto scroll-smooth px-5",
               hideComposer
                 ? "pt-4"
-                : "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)-var(--studio-chat-scroller-top,0px)+var(--studio-chat-header-height,48px))] mt-[var(--studio-chat-scroller-top,0px)] pt-[var(--thread-header-offset)]",
+                : "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)-var(--studio-chat-scroller-top,0px)+var(--studio-chat-header-height,48px))] mt-(--studio-chat-scroller-top,0px) pt-(--thread-header-offset)",
             )}
           />
           <GeneratedImageViewportOverlay
@@ -2678,7 +2678,7 @@ const ThreadComposerDock: FC<{
       ref={dockRef}
       className={cn(
         // Inset both sides: keeps the bottom fade off the scrollbar without shifting the centre.
-        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[var(--thread-scrollbar-gutter,10px)] md:right-[var(--thread-scrollbar-gutter,10px)]",
+        "aui-thread-composer-dock pointer-events-none absolute bottom-0 inset-x-0 md:inset-x-(--thread-scrollbar-gutter,10px)",
         overlay ? "z-40" : "z-20",
       )}
     >
@@ -2686,9 +2686,9 @@ const ThreadComposerDock: FC<{
       <div
         aria-hidden={true}
         className={cn(
-          "thread-bottom-fade absolute bottom-0 left-1/2 w-full max-w-(--thread-max-width) -translate-x-1/2 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
+          "thread-bottom-fade absolute bottom-0 left-1/2 w-full max-w-(--thread-max-width) -translate-x-1/2 bg-linear-to-t from-background from-[calc(100%-28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
           queueVisible
-            ? "h-32 backdrop-blur-[1px] [mask-image:linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
+            ? "h-32 backdrop-blur-[1px] mask-[linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
             : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
@@ -2849,7 +2849,7 @@ const ThreadWelcome: FC<{
           {!incognito && greeting.kind === "text" && greeting.icon.kind === "sloth" && (
             <MascotImg
               src={currentEmojiSrc}
-              className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
+              className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] translate-y-[-2px]"
             />
           )}
           {!incognito && greeting.kind === "text" && greeting.icon.kind === "custom" && (
@@ -2857,13 +2857,13 @@ const ThreadWelcome: FC<{
               src={greeting.icon.src}
               alt=""
               draggable={false}
-              className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(44px*var(--ui-space-scale,1))] shrink-0 -translate-y-[2px] object-contain"
+              className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(44px*var(--ui-space-scale,1))] shrink-0 translate-y-[-2px] object-contain"
             />
           )}
           <h1
             className={cn(
               "aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200",
-              customText && "min-w-0 text-balance text-center [overflow-wrap:anywhere]",
+              customText && "min-w-0 text-balance text-center wrap-anywhere",
             )}
           >
             {incognito
@@ -2883,7 +2883,7 @@ const ThreadWelcome: FC<{
   );
 
   return (
-    <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
+    <div className="aui-thread-welcome-root m-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div
         className={cn(
           "aui-thread-welcome-center flex w-full grow flex-col items-center",
@@ -2947,7 +2947,7 @@ const ComposerAnimated: FC<{
   disableQueue?: boolean;
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   return (
-    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,var(--thread-content-max-width,46rem))]">
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-(--custom-chat-shell-max-width,var(--thread-content-max-width,46rem))">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}
@@ -7728,12 +7728,12 @@ const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message min-w-0 flex-1 whitespace-pre-wrap break-words" />
+        <ErrorPrimitive.Message className="aui-message-error-message min-w-0 flex-1 whitespace-pre-wrap wrap-break-word" />
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <button
               type="button"
-              className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
+              className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors"
             >
               <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
               Retry
@@ -8250,7 +8250,7 @@ const DiffusionCanvas: FC = () => {
           block {canvas.block + 1} - {stepLabel}
         </span>
       </div>
-      <pre className="max-h-[60dvh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-ui-12p5 leading-relaxed text-foreground/90">
+      <pre className="max-h-[60dvh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-ui-12p5/relaxed text-foreground/90">
         {canvas.text}
       </pre>
     </div>
@@ -8344,7 +8344,7 @@ const AssistantMessage: FC = () => {
   return (
     <ResearchMessageRunIdContext.Provider value={researchRunId}>
       <MessagePrimitive.Root
-      className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
+      className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 font-[410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
       // The message is the tab stop that lets the action bar reveal fire; a tabIndex adds no DOM node,
       // and :focus-visible keeps mouse clicks unringed.
@@ -8409,7 +8409,7 @@ const AssistantMessage: FC = () => {
         )}
       </div>
 
-      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
+      <div className="aui-assistant-message-footer mt-1.5 -ml-(--icon-btn-inset) flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         {/* First, so the action bar mounting on hover never moves it. */}
         <AssistantMessageTime />
         {/* Match the row height so wrapping live text cannot move the picker. */}
@@ -8675,7 +8675,7 @@ const DeleteMessageButton: FC = () => {
       tooltip="Delete"
       disabled={isRunning}
       onClick={() => void handleDelete()}
-      className="hover:!text-destructive"
+      className="hover:text-destructive!"
     >
       <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
     </TooltipIconButton>
@@ -8814,7 +8814,7 @@ const ContinueResponseMenuItemForLastMessage: FC = () => {
       onSelect={() => {
         startContinuation();
       }}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50"
     >
       <HugeiconsIcon icon={ContinueArrowIcon} strokeWidth={1.75} className="size-icon" />
       Continue response
@@ -8835,7 +8835,7 @@ const EditAssistantMessageMenuItem: FC = () => {
     <ActionBarMorePrimitive.Item
       disabled={isRunning || researchActive}
       onSelect={() => setEditingId(messageId)}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50"
     >
       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
       Edit response
@@ -8881,7 +8881,7 @@ const AssistantActionBar: FC = () => {
         // Autohide drops each bar's ~8 tooltip subscriptions; "not-last" keeps the newest reply's bar
         // tabbable, useActionBarFocusReveal remounts others on focus, "never" while speaking.
         autohide={speaking ? "never" : "not-last"}
-        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex min-w-0 flex-wrap items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex min-w-0 flex-wrap items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:rounded-full! [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
@@ -9096,7 +9096,7 @@ const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       className={cn(
-        "aui-user-message-root mx-auto flex w-full max-w-(--thread-content-max-width) flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]",
+        "aui-user-message-root mx-auto flex w-full max-w-(--thread-content-max-width) flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 font-[410] tracking-[0.01em] dark:tracking-[0.02em]",
         arriving && "fade-in slide-in-from-bottom-1 animate-in duration-150",
       )}
       data-role="user"
@@ -9231,7 +9231,7 @@ const EditComposer: FC = () => {
 
   return (
     // Top gap and type match UserMessage, so the text stays near the prompt's line.
-    <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]">
+    <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 font-[410] tracking-[0.01em] dark:tracking-[0.02em]">
       <ComposerPrimitive.Root
         className="aui-edit-composer-root flex w-full flex-col rounded-xl bg-muted"
         onSubmit={(event) => {

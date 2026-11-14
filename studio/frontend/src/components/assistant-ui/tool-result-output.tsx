@@ -28,7 +28,7 @@ export function ToolResultOutput({ text }: { text: string }) {
             : `Show all (${tail.hiddenChars.toLocaleString()} earlier chars hidden)`}
         </button>
       )}
-      <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
+      <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-xs">
         {showAll ? cleaned : tail.visible}
       </pre>
     </>

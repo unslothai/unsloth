@@ -196,7 +196,7 @@ export default function SamplingFooter({
   const unchanged = saved !== null && sameSampling(saved, current);
 
   return (
-    <div className="flex flex-col gap-3.5 border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] pt-4.75 dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]">
+    <div className="flex flex-col gap-3.5 border-t border-[rgb(0_0_0/calc(0.13*var(--contrast-edge-gain,1)))] pt-4.75 dark:border-[rgb(255_255_255/calc(0.09*var(--contrast-edge-gain,1)))]">
       {/* Not inline: the sheet is too narrow. */}
       <div>
         <div className="flex min-w-0 items-center gap-2">
@@ -218,7 +218,7 @@ export default function SamplingFooter({
           id={statusId}
           aria-live="polite"
           data-state={status === "Unsaved changes" ? "dirty" : undefined}
-          className="pt-1 pl-6 text-ui-11 leading-snug text-muted-foreground empty:pt-0 data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+          className="pt-1 pl-6 text-ui-11/snug text-muted-foreground empty:pt-0 data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
         >
           {status}
         </p>

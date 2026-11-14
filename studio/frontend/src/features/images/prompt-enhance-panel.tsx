@@ -330,7 +330,7 @@ export function EnhancePromptControls({
           </div>
           {previewOpen ? (
             <>
-              <p className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-foreground">
+              <p className="max-h-48 overflow-y-auto whitespace-pre-wrap wrap-break-word text-foreground">
                 {preview.caption}
               </p>
               <div className="flex items-center justify-end gap-1">
@@ -374,7 +374,7 @@ export function EnhancedPromptRecipeRow({ caption }: { caption: string }) {
         <span
           className={cn(
             "min-w-0 text-foreground",
-            open ? "whitespace-pre-wrap break-words" : "truncate",
+            open ? "whitespace-pre-wrap wrap-break-word" : "truncate",
           )}
         >
           {caption}

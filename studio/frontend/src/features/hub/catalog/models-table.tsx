@@ -147,7 +147,7 @@ export function HubListHeader({
             {title}
           </h2>
           {subtitle && (
-            <p className="text-ui-12p5 leading-tight text-muted-foreground">
+            <p className="text-ui-12p5/tight text-muted-foreground">
               {subtitle}
             </p>
           )}
@@ -395,17 +395,17 @@ export const ResultCard = memo(function ResultCard({
       type="button"
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
-      className="hub-result-row hub-result-card group/row @container flex h-full w-full cursor-pointer items-center gap-3.5 px-4 text-left max-md:gap-3 max-md:px-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+      className="hub-result-row hub-result-card group/row @container flex size-full cursor-pointer items-center gap-3.5 px-4 text-left max-md:gap-3 max-md:px-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-lg text-ui-16 max-md:size-[calc(42px*var(--ui-space-scale,1))] max-md:rounded-md max-md:text-ui-14 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-lg text-ui-16 max-md:size-[calc(42px*var(--ui-space-scale,1))] max-md:rounded-md max-md:text-ui-14 ring-1 ring-[rgb(0_0_0/calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255/calc(0.1*var(--contrast-edge-gain,1)))]"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-ui-15 font-semibold leading-ui-18 text-foreground max-md:text-ui-14">
+          <span className="truncate text-ui-15/ui-18 font-semibold text-foreground max-md:text-ui-14">
             {row.repo}
           </span>
           <TitleMarkers
@@ -418,10 +418,10 @@ export const ResultCard = memo(function ResultCard({
             onDevice={onDevice}
           />
         </div>
-        <span className="flex min-w-0 items-center gap-1 text-ui-12p5 leading-ui-16 text-muted-foreground/80">
+        <span className="flex min-w-0 items-center gap-1 text-ui-12p5/ui-16 text-muted-foreground/80">
           <VerifiedOwner owner={row.owner} />
         </span>
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-11p5 leading-ui-16 tabular-nums text-muted-foreground/65">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-11p5/ui-16 tabular-nums text-muted-foreground/65">
           {/* Narrow cards drop the task label, then the date. */}
           {textParts.map((part, index) => (
             <span
@@ -527,7 +527,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       aria-current={selected || undefined}
       data-selected={selected || undefined}
       onClick={() => onSelect(row.id)}
-      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[selected]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-accent"
+      className="group/row flex size-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-selected:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255/calc(0.05*var(--contrast-wash-gain,1)))] dark:data-selected:bg-accent"
     >
       <OwnerAvatar
         owner={row.owner}
@@ -537,7 +537,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-ui-12p5 font-semibold leading-ui-16 text-foreground">
+          <span className="truncate text-ui-12p5/ui-16 font-semibold text-foreground">
             {row.repo}
           </span>
           <TitleMarkers
@@ -550,7 +550,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             onDevice={onDevice}
           />
         </div>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-10p5 leading-ui-14 text-muted-foreground/80">
+        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-10p5/ui-14 text-muted-foreground/80">
           <VerifiedOwner owner={row.owner} />
         </span>
       </div>

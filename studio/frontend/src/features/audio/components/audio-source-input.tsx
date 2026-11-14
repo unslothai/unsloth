@@ -129,7 +129,7 @@ function AlertLine({ children }: { children: ReactNode }) {
   return (
     <p
       role="alert"
-      className="flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
+      className="flex items-start gap-1.5 text-ui-12/snug text-foreground"
     >
       <HugeiconsIcon
         icon={Alert02Icon}
@@ -282,7 +282,7 @@ export function AudioSourceInput({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+              className="h-auto gap-1 p-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
               disabled={disabled}
               onClick={source.clear}
             >
@@ -325,7 +325,7 @@ export function AudioSourceInput({
         </div>
       ) : showSelected && status.phase !== "error" ? (
         <div className="grid gap-2">
-          <div className="grid gap-2.5 rounded-xl border border-border bg-background px-3.5 py-3 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+          <div className="grid gap-2.5 rounded-xl border border-border bg-background px-3.5 py-3 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]">
           <div className="flex min-w-0 items-center gap-2 text-ui-12">
             <span className="grid w-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center">
               <HugeiconsIcon
@@ -387,13 +387,13 @@ export function AudioSourceInput({
           ) : usesFirstSeconds !== null &&
             durationS !== null &&
             durationS > usesFirstSeconds ? (
-            <p className="text-ui-12 leading-normal text-muted-foreground">
+            <p className="text-ui-12/normal text-muted-foreground">
               {usesFirstSeconds % 60 === 0 && usesFirstSeconds >= 60
                 ? `Uses the first ${usesFirstSeconds / 60} min.`
                 : `Uses the first ${usesFirstSeconds} s.`}
             </p>
           ) : lengthHint ? (
-            <p className="text-ui-12 leading-normal text-muted-foreground">
+            <p className="text-ui-12/normal text-muted-foreground">
               {lengthHint}
             </p>
           ) : null}
@@ -488,7 +488,7 @@ export function AudioSourceInput({
           ) : null}
           {tab === "history" && !recording ? (
             history.length === 0 ? (
-              <p className="text-ui-12 leading-snug text-muted-foreground">
+              <p className="text-ui-12/snug text-muted-foreground">
                 Clips you make in Audio show up here.
               </p>
             ) : (

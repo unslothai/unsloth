@@ -425,7 +425,7 @@ export function ApiModelLoadControls({
       {actionError ? (
         <span
           role="alert"
-          className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
+          className="basis-full wrap-break-word text-ui-12 text-red-600 dark:text-red-400"
         >
           {actionError}
         </span>

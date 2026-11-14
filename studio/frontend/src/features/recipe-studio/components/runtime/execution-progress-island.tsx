@@ -162,7 +162,7 @@ export function ExecutionProgressIsland({
           <button
             type="button"
             onClick={() => onMinimizedChange(!minimized)}
-            className="btn-fill inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition "
+            className="btn-fill inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition"
             aria-label={minimized ? "Expand progress" : "Minimize progress"}
             title={minimized ? "Expand" : "Minimize"}
           >
@@ -236,7 +236,7 @@ export function ExecutionProgressIsland({
               {execution.batch?.total ?? "--"}
             </div>
           )}
-          <div className="px-3 pb-2 pt-2">
+          <div className="px-3 py-2">
             <Button
               type="button"
               variant="outline"

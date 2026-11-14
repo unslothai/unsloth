@@ -97,7 +97,7 @@ export function GalleryItemMenu({
             // Circular hover, no border: focus returning on close would draw one. Keyboard focus tints instead.
             "rounded-full border-0 focus-visible:bg-muted dark:focus-visible:bg-muted/50",
             overlay &&
-              "bg-background/80 text-foreground shadow-sm backdrop-blur hover:bg-background focus-visible:bg-background aria-expanded:bg-background dark:focus-visible:bg-background",
+              "bg-background/80 text-foreground shadow-sm backdrop-blur-sm hover:bg-background focus-visible:bg-background aria-expanded:bg-background dark:focus-visible:bg-background",
             row && "text-muted-foreground hover:text-foreground",
             className,
           )}
@@ -195,7 +195,7 @@ export function GalleryPinBadge({
           aria-label={`Unpin this ${noun}`}
           onClick={onUnpin}
           className={cn(
-            "group/pin absolute flex items-center justify-center rounded-full bg-background/80 p-0.5 text-foreground shadow-sm backdrop-blur outline-none transition-colors hover:bg-background focus-visible:ring-2 focus-visible:ring-ring",
+            "group/pin absolute flex items-center justify-center rounded-full bg-background/80 p-0.5 text-foreground shadow-sm backdrop-blur-sm outline-none transition-colors hover:bg-background focus-visible:ring-2 focus-visible:ring-ring",
             className,
           )}
         >

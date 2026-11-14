@@ -356,7 +356,7 @@ export function LinkedFoldersManager({
           <h3 className="text-sm font-medium text-foreground">
             Source folders
           </h3>
-          <p className="text-xs leading-snug text-muted-foreground">
+          <p className="text-ui-12/snug text-muted-foreground">
             {manager.desktopSupported
               ? SOURCE_FOLDER_DESCRIPTION
               : `${sourceFolderUnavailableMessage(isTauri)} Existing source folders continue to sync.`}
@@ -367,7 +367,7 @@ export function LinkedFoldersManager({
             type="button"
             size="sm"
             variant="outline"
-            className="mt-[var(--ui-title-cap-inset)] shrink-0"
+            className="mt-(--ui-title-cap-inset) shrink-0"
             disabled={!manager.desktopSupported || manager.mutating}
             onClick={() => void manager.link()}
             title={

@@ -125,7 +125,7 @@ export function VoicePicker({
         onPause={() => setPlayingId(null)}
       />
       {voices.length === 0 ? (
-        <p className="px-1 py-2 text-ui-12 leading-snug text-muted-foreground">
+        <p className="px-1 py-2 text-ui-12/snug text-muted-foreground">
           {error ? (
             <>
               {error}{" "}

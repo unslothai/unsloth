@@ -106,7 +106,7 @@ export function SidebarEdgeTrigger({
           dataSlot="sidebar-edge-trigger"
           className={cn(
             // Below the titlebar, above the held-out panel; `block` beats the handle's `hidden sm:block`.
-            "fixed bottom-0 left-0 right-auto top-[var(--studio-desktop-titlebar-height,48px)] z-[55] block",
+            "fixed bottom-0 left-0 right-auto top-(--studio-desktop-titlebar-height,48px) z-55 block",
             // Undecorated windows (Windows, Linux) hit-test their resize border inside the content.
             usesCustomTitlebar ? "w-3" : "w-0.5",
             "after:hidden",

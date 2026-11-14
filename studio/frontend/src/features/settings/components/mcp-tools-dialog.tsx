@@ -184,7 +184,7 @@ function ToolChip({
           icon={Tick02Icon}
           strokeWidth={2}
           aria-hidden={true}
-          className="pointer-events-none absolute end-2.5 size-4"
+          className="pointer-events-none absolute inset-e-2.5 size-4"
         />
       ) : null}
     </button>
@@ -274,7 +274,7 @@ export function McpToolsDialog({
         </DialogHeader>
 
         {error ? (
-          <p className="text-xs leading-snug text-destructive">{error}</p>
+          <p className="text-ui-12/snug text-destructive">{error}</p>
         ) : null}
 
         <div
@@ -312,7 +312,7 @@ export function McpToolsDialog({
               </section>
           ))}
           {footnote ? (
-            <p className="px-3 text-xs leading-snug text-muted-foreground">
+            <p className="px-3 text-ui-12/snug text-muted-foreground">
               {footnote}
             </p>
           ) : null}

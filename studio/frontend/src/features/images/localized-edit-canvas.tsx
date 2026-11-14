@@ -222,7 +222,7 @@ export function LocalizedEditCanvas({
         onPointerMove={onMove}
         onPointerUp={onUp}
         onPointerLeave={onUp}
-        className="absolute inset-0 h-full w-full cursor-crosshair touch-none"
+        className="absolute inset-0 size-full cursor-crosshair touch-none"
       />
     </div>
   );

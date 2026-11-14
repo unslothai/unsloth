@@ -968,7 +968,7 @@ const SingleContent = memo(function SingleContent({
         className={cn(
           "chat-artifact-split relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden",
           chatOnRight &&
-            "[&>#chat-artifact]:order-1 [&>[data-slot=resizable-handle]]:order-2 [&>#chat-thread]:order-3",
+            "[&>#chat-artifact]:order-1 *:data-[slot=resizable-handle]:order-2 [&>#chat-thread]:order-3",
         )}
         data-browser-full-view={browserFullView ? "true" : undefined}
         // Not :has(), which re-walks the thread per token (thread-ancestor-has-scope.test.ts).
@@ -1043,10 +1043,10 @@ const SingleContent = memo(function SingleContent({
           }}
           onKeyUp={rememberArtifactPanelWidth}
           className={cn(
-            "relative z-30 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
+            "relative z-30 w-5 bg-transparent transition-[width,margin] duration-260 ease-(--ease-out-cubic) hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
             chatOnRight ? "-ml-4 -mr-1" : "-ml-1 -mr-4",
             (!artifactLayoutActive || browserFullView) &&
-              "pointer-events-none -ml-0 -mr-0 w-0",
+              "pointer-events-none mx-0 w-0",
           )}
         />
         <ResizablePanel
@@ -1327,7 +1327,7 @@ function ComparePane({
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
         <div
           aria-hidden={true}
-          className="compare-pane-fade pointer-events-none absolute top-0 left-0 right-[var(--thread-scrollbar-gutter,10px)] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+          className="compare-pane-fade pointer-events-none absolute top-0 left-0 right-(--thread-scrollbar-gutter,10px) z-20 h-6 bg-linear-to-b from-background to-transparent"
         />
         <ChatRuntimeProvider
           modelType={modelType}
@@ -1388,13 +1388,13 @@ function CompareShell({
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
         <div
           data-tour="chat-compare-view"
-          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-[var(--studio-content-top-inset,0px)] lg:flex-row"
+          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-(--studio-content-top-inset,0px) lg:flex-row"
         >
           {children}
         </div>
-        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
+        <div className="shrink-0 bg-background px-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
           {/* unsloth-composer-shell: the size container the single composer's narrow layout queries. */}
-          <div className="unsloth-composer-shell mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
+          <div className="unsloth-composer-shell mx-auto w-full max-w-(--custom-chat-max-width,48rem)">{composer}</div>
         </div>
       </div>
     </CompareHandlesProvider>
@@ -1536,7 +1536,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           }
           borderClassName="border-t border-border/60 lg:border-t-0 lg:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start lg:text-end lg:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <div className="shrink-0 px-3 py-1.5 text-start lg:text-end lg:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
@@ -1649,14 +1649,14 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-(--studio-chat-header-padding-top,11px)",
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
             : isTauri
-              ? "pl-12 pr-3 md:pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
-          : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              ? "pl-12 pr-3 md:pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
+              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0)-var(--sidebar-width-icon,3rem)))]"
+          : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]",
       )}
     >
       <div className="compare-model-picker pointer-events-auto ml-1.5 min-w-0 max-w-[80%]">
@@ -1670,7 +1670,7 @@ function GeneralCompareHeader({
       {label ? (
         <span
           className={cn(
-            "pointer-events-none hidden h-[var(--studio-chat-control-height,34px)] shrink-0 items-center text-ui-10 font-semibold uppercase tracking-wider sm:flex",
+            "pointer-events-none hidden h-(--studio-chat-control-height,34px) shrink-0 items-center text-ui-10 font-semibold uppercase tracking-wider sm:flex",
             side === "right" && "ml-auto",
             label === "Fine-tuned" ? "text-primary" : "text-muted-foreground",
           )}
@@ -2435,7 +2435,7 @@ function ProjectLanding({
                   className="size-6.5"
                 />
               </span>
-              <h1 className="min-w-0 flex-1 truncate font-sans text-ui-30 font-medium leading-tight tracking-normal text-foreground">
+              <h1 className="min-w-0 flex-1 truncate font-sans text-3xl/tight font-medium tracking-normal text-foreground">
                 {projectName}
               </h1>
               <NonModalDropdownMenu
@@ -2556,7 +2556,7 @@ function ProjectLanding({
                   return (
                     <div
                       key={`${item.type}:${item.id}`}
-                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-md transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover has-[[data-state=open]]:[--row-date-opacity:0]"
+                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-md transition-colors hover:bg-nav-surface-hover has-data-[state=open]:bg-nav-surface-hover has-data-[state=open]:[--row-date-opacity:0]"
                     >
                       <button
                         type="button"
@@ -2576,7 +2576,7 @@ function ProjectLanding({
                             {displayTitle}
                           </div>
                         </div>
-                        <span className="shrink-0 text-ui-14 text-muted-foreground opacity-[var(--row-date-opacity,1)] transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0">
+                        <span className="shrink-0 text-ui-14 text-muted-foreground opacity-(--row-date-opacity,1) transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0">
                           {preview?.date ??
                             formatProjectChatDate(item.createdAt)}
                         </span>
@@ -4931,22 +4931,22 @@ export function ChatPage({
           <div
             aria-hidden
             data-side-panel-inset=""
-            className="chat-header-fade pointer-events-none absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0))] top-[calc(var(--studio-content-top-inset,0)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-linear-to-b from-background to-transparent"
           />
         )}
         <div
           data-side-panel-inset=""
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-(--studio-content-top-inset,0px) left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0))] z-40 flex h-(--studio-chat-header-height,48px) shrink-0 items-start bg-background pt-(--studio-chat-header-padding-top,11px) pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]",
             isMobile
               ? "pl-12"
               : pinned
                 ? "pl-2"
                 : isTauri
-                  ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                  : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                  ? "pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
+                  : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-(--thread-scrollbar-gutter,10px) left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]",
           )}
         >
           <div data-wallpaper-chrome-controls="" data-chat-model-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
@@ -4958,7 +4958,7 @@ export function ChatPage({
                 title="New chat"
                 aria-label="New chat"
                 onClick={handleDesktopNewChat}
-                className="!size-[calc(30px*var(--ui-space-scale,1))] shrink-0 rounded-[10px] text-muted-foreground"
+                className="size-[calc(30px*var(--ui-space-scale,1))]! shrink-0 rounded-[10px] text-muted-foreground"
               >
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
@@ -4982,7 +4982,7 @@ export function ChatPage({
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
-                className="flex h-[var(--studio-chat-control-height,34px)] min-w-0 items-center gap-1.5 self-center text-ui-13p5 tracking-nav text-muted-foreground"
+                className="flex h-(--studio-chat-control-height,34px) min-w-0 items-center gap-1.5 self-center text-ui-13p5 tracking-nav text-muted-foreground"
               >
                 <ProjectSwitcher
                   currentProject={currentProject}
@@ -5073,7 +5073,7 @@ export function ChatPage({
                 parallelSlots={loadedParallelSlots}
                 contextBudget={loadedContextBudget}
                 estimated={contextUsage?.estimated}
-                className="h-[var(--studio-chat-control-height,34px)]"
+                className="h-(--studio-chat-control-height,34px)"
               />
             ) : null}
             {view.mode === "single" && incognito ? (

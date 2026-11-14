@@ -74,7 +74,7 @@ function PassageItem({
         ) : null}
       </div>
       <p
-        className={`whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground/90 ${
+        className={`whitespace-pre-wrap wrap-break-word text-ui-12/relaxed text-foreground/90 ${
           code ? "font-mono" : ""
         } ${clampable && !expanded ? "line-clamp-4" : ""}`}
       >

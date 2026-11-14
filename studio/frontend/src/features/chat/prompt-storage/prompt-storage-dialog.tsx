@@ -1880,7 +1880,7 @@ function PromptDetail({
           value={text}
           onChange={(e) => update({ text: e.target.value })}
           placeholder="Prompt text..."
-          className="min-h-0 flex-1 w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
+          className="min-h-0 flex-1 w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2.5 text-sm/relaxed ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
         />
       )}
       <div className="flex shrink-0 items-center gap-2 text-ui-11 text-muted-foreground/70">
@@ -1899,7 +1899,7 @@ function PromptDetail({
           type="button"
           onClick={() => togglePinnedPrompt(entry.id)}
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+            "flex size-8 items-center justify-center rounded-full transition-colors",
             isPinned
               ? "text-foreground hover:bg-wash-10"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
@@ -1911,7 +1911,7 @@ function PromptDetail({
         <button
           type="button"
           onClick={() => onExport(exportValue)}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="flex size-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -1920,7 +1920,7 @@ function PromptDetail({
           type="button"
           disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="flex size-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
           <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
@@ -2053,7 +2053,7 @@ function NewPromptForm({
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Write your prompt here..."
-        className="min-h-0 flex-1 w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
+        className="min-h-0 flex-1 w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2.5 text-sm/relaxed ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <div className="flex shrink-0 flex-wrap gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
@@ -2201,7 +2201,7 @@ function PromptListDetail({
           <>
             <div className="flex flex-col gap-1.5">
               {items.slice(0, 5).map((item, i) => (
-                <p key={i} className="flex gap-2 text-xs leading-relaxed text-muted-foreground">
+                <p key={i} className="flex gap-2 text-ui-12/relaxed text-muted-foreground">
                   <span className="shrink-0 tabular-nums text-muted-foreground/40">{i + 1}.</span>
                   <span className="line-clamp-1">{item}</span>
                 </p>
@@ -2237,7 +2237,7 @@ function PromptListDetail({
           type="button"
           onClick={() => togglePinnedList(entry.id)}
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+            "flex size-8 items-center justify-center rounded-full transition-colors",
             isPinned
               ? "text-foreground hover:bg-wash-10"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
@@ -2249,7 +2249,7 @@ function PromptListDetail({
         <button
           type="button"
           onClick={() => onExport(exportValue)}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="flex size-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -2258,7 +2258,7 @@ function PromptListDetail({
           type="button"
           disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="flex size-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
           <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
@@ -2799,7 +2799,7 @@ export function PromptStorageDialog({
                 className="w-full rounded-full border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
               />
               {showSuggestions && searchQuery.trim() !== "" && suggestions.length > 0 && (
-                <div className="dropdown-surface absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
+                <div className="dropdown-surface absolute top-full inset-x-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
                   {suggestions.map((name) => (
                     <button
                       key={name}

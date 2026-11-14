@@ -708,10 +708,10 @@ function NavItem({
         data-tour={dataTour}
         data-testid={testId}
         data-spinner={spinner && !waiting ? "true" : undefined}
-        className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
+        className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:size-[calc(28px*var(--ui-space-scale,1))]! group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
-        <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
+        <span className="text-ui-14p5/ui-19 tracking-nav">{label}</span>
         {badge && (
           <Badge variant="accent" className="group-data-[collapsible=icon]:hidden">
             {badge}
@@ -1045,7 +1045,7 @@ function MoreMenuItem({
             event.stopPropagation();
             newAction.run();
           }}
-          className="-my-1 -mr-1 ml-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:text-foreground group-hover/more-item:opacity-100 group-data-[highlighted]/more-item:opacity-100 focus-visible:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(pointer:coarse)]:opacity-100"
+          className="-my-1 -mr-1 ml-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-[rgb(0_0_0/calc(0.06*var(--contrast-wash-gain,1)))] hover:text-foreground group-hover/more-item:opacity-100 group-data-highlighted/more-item:opacity-100 focus-visible:opacity-100 dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] pointer-coarse:opacity-100"
         >
           <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
         </button>
@@ -4655,7 +4655,7 @@ export function AppSidebar() {
       <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
         {/* While open, the next section rides up over the tail strip below, so the strip adds
             no space. */}
-        <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0 data-[state=open]:-mb-[calc(8px*var(--ui-space-scale,1))]">
+        <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden p-0 data-[state=open]:mb-[calc(-8px*var(--ui-space-scale,1))]">
           <SidebarGroupLabel
             className={cn(
               "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
@@ -4675,7 +4675,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               Pinned
-              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 in-data-[state=closed]:-rotate-90 in-data-[state=closed]:opacity-100" />
             </CollapsibleTrigger>
             {renderSidebarHeaderMenu({
               ariaLabel: t("shell.organize.sortPinnedChats"),
@@ -4727,7 +4727,7 @@ export function AppSidebar() {
                 {pinnedRows.length === 0 ? (
                   // Every pinned page is filed elsewhere: somewhere to drag them back to.
                   <SidebarMenuItem>
-                    <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
+                    <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13/ui-18 tracking-nav text-nav-fg-muted">
                       {t("shell.sections.empty")}
                     </p>
                   </SidebarMenuItem>
@@ -4743,7 +4743,7 @@ export function AppSidebar() {
                   aria-hidden
                   className={cn(
                     // z-[1]: above the next section's header, which overlaps it.
-                    "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
+                    "relative z-1 h-[calc(8px*var(--ui-space-scale,1))]",
                     dropCueClass(SIDEBAR_TAIL_SCOPE, "pinned"),
                   )}
                   {...dnd.dropZoneProps({
@@ -4784,9 +4784,9 @@ export function AppSidebar() {
         {/* As Pinned: while open, the next section rides up over the tail strip. */}
         <SidebarGroup
           className={cn(
-            "group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0",
+            "group/sb-section group-data-[collapsible=icon]:hidden p-0",
             rows.length > 0 &&
-              "data-[state=open]:-mb-[calc(8px*var(--ui-space-scale,1))]",
+              "data-[state=open]:mb-[calc(-8px*var(--ui-space-scale,1))]",
           )}
         >
           <SidebarGroupLabel
@@ -4811,7 +4811,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               <span className="min-w-0 truncate">{section.name}</span>
-              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 in-data-[state=closed]:-rotate-90 in-data-[state=closed]:opacity-100" />
             </CollapsibleTrigger>
             <button
               type="button"
@@ -4865,7 +4865,7 @@ export function AppSidebar() {
                 />
                 {rows.length === 0 ? (
                   <SidebarMenuItem>
-                    <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
+                    <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13/ui-18 tracking-nav text-nav-fg-muted">
                       {t("shell.sections.empty")}
                     </p>
                   </SidebarMenuItem>
@@ -4873,7 +4873,7 @@ export function AppSidebar() {
                   <SidebarMenuItem
                     aria-hidden
                     className={cn(
-                      "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
+                      "relative z-1 h-[calc(8px*var(--ui-space-scale,1))]",
                       dropCueClass(SIDEBAR_TAIL_SCOPE, scope),
                     )}
                     {...dnd.dropZoneProps({
@@ -4900,7 +4900,7 @@ export function AppSidebar() {
         onOpenChange={setProjectsOpen}
         asChild
       >
-        <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0">
+        <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden p-0">
           {/* Trigger takes the free space; the actions reveal beside it. The header also
               takes a pinned folder dragged back while the section is closed. */}
           <SidebarGroupLabel
@@ -4929,7 +4929,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               {t("shell.navigation.projects")}
-              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 in-data-[state=closed]:-rotate-90 in-data-[state=closed]:opacity-100" />
             </CollapsibleTrigger>
             <button
               type="button"
@@ -4977,7 +4977,7 @@ export function AppSidebar() {
                     nowhere to land and nothing lights up. */}
                 {visibleProjectRecords.length === 0 && (
                   <SidebarMenuItem>
-                    <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
+                    <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13/ui-18 tracking-nav text-nav-fg-muted">
                       {t(
                         projects.length === 0
                           ? "shell.navigation.noProjects"
@@ -4997,7 +4997,7 @@ export function AppSidebar() {
                       }}
                       className="sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] rounded-full pl-3 pr-4 font-medium text-nav-fg-muted!"
                     >
-                      <span className="text-ui-13 leading-ui-18 tracking-nav">
+                      <span className="text-ui-13/ui-18 tracking-nav">
                         {t(
                           showAllProjects
                             ? "shell.navigation.showLess"
@@ -5431,7 +5431,7 @@ export function AppSidebar() {
         ? "sidebar-row-action sidebar-touch-reveal group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] cursor-pointer rounded-full py-0 pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
+      "sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] cursor-pointer rounded-full py-0 pr-4 text-ui-14p5/ui-19 tracking-nav font-medium",
       variant === "project" ? "pl-[calc(39px*var(--ui-space-scale,1))]" : "pl-3",
       isPinned && variant !== "project" && "gap-[calc(8.5px*var(--ui-space-scale,1))]",
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
@@ -5439,18 +5439,18 @@ export function AppSidebar() {
       showWorkSpinner ? "pr-16" : hasUnreadActivity || showForkMark ? "pr-9" : showScheduledMark ? "pr-7" : undefined,
       // Coarse pointers reveal the actions permanently, so the spinner drops back beside
       // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
-      showWorkSpinner && "[@media(pointer:coarse)]:pr-[calc(78px*var(--ui-space-scale,1))]",
+      showWorkSpinner && "pointer-coarse:pr-[calc(78px*var(--ui-space-scale,1))]",
       variant === "project"
         ? showWorkSpinner
           ? undefined
           : // Room for the pin quick-action plus the kebab, and the same room with the menu open:
             // a narrower gutter there let the title run under them.
-            "group-hover/project-chat-item:pr-14 [&:has(~.sidebar-row-action[data-state=open])]:pr-14 [@media(pointer:coarse)]:pr-14"
+            "group-hover/project-chat-item:pr-14 [&:has(~.sidebar-row-action[data-state=open])]:pr-14 pointer-coarse:pr-14"
         : showWorkSpinner
           ? undefined
           : // A chat row carries a pin and a kebab, so reserve the room for both on hover and
             // while the menu is open.
-            "group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 [@media(pointer:coarse)]:pr-16",
+            "group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 pointer-coarse:pr-16",
       variant === "project"
         ? "[&:has(~.sidebar-row-action:focus-visible)]:pr-14"
         : "[&:has(~.sidebar-row-action:focus-visible)]:pr-16",
@@ -5528,7 +5528,7 @@ export function AppSidebar() {
                   "pointer-events-none absolute right-4 top-1/2 z-10 -translate-y-1/2 transition-opacity",
                   // Touch reveals the pin and kebab for good, so there is nothing to fade
                   // behind: sit left of them instead, where this used to be.
-                  "[@media(pointer:coarse)]:right-16",
+                  "pointer-coarse:right-16",
                   variant === "project"
                     ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
                     : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
@@ -5585,7 +5585,7 @@ export function AppSidebar() {
                 role="img"
                 aria-label="Forked chat"
                 className={cn(
-                  "pointer-events-none absolute right-4 top-1/2 z-10 flex -translate-y-1/2 text-muted-foreground transition-opacity [@media(pointer:coarse)]:hidden",
+                  "pointer-events-none absolute right-4 top-1/2 z-10 flex -translate-y-1/2 text-muted-foreground transition-opacity pointer-coarse:hidden",
                   variant === "project"
                     ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
                     : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
@@ -5801,14 +5801,14 @@ export function AppSidebar() {
             if (listsChats) toggleProjectCollapsed(project.id);
             else openProject(project.id);
           }}
-            className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 [@media(pointer:coarse)]:pr-16"
+            className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 pointer-coarse:pr-16"
           >
             <HugeiconsIcon
               icon={expanded ? Folder02Icon : ProjectIcon}
               strokeWidth={1.75}
               className="size-icon! shrink-0"
             />
-            <span className="truncate text-ui-14p5 leading-ui-19 tracking-nav">{project.name}</span>
+            <span className="truncate text-ui-14p5/ui-19 tracking-nav">{project.name}</span>
           </SidebarMenuButton>
           <button
             type="button"
@@ -5876,7 +5876,7 @@ export function AppSidebar() {
       <SidebarMenuItem
         {...dnd.dropZoneProps({ section: order.section, folderId: project.id, blockEnd })}
       >
-        <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-9 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
+        <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-9 pr-4 text-ui-13/ui-18 tracking-nav text-nav-fg-muted">
           {t("shell.navigation.noChats")}
         </p>
       </SidebarMenuItem>
@@ -5895,7 +5895,7 @@ export function AppSidebar() {
             // so Show more would otherwise match the chat rows.
             className="sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] rounded-full pl-9 pr-4 font-medium text-nav-fg-muted!"
           >
-            <span className="text-ui-13 leading-ui-18 tracking-nav">
+            <span className="text-ui-13/ui-18 tracking-nav">
               {t(
                 showAll
                   ? "shell.navigation.showLess"
@@ -5919,20 +5919,20 @@ export function AppSidebar() {
       data-windows-glass-frame={(pinned && usesCustomTitlebar) || undefined}
       variant="sidebar"
       className={cn(
-        "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
+        "font-heading group-data-[collapsible=icon]:**:data-[sidebar=sidebar]:bg-(--sidebar-surface)",
         !(usesCustomTitlebar && pinned) &&
-          "[&_[data-sidebar=sidebar]]:border-r [&_[data-sidebar=sidebar]]:border-sidebar-edge dark:[&_[data-sidebar=sidebar]]:border-r-0",
+          "**:data-[sidebar=sidebar]:border-r **:data-[sidebar=sidebar]:border-sidebar-edge dark:**:data-[sidebar=sidebar]:border-r-0",
       )}
     >
       <SidebarHeader
         className={cn(
           "relative",
           usesCustomTitlebar
-            ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-padding-top,11px))]"
+            ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0)+var(--studio-chat-header-padding-top,11px))]"
             : usesNativeMacTitlebar
               ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
               : // The chat header's top padding, so the two rows line up.
-                "pl-3 pr-3 pt-[var(--studio-chat-header-padding-top,11px)] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
+                "px-3 pt-(--studio-chat-header-padding-top,11px) pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
         )}
       >
         {showSidebarBrand && (
@@ -5940,7 +5940,7 @@ export function AppSidebar() {
             {usesNativeMacTitlebar && !isMobile && (
               <div
                 data-tauri-drag-region
-                className="absolute inset-x-0 top-0 z-10 flex h-[var(--studio-desktop-titlebar-height,34px)] items-start pt-px pl-[calc(var(--studio-mac-traffic-light-inset,78px)+calc(6px*var(--ui-space-scale,1)))] select-none group-data-[collapsible=icon]:hidden"
+                className="absolute inset-x-0 top-0 z-10 flex h-(--studio-desktop-titlebar-height,34px) items-start pt-px pl-[calc(var(--studio-mac-traffic-light-inset,78px)+calc(6px*var(--ui-space-scale,1)))] select-none group-data-[collapsible=icon]:hidden"
               >
                 <DesktopTitlebarNavigation
                   expanded={pinned}
@@ -5955,7 +5955,7 @@ export function AppSidebar() {
                 usesDesktopTitlebar
                   ? "justify-between pl-4 pr-3"
                   : "justify-between",
-                usesCustomTitlebar && "h-[var(--studio-chat-control-height,34px)]",
+                usesCustomTitlebar && "h-(--studio-chat-control-height,34px)",
               )}
             >
                 <Link
@@ -5984,8 +5984,8 @@ export function AppSidebar() {
                       "relative top-px -left-px shrink-0 rounded-full object-cover",
                       // Web Studio only; the desktop header keeps its own sizes.
                       usesDesktopTitlebar
-                        ? "h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))]"
-                        : "h-[calc(20.5px+0.5rem*var(--ui-font-scale,1))] w-[calc(20.5px+0.5rem*var(--ui-font-scale,1))]",
+                        ? "size-[calc(22px+0.5rem*var(--ui-font-scale,1))]"
+                        : "size-[calc(20.5px+0.5rem*var(--ui-font-scale,1))]",
                     )}
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
@@ -6025,7 +6025,7 @@ export function AppSidebar() {
                   >
                     {t("shell.navigation.search")}
                     {searchShortcutLabel && (
-                      <kbd className="rounded-full bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
+                      <kbd className="rounded-full bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255/calc(0.15*var(--contrast-wash-gain,1)))]">
                         {searchShortcutLabel}
                       </kbd>
                     )}
@@ -6298,7 +6298,7 @@ export function AppSidebar() {
                               }
                               setMoreOpen(!morePinnedOpen);
                             }}
-                            className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
+                            className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:size-[calc(28px*var(--ui-space-scale,1))]! group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
                               icon={
@@ -6309,7 +6309,7 @@ export function AppSidebar() {
                               strokeWidth={1.75}
                               className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
                             />
-                            <span className="text-ui-14p5 leading-ui-19 tracking-nav">
+                            <span className="text-ui-14p5/ui-19 tracking-nav">
                               {t("shell.navigation.more")}
                             </span>
                           </SidebarMenuButton>
@@ -6411,7 +6411,7 @@ export function AppSidebar() {
                           decides what lives here vs. on the sidebar itself.
                           my-1 matches the menu's own p-1, so the gap either side
                           of the rule equals the one under the last row. */}
-                      <DropdownMenuSeparator className="mx-1! my-1! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]" />
+                      <DropdownMenuSeparator className="m-1! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255/calc(0.15*var(--contrast-edge-gain,1)))]" />
                       <DropdownMenuItem
                         onSelect={() =>
                           useSettingsDialogStore
@@ -6442,7 +6442,7 @@ export function AppSidebar() {
 
         {!isStudioRoute && !showTrainingRecents && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
-            <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0">
+            <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden p-0">
               <SidebarGroupLabel
                 className={cn(
                   "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
@@ -6469,7 +6469,7 @@ export function AppSidebar() {
               >
                 <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                   {t("shell.navigation.recents")}
-                  <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 in-data-[state=closed]:-rotate-90 in-data-[state=closed]:opacity-100" />
                 </CollapsibleTrigger>
                 <button
                   type="button"
@@ -6515,7 +6515,7 @@ export function AppSidebar() {
                           <SidebarMenuItem
                             aria-hidden
                             className={cn(
-                              "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
+                              "relative z-1 h-[calc(8px*var(--ui-space-scale,1))]",
                               dropCueClass(SIDEBAR_TAIL_SCOPE, "recents"),
                             )}
                             {...dnd.dropZoneProps({
@@ -6542,11 +6542,11 @@ export function AppSidebar() {
 
         {showTrainingRecents && (
           <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
-          <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0">
+          <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden p-0">
             <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", headerInset, scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                 {t("shell.navigation.recents")}
-                <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 in-data-[state=closed]:-rotate-90 in-data-[state=closed]:opacity-100" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
@@ -6671,7 +6671,7 @@ export function AppSidebar() {
           aria-hidden="true"
           className={cn(
             // from-[8px] holds the fade opaque across the hard clip, matching the list's pb-2.
-            "pointer-events-none absolute start-0 end-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute inset-s-0 inset-e-(--sidebar-rail,0px) bottom-full bg-linear-to-t from-(--sidebar-surface) from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             showUpdateCard ? "h-7" : "h-10",
             // data-visible is written by syncFade, not React.
             "opacity-0 data-[visible=true]:opacity-100",
@@ -6689,7 +6689,7 @@ export function AppSidebar() {
                     .openDialog("about", { scrollTarget: "about-updates" });
                   closeMobileIfOpen();
                 }}
-                className="btn-fill flex h-[calc(44px*var(--ui-space-scale,1))] w-full items-center gap-[calc(9px*var(--ui-space-scale,1))] rounded-[14px] px-2 py-[calc(3px*var(--ui-space-scale,1))] text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:w-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
+                className="btn-fill flex h-[calc(44px*var(--ui-space-scale,1))] w-full items-center gap-[calc(9px*var(--ui-space-scale,1))] rounded-[14px] px-2 py-[calc(3px*var(--ui-space-scale,1))] text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
               >
                 <span
                   aria-hidden="true"
@@ -6740,20 +6740,20 @@ export function AppSidebar() {
               side="top"
               align="center"
               sideOffset={8}
-              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-xl border border-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] px-2.5 py-2.5 font-heading dark:border-transparent"
+              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-xl border border-[rgb(0_0_0/calc(0.05*var(--contrast-edge-gain,1)))] p-2.5 font-heading dark:border-transparent"
               trigger={(triggerRef) => (
                 <SidebarMenuButton
                   ref={triggerRef}
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn app-user-trigger !h-[calc(44px*var(--ui-space-scale,1))] -my-[calc(3px*var(--ui-space-scale,1))] gap-[calc(9px*var(--ui-space-scale,1))] pl-2 pr-[calc(45px*var(--ui-space-scale,1))] py-[calc(3px*var(--ui-space-scale,1))] rounded-[14px] group-data-[collapsible=icon]:!size-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
+                  className="sidebar-nav-btn app-user-trigger h-[calc(44px*var(--ui-space-scale,1))]! my-[calc(-3px*var(--ui-space-scale,1))] gap-[calc(9px*var(--ui-space-scale,1))] pl-2 pr-[calc(45px*var(--ui-space-scale,1))] py-[calc(3px*var(--ui-space-scale,1))] rounded-[14px] group-data-[collapsible=icon]:size-[calc(34px*var(--ui-space-scale,1))]! group-data-[collapsible=icon]:rounded-full! group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
                 >
                   <div className="flex shrink-0 items-center">
                     <UserAvatar
                       name={displayTitle}
                       imageUrl={avatarDataUrl}
                       size="sm"
-                      className="!size-[calc(32px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:!rounded-full"
+                      className="size-[calc(32px*var(--ui-space-scale,1))]! group-data-[collapsible=icon]:rounded-full!"
                     />
                   </div>
                   {/* min-w-0 so long names truncate instead of overflowing;
@@ -6848,7 +6848,7 @@ export function AppSidebar() {
                   );
                 })}
               </DropdownMenuGroup>
-              <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]" />
+              <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255/calc(0.15*var(--contrast-edge-gain,1)))]" />
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
                   <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
@@ -6917,12 +6917,12 @@ export function AppSidebar() {
               type="button"
               aria-label={t("shell.navigation.settings")}
               onClick={() => useSettingsDialogStore.getState().openDialog()}
-              className="absolute right-2 top-1/2 flex size-[calc(32px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+              className="absolute right-2 top-1/2 flex size-[calc(32px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
             >
               <HugeiconsIcon
                 icon={Settings01Icon}
                 strokeWidth={1.5}
-                className="!size-[calc(18px*var(--ui-space-scale,1))]"
+                className="size-[calc(18px*var(--ui-space-scale,1))]!"
               />
             </button>
           </SidebarMenuItem>
@@ -7001,7 +7001,7 @@ export function AppSidebar() {
               <span className="block text-sm font-medium text-foreground">
                 {t("shell.selection.deleteFilesLabel")}
               </span>
-              <span className="block break-words text-xs leading-5 text-muted-foreground">
+              <span className="block wrap-break-word text-xs leading-5 text-muted-foreground">
                 {confirmingDelete?.kind === "project"
                   ? (confirmingDelete.project.rootPath ??
                     "The project workspace folder will be removed from disk.")
@@ -7014,7 +7014,7 @@ export function AppSidebar() {
               </span>
             </label>
             <Switch
-              className="mt-[var(--ui-title-cap-inset)]"
+              className="mt-(--ui-title-cap-inset)"
               id="delete-files-on-delete"
               checked={deleteFilesOnDelete}
               onCheckedChange={setDeleteFilesOnDelete}

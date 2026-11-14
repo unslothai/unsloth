@@ -387,7 +387,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 : "Search all models"
           }
           className={cn(
-            "field-soft h-9 rounded-full !border-0 pl-10 text-ui-13 placeholder:text-muted-foreground/80 focus-visible:!ring-0",
+            "field-soft h-9 rounded-full border-0! pl-10 text-ui-13 placeholder:text-muted-foreground/80 focus-visible:ring-0!",
             hasTrailing ? "pr-10" : "pr-4",
           )}
         />
@@ -578,13 +578,13 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                       role="checkbox"
                       aria-checked={fitOnDeviceOnly}
                       onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
-                      className="hub-menu-row relative flex w-full cursor-pointer select-none items-center gap-2.5 py-2 pr-3 pl-3 text-left text-sm"
+                      className="hub-menu-row relative flex w-full cursor-pointer select-none items-center gap-2.5 py-2 px-3 text-left text-sm"
                     >
                       <Checkbox
                         checked={fitOnDeviceOnly}
                         tabIndex={-1}
                         aria-hidden={true}
-                        className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
+                        className="pointer-events-none size-3.5 rounded-full [&_svg]:size-2.5!"
                       />
                       Only show models that fit
                     </button>

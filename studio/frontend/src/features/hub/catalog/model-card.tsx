@@ -288,20 +288,20 @@ export const ModelCard = memo(function ModelCard({
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
       style={cardAccentStyle}
-      className="hub-model-card hub-trending-card group/card flex h-full w-full cursor-pointer flex-col overflow-hidden px-3 py-3.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+      className="hub-model-card hub-trending-card group/card flex size-full cursor-pointer flex-col overflow-hidden px-3 py-3.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <div className="flex min-w-0 items-start gap-2.5">
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-11 shrink-0 rounded-md text-ui-17 ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+          className="size-11 shrink-0 rounded-md text-ui-17 ring-1 ring-[rgb(255_255_255/calc(0.1*var(--contrast-edge-gain,1)))]"
           remote={false}
         />
         <div className="min-w-0 flex-1 space-y-0.5">
-          <p className="hub-trending-title line-clamp-2 text-ui-13p5 font-semibold leading-ui-16 text-foreground">
+          <p className="hub-trending-title line-clamp-2 text-ui-13p5/ui-16 font-semibold text-foreground">
             {row.repo}
           </p>
-          <span className="hub-trending-owner flex min-w-0 items-center gap-1 text-ui-11p5 leading-ui-15 text-muted-foreground/80">
+          <span className="hub-trending-owner flex min-w-0 items-center gap-1 text-ui-11p5/ui-15 text-muted-foreground/80">
             <span className="truncate">{row.owner}</span>
             {row.owner.toLowerCase() === "unsloth" && (
               <span

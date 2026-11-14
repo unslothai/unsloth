@@ -1671,7 +1671,7 @@ export function ChatsLibrary({
       <AlertDialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)}>
         <AlertDialogContent onOverlayClick={() => setPendingDelete(null)}>
           <AlertDialogHeader>
-            <AlertDialogTitle className="break-words">{deleteCopy?.title}</AlertDialogTitle>
+            <AlertDialogTitle className="wrap-break-word">{deleteCopy?.title}</AlertDialogTitle>
             <AlertDialogDescription>{deleteCopy?.description}</AlertDialogDescription>
           </AlertDialogHeader>
           {pendingDelete && (

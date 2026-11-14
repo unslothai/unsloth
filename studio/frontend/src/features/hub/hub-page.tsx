@@ -2225,7 +2225,7 @@ export function ModelsPage() {
         className={cn(
           "relative flex min-h-0 min-w-0 flex-1 basis-0",
           splitMode
-            ? "flex-col lg:mx-auto lg:w-full lg:max-w-[var(--hub-measure)] lg:flex-row"
+            ? "flex-col lg:mx-auto lg:w-full lg:max-w-(--hub-measure) lg:flex-row"
             : "flex-col",
         )}
       >

@@ -80,7 +80,7 @@ export function TranscriptDiffEditor({
         <p
           id={diffId}
           aria-label="Changes from the transcript"
-          className="rounded-lg bg-muted/50 px-3 py-2 text-ui-13 leading-relaxed text-foreground [overflow-wrap:anywhere]"
+          className="rounded-lg bg-muted/50 px-3 py-2 text-ui-13/relaxed text-foreground wrap-anywhere"
         >
           {segments.map((segment, index) => {
             return (
@@ -109,7 +109,7 @@ export function TranscriptDiffEditor({
       )}
       <p
         id={hintId}
-        className="min-w-0 text-ui-12 leading-normal text-muted-foreground"
+        className="min-w-0 text-ui-12/normal text-muted-foreground"
       >
         {changes === null
           ? `Diff shown for up to ${EDIT_DIFF_MAX_WORDS} words.`

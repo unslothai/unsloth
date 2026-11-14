@@ -260,7 +260,7 @@ export function useCustomFolders({
         </div>
       ) : null}
       {typing ? (
-        <div className="flex flex-col gap-1 px-1 py-1">
+        <div className="flex flex-col gap-1 p-1">
           <div className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center gap-2 rounded-full bg-sidebar-accent pr-1 pl-3">
             <HugeiconsIcon
               icon={Folder02Icon}

@@ -743,7 +743,7 @@ export function Q4nxConvertCard({
                 : "Search local models or type a .gguf path"
             }
             data-model-picker-search-input={true}
-            className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8 text-sm"
+            className="field-soft h-(--picker-control-h) border-0 px-8 text-sm"
           />
           {loadingRows && (
             <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -752,7 +752,7 @@ export function Q4nxConvertCard({
       </div>
       <div className="-mr-2 flex flex-wrap items-center gap-2">
         <PillTabs
-          className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
+          className="**:[[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)+var(--picker-tab-pad)/2)]"
           ariaLabel="GGUF source"
           tabs={SOURCE_TABS}
           value={source}
@@ -891,7 +891,7 @@ export function Q4nxConvertCard({
   );
 
   const settingsPage = (
-    <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
+    <div className="min-h-0 w-full overflow-y-auto py-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0),var(--spacing)*2))] pl-7 [scrollbar-gutter:stable]">
       <div className="flex flex-col" data-testid="q4nx-convert-settings">
         <div className="flex items-center gap-2.5 pb-5">
           <button
@@ -910,10 +910,10 @@ export function Q4nxConvertCard({
             <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Convert settings
             </div>
-            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
+            <div className="mt-1.5 truncate text-sm/tight font-semibold text-foreground">
               {selectedLabel}
             </div>
-            <div className="mt-1 truncate text-ui-11 leading-tight text-muted-foreground">
+            <div className="mt-1 truncate text-ui-11/tight text-muted-foreground">
               {selectedMemory?.label ?? " "}
             </div>
           </div>
@@ -1058,7 +1058,7 @@ export function Q4nxConvertCard({
                 className={cn(
                   "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(var(--picker-panel-w),calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0",
                   showSettings
-                    ? "max-h-[var(--radix-popover-content-available-height)] overflow-hidden p-0 !px-0"
+                    ? "max-h-(--radix-popover-content-available-height) overflow-hidden p-0 px-0!"
                     : "pt-4 pb-0 pl-4 pr-2",
                 )}
               >

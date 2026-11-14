@@ -149,7 +149,7 @@ export function StemMixer({
           )}
         </Button>
         <div className="grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between">
-          <h3 className="truncate text-ui-15 font-medium leading-snug text-foreground">
+          <h3 className="truncate text-ui-15/snug font-medium text-foreground">
             {title}
           </h3>
           <p className="truncate text-ui-12 text-muted-foreground">

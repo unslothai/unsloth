@@ -79,7 +79,7 @@ export function AutoTextarea({
       placeholder={placeholder}
       rows={minRows}
       className={cn(
-        "w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed",
+        "w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2 text-sm/relaxed ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow",
         className,
       )}
     />
@@ -364,7 +364,7 @@ export function SortablePromptItems({
                   setUids((prev) => prev.filter((_, idx) => idx !== i));
                 }}
                 disabled={items.length <= minItems}
-                className="mt-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                className="mt-1.5 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Remove"
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />

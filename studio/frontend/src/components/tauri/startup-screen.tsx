@@ -56,7 +56,7 @@ function Logo() {
         src="/sticker.png"
         alt=""
         aria-hidden="true"
-        className="h-[calc(60px*var(--ui-space-scale,1))] w-[calc(60px*var(--ui-space-scale,1))] object-contain"
+        className="size-[calc(60px*var(--ui-space-scale,1))] object-contain"
       />
       <span
         className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
@@ -260,7 +260,7 @@ function InstallingContent({
     : logs;
 
   return (
-    <div className="flex h-full w-full flex-col items-center">
+    <div className="flex size-full flex-col items-center">
       <div className="flex flex-1 items-center">
         <Logo />
       </div>
@@ -295,7 +295,7 @@ function RepairingContent({
     : logs;
 
   return (
-    <div className="flex h-full w-full flex-col items-center">
+    <div className="flex size-full flex-col items-center">
       <div className="flex flex-1 items-center">
         <Logo />
       </div>
@@ -324,7 +324,7 @@ function RepairingContent({
 function ClosingContent() {
   const t = useT();
   return (
-    <div className="flex h-full w-full flex-col items-center">
+    <div className="flex size-full flex-col items-center">
       <div className="flex flex-1 items-center">
         <Logo />
       </div>
@@ -595,7 +595,7 @@ export function StartupScreen({
       <AnimatePresence mode="wait">
         <motion.div
           key={status}
-          className="flex h-full w-full flex-col items-center justify-center text-center"
+          className="flex size-full flex-col items-center justify-center text-center"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -611,7 +611,7 @@ export function StartupScreen({
 /** The chrome both full-window screens sit in, so they agree on insets and scrolling. */
 function StartupSurface({ children }: { children: ReactNode }) {
   return (
-    <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
+    <div className="box-border flex size-full flex-col items-center overflow-y-auto bg-background pb-6 pt-(--studio-startup-top-inset,0px)">
       <div className="flex min-h-0 flex-1 w-full max-w-md items-center justify-center px-6">
         {children}
       </div>
@@ -632,10 +632,10 @@ export function ClosingScreen() {
     <div
       ref={blockingScreenRef}
       data-blocking-screen=""
-      className="pointer-events-auto modal-pe-live fixed inset-0 z-[9999]"
+      className="pointer-events-auto modal-pe-live fixed inset-0 z-9999"
     >
       <StartupSurface>
-        <div className="flex h-full w-full flex-col items-center justify-center text-center">
+        <div className="flex size-full flex-col items-center justify-center text-center">
           <ClosingContent />
         </div>
       </StartupSurface>

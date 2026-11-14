@@ -132,6 +132,7 @@
     "@typescript/typescript6": "6.0.2",
     "@vitejs/plugin-react": "^6.0.1",
     "eslint": "^9.39.1",
+    "eslint-plugin-better-tailwindcss": "4.10.0",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",

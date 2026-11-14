@@ -1047,7 +1047,7 @@ function AdvancedSelect({
           </SelectContent>
         </Select>
       </div>
-      {desc && <p className="text-ui-11 leading-snug text-muted-foreground/70">{desc}</p>}
+      {desc && <p className="text-ui-11/snug text-muted-foreground/70">{desc}</p>}
     </div>
   );
 }
@@ -1213,7 +1213,7 @@ function MaskCanvas({
         onPointerMove={onMove}
         onPointerUp={onUp}
         onPointerLeave={onUp}
-        className="absolute inset-0 h-full w-full cursor-crosshair touch-none"
+        className="absolute inset-0 size-full cursor-crosshair touch-none"
       />
     </div>
   );
@@ -1334,7 +1334,7 @@ function RecipeRow({
         title={title}
         className={cn(
           "min-w-0 text-foreground",
-          wrap ? "whitespace-pre-wrap break-words" : "truncate",
+          wrap ? "whitespace-pre-wrap wrap-break-word" : "truncate",
           mono && "font-mono",
         )}
       >
@@ -1373,7 +1373,7 @@ function RecipePopover({
         align="end"
         side="top"
         collisionPadding={12}
-        className="flex max-h-[var(--radix-popover-content-available-height)] w-80 flex-col gap-0 overflow-hidden p-0"
+        className="flex max-h-(--radix-popover-content-available-height) w-80 flex-col gap-0 overflow-hidden p-0"
       >
         <div className="shrink-0 border-b border-border/60 px-4 py-2.5">
           <p className="text-sm font-semibold">Generation settings</p>
@@ -1742,7 +1742,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
         )}
         {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
         {selected && (
-          <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+          <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255/calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
         )}
       </button>
       {image.pinned && (
@@ -5232,7 +5232,7 @@ export function ImagesPage({
   );
 
   const engineNotes = conditioning?.notes?.length ? (
-    <ul className="space-y-1 text-ui-11 leading-snug text-muted-foreground">
+    <ul className="space-y-1 text-ui-11/snug text-muted-foreground">
       {conditioning.notes.map((note) => (
         <li key={note}>{note}</li>
       ))}
@@ -6299,7 +6299,7 @@ export function ImagesPage({
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
-      className="diffusion-surface media-header-layout @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface media-header-layout @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-(--studio-content-top-inset,0px)"
     >
       <MediaRailResizeHandle kind="images" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
@@ -6311,11 +6311,11 @@ export function ImagesPage({
             isMobile
               ? "pl-12"
               : !pinned && isTauri
-                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+                ? "pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
+                : "pl-(--studio-media-header-left-inset,1.5rem)",
           )}
         >
-          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-(--studio-chat-header-padding-top,11px)">
             {pageMode === "train" ? (
               <TrainBaseSelector
                 families={trainFamilies}
@@ -6339,7 +6339,7 @@ export function ImagesPage({
                 loaded={busy === "unloading" ? false : undefined}
                 onEject={status?.loaded && busy !== "unloading" ? handleEject : undefined}
                 variant="ghost"
-                className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
+                className="ml-1.5 max-w-full overflow-hidden pl-2.5! pr-1.5! h-(--studio-chat-control-height,34px)!"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 opaqueKind={opaqueKind}
@@ -6357,7 +6357,7 @@ export function ImagesPage({
                     variant="outline"
                     size="sm"
                     aria-label="Cancel load"
-                    className="!h-[calc(34px*var(--ui-space-scale,1))] shrink-0 rounded-full text-xs"
+                    className="h-[calc(34px*var(--ui-space-scale,1))]! shrink-0 rounded-full text-xs"
                     onClick={() => void handleCancelLoad()}
                   >
                     Cancel load
@@ -6372,14 +6372,14 @@ export function ImagesPage({
           </div>
         </div>
         <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
-          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-(--studio-chat-header-padding-top,11px)">
             <PillTabs
               dataTour="images-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 in-data-media-header-tight:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -6387,7 +6387,7 @@ export function ImagesPage({
             />
           </div>
           {/* The chat header's right inset. */}
-          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]">
             <MediaApiButton
               kind="images"
               model={status?.loaded ? (status.repo_id ?? null) : null}
@@ -6429,7 +6429,7 @@ export function ImagesPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0))]",
               settingsFadeClass,
             )}
           >
@@ -6442,7 +6442,7 @@ export function ImagesPage({
                   />
                   {activeWorkflowTab.heading ?? activeWorkflowTab.label}
                 </h2>
-                <p className="text-xs leading-snug text-muted-foreground">
+                <p className="text-ui-12/snug text-muted-foreground">
                   {activeWorkflowTab.hint}
                 </p>
               </div>
@@ -6653,7 +6653,7 @@ export function ImagesPage({
                             "rounded-full px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             on
                               ? "bg-wash-15 text-foreground hover:bg-wash-20 dark:bg-wash-25 dark:hover:bg-wash-30"
-                              : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
+                              : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]",
                           )}
                         >
                           {label}
@@ -7358,7 +7358,7 @@ export function ImagesPage({
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
           <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
             {!external && busy === null && heldByOtherAccount(status) && (
-              <p role="status" className="w-full text-center text-ui-11 leading-snug text-muted-foreground">
+              <p role="status" className="w-full text-center text-ui-11/snug text-muted-foreground">
                 {HELD_BY_OTHER_ACCOUNT_NOTICE}
               </p>
             )}
@@ -7522,7 +7522,7 @@ export function ImagesPage({
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur-sm **:data-[slot=button]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   <Button
                     size="icon-sm"
                     variant="ghost"
@@ -7598,7 +7598,7 @@ export function ImagesPage({
                     className="size-full object-contain"
                   />
                 )}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur-sm **:data-[slot=button]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   {srcErrors[selected.id] ? (
                     <>
                       <span role="alert" className="sr-only">Full-resolution download failed.</span>
@@ -7645,7 +7645,7 @@ export function ImagesPage({
                   selectedSrc || livePreviewSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
-                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
+                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur-sm">
                   <ModelLoadDescription
                     className="min-h-0"
                     title={

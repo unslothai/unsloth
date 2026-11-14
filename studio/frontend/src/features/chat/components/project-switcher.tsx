@@ -77,7 +77,7 @@ export function ProjectSwitcher({
           />
           <span className="flex min-w-0 flex-1 items-baseline">
             {/* Block: text-overflow skips flex containers. */}
-            <span className="block min-w-0 max-w-[calc(150px*var(--ui-space-scale,1))] flex-1 truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
+            <span className="block min-w-0 max-w-[calc(150px*var(--ui-space-scale,1))] flex-1 truncate font-heading text-base/tight font-medium text-black dark:text-foreground">
               {label}
             </span>
           </span>

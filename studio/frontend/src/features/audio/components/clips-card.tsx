@@ -92,7 +92,7 @@ export function ClipsCardEmpty({
 }) {
   return (
     <div className="grid gap-3 px-3 pb-3">
-      <p className="text-ui-13 leading-normal text-muted-foreground">{text}</p>
+      <p className="text-ui-13/normal text-muted-foreground">{text}</p>
       {actions ? <div className="[&>div]:justify-start">{actions}</div> : null}
     </div>
   );

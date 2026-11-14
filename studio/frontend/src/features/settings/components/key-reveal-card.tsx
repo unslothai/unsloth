@@ -44,7 +44,7 @@ export function KeyRevealCard({
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]">
       <div className="flex items-center gap-1.5">
         <HugeiconsIcon
           icon={Tick02Icon}
@@ -54,7 +54,7 @@ export function KeyRevealCard({
           {t("settings.apiKeys.newTokenCreated")}
         </span>
       </div>
-      <div className="flex h-control w-full items-center gap-3 rounded-full border border-border bg-background pr-2 pl-4 font-mono text-sm dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+      <div className="flex h-control w-full items-center gap-3 rounded-full border border-border bg-background pr-2 pl-4 font-mono text-sm dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]">
         <input
           ref={inputRef}
           type="text"

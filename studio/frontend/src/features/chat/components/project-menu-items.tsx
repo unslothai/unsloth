@@ -129,7 +129,7 @@ export function ProjectMenuItems({
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
           className={cn(
-            "max-h-[var(--radix-dropdown-menu-content-available-height)] w-56 overflow-y-auto",
+            "max-h-(--radix-dropdown-menu-content-available-height) w-56 overflow-y-auto",
             subClassName,
           )}
         >

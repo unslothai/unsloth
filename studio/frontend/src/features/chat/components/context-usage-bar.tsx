@@ -93,7 +93,7 @@ const TokenCount: FC<{ text: string }> = ({ text }) => (
   <>
     {text.split(".").map((part, i) => (
       <span key={i}>
-        {i > 0 ? <span className="-mx-[0.088ch] text-[0.85em]">.</span> : null}
+        {i > 0 ? <span className="mx-[-0.088ch] text-[0.85em]">.</span> : null}
         {part}
       </span>
     ))}
@@ -219,7 +219,7 @@ export const ContextUsageBar: FC<
             }
             className={cn(
               "group grid h-full items-center justify-self-end overflow-hidden rounded-[10px] text-chat-icon-fg tabular-nums whitespace-nowrap hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              "[--track:rgb(0_0_0_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]",
+              "[--track:rgb(0_0_0/calc(0.14*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255/calc(0.2*var(--contrast-wash-gain,1)))]",
             )}
           >
             {fitContent ? null : (
@@ -329,13 +329,13 @@ export const ContextUsageBar: FC<
             <span className="font-mono tabular-nums">{state.totalRowValue}</span>
           </div>
           {input.estimated ? (
-            <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
+            <div className="mt-1 max-w-64 text-ui-11/snug text-muted-foreground/90">
               Estimated from the chat&apos;s text, without attachments. A
               loaded model replaces it with an exact count.
             </div>
           ) : null}
           {advice !== "none" ? (
-            <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
+            <div className="mt-1 max-w-64 text-ui-11/snug text-muted-foreground/90">
               {advice === "mlx-past-limit" ? (
                 <>
                   Past the context limit. The chat keeps going rather than

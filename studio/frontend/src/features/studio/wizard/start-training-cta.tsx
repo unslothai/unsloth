@@ -141,7 +141,7 @@ export function StartTrainingCta() {
           "w-full justify-center rounded-full text-ui-13p5 font-semibold tracking-tight",
           "bg-action text-background shadow-sm",
           "hover:opacity-90",
-          "disabled:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+          "disabled:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]",
           "transition-colors duration-200",
         )}
         onClick={() => {
@@ -155,13 +155,13 @@ export function StartTrainingCta() {
       {errorMessage && (
         <div
           className={cn(
-            "flex items-start justify-between gap-2 text-ui-11p5 leading-relaxed",
+            "flex items-start justify-between gap-2 text-ui-11p5/relaxed",
             isWarning ? "text-status-warning" : "text-destructive",
           )}
         >
           <p
             role={isWarning ? "status" : "alert"}
-            className="min-w-0 break-words"
+            className="min-w-0 wrap-break-word"
           >
             {errorMessage}
           </p>

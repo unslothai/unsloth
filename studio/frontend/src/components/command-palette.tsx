@@ -191,7 +191,7 @@ export function CommandPalette() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] -translate-y-1/2 w-[calc(635px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] sm:max-w-[calc(635px*var(--ui-space-scale,1))]"
+      className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-[calc(50%+var(--studio-window-chrome-top,0)/2)] -translate-y-1/2 w-[calc(635px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 duration-180 ease-[cubic-bezier(0.16,1,0.3,1)] sm:max-w-[calc(635px*var(--ui-space-scale,1))]"
       overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none"
     >
       <PaletteContent />

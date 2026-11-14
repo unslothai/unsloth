@@ -84,7 +84,7 @@ function DownloadChoice({
     <AlertDialogContent className="sm:max-w-[calc(490px*var(--ui-space-scale,1))]">
       <AlertDialogHeader className="flex flex-row flex-wrap items-center justify-between gap-x-4 gap-y-2 text-left sm:group-data-[size=default]/alert-dialog-content:place-items-center">
         <AlertDialogTitle className="shrink-0">Download model</AlertDialogTitle>
-        <AlertDialogDescription className="min-w-0 text-xs break-words sm:ml-auto sm:text-right">
+        <AlertDialogDescription className="min-w-0 text-xs wrap-break-word sm:ml-auto sm:text-right">
           {displayName ?? "Choose which files to download."}
         </AlertDialogDescription>
       </AlertDialogHeader>
@@ -158,7 +158,7 @@ function DownloadChoice({
               </li>
             ))}
           </ul>
-          <p className="text-xs leading-relaxed text-muted-foreground">
+          <p className="text-ui-12/relaxed text-muted-foreground">
             Required to run · Shared across compatible variants
           </p>
           <div className="flex justify-between border-t pt-4 font-medium">

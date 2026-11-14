@@ -47,12 +47,12 @@ export function LlmCompressorConsentDialog() {
                 <AlertDialogDescription asChild>
                   <div className="space-y-2 text-sm text-muted-foreground">
                     {blocked ? (
-                      <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 [overflow-wrap:anywhere] dark:text-red-400">
+                      <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 wrap-anywhere dark:text-red-400">
                         {probe?.blocked_reason}
                       </p>
                     ) : (
                       <>
-                        <p className="[overflow-wrap:anywhere]">{summary}</p>
+                        <p className="wrap-anywhere">{summary}</p>
                         {probe?.consent_kind === "workspace" ? (
                           <LineBox as="p" className="border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground break-all">
                             {probe.workspace_install_command}

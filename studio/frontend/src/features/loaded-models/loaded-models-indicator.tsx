@@ -339,7 +339,7 @@ export function LoadedModelsIndicator({
       className={cn(
         // See floating-monitor.tsx: a drop must not flash at the start spot under reduce motion.
         "pointer-events-none transition-none",
-        position && "fixed z-[9999] w-fit",
+        position && "fixed z-9999 w-fit",
         !position &&
           (positioned
             ? "fixed bottom-4 right-4 z-50"

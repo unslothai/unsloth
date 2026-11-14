@@ -364,7 +364,7 @@ export function TranscriptGallery({
               onClick={() => setConfirmingClear(true)}
               className={cn(
                 CLIPS_HEADER_LINK,
-                "h-auto px-0 py-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
+                "h-auto p-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
               )}
             >
               Clear all

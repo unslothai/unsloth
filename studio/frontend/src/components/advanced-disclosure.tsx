@@ -28,7 +28,7 @@ export function AdvancedDisclosure({
   children: ReactNode;
 }) {
   return (
-    <div className="mt-2 flex flex-col gap-3 border-t border-border/60 pt-4 pb-4">
+    <div className="mt-2 flex flex-col gap-3 border-t border-border/60 py-4">
       <button
         type="button"
         onClick={() => onOpenChange(!open)}
@@ -42,7 +42,7 @@ export function AdvancedDisclosure({
           icon={Settings01Icon}
           className="size-3.5 shrink-0 text-muted-foreground"
         />
-        <span className="min-w-0 flex-1 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
+        <span className="min-w-0 flex-1 text-ui-13/tight font-medium tracking-nav text-foreground">
           Advanced
         </span>
         <HugeiconsIcon
@@ -55,7 +55,7 @@ export function AdvancedDisclosure({
       </button>
       {open && (
         <div className="flex flex-col gap-3">
-          <p className="text-ui-11 leading-snug text-muted-foreground">
+          <p className="text-ui-11/snug text-muted-foreground">
             {description}
           </p>
           {children}

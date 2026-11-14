@@ -40,7 +40,7 @@ import {
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
 import { ThreadRecordWriteCoordinator } from "./thread-record-write-coordinator";
-// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
+ 
 import { setForkBoundary } from "../stores/fork-boundary-store";
 
 // Incognito is tagged per thread at creation, never read from the live toggle, so mid-stream
