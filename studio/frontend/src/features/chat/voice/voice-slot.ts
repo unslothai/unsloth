@@ -7,6 +7,7 @@ import {
   loadModel,
   unloadModel,
 } from "@/features/chat/api/chat-api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { translate } from "@/i18n";
 import {
@@ -17,8 +18,12 @@ import {
 } from "./voice-models";
 
 export async function voiceServing(id: string): Promise<boolean> {
+  if (isChatModelVoice(id)) {
+    // The model that answers, which may sit in a kept slot rather than the primary.
+    const checkpoint = useChatRuntimeStore.getState().params.checkpoint || undefined;
+    return Boolean((await getInferenceStatus(undefined, checkpoint)).speaks);
+  }
   const status = await getInferenceStatus();
-  if (isChatModelVoice(id)) return Boolean(status.speaks);
   return (status.serving ?? status.loaded ?? []).some((s) => voiceIdServes(s, id));
 }
 

@@ -118,3 +118,11 @@ test("speech of a turn cleared while STT ran never reaches the next turn", () =>
   assert.match(loop.slice(guard, add), /epoch === heldEpoch/);
 });
 
+
+test("a turn whose audio attaches slowly re-arms the run once it lands", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(
+    engine,
+    /\.then\(\(\) => \{\s*if \(voiceModeRef\.current !== "active" \|\| voiceNotesEpoch\(\) !== turn\) return;\s*send\(\);[\s\S]{0,200}if \(!voiceCoalesceTimerRef\.current\)\s*voiceCoalesceTimerRef\.current = setTimeout\(\(\) => fireCoalescedRun\(0\), VOICE_COALESCE_MS\);/,
+  );
+});

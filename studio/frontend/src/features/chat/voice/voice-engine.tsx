@@ -474,10 +474,17 @@ export const VoiceEngine: FC = () => {
       };
       if (turnAudio) {
         const bytes = Uint8Array.from(atob(turnAudio), (c) => c.charCodeAt(0));
+        const turn = voiceNotesEpoch();
         void composer
           .addAttachment(new File([bytes], "voice.wav", { type: "audio/wav" }))
           .catch((error: unknown) => voiceTrace("engine.turnAudioAttachFailed", { message: String(error) }))
-          .then(send);
+          .then(() => {
+            if (voiceModeRef.current !== "active" || voiceNotesEpoch() !== turn) return;
+            send();
+            // The window may have given up waiting for this message: arm it again.
+            if (!voiceCoalesceTimerRef.current)
+              voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(0), VOICE_COALESCE_MS);
+          });
       } else {
         send();
       }
