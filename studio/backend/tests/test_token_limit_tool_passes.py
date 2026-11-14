@@ -110,6 +110,8 @@ def _usage(
         (False, 0, [("anthropic_tool_use", 3986)], "completed", (0, 1000, 1000)),
         # A stop during thinking returns only thinking blocks: they are generated output.
         (False, 0, [("anthropic_thinking", 400)], "cancelled", (0, 100, 100)),
+        # A stopped whole response's usage covers all of its output.
+        (False, 0, [("whole_response", 400)], "cancelled", (900, 100, 1000)),
         # A tool loop's earlier passes reported after a later one was interrupted mid-stream.
         (
             True,
@@ -180,6 +182,12 @@ def test_a_receipt_settles_reported_and_estimated_usage(
             inference_route._monitor_usage(entry, value)
         elif kind == "hidden":
             monitor.count_output(entry, value)
+        elif kind == "whole_response":
+            message = {"role": "assistant", "content": "r" * value}
+            usage = {"prompt_tokens": 900, "completion_tokens": 100, "total_tokens": 1000}
+            inference_route._monitor_openai_chunk(
+                entry, {"choices": [{"index": 0, "message": message}], "usage": usage}
+            )
         elif kind == "message_reasoning":
             message = {"role": "assistant", "content": "", "reasoning_content": "t" * value}
             inference_route._monitor_openai_chunk(
@@ -344,6 +352,7 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     assert '_sf_text_stats = _sf_stats_holder.get("stats")' in source
     # A later pass's failure settles the passes that already reported, on every exit.
     assert source.count("_sf_settle_reported_passes()") == 6  # the def and its five calls
+    assert source.count("_sf_settle_streamed_passes()") == 5  # the def and its four calls
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
@@ -472,7 +481,8 @@ def test_a_chatgpt_subscription_stream_settles_a_receipt(monkeypatch, silent_can
     assert receipt.via_api_key is False
 
 
-def test_a_stopped_in_process_message_settles_its_partial_output(monkeypatch):
+@pytest.mark.parametrize("reported", [False, True])
+def test_a_stopped_in_process_message_settles_its_partial_output(monkeypatch, reported):
     receipts = []
     monitor = ApiMonitor()
     monitor.set_terminal_callback(receipts.append)
@@ -486,7 +496,10 @@ def test_a_stopped_in_process_message_settles_its_partial_output(monkeypatch):
         # The user stops the run; the in-process backend still returns what it generated.
         request.state.generation_cancel_event.set()
         message = {"role": "assistant", "content": "r" * 400}
-        return SimpleNamespace(body = json.dumps({"choices": [{"index": 0, "message": message}]}))
+        body = {"choices": [{"index": 0, "message": message}]}
+        if reported:
+            body["usage"] = {"prompt_tokens": 900, "completion_tokens": 100, "total_tokens": 1000}
+        return SimpleNamespace(body = json.dumps(body))
 
     monkeypatch.setattr(inference_route, "openai_chat_completions", stopped_completion)
     payload = inference_route.AnthropicMessagesRequest(
@@ -499,6 +512,7 @@ def test_a_stopped_in_process_message_settles_its_partial_output(monkeypatch):
     with override_claim_scope(claim), pytest.raises(asyncio.CancelledError):
         asyncio.run(inference_route._anthropic_in_process_messages(payload, request, "owner"))
     [receipt] = receipts
+    # Reported or estimated from 400 characters, the stopped reply is charged once.
     assert receipt.completion_tokens == 100
     assert claim["generated"]
 

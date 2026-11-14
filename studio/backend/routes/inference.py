@@ -7619,6 +7619,16 @@ def _monitor_openai_chunk(
 ):
     if not monitor_id:
         return
+    if not streaming and isinstance(data, dict) and data.get("usage") is not None:
+        # A whole response's usage covers all of it, so it settles after that output is counted.
+        _monitor_openai_chunk(
+            monitor_id,
+            {**data, "usage": None, "timings": None, "prompt_progress": None},
+            context_length,
+        )
+        reported = {key: data.get(key) for key in ("usage", "timings", "prompt_progress")}
+        _monitor_openai_chunk(monitor_id, reported, context_length, streaming = True)
+        return
     # Ignore malformed shapes: a raise here would abort the user's streamed response.
     choices = data.get("choices")
     if isinstance(choices, list):
@@ -35151,6 +35161,18 @@ async def produce_openai_chat_completions(
             _sf_streamed_calls: set = set()
             _sf_seen_stats = None
             _sf_reported_chars = 0
+
+            def _sf_settle_streamed_passes():
+                # A later pass's failure must not lose the passes that already reported.
+                _stats = _sf_stats_holder.get("stats")
+                if _stats:
+                    _monitor_usage(
+                        monitor_id,
+                        _stats.get("usage"),
+                        # Stats published after the last event seen cover everything streamed.
+                        reported_chars = _sf_reported_chars if _stats is _sf_seen_stats else None,
+                    )
+
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -35405,21 +35427,25 @@ async def produce_openai_chat_completions(
             except asyncio.CancelledError:
                 cancel_event.set()
                 backend.reset_generation_state(cancel_event)
+                _sf_settle_streamed_passes()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
             except GenStreamErrorRaised as exc:
                 backend.reset_generation_state(cancel_event)
                 _msg = _friendly_gen_stream_error(exc)
+                _sf_settle_streamed_passes()
                 api_monitor.fail(monitor_id, _msg)
                 yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except context_refusal.ContextBudgetExceeded as e:
                 backend.reset_generation_state(cancel_event)
+                _sf_settle_streamed_passes()
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 yield _openai_stream_error_sse(_openai_stream_error_chunk(e))
             except Exception:
                 backend.reset_generation_state(cancel_event)
                 # Generic message; trace stays in the log (CWE-209).
                 logger.exception("safetensors tool stream error")
+                _sf_settle_streamed_passes()
                 api_monitor.fail(monitor_id, "An internal error occurred.")
                 error_chunk = {
                     "error": {
