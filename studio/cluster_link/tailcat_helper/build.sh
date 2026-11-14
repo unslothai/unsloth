@@ -17,7 +17,7 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 wi
     exe="unsloth-link"
     [ "$os" = windows ] && exe="unsloth-link.exe"
     mkdir -p "$out/$os-$arch"
-    CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -tags "$tags" \
+    CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -buildvcs=false -tags "$tags" \
         -ldflags "-s -w -X main.tailcatVersion=$version" -o "$out/$os-$arch/$exe" .
     cp LICENSE.tailcat "$out/$os-$arch/"
 done
