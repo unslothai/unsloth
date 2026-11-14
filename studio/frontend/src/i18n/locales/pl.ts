@@ -2447,6 +2447,18 @@ export const pl = {
         deviceGpu: "GPU",
         deviceLocked: "Ustawione przez {name}.",
         deviceSaveError: "Nie udało się zmienić urządzenia osadzeń",
+        offlineDocs: {
+          folderLabel: "Dokumentacja Unsloth offline",
+          folderDescription: "Zapisz pełną dokumentację Unsloth w folderze, aby działała bez internetu.",
+          folderHint: "Unsloth pobiera unsloth.ai/docs/llms-full.txt do tego folderu jako \"Unsloth Docs LLMs Full Text [Documentation] (date).md\", zastępując poprzednią kopię. Połącz folder z bazą wiedzy, aby przeszukiwać dokumentację w czacie offline. Folder jest zachowywany przy aktualizacjach.",
+          choose: "Wybierz",
+          autoUpdateLabel: "Aktualizuj dokumentację z każdym wydaniem",
+          autoUpdateDescription: "Pobiera nową kopię przy pierwszym uruchomieniu nowej wersji Unsloth.",
+          downloadNow: "Pobierz teraz",
+          downloading: "Pobieranie dokumentacji…",
+          notDownloaded: "Jeszcze nie pobrano",
+          lastUpdated: "Zaktualizowano {date} dla {release}",
+        },
       },
       storage: {
         sectionTitle: "Miejsce na dysku",
@@ -4039,6 +4051,8 @@ export const pl = {
       llamaCppVersion: "Wersja llama.cpp",
       audioCppVersion: "Wersja audio.cpp",
       mlxVersion: "Wersja MLX",
+      fastflowlmVersion: "Wersja FastFlowLM",
+      lemonadeVersion: "Wersja Lemonade",
       whisperCppVersion: "Wersja whisper.cpp",
       engines: {
         title: "Silniki",

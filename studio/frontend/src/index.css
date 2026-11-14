@@ -2246,7 +2246,7 @@ html[data-chat-font] .aui-root {
 	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[data-modal-lock-lower] .pointer-events-auto:not([data-radix-popper-content-wrapper] *) {
 		pointer-events: none !important;
 	}
-	/* The same for pointer-events-auto restorations in the page itself (toolbars, the Downloads card,
+	/* The same for pointer-events-auto restorations in the page itself (toolbars,
 	   floating monitors): with the body lock on, wheel over one scrolled what sits behind the modal.
 	   Left live: the top dialog (contained or portaled), every popper popup, the thread (its cover
 	   blocks it, and its many restorations would restyle on each toggle) and window chrome, toasts and
@@ -8119,4 +8119,12 @@ html[data-glass="liquid-3d"][data-glass-cpu] :is(.unsloth-composer-surface, .uns
 html.dark[data-glass="liquid-3d"][data-glass-cpu] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-rim: inset 0 1px 1px rgb(255 255 255 / .121);
   --glass-glow: linear-gradient(rgb(255 255 255 / .06), rgb(255 255 255 / .016) 12px, transparent 26px), linear-gradient(to top, rgb(255 255 255 / .032), transparent 24px);
+}
+
+/* Audio's settings rail shares the sidebar surface: a faint seam marks the boundary and fades out at both ends.
+   The Audio page sets the root attribute while it is shown (no :has() on the root). */
+html[data-audio-attached-rail] [data-sidebar="sidebar"] {
+	--audio-seam: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-seam-gain, 1)), var(--sidebar));
+	border-right: 1px solid transparent;
+	border-image: linear-gradient(to bottom, transparent, var(--audio-seam) 18%, var(--audio-seam) 82%, transparent) 1;
 }

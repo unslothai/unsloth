@@ -2419,6 +2419,18 @@ export const vi = {
         deviceGpu: "GPU",
         deviceLocked: "Được đặt bởi {name}.",
         deviceSaveError: "Không thể thay đổi thiết bị nhúng",
+        offlineDocs: {
+          folderLabel: "Tài liệu Unsloth ngoại tuyến",
+          folderDescription: "Lưu toàn bộ tài liệu Unsloth vào một thư mục để dùng khi không có internet.",
+          folderHint: "Unsloth tải unsloth.ai/docs/llms-full.txt vào thư mục này với tên \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" và thay thế bản trước. Liên kết thư mục với một cơ sở tri thức để tìm trong tài liệu khi trò chuyện ngoại tuyến. Thư mục được giữ lại qua các bản cập nhật.",
+          choose: "Chọn",
+          autoUpdateLabel: "Cập nhật tài liệu mỗi bản phát hành",
+          autoUpdateDescription: "Tải bản mới lần đầu một phiên bản Unsloth mới khởi động.",
+          downloadNow: "Tải ngay",
+          downloading: "Đang tải tài liệu…",
+          notDownloaded: "Chưa tải",
+          lastUpdated: "Đã cập nhật {date} cho {release}",
+        },
       },
       storage: {
         sectionTitle: "Lưu trữ",
@@ -3993,6 +4005,8 @@ export const vi = {
       llamaCppVersion: "Phiên bản llama.cpp",
       audioCppVersion: "Phiên bản audio.cpp",
       mlxVersion: "Phiên bản MLX",
+      fastflowlmVersion: "Phiên bản FastFlowLM",
+      lemonadeVersion: "Phiên bản Lemonade",
       whisperCppVersion: "Phiên bản whisper.cpp",
       engines: {
         title: "Công cụ chạy",

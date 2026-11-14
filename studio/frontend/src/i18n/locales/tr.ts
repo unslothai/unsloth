@@ -2409,6 +2409,18 @@ export const tr = {
         deviceGpu: "GPU",
         deviceLocked: "Şunun tarafından ayarlandı: {name}",
         deviceSaveError: "Gömme aygıtı değiştirilemedi",
+        offlineDocs: {
+          folderLabel: "Çevrimdışı Unsloth belgeleri",
+          folderDescription: "Unsloth belgelerinin tamamını bir klasöre kaydedin, internet olmadan da kullanın.",
+          folderHint: "Unsloth, unsloth.ai/docs/llms-full.txt dosyasını bu klasöre \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" adıyla indirir ve önceki kopyanın yerine koyar. Belgelerde çevrimdışıyken sohbette arama yapmak için klasörü bir bilgi tabanına bağlayın. Klasör güncellemelerde korunur.",
+          choose: "Seç",
+          autoUpdateLabel: "Belgeleri her sürümde güncelle",
+          autoUpdateDescription: "Yeni bir Unsloth sürümü ilk kez başladığında yeni bir kopya indirir.",
+          downloadNow: "Şimdi indir",
+          downloading: "Belgeler indiriliyor…",
+          notDownloaded: "Henüz indirilmedi",
+          lastUpdated: "{release} için {date} tarihinde güncellendi",
+        },
       },
       storage: {
         sectionTitle: "Depolama",
@@ -3990,6 +4002,8 @@ export const tr = {
       llamaCppVersion: "llama.cpp Sürümü",
       audioCppVersion: "audio.cpp Sürümü",
       mlxVersion: "MLX Sürümü",
+      fastflowlmVersion: "FastFlowLM Sürümü",
+      lemonadeVersion: "Lemonade Sürümü",
       whisperCppVersion: "whisper.cpp Sürümü",
       engines: {
         title: "Motorlar",

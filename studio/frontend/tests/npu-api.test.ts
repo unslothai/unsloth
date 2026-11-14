@@ -6,6 +6,7 @@ import test from "node:test";
 import { matchesFormatFilter } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import type * as NpuApi from "../src/features/npu/api.ts";
 import * as npuModelId from "../src/features/npu/model-id.ts";
+import * as runtimeVersions from "../src/features/npu/runtime-versions.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import * as sseJsonEvents from "../src/lib/sse-json-events.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -24,6 +25,7 @@ function client(response: () => Response) {
       "./model-id": npuModelId,
       "@/lib/format-fastapi-error": formatFastApiError,
       "@/lib/sse-json-events": sseJsonEvents,
+      "./runtime-versions": runtimeVersions,
     },
   );
   return { api, requests };

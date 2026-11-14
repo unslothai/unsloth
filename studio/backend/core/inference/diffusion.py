@@ -57,6 +57,7 @@ from .diffusion_content import (
     whole_pipeline_gguf_family,
 )
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
+from .diffusion_hub_evidence import cached_family
 from .diffusion_init_buffers import install_single_file_fp32_buffers
 from . import hub_reachability
 from .diffusion_families import (
@@ -2096,7 +2097,10 @@ _WHOLE_PIPELINE_GGUF_LORA_MSG = (
 
 def _whole_pipeline_gguf_pick(repo_id: Optional[str], gguf_filename: Optional[str]) -> bool:
     """True when the pick is an on-disk GGUF carrying a whole single-file pipeline (UNet + text encoders + VAE)."""
-    return whole_pipeline_gguf_family(local_pick_file(repo_id, gguf_filename)) is not None
+    return (
+        whole_pipeline_gguf_family(local_pick_file(repo_id, gguf_filename)) is not None
+        or cached_family(repo_id, gguf_filename) is not None
+    )
 
 
 def _dequantize_gguf_outside_linears(

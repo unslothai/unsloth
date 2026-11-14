@@ -2204,6 +2204,18 @@ export const ar = {
         deviceGpu: "GPU",
         deviceLocked: "مضبوط بواسطة {name}.",
         deviceSaveError: "تعذّر تغيير جهاز التضمين",
+        offlineDocs: {
+          folderLabel: "وثائق Unsloth دون اتصال",
+          folderDescription: "احفظ وثائق Unsloth الكاملة في مجلد لتعمل دون إنترنت.",
+          folderHint: "ينزّل Unsloth الملف unsloth.ai/docs/llms-full.txt إلى هذا المجلد باسم \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" ويستبدل النسخة السابقة. اربط المجلد بقاعدة معرفة للبحث في الوثائق من المحادثة دون اتصال. يبقى المجلد محفوظًا عبر التحديثات.",
+          choose: "اختيار",
+          autoUpdateLabel: "تحديث الوثائق مع كل إصدار",
+          autoUpdateDescription: "تنزيل نسخة جديدة عند أول تشغيل لإصدار جديد من Unsloth.",
+          downloadNow: "تنزيل الآن",
+          downloading: "جارٍ تنزيل الوثائق…",
+          notDownloaded: "لم يتم التنزيل بعد",
+          lastUpdated: "حُدّثت في {date} للإصدار {release}",
+        },
       },
       storage: {
         sectionTitle: "التخزين",
@@ -3694,6 +3706,8 @@ export const ar = {
       llamaCppVersion: "إصدار llama.cpp",
       audioCppVersion: "إصدار audio.cpp",
       mlxVersion: "إصدار MLX",
+      fastflowlmVersion: "إصدار FastFlowLM",
+      lemonadeVersion: "إصدار Lemonade",
       whisperCppVersion: "إصدار whisper.cpp",
       engines: {
         title: "المحركات",
