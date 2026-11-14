@@ -88,7 +88,9 @@
   }
 
   const quantile = (sorted, q) =>
-    sorted.length === 0 ? null : sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
+    sorted.length === 0
+      ? null
+      : sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
 
   window.__sb.frames = {
     beginCalibration() {
@@ -103,8 +105,14 @@
       if (samples.length < 10) {
         R.clampMs = null;
         R.clampReason =
-          "the idle window produced " + samples.length + " timer ticks, too few to find a floor";
-        return { clampMs: null, reason: R.clampReason, samples: samples.length };
+          "the idle window produced " +
+          samples.length +
+          " timer ticks, too few to find a floor";
+        return {
+          clampMs: null,
+          reason: R.clampReason,
+          samples: samples.length,
+        };
       }
       const median = samples[Math.floor(samples.length / 2)];
       if (median > MAX_CLAMP_MS) {
@@ -116,7 +124,12 @@
           "ms, above the " +
           MAX_CLAMP_MS +
           "ms ceiling: the page was not idle during calibration, so there is no floor to subtract";
-        return { clampMs: null, reason: R.clampReason, median, samples: samples.length };
+        return {
+          clampMs: null,
+          reason: R.clampReason,
+          median,
+          samples: samples.length,
+        };
       }
       R.clampMs = median;
       R.clampReason = "calibrated";
@@ -152,22 +165,32 @@
         frames: R.frames,
         frames_attempted: true,
         app_rafs: R.appRafs,
-        fps: elapsed === null ? null : Math.round((R.frames / (elapsed / 1000)) * 10) / 10,
+        fps:
+          elapsed === null
+            ? null
+            : Math.round((R.frames / (elapsed / 1000)) * 10) / 10,
         frames_over_33: over33,
         // A share, not a count: headless Chromium has no vsync so raw counts are not comparable.
         frames_over_33_pct:
-          gaps.length === 0 ? null : Math.round((over33 / gaps.length) * 1000) / 10,
+          gaps.length === 0
+            ? null
+            : Math.round((over33 / gaps.length) * 1000) / 10,
         p50_frame_ms: quantile(gaps, 0.5),
         p95_frame_ms: quantile(gaps, 0.95),
         // Sorted gaps: over the cap emit null, since a head slice drops the janky frames.
         frame_gaps_ms:
-          gaps.length > GAPS_CAP ? null : gaps.map((g) => Math.round(g * 10) / 10),
+          gaps.length > GAPS_CAP
+            ? null
+            : gaps.map((g) => Math.round(g * 10) / 10),
         frame_gaps_truncated: gaps.length > GAPS_CAP,
         frame_gaps_total: gaps.length,
         max_frame_ms: gaps.length === 0 ? null : gaps[gaps.length - 1],
         max_lag_ms: Math.round(R.maxLagMs * 10) / 10,
         lag_ticks: R.lagTicks,
-        mean_lag_ms: R.lagTicks === 0 ? null : Math.round((R.lagSumMs / R.lagTicks) * 10) / 10,
+        mean_lag_ms:
+          R.lagTicks === 0
+            ? null
+            : Math.round((R.lagSumMs / R.lagTicks) * 10) / 10,
         clamp_ms: R.clampMs === null ? null : Math.round(R.clampMs * 100) / 100,
         clamp_reason: R.clampReason,
         long_tasks: R.longTaskSupported ? R.longTasks : null,
@@ -181,7 +204,8 @@
         out.blocked_ms = null;
       } else if (elapsed === null) {
         out.busy_pct = null;
-        out.busy_pct_reason = "the driver reported no elapsed time for this window";
+        out.busy_pct_reason =
+          "the driver reported no elapsed time for this window";
         out.blocked_ms = Math.round(R.blockedMs * 10) / 10;
       } else {
         out.blocked_ms = Math.round(R.blockedMs * 10) / 10;
@@ -196,11 +220,17 @@
       return R.blockedTotalMs;
     },
     clamp() {
-      return { clampMs: R.clampMs, reason: R.clampReason, samples: R.clampSamples };
+      return {
+        clampMs: R.clampMs,
+        reason: R.clampReason,
+        samples: R.clampSamples,
+      };
     },
   };
 
   // Two rAFs: the second is the frame that painted the first's work.
   window.__sbNextPaint = () =>
-    new Promise((resolve) => nativeRaf(() => nativeRaf(() => resolve(performance.now()))));
+    new Promise((resolve) =>
+      nativeRaf(() => nativeRaf(() => resolve(performance.now()))),
+    );
 })();

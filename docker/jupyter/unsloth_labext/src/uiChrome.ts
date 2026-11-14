@@ -3,22 +3,22 @@
 
 import {
   ILabShell,
-  JupyterFrontEnd,
-  JupyterFrontEndPlugin
-} from '@jupyterlab/application';
+  type JupyterFrontEnd,
+  type JupyterFrontEndPlugin,
+} from "@jupyterlab/application";
 
 /**
  * Hide the right activity bar by default. There is no settings key for it, so the
  * strip is hidden with CSS and the panel collapsed once on startup.
  */
 
-const STYLE_ID = 'unsloth-ui-chrome-style';
+const STYLE_ID = "unsloth-ui-chrome-style";
 
 function injectStyle(): void {
   if (document.getElementById(STYLE_ID)) {
     return;
   }
-  const style = document.createElement('style');
+  const style = document.createElement("style");
   style.id = STYLE_ID;
   style.textContent = `
 /* Hide the right-hand activity bar strip (Property Inspector / Debugger tabs). */
@@ -30,8 +30,8 @@ function injectStyle(): void {
 }
 
 const uiChromePlugin: JupyterFrontEndPlugin<void> = {
-  id: 'unsloth-jupyterlab:ui-chrome',
-  description: 'Hide the right activity bar by default (Colab-like chrome).',
+  id: "unsloth-jupyterlab:ui-chrome",
+  description: "Hide the right activity bar by default (Colab-like chrome).",
   autoStart: true,
   requires: [ILabShell],
   activate: (app: JupyterFrontEnd, shell: ILabShell): void => {
@@ -45,7 +45,7 @@ const uiChromePlugin: JupyterFrontEndPlugin<void> = {
         }
       })
       .catch(() => undefined);
-  }
+  },
 };
 
 export default uiChromePlugin;

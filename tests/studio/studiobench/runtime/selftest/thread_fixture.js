@@ -45,7 +45,8 @@
       root.className = "aui-root aui-thread-root";
       const viewport = document.createElement("div");
       viewport.className = "aui-thread-viewport aui-stream-viewport";
-      viewport.style.cssText = "height:400px;overflow-y:auto;position:relative;";
+      viewport.style.cssText =
+        "height:400px;overflow-y:auto;position:relative;";
       root.appendChild(viewport);
 
       const topSpacer = document.createElement("div");
@@ -70,7 +71,11 @@
       let store = [];
       for (let i = 0; i < turns; i += 1) {
         store.push({ role: "user", text: marker(i), pos: i * 2 + 1 });
-        store.push({ role: "assistant", text: "reply to turn " + i + " ".repeat(200), pos: i * 2 + 2 });
+        store.push({
+          role: "assistant",
+          text: "reply to turn " + i + " ".repeat(200),
+          pos: i * 2 + 2,
+        });
       }
       const declaredTotal = total;
       if (mode === "windowed_lost_head") store = store.slice(-windowSize);
@@ -114,11 +119,15 @@
           list.appendChild(el);
         }
         // Spacers keep the scroll extent equal to the whole thread.
-        const above = mode === "full" || mode === "mounting" ? 0 : startIndex * ROW_PX;
+        const above =
+          mode === "full" || mode === "mounting" ? 0 : startIndex * ROW_PX;
         const below =
           mode === "full" || mode === "mounting"
             ? 0
-            : Math.max(0, (state.declaredTotal - startIndex - slice.length) * ROW_PX);
+            : Math.max(
+                0,
+                (state.declaredTotal - startIndex - slice.length) * ROW_PX,
+              );
         topSpacer.style.height = above + "px";
         bottomSpacer.style.height = below + "px";
       }
@@ -132,16 +141,25 @@
         if (mode === "windowed_lost_middle") {
           const start = Math.max(
             0,
-            Math.min(state.store.length - windowSize, Math.floor(scrollTop / ROW_PX)),
+            Math.min(
+              state.store.length - windowSize,
+              Math.floor(scrollTop / ROW_PX),
+            ),
           );
           render(start, windowSize, true);
           return;
         }
         const first = Math.max(
           0,
-          Math.min(state.declaredTotal - windowSize, Math.floor(scrollTop / ROW_PX)),
+          Math.min(
+            state.declaredTotal - windowSize,
+            Math.floor(scrollTop / ROW_PX),
+          ),
         );
-        const offset = mode === "windowed_lost_head" ? state.declaredTotal - state.store.length : 0;
+        const offset =
+          mode === "windowed_lost_head"
+            ? state.declaredTotal - state.store.length
+            : 0;
         render(Math.max(0, first - offset), windowSize, true);
       };
 
@@ -154,7 +172,10 @@
         pin();
         state.timer = setInterval(() => {
           n += 1;
-          if (n > state.store.length) { clearInterval(state.timer); return; }
+          if (n > state.store.length) {
+            clearInterval(state.timer);
+            return;
+          }
           render(0, n, false);
           pin();
         }, 250);
@@ -180,7 +201,8 @@
           state.renderWindowAround(viewport.scrollTop);
           jump.classList.toggle(
             "invisible",
-            viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop < 8,
+            viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <
+              8,
           );
         });
       }
@@ -188,13 +210,22 @@
       if (opts.copyFromStore) {
         viewport.addEventListener("copy", (event) => {
           const selection = window.getSelection();
-          const nodes = Array.from(viewport.querySelectorAll("[aria-posinset]"));
-          if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+          const nodes = Array.from(
+            viewport.querySelectorAll("[aria-posinset]"),
+          );
+          if (!selection || selection.isCollapsed || selection.rangeCount === 0)
+            return;
           if (nodes.length === 0 || state.store.length <= nodes.length) return;
           const first = nodes[0];
           const last = nodes[nodes.length - 1];
-          if (!selection.containsNode(first, true) || !selection.containsNode(last, true)) return;
-          const text = state.store.map((m) => "## " + m.role + "\n\n" + m.text).join("\n\n");
+          if (
+            !selection.containsNode(first, true) ||
+            !selection.containsNode(last, true)
+          )
+            return;
+          const text = state.store
+            .map((m) => "## " + m.role + "\n\n" + m.text)
+            .join("\n\n");
           event.clipboardData.setData("text/plain", text);
           event.preventDefault();
         });
@@ -208,7 +239,9 @@
   if (!window.__sbNextPaint) {
     window.__sbNextPaint = () =>
       new Promise((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.now()))),
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => resolve(performance.now())),
+        ),
       );
   }
 })();

@@ -46,10 +46,7 @@ test("missing and malformed GGUF vision metadata remain unknown", () => {
   for (const value of [undefined, null, "false", 0]) {
     const isVision = normalizeGgufVisionCapability(value);
     assert.equal(isVision, undefined);
-    assert.equal(
-      isKnownTextOnlySelection({ isGguf: true, isVision }),
-      false,
-    );
+    assert.equal(isKnownTextOnlySelection({ isGguf: true, isVision }), false);
   }
   assert.equal(normalizeGgufVisionCapability(false), false);
   assert.equal(
@@ -57,8 +54,6 @@ test("missing and malformed GGUF vision metadata remain unknown", () => {
     true,
   );
 });
-
-
 
 test("known text-only non-GGUF still emits the warning", () => {
   assert.equal(

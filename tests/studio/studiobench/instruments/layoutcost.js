@@ -14,7 +14,7 @@
     return;
   }
 
-  var W = window;
+  const W = window;
 
   // Idempotence: add_init_script runs per document; double wrapping would double every count.
   if (W.__sbLayoutCostInstalled) {
@@ -22,23 +22,23 @@
   }
   W.__sbLayoutCostInstalled = true;
 
-  var VIEWPORT_CLASS = "aui-stream-viewport";
-  var STABILIZER_PROP = "--aui-scroll-stabilizer";
-  var MAX_KEYS = 24;
-  var OTHER_KEY = "__other__";
+  const VIEWPORT_CLASS = "aui-stream-viewport";
+  const STABILIZER_PROP = "--aui-scroll-stabilizer";
+  const MAX_KEYS = 24;
+  const OTHER_KEY = "__other__";
 
   // Capture before the app can replace performance.now.
-  var perf = W.performance;
-  var rawNow =
+  const perf = W.performance;
+  const rawNow =
     perf && typeof perf.now === "function" ? perf.now.bind(perf) : null;
-  var now =
+  const now =
     rawNow ||
     function () {
       return Date.now();
     };
-  var hasHiResClock = !!rawNow;
+  const hasHiResClock = !!rawNow;
 
-  var doc = W.document || null;
+  const doc = W.document || null;
 
   function nowStamp() {
     try {
@@ -47,7 +47,6 @@
       return null;
     }
   }
-
 
   function freshTiming() {
     return { totalMs: 0, maxMs: 0, samples: 0 };
@@ -65,7 +64,7 @@
       moCallbacks: 0,
       moRecords: 0,
       customPropSets: 0,
-      stabilizerPropSets: 0
+      stabilizerPropSets: 0,
     };
   }
 
@@ -73,7 +72,7 @@
     return {
       scrollHeightRead: freshTiming(),
       scrollTo: freshTiming(),
-      moCallback: freshTiming()
+      moCallback: freshTiming(),
     };
   }
 
@@ -84,11 +83,11 @@
       observersWithAriaExpandedFilter: 0,
       observeCalls: 0,
       viewportObserver: freshMoBucket(),
-      other: freshMoBucket()
+      other: freshMoBucket(),
     };
   }
 
-  var state = {
+  const state = {
     active: false,
     counters: freshCounters(),
     timings: freshTimings(),
@@ -101,21 +100,21 @@
       scrollTop: false,
       scrollTo: false,
       mutationObserver: false,
-      customProps: false
+      customProps: false,
     },
     unavailable: [],
     selfCost: null,
     clockGranularityMs: null,
     // Sink so the discarded read cannot be optimised out.
-    sink: 0
+    sink: 0,
   };
 
-  var originals = {
+  const originals = {
     scrollHeightDesc: null,
     scrollTopDesc: null,
     scrollToDesc: null,
     setPropertyDesc: null,
-    MutationObserver: null
+    MutationObserver: null,
   };
 
   function markUnavailable(name, reason) {
@@ -141,16 +140,16 @@
       if (!el || typeof el !== "object") {
         return "unknown";
       }
-      var tag = "";
+      let tag = "";
       try {
         tag = String(el.tagName || el.nodeName || "?").toLowerCase();
       } catch (e) {
         tag = "?";
       }
-      var cls = "";
-      var isViewport = false;
+      let cls = "";
+      let isViewport = false;
       try {
-        var list = el.classList;
+        const list = el.classList;
         if (list) {
           if (list.length > 0) {
             cls = String(list[0] || "");
@@ -167,12 +166,12 @@
   }
 
   function bucketFor(el) {
-    var key = keyFor(el);
-    var b = state.breakdown[key];
+    let key = keyFor(el);
+    let b = state.breakdown[key];
     if (b) {
       return b;
     }
-    var isOther = false;
+    let isOther = false;
     if (state.breakdownKeyCount >= MAX_KEYS) {
       state.breakdownCapped = true;
       key = OTHER_KEY;
@@ -189,7 +188,7 @@
       scrollTopWrites: 0,
       scrollToCalls: 0,
       scrollToMs: 0,
-      scrollToMaxMs: 0
+      scrollToMaxMs: 0,
     };
     state.breakdown[key] = b;
     if (!isOther) {
@@ -199,8 +198,7 @@
     return b;
   }
 
-
-  var ElementProto =
+  const ElementProto =
     typeof W.Element === "function" && W.Element.prototype
       ? W.Element.prototype
       : null;
@@ -210,7 +208,7 @@
       markUnavailable(name, "Element.prototype is not available");
       return null;
     }
-    var d = null;
+    let d = null;
     try {
       d = Object.getOwnPropertyDescriptor(proto, name);
     } catch (e) {
@@ -229,7 +227,7 @@
   }
 
   function installScrollHeight() {
-    var d = grabDescriptor(ElementProto, "scrollHeight");
+    const d = grabDescriptor(ElementProto, "scrollHeight");
     if (!d || typeof d.get !== "function") {
       if (d) {
         markUnavailable("scrollHeight", "descriptor has no getter");
@@ -237,7 +235,7 @@
       return;
     }
     originals.scrollHeightDesc = d;
-    var origGet = d.get;
+    const origGet = d.get;
     try {
       Object.defineProperty(ElementProto, "scrollHeight", {
         configurable: true,
@@ -246,14 +244,14 @@
           if (!state.active) {
             return origGet.call(this);
           }
-          var t0 = now();
+          const t0 = now();
           // Outside try/catch: a throwing native getter must reach the app unchanged.
-          var value = origGet.call(this);
+          const value = origGet.call(this);
           try {
-            var dt = now() - t0;
+            const dt = now() - t0;
             state.counters.scrollHeightReads += 1;
             record(state.timings.scrollHeightRead, dt);
-            var b = bucketFor(this);
+            const b = bucketFor(this);
             b.scrollHeightReads += 1;
             b.scrollHeightMs += dt;
             if (dt > b.scrollHeightMaxMs) {
@@ -264,7 +262,7 @@
           }
           return value;
         },
-        set: d.set
+        set: d.set,
       });
       state.attempted.scrollHeight = true;
     } catch (e) {
@@ -274,7 +272,7 @@
   }
 
   function installScrollTop() {
-    var d = grabDescriptor(ElementProto, "scrollTop");
+    const d = grabDescriptor(ElementProto, "scrollTop");
     if (!d || typeof d.set !== "function") {
       if (d) {
         markUnavailable("scrollTop", "descriptor has no setter");
@@ -282,7 +280,7 @@
       return;
     }
     originals.scrollTopDesc = d;
-    var origSet = d.set;
+    const origSet = d.set;
     try {
       Object.defineProperty(ElementProto, "scrollTop", {
         configurable: true,
@@ -301,7 +299,7 @@
             /* fall through to the real setter regardless */
           }
           origSet.call(this, v);
-        }
+        },
       });
       state.attempted.scrollTop = true;
     } catch (e) {
@@ -311,7 +309,7 @@
   }
 
   function installScrollTo() {
-    var d = grabDescriptor(ElementProto, "scrollTo");
+    const d = grabDescriptor(ElementProto, "scrollTo");
     if (!d || typeof d.value !== "function") {
       if (d) {
         markUnavailable("scrollTo", "descriptor is not a method");
@@ -323,7 +321,7 @@
       return;
     }
     originals.scrollToDesc = d;
-    var orig = d.value;
+    const orig = d.value;
     try {
       Object.defineProperty(ElementProto, "scrollTo", {
         configurable: true,
@@ -333,13 +331,13 @@
           if (!state.active) {
             return orig.apply(this, arguments);
           }
-          var t0 = now();
-          var out = orig.apply(this, arguments);
+          const t0 = now();
+          const out = orig.apply(this, arguments);
           try {
-            var dt = now() - t0;
+            const dt = now() - t0;
             state.counters.scrollToCalls += 1;
             record(state.timings.scrollTo, dt);
-            var b = bucketFor(this);
+            const b = bucketFor(this);
             b.scrollToCalls += 1;
             b.scrollToMs += dt;
             if (dt > b.scrollToMaxMs) {
@@ -349,7 +347,7 @@
             /* never turn a scroll into an exception */
           }
           return out;
-        }
+        },
       });
       state.attempted.scrollTo = true;
     } catch (e) {
@@ -358,9 +356,8 @@
     }
   }
 
-
   function installSetProperty() {
-    var proto =
+    const proto =
       typeof W.CSSStyleDeclaration === "function" &&
       W.CSSStyleDeclaration.prototype
         ? W.CSSStyleDeclaration.prototype
@@ -369,7 +366,7 @@
       markUnavailable("setProperty", "CSSStyleDeclaration is not available");
       return;
     }
-    var d = null;
+    let d = null;
     try {
       d = Object.getOwnPropertyDescriptor(proto, "setProperty");
     } catch (e) {
@@ -385,7 +382,7 @@
       return;
     }
     originals.setPropertyDesc = d;
-    var orig = d.value;
+    const orig = d.value;
     try {
       Object.defineProperty(proto, "setProperty", {
         configurable: true,
@@ -394,7 +391,11 @@
         value: function (name) {
           if (state.active) {
             try {
-              if (typeof name === "string" && name.charCodeAt(0) === 45 && name.charCodeAt(1) === 45) {
+              if (
+                typeof name === "string" &&
+                name.charCodeAt(0) === 45 &&
+                name.charCodeAt(1) === 45
+              ) {
                 state.counters.customPropSets += 1;
                 if (name === STABILIZER_PROP) {
                   state.counters.stabilizerPropSets += 1;
@@ -405,7 +406,7 @@
             }
           }
           return orig.apply(this, arguments);
-        }
+        },
       });
       state.attempted.customProps = true;
     } catch (e) {
@@ -418,15 +419,14 @@
   // is split out (viewportObserver) by viewport class and its aria-expanded attributeFilter.
 
   function installMutationObserver() {
-    var Native = W.MutationObserver;
+    const Native = W.MutationObserver;
     if (typeof Native !== "function") {
       markUnavailable("MutationObserver", "constructor is not available");
       return;
     }
     originals.MutationObserver = Native;
 
-    var moStates =
-      typeof W.WeakMap === "function" ? new W.WeakMap() : null;
+    const moStates = typeof W.WeakMap === "function" ? new W.WeakMap() : null;
 
     function bucketOf(obsState) {
       return obsState && (obsState.matchedViewport || obsState.hasAriaExpanded)
@@ -434,7 +434,7 @@
         : state.mo.other;
     }
 
-    var Wrapped;
+    let Wrapped;
     try {
       Wrapped = class extends Native {
         constructor(callback) {
@@ -442,27 +442,30 @@
             super(callback);
             return;
           }
-          var obsState = { matchedViewport: false, hasAriaExpanded: false };
+          const obsState = { matchedViewport: false, hasAriaExpanded: false };
           super(function (records, observer) {
             if (!state.active) {
               return callback.call(this, records, observer);
             }
-            var n = 0;
+            let n = 0;
             try {
-              n = records && typeof records.length === "number" ? records.length : 0;
+              n =
+                records && typeof records.length === "number"
+                  ? records.length
+                  : 0;
             } catch (e) {
               n = 0;
             }
-            var t0 = now();
+            const t0 = now();
             try {
               return callback.call(this, records, observer);
             } finally {
               try {
-                var dt = now() - t0;
+                const dt = now() - t0;
                 state.counters.moCallbacks += 1;
                 state.counters.moRecords += n;
                 record(state.timings.moCallback, dt);
-                var b = bucketOf(obsState);
+                const b = bucketOf(obsState);
                 b.callbacks += 1;
                 b.records += n;
                 b.totalMs += dt;
@@ -487,7 +490,7 @@
         observe(target, init) {
           try {
             state.mo.observeCalls += 1;
-            var obsState = moStates ? moStates.get(this) : null;
+            const obsState = moStates ? moStates.get(this) : null;
             if (obsState) {
               if (
                 !obsState.matchedViewport &&
@@ -501,8 +504,8 @@
                 state.mo.observersMatchedViewport += 1;
               }
               if (!obsState.hasAriaExpanded && init && init.attributeFilter) {
-                var f = init.attributeFilter;
-                for (var i = 0; i < f.length; i++) {
+                const f = init.attributeFilter;
+                for (let i = 0; i < f.length; i++) {
                   if (f[i] === "aria-expanded") {
                     obsState.hasAriaExpanded = true;
                     state.mo.observersWithAriaExpandedFilter += 1;
@@ -527,7 +530,7 @@
     try {
       Object.defineProperty(Wrapped, "name", {
         value: "MutationObserver",
-        configurable: true
+        configurable: true,
       });
     } catch (e) {
       /* cosmetic only: some feature detection sniffs constructor names */
@@ -542,19 +545,18 @@
     }
   }
 
-
   function measureClockGranularityMs() {
-    var best = null;
-    for (var trial = 0; trial < 5; trial++) {
-      var a = now();
-      var b = a;
-      var guard = 0;
+    let best = null;
+    for (let trial = 0; trial < 5; trial++) {
+      const a = now();
+      let b = a;
+      let guard = 0;
       while (b === a && guard < 2000000) {
         b = now();
         guard++;
       }
       if (b !== a) {
-        var d = b - a;
+        const d = b - a;
         if (best === null || d < best) {
           best = d;
         }
@@ -570,7 +572,7 @@
       mo: copyPlain(state.mo),
       breakdown: copyPlain(state.breakdown),
       breakdownKeyCount: state.breakdownKeyCount,
-      breakdownCapped: state.breakdownCapped
+      breakdownCapped: state.breakdownCapped,
     };
   }
 
@@ -588,7 +590,7 @@
   }
 
   function selfCostEstimate(sampleCount) {
-    var n =
+    const n =
       typeof sampleCount === "number" && sampleCount > 0
         ? Math.floor(sampleCount)
         : 200;
@@ -596,9 +598,10 @@
     if (!state.attempted.scrollHeight || !originals.scrollHeightDesc) {
       return {
         attempted: false,
-        reason: "scrollHeight getter was not patched, so there is no overhead to measure",
+        reason:
+          "scrollHeight getter was not patched, so there is no overhead to measure",
         samples: 0,
-        hasHiResClock: hasHiResClock
+        hasHiResClock: hasHiResClock,
       };
     }
     if (!doc || typeof doc.createElement !== "function") {
@@ -606,18 +609,18 @@
         attempted: false,
         reason: "no document to build a probe element in",
         samples: 0,
-        hasHiResClock: hasHiResClock
+        hasHiResClock: hasHiResClock,
       };
     }
 
-    var origGet = originals.scrollHeightDesc.get;
-    var result;
-    var saved = copyRawState();
+    const origGet = originals.scrollHeightDesc.get;
+    let result;
+    const saved = copyRawState();
     try {
-      var probe = doc.createElement("div");
+      const probe = doc.createElement("div");
       probe.className = "sb-selfcost-probe";
-      var i;
-      var sink = 0;
+      let i;
+      let sink = 0;
 
       for (i = 0; i < n; i++) {
         sink += probe.scrollHeight;
@@ -626,27 +629,27 @@
         sink += origGet.call(probe);
       }
 
-      var w0 = now();
+      const w0 = now();
       for (i = 0; i < n; i++) {
         sink += probe.scrollHeight;
       }
-      var wrappedMs = now() - w0;
+      const wrappedMs = now() - w0;
 
-      var r0 = now();
+      const r0 = now();
       for (i = 0; i < n; i++) {
         sink += origGet.call(probe);
       }
-      var rawMs = now() - r0;
+      const rawMs = now() - r0;
 
       state.sink = sink;
 
-      var granularity = state.clockGranularityMs;
+      let granularity = state.clockGranularityMs;
       if (granularity === null || granularity === undefined) {
         granularity = measureClockGranularityMs();
       }
 
-      var perWrapped = wrappedMs / n;
-      var perRaw = rawMs / n;
+      const perWrapped = wrappedMs / n;
+      const perRaw = rawMs / n;
       result = {
         attempted: true,
         samples: n,
@@ -662,7 +665,7 @@
           "dirty attached element would force. Multiply overheadMsPerCall by " +
           "counters.scrollHeightReads to bound how much of the reported scrollHeight total " +
           "belongs to the instrument. Cross-check against the driver's paired run with the " +
-          "instrument absent."
+          "instrument absent.",
       };
       state.clockGranularityMs = granularity;
     } catch (e) {
@@ -670,7 +673,7 @@
         attempted: false,
         reason: "probe threw: " + e,
         samples: 0,
-        hasHiResClock: hasHiResClock
+        hasHiResClock: hasHiResClock,
       };
     } finally {
       try {
@@ -684,14 +687,13 @@
     return copyPlain(result);
   }
 
-
   function copyPlain(v) {
     // Hand written: JSON turns non-finite into null and drops undefined.
     if (v === null || typeof v !== "object") {
       return v;
     }
-    var out;
-    var k;
+    let out;
+    let k;
     if (Object.prototype.toString.call(v) === "[object Array]") {
       out = [];
       for (k = 0; k < v.length; k++) {
@@ -709,7 +711,7 @@
   }
 
   function snapshot() {
-    var out;
+    let out;
     try {
       out = {
         enabled: !!state.active,
@@ -728,7 +730,7 @@
         otherKey: OTHER_KEY,
         clockGranularityMs: state.clockGranularityMs,
         hasHiResClock: hasHiResClock,
-        selfCost: copyPlain(state.selfCost)
+        selfCost: copyPlain(state.selfCost),
       };
     } catch (e) {
       out = { enabled: false, error: String(e) };
@@ -758,14 +760,22 @@
     state.active = false;
     try {
       if (originals.scrollHeightDesc && ElementProto) {
-        Object.defineProperty(ElementProto, "scrollHeight", originals.scrollHeightDesc);
+        Object.defineProperty(
+          ElementProto,
+          "scrollHeight",
+          originals.scrollHeightDesc,
+        );
       }
     } catch (e) {
       /* leave it wrapped rather than throw */
     }
     try {
       if (originals.scrollTopDesc && ElementProto) {
-        Object.defineProperty(ElementProto, "scrollTop", originals.scrollTopDesc);
+        Object.defineProperty(
+          ElementProto,
+          "scrollTop",
+          originals.scrollTopDesc,
+        );
       }
     } catch (e) {
       /* as above */
@@ -782,7 +792,7 @@
         Object.defineProperty(
           W.CSSStyleDeclaration.prototype,
           "setProperty",
-          originals.setPropertyDesc
+          originals.setPropertyDesc,
         );
       }
     } catch (e) {
@@ -799,6 +809,7 @@
     return true;
   }
 
+  // eslint-disable-next-line no-var -- hoisted functions above reference this object after initialization.
   var api = {
     version: 1,
     enabled: false,
@@ -814,7 +825,7 @@
     snapshot: snapshot,
     reset: reset,
     uninstall: uninstall,
-    selfCostEstimate: selfCostEstimate
+    selfCostEstimate: selfCostEstimate,
   };
 
   W.__sbLayoutCost = api;
