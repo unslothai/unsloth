@@ -61,7 +61,8 @@ export const MAX_TOTAL_MCP_IMAGE_CHARS = 12_000_000;
 export const MAX_MCP_IMAGE_MIME_CHARS = 256;
 
 export function isImageToolName(name: unknown): boolean {
-  return typeof name === "string" && (name === "view_image" || name.startsWith("mcp__"));
+  // "computer": its screenshots, so a later turn still shows the model the screen its results describe.
+  return typeof name === "string" && (name === "view_image" || name === "computer" || name.startsWith("mcp__"));
 }
 
 interface EnvelopeCarrier {

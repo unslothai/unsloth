@@ -432,6 +432,7 @@ import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import { ComputerUseMenuItem, ComputerUsePill } from "@/features/computer-use/lazy-composer-toggle";
 import {
   BranchNextIcon,
   BranchPrevIcon,
@@ -6039,6 +6040,7 @@ const Composer: FC<{
         <WebSearchToggle />
         <CodeToolsToggle />
         <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
+        <ComputerUsePill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
         <ImagesToggle />
         <KnowledgeBaseComposerButton side={effectiveMenuSide} />
         {mcpEnabledForChat ? (
@@ -7047,6 +7049,7 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuItem>
     ) : null,
     browserUse: <BrowserAgentMenuItem />,
+    computerUse: <ComputerUseMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}

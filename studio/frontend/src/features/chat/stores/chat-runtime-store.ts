@@ -11,6 +11,7 @@ import {
 } from "../utils/chat-full-access.ts";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
+import type { ComputerUseAsk } from "../../computer-use/summary";
 import {
   mirrorHfTokenInto,
   useHfTokenStore,
@@ -2557,6 +2558,8 @@ type ChatRuntimeStore = {
       threadId: string;
       imageDisclosure?: ImageDisclosure;
       runId?: string;
+      /** A computer call's reasons for asking; absent on a card restored after a reload. */
+      computerUse?: ComputerUseAsk;
     }
   >;
   webFetchToolsEnabled: boolean;
@@ -2799,6 +2802,7 @@ type ChatRuntimeStore = {
     threadId: string,
     imageDisclosure?: ImageDisclosure,
     runId?: string,
+    computerUse?: ComputerUseAsk,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -5822,6 +5826,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     threadId,
     imageDisclosure,
     runId,
+    computerUse,
   ) =>
     set((state) => ({
       toolConfirmations: {
@@ -5833,6 +5838,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           threadId,
           imageDisclosure,
           runId,
+          computerUse,
         },
       },
     })),

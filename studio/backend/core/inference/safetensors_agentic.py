@@ -61,9 +61,8 @@ from core.inference.mcp_images import (
     png_payloads_per_result,
     trim_image_turns,
 )
-from core.inference.tool_facts import repeatable
+from core.inference.tool_facts import STEPWISE, repeatable
 from core.inference.tool_loop_controller import (
-    BROWSER_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
@@ -697,7 +696,7 @@ def run_safetensors_tool_loop(
     reprompt_count = 0
     # A browser task is many steps, each a chance to announce the next one and stop: there one
     # nudge per tool turn, as in the GGUF and external loops; other requests never nudge after a tool.
-    browser_turns = any(name in BROWSER_TOOL_NAMES for name in _active_tool_names(tools or []))
+    browser_turns = any(name in STEPWISE for name in _active_tool_names(tools or []))
     post_tool_reprompts = 0
     # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
     last_reprompt_text = ""
@@ -1452,6 +1451,7 @@ def run_safetensors_tool_loop(
                 arguments = decision.arguments,
                 sandbox_level = sandbox_level,
                 session_id = session_id,
+                thread_id = thread_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirm = needs_confirm or image_share is not None

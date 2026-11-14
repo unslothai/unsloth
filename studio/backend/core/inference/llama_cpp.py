@@ -500,9 +500,8 @@ from core.inference.mcp_images import (
     is_image_tool as mcp_is_image_tool,
     mentions_images as mcp_images_mentioned_in,
 )
-from core.inference.tool_facts import repeatable
+from core.inference.tool_facts import STEPWISE, repeatable
 from core.inference.tool_loop_controller import (
-    BROWSER_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
@@ -39056,8 +39055,7 @@ class LlamaCppBackend:
         # A browser task is many steps, each a chance to announce the next one and stop: there the
         # budget is one nudge per tool turn, as in the external loop, not one per request.
         _browser_turns = any(
-            ((tool.get("function") or {}).get("name") in BROWSER_TOOL_NAMES)
-            for tool in (tools or [])
+            ((tool.get("function") or {}).get("name") in STEPWISE) for tool in (tools or [])
         )
         # Text that triggered the last nudge; if the retry restates it, stop.
         _last_reprompt_text = ""
@@ -40845,6 +40843,7 @@ class LlamaCppBackend:
                             never_needs = never_needs_approval,
                             sandbox_level = sandbox_level,
                             session_id = session_id,
+                            thread_id = thread_id,
                         ) or requires_os_isolation(
                             confirm_tool_calls = bool(confirm_tool_calls),
                             bypass_permissions = _bypass,
@@ -40956,6 +40955,7 @@ class LlamaCppBackend:
                         never_needs = never_needs_approval,
                         sandbox_level = sandbox_level,
                         session_id = session_id,
+                        thread_id = thread_id,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
                     needs_confirm = needs_confirm or image_share is not None

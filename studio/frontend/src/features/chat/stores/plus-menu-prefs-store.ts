@@ -10,6 +10,7 @@ export type PlusMenuItemId =
   | "deepResearch"
   | "chatWithFiles"
   | "browserUse"
+  | "computerUse"
   | "mcp"
   | "skills"
   | "savedPrompts"
@@ -22,6 +23,7 @@ export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "deepResearch",
   "chatWithFiles",
   "browserUse",
+  "computerUse",
   "mcp",
   "skills",
   "savedPrompts",
@@ -36,6 +38,7 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   deepResearch: true,
   chatWithFiles: true,
   browserUse: true,
+  computerUse: true,
   mcp: false,
   skills: true,
   projects: false,

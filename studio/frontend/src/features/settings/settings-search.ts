@@ -381,6 +381,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.sandbox.python",
     "settings.sandbox.terminal",
   ],
+  "computer-use": [
+    "computerUse.settings.title",
+    "computerUse.settings.control",
+    "computerUse.settings.anyApp",
+    "computerUse.settings.browser",
+    "computerUse.settings.allowedApps",
+    "computerUse.settings.blockedApps",
+  ],
   debugging: [
     "settings.debugging.logSection",
     "settings.debugging.source",

@@ -49,6 +49,7 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .computer_use import execute_computer_tool, is_computer_tool
 from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
 
@@ -14323,6 +14324,15 @@ def execute_tool(
             session_id = session_id,
             website_policy = website_policy,
             timeout = effective_timeout,
+        )
+    if is_computer_tool(name):
+        return execute_computer_tool(
+            arguments,
+            cancel_event = cancel_event,
+            # The conversation: a project's chats share session_id, and each asks for itself.
+            session_id = thread_id or session_id,
+            approved = host_access_approved,
+            full_access = disable_sandbox,
         )
     if name == "create_skill":
         from .skills import SkillError, create_skill
