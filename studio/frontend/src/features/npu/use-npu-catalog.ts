@@ -10,6 +10,7 @@ import {
   enableNpu,
   getNpuStatus,
   listNpuDownloads,
+  npuGpuHintArrived,
 } from "./api";
 import {
   followNpuDownload,
@@ -70,6 +71,16 @@ export function useNpuCatalog(
       () => undefined,
     );
   }, [ready]);
+
+  const gpuRecommended = status?.gpu_recommended;
+  const lastGpuRecommended = useRef(gpuRecommended);
+  useEffect(() => {
+    const before = lastGpuRecommended.current;
+    lastGpuRecommended.current = gpuRecommended;
+    if (ready && npuGpuHintArrived(before, gpuRecommended)) {
+      void refreshNpuModels();
+    }
+  }, [ready, gpuRecommended]);
 
   const enable = useCallback(async () => {
     if (!onStatusChange) return;

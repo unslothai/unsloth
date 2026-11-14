@@ -1273,6 +1273,31 @@ def _rocm_supported_gfx_from_gpu_name(name: str) -> Optional[str]:
     return None
 
 
+def strix_halo_gpu_present() -> Optional[bool]:
+    """Whether an AMD GPU on this host is Strix Halo (gfx1151), from the physical inventory; None when the AMD probes could not say or have not run yet. Never waits on a probe: it feeds an advisory hint on a request path, so a cold cache answers None and refreshes in the background. Not gated on a ROCm wheel: it describes the part, not the install."""
+    inventory = get_physical_gpu_inventory(block = False)
+    name_pattern = next(pattern for pattern, arch in _GPU_NAME_GFX_TABLE if arch == "gfx1151")
+    for device in inventory.get("devices") or []:
+        if device.get("vendor") != "amd":
+            continue
+        archs = [device.get("gfx"), *(device.get("gfx_candidates") or [])]
+        if "gfx1151" in (str(arch).lower() for arch in archs if arch) or re.search(
+            name_pattern, device.get("name") or "", re.IGNORECASE
+        ):
+            return True
+    if platform.system() == "Linux":
+        # sysfs carries no name and rocminfo may not exist; amdkfd names the arch regardless.
+        from . import amd
+        targets = amd.amd_kfd_gpu_gfx_targets()
+        if targets is not None:
+            return "gfx1151" in targets
+    unanswered = inventory.get("unanswered") or []
+    # Unknown with no vendor named is the cold cache, which has asked nobody yet.
+    if "amd" in unanswered or (inventory.get("unknown") and not unanswered):
+        return None
+    return False
+
+
 def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
     """Whether this AMD adapter is one the installers would have given a ROCm wheel: a stack that deliberately declines a card cannot then call the CPU wheel beside it a fault. The arch is consulted only when something can name it, so a host with no ROCm userspace reports no candidates and stays counted, which is the conservative direction."""
     candidates = [

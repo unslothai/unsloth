@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import sys
 import threading
@@ -70,6 +71,10 @@ _FLM_CONTEXT_LIMITS = {
     ),
 }
 
+# Qwen3.5 / Qwen3.6 FastFlowLM tags fail to load on Strix Halo; recheck when the issue closes.
+_STRIX_HALO_LOAD_ISSUE_URL = "https://github.com/ROCm/FastFlowLM/issues/705"
+_STRIX_HALO_LOAD_ISSUE_CHECKPOINT = re.compile(r"qwen3\.[56](?!\d)", re.IGNORECASE)
+
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
     ("npu_driver_ok", "The AMD NPU driver is missing or too old."),
@@ -104,6 +109,7 @@ class NpuModel:
     labels: tuple[str, ...]
     max_context_length: Optional[int]
     resume_percent: Optional[int] = None
+    known_issue_url: Optional[str] = None
 
     @property
     def vision(self) -> bool:
@@ -134,6 +140,7 @@ class NpuModel:
             "supports_tools": self.tools,
             "max_context_length": self.max_context_length,
             "resume_percent": self.resume_percent,
+            "known_issue_url": self.known_issue_url,
         }
 
 
@@ -237,6 +244,16 @@ def _failed(response) -> bool:
     return isinstance(body, dict) and ("error" in body or body.get("status") == "error")
 
 
+def _strix_halo_gpu() -> Optional[bool]:
+    """Imported lazily: the GPU hardware module stays out of an NPU-only path until asked."""
+    try:
+        from utils.hardware.hardware import strix_halo_gpu_present
+        return strix_halo_gpu_present()
+    except Exception as exc:  # noqa: BLE001 -- a hint never breaks the status
+        logger.debug("Strix Halo GPU check failed: %s", exc)
+        return None
+
+
 def _kill_tree(process: subprocess.Popen) -> None:
     # The whole tree: a child's children hold the pipes communicate() waits on.
     terminate_pid(process.pid, timeout = 5.0, owner_verified = True)
@@ -271,6 +288,7 @@ class LemonadeNpuBackend:
         self._closing = threading.Event()
         self._validate_process: Optional[subprocess.Popen] = None
         self._hardware: Optional[dict[str, Any]] = None
+        self._strix_halo: Optional[bool] = None
         self._validation: Optional[dict[str, Any]] = None
         self._state = "idle"
         self._error: Optional[str] = None
@@ -303,6 +321,16 @@ class LemonadeNpuBackend:
         if self._hardware is None:
             self._hardware = detect_amd_npu()
         return self._hardware
+
+    def _on_strix_halo(self) -> Optional[bool]:
+        """A supported NPU beside a Strix Halo iGPU, where llama.cpp on the GPU is the faster path.
+        None while the GPU inventory has not answered, so a caller can ask again."""
+        if not self.hardware().get("supported"):
+            return False
+        if self._strix_halo is None:
+            # An unanswered probe stays None and is asked again; the inventory caches its own passes.
+            self._strix_halo = _strix_halo_gpu()
+        return self._strix_halo
 
     @property
     def is_loaded(self) -> bool:
@@ -437,6 +465,7 @@ class LemonadeNpuBackend:
         return {
             "supported": bool(hardware.get("supported")),
             "hardware": hardware,
+            "gpu_recommended": self._on_strix_halo(),
             "runtime_installed": installed,
             "runtime_running": running,
             "state": self._state,
@@ -628,6 +657,7 @@ class LemonadeNpuBackend:
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         models: list[NpuModel] = []
         flm_binary = self._flm_binary()
+        strix_halo = self._on_strix_halo()
         for row in response.json().get("data") or []:
             if not isinstance(row, dict) or row.get("recipe") != "flm":
                 continue
@@ -649,6 +679,11 @@ class LemonadeNpuBackend:
                         checkpoint, row.get("max_context_window")
                     ),
                     resume_percent = files.resume_percent() if files else None,
+                    known_issue_url = (
+                        _STRIX_HALO_LOAD_ISSUE_URL
+                        if strix_halo and _STRIX_HALO_LOAD_ISSUE_CHECKPOINT.match(checkpoint)
+                        else None
+                    ),
                 )
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))

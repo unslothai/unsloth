@@ -7,11 +7,16 @@ export {
   type NpuModel,
   type NpuStatus,
   npuDownloadLabel,
+  npuKnownIssueLabel,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
 } from "./api";
-export { NpuRuntimeVersions, NpuSetupNotice } from "./npu-setup-notice";
+export {
+  NpuGpuHint,
+  NpuRuntimeVersions,
+  NpuSetupNotice,
+} from "./npu-setup-notice";
 export {
   type NpuCatalog,
   type NpuPickerSource,

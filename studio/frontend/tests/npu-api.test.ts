@@ -167,6 +167,76 @@ test("an interrupted NPU download says how much it kept", () => {
   assert.equal(api.npuResumeLabel(model(null)), null);
 });
 
+test("a PC whose GPU outruns its NPU gets one note, and the NPU stays offered", () => {
+  const { api } = client(() => new Response(null));
+  const status = (gpu_recommended?: boolean) =>
+    ({ gpu_recommended }) as Parameters<typeof api.npuGpuHint>[0];
+  const hint = api.npuGpuHint(status(true));
+  assert.match(hint ?? "", /GPU .* several times faster/);
+  assert.match(hint ?? "", /NPU is still available/);
+  assert.equal(api.npuGpuHint(status(false)), null);
+  // An older server sends no flag.
+  assert.equal(api.npuGpuHint(status()), null);
+  assert.equal(api.npuGpuHint(null), null);
+});
+
+test("a status read before the GPU scan answered is provisional, an answer is not", () => {
+  const { api } = client(() => new Response(null));
+  const status = (gpu_recommended?: boolean | null) =>
+    ({ gpu_recommended }) as Parameters<typeof api.npuStatusIsProvisional>[0];
+  assert.equal(api.npuStatusIsProvisional(status(null)), true);
+  assert.equal(api.npuGpuHint(status(null)), null);
+  assert.equal(api.npuStatusIsProvisional(status(true)), false);
+  assert.equal(api.npuStatusIsProvisional(status(false)), false);
+  // An older server sends no flag and never will.
+  assert.equal(api.npuStatusIsProvisional(status()), false);
+  assert.equal(api.npuStatusIsProvisional(null), false);
+});
+
+test("a pending status is re-read for longer than the slowest GPU scan, then left alone", () => {
+  const { api } = client(() => new Response(null));
+  const status = (gpu_recommended?: boolean | null) =>
+    ({ gpu_recommended }) as Parameters<typeof api.npuProvisionalRetryMs>[0];
+  let waited = 0;
+  let attempt = 0;
+  for (;;) {
+    const wait = api.npuProvisionalRetryMs(status(null), attempt);
+    if (wait == null) break;
+    waited += wait;
+    attempt += 1;
+    assert.ok(attempt < 1000, "the re-read never stops");
+  }
+  // nvidia-smi's 10 s timeout, then a 10 s AMD probe, with room to spare.
+  assert.ok(waited >= 30_000, `only ${waited} ms of re-reads`);
+  assert.equal(api.npuProvisionalRetryMs(status(true), 0), null);
+  assert.equal(api.npuProvisionalRetryMs(status(false), 0), null);
+  assert.equal(api.npuProvisionalRetryMs(status(), 0), null);
+  assert.equal(api.npuProvisionalRetryMs(null, 0), null);
+});
+
+test("only a pending GPU scan that came back yes asks for a new listing", () => {
+  const { api } = client(() => new Response(null));
+  assert.equal(api.npuGpuHintArrived(null, true), true);
+  assert.equal(api.npuGpuHintArrived(null, false), false);
+  assert.equal(api.npuGpuHintArrived(null, null), false);
+  assert.equal(api.npuGpuHintArrived(undefined, true), false);
+  assert.equal(api.npuGpuHintArrived(true, true), false);
+});
+
+test("a model with a known FastFlowLM issue on this PC is tagged", () => {
+  const { api } = client(() => new Response(null));
+  const model = (known_issue_url?: string | null) =>
+    ({ known_issue_url }) as Parameters<typeof api.npuKnownIssueLabel>[0];
+  assert.equal(
+    api.npuKnownIssueLabel(
+      model("https://github.com/ROCm/FastFlowLM/issues/705"),
+    ),
+    "Known FastFlowLM issue on this PC",
+  );
+  assert.equal(api.npuKnownIssueLabel(model(null)), null);
+  assert.equal(api.npuKnownIssueLabel(model()), null);
+});
+
 test("a download waiting for the backend says it is reconnecting", () => {
   const { api } = client(() => new Response(null));
   assert.equal(api.npuDownloadLabel(40), "Downloading 40%");

@@ -41,6 +41,8 @@ export interface NpuStatus {
   loading_model: string | null;
   /** Installed runtime versions; absent from servers that predate them. */
   versions?: { lemonade: string | null; fastflowlm: string | null };
+  /** This PC's GPU outruns its NPU (Strix Halo); null until the GPU scan answers, absent from servers that predate it. */
+  gpu_recommended?: boolean | null;
 }
 
 export interface NpuModel {
@@ -55,6 +57,8 @@ export interface NpuModel {
   supports_tools: boolean;
   max_context_length: number | null;
   resume_percent: number | null;
+  /** Upstream FastFlowLM issue for this model on this PC, when one is known. */
+  known_issue_url?: string | null;
 }
 
 export function npuRowsFor(
@@ -88,6 +92,45 @@ export function npuRuntimeLabel(
     if (version) parts.push(`${name} v${version.replace(/^v/, "")}`);
   }
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** The note for a PC whose GPU is the faster place for these models; the NPU stays usable. */
+export function npuGpuHint(status: NpuStatus | null): string | null {
+  return status?.gpu_recommended
+    ? "The GPU in this PC runs the same models several times faster. The NPU is still available."
+    : null;
+}
+
+/** A status read before the backend's GPU scan finished: worth one more read for the hint. */
+export function npuStatusIsProvisional(status: NpuStatus | null): boolean {
+  return status?.gpu_recommended === null;
+}
+
+// One inventory pass can sit through nvidia-smi's 10 s timeout and then a 10 s AMD probe, so the
+// re-read window has to outlast both; bounded so a host that never answers is not polled forever.
+const NPU_PROVISIONAL_RETRY_MS = 2000;
+const NPU_PROVISIONAL_RETRIES = 20;
+
+/** How long to wait before re-reading a provisional status, or null to stop (settled, or out of tries). */
+export function npuProvisionalRetryMs(
+  status: NpuStatus | null,
+  attempt: number,
+): number | null {
+  return npuStatusIsProvisional(status) && attempt < NPU_PROVISIONAL_RETRIES
+    ? NPU_PROVISIONAL_RETRY_MS
+    : null;
+}
+
+/** A catalog listed while the GPU scan was pending has no known-issue tags; list again once it says yes. */
+export function npuGpuHintArrived(
+  before: NpuStatus["gpu_recommended"],
+  now: NpuStatus["gpu_recommended"],
+): boolean {
+  return before === null && now === true;
+}
+
+export function npuKnownIssueLabel(model: NpuModel): string | null {
+  return model.known_issue_url ? "Known FastFlowLM issue on this PC" : null;
 }
 
 export function npuSizeLabel(sizeGb: number | null): string | null {
