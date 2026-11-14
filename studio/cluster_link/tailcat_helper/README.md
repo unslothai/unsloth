@@ -16,6 +16,12 @@ Build: `./build.sh [OUT_DIR]` cross-compiles linux, macOS and Windows (amd64, ar
 in `go.mod`. `build-tags.txt` is tailcat's release tag list for that commit, and
 `LICENSE.tailcat` is its BSD-3-Clause licence, shipped next to each binary.
 
+Release: `package.py DIST OUT` packs byte-reproducible archives and `SHA256SUMS`;
+`.github/workflows/unsloth-link.yml` builds them, fails unless they match
+`studio/unsloth_link_pins.json`, smokes each platform natively (`smoke.py`) and publishes them on
+the pinned tag. `update_pins.py` rewrites the pins from a release. `studio/install_unsloth_link.py`
+downloads the archive for this host on first need and refuses anything that differs from its pin.
+
 Tests: set `TS_DEBUG_TAILCAT_LOCAL_DERP=1` for a loopback relay. See
 `tests/studio/test_cluster_link_tailnet.py`, which runs against real helpers when
 `UNSLOTH_LINK_BIN` is set.
