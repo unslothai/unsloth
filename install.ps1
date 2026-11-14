@@ -6639,9 +6639,7 @@ exit 0
         $env:UV_HTTP_TIMEOUT = "180"
     }
 
-    # Capture native stderr without PowerShell 5.1 turning it into a terminating error.
-    # A blocked uv child reports an OS code in stderr; a blocked executable throws a
-    # Win32Exception instead. Neither may be inferred from a stale LASTEXITCODE.
+    # A blocked uv child reports an OS code in stderr, a blocked exe throws; LASTEXITCODE shows neither.
     function Invoke-PythonSelectionProbe {
         param([string]$Executable, [string[]]$Arguments)
         $ErrorActionPreference = "Continue"
@@ -6676,15 +6674,11 @@ exit 0
                 if ($policyText -and $diagnostic.Contains($policyText)) { $blocked = $true }
             }
         }
-        # Native stderr remains an ErrorRecord after 2>&1 in both supported shells.
-        # Keep it for diagnostics, never as an interpreter path or version response.
         $stdout = @($output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
         return @{ Success = $ok; Blocked = $blocked; Code = $code; Output = $stdout; Diagnostic = $diagnostic }
     }
 
-    # Official CPython NuGet distributions: https://docs.python.org/3.13/using/windows.html#the-nuget-org-packages
-    # These keep PSF's signatures on the runtime and venv launchers. Pin the complete
-    # archive, not just python.exe: stdlib extensions and Python source ship together.
+    # PSF-signed NuGet build (https://docs.python.org/3.13/using/windows.html#the-nuget-org-packages), whole archive pinned.
     function Get-SignedPythonPackage {
         param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
         $version = '3.13.17'
@@ -6708,9 +6702,7 @@ exit 0
                                'Lib\venv\scripts\nt\venvlauncher.exe', 'Lib\venv\scripts\nt\venvwlauncher.exe')) {
             if (-not (Test-Path -LiteralPath (Join-Path $Root $required) -PathType Leaf)) { return $null }
         }
-        # The six distlib executables are pip's launcher *templates*, not runtime
-        # components. Unsloth uses uv for packages and CPython's signed venv launchers.
-        # Do not exempt any other native binary, including other site-packages content.
+        # pip's six distlib launcher templates are unsigned and never run here; exempt nothing else.
         foreach ($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction Stop |
                            Where-Object { $_.Extension -in @('.exe', '.dll', '.pyd') })) {
             $relative = $file.FullName.Substring($Root.TrimEnd('\', '/').Length + 1)
@@ -6738,16 +6730,14 @@ exit 0
     }
 
     function Test-SignedPythonDownloadAllowed {
-        # Let uv resolve TOML, discovery paths, and environment precedence itself.
-        # --show-settings exits before installing or accessing the network.
+        # --show-settings applies uv's own config precedence without installing or touching the network.
         $settings = Invoke-PythonSelectionProbe -Executable $script:UvExe -Arguments @('python', 'install', '--show-settings', '--color', 'never')
         $text = $settings.Output -join "`n"
         $blocks = [regex]::Matches($text, '(?ms)^GlobalSettings \{\r?\n(?<body>.*?)^\}\r?$')
         $body = if ($blocks.Count -eq 1) { $blocks[0].Groups['body'].Value } else { '' }
         $connectivity = [regex]::Matches($body, '(?m)^[ \t]+connectivity: ([^\r\n]*)\r?$')
         $downloads = [regex]::Matches($body, '(?m)^[ \t]+python_downloads: ([^\r\n]*)\r?$')
-        # uv can warn about invalid pyproject.toml and continue with defaults.
-        # An unrecognized debug-output format must not authorize a download.
+        # A warning or unrecognized output must not authorize a download.
         if (-not $settings.Success -or $blocks.Count -ne 1 -or
             $connectivity.Count -ne 1 -or $downloads.Count -ne 1 -or
             $settings.Diagnostic -match '(?im)^\s*(warning|error):' -or
@@ -6770,8 +6760,6 @@ exit 0
             substep "No pinned signed Python build matches the requested version and architecture." "Yellow"
             return $null
         }
-        # App-owned and versioned: never install globally, discover a system Python,
-        # overwrite uv's store, or replace a runtime an existing environment depends on.
         $parent = [System.IO.Path]::GetFullPath((Join-Path $StudioHome 'python-signed'))
         $name = "cpython-$($package.Version)-$Arch-$($package.Sha256.Substring(0, 12))"
         $destination = Join-Path $parent $name
@@ -6788,11 +6776,9 @@ exit 0
                     substep "Leaving the invalid signed Python runtime unchanged at $($candidate.FullName)." "Yellow"
                 }
             }
-            # Reusing a verified runtime needs no new policy refusal; a download does.
             if ($CacheOnly) { return $null }
             if (-not (Test-SignedPythonDownloadAllowed)) { return $null }
-            # A damaged base may still be referenced by a live or rollback environment.
-            # Publish its replacement separately and discover it on subsequent repairs.
+            # A damaged base may still back a live or rollback venv: publish the replacement beside it.
             if (Test-Path -LiteralPath $destination) {
                 $destination = Join-Path $parent ($name + '-' + [guid]::NewGuid().ToString('N'))
             }
@@ -6812,8 +6798,6 @@ exit 0
             if (-not (Test-SignedPythonRuntime -Root $staged -Package $package)) {
                 throw 'The signed Python package failed runtime validation.'
             }
-            # Both paths are beneath the same private parent; no overwrite of a live runtime.
-            # Allow transient Windows access/sharing errors after staged validation.
             for ($attempt = 0; ; $attempt++) {
                 try {
                     [System.IO.Directory]::Move($staged, $destination)
@@ -6830,8 +6814,6 @@ exit 0
             return $null
         } finally {
             if ($work -and (Test-Path -LiteralPath $work)) {
-                # Remove only this invocation's staging directory, never a runtime or
-                # a reparse point supplied in place of the staging tree.
                 $full = [System.IO.Path]::GetFullPath($work)
                 if ([System.IO.Path]::GetDirectoryName($full) -eq $parent -and
                     [System.IO.Path]::GetFileName($full) -match '^\.stage-[0-9a-f]{32}$' -and
@@ -6842,9 +6824,7 @@ exit 0
         }
     }
 
-    # uv's per-venv python.exe is its own unsigned trampoline, which Windows can refuse while the
-    # base interpreter runs (the desktop's "os error 4551" in #17735). Returns the signed runtime
-    # after removing the just-created venv, or $null to keep it.
+    # uv's per-venv python.exe is an unsigned trampoline Windows can refuse on its own (#17735).
     function Repair-BlockedVenvLauncher {
         param([string]$VenvDir, [string]$VenvPython, $Python, [string]$Patch)
         if (-not (Invoke-PythonSelectionProbe -Executable $VenvPython -Arguments @('-I', '-S', '-c', 'pass')).Blocked) { return $null }
@@ -6886,8 +6866,7 @@ exit 0
             }
             $exe = "$($find.Output | Select-Object -Last 1)".Trim()
             if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
-            # The stdlib extensions too: python.exe can start while Windows blocks _socket.pyd (#17735).
-            # Exit 3 = an extension failed to load, which only a policy block turns into a refusal.
+            # Exit 3 = a stdlib extension failed to load (#17735: _socket.pyd); only a policy message refuses.
             $probe = Invoke-PythonSelectionProbe -Executable $exe -Arguments @('-S', '-I', '-c',
                 "import sys, sysconfig; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))), flush=True); M = ('_socket', '_ssl', '_ctypes', '_sqlite3', 'select', '_overlapped', '_asyncio', '_hashlib', '_queue', '_multiprocessing', '_uuid', '_lzma', '_bz2', '_decimal', '_elementtree', 'pyexpat', 'unicodedata', '_zoneinfo'); exec('b = 0\nfor m in M:\n try: __import__(m)\n except ImportError as x: b = 3; print(x, file=sys.stderr)\nsys.exit(b)')")
             if ($probe.Blocked) { $script:PythonPolicyBlocked = $true }

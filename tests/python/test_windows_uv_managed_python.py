@@ -818,8 +818,7 @@ $r = Resolve-SignedManagedPython -Minor '3.13'
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("arch", ["x86_64", "arm64"])
 def test_policy_block_installs_private_signed_runtime_and_reuses_it_offline(shell, tmp_path, arch):
-    # Only transport and the original policy refusal are simulated. The archive hash,
-    # signatures, imports, repair, cache reuse, and venv creation are real.
+    # Only transport and the policy refusal are simulated; hash, signatures, imports and venv are real.
     package_env = (
         "UNSLOTH_TEST_PSF_ARM64_PACKAGE" if arch == "arm64" else "UNSLOTH_TEST_PSF_PACKAGE"
     )
@@ -1299,8 +1298,7 @@ def _policy_text(shell: str, code: int = 4551) -> str:
     return _pwsh(shell, f"([System.ComponentModel.Win32Exception]::new({code})).Message.Trim()", {})
 
 
-# #17735: python.exe starts, but Windows refuses _socket.pyd; Python reports only the
-# formatted system message, in the user's language.
+# #17735: Python reports a refused _socket.pyd only as Windows' localized message.
 @needs_pwsh
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("code, blocked", [(4551, True), (1260, True), (None, False)])
@@ -1330,7 +1328,6 @@ def test_uv_python_with_a_refused_extension_is_not_selected(shell, tmp_path, pol
         py_stderr = f"DLL load failed while importing _socket: {reason}",
         py_exit = 3,
     )
-    # Only a policy refusal changes the choice; any other extension failure keeps uv's Python.
     assert (result is None) if policy else (result["Path"] == fake_py)
     assert "'_socket'" in _function("Resolve-UvManagedPython")
 
