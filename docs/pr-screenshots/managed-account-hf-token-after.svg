@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260" role="img" aria-labelledby="title desc">
+  <title id="title">After: managed account Hugging Face token is forwarded</title>
+  <desc id="desc">A request without a header now resolves the current account's saved token.</desc>
+  <rect width="900" height="260" fill="#ecfdf5"/>
+  <text x="32" y="42" font-family="sans-serif" font-size="24" font-weight="700" fill="#047857">After</text>
+  <g font-family="sans-serif" font-size="16" text-anchor="middle">
+    <rect x="32" y="88" width="190" height="92" rx="14" fill="#bbf7d0" stroke="#15803d" stroke-width="2"/>
+    <text x="127" y="122" fill="#14532d">No request header</text>
+    <text x="127" y="148" fill="#14532d">account context = Alice</text>
+    <rect x="292" y="88" width="190" height="92" rx="14" fill="#a7f3d0" stroke="#059669" stroke-width="2"/>
+    <text x="387" y="122" fill="#064e3b">Alice's studio.db</text>
+    <text x="387" y="148" fill="#064e3b">saved token resolved</text>
+    <rect x="552" y="88" width="190" height="92" rx="14" fill="#86efac" stroke="#16a34a" stroke-width="2"/>
+    <text x="647" y="122" fill="#14532d">Authenticated Hub call</text>
+    <text x="647" y="148" fill="#14532d">download / image load</text>
+  </g>
+  <path d="M222 134h64M482 134h64" stroke="#047857" stroke-width="3" marker-end="url(#arrow)"/>
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#047857"/></marker></defs>
+</svg>
