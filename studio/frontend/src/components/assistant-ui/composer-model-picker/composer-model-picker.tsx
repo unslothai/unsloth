@@ -249,7 +249,6 @@ interface Row extends PickerRow {
   resumable?: boolean;
   /** Runs on the Audio page: a pick opens it there instead of loading into Chat. */
   media?: "audio";
-  /** A Favorites row for one pinned quant of this repo. */
   favoriteQuant?: string;
   inventoryKey?: string;
 }
