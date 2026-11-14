@@ -298,6 +298,7 @@ export function expandQuantFavorites<
   T extends PickerRow & {
     favoriteQuant?: string;
     loadedQuant?: string | null;
+    inventoryKey?: string;
   },
 >(rows: readonly T[], pinned: readonly string[]): T[] {
   return rows.flatMap((row) => {
@@ -321,6 +322,8 @@ export function expandQuantFavorites<
     const perQuant = quants.map((quant) => ({
       ...row,
       key: `${row.key}::${quant}`,
+      // Disk state is keyed by the repo's row.
+      inventoryKey: row.key,
       favoriteQuant: quant,
       loaded:
         row.loaded === true &&

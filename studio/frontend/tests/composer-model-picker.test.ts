@@ -1326,6 +1326,7 @@ test("Favorites lists each pinned quant of a repo as its own row, as the header 
     loaded: true,
     loadedQuant: "Q8_0",
     favoriteQuant: undefined as string | undefined,
+    inventoryKey: undefined as string | undefined,
   };
   const other = {
     ...repo,
@@ -1345,6 +1346,11 @@ test("Favorites lists each pinned quant of a repo as its own row, as the header 
     "org/Other",
   ];
   const rows = expandQuantFavorites([repo, other, ext], pinned);
+  // Disk state stays keyed by the repo's row.
+  assert.deepEqual(
+    rows.slice(0, 2).map((r) => r.inventoryKey),
+    ["gguf:unsloth/Test-GGUF", "gguf:unsloth/Test-GGUF"],
+  );
   assert.deepEqual(
     rows.map((r) => [r.key, r.favoriteQuant, r.loaded]),
     [
@@ -1466,5 +1472,28 @@ test("deleting a whole cached repo sends the token and keeps quant pins another 
   assert.match(
     picker,
     /if \(row\.gguf && isChatGgufTask\(row\.gguf\.task\)\) \{\s*await reconcileGgufPinsAfterDelete\(repo\.repo_id, token\);/,
+  );
+});
+
+test("a pinned-quant row reads its repo's disk state, opens its own Run settings, and updates once disk quants land", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /deviceQuants\.get\(row\.inventoryKey \?\? row\.key\) \?\? NO_QUANTS/,
+  );
+  assert.match(
+    picker,
+    /devicePartials\.get\(row\.inventoryKey \?\? row\.key\)/,
+  );
+  const settings = picker.slice(picker.indexOf("const settingsMeta = async ("));
+  assert.match(
+    settings.slice(0, 1600),
+    /\(favorite && list\.find\(\(v\) => v\.quant\.toLowerCase\(\) === favorite\)\) \|\|\s*chooseQuant\(/,
+  );
+  assert.match(
+    picker,
+    /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*foldedQuants,\s*expandQuantizations,\s*quantsEpoch,\s*\]\);/,
   );
 });

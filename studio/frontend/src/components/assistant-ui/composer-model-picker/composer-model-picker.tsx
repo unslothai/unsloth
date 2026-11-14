@@ -251,6 +251,7 @@ interface Row extends PickerRow {
   media?: "audio";
   /** A Favorites row for one pinned quant of this repo. */
   favoriteQuant?: string;
+  inventoryKey?: string;
 }
 
 function cachedMeta(row: Row): ModelSelectorChangeMeta {
@@ -2951,10 +2952,11 @@ export function ComposerModelPicker({
   // On Device only: Discover's own offer already lists a partial quant.
   const partialsOf = (row: Row) =>
     row.tab === DEVICE_TAB && !row.partial && viewed !== RECOMMENDED_TAB
-      ? (devicePartials.get(row.key) ?? NO_QUANTS)
+      ? (devicePartials.get(row.inventoryKey ?? row.key) ?? NO_QUANTS)
       : NO_QUANTS;
   const variantCount = (row: Row) =>
-    (deviceQuants.get(row.key)?.length ?? 0) + partialsOf(row).length;
+    (deviceQuants.get(row.inventoryKey ?? row.key)?.length ?? 0) +
+    partialsOf(row).length;
 
   // The disk read cannot see newer uploads: an open quant list asks the Hub once, as the header picker did.
   const updatesReadAt = useRef(new Map<string, object>());
@@ -3036,7 +3038,14 @@ export function ComposerModelPicker({
         updatesReadAt.current.delete(row.key);
       }
     };
-  }, [open, shownRows, foldedQuants, expandQuantizations, quantsEpoch]);
+  }, [
+    open,
+    shownRows,
+    deviceQuants,
+    foldedQuants,
+    expandQuantizations,
+    quantsEpoch,
+  ]);
 
   const pick = async (row: Row) => {
     if (!source) {
@@ -3487,12 +3496,20 @@ export function ComposerModelPicker({
         defaultVariant,
         mlx,
         hasVision,
-      } = await rowQuants(target);
-      const quant = chooseQuant(list, [
-        row.loadedQuant,
-        row.id === chosen?.id ? activeVariant : null,
-        defaultVariant,
-      ]);
+      } = await rowQuants(
+        // As a pick: a pinned quant is resolved even once it is gone from disk.
+        row.favoriteQuant && row.kind === "gguf"
+          ? { ...target, remote: true, everyQuant: true }
+          : target,
+      );
+      const favorite = row.favoriteQuant?.toLowerCase();
+      const quant =
+        (favorite && list.find((v) => v.quant.toLowerCase() === favorite)) ||
+        chooseQuant(list, [
+          row.loadedQuant,
+          row.id === chosen?.id ? activeVariant : null,
+          defaultVariant,
+        ]);
       if (quant && (mlx || row.kind !== "cached")) {
         return ggufMeta(
           row,
@@ -3836,7 +3853,7 @@ export function ComposerModelPicker({
     const offerOpen = offer?.key === row.key;
     const paramLabel =
       row.kind === "hub" ? (hubParams.get(row.id.toLowerCase()) ?? null) : null;
-    const onDisk = deviceQuants.get(row.key) ?? NO_QUANTS;
+    const onDisk = deviceQuants.get(row.inventoryKey ?? row.key) ?? NO_QUANTS;
     const partials = partialsOf(row);
     const manyQuants = onDisk.length + partials.length > 1;
     const wholeQuant = onDisk.length === 1 ? onDisk[0].quant : null;
