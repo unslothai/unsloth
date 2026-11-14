@@ -20,6 +20,8 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in React.
+import { isNpuModelId } from "@/features/npu/api";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
 import { persistReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
@@ -931,6 +933,17 @@ function readThreadScopedSettings(
   return sanitizeThreadScopedSettings(source);
 }
 
+/** The defaults new chats fall back to: an NPU model's forced-off pills are not the installation's. */
+function readInstallationDefaults(state: ChatRuntimeStore): ThreadScopedSettings {
+  const settings = readThreadScopedSettings(state);
+  if (npuPillDefault(state.params.checkpoint, "toolsEnabled") === undefined) return settings;
+  const out: Record<string, unknown> = { ...settings };
+  for (const key of ["toolsEnabled", "codeToolsEnabled"] as const) {
+    out[key] = loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ?? pillDefault(key);
+  }
+  return out as ThreadScopedSettings;
+}
+
 /** What a chat whose snapshot omits `key` runs with: applyThreadScopedSettings falls back to these. */
 export function threadScopedDefault<K extends ThreadScopedSettingKey>(
   key: K,
@@ -1197,7 +1210,11 @@ function firstSetThreadScopedValue(...values: unknown[]): unknown {
   return values.find((value) => value !== undefined);
 }
 
+/** The model-derived params the latest restore laid the open chat's values over. */
+let paramsUnderChatValues: InferenceParams | null = null;
+
 function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
+  paramsUnderChatValues = params;
   const kept: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     const held = firstSetThreadScopedValue(
@@ -1280,6 +1297,35 @@ function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   return false;
 }
 
+/** Puts the chat's own values back where the store shows the loaded model's or a provider's. */
+function restoreChatOwnedValues(
+  threadId: string,
+  settings: ThreadScopedSettings,
+): void {
+  // A model that cannot stop thinking forces thinking on: that true is the model's, so
+  // persisting it would erase a chat's stored false.
+  if (
+    threadId === threadScopedSettingsThreadId &&
+    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
+    activeThreadScopedSettings?.reasoningEnabled === false &&
+    settings.reasoningEnabled !== false &&
+    useChatRuntimeStore.getState().reasoningAlwaysOn
+  ) {
+    settings.reasoningEnabled = false;
+  }
+  if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
+    const onRecord = reasoningEffortOnRecord();
+    if (onRecord !== undefined) settings.reasoningEffort = onRecord;
+  }
+  // A provider constraint moves pills without persisting: the chat keeps its stored value.
+  if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
+    settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
+  }
+  if (keepsStoredValueUnderConstraint("toolsEnabled", threadId, settings)) {
+    settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
+  }
+}
+
 function buildThreadScopedSnapshot(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
@@ -1294,29 +1340,7 @@ function buildThreadScopedSnapshot(
   ) {
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
-  // And for thinking, which a model that cannot stop thinking forces on: that true is the
-  // model's, so persisting it would erase a chat's stored false.
-  if (
-    threadId === threadScopedSettingsThreadId &&
-    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
-    activeThreadScopedSettings?.reasoningEnabled === false &&
-    settings.reasoningEnabled !== false &&
-    useChatRuntimeStore.getState().reasoningAlwaysOn
-  ) {
-    settings.reasoningEnabled = false;
-  }
-  if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
-    const onRecord = reasoningEffortOnRecord();
-    if (onRecord !== undefined) settings.reasoningEffort = onRecord;
-  }
-  // And for pills a provider constraint moved without persisting: the store holds the
-  // provider's value, so the chat keeps the one it was stored with.
-  if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
-    settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
-  }
-  if (keepsStoredValueUnderConstraint("toolsEnabled", threadId, settings)) {
-    settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
-  }
+  restoreChatOwnedValues(threadId, settings);
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
@@ -1643,7 +1667,7 @@ export function beginThreadScopedPairing(threadId: string): void {
     pairingWindowDefaultsThreadId = threadId;
     pairingWindowDefaults =
       threadScopedSettingsThreadId === null
-        ? readThreadScopedSettings(useChatRuntimeStore.getState())
+        ? readInstallationDefaults(useChatRuntimeStore.getState())
         : globalThreadScopedDefaults;
   }
   openThreadScopedPairingGate(threadId);
@@ -1909,7 +1933,21 @@ export function loadOptionalBool(key: string): boolean | null {
   return raw === "true";
 }
 
-export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
+// A tools list costs FastFlowLM its speculative decoding (ROCm/FastFlowLM#1016), so NPU models
+// default Search and Code to a saved click, else off; captured chat defaults echo the GPU default.
+function npuPillDefault(
+  checkpoint: string | null | undefined,
+  key: string,
+): boolean | undefined {
+  if (!isNpuModelId(checkpoint)) return undefined;
+  if (key !== "toolsEnabled" && key !== "codeToolsEnabled") return undefined;
+  return loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ?? false;
+}
+
+export function resolveToolsEnabledOnLoad(
+  supportsTools: boolean,
+  checkpoint?: string | null,
+): {
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   deepResearchEnabled: boolean;
@@ -1921,12 +1959,18 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
       deepResearchEnabled: false,
     };
   }
+  const preference = (key: "toolsEnabled" | "codeToolsEnabled") => {
+    const npuDefault = npuPillDefault(checkpoint, key);
+    return npuDefault === undefined
+      ? pillPreference(key)
+      : (pillOverride(key) ?? npuDefault);
+  };
   return {
     deepResearchEnabled:
       !useChatRuntimeStore.getState().incognito &&
       pillPreference("deepResearchEnabled"),
-    toolsEnabled: pillPreference("toolsEnabled"),
-    codeToolsEnabled: pillPreference("codeToolsEnabled"),
+    toolsEnabled: preference("toolsEnabled"),
+    codeToolsEnabled: preference("codeToolsEnabled"),
   };
 }
 
@@ -1979,6 +2023,48 @@ function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
   return state.permissionMode === "full"
     ? state.codeToolsDeclinedUnderFullAccess
     : false;
+}
+
+/** `state` with the paired chat's own values where the store shows its model's (pill clamps, a pin). */
+export function withChatOwnedSettings<T extends ChatRuntimeStore>(state: T): T {
+  const owned: ThreadScopedSettings = {
+    reasoningEnabled: state.reasoningEnabled,
+    reasoningEffort: state.reasoningEffort,
+  };
+  for (const key of CLAMPED_PILL_KEYS) {
+    owned[key] = readThreadScopedValue(state, key) === true;
+  }
+  if (threadScopedSettingsThreadId !== null) {
+    restoreChatOwnedValues(threadScopedSettingsThreadId, owned);
+  }
+  // Sampling the chat does not own is left unset: a new model's load supplies it (restoreThreadScopedParams).
+  const params: Record<string, unknown> = { ...state.params };
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (firstSetThreadScopedValue(heldThreadScopedParamValue(key), threadScopedOverride(key)) === undefined) {
+      params[key] = undefined;
+    }
+  }
+  return { ...state, ...owned, params: params as unknown as T["params"] };
+}
+
+/** `run`, which carries the model `live` just loaded, with what that load sets: pill clamps, its effort pin, Think, unowned sampling. */
+export function withLoadedModelOverrides<T extends ChatRuntimeStore>(run: T, live: T): T {
+  const next: Record<string, unknown> = { ...run };
+  for (const key of CLAMPED_PILL_KEYS) {
+    next[key] = run[key] === true && !isPillClampedOff(run, key);
+  }
+  if (pinOwnsLiveReasoningEffort(run)) next.reasoningEffort = live.reasoningEffort;
+  // Every load writes Think from the model (pin, forced gates, default), not from the chat.
+  next.reasoningEnabled = live.reasoningEnabled;
+  const loaded = (paramsUnderChatValues?.checkpoint === live.params.checkpoint
+    ? paramsUnderChatValues
+    : live.params) as unknown as Record<string, unknown>;
+  const params: Record<string, unknown> = { ...run.params };
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    if (params[key] === undefined) params[key] = loaded[key];
+  }
+  next.params = params;
+  return next as T;
 }
 
 /** Read the level live: Full access outlives a chat switch but codeToolsEnabled does not. */
@@ -2384,6 +2470,7 @@ type ChatRuntimeStore = {
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
+  loadedNpuContextFit: number | null;
   loadedContextBudget: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
@@ -2546,6 +2633,9 @@ type ChatRuntimeStore = {
   loadedCtxCheckpoints: number | null;
   cacheRam: number | null;
   loadedCacheRam: number | null;
+  /** GGUF only: standalone Engram table precision as chosen and as the resident load ran it. */
+  engramPrecision: string | null;
+  loadedEngramPrecision: string | null;
   tensorParallel: boolean;
   loadedTensorParallel: boolean | null;
   loadedDisableVision: boolean | null;
@@ -4196,6 +4286,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedContextEnforced: null,
   loadedContextUnboundedWhenBatched: false,
   loadedParallelSlots: null,
+  loadedNpuContextFit: null,
   loadedContextBudget: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
@@ -4329,6 +4420,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedCtxCheckpoints: null,
   cacheRam: null,
   loadedCacheRam: null,
+  engramPrecision: null,
+  loadedEngramPrecision: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   loadedDisableVision: null,
@@ -5017,7 +5110,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       if (threadScopedSettingsThreadId === null) {
         // Capture the pre-window value: a held edit belongs to its chat, not the defaults.
-        const captured = readThreadScopedSettings(state) as Record<
+        const captured = readInstallationDefaults(state) as Record<
           string,
           unknown
         >;
@@ -5093,6 +5186,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
         const value = firstSetThreadScopedValue(
           stored?.[key],
+          npuPillDefault(state.params.checkpoint, key),
           globalThreadScopedDefaults?.[key],
         );
         if (value === undefined) continue;
@@ -5268,6 +5362,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedCtxCheckpoints: null,
       cacheRam: null,
       loadedCacheRam: null,
+      engramPrecision: null,
+      loadedEngramPrecision: null,
       tensorParallel: false,
       loadedTensorParallel: null,
   loadedDisableVision: null,

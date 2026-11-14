@@ -101,10 +101,12 @@ test("history is per page, and Clear all clears only that page", () => {
   assert.match(host, /\(\) => handleClearGallery\(ttsWorkflow\)/);
 });
 
-test("Create|Train shows only where the page trains", () => {
+test("Create|Train shows on every page, and Train only navigates where the page trains", () => {
+  assert.match(host, /<PillTabs\s*ariaLabel="Page mode"/);
+  assert.doesNotMatch(host, /\{workflowTab\.createTrain \? \(\s*<PillTabs/);
   assert.match(
     host,
-    /\{workflowTab\.createTrain \? \(\s*<PillTabs\s*ariaLabel="Page mode"/,
+    /if \(!workflowTab\.createTrain\) \{\s*toast\.info\([\s\S]*?\);\s*return;\s*\}/,
   );
 });
 

@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
+import { npuVersionTag } from "./runtime-versions";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
-
-/** Keep in sync with npu_backend.py's DEFAULT_CONTEXT_LENGTH. */
-export const NPU_DEFAULT_CONTEXT_LENGTH = 8192;
 
 export function isNpuModelId(
   value: string | null | undefined,
@@ -58,6 +56,9 @@ export interface NpuModel {
   supports_tools: boolean;
   max_context_length: number | null;
   resume_percent: number | null;
+  /** FastFlowLM's Hugging Face repo (owner/name) and revision; absent from older servers. */
+  hf_repo?: string | null;
+  hf_revision?: string | null;
 }
 
 export function npuRowsFor(
@@ -71,12 +72,39 @@ export function npuRowsFor(
   },
 ): NpuModel[] {
   const needle = query.trim().toLowerCase();
-  return (models ?? []).filter(
-    (model) =>
-      (!onDevice || model.downloaded) &&
-      (!needle ||
-        `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
-  );
+  return (models ?? [])
+    .filter(
+      (model) =>
+        (!onDevice || model.downloaded) &&
+        (!needle ||
+          `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
+    )
+    .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
+}
+
+// The AMD NPU launch blog's headline models lead, then the newest ones that fit a Strix laptop
+// NPU, then the backend's order.
+const NPU_RECOMMENDED = [
+  "qwen3.6-moe:35b-a3b",
+  "qwen3.8-mtp:27b",
+  "qwen3.8-dflash2:27b",
+  "qwen3.5:9b",
+  "qwen3.5:4b",
+  "gemma4-it:e4b",
+  "gpt-oss:20b",
+  "lfm3:1.7b",
+  "nemotron3.5-bolt:e4b",
+  "qwen3vl-it:4b",
+  "gemma4-it:e2b",
+  "qwen3.5:2b",
+  "qwen3.5:0.8b",
+  "phi4-mini-it:4b",
+  "llama3.2:3b",
+];
+
+function npuRank(checkpoint: string): number {
+  const rank = NPU_RECOMMENDED.indexOf(checkpoint);
+  return rank === -1 ? NPU_RECOMMENDED.length : rank;
 }
 
 /** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */
@@ -88,9 +116,31 @@ export function npuRuntimeLabel(
     ["FastFlowLM", versions?.fastflowlm],
     ["Lemonade", versions?.lemonade],
   ] as const) {
-    if (version) parts.push(`${name} v${version.replace(/^v/, "")}`);
+    const tag = npuVersionTag(version);
+    if (tag) parts.push(`${name} ${tag}`);
   }
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+export interface NpuCapability {
+  key: "vision" | "reasoning" | "tools";
+  label: string;
+}
+
+export function npuCapabilities(model: NpuModel): NpuCapability[] {
+  const out: NpuCapability[] = [];
+  if (model.supports_vision) out.push({ key: "vision", label: "Vision" });
+  if (model.supports_reasoning)
+    out.push({ key: "reasoning", label: "Reasoning" });
+  if (model.supports_tools) out.push({ key: "tools", label: "Tools" });
+  return out;
+}
+
+export function npuContextLabel(tokens: number | null): string | null {
+  if (tokens == null || tokens <= 0) return null;
+  return tokens >= 1024 && tokens % 1024 === 0
+    ? `${tokens / 1024}K context`
+    : `${tokens.toLocaleString("en-US")} context`;
 }
 
 export function npuSizeLabel(sizeGb: number | null): string | null {

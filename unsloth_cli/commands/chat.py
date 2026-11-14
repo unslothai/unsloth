@@ -222,6 +222,13 @@ def chat(
         help = "Load the model in 4-bit. Left unset, a running Unsloth server that already "
         "has this model loaded keeps its precision.",
     ),
+    trust_remote_code: bool = typer.Option(
+        False,
+        "--trust-remote-code",
+        help = "Run the model repo's own code, for architectures this transformers does not "
+        "implement. Only for repositories you trust: it executes Python from the repo in "
+        "this process.",
+    ),
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
@@ -363,6 +370,8 @@ def chat(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
+    if trust_remote_code:
+        load_opts["trust_remote_code"] = trust_remote_code
     if speculative_type is not None:
         load_opts["speculative_type"] = speculative_type
     if spec_draft_n_max is not None:

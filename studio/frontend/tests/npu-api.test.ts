@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { matchesFormatFilter } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import type * as NpuApi from "../src/features/npu/api.ts";
+import * as runtimeVersions from "../src/features/npu/runtime-versions.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import * as sseJsonEvents from "../src/lib/sse-json-events.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -14,7 +15,7 @@ function client(response: () => Response) {
   const api = loadWithStubs<typeof NpuApi>(
     new URL("../src/features/npu/api.ts", import.meta.url),
     {
-      "@/features/auth": {
+      "@/features/auth/api": {
         authFetch: async (path: string, init?: RequestInit) => {
           requests.push({ path, init });
           return response();
@@ -22,6 +23,7 @@ function client(response: () => Response) {
       },
       "@/lib/format-fastapi-error": formatFastApiError,
       "@/lib/sse-json-events": sseJsonEvents,
+      "./runtime-versions": runtimeVersions,
     },
   );
   return { api, requests };
@@ -157,6 +159,36 @@ test("NPU rows: downloaded ones on device, all of them to browse, by query", () 
   assert.deepEqual(ids(false, " GEMMA "), ["gemma3-4b-FLM"]);
   assert.deepEqual(ids(true, "gemma"), []);
   assert.deepEqual(api.npuRowsFor(null, { onDevice: false, query: "" }), []);
+
+  const backendOrder = [
+    ["d3-edge-FLM", "d3:edge"],
+    ["gemma3-4b-FLM", "gemma3:4b"],
+    ["lfm3-1.7b-FLM", "lfm3:1.7b"],
+    ["qwen3-4b-FLM", "qwen3:4b"],
+    ["qwen3.5-0.8b-FLM", "qwen3.5:0.8b"],
+    ["qwen3.5-4b-FLM", "qwen3.5:4b"],
+    ["qwen3.5-9b-FLM", "qwen3.5:9b"],
+    ["qwen3.6-moe-35b-a3b-FLM", "qwen3.6-moe:35b-a3b"],
+    ["qwen3.8-dflash2-27b-FLM", "qwen3.8-dflash2:27b"],
+    ["qwen3.8-mtp-27b-FLM", "qwen3.8-mtp:27b"],
+  ].map(([id, checkpoint]) => ({ ...model(id, false), checkpoint }));
+  assert.deepEqual(
+    api
+      .npuRowsFor(backendOrder, { onDevice: false, query: "" })
+      .map((m) => m.id),
+    [
+      "qwen3.6-moe-35b-a3b-FLM",
+      "qwen3.8-mtp-27b-FLM",
+      "qwen3.8-dflash2-27b-FLM",
+      "qwen3.5-9b-FLM",
+      "qwen3.5-4b-FLM",
+      "lfm3-1.7b-FLM",
+      "qwen3.5-0.8b-FLM",
+      "d3-edge-FLM",
+      "gemma3-4b-FLM",
+      "qwen3-4b-FLM",
+    ],
+  );
 });
 
 test("an interrupted NPU download says how much it kept", () => {
@@ -184,4 +216,47 @@ test("the picker's NPU format holds no Hub repo", () => {
     assert.equal(matchesFormatFilter(id, gguf, "npu"), false);
     assert.equal(matchesFormatFilter(id, gguf, "all"), true);
   }
+});
+
+test("NPU models carry FastFlowLM's model card repo, absent from older servers", async () => {
+  const rows = [
+    {
+      id: "qwen3.5-9b-FLM",
+      hf_repo: "FastFlowLM/Qwen3.5-9B-NPU2",
+      hf_revision: "flm_q4k_high_precision",
+    },
+    { id: "custom-FLM", hf_repo: null, hf_revision: null },
+    { id: "older-FLM" },
+  ];
+  const c = client(() => Response.json({ models: rows }));
+  const models = await c.api.listNpuModels();
+  assert.equal(c.requests[0].path, "/api/npu/models");
+  assert.equal(models[0].hf_repo, "FastFlowLM/Qwen3.5-9B-NPU2");
+  assert.equal(models[0].hf_revision, "flm_q4k_high_precision");
+  assert.equal(models[1].hf_repo, null);
+  assert.equal(models[2].hf_repo ?? null, null);
+});
+
+test("NPU capability tags and context label", () => {
+  const { api } = client(() => new Response(null));
+  const model = (vision: boolean, reasoning: boolean, tools: boolean) =>
+    ({
+      supports_vision: vision,
+      supports_reasoning: reasoning,
+      supports_tools: tools,
+    }) as Parameters<typeof api.npuCapabilities>[0];
+  assert.deepEqual(api.npuCapabilities(model(true, true, true)), [
+    { key: "vision", label: "Vision" },
+    { key: "reasoning", label: "Reasoning" },
+    { key: "tools", label: "Tools" },
+  ]);
+  assert.deepEqual(api.npuCapabilities(model(false, true, false)), [
+    { key: "reasoning", label: "Reasoning" },
+  ]);
+  assert.deepEqual(api.npuCapabilities(model(false, false, false)), []);
+  assert.equal(api.npuContextLabel(32768), "32K context");
+  assert.equal(api.npuContextLabel(262144), "256K context");
+  assert.equal(api.npuContextLabel(10000), "10,000 context");
+  assert.equal(api.npuContextLabel(null), null);
+  assert.equal(api.npuContextLabel(0), null);
 });

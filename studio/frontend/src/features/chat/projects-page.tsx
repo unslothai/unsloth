@@ -107,7 +107,7 @@ import {
   normalizeSectionName,
   useSidebarOrganizationStore,
 } from "./stores/sidebar-organization-store";
-import { runChatImport } from "./utils/import-chats";
+import { CHAT_IMPORT_ACCEPT, runChatImport } from "./utils/import-chats";
 
 const PROJECTS_PAGE_STEP = 12;
 // Streaming fires the history event per chunk, so debounce reloads.
@@ -576,7 +576,7 @@ export function ProjectsPage({
       <input
         ref={globalImportRef}
         type="file"
-        accept=".json,.jsonl,.ndjson,.csv"
+        accept={CHAT_IMPORT_ACCEPT}
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];

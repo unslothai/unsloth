@@ -477,10 +477,19 @@ def _stateful_mixer_kind(module) -> Optional[str]:
 _PACKING_BOUNDARY_BLIND_MODULES = (
     "DeepseekV4CSACompressor",
     "DeepseekV4HCACompressor",
+    # DeepSeek-V4.1 port: engram n-grams hash across the whole row; the compressor pools row-wide token counts.
+    "DeepseekV41NgramHashState",
+    "DeepseekV41Compressor",
     "ZayaCCAProjection",
     "RecurrentGemmaRglru",
 )
-_PACKING_BOUNDARY_BLIND_MODEL_TYPES = ("deepseek_v4", "zaya", "recurrent_gemma")
+_PACKING_BOUNDARY_BLIND_MODEL_TYPES = (
+    "deepseek_v4",
+    "deepseek_v41",
+    "deepseek_v41_text",
+    "zaya",
+    "recurrent_gemma",
+)
 
 
 def packing_boundary_blocker(model, model_types = ()) -> Optional[str]:

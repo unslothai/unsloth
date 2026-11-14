@@ -234,7 +234,7 @@ export function MemoryEstimateRow({
     estimate.drafterRuntimeBytes,
   );
   return (
-    <div className="flex flex-col border-b border-border pb-5">
+    <div data-memory-estimate="" className="flex flex-col border-b border-border pb-5">
       <button
         type="button"
         onClick={() => onExpandedChange(!expanded)}
@@ -342,6 +342,7 @@ export function MemoryEstimateRow({
       </div>
       {advisory && (
         <p
+          data-memory-advisory=""
           className={`mt-1.5 text-pretty text-ui-12 leading-relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
         >
           {advisory.text}

@@ -12,12 +12,12 @@ import {
   type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
-  ModelSelector,
   type ModelSelectorChangeMeta,
   type PerModelConfig,
   isServedByMlx,
   loadedContextFields,
   modelConfigHandoffForDestination,
+  resolveInitialConfig,
   resolveResidentInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
@@ -26,6 +26,11 @@ import {
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import {
+  type ComposerModelPickerSource,
+  ComposerModelPickerContext,
+} from "@/components/assistant-ui/composer-model-picker/context";
+import { ComposerModelPicker } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
 import { rowReachPx } from "@/components/assistant-ui/distant-rows";
 import { LibraryAttachmentTargetContext } from "@/features/library";
 import { usePlatformStore } from "@/config/env";
@@ -345,6 +350,7 @@ import {
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./components/export-format-items";
+import { providerModelDisplayName, useModelDisplayNamesVersion } from "./model-display-names";
 import { lazyWithoutSuspense, preloadWhenIdle } from "@/lib/lazy-without-suspense";
 
 // Not lazy(): a Suspense reveal is held up to 300 ms, which was most of the pane's first open.
@@ -1538,6 +1544,15 @@ const LoraCompareContent = memo(function LoraCompareContent({
   );
 });
 
+// The chip leaves with its composer (dictation, browser dock, Compare): opening then anchors to nothing.
+function composerModelChipShown(): boolean {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[data-chat-page-root] button[data-tour="chat-model-selector"]',
+    ),
+  ).some((chip) => chip.getClientRects().length > 0 && !chip.closest("[inert]"));
+}
+
 function GeneralCompareHeader({
   models,
   loraModels,
@@ -1573,6 +1588,58 @@ function GeneralCompareHeader({
   // Controlled so the body-portaled popover cannot linger over another tab off-route.
   const active = useChatActive();
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const pickerSource = useMemo<ComposerModelPickerSource>(
+    () => ({
+      models,
+      loraModels,
+      externalModels,
+      onPick: (id, meta) => {
+        // A plain pick runs with the model's saved settings; Run settings' own config wins.
+        const remembered =
+          meta.config || meta.source === "external"
+            ? null
+            : resolveInitialConfig(id, meta.ggufVariant);
+        onValueChange(
+          id,
+          remembered?.remembered ? { ...meta, config: remembered.config } : meta,
+        );
+        setSelectorOpen(false);
+      },
+      eject: () => undefined,
+      ejectAll: () => undefined,
+      externalConnections,
+      open: active && selectorOpen,
+      onOpenChange: (open) => setSelectorOpen(active && open),
+      configRequest: null,
+      onConfigRequestAdopted: () => undefined,
+      onFoldersChange: onFoldersChange ?? (() => undefined),
+      onModelsChange: onModelsChange ?? (() => undefined),
+      deleteDisabled: deleteDisabled === true,
+      activeModelConfig: selectedConfig ?? null,
+      loadedContextLength: null,
+      loaded: false,
+      selection: {
+        id: value,
+        ggufVariant: selectedGgufVariant ?? null,
+        config: selectedConfig ?? null,
+      },
+    }),
+    [
+      models,
+      loraModels,
+      externalModels,
+      onValueChange,
+      externalConnections,
+      active,
+      selectorOpen,
+      onFoldersChange,
+      onModelsChange,
+      deleteDisabled,
+      selectedConfig,
+      value,
+      selectedGgufVariant,
+    ],
+  );
 
   const { pinned } = useSidebar();
   return (
@@ -1588,23 +1655,14 @@ function GeneralCompareHeader({
           : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
-      <ModelSelector
-        models={models}
-        loraModels={loraModels}
-        externalModels={externalModels}
-        externalConnections={externalConnections}
-        value={value}
-        selectedConfig={selectedConfig}
-        selectedGgufVariant={selectedGgufVariant}
-        onValueChange={onValueChange}
-        onFoldersChange={onFoldersChange}
-        onModelsChange={onModelsChange}
-        deleteDisabled={deleteDisabled}
-        variant="ghost"
-        className="pointer-events-auto ml-1.5 max-w-[80%] !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
-        open={active && selectorOpen}
-        onOpenChange={(open) => setSelectorOpen(active && open)}
-      />
+      <div className="compare-model-picker pointer-events-auto ml-1.5 min-w-0 max-w-[80%]">
+        <ComposerModelPickerContext.Provider value={pickerSource}>
+          <ComposerModelPicker
+            side="bottom"
+            align={side === "left" ? "start" : "end"}
+          />
+        </ComposerModelPickerContext.Provider>
+      </div>
       {label ? (
         <span
           className={cn(
@@ -2754,6 +2812,14 @@ function ProjectLanding({
   );
 }
 
+/** The Engram table the load will ask for, so a staged download fetches it instead of the quant's own. */
+function stagedEngramPrecision(selection: SelectedModelInput): string | null {
+  if (!selection.ggufVariant) return null;
+  const config =
+    selection.config ?? resolveInitialConfig(selection.id, selection.ggufVariant).config;
+  return config.engramPrecision ?? null;
+}
+
 type PendingHubAutoLoad = {
   selection: SelectedModelInput;
   contextKey: string;
@@ -2854,12 +2920,19 @@ export function ChatPage({
       projectId: search.project,
     }),
   );
-  // A composer that mounts while a handoff's run settings are open, as on a first Chat visit, would
-  // take focus and dismiss them.
-  const [handoffOwnsPicker, setHandoffOwnsPicker] = useState(false);
+  // Held until the picker closes: a composer mounting meanwhile (first visit, or a new chat's
+  // dock-to-centre remount) would otherwise steal focus or drop the settings.
+  const [ownedConfigRequest, setOwnedConfigRequest] =
+    useState<typeof modelConfigRequest>(null);
+  const handoffOwnsPicker = ownedConfigRequest !== null;
+  const latestConfigRequestRef = useRef(modelConfigRequest);
+  latestConfigRequestRef.current = modelConfigRequest;
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
-      setHandoffOwnsPicker(true);
+      const request = latestConfigRequestRef.current;
+      setOwnedConfigRequest((owned) =>
+        request?.requestId === requestId ? request : owned,
+      );
       setSettingsOpen(false);
       setModelSelectorLocked(false);
       setModelSelectorOpen(true);
@@ -2868,7 +2941,7 @@ export function ChatPage({
     [setSettingsOpen],
   );
   // During render, so the composer is focusable again in the commit that closes the picker.
-  if (handoffOwnsPicker && !modelSelectorOpen) setHandoffOwnsPicker(false);
+  if (handoffOwnsPicker && !modelSelectorOpen) setOwnedConfigRequest(null);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Fallback for compare opened from a path that does not set viewBeforeCompareRef.
   const lastNonCompareViewRef = useRef<ChatSearch | null>(null);
@@ -2883,17 +2956,10 @@ export function ChatPage({
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
-  const loadedIsMlx = useChatRuntimeStore((state) => state.loadedIsMlx);
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
   const loadedModels = useChatRuntimeStore((state) => state.loadedModels);
-  const loadedCount = loadedModels.length;
-  const loadedNames = useMemo(
-    () =>
-      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
-    [loadedModels],
-  );
   const loadedContextLength = useChatRuntimeStore(
     (state) => state.loadedContextLength,
   );
@@ -3700,6 +3766,7 @@ export function ChatPage({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
+            engramPrecision: stagedEngramPrecision(selection),
             expectedBytes: selection.expectedBytes ?? 0,
             presentation: selection.downloadPresentation,
             // Handed over so one start makes one toast.
@@ -3822,6 +3889,7 @@ export function ChatPage({
         kind: DOWNLOAD_KIND.MODEL,
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
+        engramPrecision: stagedEngramPrecision(pending.selection),
         expectedBytes: pending.selection.expectedBytes ?? 0,
         presentation: pending.selection.downloadPresentation,
         // Notice-only: the toast was removed and must not return on an HTTP start or once notices are spent.
@@ -4274,12 +4342,10 @@ export function ChatPage({
     },
     [ejectModel],
   );
-  const handleEjectAll = useCallback(() => {
-    void ejectAllModels();
-  }, [ejectAllModels]);
 
   // Pinned open for tour steps so a stray click cannot dismiss it.
   const openModelSelector = useCallback(() => {
+    if (!composerModelChipShown()) return;
     setModelSelectorLocked(true);
     setModelSelectorOpen(true);
   }, []);
@@ -4291,7 +4357,7 @@ export function ChatPage({
 
   const toggleModelSelector = useCallback(() => {
     if (modelSelectorLocked) return;
-    setModelSelectorOpen((open) => !open);
+    setModelSelectorOpen((open) => !open && composerModelChipShown());
   }, [modelSelectorLocked]);
 
   const handleModelSelectorOpenChange = useCallback(
@@ -4453,6 +4519,7 @@ export function ChatPage({
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
+  const modelNamesVersion = useModelDisplayNamesVersion();
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
       externalProvidersForChat
@@ -4465,7 +4532,7 @@ export function ChatPage({
         .flatMap((provider) =>
           provider.models.map((model) => {
             // OpenRouter free router: show `openrouter:<chosen>` minus `/free` and the org prefix.
-            let displayName = model;
+            let displayName = providerModelDisplayName(provider.providerType, model);
             if (
               provider.providerType === "openrouter" &&
               model === "openrouter/free" &&
@@ -4487,7 +4554,7 @@ export function ChatPage({
             };
           }),
         ),
-    [externalProvidersForChat, lastOpenRouterChosenModel],
+    [externalProvidersForChat, lastOpenRouterChosenModel, modelNamesVersion],
   );
   // An unticked model looks like a withdrawn one; the connection's cached catalog tells them apart.
   const externalConnections = useMemo<ExternalConnectionRef[]>(
@@ -4547,6 +4614,60 @@ export function ChatPage({
     }));
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
+
+  const composerPickerSource = useMemo<ComposerModelPickerSource>(
+    () => ({
+      models,
+      loraModels,
+      externalModels,
+      onPick: handleCheckpointChange,
+      eject: handleEject,
+      ejectAll: () => void ejectAllModels(),
+      externalConnections,
+      // Chat has no header picker: the shortcut, tour and Hub's Run open this one.
+      // Not under Compare, whose hidden base view keeps this composer mounted.
+      open:
+        active &&
+        view.mode !== "compare" &&
+        (modelSelectorOpen || modelConfigRequest !== null),
+      onOpenChange: handleModelSelectorOpenChange,
+      configRequest: modelConfigRequest ?? ownedConfigRequest,
+      onConfigRequestAdopted: handleModelConfigRequestAdopted,
+      onFoldersChange: refreshLocalModels,
+      onModelsChange: refreshModelLists,
+      deleteDisabled: modelOperationInProgress,
+      activeModelConfig: activeModelConfig ?? null,
+      loadedContextLength: loadedContextLength ?? null,
+      loaded: chatModelLoaded({
+        checkpoint: inferenceCheckpoint,
+        isExternalModel: isExternalModelId(inferenceCheckpoint),
+        residentCheckpoint,
+      }),
+    }),
+    [
+      models,
+      loraModels,
+      externalModels,
+      handleCheckpointChange,
+      handleEject,
+      ejectAllModels,
+      externalConnections,
+      active,
+      view.mode,
+      modelSelectorOpen,
+      modelConfigRequest,
+      ownedConfigRequest,
+      handleModelSelectorOpenChange,
+      handleModelConfigRequestAdopted,
+      refreshLocalModels,
+      refreshModelLists,
+      modelOperationInProgress,
+      activeModelConfig,
+      loadedContextLength,
+      inferenceCheckpoint,
+      residentCheckpoint,
+    ],
+  );
 
   const selectableModelIds = useMemo(
     () =>
@@ -4765,6 +4886,7 @@ export function ChatPage({
     <ChatComposerFocusableContext.Provider
       value={modelConfigRequest === null && !handoffOwnsPicker}
     >
+    <ComposerModelPickerContext.Provider value={composerPickerSource}>
     <div data-chat-page-root="" className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces escape the hidden wrapper, so gate them on `active`. */}
       {active && <GuidedTour {...tour.tourProps} />}
@@ -4817,47 +4939,6 @@ export function ChatPage({
                   className="size-icon"
                 />
               </Button>
-            )}
-            {view.mode !== "compare" && (
-              <ModelSelector
-                models={models}
-                loraModels={loraModels}
-                externalModels={externalModels}
-                externalConnections={externalConnections}
-                value={inferenceCheckpoint}
-                // Resident, not merely picked: an image or video load evicts the chat model and leaves this
-                // selection behind, so the tick stayed on a released model.
-                loaded={chatModelLoaded({
-                  checkpoint: inferenceCheckpoint,
-                  isExternalModel: isExternalModelId(
-                    inferenceCheckpoint,
-                  ),
-                  residentCheckpoint,
-                })}
-                activeGgufVariant={activeGgufVariant}
-                activeVariantIsMlx={loadedIsMlx === true}
-                activeModelConfig={activeModelConfig}
-                activeLoadedContextLength={loadedContextLength}
-                configRequest={modelConfigRequest}
-                onConfigRequestAdopted={handleModelConfigRequestAdopted}
-                onValueChange={handleCheckpointChange}
-                onEject={handleEject}
-                onEjectAll={handleEjectAll}
-                loadedCount={loadedCount}
-                loadedNames={loadedNames}
-                onFoldersChange={refreshLocalModels}
-                onModelsChange={refreshModelLists}
-                deleteDisabled={modelOperationInProgress}
-                variant="ghost"
-                open={
-                  active && (modelSelectorOpen || modelConfigRequest !== null)
-                }
-                onOpenChange={handleModelSelectorOpenChange}
-                triggerDataTour="chat-model-selector"
-                contentDataTour="chat-model-selector-popover"
-                showCloudIndicator={isExternalModel}
-                className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!ml-0 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
-              />
             )}
             {view.mode === "single" && (
               <ChatModelNotice
@@ -5173,6 +5254,7 @@ export function ChatPage({
         externalProviderType={activeExternalProviderType}
       />
     </div>
+    </ComposerModelPickerContext.Provider>
     </ChatComposerFocusableContext.Provider>
     </ChatActiveContext.Provider>
   );

@@ -189,8 +189,8 @@ const ROWS: Row[] = [
       "and reads normally.",
   },
   {
-    name: "version 15 (genuinely future)",
-    raw: { version: 15, customContextLength: 32768 },
+    name: "version 16 (genuinely future)",
+    raw: { version: 16, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -341,7 +341,11 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
     stage({ version: 13, customContextLength: 32768 }).remembered,
     true,
   );
-  assert.equal(stage({ version: 15, customContextLength: 32768 }).remembered, false);
+  assert.equal(
+    stage({ version: 14, customContextLength: 32768 }).remembered,
+    true,
+  );
+  assert.equal(stage({ version: 16, customContextLength: 32768 }).remembered, false);
 });
 
 
