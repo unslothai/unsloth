@@ -2045,15 +2045,23 @@ def test_a_live_pip_mid_wheel_is_not_pruned_around(tmp_path):
     site_dir = prefix / "lib" / "site-packages"
     old = _dist(site_dir, "unsloth_live", "1.0", 1, module = "old.py")
     _dist(site_dir, "unsloth_live", "2.0", 2, module = "new.py")
-    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    note = prefix / ".unsloth-installing-2-live"
+    note.write_text(f"{os.path.abspath(site_dir)}\t{old.name}\t{10**9}\n")
+    # The other pip holds its note's lock while it runs (its pid may be 2 in every bwrap namespace).
+    hold = "import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDONLY); fcntl.flock(fd, fcntl.LOCK_EX); print('held', flush = True); time.sleep(60)"
+    live = subprocess.Popen(
+        [sys.executable, "-c", hold, str(note)], stdout = subprocess.PIPE, text = True
+    )
     try:
-        note = prefix / f".unsloth-installing-{live.pid}"
-        note.write_text(f"{os.path.abspath(site_dir)}\t{old.name}\t{10**9}\n")
+        assert live.stdout.readline().strip() == "held"
         _prune(prefix, site_dir)
         assert old.exists() and (site_dir / "old.py").exists() and note.exists()
     finally:
         live.kill()
         live.wait()
+    # Once it is gone the same note reads as a killed run's.
+    _prune(prefix, site_dir)
+    assert not note.exists() and old.exists()
 
 
 def test_path_line_files_drop_a_utf8_bom(tmp_path):
@@ -2147,6 +2155,99 @@ def test_retirement_rechecks_each_path_before_removing_it(tmp_path):
     }
     subprocess.run([sys.executable, "-c", code], env = env, check = True, cwd = tmp_path)
     assert (outside / "old_only.py").exists()
+
+
+def test_a_note_named_with_this_processes_pid_is_still_read(tmp_path):
+    """bwrap's --unshare-pid makes every call PID 2: a dead run's note under the same pid is not ours."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    old = _dist(site_dir, "unsloth_same_pid", "1.0", 1, module = "old.py")
+    _dist(site_dir, "unsloth_same_pid", "2.0", 2, module = "new.py")
+    code = (
+        "import os, sys; prefix = sys.argv[1]; site = sys.argv[2]\n"
+        "open(os.path.join(prefix, '.unsloth-installing-' + str(os.getpid())), 'w').write("
+        "os.path.abspath(site) + '\\tunsloth_same_pid-1.0.dist-info\\t1000000000\\n')\n"
+        "sys.path.insert(0, %r)\nimport sitecustomize"
+    ) % tools._SANDBOX_SITE_DIR
+    env = {
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("PIP_", "_UNSLOTH", "PYTHONPATH"))
+        },
+        "PIP_PREFIX": str(prefix),
+        "PYTHONPATH": str(site_dir),
+    }
+    subprocess.run(
+        [sys.executable, "-S", "-c", code, str(prefix), str(site_dir)],
+        env = env,
+        check = True,
+        cwd = tmp_path,
+    )
+    assert old.exists() and (site_dir / "old.py").exists()
+    assert not list(prefix.glob(".unsloth-installing-*"))
+
+
+def test_each_prune_pass_rereads_live_notes(tmp_path):
+    """An interpreter started before another pip: its exit-time pass still sees that pip's live note."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    old = _dist(site_dir, "unsloth_later", "1.0", 1, module = "old.py")
+    note = prefix / ".unsloth-installing-2-later"
+    hold = (
+        "import fcntl, os, sys, time; open(sys.argv[1], 'w').write(sys.argv[2]); fd = os.open(sys.argv[1], os.O_RDONLY); "
+        "fcntl.flock(fd, fcntl.LOCK_EX); print('held', flush = True); time.sleep(60)"
+    )
+    code = (
+        "import subprocess, sys; sys.path.insert(0, %r); import sitecustomize as s\n"
+        "exec(sys.argv[1])\n"
+        "p = subprocess.Popen([sys.executable, '-c', sys.argv[2], sys.argv[3], sys.argv[4]], stdout = subprocess.PIPE, text = True)\n"
+        "assert p.stdout.readline().strip() == 'held'\n"
+        "s._prune_stale_dist_info()\np.kill()"
+    ) % tools._SANDBOX_SITE_DIR
+    make_new = (
+        "import os; d = %r; i = os.path.join(d, 'unsloth_later-2.0.dist-info'); os.makedirs(i); "
+        "open(os.path.join(d, 'new.py'), 'w').close(); "
+        "open(os.path.join(i, 'RECORD'), 'w').write('new.py,,\\nunsloth_later-2.0.dist-info/INSTALLER,,\\n')"
+    ) % str(site_dir)
+    env = {
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("PIP_", "_UNSLOTH", "PYTHONPATH"))
+        },
+        "PIP_PREFIX": str(prefix),
+        "PYTHONPATH": str(site_dir),
+    }
+    row = f"{os.path.abspath(site_dir)}\t{old.name}\t{10**9}\n"
+    subprocess.run(
+        [sys.executable, "-S", "-c", code, make_new, hold, str(note), row],
+        env = env,
+        check = True,
+        cwd = tmp_path,
+    )
+    assert old.exists() and (site_dir / "old.py").exists()
+
+
+def test_a_preloaded_namespace_gets_a_path_line_editable_portion(tmp_path):
+    """A pkgutil namespace imported before the shim still finds a child in a path-line editable root."""
+    studio, root = tmp_path / "studio", tmp_path / "src"
+    for base in (studio, root):
+        (base / "unsloth_preloaded_ns").mkdir(parents = True)
+    init = "from pkgutil import extend_path; __path__ = extend_path(__path__, __name__)\n"
+    (studio / "unsloth_preloaded_ns" / "__init__.py").write_text(init)
+    (root / "unsloth_preloaded_ns" / "child.py").write_text("")
+    code = (
+        "import sys; sys.path.insert(0, %r); import unsloth_preloaded_ns as ns\n"
+        "sys.path.insert(0, %r); import sitecustomize as s; sys.path.append(%r)\n"
+        "f = s._SessionPackagesFinder([], [], [%r])\n"
+        "spec = f.find_spec('unsloth_preloaded_ns.child', ns.__path__)\nprint(spec.origin)"
+    ) % (str(studio), tools._SANDBOX_SITE_DIR, str(root), str(root))
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH", "PYTHON"))}
+    out = subprocess.run(
+        [sys.executable, "-S", "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
+    )
+    assert out.stdout.strip() == str(root / "unsloth_preloaded_ns" / "child.py"), out.stderr
 
 
 def test_an_unfinished_install_retires_nothing(tmp_path):

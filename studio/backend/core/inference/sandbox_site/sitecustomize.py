@@ -1063,7 +1063,8 @@ class _SessionPackagesFinder:
             return None
         # Only a package the chat installed into: parsing every parent __init__ would tax all imports.
         parts = parent.name.split(".")
-        chat = [p for p in (os.path.join(e, *parts) for e in self._entries) if os.path.isdir(p)]
+        roots = [*self._entries, *self._added]  # path-line editable roots hold portions too
+        chat = [p for p in (os.path.join(e, *parts) for e in roots) if os.path.isdir(p)]
         if not chat:
             return None
         listed = {os.path.abspath(p) for p in path}
@@ -1176,18 +1177,69 @@ def _failed_installs():
 _PENDING = ".unsloth-installing-"
 
 
-def _alive(pid):
+# Per run, not per pid: bwrap's --unshare-pid makes every tool call PID 2. A run holds an flock on each of its
+# notes until it exits, which any later process sees whatever its pid namespace.
+_RUN_ID = "%d-%s" % (os.getpid(), os.urandom(6).hex())
+_held = []
+
+
+def _fcntl():
     if sys.platform == "win32":
-        return (
-            False  # os.kill there terminates; a concurrent pip in one chat folder is not expected
-        )
+        return None
+    saved = sys.path[:]
+    sys.path[:] = _stdlib_paths()
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        import fcntl
+        return fcntl
+    except ImportError:
+        return None
+    finally:
+        sys.path[:] = saved
+
+
+def _write_held(path, lines):
+    # Written and locked under a temporary name, then renamed: no other process ever sees it unlocked.
+    fcntl = _fcntl()
+    temp = f"{path}.tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        if fcntl:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, "".join(lines).encode("utf-8"))
+        os.replace(temp, path)
+    except BaseException:
+        os.close(fd)
+        raise
+    _held.append(fd)
+    return fd
+
+
+def _release(fd, path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    if fd in _held:
+        _held.remove(fd)
+        os.close(fd)
+
+
+def _alive(path):
+    # Windows has no flock here; a concurrent pip in one chat folder is not expected there.
+    fcntl = _fcntl()
+    if fcntl is None:
         return False
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return True
-    return True
+    finally:
+        os.close(fd)
+    return False
 
 
 def _killed_installs():
@@ -1200,12 +1252,12 @@ def _killed_installs():
     except OSError:
         return found
     for name in names:
-        pid = name[len(_PENDING) :]
-        if not pid.isdigit() or int(pid) == os.getpid():
+        run = name[len(_PENDING) :]
+        if not run or run == _RUN_ID or run.endswith(".tmp"):
             continue
-        # A live one is another pip mid-wheel: what it changed is unfinished for now, its note stays.
-        live = _alive(int(pid))
         path = os.path.join(prefix, name)
+        # A live one is another pip mid-wheel: what it changed is unfinished for now, its note stays.
+        live = _alive(path)
         try:
             with open(path, encoding = "utf-8") as f:
                 rows = [line.rstrip("\n").split("\t") for line in f]
@@ -1224,8 +1276,13 @@ def _killed_installs():
     # A dead run's pre-install file lists, whether it died inside a wheel or between two: kept for the next
     # retirement (lists of untouched distributions only repeat what their RECORD still says).
     for name in os.listdir(prefix):
-        pid = name[len(_SAVED) + 1 :] if name.startswith(_SAVED + "-") else ""
-        if pid.isdigit() and int(pid) != os.getpid() and not _alive(int(pid)):
+        run = name[len(_SAVED) + 1 :] if name.startswith(_SAVED + "-") else ""
+        if (
+            run
+            and run != _RUN_ID
+            and not run.endswith(".tmp")
+            and not _alive(os.path.join(prefix, name))
+        ):
             try:
                 with open(os.path.join(prefix, name), encoding = "utf-8") as f:
                     rows = f.readlines()
@@ -1307,6 +1364,7 @@ def _remove_files(paths, entry):
 
 
 def _prune_stale_dist_info():
+    _incomplete.clear()  # live pending notes are re-read on every pass
     try:
         prefix = os.environ.get("PIP_PREFIX")
         if not prefix:
@@ -1496,27 +1554,23 @@ def _track_wheel(entry):
     def wrapped(*args, **kwargs):
         before = _dist_stamps()
         prefix = os.environ["PIP_PREFIX"]
-        pending = os.path.join(prefix, f"{_PENDING}{os.getpid()}")
+        pending, held = os.path.join(prefix, f"{_PENDING}{_RUN_ID}"), None
         try:
             # Only into an existing prefix: nothing to protect before the first install, and the path remap
             # would move a write under a missing folder into the CWD.
-            if not before or not os.path.isdir(prefix):
-                raise OSError
-            with open(pending, "w", encoding = "utf-8") as f:
-                f.writelines(f"{os.path.abspath(e)}\t{n}\t{v}\n" for (e, n), v in before.items())
+            if before and os.path.isdir(prefix):
+                rows = [f"{os.path.abspath(e)}\t{n}\t{v}\n" for (e, n), v in before.items()]
+                held = _write_held(pending, rows)
         except OSError:
-            pending = None
+            held = None
         try:
             return entry(*args, **kwargs)
         except BaseException:
             _failed_wheels.append({k: v for k, v in _dist_stamps().items() if before.get(k) != v})
             raise
         finally:
-            if pending:
-                try:
-                    os.remove(pending)
-                except OSError:
-                    pass
+            if held is not None:
+                _release(held, pending)
 
     return wrapped
 
@@ -1613,13 +1667,6 @@ def _start_cleanup(is_pip):
 _pip_tracked = []
 
 
-def _discard(path):
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-
-
 def _track_pip():
     import atexit
 
@@ -1628,13 +1675,15 @@ def _track_pip():
     snapshot = _record_snapshot()
     # The file lists on disk too: a SIGKILL mid-reinstall leaves only what is written down.
     prefix = os.environ["PIP_PREFIX"]
-    inventory = os.path.join(prefix, f"{_SAVED}-{os.getpid()}")
+    inventory = os.path.join(prefix, f"{_SAVED}-{_RUN_ID}")
     if snapshot and os.path.isdir(prefix):
         try:
-            with open(inventory, "w", encoding = "utf-8") as f:
-                for (entry, name), (_, files, _) in snapshot.items():
-                    f.writelines(f"{os.path.abspath(entry)}\t{name}\t{p}\n" for p in sorted(files))
-            atexit.register(_discard, inventory)
+            rows = [
+                f"{os.path.abspath(entry)}\t{name}\t{p}\n"
+                for (entry, name), (_, files, _) in snapshot.items()
+                for p in sorted(files)
+            ]
+            atexit.register(_release, _write_held(inventory, rows), inventory)
         except OSError:
             pass
     atexit.register(_after_pip, snapshot)
