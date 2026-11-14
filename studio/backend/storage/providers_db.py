@@ -159,6 +159,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         _migrate_legacy_custom_provider_types(conn)
     if "max_output_tokens" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
+    if "auto_compact_tokens" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN auto_compact_tokens INTEGER")
     if "reasoning_config_json" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
     if "extra_headers_json" not in existing_cols:
@@ -225,6 +227,7 @@ def create_provider(
     reasoning_config: Optional[dict] = None,
     extra_headers: Optional[dict] = None,
     shared: bool = False,
+    auto_compact_tokens: Optional[int] = None,
 ) -> None:
     """Insert a new provider configuration."""
     reasoning_json = _encode_reasoning_config(reasoning_config)
@@ -237,9 +240,10 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
-                reasoning_config_json, extra_headers_json, shared, created_at, updated_at
+                reasoning_config_json, extra_headers_json, shared, auto_compact_tokens,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -253,6 +257,7 @@ def create_provider(
                 reasoning_json,
                 extra_headers_json,
                 1 if shared else 0,
+                auto_compact_tokens,
                 now,
                 now,
             ),
@@ -276,6 +281,7 @@ def update_provider(
     reasoning_config: dict | None | object = _UNSET,
     extra_headers: dict | None | object = _UNSET,
     shared: bool | None = None,
+    auto_compact_tokens: int | None | object = _UNSET,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -301,6 +307,9 @@ def update_provider(
     if max_output_tokens is not _UNSET:
         updates.append("max_output_tokens = ?")
         params.append(max_output_tokens)
+    if auto_compact_tokens is not _UNSET:
+        updates.append("auto_compact_tokens = ?")
+        params.append(auto_compact_tokens)
     if reasoning_config is not _UNSET:
         updates.append("reasoning_config_json = ?")
         params.append(_encode_reasoning_config(reasoning_config))

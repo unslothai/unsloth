@@ -343,10 +343,12 @@ def test_the_context_window_reaches_the_served_catalog():
         }
     }
     catalog = trim_models_dev_catalog(raw)
-    # limit.input is the prompt share and limit.output the completion cap; neither is the window.
+    # limit.input is the prompt share and limit.output the completion cap; neither is the window,
+    # so the prompt share is kept apart, for agents that may only fill that much.
     assert catalog["openrouter"]["openai/gpt-4o"] == {
         "input": ["text", "image"],
         "context": 128_000,
+        "input_tokens": 120_000,
     }
 
 
