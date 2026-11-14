@@ -2083,6 +2083,8 @@ export const vi = {
         updateFailed: "Cập nhật mật khẩu không thành công.",
       },
       chatDefaults: "Mặc định cho trò chuyện",
+      customTitlePrompt: "Hướng dẫn đặt tiêu đề tùy chỉnh",
+      customTitlePromptDescription: "Để trống để dùng hướng dẫn mặc định.",
       autoTitleNewChats: "Tự động đặt tiêu đề cho cuộc trò chuyện mới",
       autoTitleNewChatsDescription: "Tạo tiêu đề từ tin nhắn đầu tiên.",
       mlWarmup: {

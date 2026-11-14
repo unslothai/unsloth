@@ -144,6 +144,7 @@ import {
   releaseHeldThreadScopedEdits,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import {
   ingestResearchUpdate,
   useResearchRunStore,
@@ -1360,14 +1361,17 @@ async function generateTitleWithModel(payload: {
   }
 
   try {
+    const customPrompt = useChatPreferencesStore.getState().titlePrompt.trim();
     // Inside the try: building this encrypts a browser key over the network.
     const request = await buildTitleRequest(
       payload.checkpoint,
       parts.join("\n"),
+      customPrompt || undefined,
     );
     if (!request) return null;
     return await titleFromStream(
       streamChatCompletions(request, new AbortController().signal),
+      Boolean(customPrompt),
     );
   } catch {
     return null;

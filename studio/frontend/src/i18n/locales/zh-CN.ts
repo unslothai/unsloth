@@ -1891,6 +1891,8 @@ export const zhCN = {
         newHasSpaces: "新密码不能包含空格。",
       },
       chatDefaults: "聊天默认设置",
+      customTitlePrompt: "自定义标题指令",
+      customTitlePromptDescription: "留空以使用默认指令。",
       autoTitleNewChats: "自动为新聊天命名",
       autoTitleNewChatsDescription: "根据第一条消息生成简短标题。",
       mlWarmup: {

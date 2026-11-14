@@ -27,6 +27,8 @@ import {
 } from "../lib/live-generation-stats.ts";
 
 export interface ChatPreferencesState {
+  titlePrompt: string;
+  setTitlePrompt: (value: string) => void;
   shareComposerDraft: boolean;
   setShareComposerDraft: (value: boolean) => void;
   plainTextComposer: boolean;
@@ -99,6 +101,8 @@ function normalisePastedTextMinChars(value: unknown): number {
 export const useChatPreferencesStore = create<ChatPreferencesState>()(
   persist(
     (set) => ({
+      titlePrompt: "",
+      setTitlePrompt: (titlePrompt) => set({ titlePrompt }),
       ...normalizeComposerPreferences(null),
       shareComposerDraft: false,
       setShareComposerDraft: (shareComposerDraft) => set({ shareComposerDraft }),
@@ -175,6 +179,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           | undefined;
         return {
           ...current,
+          titlePrompt: typeof saved?.titlePrompt === "string" ? saved.titlePrompt : "",
           ...normalizeComposerPreferences(saved),
           shareComposerDraft: saved?.shareComposerDraft === true,
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,

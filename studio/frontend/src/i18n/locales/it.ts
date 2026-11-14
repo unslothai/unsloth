@@ -1815,6 +1815,8 @@ export const it = {
         updateFailed: "Aggiornamento della password non riuscito.",
       },
       chatDefaults: "Impostazioni predefinite della chat",
+      customTitlePrompt: "Istruzione personalizzata per il titolo",
+      customTitlePromptDescription: "Lascia vuoto per usare le istruzioni predefinite.",
       autoTitleNewChats: "Titola automaticamente le nuove chat",
       autoTitleNewChatsDescription:
         "Genera un titolo breve a partire dal primo messaggio.",

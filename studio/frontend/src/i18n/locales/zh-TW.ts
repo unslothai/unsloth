@@ -1973,6 +1973,8 @@ export const zhTW = {
         updateFailed: "密碼更新失敗。",
       },
       chatDefaults: "聊天預設值",
+      customTitlePrompt: "自訂標題指令",
+      customTitlePromptDescription: "留空以使用預設指令。",
       autoTitleNewChats: "自動為新聊天命名",
       autoTitleNewChatsDescription: "根據第一則訊息產生標題。",
       mlWarmup: {

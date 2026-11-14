@@ -2093,6 +2093,8 @@ export const uk = {
         updateFailed: "Не вдалося оновити пароль.",
       },
       chatDefaults: "Типові параметри чату",
+      customTitlePrompt: "Власна інструкція для назви",
+      customTitlePromptDescription: "Залиште порожнім для типових інструкцій.",
       autoTitleNewChats: "Автоматичні назви нових чатів",
       autoTitleNewChatsDescription: "Генерувати назву з першого повідомлення.",
       mlWarmup: {

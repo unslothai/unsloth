@@ -2086,6 +2086,8 @@ export const cs = {
         updateFailed: "Heslo se nepodařilo aktualizovat.",
       },
       chatDefaults: "Výchozí nastavení chatu",
+      customTitlePrompt: "Vlastní pokyny pro název",
+      customTitlePromptDescription: "Ponechte prázdné pro výchozí pokyny.",
       autoTitleNewChats: "Automaticky pojmenovávat nové chaty",
       autoTitleNewChatsDescription: "Vygenerovat název z první zprávy.",
       mlWarmup: {

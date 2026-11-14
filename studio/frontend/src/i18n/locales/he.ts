@@ -1966,6 +1966,8 @@ export const he = {
         updateFailed: "עדכון הסיסמה נכשל.",
       },
       chatDefaults: "ברירות מחדל של הצ'אט",
+      customTitlePrompt: "הנחיה מותאמת לכותרת",
+      customTitlePromptDescription: "יש להשאיר ריק כדי להשתמש בהנחיות ברירת המחדל.",
       autoTitleNewChats: "מתן כותרת אוטומטית לצ'אטים חדשים",
       autoTitleNewChatsDescription: "צור כותרת מההודעה הראשונה.",
       mlWarmup: {

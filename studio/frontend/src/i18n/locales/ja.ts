@@ -1903,6 +1903,8 @@ export const ja = {
         newHasSpaces: "新しいパスワードにスペースは使用できません。",
       },
       chatDefaults: "チャットのデフォルト設定",
+      customTitlePrompt: "タイトルのカスタム指示",
+      customTitlePromptDescription: "既定の指示を使うには空欄にします。",
       autoTitleNewChats: "新規チャットのタイトル自動生成",
       autoTitleNewChatsDescription: "最初のメッセージから短いタイトルを自動生成します。",
       mlWarmup: {

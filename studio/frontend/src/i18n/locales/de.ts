@@ -1919,6 +1919,8 @@ export const de = {
         newHasSpaces: "Das neue Passwort darf keine Leerzeichen enthalten.",
       },
       chatDefaults: "Chat-Standardeinstellungen",
+      customTitlePrompt: "Eigene Anweisung für Titel",
+      customTitlePromptDescription: "Leer lassen, um die Standardanweisung zu verwenden.",
       autoTitleNewChats: "Neue Chats automatisch benennen",
       autoTitleNewChatsDescription:
         "Erzeugt einen kurzen Titel aus der ersten Nachricht.",

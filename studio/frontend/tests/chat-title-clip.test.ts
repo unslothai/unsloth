@@ -630,6 +630,18 @@ test("emoji-only output still falls back instead of saving an invisible title", 
   }
 });
 
+test("custom title formatting preserves emoji and more than six words", async () => {
+  const formatted = "🐍 Solving tricky Python errors with helpful debugging steps";
+  assert.equal(
+    normalizeTitle(formatted, true),
+    formatted,
+  );
+  assert.equal(await titleFromStream(iterate(deltas(formatted)), true), formatted);
+  assert.equal(normalizeTitle("User: confidential text", true), null);
+  assert.equal(normalizeTitle('"User: confidential text"', true), null);
+  assert.equal(normalizeTitle("   ", true), null);
+});
+
 test("the answer is reduced to a short, plain line in its own language", () => {
   for (const [raw, expected] of [
     ['  "Matrix Inversion" — Steps  ', "Matrix Inversion Steps"],
@@ -697,7 +709,7 @@ test("the title is wired to what answered, and built inside the fallback boundar
     /const answeredWith = answeringCheckpoint\( firstAssistant\?\.metadata\?\.custom, \);/,
     /if \(!payload\.checkpoint\) return null;/,
     /checkpoint: titleCheckpoint\( answeredWith, useChatRuntimeStore\.getState\(\)\.params\.checkpoint, \),/,
-    /try \{ [^{}]*?const request = await buildTitleRequest\( payload\.checkpoint, parts\.join\("\\n"\), \); if \(!request\) return null; [^{}]*?return await titleFromStream\([^{}]*?\); \} catch \{ [^{}]*?return null; \}/,
+    /try \{ [^{}]*?const request = await buildTitleRequest\( payload\.checkpoint, parts\.join\("\\n"\), customPrompt \|\| undefined, \); if \(!request\) return null; [^{}]*?return await titleFromStream\([^{}]*?\); \} catch \{ [^{}]*?return null; \}/,
   ]) {
     assert.match(provider, rule);
   }

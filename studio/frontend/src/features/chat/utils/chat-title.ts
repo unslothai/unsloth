@@ -486,13 +486,16 @@ export function heuristicChatTitle(messages: readonly MessageRecord[]): string |
   return fallbackTitleFromUserText(title.charAt(0).toUpperCase() + title.slice(1));
 }
 
+/** Build a refresh request using custom instructions when provided. */
 export function buildTitleRefreshRequest(
   checkpoint: string,
   excerpt: string,
+  customPrompt?: string,
 ): Promise<OpenAIChatCompletionsRequest | null> {
-  return buildTitleRequest(checkpoint, excerpt, TITLE_REFRESH_SYSTEM_PROMPT);
+  return buildTitleRequest(checkpoint, excerpt, customPrompt || TITLE_REFRESH_SYSTEM_PROMPT);
 }
 
+/** Build the title request with the selected model and prompt. */
 export async function buildTitleRequest(
   checkpoint: string,
   prompt: string,
@@ -512,6 +515,8 @@ export async function buildTitleRequest(
         )
       : null;
   const local = routing.kind === "local";
+  const customPrompt =
+    systemPrompt !== TITLE_SYSTEM_PROMPT && systemPrompt !== TITLE_REFRESH_SYSTEM_PROMPT;
 
   return {
     model: checkpoint,
@@ -519,7 +524,7 @@ export async function buildTitleRequest(
     stream: true,
     ...(local || caps?.temperature !== false ? { temperature: 0.2 } : {}),
     ...(local || caps?.topP !== false ? { top_p: 0.9 } : {}),
-    max_tokens: routing.kind === "external" ? titleMaxTokens(routing) : 24,
+    max_tokens: Math.max(routing.kind === "external" ? titleMaxTokens(routing) : 24, customPrompt ? 96 : 0),
     ...(local || caps?.topK ? { top_k: 20 } : {}),
     ...(local || caps?.repetitionPenalty ? { repetition_penalty: 1.0 } : {}),
     ...(routing.kind === "external"
@@ -537,8 +542,10 @@ export async function buildTitleRequest(
   };
 }
 
+/** Assemble streamed output and normalize it according to the chosen prompt. */
 export async function titleFromStream(
   chunks: AsyncIterable<OpenAIChatChunk>,
+  preserveFormatting = false,
 ): Promise<string | null> {
   let content = "";
   let finishReason: string | null = null;
@@ -552,20 +559,25 @@ export async function titleFromStream(
   if (finishReason === "length") return null;
   const visible = content.replace(/<think>[\s\S]*?<\/think>/gi, "");
   if (!visible || /<\/?think>/i.test(visible)) return null;
-  return normalizeTitle(visible);
+  return normalizeTitle(visible, preserveFormatting);
 }
 
-export function normalizeTitle(raw: string): string | null {
+/** Clean generated text while preserving custom formatting when requested. */
+export function normalizeTitle(raw: string, preserveFormatting = false): string | null {
   let title = raw.split(/\r?\n/, 1)[0] ?? "";
   title = title.replace(/^\s*title\s*:\s*/i, "");
-  // U+200C (ZWNJ) is part of Persian spelling.
-  title = title.replace(/[^\x20-\x7E\p{L}\p{M}\p{N}‌]+/gu, " ");
-  title = title.replace(/["'`]+/g, "");
-
-  // Echo fail-safe: reject leading role labels before punctuation strips the ":".
-  if (/^\s*(user|assistant|base|lora)\s*:/i.test(title)) {
-    return null;
+  // Apply the original echo check to both default and custom formatting.
+  const plainTitle = title
+    .replace(/[^\x20-\x7E\p{L}\p{M}\p{N}‌]+/gu, " ")
+    .replace(/["'`]+/g, "");
+  // Refuse echoed conversation role labels before any punctuation is changed.
+  if (/^\s*(user|assistant|base|lora)\s*:/i.test(plainTitle)) return null;
+  if (preserveFormatting) {
+    title = dropLoneSurrogates(title).replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+    return title ? cutToUnits(title, FALLBACK_TITLE_MAX).trimEnd() : null;
   }
+  // U+200C (ZWNJ) is part of Persian spelling.
+  title = plainTitle;
 
   title = title.replace(/[.!?:;,]+/g, " ");
   title = title.replace(/\s+/g, " ").trim();

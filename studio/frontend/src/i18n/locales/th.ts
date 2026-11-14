@@ -1984,6 +1984,8 @@ export const th = {
         updateFailed: "การอัปเดตรหัสผ่านล้มเหลว",
       },
       chatDefaults: "ค่าเริ่มต้นของแชท",
+      customTitlePrompt: "คำสั่งกำหนดชื่อเอง",
+      customTitlePromptDescription: "เว้นว่างเพื่อใช้คำสั่งเริ่มต้น",
       autoTitleNewChats: "ตั้งชื่อแชทใหม่โดยอัตโนมัติ",
       autoTitleNewChatsDescription: "สร้างชื่อจากข้อความแรก",
       mlWarmup: {

@@ -1904,6 +1904,8 @@ export const ko = {
         newHasSpaces: "새 비밀번호에는 공백을 넣을 수 없습니다.",
       },
       chatDefaults: "채팅 기본값",
+      customTitlePrompt: "사용자 지정 제목 지침",
+      customTitlePromptDescription: "기본 지침을 사용하려면 비워 두세요.",
       autoTitleNewChats: "새 채팅 제목 자동 생성",
       autoTitleNewChatsDescription:
         "첫 메시지를 기반으로 짧은 제목을 생성합니다.",

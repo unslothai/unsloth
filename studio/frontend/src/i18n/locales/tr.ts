@@ -2073,6 +2073,8 @@ export const tr = {
         updateFailed: "Parola güncellenemedi.",
       },
       chatDefaults: "Sohbet varsayılanları",
+      customTitlePrompt: "Özel başlık talimatı",
+      customTitlePromptDescription: "Varsayılan talimatları kullanmak için boş bırakın.",
       autoTitleNewChats: "Yeni sohbetlere otomatik başlık ver",
       autoTitleNewChatsDescription: "İlk mesajdan bir başlık oluşturun.",
       mlWarmup: {

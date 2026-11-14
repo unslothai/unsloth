@@ -2069,6 +2069,8 @@ export const fa = {
         updateFailed: "به‌روزرسانی گذرواژه ناموفق بود.",
       },
       chatDefaults: "پیش‌فرض‌های گفتگو",
+      customTitlePrompt: "دستور سفارشی عنوان",
+      customTitlePromptDescription: "برای استفاده از دستور پیش‌فرض خالی بگذارید.",
       autoTitleNewChats: "عنوان‌گذاری خودکار گفتگوهای جدید",
       autoTitleNewChatsDescription: "از اولین پیام یک عنوان تولید می‌شود.",
       mlWarmup: {

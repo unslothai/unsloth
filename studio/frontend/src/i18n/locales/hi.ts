@@ -1911,6 +1911,8 @@ export const hi = {
         newHasSpaces: "नए पासवर्ड में स्पेस नहीं हो सकते।",
       },
       chatDefaults: "चैट डिफ़ॉल्ट",
+      customTitlePrompt: "शीर्षक के लिए कस्टम निर्देश",
+      customTitlePromptDescription: "डिफ़ॉल्ट निर्देशों के लिए खाली छोड़ें।",
       autoTitleNewChats: "नई चैट को स्वतः शीर्षक दें",
       autoTitleNewChatsDescription:
         "पहले संदेश से एक छोटा शीर्षक बनाएं।",

@@ -2098,6 +2098,8 @@ export const pl = {
         updateFailed: "Aktualizacja hasła nie powiodła się.",
       },
       chatDefaults: "Domyślne ustawienia czatu",
+      customTitlePrompt: "Własna instrukcja tytułu",
+      customTitlePromptDescription: "Pozostaw puste, aby użyć domyślnych instrukcji.",
       autoTitleNewChats: "Automatyczne tytuły nowych czatów",
       autoTitleNewChatsDescription:
         "Generuj tytuł na podstawie pierwszej wiadomości.",

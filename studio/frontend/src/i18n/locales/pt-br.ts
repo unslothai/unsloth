@@ -1912,6 +1912,8 @@ export const ptBR = {
         newHasSpaces: "A nova senha não pode conter espaços.",
       },
       chatDefaults: "Padrões do chat",
+      customTitlePrompt: "Instrução personalizada para o título",
+      customTitlePromptDescription: "Deixe em branco para usar as instruções padrão.",
       autoTitleNewChats: "Gerar título automático para novos chats",
       autoTitleNewChatsDescription:
         "Gera um título curto a partir da primeira mensagem.",

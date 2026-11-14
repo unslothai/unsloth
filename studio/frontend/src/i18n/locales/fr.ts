@@ -1918,6 +1918,8 @@ export const fr = {
         newHasSpaces: "Le nouveau mot de passe ne peut pas contenir d'espaces.",
       },
       chatDefaults: "Valeurs par défaut de discussion",
+      customTitlePrompt: "Instruction personnalisée pour le titre",
+      customTitlePromptDescription: "Laissez vide pour utiliser les instructions par défaut.",
       autoTitleNewChats: "Titrer automatiquement les nouvelles discussions",
       autoTitleNewChatsDescription:
         "Générer un titre court à partir du premier message.",

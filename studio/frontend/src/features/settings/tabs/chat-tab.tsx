@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   DEFAULT_THINKING_VISIBILITY,
   DEFAULT_TOOL_VISIBILITY,
@@ -307,6 +308,8 @@ export function ChatTab() {
   );
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
+  const titlePrompt = useChatPreferencesStore((state) => state.titlePrompt);
+  const setTitlePrompt = useChatPreferencesStore((state) => state.setTitlePrompt);
   const projectAttachmentTarget = useChatRuntimeStore(
     (state) => state.projectAttachmentTarget,
   );
@@ -681,6 +684,19 @@ export function ChatTab() {
             onCheckedChange={setAutoTitle}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.customTitlePrompt")}
+          description={t("settings.general.customTitlePromptDescription")}
+          wideControl
+          below={
+            <Textarea
+              aria-label={t("settings.general.customTitlePrompt")}
+              value={titlePrompt}
+              onChange={(event) => setTitlePrompt(event.target.value)}
+              rows={4}
+            />
+          }
+        />
         <SettingsRow
           label={t("settings.chat.autoCompact")}
           description={t("settings.chat.autoCompactDescription")}

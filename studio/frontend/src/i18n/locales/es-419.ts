@@ -2098,6 +2098,8 @@ export const es419 = {
         updateFailed: "No se pudo actualizar la contraseña.",
       },
       chatDefaults: "Valores predeterminados del chat",
+      customTitlePrompt: "Instrucción personalizada para títulos",
+      customTitlePromptDescription: "Déjalo vacío para usar las instrucciones predeterminadas.",
       autoTitleNewChats: "Poner título automático a los chats nuevos",
       autoTitleNewChatsDescription:
         "Genera un título a partir del primer mensaje.",

@@ -1911,6 +1911,8 @@ export const ru = {
         newHasSpaces: "Новый пароль не может содержать пробелы.",
       },
       chatDefaults: "Настройки чата по умолчанию",
+      customTitlePrompt: "Своя инструкция для заголовка",
+      customTitlePromptDescription: "Оставьте поле пустым для стандартных инструкций.",
       autoTitleNewChats: "Автоматически называть новые чаты",
       autoTitleNewChatsDescription:
         "Создавать короткое название по первому сообщению.",

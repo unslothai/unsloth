@@ -1916,6 +1916,8 @@ export const es = {
         newHasSpaces: "La nueva contraseña no puede contener espacios.",
       },
       chatDefaults: "Valores predeterminados del chat",
+      customTitlePrompt: "Instrucción personalizada para títulos",
+      customTitlePromptDescription: "Déjalo vacío para usar las instrucciones predeterminadas.",
       autoTitleNewChats: "Titular automáticamente los chats nuevos",
       autoTitleNewChatsDescription:
         "Genera un título breve a partir del primer mensaje.",
