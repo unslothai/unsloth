@@ -55,6 +55,7 @@ def _card_sdpa() -> str:
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+    monkeypatch.delenv(I.IMPL_ENV, raising = False)
     stats = dict(I.STATS)
     yield
     I.STATS.update(stats)
@@ -563,7 +564,8 @@ def test_the_card_check_counts_for_its_dtype_only(monkeypatch):
         )
 
     bf16, fp16 = operand(torch.bfloat16), operand(torch.float16)
-    monkeypatch.setattr(I, "_VERIFIED", {(0, 64, "torch.bfloat16")})
+    monkeypatch.setattr(I, "implementation", lambda index, head_dim: "cuda")
+    monkeypatch.setattr(I, "_VERIFIED", {(0, 64, "torch.bfloat16", "cuda")})
     assert I._verified(bf16, bf16, bf16)
     assert not I._verified(fp16, fp16, fp16) and not I._verified(bf16, bf16, fp16)
     assert not I._verified(operand(torch.bfloat16), bf16, operand(torch.float32))
@@ -572,7 +574,7 @@ def test_the_card_check_counts_for_its_dtype_only(monkeypatch):
     )
     monkeypatch.setattr(I, "_VERIFIED", set())
     assert I._check("cpu", torch.float32, 4, 64, None, timed = False)["ok"]
-    assert I._VERIFIED == {(0, 64, "torch.float32")}
+    assert I._VERIFIED == {(0, 64, "torch.float32", "cuda")}
 
 
 def test_flux3_strided_processor_keeps_native_attention_for_calls_that_need_gradients(monkeypatch):
