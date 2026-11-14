@@ -6990,10 +6990,23 @@ export function createOpenAIStreamAdapter(
             };
           }
 
-          const turnAudioBase64 = findLatestUserAudioBase64(
-            currentTurnMessages,
-            !queuedRunSettings && !continuation,
-          );
+          // The audio-input route returns before Studio's tool loop: with any tool on (project sources and
+          // skills included) a voice turn goes as its transcript, so retrieval and search still run.
+          const voiceTurnAsText =
+            getVoiceMode() === "active" &&
+            supportsTools &&
+            (toolsEnabled ||
+              codeToolsEnabled ||
+              mcpEnabledForChat ||
+              ragEnabled ||
+              projectRagEnabled ||
+              skillTools.length > 0 ||
+              browserTools.length > 0 ||
+              localMediaTools.length > 0 ||
+              deepResearchArmed);
+          const turnAudioBase64 = voiceTurnAsText
+            ? undefined
+            : findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation);
           return {
             model: params.checkpoint,
             messages: outboundMessages,
@@ -7035,8 +7048,9 @@ export function createOpenAIStreamAdapter(
             })
               ? { modalities: ["text", "audio"] }
               : {}),
-            extra_audio_base64:
-              findLatestUserExtraAudioBase64(currentTurnMessages),
+            extra_audio_base64: voiceTurnAsText
+              ? undefined
+              : findLatestUserExtraAudioBase64(currentTurnMessages),
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
