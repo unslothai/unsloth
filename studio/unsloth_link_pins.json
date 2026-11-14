@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "comment": "Trust anchor for install_unsloth_link.py: sha256 and size of each release archive built by .github/workflows/unsloth-link.yml, and the sha256 of the executable inside it. Regenerate with studio/cluster_link/tailcat_helper/update_pins.py from the release's own assets.",
+  "repo": "unslothai/unsloth",
+  "tag": "unsloth-link-v1",
+  "assets": {
+    "linux-amd64": {
+      "name": "unsloth-link-linux-amd64.tar.gz",
+      "sha256": "b9caa8b77e528200caef5b766f7803bc810232b9435e11b13d3310fbb164db98",
+      "size": 6755576,
+      "binary_sha256": "9a719bf574d34f6e332b379389f124382ad300760a81844a3dd62f7227608081"
+    },
+    "linux-arm64": {
+      "name": "unsloth-link-linux-arm64.tar.gz",
+      "sha256": "2fee969a57c92d91ea50361022ffeb78ee822103cf95b2b607647f84cc9da573",
+      "size": 6115226,
+      "binary_sha256": "dd0d4dddac693c0673a007cfd5b033d0f1d5343ccdf293c05a663893ce383043"
+    },
+    "darwin-amd64": {
+      "name": "unsloth-link-darwin-amd64.tar.gz",
+      "sha256": "d0c17a175c26fb6fe44e831c534d13b4263eea7f90b10c066b90208c058969fd",
+      "size": 6623480,
+      "binary_sha256": "a835840f3b592f008949402b7eadea67ae23ccc714c5e4116c03310c36d2e50d"
+    },
+    "darwin-arm64": {
+      "name": "unsloth-link-darwin-arm64.tar.gz",
+      "sha256": "02c0ddda434190343a79b2effa07b7ea296473f2b916622cbe7abfbee04419c6",
+      "size": 6138354,
+      "binary_sha256": "b2a448fb2c4dfda76233924a772f490950460bc91eed98fa406f64e6033329af"
+    },
+    "windows-amd64": {
+      "name": "unsloth-link-windows-amd64.zip",
+      "sha256": "be7eeada69a229c89bdcc16019f5f02ad20b1ed1023482fc2d0c3c20dfda20c9",
+      "size": 6720967,
+      "binary_sha256": "a7b2e04c719ae4ea1aff53ca3111128f54dadd761a0967e111a016ff387ad39b"
+    },
+    "windows-arm64": {
+      "name": "unsloth-link-windows-arm64.zip",
+      "sha256": "27e50637c2f5f46fa9e2b58823489bc4045eecba26c35d78ef04930d4b7eb0cd",
+      "size": 6013504,
+      "binary_sha256": "8fd30bd5b3207cb25b3edb503f7dae32e202f6d9dfbff2feca01e29be6d28947"
+    }
+  }
+}

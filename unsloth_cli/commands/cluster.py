@@ -56,15 +56,8 @@ def _registry(identity: Any) -> Any:
 
 
 def _addresses(peer: Any) -> List[Tuple[str, int]]:
-    default = int(getattr(peer, "agent_port", 0) or 0)
-    out: List[Tuple[str, int]] = []
-    for addr in getattr(peer, "addrs", None) or []:
-        host, sep, port = str(addr).rpartition(":")
-        if sep and host and port.isdigit() and ":" not in host:
-            out.append((host, int(port)))
-        elif addr and default:
-            out.append((str(addr), default))
-    return out
+    from studio.cluster_link.status import addresses
+    return addresses(peer)
 
 
 def parse_duration(text: str) -> float:
@@ -146,6 +139,10 @@ def worker(
         "--allow-any-network",
         help = "Accept the master from a non-private address (e.g. a VPN range). Still needs pairing.",
     ),
+    join_first: bool = typer.Option(
+        False, "--join", help = "Pair with a master first (asks for its code), then serve it."
+    ),
+    name: Optional[str] = typer.Option(None, "--name", help = "This machine's name, with --join."),
 ):
     """Serve this machine's GPUs to the master it was paired with."""
     import asyncio
@@ -153,11 +150,13 @@ def worker(
     identity = _link(crypto = True)
     from studio.cluster_link import AGENT_PORT_DEFAULT, NATIVE_RPC_PORT_DEFAULT, RPC_PORT_DEFAULT
 
+    if join_first:
+        _join_with_code(_read_code(False), name, port)
     me = identity.worker_identity()
     if me is None:
         _fail(
             "This machine is not paired yet. On the master run `unsloth cluster pair`, then run "
-            "`unsloth cluster join` here and paste the token it prints."
+            "`unsloth worker --join` here and paste the code it prints."
         )
     binary = _rpc_server_binary()
     if not binary:
@@ -165,13 +164,21 @@ def worker(
             "ggml-rpc-server was not found. `unsloth worker` uses Unsloth Studio's llama.cpp: "
             "install Studio on this machine first."
         )
+    from studio.cluster_link import remote
     from studio.cluster_link.agent import Agent
+
+    if remote.key_path("server").is_file():
+        remote.ensure_helper(_say)
 
     def authorize(peer: Any) -> bool:
         try:
             return _registry(identity).authorize(peer, "master") is not None
         except Exception:
             return False
+
+    def tunnel_allow() -> List[str]:
+        master = _registry(identity).master()
+        return [master.tc_pub] if master is not None and master.tc_pub else []
 
     paired_port = identity.worker_agent_port() or AGENT_PORT_DEFAULT
     if port and port != paired_port:
@@ -203,6 +210,7 @@ def worker(
         rpc_env = _rpc_server_env(binary),
         native_port = native_port,
         native_tls = False if no_native_tls else None,
+        tunnel_allow = tunnel_allow,
     )
     announcer = None
     if not no_discovery:
@@ -228,6 +236,8 @@ def worker(
                     _say(
                         f"  llama.cpp TLS: a master with it is served directly on port {agent.native_port}."
                     )
+                if getattr(agent, "tunnel", None) is not None:
+                    _say("  Also reachable by its master from other networks, through tailcat.")
             else:
                 _say(
                     "ggml-rpc-server has not come up yet; the master will see this worker as rpc down:"
@@ -270,31 +280,47 @@ def pair(
     port: int = typer.Option(
         None, "--port", min = 1, max = 65535, help = "Pairing port, open only while this runs."
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help = "Approve the worker that uses the code without asking."
+    ),
 ):
-    """Print a one-time token that adds one worker to this machine's cluster."""
+    """Print a one-time code that adds one worker to this machine's cluster."""
     import asyncio
 
     identity = _link(crypto = True)
-    from studio.cluster_link import PAIR_PORT_DEFAULT
+    from studio.cluster_link import PAIR_PORT_DEFAULT, remote
     from studio.cluster_link.pairing import PairingError, PairingWindow
+
+    remote.ensure_helper(_say)
 
     seconds = parse_duration(ttl)
     try:
         master = identity.master_identity(create = True)
     except RuntimeError as exc:
         _fail(str(exc))
+
+    def ask(name: str, words: Optional[List[str]]) -> bool:
+        seen = " ".join(words or [])
+        return typer.confirm(_printable(f"{name} wants to join ({seen}). Allow?"), default = True)
+
     window = PairingWindow(
-        master, host = "0.0.0.0", port = port or PAIR_PORT_DEFAULT, ttl = seconds, addrs = addr or None
+        master,
+        host = "0.0.0.0",
+        port = port or PAIR_PORT_DEFAULT,
+        ttl = seconds,
+        addrs = addr or None,
+        approve = None if yes else (lambda name, words: asyncio.to_thread(ask, name, words)),
     )
 
     async def run() -> Any:
         token = await window.start()
-        # The token is never part of a command line: other local users can read process arguments.
-        _say("On the worker, run `unsloth cluster join` and paste this token when asked:")
+        # The code is never part of a command line: other local users can read process arguments.
+        _say("On the other machine run `unsloth worker --join` and paste this code when asked:")
         _say("")
         _say(f"    {token}")
         _say("")
-        _say(f"(or pipe it to `unsloth cluster join --token-stdin`). It works once, for {ttl}.")
+        where = "on this network or another one" if window.tc else "on this network"
+        _say(f"It works once, for {ttl}, {where}. Keep it private: it lets a machine join.")
         _say("Waiting for the worker to join (Ctrl-C to cancel)...")
         try:
             return await window.wait(seconds)
@@ -315,8 +341,8 @@ def pair(
         _fail(f"Could not open the pairing port: {exc}. Pick another with --port.")
     _say(
         _printable(
-            f"Paired {peer.name} ({peer.node_id[:12]}). Start `unsloth worker` on it to serve; "
-            "`unsloth cluster list` shows whether it is ready."
+            f"Paired {peer.name} ({peer.node_id[:12]}). `unsloth cluster list` shows whether it is "
+            "ready (it serves while `unsloth worker` runs there)."
         )
     )
 
@@ -335,28 +361,48 @@ def join(
         help = "Port `unsloth worker` will serve on here (default 50070).",
     ),
 ):
-    """Pair this machine to a master as a worker."""
+    """Pair this machine to a master as a worker (`unsloth worker --join` also starts serving)."""
+    _link(crypto = True)
+    me = _join_with_code(_read_code(token_stdin), name, port)
+    _say(f"Joined as {me.node_id[:12]}. Now run `unsloth worker` here to serve the master.")
+
+
+def _read_code(from_stdin: bool) -> str:
+    # Only stdin or a hidden prompt: a code in argv is readable by every local user while join runs.
+    token = (
+        sys.stdin.readline().strip()
+        if from_stdin
+        else typer.prompt("Code", hide_input = True).strip()
+    )
+    if not token:
+        _fail("No code given.")
+    return token
+
+
+def _join_with_code(token: str, name: Optional[str], port: Optional[int]) -> Any:
     import asyncio
 
     _link(crypto = True)
+    from studio.cluster_link import remote
     from studio.cluster_link.pairing import PairingError, PairingUnconfirmed, join as join_cluster
-    from studio.cluster_link.tokens import TokenError
+    from studio.cluster_link.tokens import PREFIX_V2, TokenError
 
-    # Only stdin or a hidden prompt: a token in argv is readable by every local user while join runs.
-    if token_stdin:
-        token = sys.stdin.readline().strip()
-    else:
-        token = typer.prompt("Token", hide_input = True).strip()
-    if not token:
-        _fail("No token given.")
+    if token.strip().startswith(PREFIX_V2):
+        remote.ensure_helper(_say)
+
+    def show(words: List[str]) -> None:
+        _say(f"Check that the master shows these words, then allow it there: {' '.join(words)}")
+
     try:
         kwargs = {"agent_port": port} if port else {}
-        me = asyncio.run(join_cluster(token, name = name or socket.gethostname(), **kwargs))
+        return asyncio.run(
+            join_cluster(token, name = name or socket.gethostname(), on_words = show, **kwargs)
+        )
     except PairingUnconfirmed as exc:
         _fail(_redact(str(exc), token))
     except TokenError as exc:
         _fail(
-            f"That is not a usable pairing token ({_redact(str(exc), token)}). Copy the whole token "
+            f"That is not a usable pairing code ({_redact(str(exc), token)}). Copy the whole code "
             "`unsloth cluster pair` printed on the master; it starts with `unsloth-pair-`."
         )
     except PairingError as exc:
@@ -368,9 +414,8 @@ def join(
             )
         _fail(f"Pairing failed: {message}.")
     except Exception as exc:
-        # The token must never appear in output: report only the kind of failure.
+        # The code must never appear in output: report only the kind of failure.
         _fail(f"Pairing failed: {type(exc).__name__}: {_redact(str(exc), token)}")
-    _say(f"Joined as {me.node_id[:12]}. Now run `unsloth worker` here to serve the master.")
 
 
 DISCOVERY_SETTLE_S = 6.5
@@ -391,31 +436,6 @@ def _clause(text: str) -> str:
 def _sentence(text: str) -> str:
     text = str(text).strip()
     return text[:1].upper() + text[1:] if text else text
-
-
-# macOS answers "No route to host" for every outgoing LAN connection until the app has Local Network access.
-LOCAL_NETWORK_HINT = (
-    "on macOS, allow Local Network access for the app running Unsloth in "
-    "System Settings > Privacy & Security > Local Network"
-)
-
-
-def _unreachable_reason(st: Any) -> str:
-    if not isinstance(st, dict):
-        return "not found on the LAN"
-    raw = str(st.get("error") or "")
-    low = raw.lower()
-    if "errno 111" in low or "connection refused" in low or "connect call failed" in low:
-        return "not running: start `unsloth worker` there"
-    if "timeout" in low or "timed out" in low:
-        return "timed out"
-    if "certificate" in low or "ssl" in low or "tls" in low:
-        return f"TLS refused: {raw}; re-pair it if it was reset"
-    if "no route" in low or "unreachable" in low or "errno 113" in low:
-        if sys.platform == "darwin":
-            return f"no route to it on the network; {LOCAL_NETWORK_HINT}"
-        return "no route to it on the network"
-    return raw or "no answer"
 
 
 @cluster_app.command("list")
@@ -446,73 +466,36 @@ def list_workers(
             where = f"{pairs[0][0]}:{pairs[0][1]}" if pairs else "address unknown"
             _say(_printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}"))
         return
-    from studio.cluster_link.relay import RelayManager
+    from studio.cluster_link import status
 
-    relays = RelayManager(
-        master, lambda peer: _registry(identity).authorize(peer, "worker") is not None
-    )
-
-    def ask(peer: Any, host: str, port: int) -> Any:
-        try:
-            relays.ensure(peer.node_id, host, port)
-            return relays.status(peer.node_id, timeout = 3.0)
-        except Exception as exc:
-            return {"type": "error", "error": type(exc).__name__, "reachable": False}
-
-    def answered(st: Any) -> bool:
-        return (
-            isinstance(st, dict)
-            and st.get("reachable", True) is not False
-            and st.get("type") != "error"
-        )
-
-    found: dict = {}
     try:
-        for peer in workers:
-            for i, (addr, aport) in enumerate(_addresses(peer)):
-                st = ask(peer, addr, aport)
-                if i == 0 or answered(st):
-                    found[peer.node_id] = (f"{addr}:{aport}", st, False)
-                if answered(st):
-                    if i:
-                        with registry.transaction():
-                            registry.record_address(peer.node_id, addr, aport)
-                    break
-        missing = [p for p in workers if not answered(found.get(p.node_id, (None, None))[1])]
-        if missing:
-            from studio.cluster_link.discovery import Listener
-
-            fps = {p.node_id: p.fingerprint for p in workers}
-            _say(f"Looking for {len(missing)} worker(s) on the LAN...")
-            listener = Listener(accept = lambda node_id, fp: fps.get(node_id) == fp).start()
-            try:
-                time.sleep(DISCOVERY_SETTLE_S)
-                for peer in missing:
-                    for seen in listener.candidates(peer.node_id):
-                        if seen.fp != peer.fingerprint:
-                            continue
-                        st = ask(peer, seen.host, seen.agent_port)
-                        if answered(st):
-                            found[peer.node_id] = (f"{seen.host}:{seen.agent_port}", st, True)
-                            with registry.transaction():
-                                registry.record_address(peer.node_id, seen.host, seen.agent_port)
-                            break
-            finally:
-                listener.stop()
-        for peer in workers:
-            where, st, discovered = found.get(peer.node_id, ("address unknown", None, False))
-            line = _printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}")
-            if not answered(st):
-                line += _printable(f"  unreachable ({_unreachable_reason(st)})")
-            else:
-                state = "busy" if st.get("busy") else ("ready" if st.get("rpc_up") else "rpc down")
-                devices = ", ".join(str(d) for d in st.get("devices") or [])
-                line += f"  {state}" + (f"  [{devices}]" if devices else "")
-                if discovered:
-                    line += "  (found by discovery)"
-            _say(line)
+        rows = status.check_workers(
+            master,
+            registry,
+            workers,
+            authorize = lambda peer: _registry(identity).authorize(peer, "worker") is not None,
+            settle_s = DISCOVERY_SETTLE_S,
+            on_search = lambda n: _say(f"Looking for {n} worker(s) on the LAN..."),
+        )
     finally:
-        relays.stop()
+        try:
+            from studio.cluster_link import remote
+            remote.close()
+        except Exception:
+            pass
+    for row in rows:
+        line = _printable(f"{row.name:<20} {row.node_id[:12]}  {row.where}")
+        if row.state == "unreachable":
+            line += _printable(f"  unreachable ({row.reason})")
+        elif row.state == "relayed":
+            line += "  relayed only: too slow to serve models"
+        else:
+            state = f"ready ({row.via})" if row.state == "ready" else row.state
+            devices = ", ".join(row.devices)
+            line += f"  {state}" + (f"  [{devices}]" if devices else "")
+            if row.discovered:
+                line += "  (found by discovery)"
+        _say(line)
 
 
 @cluster_app.command("discover")
@@ -578,9 +561,21 @@ def leave(yes: bool = typer.Option(False, "--yes", "-y", help = "Do not ask for 
                     "them first, or they lose their master."
                 )
             identity.forget_master()
+            _forget_tailnet_keys()
         _say("Master identity removed. This machine can now join another cluster as a worker.")
         return
     if not yes and not typer.confirm("Forget the master and this machine's cluster identity?"):
         raise typer.Exit(code = 1)
-    identity.forget_identity()
-    _say("Left the cluster. Pair again with `unsloth cluster join`.")
+    with identity.identity_lock():
+        identity.forget_identity()
+        _forget_tailnet_keys()
+    _say("Left the cluster. Pair again with `unsloth worker --join`.")
+
+
+def _forget_tailnet_keys() -> None:
+    """Called under identity_lock, the lock a pairing makes its keys under."""
+    try:
+        from studio.cluster_link import remote
+        remote.forget_keys(held = True)
+    except Exception:
+        pass
