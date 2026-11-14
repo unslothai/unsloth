@@ -75,3 +75,8 @@ test("the re-arm clears only the transcript the loop wrote, never a typed draft"
   assert.equal((loop.match(/for \(const cb of speechCallbacks\)/g) ?? []).length, 1);
   assert.match(loop, /voiceBoxText = shown\(transcript\);/);
 });
+
+test("a barge-in that ends before the detector answers keeps its voiced length", () => {
+  assert.match(loop, /if \(bargeConfirming\) bargePeakMs = Math\.max\(bargePeakMs, bargeGate\.loudMs\);/);
+  assert.match(loop, /voicedMs = Math\.max\(bargeGate\.loudMs, bargePeakMs\);/);
+});

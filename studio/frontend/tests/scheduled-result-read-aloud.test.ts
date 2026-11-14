@@ -65,7 +65,11 @@ function player(store: ReturnType<typeof unseenStore>) {
   const component = loadWithStubs<{ AutoReadAloud: () => void }>(
     new URL("../src/components/assistant-ui/auto-read-aloud.tsx", import.meta.url),
     {
-      "@/features/chat": { decideAutoRead, useChatActive: () => state.active },
+      "@/features/chat": {
+        decideAutoRead,
+        useChatActive: () => state.active,
+        useChatRuntimeStore: { getState: () => ({ voiceMode: "off" }) },
+      },
       "@/features/settings": { useVoiceSettingsStore: { getState: () => state.voice } },
       "@/features/scheduled-tasks": {
         useUnseenScheduledRuns: Object.assign(
