@@ -61,6 +61,8 @@ import {
 } from "./studio-model-dictation-adapter";
 import { isMissingDeviceError } from "./studio-web-speech-dictation-adapter";
 
+const wavBlob = (samples: Float32Array, rate: number) =>
+  new Blob([encodeWav(samples, rate)], { type: "audio/wav" });
 
 // Loudness floors, scaled from the room: both thresholds sit a fixed ratio above the
 // ambient RMS measured while nothing is being said, never below these minimums.
@@ -575,7 +577,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         merged.set(c, offset);
         offset += c.length;
       }
-      const wav = new Blob([encodeWav(merged, sampleRate)], { type: "audio/wav" });
+      const wav = wavBlob(merged, sampleRate);
 
       if ((await clipHasSpeech(wav)) === false) {
         if (ended) return;
@@ -917,7 +919,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               probe.set(c, at);
               at += c.length;
             }
-            void clipHasSpeech(encodeWav(probe, sampleRate), BARGE_VAD_MIN_SPEECH_MS).then((voiced) => {
+            void clipHasSpeech(wavBlob(probe, sampleRate), BARGE_VAD_MIN_SPEECH_MS).then((voiced) => {
               bargeConfirming = false;
               if (ended || bargedIn) return;
               if (voiced === false) {
