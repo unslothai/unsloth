@@ -1,0 +1,1140 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Auto keeps every layer, then the embedded MTP head, on the GPU before giving either up.
+
+1. A Hybrid Mamba target whose MTP head is all that keeps it off the GPU used to go to --fit on, where the head
+   stands down anyway (mtp_partial_offload) and llama.cpp moves layers to the CPU (Qwen3.8-27B IQ3_XXS, A100:
+   11-15 tok/s). Auto now re-prices the slot reduction without the head and keeps every layer on the GPU.
+2. An embedded NextN head that did not fit beside the largest Auto context was dropped for that context.
+   With the slots left at the default, Auto now keeps it at a smaller context, down to _FIT_MIN_CTX.
+
+Loads that already fit, named slots, explicit contexts, a forced head and speculation off keep their argv;
+the table pins it.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
+import pytest  # noqa: E402
+
+import core.inference.llama_cpp as llama_cpp  # noqa: E402
+from test_llama_cpp_placement import (  # noqa: E402
+    _backend,
+    _install_slot_scaled_compute,
+    _launch,
+)
+
+MIB = 1024 * 1024
+CARD_MIB = 12 * 1024
+
+# Qwen3.8-27B-GGUF metadata (Hybrid Mamba, embedded NextN head).
+HYBRID = {
+    "_architecture": "qwen35",
+    "_vocab_size": 248320,
+    "_nextn_predict_layers": 1,
+    "_n_layers": 65,
+    "_n_kv_heads": 4,
+    "_n_heads": 24,
+    "_embedding_length": 5120,
+    "_kv_key_length": 256,
+    "_kv_value_length": 256,
+    "_key_length_mla": None,
+    "_context_length": 262144,
+    "_full_attention_interval": 4,
+    "_ssm_inner_size": 6144,
+    "_ssm_state_size": 128,
+    "_ssm_group_count": 16,
+    "_ssm_conv_kernel": 4,
+}
+# The same target without its recurrent layers: a plain dense model with a NextN head.
+DENSE_NEXTN = {
+    k: v
+    for k, v in HYBRID.items()
+    if k
+    not in (
+        "_full_attention_interval",
+        "_ssm_inner_size",
+        "_ssm_state_size",
+        "_ssm_group_count",
+        "_ssm_conv_kernel",
+    )
+}
+
+_VOLATILE = {"-m", "--port", "--api-key-file", "--slot-save-path"}
+
+
+def _argv(
+    tmp_path,
+    *,
+    weights_mib,
+    spec = "auto",
+    n_parallel = 4,
+    from_default = True,
+    n_ctx = 0,
+    vram_mib = CARD_MIB,
+    metadata = HYBRID,
+    slot_scaled_compute = True,
+):
+    """The launched llama-server argv with paths, port and key file masked."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, vram_mib, vram_mib)])
+
+    def read(_path):
+        for key, value in metadata.items():
+            setattr(backend, key, value)
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: weights_mib * MIB
+    del backend._can_estimate_kv
+    if slot_scaled_compute:
+        _install_slot_scaled_compute(backend)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+        "supports_kv_unified": True,
+        "supports_fit_ctx": True,
+    }
+    cmd = _launch(
+        backend,
+        gguf,
+        speculative_type = spec,
+        n_ctx = n_ctx,
+        n_parallel = n_parallel,
+        n_parallel_from_default = from_default,
+    )["cmd"]
+    out = []
+    for i, tok in enumerate(cmd[1:], 1):
+        out.append("<v>" if cmd[i - 1] in _VOLATILE else tok)
+    return out
+
+
+def _flags(argv):
+    def flag(name, default = None):
+        return argv[argv.index(name) + 1] if name in argv else default
+
+    return (
+        flag("--fit", "off"),
+        int(flag("--parallel", 1)),
+        int(flag("-c", 0)),
+        flag("--spec-type", "-"),
+    )
+
+
+class TestHybridDropsTheHeadBeforeAnyLayer:
+    @pytest.mark.parametrize("weights_mib", [10_600, 10_800, 11_000, 11_100])
+    def test_default_slots_keep_every_layer_without_the_head(self, tmp_path, weights_mib):
+        fit, slots, ctx, spec = _flags(_argv(tmp_path, weights_mib = weights_mib))
+        assert (fit, slots, spec) == ("off", 1, "ngram-mod")
+        assert ctx >= llama_cpp._LLAMA_FIT_MIN_CTX
+
+    def test_one_named_slot_keeps_every_layer_without_the_head(self, tmp_path):
+        got = _flags(_argv(tmp_path, weights_mib = 11_000, n_parallel = 1, from_default = False))
+        assert got[:2] == ("off", 1) and got[3] == "ngram-mod"
+
+    @pytest.mark.parametrize("n_ctx", [4096, 8192])
+    def test_an_explicit_context_is_kept_as_given(self, tmp_path, n_ctx):
+        got = _flags(_argv(tmp_path, weights_mib = 10_600, n_ctx = n_ctx))
+        assert got == ("off", 1, n_ctx, "ngram-mod")
+
+    def test_named_slots_are_priced_only_as_named(self, tmp_path):
+        """Four named slots do not fit even without the head: --fit on keeps them."""
+        got = _flags(_argv(tmp_path, weights_mib = 10_800, from_default = False))
+        assert got == ("on", 4, llama_cpp._LLAMA_FIT_MIN_CTX, "none")
+
+
+class TestFitOnGetsOneSlotAndTheFitFloor:
+    """Short even without the head: --fit on with one slot and llama.cpp's own context floor, so the
+    fitter trims KV before layers (IQ3_XXS, A100 11.7 GB free: 66/66 layers 48 tok/s, against 60/66 and
+    11 tok/s at 4 slots / 8192)."""
+
+    @pytest.mark.parametrize("weights_mib", [11_400, 11_600])
+    def test_default_slots_and_auto_context(self, tmp_path, weights_mib):
+        got = _flags(_argv(tmp_path, weights_mib = weights_mib))
+        assert got == ("on", 1, llama_cpp._LLAMA_FIT_MIN_CTX, "none")
+
+    def test_the_real_estimator_takes_the_same_path(self, tmp_path):
+        got = _flags(_real(tmp_path, 23_476))
+        assert got == ("on", 1, llama_cpp._LLAMA_FIT_MIN_CTX, "none")
+
+    def test_an_explicit_context_is_kept(self, tmp_path):
+        got = _flags(_argv(tmp_path, weights_mib = 11_400, n_ctx = 8192))
+        assert got == ("on", 1, 8192, "none")
+
+    def test_speculation_off_is_unchanged(self, tmp_path):
+        got = _flags(_argv(tmp_path, weights_mib = 11_400, spec = "off"))
+        assert got == ("on", 4, llama_cpp._AUTO_OFFLOAD_CTX, "-")
+
+    def test_a_dense_target_is_unchanged(self, tmp_path):
+        got = _flags(_argv(tmp_path, weights_mib = 10_800, metadata = DENSE_NEXTN))
+        assert got == ("on", 4, llama_cpp._AUTO_OFFLOAD_CTX, "draft-mtp")
+
+    def test_a_forced_head_is_never_dropped(self, tmp_path):
+        got = _flags(_argv(tmp_path, weights_mib = 10_800, spec = "mtp"))
+        assert got[0] == "on" and got[3] == "draft-mtp"
+
+    def test_a_dense_target_keeps_its_head_under_fit(self, tmp_path):
+        """Only the Hybrid Mamba head stands down under --fit on, so only it is traded for layers."""
+        got = _flags(_argv(tmp_path, weights_mib = 10_800, metadata = DENSE_NEXTN))
+        assert got[0] == "on" and got[3] == "draft-mtp"
+
+
+class TestTheHeadIsKeptAtASmallerAutoContext:
+    """Real compute estimator on a 24 GB card: the extra slots cost little, so before this change the
+    default four slots kept the context and dropped the head (ngram-mod, 12-22k)."""
+
+    @pytest.mark.parametrize("weights_mib", [21_376, 21_676, 21_976])
+    def test_default_slots_keep_the_head_on_one_slot(self, tmp_path, weights_mib):
+        got = _flags(_real(tmp_path, weights_mib))
+        assert got[:2] == ("off", 1) and got[3] == "draft-mtp"
+        assert got[2] >= llama_cpp._FIT_MIN_CTX
+
+    def test_below_the_auto_floor_the_head_still_gives_way(self, tmp_path):
+        """With the head the dense target would launch under _FIT_MIN_CTX: the context wins, as before."""
+        got = _flags(_real(tmp_path, 9_288, vram_mib = CARD_MIB, metadata = DENSE_NEXTN))
+        assert got == ("off", 4, 8_448, "ngram-mod")
+
+    def test_named_slots_keep_the_old_trade(self, tmp_path):
+        got = _flags(_real(tmp_path, 21_676, from_default = False))
+        assert got[:2] == ("off", 4) and got[3] == "ngram-mod"
+
+    def test_an_explicit_context_keeps_the_old_trade(self, tmp_path):
+        got = _flags(_real(tmp_path, 21_676, n_ctx = 16_384))
+        assert got[2] == 16_384 and got[3] != "draft-mtp"
+
+
+def _real(
+    tmp_path,
+    weights_mib,
+    vram_mib = 24 * 1024,
+    **kwargs,
+):
+    return _argv(
+        tmp_path, weights_mib = weights_mib, vram_mib = vram_mib, slot_scaled_compute = False, **kwargs
+    )
+
+
+# Loads that fit today (nothing dropped, nothing offloaded), explicit contexts / slots and speculation
+# off: argv as launched before these changes (ceb461c766), masked.
+_PINNED = {
+    "hybrid_12g_w9000": (
+        dict(weights_mib = 9000),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "2",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "12544",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w9400": (
+        dict(weights_mib = 9400),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "21760",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w9800": (
+        dict(weights_mib = 9800),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "15872",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w10300": (
+        dict(weights_mib = 10300),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "8448",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w10500": (
+        dict(weights_mib = 10500),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "5376",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_16g_w10000": (
+        dict(weights_mib = 10000, vram_mib = 16384),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "2",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "56832",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_24g_w10000": (
+        dict(weights_mib = 10000, vram_mib = 24576),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "188416",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_24g_w15000": (
+        dict(weights_mib = 15000, vram_mib = 24576),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "2",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "100352",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_48g_w15000": (
+        dict(weights_mib = 15000, vram_mib = 49152),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "4",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "262144",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w9000_np3_named": (
+        dict(weights_mib = 9000, n_parallel = 3, from_default = False, n_ctx = 8192),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "3",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "8192",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "ngram-mod",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w9000_np2_named_off": (
+        dict(weights_mib = 9000, n_parallel = 2, from_default = False, spec = "off"),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "2",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "26624",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w9000_ctx8192": (
+        dict(weights_mib = 9000, n_ctx = 8192),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "2",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "8192",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w10000_ctx4096": (
+        dict(weights_mib = 10000, n_ctx = 4096),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "4096",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w9000_np1_ctx32768": (
+        dict(weights_mib = 9000, n_parallel = 1, from_default = False, n_ctx = 32768),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "32768",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "ngram-mod",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w10400_np1": (
+        dict(weights_mib = 10400, n_parallel = 1, from_default = False),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "15616",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "ngram-mod",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w9000_off": (
+        dict(weights_mib = 9000, spec = "off"),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "3",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "15360",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w10000_off": (
+        dict(weights_mib = 10000, spec = "off"),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "2",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "10752",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w11000_off": (
+        dict(weights_mib = 11000, spec = "off"),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "6144",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w10800_mtp": (
+        dict(weights_mib = 10800, spec = "mtp"),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "4",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "8192",
+            "--alias",
+            "test",
+            "--fit",
+            "on",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "dense_12g_w9000": (
+        dict(weights_mib = 9000, metadata = DENSE_NEXTN),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "8960",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "dense_12g_w10000": (
+        dict(weights_mib = 10000, metadata = DENSE_NEXTN),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "5120",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "dense_24g_w15000": (
+        dict(weights_mib = 15000, vram_mib = 24576, metadata = DENSE_NEXTN),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "3",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "27904",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "dense_12g_w10800": (
+        dict(weights_mib = 10800, metadata = DENSE_NEXTN),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "4",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "8192",
+            "--alias",
+            "test",
+            "--fit",
+            "on",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w9000_np1_named": (
+        dict(weights_mib = 9000, n_parallel = 1, from_default = False),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "37632",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "ngram-mod",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "hybrid_12g_w10000_np1_named": (
+        dict(weights_mib = 10000, n_parallel = 1, from_default = False),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "22016",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "ngram-mod",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "real_hybrid_24g_w20776": (
+        dict(weights_mib = 20776, vram_mib = 24576, slot_scaled_compute = False),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "28416",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "real_hybrid_24g_w22276": (
+        dict(weights_mib = 22276, vram_mib = 24576, slot_scaled_compute = False),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "6144",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "real_hybrid_24g_w21676_np4_named": (
+        dict(weights_mib = 21676, vram_mib = 24576, slot_scaled_compute = False, from_default = False),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "4",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "17152",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "ngram-mod",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "real_hybrid_24g_w21676_ctx16384": (
+        dict(weights_mib = 21676, vram_mib = 24576, slot_scaled_compute = False, n_ctx = 16384),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "4",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "16384",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "ngram-mod",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "real_dense_24g_w21476": (
+        dict(weights_mib = 21476, vram_mib = 24576, slot_scaled_compute = False, metadata = DENSE_NEXTN),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "3",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "6400",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "real_dense_12g_w9288": (
+        dict(weights_mib = 9288, slot_scaled_compute = False, metadata = DENSE_NEXTN),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "4",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "8448",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--kv-unified",
+            "--jinja",
+            "--spec-type",
+            "ngram-mod",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+    "real_hybrid_12g_w10388": (
+        dict(weights_mib = 10388, slot_scaled_compute = False),
+        [
+            "-m",
+            "<v>",
+            "--port",
+            "<v>",
+            "--parallel",
+            "1",
+            "--flash-attn",
+            "on",
+            "--no-context-shift",
+            "-c",
+            "5632",
+            "--alias",
+            "test",
+            "-ngl",
+            "-1",
+            "--fit",
+            "off",
+            "--jinja",
+            "--spec-type",
+            "draft-mtp",
+            "--spec-draft-n-max",
+            "2",
+            "--api-key-file",
+            "<v>",
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_PINNED))
+def test_argv_unchanged_where_nothing_was_traded(tmp_path, case):
+    kwargs, expected = _PINNED[case]
+    assert _argv(tmp_path, **kwargs) == expected

@@ -26855,6 +26855,56 @@ class LlamaCppBackend:
                                         _n_ubatch = _effective_ubatch,
                                     )
                                 _both_fit_somewhere = True
+                        # An embedded NextN head doubles decode on a dense / hybrid target (Qwen3.8-27B
+                        # Q4_K_M, L4: 30 vs 15 tok/s), so Auto keeps it at a smaller context, down to
+                        # _FIT_MIN_CTX, rather than drop it to keep the largest one. The slot count
+                        # giving the head the most context wins; named slots and contexts keep the
+                        # rule above.
+                        if (
+                            _target_fits_somewhere
+                            and not _both_fit_somewhere
+                            and _slots_reducible
+                            and not explicit_ctx
+                            and _spec_canon == "auto"
+                            and _engaged_is_mtp
+                            and self._nextn_predict_layers
+                            and not mtp_draft_path
+                            and not self._key_length_mla
+                        ):
+                            _head_best = None  # (context with the head, slots, target-only context)
+                            for _s in range(n_parallel, 0, -1):
+                                for _n, _ctx_c, _budget_c, _ckpts_c in _target_placements:
+                                    _c = _ctx_with_drafter(_n, _ctx_c, _budget_c, _s, _ckpts_c)
+                                    if _c <= 0:
+                                        continue
+                                    if _head_best is None or _c > _head_best[0]:
+                                        _head_best = (_c, _s, _ctx_c)
+                                    break
+                            if _head_best is not None and _head_best[0] >= min(
+                                _head_best[2], _FIT_MIN_CTX
+                            ):
+                                _head_ctx, _head_slots, _head_target_ctx = _head_best
+                                logger.info(
+                                    "Auto: keeping the embedded MTP head at context %d on %d "
+                                    "serving slot(s) (without it: %d). Set the context to keep "
+                                    "it without the head.",
+                                    _head_ctx,
+                                    _head_slots,
+                                    _head_target_ctx,
+                                )
+                                if _head_slots != n_parallel:
+                                    _mtp_slots_asked = n_parallel
+                                    _mtp_slots_target_ctx = _head_target_ctx
+                                    n_parallel = _head_slots  # allow-slot-clamp: the head keeps more context at fewer slots
+                                    _effective_ubatch = _ubatch_for_slots(n_parallel)
+                                    _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                                    if mtp_overhead_fn is not None:
+                                        mtp_overhead_fn = functools.partial(
+                                            mtp_overhead_fn,
+                                            _np = n_parallel,
+                                            _n_ubatch = _effective_ubatch,
+                                        )
+                                _both_fit_somewhere = True
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False
@@ -27974,47 +28024,159 @@ class LlamaCppBackend:
                     # offloads layers to host and decode collapses ~3x (#6718). Retry the fit
                     # at fewer slots, keeping the largest count that stays fully on GPU and the
                     # chosen context. Skips tensor mode / Metal / KV-inestimable paths.
+                    # Auto's embedded MTP head on a Hybrid Mamba target stands down under --fit on
+                    # anyway (mtp_partial_offload), so when the head is what keeps the layers off the
+                    # GPU it is dropped first: every layer on the GPU without MTP decodes 3-4x faster
+                    # than --fit on moving layers to the CPU (Qwen3.8-27B IQ3_XXS, A100: 48 vs 11-15 tok/s).
+                    _mtp_drop_keeps_layers = bool(
+                        use_fit
+                        and _mtp_will_engage
+                        and _engaged_is_mtp
+                        and _spec_canon == "auto"
+                        and not mtp_draft_path
+                        and not _extra_args_set_spec_type(extra_args)
+                        and self._nextn_predict_layers
+                        and self._ssm_inner_size is not None
+                        and self._full_attention_interval is not None
+                    )
                     if (
                         use_fit
-                        and n_parallel > 1
+                        and (n_parallel > 1 or _mtp_drop_keeps_layers)
                         and gpus
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
-                        # Probe at _FIT_MIN_CTX, not _AUTO_OFFLOAD_CTX (a higher probe fails the slot reduction); must match _largest_ctx floor. Explicit contexts priced as given
-                        _reduce_ctx = (
-                            effective_ctx if explicit_ctx else min(effective_ctx, _FIT_MIN_CTX)
+                        # Probe at _FIT_MIN_CTX, not _AUTO_OFFLOAD_CTX (a higher probe fails the slot reduction); must match _largest_ctx floor. Explicit contexts priced as given.
+                        # Auto then tries llama.cpp's own fit floor (_LLAMA_FIT_MIN_CTX): a model a few hundred MiB
+                        # short at 8192 still holds every layer (and its MTP head) at 4096, while --fit on moves layers
+                        # to the CPU, which costs a dense model 2-7x decode.
+                        _reduce_probes = (
+                            [effective_ctx]
+                            if explicit_ctx
+                            else sorted(
+                                {
+                                    min(effective_ctx, _FIT_MIN_CTX),
+                                    min(effective_ctx, _LLAMA_FIT_MIN_CTX),
+                                },
+                                reverse = True,
+                            )
                         )
-                        # Slot-independent footprint (folded compute buffer and the MTP
-                        # reserve swapped out so the helper re-prices both per candidate).
-                        _base_footprint = (
-                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(_reduce_ctx)
-                        )
-                        _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
-                            n_parallel,
-                            _reduce_ctx,
-                            gpus,
-                            total_by_idx,
-                            _base_footprint,
-                            cache_type_kv,
-                            _pin_fraction,
-                            _pipeline_overhead_bytes + _cc_bytes(_reduce_ctx),
-                            _layer_min_gpus,
-                            _effective_ubatch,
-                            swa_full = swa_full,
-                            kv_unified = planned_kv_unified,
-                            flash_attn = planned_flash_attn,
-                            split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
-                            ubatch_for_slots = _ubatch_for_slots,
-                            mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
-                            ctx_checkpoints = _placement_ctx_checkpoints,
-                            # An explicit device pick skips the discrete tier; host-only accounting still applies.
-                            integrated = _integrated_gpus,
-                            prefer_discrete = bool(_tier_gpus),
-                            discount_prefixes = _discount_prefixes,
-                            discrete_host_only_bytes = _discrete_host_only(),
-                            shared_gpu_ids = _shared_gpu_ids,
-                        )
+                        for _reduce_ctx in _reduce_probes:
+                            # Slot-independent footprint (folded compute buffer and the MTP
+                            # reserve swapped out so the helper re-prices both per candidate).
+                            _base_footprint = (
+                                model_size_fit - _compute_buffer_pipeline + _cc_bytes(_reduce_ctx)
+                            )
+                            _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
+                                n_parallel,
+                                _reduce_ctx,
+                                gpus,
+                                total_by_idx,
+                                _base_footprint,
+                                cache_type_kv,
+                                _pin_fraction,
+                                _pipeline_overhead_bytes + _cc_bytes(_reduce_ctx),
+                                _layer_min_gpus,
+                                _effective_ubatch,
+                                swa_full = swa_full,
+                                kv_unified = planned_kv_unified,
+                                flash_attn = planned_flash_attn,
+                                split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
+                                ubatch_for_slots = _ubatch_for_slots,
+                                mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
+                                ctx_checkpoints = _placement_ctx_checkpoints,
+                                # An explicit device pick skips the discrete tier; host-only accounting still applies.
+                                integrated = _integrated_gpus,
+                                prefer_discrete = bool(_tier_gpus),
+                                discount_prefixes = _discount_prefixes,
+                                discrete_host_only_bytes = _discrete_host_only(),
+                                shared_gpu_ids = _shared_gpu_ids,
+                            )
+                            if not _uf_slots:
+                                break
+                        if _uf_slots and _mtp_drop_keeps_layers:
+                            # Same probes without the head's reserve (draft KV copy, rollback state,
+                            # draft graph); slots the user named are priced only as named.
+                            _mtp_kept = (
+                                mtp_overhead_fn,
+                                model_size_fit,
+                                _soft_overhead,
+                                _pin_fraction,
+                            )
+                            _draft_graph = self._MTP_DRAFT_COMPUTE_BYTES if _mtp_reserves_gpu else 0
+                            mtp_overhead_fn = None
+                            model_size_fit -= _draft_graph
+                            _soft_overhead -= _draft_graph
+                            _pin_fraction = _vram_frac
+                            _slots_named = not (
+                                intent.n_parallel_from_default
+                                and _extra_args_n_parallel(extra_args, env = {}) is None
+                            )
+                            for _reduce_ctx in _reduce_probes:
+                                _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
+                                    n_parallel,
+                                    _reduce_ctx,
+                                    gpus,
+                                    total_by_idx,
+                                    model_size_fit
+                                    - _compute_buffer_pipeline
+                                    + _cc_bytes(_reduce_ctx),
+                                    cache_type_kv,
+                                    _pin_fraction,
+                                    _pipeline_overhead_bytes + _cc_bytes(_reduce_ctx),
+                                    _layer_min_gpus,
+                                    _effective_ubatch,
+                                    swa_full = swa_full,
+                                    kv_unified = planned_kv_unified,
+                                    flash_attn = planned_flash_attn,
+                                    split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
+                                    ubatch_for_slots = _ubatch_for_slots,
+                                    ctx_checkpoints = _placement_ctx_checkpoints,
+                                    include_requested = True,
+                                    exact = _slots_named,
+                                    integrated = _integrated_gpus,
+                                    prefer_discrete = bool(_tier_gpus),
+                                    discount_prefixes = _discount_prefixes,
+                                    discrete_host_only_bytes = _discrete_host_only(),
+                                    shared_gpu_ids = _shared_gpu_ids,
+                                )
+                                if not _uf_slots:
+                                    break
+                            if _uf_slots:
+                                mtp_overhead_fn, model_size_fit, _soft_overhead, _pin_fraction = (
+                                    _mtp_kept
+                                )
+                                # Still short, so --fit on places the layers and the head stands
+                                # down there. One slot and llama.cpp's own context floor let the
+                                # fitter trim KV before layers (IQ3_XXS, A100, 11.7 GB free: 66/66
+                                # layers, 48 tok/s, against 60/66 and 11 tok/s at 4 slots / 8192).
+                                if not _slots_named and n_parallel > 1:
+                                    logger.info(
+                                        "Auto: --fit on with one serving slot (asked %d) so "
+                                        "llama.cpp keeps more layers on the GPU.",
+                                        n_parallel,
+                                    )
+                                    n_parallel = (
+                                        1  # allow-slot-clamp: --fit on keeps layers over slots
+                                    )
+                                    _effective_ubatch = _ubatch_for_slots(n_parallel)
+                                    _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                                if not explicit_ctx:
+                                    effective_ctx = min(effective_ctx, _LLAMA_FIT_MIN_CTX)
+                            else:
+                                logger.info(
+                                    "Auto: the embedded MTP head does not fit beside every layer "
+                                    "at context %d; it is dropped so no layer moves to the CPU. "
+                                    "Free VRAM or choose MTP explicitly to keep it.",
+                                    _reduce_ctx,
+                                )
+                                _spec_dropped_no_vram = True
+                                _mtp_will_engage = False
+                                _mtp_reserves_gpu = False
+                                _mtp_gpu_bytes_remain = False
+                                _mtp_kv_unsized = False
+                                _flat_mtp_engages = False
+                                _flat_mtp_reserve = 0.0
                         if not _uf_slots:
                             _slots_asked = n_parallel
                             gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
@@ -28060,7 +28222,7 @@ class LlamaCppBackend:
                             ) -> Optional[tuple[int, list[int]]]:
                                 """Largest 256-aligned context the cards hold; footprint grows monotonically with context, and a missing native length (0 sentinel) would search nothing"""
                                 _native = self._context_length or _reduce_ctx
-                                _lo = max(1, min(_FIT_MIN_CTX, _native) // 256)
+                                _lo = max(1, min(_FIT_MIN_CTX, _reduce_ctx, _native) // 256)
                                 _hi = _native // 256
                                 _best = None
                                 while _lo <= _hi:
