@@ -391,7 +391,7 @@ def worker_case(
     if fault == "rows" and rank == world - 1:
         orig_gather = zoo_store.FrozenTableStore.gather
         zoo_store.FrozenTableStore.gather = (
-            lambda self, i, dtype = None: orig_gather(self, i, dtype) + 1
+            lambda self, i, dtype = None, **kw: orig_gather(self, i, dtype, **kw) + 1
         )
     if gc:
         # GradientCheckpointingLayer checkpoints in training mode only (every dropout here is 0).
