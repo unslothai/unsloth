@@ -5,6 +5,24 @@
 
 import { joinWavBase64, pcmWavBase64 } from "../utils/wav-chunks.ts";
 
+// Audio-input models read 16 kHz; the mic runs at 48 kHz, so sending it raw is 3x the bytes.
+export const TURN_AUDIO_RATE = 16000;
+
+/** Box-filtered decimation: each output sample averages the input window it covers. */
+export function downsample(samples: Float32Array, rate: number, target = TURN_AUDIO_RATE): Float32Array {
+  if (rate <= target) return samples;
+  const step = rate / target;
+  const out = new Float32Array(Math.floor(samples.length / step));
+  for (let i = 0; i < out.length; i++) {
+    const from = Math.floor(i * step);
+    const to = Math.min(samples.length, Math.floor((i + 1) * step));
+    let sum = 0;
+    for (let j = from; j < to; j++) sum += samples[j] ?? 0;
+    out[i] = to > from ? sum / (to - from) : 0;
+  }
+  return out;
+}
+
 export function createTurnAudio() {
   let chunks: Float32Array[] = [];
   let rate = 0;
@@ -24,9 +42,10 @@ export function createTurnAudio() {
   };
   return {
     add(samples: Float32Array, sampleRate: number): void {
-      if (rate && sampleRate !== rate) chunks = [];
-      rate = sampleRate;
-      chunks.push(samples);
+      const next = Math.min(sampleRate, TURN_AUDIO_RATE);
+      if (rate && next !== rate) chunks = [];
+      rate = next;
+      chunks.push(downsample(samples, sampleRate));
     },
     take(): string | null {
       const all = [...parked, current()].filter((w): w is string => Boolean(w));

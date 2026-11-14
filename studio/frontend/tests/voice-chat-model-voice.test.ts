@@ -9,6 +9,7 @@ import { joinWavBase64, pcmWavBase64 } from "../src/features/chat/utils/wav-chun
 import {
   coalescedTurnAudio,
   createTurnAudio,
+  downsample,
   lastUserTurnHasAudio,
   voiceTurnAttachment,
   withoutAudioPlayer,
@@ -65,25 +66,34 @@ test("spoken reply chunks join into one WAV of all their samples, in order", () 
 test("the fragments of one turn are sent together, then the turn is empty", () => {
   const turn = createTurnAudio();
   assert.equal(turn.take(), null);
-  turn.add(new Float32Array(100), 48000);
-  turn.add(new Float32Array(50), 48000);
+  turn.add(new Float32Array(100), 16000);
+  turn.add(new Float32Array(50), 16000);
   assert.equal(wavInfo(turn.take() ?? "").dataBytes, 300);
   assert.equal(turn.take(), null);
-  turn.add(new Float32Array(10), 48000);
+  turn.add(new Float32Array(10), 16000);
   turn.clear();
   assert.equal(turn.take(), null);
 });
 
+test("turn audio goes to the model at 16 kHz, box-filtered from the mic rate", () => {
+  const turn = createTurnAudio();
+  turn.add(new Float32Array(4800).fill(0.5), 48000);
+  turn.add(new Float32Array(160).fill(0.5), 16000);
+  const info = wavInfo(turn.take() ?? "");
+  assert.equal(info.dataBytes, (1600 + 160) * 2);
+  assert.deepEqual(Array.from(downsample(new Float32Array([0, 0.3, 0.6, 0.9, 0.9, 0.9]), 48000)).map((v) => v.toFixed(2)), ["0.30", "0.90"]);
+});
+
 test("a queued utterance keeps its speech when a later one is ignored", () => {
   const turn = createTurnAudio();
-  turn.add(new Float32Array(100), 48000);
+  turn.add(new Float32Array(100), 16000);
   turn.park();
-  turn.add(new Float32Array(40), 48000);
+  turn.add(new Float32Array(40), 16000);
   turn.dropCurrent();
-  turn.add(new Float32Array(10), 48000);
+  turn.add(new Float32Array(10), 16000);
   assert.equal(wavInfo(turn.take() ?? "").dataBytes, 220);
   assert.equal(turn.take(), null);
-  turn.add(new Float32Array(10), 48000);
+  turn.add(new Float32Array(10), 16000);
   turn.park();
   turn.clear();
   assert.equal(turn.take(), null);
@@ -127,9 +137,9 @@ test("whether the loaded chat model speaks comes from its status", () => {
 });
 
 test("bubbles coalesced into one run send all their speech on the newest", () => {
-  const a = pcmWavBase64(new Float32Array(100), 48000);
-  const b = pcmWavBase64(new Float32Array(50), 48000);
-  const c = pcmWavBase64(new Float32Array(25), 48000);
+  const a = pcmWavBase64(new Float32Array(100), 16000);
+  const b = pcmWavBase64(new Float32Array(50), 16000);
+  const c = pcmWavBase64(new Float32Array(25), 16000);
   const reply = { role: "assistant", content: [{ type: "text" }] };
   const bubble = (wav: string) => ({
     role: "user",
