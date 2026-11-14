@@ -341,6 +341,14 @@ def _lost_connection_msg() -> str:
     return _cluster_ux("lost_connection_message") or _LOST_CONNECTION_MSG
 
 
+def _cluster_lost_connection_detail(exc: BaseException) -> Optional[str]:
+    """The streaming path's lost-connection text naming the workers, for a non-streaming failure of a split model."""
+    lost = (
+        isinstance(exc, httpx.RequestError) and not isinstance(exc, httpx.TimeoutException)
+    ) or "Lost connection to llama-server" in str(exc)
+    return _cluster_ux("lost_connection_message") if lost else None
+
+
 _OVERSIZE_TOKENS_RE = _re.compile(
     r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"
 )
@@ -34929,7 +34937,10 @@ async def produce_openai_chat_completions(
                             param = "messages",
                         ),
                     )
-                raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+                raise HTTPException(
+                    status_code = 500,
+                    detail = _cluster_lost_connection_detail(e) or safe_error_detail(e),
+                )
             finally:
                 if admission_lease is not None:
                     admission_lease.release()
@@ -35618,7 +35629,10 @@ async def produce_openai_chat_completions(
                             param = "messages",
                         ),
                     )
-                raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+                raise HTTPException(
+                    status_code = 500,
+                    detail = _cluster_lost_connection_detail(e) or safe_error_detail(e),
+                )
             finally:
                 if admission_lease is not None:
                     admission_lease.release()
@@ -40224,6 +40238,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             raise
         except Exception as e:
             api_monitor.fail(monitor_id, _friendly_error(e))
+            _lost = _cluster_lost_connection_detail(e)
+            if _lost:
+                raise HTTPException(status_code = 502, detail = _lost) from e
             raise
         finally:
             # Nested so a close-time failure still unregisters; a phantom entry 409s swaps.
@@ -46610,6 +46627,9 @@ async def anthropic_messages(
             raise
         except Exception as exc:
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            _lost = _cluster_lost_connection_detail(exc)
+            if _lost:
+                raise HTTPException(status_code = 502, detail = _lost) from exc
             raise
         return _monitor_anthropic_response(
             response,
