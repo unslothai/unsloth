@@ -56,8 +56,7 @@ class Transcript:
     # at ``inherited``, the count of leading messages carried over from the previous revision.
     revision: str = ""
     inherited: int = 0
-    # {older revision of this parser: where its n-th turn ends in ``messages``}, so a parser
-    # that now keeps more turns resumes after what it imported instead of re-sending edited ones.
+    # {older revision: index after its n-th turn}; resuming at turns would re-send edited ones.
     earlier: dict[str, list[int]] = field(default_factory = dict)
 
 

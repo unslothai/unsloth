@@ -47,12 +47,11 @@ def list_projects(home: Path) -> list[SourceProject]:
 
 
 def _user_text(text: str, expanded: bool) -> str:
-    # A command that expanded into a prompt stays as typed; other slash commands are the harness talking.
+    # Only commands that expanded into a prompt are the user's; command output can trail a prompt.
     if _COMMAND.search(text):
         if not expanded:
             return ""
         return clean_text(" ".join(value.strip() for _, value in _TYPED_COMMAND.findall(text)))
-    # Captured command output is cut, it can follow a prompt.
     return clean_text(_LOCAL_STDOUT.split(text)[0])
 
 
