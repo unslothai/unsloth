@@ -54,6 +54,8 @@ TAIL_PARAMS = (
     "existingProviders",
     "syncedProviders",
     "registryRows",
+    "enabledIds",
+    "syncedRows",
 )
 
 
@@ -78,6 +80,10 @@ def _harness_source() -> str:
             """
         // @ts-nocheck
         // ---- PRELUDE: the sliced tail reads only through its parameters ----
+        const disabledWrites = [];
+        const useExternalProvidersStore = {
+          getState: () => ({ setDisabledProviders: (rows) => disabledWrites.push(rows) }),
+        };
         // ---- PRELUDE ENDS: verbatim studio source follows ----
         """
         )
@@ -115,6 +121,8 @@ const returned = await syncBackfillTail(
   () => true,
   ["existing"],
   ["synced"],
+  [],
+  new Set(),
   [],
 );
 const finishedWhenSyncResolved = [...finished];
