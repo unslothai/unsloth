@@ -3065,6 +3065,8 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      rightToLeftLayout: "Расположение чата справа налево",
+      rightToLeftLayoutDescription: "Отразить расположение чата справа налево.",
       showReplyTimes: "Время ответов",
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:

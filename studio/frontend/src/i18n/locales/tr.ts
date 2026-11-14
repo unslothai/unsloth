@@ -3298,6 +3298,8 @@ export const tr = {
       showResponseModel: "Yanıt modeli",
       showResponseModelDescription:
         "Asistan yanıtlarında model ayrıntılarını gösterin.",
+      rightToLeftLayout: "Sağdan sola sohbet düzeni",
+      rightToLeftLayoutDescription: "Sohbet düzenini sağdan sola yansıtın.",
       showReplyTimes: "Yanıt saatleri",
       showReplyTimesDescription:
         "Her yanıtın ne zaman tamamlandığını yanıtın altında gösterin.",

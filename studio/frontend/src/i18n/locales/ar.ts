@@ -3052,6 +3052,8 @@ export const ar = {
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
+      rightToLeftLayout: "تخطيط المحادثة من اليمين إلى اليسار",
+      rightToLeftLayoutDescription: "اعكس تخطيط المحادثة ليبدأ من اليمين.",
       showReplyTimes: "أوقات الردود",
       showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
       showReplyTimesKeywords:

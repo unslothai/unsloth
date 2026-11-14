@@ -3132,6 +3132,8 @@ export const he = {
       showLinkPreviewsDescription: "הצגת תצוגות מקדימות במעבר העכבר מעל קישורי מקורות.",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
+      rightToLeftLayout: "פריסת הצ׳אט מימין לשמאל",
+      rightToLeftLayoutDescription: "היפוך פריסת הצ׳אט מימין לשמאל.",
       showReplyTimes: "זמני תשובות",
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:

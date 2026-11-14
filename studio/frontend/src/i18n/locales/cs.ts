@@ -3316,6 +3316,8 @@ export const cs = {
       showResponseModel: "Model odpovědi",
       showResponseModelDescription:
         "Zobrazovat v odpovědích asistenta podrobnosti o modelu.",
+      rightToLeftLayout: "Rozložení chatu zprava doleva",
+      rightToLeftLayoutDescription: "Zrcadlit rozložení chatu zprava doleva.",
       showReplyTimes: "Časy odpovědí",
       showReplyTimesDescription:
         "Pod každou odpovědí zobrazovat, kdy byla dokončena.",

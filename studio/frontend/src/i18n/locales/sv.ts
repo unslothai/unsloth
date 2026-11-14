@@ -3214,6 +3214,8 @@ export const sv = {
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
+      rightToLeftLayout: "Chattlayout från höger till vänster",
+      rightToLeftLayoutDescription: "Spegla chattlayouten från höger till vänster.",
       showReplyTimes: "Svarstider",
       showReplyTimesDescription: "Visa under varje svar när det blev klart.",
       showReplyTimesKeywords:

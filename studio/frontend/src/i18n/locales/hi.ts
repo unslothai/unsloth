@@ -3061,6 +3061,8 @@ export const hi = {
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
+      rightToLeftLayout: "चैट लेआउट दाएँ से बाएँ",
+      rightToLeftLayoutDescription: "चैट लेआउट को दाएँ से बाएँ पलटें।",
       showReplyTimes: "जवाब का समय",
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:

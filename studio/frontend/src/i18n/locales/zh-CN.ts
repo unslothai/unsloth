@@ -3009,6 +3009,8 @@ export const zhCN = {
       showLinkPreviewsDescription: "将鼠标悬停在来源链接上时显示预览。",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
+      rightToLeftLayout: "从右到左的聊天布局",
+      rightToLeftLayoutDescription: "将聊天布局镜像为从右到左。",
       showReplyTimes: "回复时间",
       showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
       showReplyTimesKeywords:

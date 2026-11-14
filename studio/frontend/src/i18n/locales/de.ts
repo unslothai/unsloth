@@ -3093,6 +3093,8 @@ export const de = {
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
+      rightToLeftLayout: "Chat-Layout von rechts nach links",
+      rightToLeftLayoutDescription: "Das Chat-Layout von rechts nach links spiegeln.",
       showReplyTimes: "Antwortzeiten",
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:

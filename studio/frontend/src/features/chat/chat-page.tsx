@@ -2832,6 +2832,7 @@ export function ChatPage({
   search,
   active,
 }: { search: ChatSearch; active: boolean }): ReactElement {
+  const rightToLeftLayout = useChatPreferencesStore((s) => s.rightToLeftLayout);
   const showContextWindowUsage = useChatPreferencesStore(
     (s) => s.showContextWindowUsage,
   );
@@ -4887,7 +4888,11 @@ export function ChatPage({
       value={modelConfigRequest === null && !handoffOwnsPicker}
     >
     <ComposerModelPickerContext.Provider value={composerPickerSource}>
-    <div data-chat-page-root="" className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
+    <div
+      data-chat-page-root=""
+      dir={rightToLeftLayout ? "rtl" : "ltr"}
+      className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background"
+    >
       {/* Portaled surfaces escape the hidden wrapper, so gate them on `active`. */}
       {active && <GuidedTour {...tour.tourProps} />}
       {/* One app-level mount driven by global state, or Compare's composers each render a copy. */}

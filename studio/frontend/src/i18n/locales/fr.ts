@@ -3089,6 +3089,8 @@ export const fr = {
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
+      rightToLeftLayout: "Disposition du chat de droite à gauche",
+      rightToLeftLayoutDescription: "Inverser la disposition du chat de droite à gauche.",
       showReplyTimes: "Heure des réponses",
       showReplyTimesDescription: "Afficher sous chaque réponse l'heure à laquelle elle s'est terminée.",
       showReplyTimesKeywords:

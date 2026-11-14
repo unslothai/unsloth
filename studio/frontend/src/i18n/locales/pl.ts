@@ -3336,6 +3336,8 @@ export const pl = {
       showResponseModel: "Model odpowiedzi",
       showResponseModelDescription:
         "Pokazuj szczegóły modelu w odpowiedziach asystenta.",
+      rightToLeftLayout: "Układ czatu od prawej do lewej",
+      rightToLeftLayoutDescription: "Odbij układ czatu od prawej do lewej.",
       showReplyTimes: "Godziny odpowiedzi",
       showReplyTimesDescription:
         "Pokazuj pod odpowiedzią, kiedy się zakończyła.",

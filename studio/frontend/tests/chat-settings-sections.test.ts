@@ -108,6 +108,7 @@ test("Thinking and tools groups the visibility rows out of Display", () => {
   assert.deepEqual(labels(section("settings.chat.groups.display.title")), [
     "settings.chat.showLinkPreviews",
     "settings.chat.showResponseModel",
+    "settings.chat.rightToLeftLayout",
     "settings.chat.showReplyTimes",
     "settings.chat.showGenerationDetails",
     "settings.chat.inlineEditResponse",

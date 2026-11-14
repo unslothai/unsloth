@@ -5349,6 +5349,7 @@ _DisplayVisibility = Literal["collapsed", "auto", "expanded"]
 class ChatPrefsPayload(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
+    rightToLeftLayout: Optional[bool] = None
     shareComposerDraft: Optional[bool] = None
     plainTextComposer: Optional[bool] = None
     showContextWindowUsage: Optional[bool] = None

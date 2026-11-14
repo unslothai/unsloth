@@ -3286,6 +3286,8 @@ export const fa = {
       showResponseModel: "مدل پاسخ",
       showResponseModelDescription:
         "جزئیات مدل در پاسخ‌های دستیار نمایش داده شود.",
+      rightToLeftLayout: "چیدمان گفتگو از راست به چپ",
+      rightToLeftLayoutDescription: "چیدمان گفتگو را از راست به چپ معکوس کنید.",
       showReplyTimes: "زمان پاسخ‌ها",
       showReplyTimesDescription:
         "زمان پایان هر پاسخ، زیر همان پاسخ نمایش داده شود.",

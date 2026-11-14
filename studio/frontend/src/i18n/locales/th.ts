@@ -3165,6 +3165,8 @@ export const th = {
       showLinkPreviewsDescription: "แสดงตัวอย่างเมื่อวางตัวชี้เมาส์เหนือลิงก์แหล่งข้อมูล",
       showResponseModel: "โมเดลที่ตอบ",
       showResponseModelDescription: "แสดงรายละเอียดโมเดลในคำตอบของผู้ช่วย",
+      rightToLeftLayout: "เค้าโครงแชทจากขวาไปซ้าย",
+      rightToLeftLayoutDescription: "สลับเค้าโครงแชทจากขวาไปซ้าย",
       showReplyTimes: "เวลาตอบกลับ",
       showReplyTimesDescription: "แสดงเวลาที่การตอบกลับแต่ละครั้งเสร็จสิ้นไว้ใต้การตอบกลับ",
       showReplyTimesKeywords:

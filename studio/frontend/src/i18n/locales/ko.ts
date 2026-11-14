@@ -3045,6 +3045,8 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      rightToLeftLayout: "오른쪽에서 왼쪽으로 채팅 배치",
+      rightToLeftLayoutDescription: "채팅 레이아웃을 오른쪽에서 왼쪽으로 반전합니다.",
       showReplyTimes: "응답 시간",
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:

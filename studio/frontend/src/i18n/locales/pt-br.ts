@@ -3066,6 +3066,8 @@ export const ptBR = {
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
+      rightToLeftLayout: "Layout do chat da direita para a esquerda",
+      rightToLeftLayoutDescription: "Inverter o layout do chat da direita para a esquerda.",
       showReplyTimes: "Horário das respostas",
       showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
       showReplyTimesKeywords:

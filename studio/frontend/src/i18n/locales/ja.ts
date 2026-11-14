@@ -3038,6 +3038,8 @@ export const ja = {
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
+      rightToLeftLayout: "チャットを右から左に配置",
+      rightToLeftLayoutDescription: "チャットのレイアウトを右から左に反転します。",
       showReplyTimes: "応答の時刻",
       showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
       showReplyTimesKeywords:

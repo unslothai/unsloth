@@ -3299,6 +3299,8 @@ export const vi = {
       showResponseModel: "Mô hình trả lời",
       showResponseModelDescription:
         "Hiển thị thông tin mô hình trong câu trả lời của trợ lý.",
+      rightToLeftLayout: "Bố cục trò chuyện từ phải sang trái",
+      rightToLeftLayoutDescription: "Đảo bố cục trò chuyện từ phải sang trái.",
       showReplyTimes: "Thời điểm trả lời",
       showReplyTimesDescription:
         "Hiển thị thời điểm mỗi câu trả lời hoàn tất, bên dưới câu trả lời.",

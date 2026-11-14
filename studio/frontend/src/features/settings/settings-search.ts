@@ -177,6 +177,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.showLinkPreviews",
     "settings.chat.inlineEditResponse",
     "settings.chat.showReplyTimes",
+    "settings.chat.rightToLeftLayout",
     "settings.chat.showGenerationDetails",
     "settings.chat.generationStatsUpdates",
     "settings.chat.groups.menu.title",
@@ -519,6 +520,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.replyNotification": "settings.chat.replyNotificationKeywords",
   "settings.chat.showLinkPreviews": "settings.chat.showLinkPreviewsDescription",
   "settings.chat.showReplyTimes": "settings.chat.showReplyTimesKeywords",
+  "settings.chat.rightToLeftLayout": "settings.chat.rightToLeftLayoutDescription",
   "settings.chat.showGenerationDetails": "settings.chat.showGenerationDetailsKeywords",
   "settings.chat.generationStatsUpdates": "settings.chat.generationStatsUpdatesKeywords",
   // match protocol and agent names omitted from the title.

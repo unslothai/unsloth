@@ -3300,6 +3300,8 @@ export const id = {
       showResponseModel: "Model respons",
       showResponseModelDescription:
         "Tampilkan detail model di respons asisten.",
+      rightToLeftLayout: "Tata letak chat kanan ke kiri",
+      rightToLeftLayoutDescription: "Cerminkan tata letak chat dari kanan ke kiri.",
       showReplyTimes: "Waktu balasan",
       showReplyTimesDescription:
         "Tampilkan kapan setiap balasan selesai, di bawah balasan.",
