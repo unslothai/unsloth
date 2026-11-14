@@ -11288,6 +11288,8 @@ class VideoBackend:
                 logger = logger,
                 # Probe at the post-promotion dtype: fused SDPA is half-only, fp32 falls to math backend.
                 target = types.SimpleNamespace(device = target.device, dtype = dtype),
+                # unsloth_int8 by name routes the DiT's attention dispatch to the INT8 kernel
+                requested = attention_backend,
             )
             # The optimizer's speed layer (diffusion_autoopt), shared with the image backend. Its family hooks are
             # what used to be inline here: LTX static compile (token counts depend only on (w, h, frames): one
