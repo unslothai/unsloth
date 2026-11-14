@@ -14195,10 +14195,10 @@ class VideoBackend:
                         h3_diffusers_references,
                         keep_h3_reference_image_sizes,
                     )
-                    if references.images and not keep_h3_reference_image_sizes(pipe):
+                    if not keep_h3_reference_image_sizes(pipe):
                         logger.warning(
                             "video.h3_references: no Ref2VA setup step found; Diffusers may rescale "
-                            "the reference images"
+                            "the references and cut their soundtracks"
                         )
                     kwargs["references"] = h3_diffusers_references(references)
                 if continuation is not None:
@@ -14222,9 +14222,14 @@ class VideoBackend:
                     # H3 grid includes the terminal 0: `steps` evaluations need steps + 1 points.
                     kwargs["num_inference_steps"] = h3_num_inference_steps(steps)
                     # PDD bank is distilled for ComfyUI's count, so it keeps steps + 1 even under the kill switch.
-                    if bind_h3_pdd_render(pipe, shift, audio_shift):
+                    h3_pdd = bool(bind_h3_pdd_render(pipe, shift, audio_shift))
+                    if h3_pdd:
                         kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
                         request_shape["pdd"] = True
+                    from .video_minimax_h3_sampling import install_h3_reference_recipe
+
+                    # Reference grid, sampler, noise layout and vision input; Euler stays for PDD.
+                    request_shape["h3_recipe"] = install_h3_reference_recipe(pipe, pdd = h3_pdd)
 
                 # What the clip records; LTX-2.5's two-stage render reports its stage-2 steps in the progress below.
                 recorded_steps = steps
@@ -14583,6 +14588,13 @@ class VideoBackend:
                     audio = output.get("audio")
                     audio_track = audio[0] if audio is not None else None
                     audio_sample_rate = output.get("sampling_rate")
+                    if fam.name == "minimax-h3" and audio_track is not None and audio_sample_rate:
+                        from .video_minimax_h3 import h3_output_audio
+
+                        # Loudness-limited, and ending with the last frame: ceil(rate / fps * frames) samples.
+                        audio_track = h3_output_audio(
+                            audio_track, int(audio_sample_rate), int(out_fps), len(video_frames)
+                        )
                 elif fam.name in COSMOS3_FAMILIES:
                     video_frames = (
                         output.video
@@ -14852,6 +14864,7 @@ class VideoBackend:
         """Image sizing is settled here: Diffusers' rescale is skipped, sd.cpp gets "max" (#2177); native refuses "max"."""
         from .video_minimax_h3 import (
             MiniMaxH3References,
+            conform_h3_reference_audio,
             decode_h3_reference_audio,
             decode_h3_reference_video,
             validate_h3_reference_trim,
@@ -14907,6 +14920,8 @@ class VideoBackend:
                     trim_start_seconds = None if clip is None else 0.0,
                     trim_end_seconds = None if clip is None else clip[1] - clip[0],
                 )
+            if waveform is not None:
+                waveform, sample_rate = conform_h3_reference_audio(waveform, sample_rate)
             decoded_videos.append((frames, waveform, sample_rate))
         if engine == "sd_cpp":
             soundtrack_gap = False
@@ -14929,7 +14944,10 @@ class VideoBackend:
         return MiniMaxH3References(
             images = fitted_images,
             videos = tuple(decoded_videos),
-            audios = reused_audios,
+            audios = tuple(
+                conform_h3_reference_audio(waveform, sample_rate)
+                for waveform, sample_rate in reused_audios
+            ),
         )
 
     def _h3_native_server_render(
