@@ -114,6 +114,7 @@ from utils.helper_precache_settings import (
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils import video_cpu_settings
 from utils.download_speed_limit import (
+    DownloadSpeedLimitUnavailableError,
     get_download_speed_limit_mbps,
     set_download_speed_limit_mbps,
 )
@@ -2175,7 +2176,10 @@ def update_download_transport(
 def get_download_speed_limit(
     current_subject: str = Depends(get_current_subject),
 ) -> DownloadSpeedLimitResponse:
-    return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+    try:
+        return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+    except DownloadSpeedLimitUnavailableError as exc:
+        raise HTTPException(status_code = 503, detail = str(exc)) from None
 
 
 @_owner_settings_router.put("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
