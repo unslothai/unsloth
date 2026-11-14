@@ -20,10 +20,17 @@ def png_size(path: Path) -> tuple[int, int]:
     return struct.unpack(">II", data[16:24])
 
 
-def test_index_links_the_manifest():
+def test_index_links_install_icons():
     html = (FRONTEND / "index.html").read_text(encoding = "utf-8")
     links = re.findall(r'<link\s+rel="manifest"\s+href="([^"]+)"', html)
     assert links == ["/manifest.webmanifest"]
+
+    apple_icons = re.findall(
+        r'<link\s+rel="apple-touch-icon"\s+sizes="180x180"\s+href="([^"]+)"',
+        html,
+    )
+    assert apple_icons == ["/apple-touch-icon.png"]
+    assert png_size(PUBLIC / apple_icons[0].lstrip("/")) == (180, 180)
 
 
 def test_manifest_meets_install_criteria():
