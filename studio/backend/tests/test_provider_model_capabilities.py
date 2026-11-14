@@ -474,7 +474,8 @@ def test_the_registry_lists_the_catalog_chat_models_newest_first(listed_catalog)
 def test_the_registry_never_fetches_and_is_never_empty_before_a_catalog_exists(listed_catalog):
     rows = asyncio.run(providers_route.list_registry(current_subject = "tester"))
     listed = {row["provider_type"] for row in rows if row["default_models"]}
-    assert listed == set(MODELS_DEV_MODEL_LIST_SOURCES)
+    # Perplexity ships a fixed list: its /models names Agent API ids that /chat/completions does not take.
+    assert listed == set(MODELS_DEV_MODEL_LIST_SOURCES) | {"perplexity"}
     assert _FakeCatalogClient.calls == 0
 
 

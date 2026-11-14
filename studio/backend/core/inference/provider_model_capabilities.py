@@ -95,6 +95,13 @@ MODELS_DEV_PROVIDER_MAP = {
     "opencode-go": "opencode_go",
     "ollama-cloud": "ollama",
     "lmstudio": "lmstudio",
+    "xai": "xai",
+    "nvidia": "nvidia",
+    "perplexity": "perplexity",
+    "vercel": "vercel",
+    "azure": "azure",
+    "amazon-bedrock": "bedrock",
+    "google-vertex": "vertex",
 }
 
 
@@ -152,6 +159,9 @@ MODELS_DEV_MODEL_LIST_SOURCES = {
     "opencode_go": "opencode-go",
     "qwen": "alibaba",
     "huggingface": "huggingface",
+    "xai": "xai",
+    "nvidia": "nvidia",
+    "cohere": "cohere",
 }
 
 

@@ -227,6 +227,128 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # Fixed at 1 / 0.95 server-side (https://platform.minimax.io/docs/api-reference/text-openai-api).
         "body_omit": ("temperature", "top_p", "presence_penalty"),
     },
+    "xai": {
+        "display_name": "xAI",
+        "api_key_url": "https://console.x.ai/team/default/api-keys",
+        "base_url": "https://api.x.ai/v1",
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # /v1/models also lists image, video and voice models.
+        "model_id_denylist": re.compile(r"^grok-(?:imagine|voice)-"),
+        # Reasoning models error on it, and every current chat id but one reasons (docs.x.ai chat-completions reference).
+        "body_omit": ("presence_penalty",),
+        # max_tokens is deprecated there.
+        "max_tokens_field": "max_completion_tokens",
+        # "Reasoning cannot be disabled" (docs.x.ai reasoning guide).
+        "reasoning_effort_values": ("low", "medium", "high", "xhigh"),
+    },
+    "nvidia": {
+        "display_name": "NVIDIA NIM",
+        "api_key_url": "https://build.nvidia.com/settings/api-keys",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # The list has no capability fields, so embedding, guard, OCR and translation models go by name.
+        "model_id_denylist": re.compile(
+            r"embed|nvclip|rerank|guard|safety|topic-control|jailbreak|parse|riva|translate|gliner"
+            r"|reward|detector|deplot|kosmos|fuyu|neva|vila|paligemma|calibration"
+        ),
+        # Per-model schemas forbid unknown fields (422), and several omit the penalties.
+        "body_omit": ("presence_penalty",),
+        "max_temperature": 1.0,
+    },
+    "perplexity": {
+        "display_name": "Perplexity",
+        "api_key_url": "https://console.perplexity.ai/project/keys",
+        # No /v1: the route is /chat/completions on the bare host.
+        "base_url": "https://api.perplexity.ai",
+        # Its /v1/models lists Agent API ids, not what /chat/completions takes.
+        "default_models": ["sonar-pro", "sonar", "sonar-reasoning-pro", "sonar-deep-research"],
+        "model_list_mode": "curated",
+        "probe_with_chat": True,
+        "supports_streaming": True,
+        "supports_vision": False,
+        # Sonar searches by itself; function calling is not documented for it.
+        "supports_tool_calling": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "body_omit": ("presence_penalty",),
+    },
+    "cohere": {
+        "display_name": "Cohere",
+        "api_key_url": "https://dashboard.cohere.com/api-keys",
+        "base_url": "https://api.cohere.ai/compatibility/v1",
+        "supports_streaming": True,
+        # Image parts are not documented on the compatibility endpoint.
+        "supports_vision": False,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # The compatibility API takes these two only (docs.cohere.com/docs/compatibility-api).
+        "reasoning_effort_values": ("none", "high"),
+        "reasoning_effort_aliases": {
+            "minimal": "high",
+            "low": "high",
+            "medium": "high",
+            "xhigh": "high",
+            "max": "high",
+        },
+    },
+    "vercel": {
+        "display_name": "Vercel AI Gateway",
+        "api_key_url": "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys",
+        "base_url": "https://ai-gateway.vercel.sh/v1",
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "reasoning_effort_values": ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+    },
+    "azure": {
+        "display_name": "Azure OpenAI",
+        # The resource's own endpoint, ending in /openai/v1.
+        "base_url": "",
+        "default_models": [],
+        # `model` is the deployment name, which no key-authenticated endpoint lists.
+        "probe_with_chat": True,
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # Reasoning deployments accept nothing else.
+        "max_tokens_field": "max_completion_tokens",
+        "reasoning_effort_values": ("none", "minimal", "low", "medium", "high", "xhigh"),
+        "hidden": True,
+    },
+    "bedrock": {
+        "display_name": "Amazon Bedrock",
+        # The region is part of the host. This route takes a Bedrock API key as a bearer token; it does
+        # not serve Claude, Nova or Llama, and has no /models (docs.aws.amazon.com inference-chat-completions).
+        "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+        "default_models": [],
+        "probe_with_chat": True,
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "reasoning_effort_values": ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+        "hidden": True,
+    },
     # Console is pay as you go, Go a subscription; both translate every text model to /chat/completions.
     "opencode": {
         "display_name": "OpenCode Console",
@@ -454,6 +576,27 @@ def answers_decisions_only(provider_type: str | None, api_type: str | None = Non
     return bool(info and info.get("decisions_only")) or (
         provider_type == "custom" and api_type == "systemone"
     )
+
+
+VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1/publishers/google"
+
+
+def is_vertex_host(host: str | None) -> bool:
+    host = (host or "").lower()
+    return host == "aiplatform.googleapis.com" or host.endswith("-aiplatform.googleapis.com")
+
+
+def is_google_gemini_host(host: str | None) -> bool:
+    """Hosts that speak native generateContent: the Gemini Developer API and Vertex AI."""
+    return (host or "").lower() == "generativelanguage.googleapis.com" or is_vertex_host(host)
+
+
+def provider_probes_with_chat(provider_type: str, base_url: str | None = None) -> bool:
+    """No usable model list, so a connection check has to send a one-token chat."""
+    info = PROVIDER_REGISTRY.get(provider_type) or {}
+    if info.get("probe_with_chat"):
+        return True
+    return provider_type == "gemini" and is_vertex_host(urlsplit(base_url or "").hostname)
 
 
 def get_base_url(provider_type: str) -> str | None:

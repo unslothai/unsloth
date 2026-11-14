@@ -1156,6 +1156,13 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   qwen: { levels: [], off: "unified" },
   qwencloud: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
+  xai: { levels: ["low", "medium", "high", "xhigh"], off: "unified" },
+  nvidia: { levels: null, off: "unified" },
+  cohere: { levels: [], off: "unified" },
+  vercel: { levels: null, off: "unified" },
+  azure: { levels: ["minimal", "low", "medium", "high", "xhigh"], off: "none-level" },
+  bedrock: { levels: null, off: "unified" },
+  vertex: { levels: ["minimal", "low", "medium", "high", "xhigh", "max"], off: "unified" },
   ollama: { levels: null, off: "unified" },
   // A vLLM older than 0.21 400s on the wider levels; the backend then leaves them to the template default.
   vllm: { levels: null, off: "unified" },
@@ -1323,7 +1330,19 @@ export function getExternalReasoningCapabilities(
     case "qwen":
     case "qwencloud":
     case "huggingface":
+    case "xai":
+    case "nvidia":
+    case "cohere":
+    case "vercel":
+    case "azure":
+    case "bedrock":
       return catalogCapabilities(normalizedProvider, normalizedModel) ?? withEnableThinkingStyle();
+    case "vertex": {
+      const table = resolveGeminiReasoningCapabilities(modelForMatching);
+      return table.supportsReasoning
+        ? table
+        : (catalogCapabilities("vertex", normalizedModel) ?? table);
+    }
     case "vllm":
     case "llama_cpp":
       return catalogCapabilities(normalizedProvider, normalizedModel, true) ?? withEnableThinkingStyle();

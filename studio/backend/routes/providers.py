@@ -40,6 +40,7 @@ from core.inference.providers import (
     get_provider_info,
     list_available_providers,
     provider_default_models,
+    provider_probes_with_chat,
     validate_provider_base_url,
 )
 from core.inference.pricing import pricing_snapshot
@@ -86,7 +87,7 @@ _NO_CREDIT = "The key was accepted, but its account has no credit."
 _RATE_LIMITED = "The server is rate limiting this key right now. Try again in a moment."
 _TIMED_OUT = "The server took too long to answer."
 # Their /models answers without auth, so only a second request can tell a bad key apart.
-_KEY_CHECKED_PROVIDERS = frozenset({"openrouter", "huggingface"})
+_KEY_CHECKED_PROVIDERS = frozenset({"openrouter", "huggingface", "vercel"})
 _URL_USERINFO = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/\s@'\"]+@", re.IGNORECASE)
 
 
@@ -963,6 +964,69 @@ async def _test_custom_provider_connectivity(
         )
 
 
+async def _test_by_chat(client, model_id: str, base_url: str) -> ProviderTestResult:
+    """For providers with no usable model list (Azure deployments, Bedrock, Vertex, Perplexity)."""
+    if not model_id:
+        return ProviderTestResult(
+            success = False,
+            message = "Connection failed: add a model ID to test with.",
+            error_kind = "other",
+        )
+    failure: str | None = None
+    kind = "other"
+    answered = False
+    stream = client.stream_chat_completion(
+        messages = [{"role": "user", "content": "ping"}],
+        model = model_id,
+        temperature = None,
+        top_p = None,
+        max_tokens = 16,
+    )
+
+    async def consume() -> None:
+        nonlocal failure, kind, answered
+        async for line in stream:
+            if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                event = json.loads(line[6:])
+                answered = answered or bool(event.get("choices"))
+                if event.get("error"):
+                    failure = event["error"].get("message", "The request failed.")
+                    # The stream arrives under a 200; the upstream status rides in `code`.
+                    status = str(event["error"].get("code"))
+                    if status in ("401", "403"):
+                        failure, kind = _API_KEY_REJECTED, "auth"
+                    elif status == "402":
+                        failure, kind = _NO_CREDIT, "billing"
+                    elif status == "429":
+                        failure, kind = _RATE_LIMITED, "rate_limit"
+
+    try:
+        try:
+            await asyncio.wait_for(consume(), timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS)
+        finally:
+            await stream.aclose()
+    except asyncio.TimeoutError:
+        return ProviderTestResult(
+            success = False, message = f"Connection failed: {_TIMED_OUT}", error_kind = "timeout"
+        )
+    except Exception as exc:
+        return ProviderTestResult(
+            success = False,
+            message = f"Connection failed: {_provider_error_detail(exc, base_url)}",
+            error_kind = _provider_error_kind(exc),
+        )
+    if failure is None and answered:
+        return ProviderTestResult(
+            success = True, message = f"Connected successfully. {model_id} answered."
+        )
+    failure = failure or "The model returned nothing."
+    return ProviderTestResult(
+        success = False,
+        message = f"Connection failed: {_redact_url_userinfo(failure)}",
+        error_kind = kind,
+    )
+
+
 async def _test_decision_connectivity(client, model_id: str) -> ProviderTestResult:
     if not model_id:
         return ProviderTestResult(
@@ -1085,6 +1149,8 @@ async def test_provider(
             return await _test_custom_provider_connectivity(
                 client, payload.model_id or "", payload.api_type, base_url
             )
+        if provider_probes_with_chat(payload.provider_type, base_url):
+            return await _test_by_chat(client, (payload.model_id or "").strip(), base_url)
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
             if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
@@ -1426,7 +1492,7 @@ async def list_provider_models(
         models = await client.list_models()
         # Model-id filters only apply on the vendor's own host; proxies and Azure use other names.
         _NATIVE_HOSTS = {
-            "gemini": ("generativelanguage.googleapis.com",),
+            "gemini": ("generativelanguage.googleapis.com", "aiplatform.googleapis.com"),
             "openai": ("api.openai.com",),
         }
         apply_registry_model_filters = True

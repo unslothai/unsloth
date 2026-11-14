@@ -48,7 +48,18 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
 # custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
-    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
+    {
+        "vllm",
+        "llama_cpp",
+        "ollama",
+        "openrouter",
+        "kimi",
+        "lemonade",
+        "qwen",
+        "qwencloud",
+        "xai",
+        "azure",
+    }
 )
 
 
@@ -1622,7 +1633,7 @@ class ExternalProviderClient:
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
-        from core.inference.providers import get_provider_info
+        from core.inference.providers import get_provider_info, is_google_gemini_host
 
         provider_info = get_provider_info(self.provider_type) or {}
         auth_header = provider_info.get("auth_header", "Authorization")
@@ -1630,8 +1641,7 @@ class ExternalProviderClient:
 
         # Non-Google Gemini bases (LiteLLM, custom gateways) use OAI-compat Bearer auth, not x-goog-api-key.
         if self.provider_type == "gemini":
-            _host = (urlparse(self.base_url).hostname or "").lower()
-            if _host != "generativelanguage.googleapis.com":
+            if not is_google_gemini_host(urlparse(self.base_url).hostname):
                 auth_header = "Authorization"
                 auth_prefix = "Bearer "
 
@@ -1691,13 +1701,12 @@ class ExternalProviderClient:
 
     def _is_openai_compatible(self) -> bool:
         """Return False for providers needing request/response translation (e.g. Anthropic)."""
-        from core.inference.providers import get_provider_info
+        from core.inference.providers import get_provider_info, is_google_gemini_host
 
         info = get_provider_info(self.provider_type) or {}
         # Google-hosted Gemini uses native translator; non-Google bases stay OAI-compat for LiteLLM/proxies.
         if self.provider_type == "gemini":
-            _host = (urlparse(self.base_url).hostname or "").lower()
-            if _host != "generativelanguage.googleapis.com":
+            if not is_google_gemini_host(urlparse(self.base_url).hostname):
                 return True
         return info.get("openai_compatible", True)
 
@@ -1855,6 +1864,12 @@ class ExternalProviderClient:
             else {}
         )
 
+        from core.inference.providers import get_provider_info
+
+        provider_info = get_provider_info(self.provider_type) or {}
+        max_temperature = provider_info.get("max_temperature")
+        if max_temperature is not None and temperature is not None:
+            temperature = min(temperature, max_temperature)
         body: dict[str, Any] = {
             "model": model,
             "messages": _vllm_reasoning_turns(messages)
@@ -1872,7 +1887,10 @@ class ExternalProviderClient:
             body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
             # Newer OpenAI models reject max_tokens; MiniMax counts thinking against it.
-            if self.provider_type in ("openai", "minimax"):
+            if (
+                self.provider_type in ("openai", "minimax")
+                or provider_info.get("max_tokens_field") == "max_completion_tokens"
+            ):
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
@@ -1886,9 +1904,6 @@ class ExternalProviderClient:
             )
 
         # Drop registry-unusable fields so fixed-default models (Kimi k2.6) don't 400 on pydantic defaults.
-        from core.inference.providers import get_provider_info
-
-        provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 
@@ -1917,6 +1932,16 @@ class ExternalProviderClient:
             _apply_qwen_reasoning_controls(body, enable_thinking)
         elif self.provider_type == "huggingface":
             _apply_passthrough_reasoning_effort(body, enable_thinking, reasoning_effort)
+        elif provider_info.get("reasoning_effort_values"):
+            _apply_passthrough_reasoning_effort(
+                body,
+                enable_thinking,
+                reasoning_effort,
+                provider_info.get("reasoning_effort_aliases"),
+            )
+            # A value the provider does not list is an error there, so it sends its default instead.
+            if body.get("reasoning_effort") not in provider_info["reasoning_effort_values"]:
+                body.pop("reasoning_effort", None)
         elif provider_info.get("supports_chat_template_kwargs"):
             # chat_template_kwargs is opt-in per registry entry (strict gateways 400 on it); vLLM <=0.16
             # 400s on reasoning_effort=none, so off rides on the kwarg alone.
@@ -7263,8 +7288,16 @@ class ExternalProviderClient:
         }
         if top_p is not None:
             body["top_p"] = top_p
+        from core.inference.providers import get_provider_info
+
+        provider_info = get_provider_info(self.provider_type) or {}
+        for field in provider_info.get("body_omit", ()):
+            body.pop(field, None)
         if max_tokens is not None:
-            if self.provider_type == "openai":
+            if (
+                self.provider_type == "openai"
+                or provider_info.get("max_tokens_field") == "max_completion_tokens"
+            ):
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
@@ -7499,8 +7532,20 @@ class ExternalProviderClient:
         """return each provider's OpenAI-compatible /models entries, including Anthropic."""
         if self.provider_type == "openrouter":
             return await self._list_openrouter_models()
+        if self.provider_type == "cohere" and (urlparse(self.base_url).hostname or "").lower() in (
+            "api.cohere.ai",
+            "api.cohere.com",
+        ):
+            return await self._list_cohere_models()
         try:
             data, models = await self._models_payload(self._timeout)
+            if self.provider_type == "vercel":
+                # Embedding, image, video and speech models share the list; only `language` ones chat.
+                models = [
+                    {**m, "context_length": m.get("context_window")}
+                    for m in models
+                    if m.get("type") == "language"
+                ]
             if self.provider_type == "ollama":
                 # only /api/tags carries each model's "thinking" capability.
                 if not models:
@@ -7513,6 +7558,37 @@ class ExternalProviderClient:
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    async def _list_cohere_models(self) -> list[dict[str, Any]]:
+        """The compatibility base has no /models; the native list is on api.cohere.com, named by `name`."""
+        models: list[dict[str, Any]] = []
+        token: Optional[str] = None
+        for _ in range(5):
+            params: dict[str, Any] = {"endpoint": "chat", "page_size": 1000}
+            if token:
+                params["page_token"] = token
+            response = await _client().get(
+                "https://api.cohere.com/v1/models",
+                params = params,
+                headers = self._auth_headers(),
+                timeout = self._timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            for entry in (data.get("models") if isinstance(data, dict) else None) or []:
+                if (
+                    isinstance(entry, dict)
+                    and isinstance(entry.get("name"), str)
+                    and not entry.get("is_deprecated")
+                    and not entry.get("finetuned")
+                ):
+                    models.append(
+                        {"id": entry["name"], "context_length": entry.get("context_length")}
+                    )
+            token = data.get("next_page_token") if isinstance(data, dict) else None
+            if not token:
+                break
+        return models
 
     async def _list_openrouter_models(self) -> list[dict[str, Any]]:
         key_digest = hashlib.sha256((self.api_key or "").encode("utf-8")).hexdigest()[:16]
@@ -7931,6 +8007,8 @@ class ExternalProviderClient:
         401/403 count as not rejected."""
         if self.provider_type == "openrouter":
             url = _append_provider_path(self.base_url, "/key")
+        elif self.provider_type == "vercel":
+            url = _append_provider_path(self.base_url, "/credits")
         elif (
             self.provider_type == "huggingface"
             and (urlparse(self.base_url).hostname or "").lower() == "router.huggingface.co"

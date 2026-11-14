@@ -9888,7 +9888,20 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
 _MIXED_CATALOG_PROVIDER_TYPES = frozenset(
-    {"huggingface", "openrouter", "qwen", "qwencloud", "zai", "opencode", "opencode_go"}
+    {
+        "huggingface",
+        "openrouter",
+        "qwen",
+        "qwencloud",
+        "zai",
+        "opencode",
+        "opencode_go",
+        "xai",
+        "nvidia",
+        "vercel",
+        "azure",
+        "bedrock",
+    }
 )
 
 # Mixed catalogs whose models.dev namespace answers vision per model.
@@ -9898,6 +9911,11 @@ _CATALOG_VISION_NAMESPACES = {
     "zai": "zai",
     "opencode": "opencode",
     "opencode_go": "opencode_go",
+    "xai": "xai",
+    "nvidia": "nvidia",
+    "vercel": "vercel",
+    "azure": "azure",
+    "bedrock": "bedrock",
 }
 
 
@@ -28519,8 +28537,8 @@ def _build_external_messages(
     if provider_type == "gemini" and base_url:
         try:
             from urllib.parse import urlparse as _urlparse
-            _host = (_urlparse(base_url).hostname or "").lower()
-            _native_gemini = _host == "generativelanguage.googleapis.com"
+            from core.inference.providers import is_google_gemini_host
+            _native_gemini = is_google_gemini_host(_urlparse(base_url).hostname)
         except Exception:
             _native_gemini = False
     emit_extra_content = _native_gemini or provider_type == "openai_codex"

@@ -14,6 +14,11 @@ const HUB_PROVIDER_IDS = new Map([
   ["qwencloud", "qwen"],
   ["zai", "zai-org"],
   ["minimax", "minimax"],
+  ["xai", "xai-org"],
+  ["nvidia", "nvidia"],
+  ["cohere", "cohere"],
+  ["azure", "microsoft"],
+  ["vertex", "google"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(

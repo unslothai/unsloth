@@ -37,6 +37,7 @@ import {
   getExternalProviderApiKey,
   isCustomProviderType,
   isPromptCacheTtl,
+  isVertexBaseUrl,
   learnCatalogModelCapabilities,
   loadNewModelChecksAt,
   newModelCheckOf,
@@ -106,6 +107,9 @@ export function resolveUiProviderTypeFromConfig(
   _registryRows: ProviderRegistryEntry[],
   _existingProviderType: string | undefined,
 ): string {
+  if (configProviderType === "gemini" && isVertexBaseUrl(configBaseUrl)) {
+    return "vertex";
+  }
   if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
     return configProviderType;
   }
@@ -433,7 +437,7 @@ export function autoTickLimit(providerId: string, limit?: number): number | unde
 }
 
 // Gateways list new third-party models every week; ticking each would flood the picker.
-const NO_AUTO_TICK_PROVIDER_TYPES = new Set(["openrouter", "huggingface"]);
+const NO_AUTO_TICK_PROVIDER_TYPES = new Set(["openrouter", "huggingface", "vercel"]);
 export const MAX_AUTO_TICKED_MODELS = 3;
 
 export function autoTicksNewlyListedModels(

@@ -14,6 +14,7 @@ import {
   CUSTOM_PROVIDER_PRESETS,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   connectionPickerValue,
+  isCloudPresetProviderType,
   isDecisionConnection,
 } from "./external-providers";
 
@@ -39,6 +40,14 @@ const PROVIDER_DESCRIPTIONS: Record<string, string> = {
   opencode: "OpenCode Console and Go plans.",
   qwencloud: "Qwen models, pay as you go.",
   huggingface: "Open models through Inference Providers.",
+  xai: "Grok models with an API key.",
+  nvidia: "Open models hosted by NVIDIA.",
+  perplexity: "Sonar models with built-in web search.",
+  cohere: "Command models.",
+  vercel: "One key for hundreds of models.",
+  azure: "Your Azure deployments, by endpoint and key.",
+  bedrock: "OpenAI-compatible models on AWS, by API key.",
+  vertex: "Gemini on Google Cloud, by API key.",
   ollama: "Models served by Ollama, local or cloud.",
   llama_cpp: "A running llama-server.",
   vllm: "A self-hosted vLLM server.",
@@ -85,21 +94,35 @@ export function buildConnectionGallery(
     return entry ? [fromRegistry(entry)] : [];
   });
   const popularTypes = new Set(popular.map((item) => item.providerType));
-  const local: ConnectionGalleryItem[] = [
-    ...CUSTOM_PROVIDER_PRESETS.map((preset) => ({
+  const presets: ConnectionGalleryItem[] = CUSTOM_PROVIDER_PRESETS.map(
+    (preset) => ({
       providerType: preset.providerType as string,
       name: preset.displayName as string,
       description: PROVIDER_DESCRIPTIONS[preset.providerType] ?? "",
-    })),
+    }),
+  );
+  const local: ConnectionGalleryItem[] = [
+    ...presets.filter((item) => !isCloudPresetProviderType(item.providerType)),
     {
       providerType: LEGACY_CUSTOM_PROVIDER_TYPE,
       name: CUSTOM_PROVIDER_DISPLAY_NAME,
       description: PROVIDER_DESCRIPTIONS[LEGACY_CUSTOM_PROVIDER_TYPE],
     },
   ];
-  const more = registry
-    .filter((entry) => !popularTypes.has(entry.provider_type))
-    .map(fromRegistry);
+  const chat = registry.filter(
+    (entry) =>
+      !popularTypes.has(entry.provider_type) &&
+      !isDecisionConnection({ providerType: entry.provider_type }),
+  );
+  const decision = registry.filter((entry) =>
+    isDecisionConnection({ providerType: entry.provider_type }),
+  );
+  // Cloud platforms sit with the other hosted providers, ahead of the decision-only ones.
+  const more = [
+    ...chat.map(fromRegistry),
+    ...presets.filter((item) => isCloudPresetProviderType(item.providerType)),
+    ...decision.map(fromRegistry),
+  ];
   const needle = searchKey(query);
   const matches = (item: ConnectionGalleryItem) =>
     !needle ||
@@ -184,6 +207,12 @@ export function ConnectionGallery({
                           providerType={item.providerType}
                           className="size-5"
                           title={item.name}
+                          name={
+                            isCloudPresetProviderType(item.providerType) ||
+                            item.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
+                              ? undefined
+                              : item.name
+                          }
                         />
                       </span>
                       <span className="flex min-w-0 flex-1 flex-col">

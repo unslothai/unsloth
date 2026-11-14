@@ -201,9 +201,17 @@ test("the gallery leads with popular providers and always offers the self-hosted
     groups[1].items.map((item) => item.providerType),
     ["llama_cpp", "vllm", "ollama", "custom"],
   );
+  // Cloud platforms that use the custom-server form sit with the hosted providers, before decision-only ones.
   assert.deepEqual(
     groups[2].items.map((item) => item.name),
-    ["DeepSeek", "OpenCode", "TypeSafe"],
+    [
+      "DeepSeek",
+      "OpenCode",
+      "Azure OpenAI",
+      "Amazon Bedrock",
+      "Google Vertex AI",
+      "TypeSafe",
+    ],
   );
 });
 
@@ -219,7 +227,7 @@ test("gallery search ignores punctuation and drops empty groups", () => {
     buildConnectionGallery(REGISTRY, "Open AI").flatMap((group) =>
       group.items.map((item) => item.providerType),
     ),
-    ["openai_codex", "openai", "custom"],
+    ["openai_codex", "openai", "custom", "azure", "bedrock"],
   );
   assert.deepEqual(buildConnectionGallery(REGISTRY, "zzz"), []);
 });
@@ -287,10 +295,53 @@ test("a typed key is checked once it stops changing, and a late answer cannot la
 test("a key the listing cannot vouch for is tested first", () => {
   assert.match(
     dialog,
-    /const KEY_CHECKED_SEPARATELY = new Set\(\["openrouter", "huggingface"\]\);/,
+    /const KEY_CHECKED_SEPARATELY = new Set\(\["openrouter", "huggingface", "vercel"\]\);/,
   );
   assert.match(
     dialog,
     /if \(!silent && typedKey && KEY_CHECKED_SEPARATELY\.has\(backendProviderType\)\) \{\s*const keyTest = await testProviderConnection\(/,
+  );
+});
+
+test("cloud presets keep their identity across a save and a sync", async () => {
+  const providers = await vite.ssrLoadModule(
+    "/src/features/chat/external-providers.ts",
+  );
+  const sync = await vite.ssrLoadModule(
+    "/src/features/chat/sync-external-providers.ts",
+  );
+  assert.equal(providers.toExternalBackendProviderType("azure"), "azure");
+  assert.equal(providers.toExternalBackendProviderType("bedrock"), "bedrock");
+  // Vertex is the native Gemini API at another host, so the backend row is a Gemini one.
+  assert.equal(providers.toExternalBackendProviderType("vertex"), "gemini");
+  const uiType = (type: string, baseUrl: string) =>
+    sync.resolveUiProviderTypeFromConfig(type, "name", baseUrl, [], undefined);
+  assert.equal(
+    uiType("gemini", "https://aiplatform.googleapis.com/v1/publishers/google"),
+    "vertex",
+  );
+  assert.equal(
+    uiType("gemini", "https://us-central1-aiplatform.googleapis.com/v1/x"),
+    "vertex",
+  );
+  assert.equal(
+    uiType("gemini", "https://generativelanguage.googleapis.com/v1beta"),
+    "gemini",
+  );
+  assert.equal(
+    uiType("azure", "https://res.openai.azure.com/openai/v1"),
+    "azure",
+  );
+  for (const type of ["azure", "bedrock", "vertex"]) {
+    assert.equal(providers.isCustomProviderType(type), true);
+    assert.equal(providers.isCloudPresetProviderType(type), true);
+    assert.equal(providers.supportsRemoteModelCatalog(type), false);
+    assert.equal(providers.connectionCheckNeedsModel(type), true);
+  }
+  assert.equal(providers.isCloudPresetProviderType("ollama"), false);
+  assert.equal(providers.customProviderDefaultBaseUrl("azure"), "");
+  assert.match(
+    providers.customProviderDefaultBaseUrl("bedrock"),
+    /bedrock-runtime\.us-east-1/,
   );
 });

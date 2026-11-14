@@ -105,6 +105,10 @@ import {
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
+  customProviderApiKeyUrl,
+  customProviderDefaultBaseUrl,
+  connectionCheckNeedsModel,
+  isCloudPresetProviderType,
   PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   connectionApiFields,
   getExternalProviderApiKey,
@@ -274,7 +278,7 @@ const AUTO_CHECK_DELAY_MS = 700;
 const CONNECTION_CHECK_TTL_MS = 10 * 60 * 1000;
 const KEY_REJECTED_PATTERN = /rejected the API key|refused the API key/i;
 // Their /models answers without auth (backend _KEY_CHECKED_PROVIDERS), so listing proves nothing about a key.
-const KEY_CHECKED_SEPARATELY = new Set(["openrouter", "huggingface"]);
+const KEY_CHECKED_SEPARATELY = new Set(["openrouter", "huggingface", "vercel"]);
 
 /** The backend's list order: own connections by age, then the ones the owner shared. */
 function byListOrder(a: ExternalProviderConfig, b: ExternalProviderConfig): number {
@@ -583,13 +587,15 @@ export function ChatProvidersSettings({
           providerModelDisplayName(providerType, model).toLowerCase().includes(query)),
     );
   }, [availableModels, modelSearchQuery, providerType, selectedOnly, selectedModelIds]);
-  const apiKeyUrl = selectedProviderContract?.api_key_url ?? null;
+  const keyOptional = isCustomProvider && !isCloudPresetProviderType(providerType);
+  const apiKeyUrl =
+    customProviderApiKeyUrl(providerType) ?? selectedProviderContract?.api_key_url ?? null;
   // Without a key field the rejection has nowhere to show but the Models strip.
   const keyRejected = formCheck?.state === "error" && formCheck.auth && showApiKeyField;
   const canTestDraft =
     !usesOAuth &&
     Boolean(providerType) &&
-    (isCustomProvider ||
+    (keyOptional ||
       apiKey.trim().length > 0 ||
       (editingProviderHasSavedKey && !clearApiKeyRequested));
 
@@ -684,7 +690,7 @@ export function ChatProvidersSettings({
     if (!entry) {
       if (isCustomProviderType(providerType)) {
         setCustomProviderName(customProviderDisplayName(providerType));
-        setBaseUrlDraft("");
+        setBaseUrlDraft(customProviderDefaultBaseUrl(providerType));
       }
       return;
     }
@@ -812,6 +818,7 @@ export function ChatProvidersSettings({
       setProviderType(presetType);
       setCustomProviderName(customProviderDisplayName(presetType));
     }
+    setBaseUrlDraft(customProviderDefaultBaseUrl(type));
     const entry = type ? registryByType.get(type) : null;
     if (entry) seedModels(entry);
     setPage("form");
@@ -1129,7 +1136,9 @@ export function ChatProvidersSettings({
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
         extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
         modelId:
-          providerType === LEGACY_CUSTOM_PROVIDER_TYPE || decisionsOnly
+          providerType === LEGACY_CUSTOM_PROVIDER_TYPE ||
+          decisionsOnly ||
+          connectionCheckNeedsModel(providerType)
             ? (selectedModelIds[0] ?? parseManualModelIds(manualModelIds)[0] ?? null)
             : null,
       });
@@ -1211,7 +1220,7 @@ export function ChatProvidersSettings({
       ? customProviderName.trim() || customProviderDisplayName(providerType)
       : (selectedRegistryEntry?.display_name ?? providerType);
     if (
-      !isCustomProvider &&
+      !keyOptional &&
       selectedRegistryEntry?.auth_kind !== "chatgpt_oauth" &&
       !apiKey.trim()
     ) {
@@ -1376,7 +1385,7 @@ export function ChatProvidersSettings({
     );
     const isEditingOAuthProvider = existing.authKind === "chatgpt_oauth";
     if (
-      !isEditingCustomProvider &&
+      (!isEditingCustomProvider || isCloudPresetProviderType(existing.providerType)) &&
       !isEditingOAuthProvider &&
       credentialEdit.action === "missing"
     ) {
@@ -1857,7 +1866,8 @@ export function ChatProvidersSettings({
         extraHeaders: provider.extraHeaders,
         modelId:
           provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE ||
-          isDecisionConnection(provider)
+          isDecisionConnection(provider) ||
+          connectionCheckNeedsModel(provider.providerType)
             ? (provider.models[0] ?? null)
             : null,
       });
@@ -2092,7 +2102,7 @@ export function ChatProvidersSettings({
                       htmlFor="provider-api-key"
                       className="text-sm font-medium"
                     >
-                      API key {isCustomProvider ? "(optional)" : ""}
+                      API key {keyOptional ? "(optional)" : ""}
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
                       {editingProviderHasSavedKey
@@ -2907,7 +2917,8 @@ export function ChatProvidersSettings({
                   status={connectionStatus(provider, {
                     enabled: enabled && connectionsEnabled,
                     keyOptional:
-                      isCustomProviderType(provider.providerType) ||
+                      (isCustomProviderType(provider.providerType) &&
+                        !isCloudPresetProviderType(provider.providerType)) ||
                       getExternalProviderApiKey(provider.id).trim().length > 0,
                     checking: checkingIds[provider.id] === true,
                     check: checks[provider.id],
