@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "comment": "Trust anchor for install_unsloth_link.py: sha256 and size of each release archive built by .github/workflows/unsloth-link.yml. Regenerate with studio/cluster_link/tailcat_helper/update_pins.py from the release's own assets.",
+  "repo": "unslothai/unsloth",
+  "tag": "unsloth-link-v1",
+  "assets": {
+    "linux-amd64": {
+      "name": "unsloth-link-linux-amd64.tar.gz",
+      "sha256": "c7c28b01f074fd4091250f74ec5c38cb9de5a50ce167d44769a63f55b0a2b77a",
+      "size": 6750541
+    },
+    "linux-arm64": {
+      "name": "unsloth-link-linux-arm64.tar.gz",
+      "sha256": "759dc17e00e0ffb0227ff35a031006c1f18c4a2aff0bdf82af688f09f4de17d8",
+      "size": 6113398
+    },
+    "darwin-amd64": {
+      "name": "unsloth-link-darwin-amd64.tar.gz",
+      "sha256": "de917d102b62d9297641a65b6967063eb90600f74cc9a96494760ddde4d687a4",
+      "size": 6620327
+    },
+    "darwin-arm64": {
+      "name": "unsloth-link-darwin-arm64.tar.gz",
+      "sha256": "78261e06a6008120c7382880e273e20408894f03ae7e9d21bb778c8fb287cb40",
+      "size": 6135267
+    },
+    "windows-amd64": {
+      "name": "unsloth-link-windows-amd64.zip",
+      "sha256": "9735cfbb7705e2c6522deaf1efff0cc7360bd872f899480232957b0ee6111a6c",
+      "size": 6715292
+    },
+    "windows-arm64": {
+      "name": "unsloth-link-windows-arm64.zip",
+      "sha256": "8e6fac8c5ac3ff7d79b385b43a9d774ede5f25c8096f98cedeebbb9755a27bb3",
+      "size": 6008620
+    }
+  }
+}

@@ -50,13 +50,38 @@ def relay_allowed() -> bool:
     return (os.environ.get(ENV_ALLOW_RELAY) or "").strip() == "1"
 
 
+def _installer() -> Any:
+    try:
+        from studio import install_unsloth_link
+    except ImportError:
+        import install_unsloth_link
+    return install_unsloth_link
+
+
 def helper_path() -> Optional[Path]:
+    """``UNSLOTH_LINK_BIN``, else the verified install for the current pins. Never downloads."""
     override = (os.environ.get(ENV_BIN) or "").strip()
     if override:
         path = Path(override).expanduser()
         return path if path.is_file() else None
-    path = paths._studio_root() / "bin" / BINARY
-    return path if path.is_file() else None
+    try:
+        return _installer().installed_binary()
+    except Exception:
+        return None
+
+
+def install(log: Any = None) -> Path:
+    """Download and verify the pinned helper if it is missing; raises TailnetUnavailable when it cannot."""
+    found = helper_path()
+    if found is not None:
+        return found
+    if (os.environ.get(ENV_BIN) or "").strip():
+        raise TailnetUnavailable(f"{ENV_BIN} does not name a file")
+    try:
+        installer = _installer()
+        return installer.ensure(log = log or (lambda _msg: None))
+    except Exception as exc:
+        raise TailnetUnavailable(str(exc)) from exc
 
 
 def available() -> bool:
