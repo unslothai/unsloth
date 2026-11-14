@@ -125,6 +125,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     const chunks: Float32Array[] = [];
     const chunkVoiced: boolean[] = [];
     let voicedMs = 0;
+    let prerollVoicedMs = 0;
     const bargeGate = createBargeGate(
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
     );
@@ -488,16 +489,19 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             const loud = Math.sqrt(sq / frame.length) >= SPEECH_RMS;
             chunks.push(frame);
             chunkVoiced.push(loud);
-            if (loud) voicedMs += frameMs;
+            // Counted only once live speech follows: echo left after the reply must not become a turn.
+            if (loud) prerollVoicedMs += frameMs;
           }
           chunks.push(new Float32Array(input));
           const notSilent = rms >= SILENCE_RMS;
           const speech = rms >= SPEECH_RMS;
           chunkVoiced.push(speech);
           if (notSilent) lastVoiceAt = now;
-          if (speech || (voicedMs > 0 && !heardSpeech)) {
-            if (speech) voicedMs += frameMs;
+          if (speech) {
+            voicedMs += frameMs;
             if (!heardSpeech) {
+              voicedMs += prerollVoicedMs;
+              prerollVoicedMs = 0;
               heardSpeech = true;
               useChatRuntimeStore.getState().setVoiceHearing(true);
               for (const cb of speechStartCallbacks) cb();

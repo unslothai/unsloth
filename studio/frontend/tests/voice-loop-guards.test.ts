@@ -113,3 +113,16 @@ test("turning voice off mid-reveal stops the transcript reaching the composer", 
   const offChecks = reveal.slice(0, emitFinal).match(/if \(getVoiceMode\(\) === "off"\) \{\s*finish\("cancelled"\);/g) ?? [];
   assert.equal(offChecks.length, 2);
 });
+
+test("echo left in the preroll after the reply is not a turn on its own", () => {
+  assert.match(loop, /if \(loud\) prerollVoicedMs \+= frameMs;/);
+  assert.match(loop, /if \(speech\) \{\s*voicedMs \+= frameMs;\s*if \(!heardSpeech\) \{\s*voicedMs \+= prerollVoicedMs;/);
+  assert.doesNotMatch(loop, /voicedMs > 0 && !heardSpeech/);
+});
+
+test("voice off waits for a detect in flight before unloading the detector", () => {
+  const vad = readSrc("features/chat/voice/vad-client.ts");
+  assert.match(vad, /return track\(runDetect\(wav, model, signal\)\);/);
+  assert.match(vad, /return track\(startVadModel\(model, signal\)\);/);
+  assert.match(vad, /await Promise\.all\(\[\.\.\.pendingLoads\]\);\s*await authFetch\("\/api\/inference\/audio\/vad\/unload"/);
+});

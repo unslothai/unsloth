@@ -31,16 +31,19 @@ async function detail(response: Response): Promise<string> {
   return response.statusText || `HTTP ${response.status}`;
 }
 
-// A first load downloads before starting the server, so an unload must wait for it.
+// A load (or a detect, which loads too) still in flight would restart the detector after an unload.
 const pendingLoads = new Set<Promise<unknown>>();
 
-export function loadVadModel(model: string, signal?: AbortSignal): Promise<string> {
-  const run = startVadModel(model, signal);
+function track<T>(run: Promise<T>): Promise<T> {
   const tracked: Promise<unknown> = run
     .catch(() => {})
     .finally(() => pendingLoads.delete(tracked));
   pendingLoads.add(tracked);
   return run;
+}
+
+export function loadVadModel(model: string, signal?: AbortSignal): Promise<string> {
+  return track(startVadModel(model, signal));
 }
 
 async function startVadModel(model: string, signal?: AbortSignal): Promise<string> {
@@ -67,7 +70,15 @@ export async function unloadVadModel(): Promise<void> {
   );
 }
 
-export async function detectSpeech(
+export function detectSpeech(
+  wav: Blob,
+  model: string,
+  signal?: AbortSignal,
+): Promise<SpeechDetection> {
+  return track(runDetect(wav, model, signal));
+}
+
+async function runDetect(
   wav: Blob,
   model: string,
   signal?: AbortSignal,
