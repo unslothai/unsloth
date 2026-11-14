@@ -74,6 +74,7 @@ class _Pairing:
 
 
 _PAIRINGS: Dict[str, _Pairing] = {}
+_PAIR_LOCK = asyncio.Lock()
 
 
 def _end(
@@ -81,11 +82,15 @@ def _end(
     state: str,
     error: Optional[str] = None,
 ) -> None:
-    if p.state in ("waiting", "approval"):
-        p.state, p.error = state, error
     if p.answer is not None and not p.answer.done():
         p.answer.set_result(False)
     p.window.close()
+    # Closing refuses any later commit; a worker already recorded stays paired.
+    peer = getattr(p.window, "paired", None)
+    if peer is not None:
+        p.state, p.name, p.node_id, p.error = "paired", peer.name, peer.node_id, None
+    elif p.state in ("waiting", "approval"):
+        p.state, p.error = state, error
 
 
 async def _run(p: _Pairing) -> None:
@@ -171,11 +176,20 @@ async def remove_machine(node_id: str) -> Dict[str, Any]:
         removed = registry.remove(node_id)
     if not removed:
         raise HTTPException(status_code = 500, detail = f"Could not remove {match[0].name}.")
+    from studio.cluster_link import remote
+
+    await asyncio.to_thread(remote.drop, node_id)
     return {"removed": node_id, "name": match[0].name}
 
 
 @router.post("/pair")
 async def start_pairing() -> Dict[str, Any]:
+    # One pairing at a time: replacing, starting and registering a window never interleave.
+    async with _PAIR_LOCK:
+        return await _start_pairing()
+
+
+async def _start_pairing() -> Dict[str, Any]:
     identity = _link()
     from studio.cluster_link import PAIR_PORT_DEFAULT
     from studio.cluster_link.pairing import PairingError, PairingWindow
@@ -214,6 +228,9 @@ async def start_pairing() -> Dict[str, Any]:
         except PairingError as exc:
             window.close()
             raise HTTPException(status_code = 400, detail = str(exc))
+        except BaseException:
+            window.close()
+            raise
     if code is None:
         raise HTTPException(status_code = 503, detail = "Could not open a pairing port.")
     p = _Pairing(id = pairing_id, window = window, expires_at = window.expires_at, remote = bool(window.tc))

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -178,3 +179,89 @@ def test_an_api_key_cannot_open_a_pairing(client):
     client.app.dependency_overrides[cluster.authenticated_via_api_key] = lambda: True
     assert client.post("/api/cluster/pair").status_code == 403
     assert client.get("/api/cluster/machines").status_code == 403
+
+
+def test_removing_a_machine_drops_its_tunnel_forward(client, monkeypatch):
+    from studio.cluster_link import identity, remote
+
+    identity.master_identity(create = True)
+    peer = type("P", (), dict(name = "desk", node_id = "a1", removed = False))()
+    monkeypatch.setattr(identity.Registry, "workers", lambda self: [peer])
+    monkeypatch.setattr(identity.Registry, "remove", lambda self, node_id: True)
+    dropped = []
+    monkeypatch.setattr(remote, "drop", dropped.append)
+    assert client.delete("/api/cluster/machines/a1").status_code == 200
+    assert dropped == ["a1"]
+
+
+class _SlowWindow:
+    """A pairing window whose start() waits for ``gate``; records every window opened or closed."""
+
+    made: list = []
+    gate = None
+
+    def __init__(self, *a, **k):
+        self.closed, self.paired, self.tc, self.expires_at = False, None, None, time.time() + 60
+        _SlowWindow.made.append(self)
+
+    async def start(self):
+        await _SlowWindow.gate.wait()
+        return "unsloth-pair-x"
+
+    async def wait(self, timeout = None):
+        await asyncio.sleep(3600)
+
+    def close(self):
+        self.closed = True
+
+
+def test_concurrent_pairing_starts_leave_one_open_window(client, monkeypatch):
+    from studio.cluster_link import pairing, remote
+
+    monkeypatch.setattr(remote, "ensure_helper", lambda *a: False)
+    monkeypatch.setattr(pairing, "PairingWindow", _SlowWindow)
+    _SlowWindow.made = []
+
+    async def run():
+        _SlowWindow.gate = asyncio.Event()
+        first = asyncio.ensure_future(cluster.start_pairing())
+        second = asyncio.ensure_future(cluster.start_pairing())
+        await asyncio.sleep(0.2)
+        _SlowWindow.gate.set()
+        got = await asyncio.gather(first, second)
+        closed = [w.closed for w in _SlowWindow.made]
+        tracked = list(cluster._PAIRINGS)
+        for p in list(cluster._PAIRINGS.values()):
+            p.task.cancel()
+        return got, closed, tracked
+
+    got, closed, tracked = asyncio.run(run())
+    assert len(got) == 2 and closed == [True, False] and tracked == [got[1]["id"]]
+    cluster._PAIRINGS.clear()
+
+
+def test_a_cancelled_pairing_start_closes_its_window(client, monkeypatch):
+    from studio.cluster_link import pairing, remote
+
+    monkeypatch.setattr(remote, "ensure_helper", lambda *a: False)
+    monkeypatch.setattr(pairing, "PairingWindow", _SlowWindow)
+    _SlowWindow.made = []
+
+    async def run():
+        _SlowWindow.gate = asyncio.Event()
+        task = asyncio.ensure_future(cluster.start_pairing())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert [w.closed for w in _SlowWindow.made] == [True] and cluster._PAIRINGS == {}
+
+
+def test_cancelling_after_the_worker_was_recorded_reports_paired():
+    peer = type("Peer", (), dict(name = "desk", node_id = "a1"))()
+    window = type("W", (), dict(paired = peer, close = lambda self: None))()
+    p = cluster._Pairing(id = "x", window = window, expires_at = 0.0, remote = False, state = "approval")
+    cluster._end(p, "cancelled")
+    assert (p.state, p.node_id, p.name) == ("paired", "a1", "desk")
