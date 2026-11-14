@@ -7,6 +7,7 @@ const SPEECH_STRIP_RE =
 export function stripForSpeech(text: string): string {
   return text
     .replace(SPEECH_STRIP_RE, "")
+    .replace(/−(?=\d)/g, "-") //                                 a numeric minus is not a dash
     .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ")
     .replace(/[^\S\n]*…[^\S\n]*/g, " ")
     .replace(/\.{2,}/g, " ")
