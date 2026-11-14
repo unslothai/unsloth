@@ -57,8 +57,16 @@ def test_pp_tables(ckpt, cell):
     assert ftp.check_ids(res, ckpt, kw["table_mode"], "pp") == []
     if kw.get("gc"):
         # Forward + checkpoint recompute per micro-batch and step: every one checked against the file rows above.
-        # The memo keeps one lookup, so under 1F1B a recompute (F0 F1 B0 B1) re-reads its own rows.
         assert len(res[0]["calls"]) == 2 * 2 * 2, len(res[0]["calls"])
+        memo = res[0]["table_memo"]
+        if memo and memo[0] is not None:
+            # One memo slot per in-flight micro-batch: under 1F1B (F0 F1 B0 B1 on the first stage) both recomputes
+            # are served from memory, so each step reads the table once per micro-batch.
+            assert memo == [{"memo_hits": 2, "memo_misses": 2}] * 2, memo
+            assert res[0]["stats"]["gathers"] == 2 * 2, res[0]["stats"]
+            assert res[1]["table_memo"] == [None, None]  # the stage without the table
+        else:  # an unsloth_zoo with a single-entry memo: the recompute (F0 F1 B0 B1) re-reads its rows
+            assert res[0]["stats"]["gathers"] == 2 * 2 * 2, res[0]["stats"]
 
 
 def test_pp_catches_a_memo_that_crosses_micro_batches(ckpt):

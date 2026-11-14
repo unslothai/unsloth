@@ -383,8 +383,10 @@ def worker_case(
             _orig = zoo_store.UnslothFrozenTableEmbedding._lookup,
         ):
             memo = self._memo
-            if memo is not None and memo[2][2] == tuple(ids_.shape):
-                return memo[3]
+            if isinstance(memo, tuple):  # an unsloth_zoo with a single-entry memo
+                memo = [memo]
+            if memo and memo[0][2][2] == tuple(ids_.shape):
+                return memo[0][3]
             return _orig(self, ids_)
 
         zoo_store.UnslothFrozenTableEmbedding._lookup = _bad_lookup
@@ -450,10 +452,13 @@ def worker_case(
     if zoo_store is not None:
         zoo_store.reset_frozen_table_stats()
     opt = torch.optim.SGD(params, lr = 1e-2)
+    rec["table_memo"] = []
     for _ in range(steps):
         loss = step()
         if mode != "pp":
             loss.backward()
+        else:
+            rec["table_memo"].append(pp.last_table_memo)
         opt.step()
         opt.zero_grad(set_to_none = True)
         if zoo_store is not None:

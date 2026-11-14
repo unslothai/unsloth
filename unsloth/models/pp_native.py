@@ -110,6 +110,10 @@ class PPConfig:
     # dropping them, so for_inference / generate / exports can rebuild the whole model on each rank after
     # training (pp_env.py; UNSLOTH_PP_SIZE sets it).
     keep_replica: bool = False
+    # Rows each frozen lookup table (unsloth_zoo frozen_table_store: n-gram / engram tables read from disk or
+    # host RAM) keeps for checkpoint recomputes; None = the micro-batches this stage has in flight (GPipe: all of
+    # them, 1F1B: the stages from this one to the last), at least 2.
+    frozen_table_memo_slots: Optional[int] = None
 
 
 class _StageOutput(BaseException):
@@ -1651,6 +1655,8 @@ class PipelineParallel:
         self._mb_losses = []
         self._loss_multiplier = 1
         self.last_aux_loss = None  # mixture-of-experts models: the step's router auxiliary loss
+        # Frozen lookup tables on this stage: {"memo_hits", "memo_misses"} of the last step (None: no tables).
+        self.last_table_memo = None
         self.dp_mesh = None  # set by shard_model (FSDP2 over the data parallel dimension)
         # DDP-style data parallel (UNSLOTH_PP_SIZE without UNSLOTH_FSDP2): replicated stage weights, the loss
         # normalised over the dp replicas' tokens, gradients averaged over this mesh by the caller.
@@ -1970,15 +1976,38 @@ class PipelineParallel:
         self.ctx.aux_losses = []
         args = (input_ids.to(device),) if self.is_first else ()
         target = step_kwargs["labels"] if self.is_last else None
+        tables = self._size_frozen_table_memo(m)
         try:
             schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
         finally:
             self._scaler = None
             self.ctx.num_items_in_batch = None
+        if tables is not None:
+            self.last_table_memo = tables.frozen_table_step_stats()
         if self.dp_mesh is not None:
             self._average_replicated_grads()
         total = self._batch_loss(m, device, dp_group)
         return total * float(loss_scale) if loss_scale != 1 else total
+
+    def _in_flight(self, m):
+        """Micro-batches this rank has forwarded but not yet backpropagated, at most."""
+        if self.schedule == "1f1b":
+            return min(m, self.num_stages - self.stage_index)
+        return m  # GPipe: every forward before any backward; multi-stage schedules: bounded by m
+
+    def _size_frozen_table_memo(self, m):
+        """One memo slot per in-flight micro-batch for the frozen lookup tables on this stage, so each micro-batch's
+        checkpoint recompute finds its rows instead of reading the table again; a new memo step per optimizer
+        step. Returns the frozen table module (None: no tables here, or an unsloth_zoo without bounded memos)."""
+        tables = sys.modules.get("unsloth_zoo.frozen_table_store")
+        if tables is None or not hasattr(tables, "set_frozen_table_memo_slots"):
+            return None
+        slots = self.config.frozen_table_memo_slots
+        slots = int(slots) if slots is not None else max(2, self._in_flight(m))
+        if not tables.set_frozen_table_memo_slots(self.model, slots):
+            return None
+        tables.frozen_table_next_step()
+        return tables
 
     def _needs_stage_ids(self):
         """A local stage after the first one runs here: it gets the batch's real token ids (_STAGE_IDS)."""
