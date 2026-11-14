@@ -239,13 +239,7 @@ import {
   subscribeAdvancedSettingsOpen,
   sameEngramPrecision,
 } from "../model-config/per-model-config";
-import {
-  type EngramTableDetail,
-  listGgufVariants,
-  useOnlineStatus,
-  useSelectedModelMetadata,
-} from "@/features/hub";
-import { hubRepoIdFor, modelInfoFacts } from "./model-info-facts";
+import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import { isNpuModelId } from "../../npu";
 import {
@@ -1158,49 +1152,6 @@ function AdvancedGroup({
       </h3>
       <div className="space-y-5">{children}</div>
     </section>
-  );
-}
-
-function ModelInfoGroup({
-  modelId,
-  hfToken,
-}: {
-  modelId: string;
-  hfToken: string | null;
-}) {
-  const repoId = hubRepoIdFor(modelId);
-  const online = useOnlineStatus();
-  const { result, error } = useSelectedModelMetadata(repoId, {
-    accessToken: hfToken || undefined,
-    enabled: repoId !== null,
-    online,
-  });
-  if (!repoId) {
-    return null;
-  }
-  const facts = online && result ? modelInfoFacts(result) : null;
-  const status = !online
-    ? "Connect to the internet to look up model details."
-    : error
-      ? "Could not reach Hugging Face for this model."
-      : "Loading details...";
-  return (
-    <AdvancedGroup title="Model info">
-      {facts ? (
-        <dl className="space-y-2">
-          {facts.map(([label, value]) => (
-            <div key={label} className="flex items-baseline justify-between gap-3">
-              <dt className="shrink-0 text-ui-12 text-muted-foreground">{label}</dt>
-              <dd className="min-w-0 break-all text-right text-ui-12 text-foreground">
-                {value}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      ) : (
-        <p className="text-ui-11 text-muted-foreground">{status}</p>
-      )}
-    </AdvancedGroup>
   );
 }
 
@@ -4384,9 +4335,6 @@ export function ModelConfigPage({
               </>
             )}
           </>
-        )}
-        {variant === "sidebar" && showAdvanced && (
-          <ModelInfoGroup modelId={target.id} hfToken={hfToken} />
         )}
       </div>
 

@@ -59,12 +59,21 @@ test("only Hub repos are looked up: snapshot paths map back, other local paths d
   assert.equal(hubRepoIdFor("C:\\models\\my-finetune.gguf"), null);
 });
 
-test("Model info sits in the right sidebar's Advanced settings, keyed to the loaded model", () => {
-  const page = readSrc(
-    "features/model-picker/components/model-config-page.tsx",
+test("Information is the last settings section, collapsed by default, for the loaded Hub model", () => {
+  const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
+  const info = sheet.indexOf(
+    '<CollapsibleSection label="Information">{modelInfo}</CollapsibleSection>',
   );
+  assert.ok(info > 0, "Information section rendered");
+  assert.equal(
+    sheet.indexOf("<CollapsibleSection", info + 1),
+    -1,
+    "nothing after it",
+  );
+  const page = readSrc("features/chat/chat-page.tsx");
+  assert.match(page, /\? hubRepoIdFor\(inferenceCheckpoint\)\n\s*: null;/);
   assert.match(
     page,
-    /\{variant === "sidebar" && showAdvanced && \(\n\s*<ModelInfoGroup modelId=\{target\.id\} hfToken=\{hfToken\} \/>/,
+    /modelInfoRepoId \? <ModelInfo repoId=\{modelInfoRepoId\} \/> : null/,
   );
 });
