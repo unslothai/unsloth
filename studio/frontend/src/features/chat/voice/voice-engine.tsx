@@ -194,7 +194,8 @@ export const VoiceEngine: FC = () => {
     const deferredClear = (n: number) => {
       if (voiceModeRef.current !== "active") return;
       const fresh = auiRef.current.composer();
-      if (!fresh.getState().text) return;
+      // Only the transcript the composer refills: a draft typed since, or another chat's, stays.
+      if (!voiceWroteBox(fresh.getState().text)) return;
       fresh.setText("");
       if (n < 5) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
     };

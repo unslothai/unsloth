@@ -58,3 +58,9 @@ test("the barge-in probe is judged on the shorter bar its clip can meet", () => 
   assert.match(loop, /const BARGE_VAD_MIN_SPEECH_MS = 200;/);
   assert.match(loop, /BARGE_VAD_MIN_SPEECH_MS,\s*\)\.then\(\(voiced\) => \{/);
 });
+
+test("the delayed composer cleanup clears only the refilled transcript", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const clear = engine.slice(engine.indexOf("const deferredClear = (n: number) => {"));
+  assert.match(clear.slice(0, 400), /if \(!voiceWroteBox\(fresh\.getState\(\)\.text\)\) return;/);
+});
