@@ -780,7 +780,7 @@ def target_head_enabled() -> bool:
 
 
 def refined_text(transformer: Any, encoder_hidden_states: Any) -> Any:
-    """``context_embedder`` + ``token_refiner`` over the conditioning: the text rows every step of a render reads."""
+    """``context_embedder`` + ``token_refiner`` over the conditioning."""
     from diffusers.models.modeling_utils import get_parameter_dtype
 
     dtype = get_parameter_dtype(transformer.context_embedder)
@@ -802,9 +802,8 @@ def _h3_image_forward(
     text_embeds: Any = None,
     output_indices: Any = None,
 ) -> Any:
-    """The transformer's forward op for op, plus two inputs: ``text_embeds`` (the refined text rows, computed once per
-    render by ``refined_text``) and ``output_indices`` (the rows the output norm and head run on; the generated image
-    only, instead of every image row). Without either it is the stock forward."""
+    """The stock transformer forward plus ``text_embeds`` (refined text rows, computed once per render) and
+    ``output_indices`` (rows the output norm and head run on)."""
     stock = type(self).forward
     if text_embeds is None and output_indices is None:
         return stock(
@@ -865,21 +864,19 @@ def _h3_image_forward(
 
 
 def h3_image_forward_active(transformer: Any) -> bool:
-    """Whether a call to ``transformer`` reaches ``_h3_image_forward`` directly. Anything wrapping or replacing the
-    forward since (a graph or offload wrapper) gets the stock call, without the two extra inputs."""
+    """Whether ``transformer`` still calls ``_h3_image_forward`` directly; a wrapped forward gets the stock call."""
     forward = transformer.__dict__.get("forward") if transformer is not None else None
     return getattr(forward, "__func__", None) is _h3_image_forward
 
 
 def install_h3_image_forward(transformer: Any) -> bool:
-    """Route the transformer through ``_h3_image_forward`` (an instance attribute, so the class stays stock). Done at
-    load, before anything wraps ``forward``; returns whether it is installed."""
+    """Install ``_h3_image_forward`` as an instance attribute at load, before anything wraps ``forward``."""
     if transformer is None:
         return False
     if h3_image_forward_active(transformer):
         return True
     if "forward" in transformer.__dict__:
-        # someone already wraps this instance's forward: keep theirs, the render takes the stock call
+        # already wrapped: keep it, the render takes the stock call
         return False
     transformer.forward = types.MethodType(_h3_image_forward, transformer)
     return True
@@ -1508,8 +1505,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
 
     @staticmethod
     def prepare_references(images: Any) -> tuple[list, list]:
-        """(VAE copies, encoder copies) of the references: upright, RGB, each resized (LANCZOS) to its consumer's
-        short-edge rule with both sides on the 32 grid; a picture already at that size is passed through."""
+        """(VAE copies, encoder copies) of the references, upright RGB, LANCZOS-resized to each short-edge rule."""
         from PIL import Image, ImageOps
 
         if images is None:
@@ -1697,7 +1693,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             extra: dict = {}
             if h3_image_forward_active(transformer):
                 if target_head_enabled():
-                    # the output norm and head run on the generated rows only
                     extra["output_indices"] = image_idx[n_ref:].to(device)
                 if refiner_cache_enabled():
                     # the text rows do not change across steps: refine them once per render
