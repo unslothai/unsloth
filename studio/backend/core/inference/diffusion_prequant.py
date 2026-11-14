@@ -673,13 +673,28 @@ def prefer_cached_pickle_twins(
                     return True
             return False
 
+        prefer_safetensors = (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        def _reusable(name: str) -> bool:
+            if not _ok(name) or not _cached(name):
+                return False
+            # same pickle trust rule as below
+            if name.lower().endswith(_PICKLE_SUFFIXES):
+                return not prefer_safetensors and _verified(name)
+            return True
+
         # A cached container of an artifact beats an uncached one of the SAME artifact: never download a second copy.
         for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
             stem = _artifact_stem(comfy)
             twins = [n for n in out if n != comfy and _artifact_stem(n) == stem]
             if not twins:
                 continue
-            hit = next((t for t in twins if _ok(t) and _cached(t)), None)
+            hit = next((t for t in twins if _reusable(t)), None)
             if _cached(comfy):
                 if hit is None and _ok(comfy) and out.index(comfy) > out.index(twins[0]):
                     out.remove(comfy)
@@ -703,12 +718,7 @@ def prefer_cached_pickle_twins(
                     hit,
                     comfy,
                 )
-        if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
+        if prefer_safetensors:
             return out
 
         for st in [
@@ -3378,8 +3388,10 @@ def stream_prequantized_module(
     *,
     logger: Any = None,
     label: str = "pre-quantized denoiser",
+    defer_pin: bool = False,
 ) -> Optional[str]:
-    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render."""
+    """Streams via group offloading; raises once unhooked, as a resident fallback would OOM each render.
+    ``defer_pin``: lazy host copies, no up-front pin (the caller pins what does not end up resident)."""
     if not torchao_group_offload_supported():
         return None
     import inspect
@@ -3431,7 +3443,9 @@ def stream_prequantized_module(
                 kwargs["non_blocking"] = True
             if "record_stream" in params:
                 kwargs["record_stream"] = True
-            if "low_cpu_mem_usage" in params:
+            if "low_cpu_mem_usage" in params and defer_pin:
+                kwargs["low_cpu_mem_usage"] = True
+            elif "low_cpu_mem_usage" in params:
                 from itertools import chain
                 payload_mib = sum(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())

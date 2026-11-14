@@ -1200,6 +1200,52 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     assert seen["hf_token"] == "hf_secret"
 
 
+def test_video_download_plan_of_a_gated_repo_uses_a_managed_accounts_token(client, monkeypatch):
+    from hub.services.models import account_access
+    from hub.utils import hf_tokens
+
+    grants: set[str] = set()
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "require_media_references", lambda *a, **k: None)
+    monkeypatch.setattr(account_access, "model_grants", lambda: set(grants))
+    monkeypatch.setattr(account_access, "model_allowlist", lambda: None)
+    monkeypatch.setattr(account_access, "repo_is_public", lambda *a, **k: False)
+    monkeypatch.setattr(
+        account_access,
+        "record_model_grant",
+        lambda repo_id, repo_type = "model": grants.add(
+            account_access._grant_key(repo_id, repo_type)
+        ),
+    )
+    monkeypatch.setattr(
+        hf_tokens,
+        "_probe_repo_access",
+        lambda repo_id, token, repo_type, **_: token == "hf_reader"
+        and repo_id == "gated/LTX-2.3-GGUF",
+    )
+    hf_tokens.reset_repo_access_cache()
+    monkeypatch.setattr(
+        video_module.get_video_backend(),
+        "download_plan",
+        lambda *a, **k: {"entries": [], "total_bytes": 0},
+        raising = False,
+    )
+    body = {
+        "model_path": "gated/LTX-2.3-GGUF",
+        "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+        "model_kind": "gguf",
+    }
+
+    assert client.post("/api/inference/video/download-plan", json = body).status_code == 404
+    denied = client.post(
+        "/api/inference/video/download-plan", json = {**body, "hf_token": "hf_other"}
+    )
+    assert denied.status_code == 404 and not grants
+    resp = client.post("/api/inference/video/download-plan", json = {**body, "hf_token": "hf_reader"})
+    assert resp.status_code == 200, resp.text
+    assert grants == {"model:gated/ltx-2.3-gguf"}
+
+
 def test_video_download_plan_validates_with_the_encoder_precision(client, monkeypatch):
     backend = video_module.get_video_backend()
     seen: dict = {}

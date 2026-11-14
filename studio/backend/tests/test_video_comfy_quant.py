@@ -98,7 +98,9 @@ def test_h3_keeps_the_pruned_model_float32_tensors():
         ("wan2.2_ti2v_5B_fp16.safetensors", False, None),
         ("minimax_h3_fl2va_pruned_bf16.safetensors", True, "fl2va"),
         ("minimax_h3_fl2va_pruned_nvfp4.safetensors", False, None),
-        ("minimax_h3_fl2va_pruned_w6a8.safetensors", False, None),
+        ("minimax_h3_fl2va_pruned_w6a8.safetensors", True, "fl2va"),
+        ("minimax_h3_image_pruned_w4a8.safetensors", True, "fl2va"),
+        ("minimax_h3_fl2va_pruned_w4a4.safetensors", False, None),
     ],
 )
 def test_h3_single_file_names(name, ok, task):

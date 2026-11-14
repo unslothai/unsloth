@@ -5478,9 +5478,17 @@ def count_chat_messages_for_threads(thread_ids: list[str]) -> dict[str, int]:
     return counts
 
 
-def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
+def list_chat_messages_for_threads(
+    thread_ids: list[str], *, include_metadata: bool = True
+) -> list[dict]:
+    """include_metadata=False skips reading and decoding metadata_json (the search view drops it)."""
     if not thread_ids:
         return []
+    columns = (
+        "*"
+        if include_metadata
+        else "id, thread_id, parent_id, role, content_json, attachments_json, created_at"
+    )
     unique_thread_ids = list(dict.fromkeys(thread_ids))
     messages: list[dict] = []
     conn = get_connection()
@@ -5490,7 +5498,7 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
             placeholders = ",".join("?" for _ in chunk)
             rows = conn.execute(
                 f"""
-                SELECT * FROM chat_messages
+                SELECT {columns} FROM chat_messages
                 WHERE thread_id IN ({placeholders})
                 ORDER BY created_at ASC, id ASC
                 """,

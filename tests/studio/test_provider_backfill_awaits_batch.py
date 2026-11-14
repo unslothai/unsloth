@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import textwrap
 
 import pytest
@@ -46,6 +47,31 @@ def _tail_source() -> str:
     return text[start:end]
 
 
+# The sliced tail runs inside syncBackfillTail, so every local of the sync it reads must be one of these.
+TAIL_PARAMS = (
+    "backfillTasks",
+    "isCurrent",
+    "existingProviders",
+    "syncedProviders",
+    "registryRows",
+)
+
+
+def _sync_locals_read_by_tail() -> set[str]:
+    """Locals (and parameters) of syncExternalProvidersFromBackend that the sliced tail reads."""
+    text = read(SYNC_PROVIDERS)
+    start = text.index("export async function syncExternalProvidersFromBackend(")
+    tail = _tail_source()
+    body = text[start : text.index(tail, start)]
+    names = set()
+    # Function-scope declarations only (two-space indent); nested blocks cannot leak into the tail.
+    for group in re.findall(r"^  (?:const|let|var)\s+(\[[^\]]*\]|\{[^}]*\}|\w+)", body, re.M):
+        names.update(re.findall(r"\b[A-Za-z_]\w*\b", group.split("=")[0]))
+    signature = body[: body.index(")")]
+    names.update(re.findall(r"\b([A-Za-z_]\w*)\??\s*:", signature))
+    return {name for name in names if re.search(rf"\b{name}\b", tail)}
+
+
 def _harness_source() -> str:
     return (
         textwrap.dedent(
@@ -59,13 +85,10 @@ def _harness_source() -> str:
         + textwrap.dedent(
             """
         export async function syncBackfillTail(
-          backfillTasks,
-          isCurrent,
-          existingProviders,
-          syncedProviders,
-        ) {
         """
         )
+        + "".join(f"  {name},\n" for name in TAIL_PARAMS)
+        + "){\n"
         + "  "
         + _tail_source()
         + "\n}\n"
@@ -92,6 +115,7 @@ const returned = await syncBackfillTail(
   () => true,
   ["existing"],
   ["synced"],
+  [],
 );
 const finishedWhenSyncResolved = [...finished];
 
@@ -123,6 +147,13 @@ def test_the_backfill_batch_is_complete_when_the_sync_resolves(result: dict):
         "transition right after startup would lose them"
     )
     assert result["returned"] == ["synced"]
+
+
+def test_the_tail_reads_no_sync_local_the_harness_does_not_pass():
+    unpassed = sorted(_sync_locals_read_by_tail() - set(TAIL_PARAMS))
+    assert (
+        not unpassed
+    ), f"the sync's tail now reads {unpassed}; add them to TAIL_PARAMS and pass them in SCRIPT"
 
 
 def test_a_stale_session_runs_no_backfill(result: dict):

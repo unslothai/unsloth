@@ -34,6 +34,8 @@ CUSTOM_MEASURED = {
     "chatWidth": "full",
     "uiFontSize": 20,
     "codeFontSize": 20,
+    # Forced motion, the default until Reduce motion turned on by default.
+    "reduceMotion": "off",
 }
 # Root attributes / classes the `+custom` modes must show, so a renamed key cannot measure nothing.
 CUSTOM_EXPECT = [
@@ -47,6 +49,7 @@ CUSTOM_EXPECT = [
     "data-code-font-size",
     "pointer-cursors",
     "no-font-smoothing",
+    "force-motion",
 ]
 CUSTOM_ALLOW = {
     "colors": "custom colour tokens (CSS variables only, no effect properties)",
@@ -56,7 +59,6 @@ CUSTOM_ALLOW = {
     "codeFont": "font-family variable only",
     "importedFonts": "@font-face list for the font settings above",
     "sentAttachments": "layout of sent attachment rows only",
-    "reduceMotion": "default 'off' (forced motion) is what every mode measures; 'on' and 'system' only remove motion",
     "sidebarMenu": "which sidebar menu items show",
     "sidebarNav": "which sidebar items are pinned",
     "sidebarNavAuto": "which sidebar items auto-show",
@@ -64,7 +66,7 @@ CUSTOM_ALLOW = {
 # Enum settings: every value must be the default, measured, or listed here.
 ENUM_ALLOW = {
     ("chatWidth", "wide"): "between standard and the measured full width",
-    ("reduceMotion", "on"): "removes motion",
+    ("reduceMotion", "on"): "removes motion (the default)",
     ("reduceMotion", "system"): "follows the OS; no more than forced motion",
     ("sentAttachments", "list"): "attachment row layout",
     ("sentAttachments", "chips"): "attachment row layout",

@@ -34,6 +34,8 @@ const maxTokens = positiveInt(
   Math.min(Math.floor(contextWindow / 4), 8192),
 );
 const samplingParams = (config.samplingParams ?? {}) as Record<string, unknown>;
+const input: ("text" | "image")[] =
+  config.vision === true ? ["text", "image"] : ["text"];
 let activeAgents = 0;
 const waitingAgents: Array<() => boolean> = [];
 
@@ -45,16 +47,18 @@ function positiveInt(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function finalText(message: unknown): string {
-  const value = message as { role?: unknown; content?: unknown };
-  if (value.role !== "assistant" || !Array.isArray(value.content)) return "";
-  return value.content
-    .filter(
-      (part): part is { type?: unknown; text?: unknown } =>
-        typeof part === "object" && part !== null && "text" in part,
-    )
-    .filter((part) => part.type === "text" && typeof part.text === "string")
-    .map((part) => part.text as string)
+interface ChatPart {
+  type?: unknown;
+  text?: unknown;
+}
+
+function finalText(raw: unknown): string {
+  const message = raw as { role?: unknown; content?: unknown } | null;
+  if (message?.role !== "assistant" || !Array.isArray(message.content))
+    return "";
+  return (message.content as ChatPart[])
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => String(part.text))
     .join("\n")
     .trim();
 }
@@ -327,7 +331,7 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
         id: model,
         name: `${model} via Unsloth`,
         reasoning: false,
-        input: ["text"],
+        input,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,
         maxTokens,

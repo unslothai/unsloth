@@ -32,6 +32,8 @@ _ALIASES: dict[str, str] = {
     "sage": "sage",
     "xformers": "xformers",
     "aiter": "aiter",
+    # Studio's INT8 attention kernel: the automatic native pick, with the strided processors routed to the kernel
+    "unsloth_int8": "unsloth_int8",
 }
 ATTN_ALIASES = (ATTN_AUTO,) + tuple(dict.fromkeys(_ALIASES))
 
@@ -618,6 +620,9 @@ def select_attention_backend(
     bit-identical), and on ROCm with verified flash_attn to ``ROCM_FLASH_CANDIDATE`` (resolved by timing in
     ``apply_attention_backend``) unless speed is explicitly ``off``; elsewhere returns None (native)."""
     alias = normalize_attention_backend(requested)
+    if alias == "unsloth_int8":
+        alias = ATTN_AUTO
+        speed_active = True
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
         if backend == "native":
@@ -2676,10 +2681,11 @@ def _sage_usable(
 
 
 # PyPI has only SageAttention 1 (diffusers refuses it), so sage uses the kernels-hub build.
-# Version 2 first: the version 1 builds diffusers asks for stop at torch 2.10.
+# Version 2 first (it also covers sm100), then 3; the model-type mirror's version 1 builds stop at torch 2.10.
 SAGE_HUB_BACKEND = "sage_hub"
 _SAGE_HUB_REPO = "kernels-community/sage-attention"
 _SAGE_HUB_VERSIONS = (2, 1)
+_SAGE_HUB_DIRECT_VERSIONS = (2, 3)
 _SAGE_HUB_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 _SAGE_HUB_LOCK = threading.Lock()
 # A failed fetch, remembered so the in-lock apply does not repeat it. Cleared by a restart, like _INSTALL_ATTEMPTED.
@@ -2718,10 +2724,17 @@ def _load_sage_hub_kernel() -> tuple[Any, str]:
         if _SAGE_HUB_FAILED:
             return None, _SAGE_HUB_FAILED[0]
         try:
+            # diffusers' sage_hub backend refuses to engage without an importable kernels.
             from kernels import get_kernel
         except Exception as exc:  # noqa: BLE001
             return None, f"the kernels package is not importable ({type(exc).__name__}: {exc})"
-        errors = []
+        # Studio's own loader first: the kernels release transformers < 5.13 imports next to (0.12.3) reads only
+        # the hub's model-type mirror, which has no build for current torch.
+        fn, direct_why = _load_sage_hub_direct()
+        if callable(fn):
+            config.kernel_fn = fn
+            return fn, ""
+        errors = [f"direct: {direct_why}"]
         versions = list(_SAGE_HUB_VERSIONS)
         default = getattr(config, "version", None)
         if isinstance(default, int) and default not in versions:
@@ -2738,6 +2751,11 @@ def _load_sage_hub_kernel() -> tuple[Any, str]:
             errors.append(f"version {ver}: no sageattn in the build")
         _SAGE_HUB_FAILED.append(f"no {_SAGE_HUB_REPO} build loads here ({'; '.join(errors)})")
         return None, _SAGE_HUB_FAILED[0]
+
+
+def _load_sage_hub_direct() -> tuple[Any, str]:
+    from .diffusion_sage_hub import load_sageattn
+    return load_sageattn(_SAGE_HUB_DIRECT_VERSIONS, repo = _SAGE_HUB_REPO)
 
 
 def _sage_hub_kernel_runs(
@@ -3180,6 +3198,9 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
     # A hidden package stays unusable until restart; skip without recording an attempt.
     if module in sys.modules and sys.modules[module] is None:
         reason = f"{module} is disabled in this process because it requires a different torch"
+        if module == "kernels":
+            from utils.kernels_compat import hidden_reason
+            reason = hidden_reason() or reason
         if logger is not None:
             logger.warning(
                 "diffusion.attention: not installing %s for backend=%s: %s; restart Unsloth "
@@ -3242,6 +3263,15 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
     _INSTALL_ATTEMPTED.add(package)
     import subprocess
 
+    requirement = package
+    previous_kernels = None
+    if package == "kernels":
+        # Unpinned, pip takes the newest kernels, which an older transformers cannot import next to.
+        from utils.kernels_compat import current_kernels_install_spec
+
+        requirement = current_kernels_install_spec()
+        previous_kernels = _dist_version("kernels")
+        display = requirement
     if logger is not None:
         logger.info(
             "diffusion.attention: installing %s for backend=%s (wheel-only)", display, backend
@@ -3257,7 +3287,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
                 "--only-binary",
                 ":all:",
                 "--no-deps",
-                package,
+                requirement,
             ],
             capture_output = True,
             timeout = 600,
@@ -3267,7 +3297,11 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
         # the new wheel.
         importlib.invalidate_caches()
         if package == "kernels":
-            _refresh_diffusers_kernels_version(logger)
+            from utils.kernels_compat import check_kernels_install
+
+            # A kernels transformers cannot import breaks every later process: roll it back instead.
+            if check_kernels_install(previous_kernels, logger):
+                _refresh_diffusers_kernels_version(logger)
     except Exception as exc:  # noqa: BLE001 - no wheel / no network -> native fallback
         if logger is not None:
             # CalledProcessError.str() shows only the exit code; surface stderr so the fallback is diagnosable.
@@ -3532,8 +3566,30 @@ def apply_attention_backend(
     *,
     logger: Any = None,
     target: Any = None,
+    requested: Optional[str] = None,
 ) -> Optional[str]:
-    """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak)."""
+    """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
+
+    ``requested`` is the load's own attention request: ``unsloth_int8`` (or its env switch) then routes the strided
+    processors of a native pick to the INT8 kernel, and that name is returned."""
+    engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
+    if target is not None and (engaged is None or str(engaged).startswith("_native")):
+        try:
+            from .diffusion_int8_attention import BACKEND, install_requested
+            if install_requested(pipe, requested, target, logger = logger):
+                return BACKEND
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8", exc)
+    return engaged
+
+
+def _apply_attention_backend(
+    pipe: Any,
+    backend: Optional[str],
+    *,
+    logger: Any = None,
+    target: Any = None,
+) -> Optional[str]:
     if target is not None:
         try:
             guard_rocm_fused_sdpa(target, logger)
@@ -4058,3 +4114,13 @@ def install_hunyuan_attention_trim(
     if engaged and logger is not None:
         logger.info("diffusion.attention: hunyuan padded-text trim engaged")
     return engaged
+
+
+# declared checkpoint attention -> Studio backend of the same arithmetic (still probe-gated)
+CHECKPOINT_ATTENTION_BACKENDS = {"int8": "sage"}
+
+
+def checkpoint_attention_backend(declared: Any) -> Optional[str]:
+    if not isinstance(declared, str):
+        return None
+    return CHECKPOINT_ATTENTION_BACKENDS.get(declared.strip().lower())
