@@ -105,6 +105,8 @@ def _usage(
         (False, 0, [("tool_call", (i, 40)) for i in range(70)], "cancelled", (0, 700, 700)),
         # Whole-response calls: the preview trims arguments to 500 characters, the estimate does not.
         (False, 0, [("message_tool_call", 3986)], "completed", (0, 1000, 1000)),
+        # A call beside visible text: 4 text characters plus the whole call.
+        (False, 0, [("message_text_and_tool_call", 3986)], "completed", (0, 1001, 1001)),
         (False, 0, [("anthropic_tool_use", 3986)], "completed", (0, 1000, 1000)),
         # A tool loop's earlier passes reported after a later one was interrupted mid-stream.
         (
@@ -181,9 +183,10 @@ def test_a_receipt_settles_reported_and_estimated_usage(
             inference_route._monitor_openai_chunk(
                 entry, {"choices": [{"index": 0, "message": message}]}
             )
-        elif kind == "message_tool_call":
+        elif kind in ("message_tool_call", "message_text_and_tool_call"):
             call = {"id": "c", "function": {"name": "f", "arguments": "a" * value}}
-            message = {"role": "assistant", "content": None, "tool_calls": [call]}
+            content = "hell" if kind == "message_text_and_tool_call" else None
+            message = {"role": "assistant", "content": content, "tool_calls": [call]}
             inference_route._monitor_openai_chunk(
                 entry, {"choices": [{"index": 0, "message": message}]}
             )
@@ -327,6 +330,8 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     assert 'sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies)' in source
     assert '_sf_streamed_calls.add(event.get("tool_call_id"))' in source
     assert 'event.get("tool_call_id") not in _sf_streamed_calls' in source
+    # A finalized call runs after its pass ended, so that pass's report already covers it.
+    assert "Executed after its pass ended, so that pass's reported usage covers it." in source
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
@@ -484,3 +489,68 @@ def test_a_stopped_in_process_message_settles_its_partial_output(monkeypatch):
     [receipt] = receipts
     assert receipt.completion_tokens == 100
     assert claim["generated"]
+
+
+def test_a_whole_responses_reply_counts_thinking_and_calls_beside_its_text(monkeypatch):
+    from models.inference import ChatMessage, ResponsesRequest
+
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    monkeypatch.setattr(inference_route, "_monitor_context_length", lambda: None)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: None)
+    monkeypatch.setattr(
+        inference_route, "_responses_should_parse_think_markers", lambda *_args: False
+    )
+    call = {"id": "c", "type": "function", "function": {"name": "f", "arguments": "a" * 3986}}
+    message = {
+        "role": "assistant",
+        "content": "hell",
+        "reasoning_content": "t" * 400,
+        "tool_calls": [call],
+    }
+
+    async def completion(*_args):
+        # No usage: the receipt is estimated from the generated text.
+        return {"choices": [{"index": 0, "message": message, "finish_reason": "tool_calls"}]}
+
+    monkeypatch.setattr(inference_route, "openai_chat_completions", completion)
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/v1/responses"), method = "POST"
+    )
+    asyncio.run(
+        inference_route._responses_non_streaming(
+            ResponsesRequest(model = "m", input = "hi"),
+            [ChatMessage(role = "user", content = "hi")],
+            request,
+            "owner",
+        )
+    )
+    [receipt] = receipts
+    # 4 visible + 400 thinking + 4000 for the call ("Tool call: f(...)").
+    assert receipt.completion_tokens == 1101
+
+
+def test_media_routes_are_admitted_against_the_allowance(monkeypatch):
+    from fastapi import HTTPException
+
+    from core.inference import token_limit
+
+    def reached():
+        raise HTTPException(status_code = 429, detail = "reached")
+
+    monkeypatch.setattr(token_limit, "enforce", reached)
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/v1/audio/transcriptions"), method = "POST"
+    )
+
+    async def transcribe():
+        async with inference_route._monitored_media_request(
+            request, model = "m", prompt = "", subject = "owner"
+        ):
+            raise AssertionError("ran past an exhausted allowance")
+
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(transcribe())
+    assert refused.value.status_code == 429

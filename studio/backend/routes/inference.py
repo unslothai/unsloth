@@ -7727,6 +7727,11 @@ def _monitor_openai_chunk(
             text = message.get("content")
             if isinstance(text, str):
                 reply_parts.append((idx, text))
+                # Calls beside visible text are generated output too.
+                api_monitor.count_output(
+                    monitor_id,
+                    len(_monitor_tool_calls_text_capped(message.get("tool_calls"), cap = None)),
+                )
             else:
                 tool_text = _monitor_tool_calls_text(message.get("tool_calls"), monitor_id)
                 if tool_text:
@@ -8216,6 +8221,8 @@ async def _monitored_media_request(
     request: Request, *, model: Optional[str], prompt: str, subject: Optional[str]
 ):
     """Give the image/audio routes the API monitor row the text routes already open."""
+    # Their receipts debit the allowance, so they are admitted like the text routes.
+    await _enforce_token_limit(request)
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -35247,6 +35254,9 @@ async def produce_openai_chat_completions(
                         api_monitor.mark_first_token(
                             monitor_id, decoded = False, output_chars = len(event["arguments_text"])
                         )
+                        if _sf_seen_stats is not None:
+                            # Executed after its pass ended, so that pass's reported usage covers it.
+                            _sf_reported_chars = api_monitor.reply_chars(monitor_id)
                     if event["type"] in ("tool_output", "tool_args", "tool_approved"):
                         # Live stdout/stderr, tool-call arguments as the model writes them, or an approval.
                         if _ui_events:
@@ -40489,10 +40499,13 @@ async def _responses_non_streaming(
             max_output_tokens = payload.max_output_tokens,
             instructions = payload.instructions,
         )
-        api_monitor.set_reply(monitor_id, text or _monitor_tool_calls_text(tool_calls))
-        if not text:
-            # set_reply replaces the count, so the preview's trimmed arguments are added after it.
-            _monitor_tool_calls_text(tool_calls, monitor_id)
+        preview = text or _monitor_tool_calls_text(tool_calls)
+        api_monitor.set_reply(monitor_id, preview)
+        # set_reply replaces the count: add the thinking and tool calls the preview leaves out.
+        full_calls = _monitor_tool_calls_text_capped(tool_calls, cap = None)
+        api_monitor.count_output(
+            monitor_id, len(reasoning_text) + len(text) + len(full_calls) - len(preview)
+        )
         _monitor_usage(
             monitor_id,
             usage_data,
