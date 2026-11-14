@@ -3513,7 +3513,7 @@ export const ru = {
       allow: "Разрешить",
       refuse: "Отклонить",
       pairedTitle: "{name} связан",
-      pairedDescription: "Он обслуживает модели, пока там запущен `unsloth worker`.",
+      pairedDescription: "Он обслуживает модели, пока там запущен unsloth worker.",
       done: "Готово",
       close: "Закрыть",
       expired: "Срок действия кода истёк. Начните заново, чтобы получить новый.",

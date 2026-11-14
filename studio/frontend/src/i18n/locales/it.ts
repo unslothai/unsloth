@@ -3440,7 +3440,7 @@ export const it = {
       allow: "Consenti",
       refuse: "Rifiuta",
       pairedTitle: "{name} è associata",
-      pairedDescription: "Serve modelli finché lì è in esecuzione `unsloth worker`.",
+      pairedDescription: "Serve modelli finché lì è in esecuzione unsloth worker.",
       done: "Fatto",
       close: "Chiudi",
       expired: "Il codice è scaduto. Ricomincia per averne uno nuovo.",

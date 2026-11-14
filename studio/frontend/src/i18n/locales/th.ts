@@ -3617,7 +3617,7 @@ export const th = {
       allow: "อนุญาต",
       refuse: "ปฏิเสธ",
       pairedTitle: "จับคู่ {name} แล้ว",
-      pairedDescription: "เครื่องนั้นให้บริการโมเดลขณะที่ `unsloth worker` ทำงานอยู่ที่นั่น",
+      pairedDescription: "เครื่องนั้นให้บริการโมเดลขณะที่ unsloth worker ทำงานอยู่ที่นั่น",
       done: "เสร็จ",
       close: "ปิด",
       expired: "โค้ดหมดอายุแล้ว เริ่มใหม่เพื่อรับโค้ดใหม่",

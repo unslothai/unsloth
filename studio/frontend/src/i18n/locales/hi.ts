@@ -3510,7 +3510,7 @@ export const hi = {
       allow: "अनुमति दें",
       refuse: "अस्वीकार करें",
       pairedTitle: "{name} जुड़ गई",
-      pairedDescription: "जब तक वहाँ `unsloth worker` चलता है, यह मॉडल चलाती है।",
+      pairedDescription: "जब तक वहाँ unsloth worker चलता है, यह मॉडल चलाती है।",
       done: "हो गया",
       close: "बंद करें",
       expired: "कोड की अवधि समाप्त हो गई। नए कोड के लिए फिर से शुरू करें।",

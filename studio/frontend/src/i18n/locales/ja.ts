@@ -3477,7 +3477,7 @@ export const ja = {
       allow: "許可",
       refuse: "拒否",
       pairedTitle: "{name} をペアリングしました",
-      pairedDescription: "そこで `unsloth worker` が動いている間、モデルを提供します。",
+      pairedDescription: "そこで unsloth worker が動いている間、モデルを提供します。",
       done: "完了",
       close: "閉じる",
       expired: "コードの期限が切れました。新しいコードを得るにはやり直してください。",

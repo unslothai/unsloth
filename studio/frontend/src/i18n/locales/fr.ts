@@ -3547,7 +3547,7 @@ export const fr = {
       allow: "Autoriser",
       refuse: "Refuser",
       pairedTitle: "{name} est associée",
-      pairedDescription: "Elle sert des modèles tant que `unsloth worker` y tourne.",
+      pairedDescription: "Elle sert des modèles tant que unsloth worker y tourne.",
       done: "Terminé",
       close: "Fermer",
       expired: "Le code a expiré. Recommencez pour en obtenir un nouveau.",

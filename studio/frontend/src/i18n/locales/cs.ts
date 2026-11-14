@@ -3793,7 +3793,7 @@ export const cs = {
       allow: "Povolit",
       refuse: "Odmítnout",
       pairedTitle: "{name} je spárován",
-      pairedDescription: "Obsluhuje modely, dokud tam běží `unsloth worker`.",
+      pairedDescription: "Obsluhuje modely, dokud tam běží unsloth worker.",
       done: "Hotovo",
       close: "Zavřít",
       expired: "Platnost kódu vypršela. Začněte znovu pro nový.",

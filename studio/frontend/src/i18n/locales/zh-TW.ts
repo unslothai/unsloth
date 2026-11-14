@@ -3596,7 +3596,7 @@ export const zhTW = {
       allow: "允許",
       refuse: "拒絕",
       pairedTitle: "{name} 已配對",
-      pairedDescription: "只要那裡在執行 `unsloth worker`，它就會提供模型。",
+      pairedDescription: "只要那裡在執行 unsloth worker，它就會提供模型。",
       done: "完成",
       close: "關閉",
       expired: "代碼已過期。重新開始以取得新代碼。",

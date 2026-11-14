@@ -3540,7 +3540,7 @@ export const es = {
       allow: "Permitir",
       refuse: "Rechazar",
       pairedTitle: "{name} está emparejada",
-      pairedDescription: "Sirve modelos mientras `unsloth worker` se ejecuta allí.",
+      pairedDescription: "Sirve modelos mientras unsloth worker se ejecuta allí.",
       done: "Listo",
       close: "Cerrar",
       expired: "El código caducó. Empieza de nuevo para obtener otro.",

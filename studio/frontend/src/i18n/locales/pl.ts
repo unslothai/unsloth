@@ -3821,7 +3821,7 @@ export const pl = {
       allow: "Zezwól",
       refuse: "Odrzuć",
       pairedTitle: "{name} jest sparowana",
-      pairedDescription: "Obsługuje modele, dopóki działa tam `unsloth worker`.",
+      pairedDescription: "Obsługuje modele, dopóki działa tam unsloth worker.",
       done: "Gotowe",
       close: "Zamknij",
       expired: "Kod wygasł. Zacznij od nowa, aby dostać nowy.",

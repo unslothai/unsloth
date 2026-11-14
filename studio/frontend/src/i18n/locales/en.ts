@@ -3521,7 +3521,7 @@ export const en = {
       allow: "Allow",
       refuse: "Refuse",
       pairedTitle: "{name} is paired",
-      pairedDescription: "It serves models while `unsloth worker` runs there.",
+      pairedDescription: "It serves models while unsloth worker runs there.",
       done: "Done",
       close: "Close",
       expired: "The code expired. Start again for a new one.",

@@ -3833,7 +3833,7 @@ export const es419 = {
       allow: "Permitir",
       refuse: "Rechazar",
       pairedTitle: "{name} está emparejada",
-      pairedDescription: "Sirve modelos mientras `unsloth worker` se ejecuta allí.",
+      pairedDescription: "Sirve modelos mientras unsloth worker se ejecuta allí.",
       done: "Listo",
       close: "Cerrar",
       expired: "El código venció. Empieza de nuevo para obtener otro.",

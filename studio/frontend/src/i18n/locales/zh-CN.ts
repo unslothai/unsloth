@@ -3447,7 +3447,7 @@ export const zhCN = {
       allow: "允许",
       refuse: "拒绝",
       pairedTitle: "{name} 已配对",
-      pairedDescription: "只要那里在运行 `unsloth worker`，它就会提供模型。",
+      pairedDescription: "只要那里在运行 unsloth worker，它就会提供模型。",
       done: "完成",
       close: "关闭",
       expired: "代码已过期。重新开始以获取新代码。",

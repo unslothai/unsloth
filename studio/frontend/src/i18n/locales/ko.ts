@@ -3491,7 +3491,7 @@ export const ko = {
       allow: "허용",
       refuse: "거부",
       pairedTitle: "{name}이(가) 페어링되었습니다",
-      pairedDescription: "그곳에서 `unsloth worker`가 실행되는 동안 모델을 제공합니다.",
+      pairedDescription: "그곳에서 unsloth worker가 실행되는 동안 모델을 제공합니다.",
       done: "완료",
       close: "닫기",
       expired: "코드가 만료되었습니다. 새 코드를 받으려면 다시 시작하세요.",

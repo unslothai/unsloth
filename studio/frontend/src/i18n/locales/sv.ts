@@ -3680,7 +3680,7 @@ export const sv = {
       allow: "Tillåt",
       refuse: "Neka",
       pairedTitle: "{name} är parad",
-      pairedDescription: "Den betjänar modeller så länge `unsloth worker` körs där.",
+      pairedDescription: "Den betjänar modeller så länge unsloth worker körs där.",
       done: "Klar",
       close: "Stäng",
       expired: "Koden har gått ut. Börja om för en ny.",

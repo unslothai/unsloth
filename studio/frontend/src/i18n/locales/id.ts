@@ -3775,7 +3775,7 @@ export const id = {
       allow: "Izinkan",
       refuse: "Tolak",
       pairedTitle: "{name} sudah dipasangkan",
-      pairedDescription: "Mesin itu melayani model selama `unsloth worker` berjalan di sana.",
+      pairedDescription: "Mesin itu melayani model selama unsloth worker berjalan di sana.",
       done: "Selesai",
       close: "Tutup",
       expired: "Kode kedaluwarsa. Mulai lagi untuk kode baru.",

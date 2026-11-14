@@ -3547,7 +3547,7 @@ export const de = {
       allow: "Erlauben",
       refuse: "Ablehnen",
       pairedTitle: "{name} ist gekoppelt",
-      pairedDescription: "Er bedient Modelle, solange dort `unsloth worker` läuft.",
+      pairedDescription: "Er bedient Modelle, solange dort unsloth worker läuft.",
       done: "Fertig",
       close: "Schließen",
       expired: "Der Code ist abgelaufen. Starte neu für einen neuen.",

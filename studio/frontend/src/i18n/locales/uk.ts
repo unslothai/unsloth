@@ -3806,7 +3806,7 @@ export const uk = {
       allow: "Дозволити",
       refuse: "Відхилити",
       pairedTitle: "{name} під’єднано",
-      pairedDescription: "Він обслуговує моделі, поки там запущено `unsloth worker`.",
+      pairedDescription: "Він обслуговує моделі, поки там запущено unsloth worker.",
       done: "Готово",
       close: "Закрити",
       expired: "Термін дії коду сплив. Почніть знову, щоб отримати новий.",

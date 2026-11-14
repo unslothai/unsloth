@@ -3763,7 +3763,7 @@ export const fa = {
       allow: "اجازه",
       refuse: "رد",
       pairedTitle: "{name} جفت شد",
-      pairedDescription: "تا وقتی `unsloth worker` آنجا اجرا می‌شود مدل سرویس می‌دهد.",
+      pairedDescription: "تا وقتی unsloth worker آنجا اجرا می‌شود مدل سرویس می‌دهد.",
       done: "انجام شد",
       close: "بستن",
       expired: "کد منقضی شد. برای کد تازه دوباره شروع کنید.",

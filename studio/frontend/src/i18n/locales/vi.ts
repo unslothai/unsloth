@@ -3776,7 +3776,7 @@ export const vi = {
       allow: "Cho phép",
       refuse: "Từ chối",
       pairedTitle: "{name} đã được ghép nối",
-      pairedDescription: "Nó phục vụ mô hình khi `unsloth worker` chạy ở đó.",
+      pairedDescription: "Nó phục vụ mô hình khi unsloth worker chạy ở đó.",
       done: "Xong",
       close: "Đóng",
       expired: "Mã đã hết hạn. Bắt đầu lại để có mã mới.",

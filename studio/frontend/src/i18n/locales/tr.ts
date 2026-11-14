@@ -3774,7 +3774,7 @@ export const tr = {
       allow: "İzin ver",
       refuse: "Reddet",
       pairedTitle: "{name} eşleştirildi",
-      pairedDescription: "Orada `unsloth worker` çalıştığı sürece model sunar.",
+      pairedDescription: "Orada unsloth worker çalıştığı sürece model sunar.",
       done: "Bitti",
       close: "Kapat",
       expired: "Kodun süresi doldu. Yeni bir kod için baştan başlayın.",

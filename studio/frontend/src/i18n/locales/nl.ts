@@ -3820,7 +3820,7 @@ export const nl = {
       allow: "Toestaan",
       refuse: "Weigeren",
       pairedTitle: "{name} is gekoppeld",
-      pairedDescription: "Hij bedient modellen zolang `unsloth worker` daar draait.",
+      pairedDescription: "Hij bedient modellen zolang unsloth worker daar draait.",
       done: "Klaar",
       close: "Sluiten",
       expired: "De code is verlopen. Begin opnieuw voor een nieuwe.",

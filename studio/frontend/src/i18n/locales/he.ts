@@ -3583,7 +3583,7 @@ export const he = {
       allow: "אישור",
       refuse: "דחייה",
       pairedTitle: "{name} מצומד",
-      pairedDescription: "הוא משרת מודלים כל עוד `unsloth worker` רץ שם.",
+      pairedDescription: "הוא משרת מודלים כל עוד unsloth worker רץ שם.",
       done: "סיום",
       close: "סגירה",
       expired: "תוקף הקוד פג. התחילו מחדש לקבלת קוד חדש.",

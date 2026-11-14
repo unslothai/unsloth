@@ -3514,7 +3514,7 @@ export const ptBR = {
       allow: "Permitir",
       refuse: "Recusar",
       pairedTitle: "{name} está pareada",
-      pairedDescription: "Ela serve modelos enquanto `unsloth worker` roda lá.",
+      pairedDescription: "Ela serve modelos enquanto unsloth worker roda lá.",
       done: "Concluído",
       close: "Fechar",
       expired: "O código expirou. Comece de novo para obter outro.",

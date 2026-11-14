@@ -3501,7 +3501,7 @@ export const ar = {
       allow: "سماح",
       refuse: "رفض",
       pairedTitle: "تم إقران {name}",
-      pairedDescription: "يخدم النماذج ما دام `unsloth worker` يعمل هناك.",
+      pairedDescription: "يخدم النماذج ما دام unsloth worker يعمل هناك.",
       done: "تم",
       close: "إغلاق",
       expired: "انتهت صلاحية الرمز. ابدأ من جديد للحصول على رمز جديد.",
