@@ -412,10 +412,8 @@ def _is_pip_launch():
                 break
         if module:
             break
-    # Python < 3.10 has no orig_argv: any -m launch counts.
-    return module in ("pip", "pip.__main__") or (
-        not module and ((not argv and sys.argv[0] == "-m") or _is_pip_script(sys.argv[0]))
-    )
+    # Python < 3.10 has no orig_argv, so a -m launch cannot be told apart (venv --upgrade-deps): only pip scripts.
+    return module in ("pip", "pip.__main__") or (not module and _is_pip_script(sys.argv[0]))
 
 
 def _within(path, root):
@@ -832,10 +830,18 @@ def _recorded_files(
     files = set()
     # Resolved too: a recorded folder that is a symlink must not lead the cleanup outside the prefix.
     real_root = os.path.join(os.path.normcase(os.path.realpath(root)), "")
+    if "csv" not in sys.modules:
+        saved = sys.path[:]
+        sys.path[:] = _stdlib_paths()
+        try:
+            import csv  # noqa: F401
+        finally:
+            sys.path[:] = saved
     try:
-        with open(record, encoding = "utf-8") as f:
-            for line in f:
-                path = line.rstrip("\n").rsplit(",", 2)[0].strip('"')
+        with open(record, encoding = "utf-8", newline = "") as f:
+            # RECORD is CSV: a quoted name ("a""b") must name that file, not a neighbour.
+            for row in sys.modules["csv"].reader(f):
+                path = row[0] if row else ""
                 in_meta = path.startswith(dist_info + "/")
                 if not path or (in_meta and (not metadata or path.endswith("/RECORD"))):
                     continue
@@ -847,7 +853,7 @@ def _recorded_files(
                     )
                 if full.startswith(root) and _real_dirs[folder].startswith(real_root):
                     files.add(full)
-    except OSError:
+    except Exception:  # noqa: BLE001 - unreadable or malformed: nothing listed, nothing removed
         pass
     _record_cache[key] = files
     return files
@@ -1012,8 +1018,10 @@ def _record_snapshot():
     return snapshot
 
 
-def _retire_rewritten(snapshot):
+def _retire_rewritten(snapshot, skip = ()):
     for (entry, name), (stamp, files, root) in snapshot.items():
+        if (entry, name) in skip:
+            continue
         try:
             if os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns == stamp:
                 continue
@@ -1130,6 +1138,9 @@ def _after_pip(snapshot):
                 os.path.join(os.environ["PIP_PREFIX"], _INCOMPLETE), "a", encoding = "utf-8"
             ) as f:
                 f.writelines(lines)
+        if _failed_wheels:
+            # Wheels that finished before the failing one: a same-version reinstall still drops its old files.
+            _retire_rewritten(snapshot, set(failed))
     except Exception:  # noqa: BLE001
         pass
 
