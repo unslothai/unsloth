@@ -529,20 +529,31 @@ export function customProviderApiKeyUrl(providerType: string | null | undefined)
   return (providerType && CLOUD_PRESET_API_KEY_URLS[providerType]) || null;
 }
 
-export function connectionCheckNeedsModel(providerType: string | null | undefined): boolean {
+function vertexUrl(baseUrl: string | null | undefined): URL | null {
+  try {
+    const url = new URL(baseUrl ?? "");
+    const host = url.hostname.toLowerCase();
+    return host === "aiplatform.googleapis.com" || host.endsWith("-aiplatform.googleapis.com")
+      ? url
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The backend checks every Gemini row on a Vertex host by chat, OpenAI-compatible path included. */
+export function connectionCheckNeedsModel(
+  providerType: string | null | undefined,
+  baseUrl?: string | null,
+): boolean {
+  if (providerType === "gemini") return vertexUrl(baseUrl) != null;
   return providerType != null && CHAT_PROBED_PROVIDER_TYPES.has(providerType);
 }
 
 /** Native Vertex only: its /endpoints/openapi path is OpenAI-compatible Chat Completions. */
 export function isVertexBaseUrl(baseUrl: string | null | undefined): boolean {
-  try {
-    const url = new URL(baseUrl ?? "");
-    const host = url.hostname.toLowerCase();
-    if (url.pathname.toLowerCase().includes("/endpoints/openapi")) return false;
-    return host === "aiplatform.googleapis.com" || host.endsWith("-aiplatform.googleapis.com");
-  } catch {
-    return false;
-  }
+  const url = vertexUrl(baseUrl);
+  return url != null && !url.pathname.toLowerCase().includes("/endpoints/openapi");
 }
 
 const CUSTOM_PROVIDER_LABELS: Record<string, string> = {

@@ -1180,7 +1180,10 @@ export function ChatProvidersSettings({
         modelId:
           providerType === LEGACY_CUSTOM_PROVIDER_TYPE ||
           decisionsOnly ||
-          connectionCheckNeedsModel(providerType)
+          connectionCheckNeedsModel(
+            providerType,
+            parseBaseUrlForProvider(baseUrlDraft, isCustomProvider, providerType),
+          )
             ? (selectedModelIds[0] ?? parseManualModelIds(manualModelIds)[0] ?? null)
             : null,
       });
@@ -1921,7 +1924,7 @@ export function ChatProvidersSettings({
         modelId:
           provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE ||
           isDecisionConnection(provider) ||
-          connectionCheckNeedsModel(provider.providerType)
+          connectionCheckNeedsModel(provider.providerType, provider.baseUrl)
             ? (provider.models[0] ?? null)
             : null,
       });

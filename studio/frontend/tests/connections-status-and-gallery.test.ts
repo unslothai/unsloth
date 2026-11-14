@@ -359,6 +359,14 @@ test("cloud presets keep their identity across a save and a sync", async () => {
     assert.equal(providers.supportsRemoteModelCatalog(type), false);
     assert.equal(providers.connectionCheckNeedsModel(type), true);
   }
+  // The backend checks a Gemini row on any Vertex host by chat, so it needs a model too.
+  const openapi = "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi";
+  assert.equal(providers.connectionCheckNeedsModel("gemini", openapi), true);
+  assert.equal(
+    providers.connectionCheckNeedsModel("gemini", "https://generativelanguage.googleapis.com/v1beta"),
+    false,
+  );
+  assert.equal(providers.connectionCheckNeedsModel("gemini"), false);
   assert.equal(providers.isCloudPresetProviderType("ollama"), false);
   assert.equal(providers.customProviderDefaultBaseUrl("azure"), "");
   assert.match(
