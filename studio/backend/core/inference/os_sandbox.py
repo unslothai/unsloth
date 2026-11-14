@@ -82,8 +82,9 @@ def with_session_packages(env: dict, workdir: str) -> dict:
     packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
     # sitecustomize sets PIP_PREFIX only in Studio's own interpreter: a project venv's pip keeps installing there.
     updated = {**env, **studio_pip_prefix(packages)}
-    # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
-    updated["PYTHONNOUSERSITE"] = "1"
+    if os.path.isdir(packages):
+        # Block a planted usercustomize.py; a fresh chat keeps pip --user usable.
+        updated["PYTHONNOUSERSITE"] = "1"
     for key, value in (
         ("PYTHONPATH", os.pathsep.join(session_package_paths(packages))),
         ("PATH", os.pathsep.join(session_script_dirs(packages))),

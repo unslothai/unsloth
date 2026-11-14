@@ -718,6 +718,28 @@ def test_an_unisolated_launch_cannot_be_hooked_by_a_planted_usercustomize(tmp_pa
     assert env["PYTHONNOUSERSITE"] == "1"
 
 
+def test_a_fresh_chat_keeps_the_user_site_for_pip_user(tmp_path):
+    """No chat folder yet: user site stays on, so pip --user (left unredirected) still installs."""
+    env = tools._with_session_packages({"PATH": "/usr/bin"}, str(tmp_path / "session"))
+    assert "PYTHONNOUSERSITE" not in env
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows known folders")
+def test_windows_pip_config_dirs_ignore_a_repointed_appdata(tmp_path):
+    """pip finds its user pip.ini through the shell, so a repointed %APPDATA% must not hide it."""
+    from pip._vendor.platformdirs.windows import get_win_folder
+
+    code = "import sys; sys.path.insert(0, %r); import sitecustomize as s; print(s._win_folder(26, 'APPDATA', 'APPDATA', ''))"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH", "PYTHON"))}
+    out = subprocess.run(
+        [sys.executable, "-c", code % tools._SANDBOX_SITE_DIR],
+        env = {**env, "APPDATA": str(tmp_path)},
+        capture_output = True,
+        text = True,
+    )
+    assert out.stdout.strip() == get_win_folder("CSIDL_APPDATA"), out.stderr
+
+
 def test_the_shipped_sitecustomize_is_found_before_the_session_packages(tmp_path):
     workdir = tmp_path / "session"
     (workdir / os_sandbox.SESSION_PACKAGES_RELPATH).mkdir(parents = True)

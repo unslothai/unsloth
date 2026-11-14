@@ -580,6 +580,25 @@ finally:
     sys.path[:] = _saved_path
 
 
+def _win_folder(csidl, name, env, default):
+    # pip's platformdirs asks the shell, not %APPDATA% / %ProgramData%, which the sandbox repoints.
+    override = os.environ.get(f"WIN_PD_OVERRIDE_{name}", "").strip()
+    if os.path.isabs(override):
+        return override
+    saved = sys.path[:]
+    sys.path[:] = _stdlib_paths()
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(1024)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf) == 0 and buf.value:
+            return buf.value
+    except Exception:
+        pass
+    finally:
+        sys.path[:] = saved
+    return os.environ.get(env, default)
+
+
 def _config_chooses_location(
     isolated = False,
     use_user = True,
@@ -593,10 +612,12 @@ def _config_chooses_location(
     name = "pip.ini" if sys.platform == "win32" else "pip.conf"
     home = os.path.expanduser("~")
     if sys.platform == "win32":
-        system = [os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "pip")]
+        system = [
+            os.path.join(_win_folder(35, "COMMON_APPDATA", "ProgramData", r"C:\ProgramData"), "pip")
+        ]
         user_dirs = [
             os.path.join(home, "pip"),
-            os.path.join(os.environ.get("APPDATA", home), "pip"),
+            os.path.join(_win_folder(26, "APPDATA", "APPDATA", home), "pip"),
         ]
     else:
         if sys.platform == "darwin":
