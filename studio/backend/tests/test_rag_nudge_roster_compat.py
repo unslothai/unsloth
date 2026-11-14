@@ -125,9 +125,7 @@ def _write_legacy_db(
 
 
 def test_roster_reads_a_database_written_before_linked_folders_existed(rag_home, fresh_process):
-    """A1. The predicate names three things this file has never heard of. The
-    rag_available() gate has to migrate it before the query runs, or every install that
-    predates linked folders silently loses the roster."""
+    """Databases from before linked folders need rag_available() to migrate first, or the roster is lost."""
     _write_legacy_db(rag_home)
     _requires_rag()
     out = _nudge({"project_id": "p1"})
@@ -135,8 +133,7 @@ def test_roster_reads_a_database_written_before_linked_folders_existed(rag_home,
 
 
 def test_roster_reads_a_database_missing_only_the_newer_columns(rag_home, fresh_process):
-    """A2/A3/A4. project_id, embedding_model and the archive columns arrive by lazy
-    ALTER. A row inserted before any of them still has to be nameable."""
+    """Lazy ALTER adds project_id, embedding_model and archive; old rows must still be nameable."""
     schema = (
         _ANCIENT_SCHEMA
         + """
@@ -185,8 +182,7 @@ def test_roster_degrades_rather_than_raising_when_the_gate_lies(rag_home, monkey
 
 
 def test_roster_is_quiet_when_the_vector_extension_is_missing(rag_home, monkeypatch):
-    """A8. No sqlite_vec means no retrieval, so naming documents would promise something
-    search cannot deliver."""
+    """Without sqlite_vec there is no retrieval, so the roster must stay quiet."""
     from storage import rag_db
 
     monkeypatch.setattr(rag_db, "RAG_AVAILABLE", False)
@@ -259,8 +255,7 @@ def test_the_whole_prompt_is_free_of_controls_for_any_name(rag_conn):
 
 
 def test_a_direction_override_cannot_be_left_unterminated_by_truncation(rag_conn):
-    """B2. The 120-character cut used to be able to land between an isolate and its pop,
-    which reflows everything after the name."""
+    """Truncation must not leave an isolate unclosed, or the rest of the prompt reflows."""
     from routes import inference
 
     name = "⁦" + "x" * (inference._RAG_ROSTER_MAX_NAME_CHARS + 40) + "⁩.pdf"
@@ -284,9 +279,7 @@ def test_windows_style_separators_survive_normalisation(rag_conn):
 
 
 def test_nfd_and_nfc_spellings_are_both_named(rag_conn):
-    """B4. macOS writes NFD, Linux NFC. The roster does not normalise, so the same file
-    copied between them is two names -- both must appear rather than one shadowing the
-    other or the pair collapsing into a wrong count."""
+    """The roster does not normalise, so NFC and NFD spellings of one file must both be listed."""
     nfc = unicodedata.normalize("NFC", "résumé.pdf")
     nfd = unicodedata.normalize("NFD", "résumé.pdf")
     assert nfc != nfd
@@ -321,8 +314,7 @@ def test_name_length_boundaries(rag_conn, n):
 
 
 def test_an_astral_character_is_not_split_by_the_cut(rag_conn):
-    """B6. Python slices by code point, so an emoji cannot be halved -- pinned so a
-    future move to bytes cannot silently start emitting lone surrogates."""
+    """Slicing is by code point, so an emoji cannot be split into lone surrogates."""
     from routes import inference
 
     _doc(rag_conn, "project_p1", "d1", "\U0001f600" * (inference._RAG_ROSTER_MAX_NAME_CHARS + 10))
@@ -365,8 +357,7 @@ def test_a_name_python_cannot_encode_never_reaches_the_database(rag_conn):
 
 
 def _rag_db_fds():
-    """Descriptors open on rag.db right now. Counting all of /proc/self/fd would be
-    measuring the event loop and the threadpool, which move on their own."""
+    """Count only rag.db descriptors, since the loop and threadpool churn other fds."""
     out = 0
     for fd in os.listdir("/proc/self/fd"):
         try:
@@ -440,8 +431,7 @@ def test_the_failure_warning_latch_clears_after_a_good_read(rag_conn, monkeypatc
 
 
 def test_the_read_does_not_run_on_the_event_loop(rag_conn, monkeypatch):
-    """C4. It walks every row of the scope, so on the loop it would stall every other
-    request rather than just this one."""
+    """The read walks every row of the scope, so it must stay off the event loop."""
     from routes import inference
 
     _doc(rag_conn, "project_p1", "d1", "f.pdf")
@@ -477,17 +467,15 @@ def test_roster_strip_table_covers_every_control_and_format_character():
 
 
 def test_the_roster_still_reads_without_deterministic_functions(rag_conn, monkeypatch):
-    """D. deterministic= is refused below SQLite 3.8.3, and CPython decides that at
-    compile time, so on a Python linked against an old library the roster would be gone
-    for the life of the install rather than for one request."""
+    """deterministic= is refused below SQLite 3.8.3, decided at CPython compile time, so the roster
+    must still read without it or be gone for the install life."""
     from storage import rag_db
 
     _doc(rag_conn, "project_p1", "d1", "old-sqlite.pdf")
     real_connect = rag_db.get_metadata_connection
 
     class _OldSqlite:
-        """Everything the real connection does, except it refuses the flag the way a
-        SQLite older than 3.8.3 does."""
+        """Wraps the real connection but refuses the flag the way SQLite older than 3.8.3 does."""
 
         def __init__(self, conn):
             self._conn = conn
@@ -507,8 +495,7 @@ def test_the_roster_still_reads_without_deterministic_functions(rag_conn, monkey
 
 
 def test_the_roster_needs_nothing_newer_than_the_declared_python_floor():
-    """pyproject declares >=3.9. The roster uses PEP 585 builtin generics in its
-    annotations, which are evaluated at def time."""
+    """PEP 585 generics in roster annotations evaluate at def time, so 3.9 is the floor."""
     assert sys.version_info >= (3, 9)
     from routes import inference
 

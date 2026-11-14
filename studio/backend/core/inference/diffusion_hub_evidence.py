@@ -68,9 +68,8 @@ def _verdict(key: tuple[str, str]) -> tuple[bool, Optional[str]]:
 
 
 def cached_family(repo_id: Optional[str], filename: Optional[str] = None) -> Optional[str]:
-    """The family a Hub single-file pick's header declares, from memory or disk only; None when
-    nothing is known. A header read off the Hub by this request's prefetch outranks a cached copy,
-    which may be an older revision of the file the load will fetch."""
+    """The family a Hub single-file header declares, from memory or disk only (None if unknown); a
+    prefetch read off the Hub outranks a cached copy, which may be an older revision."""
     if not is_hub_id(repo_id) or not _is_single_file(filename):
         return None
     repo_id = str(repo_id).strip()
@@ -87,6 +86,36 @@ def cached_family(repo_id: Optional[str], filename: Optional[str] = None) -> Opt
     return _dit_family(inspect_checkpoint(local))
 
 
+def read_hub_checkpoint_family(
+    repo_id: str,
+    filename: str,
+    hf_token: Any,
+    revision: Optional[str] = None,
+) -> Optional[str]:
+    """Identify a bundled pipeline by its tensor header, independent of the repo and file names."""
+    return _dit_family(_read_hub_header(repo_id, filename, hf_token, revision))
+
+
+def _read_hub_header(
+    repo_id: str,
+    filename: str,
+    hf_token: Any,
+    revision: Optional[str] = None,
+) -> Any:
+    from huggingface_hub import HfApi
+
+    from .diffusion_content import classify_tensors
+
+    from hub.utils.hf_tokens import normalize_token
+
+    token = normalize_token(hf_token)
+    meta = HfApi().parse_safetensors_file_metadata(
+        repo_id, filename, token = token, revision = revision
+    )
+    shapes = {name: list(info.shape) for name, info in meta.tensors.items()}
+    return classify_tensors(shapes, meta.metadata)
+
+
 def prefetch_for_pick(
     repo_id: Optional[str],
     filename: Optional[str],
@@ -94,11 +123,9 @@ def prefetch_for_pick(
     hf_token: Any,
     allow_network: bool = True,
 ) -> None:
-    """The route hook: read the picked single file's header off the Hub (a range read, no weights,
-    nothing cached) when neither the name, a local path nor the content answered. ``allow_network=
-    False`` (an automatic, cache-only load) does nothing. ``hf_token`` passes through as given apart
-    from trimming a string: ``False`` (a managed account with no token of its own) stays anonymous.
-    Fails open: offline, gated or odd keeps the previous verdict, if any."""
+    """Reads a picked single file's header off the Hub (range read, nothing cached) when name, path
+    and content gave no verdict; allow_network=False does nothing; hf_token passes through, False
+    stays anonymous; fails open."""
     if (
         not allow_network
         or family_override
@@ -117,19 +144,39 @@ def prefetch_for_pick(
             and _family_from_hub_evidence(repo_id, filename) is None
         ):
             return
-        from huggingface_hub import HfApi
-
-        from .diffusion_content import classify_tensors
-
-        from hub.utils.hf_tokens import normalize_token
-
-        token = normalize_token(hf_token)
-        meta = HfApi().parse_safetensors_file_metadata(repo_id, filename, token = token)
-        shapes = {name: list(info.shape) for name, info in meta.tensors.items()}
-        family = _dit_family(classify_tensors(shapes, meta.metadata))
+        family = read_hub_checkpoint_family(repo_id, filename, hf_token)
     except Exception:  # noqa: BLE001 - evidence is best effort; validation and the load still decide
         return
+    _remember(repo_id, filename, family)
+
+
+def _remember(repo_id: str, filename: str, family: Optional[str]) -> None:
     with _LOCK:
         if len(_HEADER_VERDICTS) >= _MAX_VERDICTS:
             _HEADER_VERDICTS.clear()
         _HEADER_VERDICTS[_key(repo_id, filename)] = (time.monotonic(), family)
+
+
+def hub_checkpoint_loads_as_sdxl(
+    repo_id: str,
+    filename: str,
+    hf_token: Any,
+    revision: Optional[str] = None,
+) -> bool:
+    """A whole-SDXL or single-file image transformer header AND the loader's own verdict, so text
+    encoders, VAEs and name-vetoed variants (inpaint, edit) are not offered."""
+    from .diffusion_content import PAGE_IMAGE, ROLE_DIT, SAME_ARCH_VARIANTS
+    from .diffusion_families import detect_family_for_pick
+
+    info = _read_hub_header(repo_id, filename, hf_token, revision)
+    if info.role != ROLE_DIT or not info.family or info.page != PAGE_IMAGE:
+        return False
+    whole = _dit_family(info)
+    if whole:
+        _remember(repo_id, filename, whole)
+    fam = detect_family_for_pick(repo_id, filename, None)
+    return (
+        fam is not None
+        and fam.single_file_is_pipeline == bool(whole)
+        and fam.name in SAME_ARCH_VARIANTS.get(info.family, frozenset({info.family}))
+    )

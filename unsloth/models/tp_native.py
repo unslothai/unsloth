@@ -160,6 +160,8 @@ class TPConfig:
     # {"layers.*.self_attn.q_proj": "colwise", ...}; None = the model's TP plan, else structural discovery.
     plan: Optional[dict] = None
     # Broadcast trainable parameters from tp rank 0 first (every rank must start from the same adapter).
+    # False: the caller guarantees it, e.g. a loaded adapter or the same seed before get_peft_model on every
+    # rank (random LoRA inits draw full-size factors, so per-rank seeds give per-rank factors).
     sync_trainable: bool = True
 
 
@@ -2239,8 +2241,12 @@ def tp_full_state_dict(model, adapters_only = False):
 def _peft_state_dict(model, **kwargs):
     """What PEFT selects for save_pretrained, DTensors gathered; local tensors by reference (PEFT reruns
     its selection inside save_pretrained and must see the same model)."""
+    import inspect
+
     from peft import get_peft_model_state_dict
 
+    # Wrappers (zoo's expert factor swap) return new tensors the id match cannot find; save_pretrained converts.
+    get_peft_model_state_dict = inspect.unwrap(get_peft_model_state_dict)
     raw = model.state_dict(keep_vars = True)
     adapters = kwargs.get("selected_adapters") or list(model.peft_config)
     known = {id(value) for value in raw.values()}
@@ -2328,20 +2334,21 @@ def _preloaded(t):
 
 
 def _refuse_weight_dependent_lora_init(model):
-    """PiSSA / OLoRA / CorDA / EVA / LoftQ build the factors (and residual) from the weight; on a sharded_loading
-    slice that is this rank's slice only, so the factors come out shard-sized and differ per rank."""
+    """PiSSA / OLoRA / CorDA / EVA / LoftQ / MiCA build the factors (and residual) from the weight; on a sharded_loading
+    slice that is this rank's slice only, so the factors come out shard-sized and differ per rank. Orthogonal init
+    reads only the full in / out features and the dtype, so like gaussian it gives full-size factors."""
     configs = {}
     for level in _tp_chain(model):
         configs.update(getattr(level, "peft_config", None) or {})
     bad = {
         name: cfg.init_lora_weights
         for name, cfg in configs.items()
-        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian")
+        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian", "orthogonal")
     }
     if bad:
         raise ValueError(
             f"Unsloth: init_lora_weights {bad} depends on the base weight, which sharded_loading holds only as "
-            "this rank's slice; use init_lora_weights = True / 'gaussian', or load the full model (no "
+            "this rank's slice; use init_lora_weights = True / 'gaussian' / 'orthogonal', or load the full model (no "
             "sharded_loading) before get_peft_model and apply_tensor_parallel."
         )
 
@@ -3601,8 +3608,7 @@ def _install_tp_accelerate_hooks():
                 init_fn.func, *init_fn.args, **{**init_fn.keywords, "rank": dp_rank}
             )
         cls = type(self)
-        # accelerate shards the batches by num_processes / process_index: give it the dp layout, so the tp
-        # ranks of a replica read the same batches.
+        # accelerate shards by process index: give it the dp layout so tp ranks share batches.
         self.__class__ = type(
             "UnslothTensorParallelDataAccelerator",
             (cls,),

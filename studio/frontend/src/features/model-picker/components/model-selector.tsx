@@ -18,13 +18,14 @@ import { useSettingsDialogStore } from "@/features/settings/stores/settings-dial
 import { isNpuModelId, NPU_MODEL_PREFIX, useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { snapInlinePadding } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
   CloudIcon,
   Download01Icon,
   RemoveCircleIcon,
-  StarIcon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -33,28 +34,22 @@ import {
   type ReactNode,
   useEffect,
   useMemo,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
 import {
-  type ModelConfigFocus,
-  type ModelConfigHandoffRequest,
   modelConfigTarget,
-  modelConfigTargetIsResident,
-  modelConfigTargetMatchesSelection,
 } from "../model-config/model-config-handoff";
 import { modelConfigInstanceKey } from "../model-config/config-signature";
 import {
-  ggufVariantsMatch,
   modelDisplayName,
 } from "../model-config/model-identity";
 import {
-  type PerModelConfig,
   resolveInitialConfig,
 } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
 import {
-  type ExternalConnectionRef,
   missingExternalModel,
 } from "./model-selector/missing-external-model";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
@@ -72,12 +67,8 @@ import {
   resolveHubSection,
 } from "./model-selector/hub-section";
 import { PillTabs } from "./model-selector/pill-tabs";
-import { loraOptionLabel } from "./model-selector/row-meta";
-import { isFineTunedSource } from "./model-selector/source-tabs";
 import type {
-  DeletedModelRef,
   ExternalModelOption,
-  LoraModelOption,
   ModelDownloadFootprintResolver,
   ModelOption,
   ModelPickTarget,
@@ -102,42 +93,20 @@ interface ModelSelectorProps {
   loadedModelIdOverride?: string;
   /** Task-owned loaded quant, paired with `loadedModelIdOverride`; null means none. */
   loadedGgufVariantOverride?: string | null;
-  loraModels?: LoraModelOption[];
   externalModels?: ExternalModelOption[];
-  /** Carries each connection's cached catalogue, which tells a user-unticked model from a withdrawn one. */
-  externalConnections?: ExternalConnectionRef[];
   value?: string;
-  defaultValue?: string;
   /** Whether the selection is actually resident. Omitted means a selection is a load. */
   loaded?: boolean;
   activeGgufVariant?: string | null;
-  activeVariantIsMlx?: boolean;
-  activeModelConfig?: PerModelConfig | null;
-  activeLoadedContextLength?: number | null;
-  selectedConfig?: PerModelConfig | null;
-  selectedGgufVariant?: string | null;
-  configRequest?: ModelConfigHandoffRequest | null;
-  onConfigRequestAdopted?: (requestId: string) => void;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   /** Optional task-specific resolver for companion assets a GGUF row alone cannot describe. */
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: (modelId?: string) => void;
-  onEjectAll?: () => void;
-  loadedCount?: number;
-  loadedNames?: string[];
-  onFoldersChange?: () => void;
-  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
-  deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
-  size?: "sm" | "default" | "lg";
   className?: string;
-  triggerLabelClassName?: string;
-  contentClassName?: string;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   triggerDataTour?: string;
-  contentDataTour?: string;
-  showCloudIndicator?: boolean;
   /** Restrict the Hub tab to a pipeline task (e.g. text-to-image). */
   task?: HfTaskFilter;
   /** Canonical model groups (Images / Video): one row per model with a format second level. */
@@ -171,43 +140,23 @@ const GAP_BEFORE = "before:inline-block before:w-2 before:content-['']";
 function ModelSelectorTrigger({
   currentModel,
   isLoaded,
-  showCloudIndicator = false,
   variant = "outline",
-  size = "default",
   className,
-  triggerLabelClassName,
   dataTour,
   onEject,
-  loadedCount = 0,
-  loadedNames,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
 }: {
-  loadedCount?: number;
-  loadedNames?: string[];
   currentModel?: ModelOption;
   isLoaded: boolean;
-  showCloudIndicator?: boolean;
   variant?: "outline" | "ghost" | "muted";
-  size?: "sm" | "default" | "lg";
   className?: string;
-  triggerLabelClassName?: string;
   dataTour?: string;
   onEject?: () => void;
   placeholder?: string;
 }) {
-  const severalLoaded = loadedCount > 1;
-  const listsNames = severalLoaded && (loadedNames?.length ?? 0) > 1;
-  const triggerTitle = listsNames
-    ? loadedNames?.join(" • ")
-    : severalLoaded
-      ? `${loadedCount} models loaded`
-      : (currentModel?.name ?? placeholder);
-  const subtitle = listsNames
-    ? undefined
-    : severalLoaded
-      ? currentModel?.name
-      : currentModel?.description;
+  const triggerTitle = currentModel?.name ?? placeholder;
+  const subtitle = currentModel?.description;
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -222,10 +171,7 @@ function ModelSelectorTrigger({
             "rounded-[10px] hover:bg-nav-surface-hover has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
             "rounded-full bg-muted hover:bg-muted has-[[data-eject-hit]:hover]:!bg-muted",
-          // Height stays pinned to --studio-chat-control-height.
-          size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
-          size === "default" && "h-9 pl-4 pr-2 text-sm",
-          size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
+          "h-9 pl-4 pr-2 text-sm",
           className,
         )}
       >
@@ -265,37 +211,25 @@ function ModelSelectorTrigger({
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
           <span className="flex min-w-0 items-baseline">
-            <span
-              className={cn(
-                "flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
-                triggerLabelClassName,
-              )}
-            >
+            <span className="flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
               <span className="min-w-0 truncate">{triggerTitle}</span>
-              {showCloudIndicator ? (
-                <HugeiconsIcon
-                  icon={CloudIcon}
-                  strokeWidth={1.75}
-                  className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
-                />
-              ) : null}
             </span>
             {subtitle && (
               <span
                 className={cn(
                   "min-w-0 shrink-[1000] truncate text-xs leading-tight text-muted-foreground",
-                  !showCloudIndicator && GAP_BEFORE,
+                  GAP_BEFORE,
                 )}
               >
                 {subtitle}
               </span>
             )}
           </span>
-          {!listsNames && currentModel?.descriptionSuffix && (
+          {currentModel?.descriptionSuffix && (
             <span
               className={cn(
                 "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground",
-                !subtitle && !showCloudIndicator && GAP_BEFORE,
+                !subtitle && GAP_BEFORE,
               )}
             >
               {/* Its own span: a flex item drops the leading space of its text. */}
@@ -349,7 +283,7 @@ const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
     value: "recommended",
     label: "Recommended",
-    icon: <HugeiconsIcon icon={StarIcon} className="size-3.5 shrink-0" />,
+    icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5 shrink-0" />,
   },
   {
     value: "downloaded",
@@ -364,28 +298,14 @@ function ModelSelectorContent({
   additionalOnDeviceModels,
   loadedModelIdOverride,
   loadedGgufVariantOverride,
-  loraModels,
   externalModels,
   value,
   loaded,
-  activeGgufVariant,
-  activeModelConfig,
-  activeLoadedContextLength,
-  selectedConfig,
-  selectedGgufVariant,
-  configRequest,
-  onConfigRequestAdopted,
   onSelect,
   resolveDownloadFootprint,
   onEject,
-  onEjectAll,
-  onFoldersChange,
   onBrowseHub,
   onConfigureConnection,
-  onModelsChange,
-  deleteDisabled,
-  className,
-  dataTour,
   task,
   catalog,
   communityModelPolicy,
@@ -402,28 +322,14 @@ function ModelSelectorContent({
   additionalOnDeviceModels?: ModelOption[];
   loadedModelIdOverride?: string;
   loadedGgufVariantOverride?: string | null;
-  loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value?: string;
   loaded?: boolean;
-  activeGgufVariant?: string | null;
-  activeModelConfig?: PerModelConfig | null;
-  activeLoadedContextLength?: number | null;
-  selectedConfig?: PerModelConfig | null;
-  selectedGgufVariant?: string | null;
-  configRequest?: ModelConfigHandoffRequest | null;
-  onConfigRequestAdopted?: (requestId: string) => void;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: (modelId?: string) => void;
-  onEjectAll?: () => void;
-  onFoldersChange?: () => void;
   onBrowseHub?: () => void;
   onConfigureConnection?: (providerId: string) => void;
-  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
-  deleteDisabled?: boolean;
-  className?: string;
-  dataTour?: string;
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
@@ -438,12 +344,6 @@ function ModelSelectorContent({
   const t = useT();
   const hasSelection = Boolean(value);
   const hasExternal = externalModels.length > 0;
-  // Local models (LM Studio, Ollama, custom folders) live in Hub, not Fine-tuned.
-  const fineTunedModels = useMemo(
-    () => loraModels.filter((model) => isFineTunedSource(model.source)),
-    [loraModels],
-
-  );
   const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
   const npu =
     !task && npuStatus?.supported === true
@@ -490,11 +390,6 @@ function ModelSelectorContent({
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
   );
-  const [adoptedConfigRequestId, setAdoptedConfigRequestId] = useState<
-    string | null
-  >(null);
-  const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
-  const [configStandalone, setConfigStandalone] = useState(false);
 
   // Cleared during render, not in an effect: a reopen inside the exit animation dropped the adopted target.
   const [renderedOpen, setRenderedOpen] = useState(open);
@@ -503,8 +398,6 @@ function ModelSelectorContent({
     if (!open) {
       setSectionChosenThisOpen(false);
       setConfigTarget(null);
-      setConfigFocus(null);
-      setConfigStandalone(false);
     }
   }
 
@@ -567,53 +460,8 @@ function ModelSelectorContent({
       ? id.slice(NPU_MODEL_PREFIX.length)
       : undefined;
     setConfigTarget(modelConfigTarget(id, meta, displayName));
-    setConfigFocus(null);
-    setConfigStandalone(false);
   };
-  const requestedConfigTarget = useMemo(
-    () =>
-      open && configRequest
-        ? modelConfigTarget(
-            configRequest.id,
-            configRequest.meta,
-            configRequest.displayName,
-          )
-        : null,
-    [configRequest, open],
-  );
-  const visibleConfigTarget = open
-    ? (requestedConfigTarget ?? configTarget)
-    : null;
-  const visibleConfigMatchesSelection =
-    visibleConfigTarget !== null &&
-    modelConfigTargetMatchesSelection(visibleConfigTarget, value);
-  const visibleConfigIsResident =
-    visibleConfigTarget !== null &&
-    modelConfigTargetIsResident({
-      target: visibleConfigTarget,
-      selectedId: value,
-      activeGgufVariant,
-      loaded,
-    });
-  const visibleLoadedConfig = visibleConfigIsResident
-    ? (activeModelConfig ?? null)
-    : null;
-  if (
-    configRequest &&
-    requestedConfigTarget &&
-    adoptedConfigRequestId !== configRequest.requestId
-  ) {
-    setAdoptedConfigRequestId(configRequest.requestId);
-    setConfigTarget(requestedConfigTarget);
-    setConfigFocus(configRequest.focus ?? null);
-    setConfigStandalone(configRequest.standalone === true);
-  }
-  useEffect(() => {
-    if (!configRequest || adoptedConfigRequestId !== configRequest.requestId) {
-      return;
-    }
-    onConfigRequestAdopted?.(configRequest.requestId);
-  }, [adoptedConfigRequestId, configRequest, onConfigRequestAdopted]);
+  const visibleConfigTarget = open ? configTarget : null;
   const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
     if (meta.source === "external") {
       onSelect(id, meta);
@@ -626,112 +474,105 @@ function ModelSelectorContent({
     });
   };
 
+  // Padding snaps once at mount; opened on Run settings it stayed zero after Back, so re-snap.
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const showingConfig = visibleConfigTarget !== null;
+  const lastShowingConfig = useRef(showingConfig);
+  useLayoutEffect(() => {
+    if (lastShowingConfig.current === showingConfig) {
+      return;
+    }
+    lastShowingConfig.current = showingConfig;
+    const surface = surfaceRef.current;
+    if (!surface) {
+      return;
+    }
+    surface.style.removeProperty("padding-left");
+    surface.style.removeProperty("padding-right");
+    snapInlinePadding(surface);
+  }, [showingConfig]);
+
   const panel = (
     <>
-      <TooltipProvider
-        delayDuration={0}
-        skipDelayDuration={0}
-        disableHoverableContent={true}
-      >
-        {visibleConfigTarget ? (
-          // 28px sides like the list's text; the right is 20px plus the bar, an overlay strip capped at 8px.
-          <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
-            <ModelConfigPage
-              key={modelConfigInstanceKey(
-                visibleConfigTarget.configId ?? visibleConfigTarget.id,
-                visibleConfigTarget.ggufVariant,
-                visibleLoadedConfig,
-              )}
-              target={visibleConfigTarget}
-              onBack={
-                configStandalone
-                  ? undefined
-                  : () => {
-                      setConfigTarget(null);
-                      setConfigFocus(null);
-                    }
-              }
-              focusField={configFocus ?? undefined}
-              onRun={(config, isDiffusion) =>
-                onSelect(
+        <TooltipProvider
+          delayDuration={0}
+          skipDelayDuration={0}
+          disableHoverableContent={true}
+        >
+          {visibleConfigTarget ? (
+            // 28px sides like the list's text; the right is 20px plus the bar, an overlay strip capped at 8px.
+            <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
+              <ModelConfigPage
+                key={modelConfigInstanceKey(
                   visibleConfigTarget.configId ?? visibleConfigTarget.id,
-                  {
-                    ...visibleConfigTarget.meta,
-                    config,
-                    isDiffusion,
-                    forceReload: true,
-                  },
-                )
-              }
-              loadedConfig={visibleLoadedConfig}
-              loadedContextLength={
-                visibleConfigIsResident
-                  ? (activeLoadedContextLength ?? null)
-                  : null
-              }
-              initialConfig={
-                visibleConfigMatchesSelection &&
-                ggufVariantsMatch(
-                  selectedGgufVariant,
                   visibleConfigTarget.ggufVariant,
-                )
-                  ? (selectedConfig ?? null)
-                  : null
-              }
-            />
-          </div>
-        ) : (
-          <>
-            <HubModelPicker
-              open={open}
-              models={models}
-              additionalOnDeviceModels={additionalOnDeviceModels}
-              loadedModelIdOverride={loadedModelIdOverride}
-              loadedGgufVariantOverride={loadedGgufVariantOverride}
-              loraModels={fineTunedModels}
-              externalModels={externalModels}
-              value={value}
-              valueLoaded={loaded}
-              onSelect={handlePick}
-              resolveDownloadFootprint={resolveDownloadFootprint}
-              onFoldersChange={onFoldersChange}
-              onBrowseHub={onBrowseHub}
-              onConfigureConnection={onConfigureConnection}
-              onModelsChange={onModelsChange}
-              onConfigure={openConfigPage}
-              deleteDisabled={deleteDisabled}
-              onEject={hasSelection && onEject ? onEject : undefined}
-              onEjectAll={onEjectAll}
-              task={task}
-              catalog={catalog}
-              communityModelPolicy={communityModelPolicy}
-              opaqueKind={opaqueKind}
-              rowFilter={rowFilter}
-              cpuLoad={cpuLoad}
-              moreModels={moreModels}
-              npu={npu}
-              onDeviceInventoryChange={setHasDeviceModels}
-              section={effectiveHubSection}
-              sectionToggle={
-                <PillTabs
-                  // The panel reserves --picker-tab-pad per pill, so keep the two in step.
-                  className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
-                  ariaLabel={t("picker.hubSectionAriaLabel")}
-                  tabs={hubSectionTabs}
-                  value={effectiveHubSection}
-                  onValueChange={(next) => {
-                    const section = next as HubSection;
-                    setSectionChosenThisOpen(true);
-                    setHubSection(section);
-                    saveLastHubSection(section);
-                  }}
-                  fit={true}
-                />
-              }
-            />
-          </>
-        )}
-      </TooltipProvider>
+                  null,
+                )}
+                target={visibleConfigTarget}
+                onBack={() => setConfigTarget(null)}
+                onRun={(config, isDiffusion) =>
+                  onSelect(
+                    visibleConfigTarget.configId ?? visibleConfigTarget.id,
+                    {
+                      ...visibleConfigTarget.meta,
+                      config,
+                      isDiffusion,
+                      forceReload: true,
+                    },
+                  )
+                }
+                loadedConfig={null}
+                loadedContextLength={null}
+                initialConfig={null}
+              />
+            </div>
+          ) : (
+            <>
+              <HubModelPicker
+                open={open}
+                models={models}
+                additionalOnDeviceModels={additionalOnDeviceModels}
+                loadedModelIdOverride={loadedModelIdOverride}
+                loadedGgufVariantOverride={loadedGgufVariantOverride}
+                externalModels={externalModels}
+                value={value}
+                valueLoaded={loaded}
+                onSelect={handlePick}
+                resolveDownloadFootprint={resolveDownloadFootprint}
+                onBrowseHub={onBrowseHub}
+                onConfigureConnection={onConfigureConnection}
+                onConfigure={openConfigPage}
+                onEject={hasSelection && onEject ? onEject : undefined}
+                task={task}
+                catalog={catalog}
+                communityModelPolicy={communityModelPolicy}
+                opaqueKind={opaqueKind}
+                rowFilter={rowFilter}
+                cpuLoad={cpuLoad}
+                moreModels={moreModels}
+                npu={npu}
+                onDeviceInventoryChange={setHasDeviceModels}
+                section={effectiveHubSection}
+                sectionToggle={
+                  <PillTabs
+                    // The panel reserves --picker-tab-pad per pill, so keep the two in step.
+                    className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
+                    ariaLabel={t("picker.hubSectionAriaLabel")}
+                    tabs={hubSectionTabs}
+                    value={effectiveHubSection}
+                    onValueChange={(next) => {
+                      const section = next as HubSection;
+                      setSectionChosenThisOpen(true);
+                      setHubSection(section);
+                      saveLastHubSection(section);
+                    }}
+                    fit={true}
+                  />
+                }
+              />
+            </>
+          )}
+        </TooltipProvider>
     </>
   );
   if (embedded) {
@@ -746,7 +587,6 @@ function ModelSelectorContent({
             : hasExternal
               ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pt-2 pl-4 pr-4"
               : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pt-2 pl-4 pr-2",
-          className,
         )}
       >
         {panel}
@@ -758,6 +598,7 @@ function ModelSelectorContent({
       align="start"
       alignOffset={10}
       dropdownGlow="picker"
+      ref={surfaceRef}
       // Read by the model list, which sets its right inset against the panel's own.
       data-external={hasExternal || undefined}
       aria-label={
@@ -765,7 +606,6 @@ function ModelSelectorContent({
           ? `Run settings for ${visibleConfigTarget.displayName}`
           : undefined
       }
-      data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
@@ -785,7 +625,6 @@ function ModelSelectorContent({
                 ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
                 : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
             ),
-        className,
       )}
     >
       {panel}
@@ -798,36 +637,17 @@ export function ModelSelector({
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
   loadedGgufVariantOverride,
-  loraModels = [],
   externalModels = [],
-  externalConnections = [],
   value,
-  defaultValue,
   activeGgufVariant,
-  activeVariantIsMlx = false,
-  activeModelConfig,
-  activeLoadedContextLength,
-  selectedConfig,
-  selectedGgufVariant,
-  configRequest,
-  onConfigRequestAdopted,
   onValueChange,
   resolveDownloadFootprint,
   onEject,
-  onEjectAll,
-  onFoldersChange,
-  onModelsChange,
-  deleteDisabled,
   variant = "outline",
-  size = "default",
   className,
-  triggerLabelClassName,
-  contentClassName,
   open: controlledOpen,
   onOpenChange,
   triggerDataTour,
-  contentDataTour,
-  showCloudIndicator = false,
   task,
   catalog,
   communityModelPolicy = "none",
@@ -839,8 +659,6 @@ export function ModelSelector({
   hubTask,
   placeholder,
   loaded,
-  loadedCount,
-  loadedNames,
   embedded = false,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
@@ -848,7 +666,7 @@ export function ModelSelector({
   const setOpen = onOpenChange ?? setUncontrolledOpen;
   const navigate = useNavigate();
   const t = useT();
-  const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
+  const [uncontrolled, setUncontrolled] = useState("");
 
   const selected = value ?? uncontrolled;
   // The chat model can be evicted by an image or video load while the pick survives.
@@ -861,30 +679,6 @@ export function ModelSelector({
     }
     for (const model of models) {
       all.set(model.id, model);
-    }
-    for (const lora of loraModels) {
-      const displayName = loraOptionLabel(lora);
-      const isLocal = lora.source === "local";
-      const isTraining = lora.source === "training";
-      const isExported = lora.source === "exported";
-      const isMerged = lora.exportType === "merged";
-      const isGguf = lora.exportType === "gguf";
-      const tag = isLocal
-        ? isGguf
-          ? "GGUF"
-          : "Local"
-        : isTraining && isMerged
-          ? "Full finetune"
-          : isExported
-            ? isMerged
-              ? "Merged · Exported"
-              : "LoRA · Exported"
-            : "LoRA";
-      all.set(lora.id, {
-        ...lora,
-        name: displayName,
-        description: tag,
-      });
     }
     for (const externalModel of externalModels) {
       all.set(externalModel.id, {
@@ -900,7 +694,7 @@ export function ModelSelector({
       });
     }
     return all;
-  }, [externalModels, loraModels, models, moreModels]);
+  }, [externalModels, models, moreModels]);
 
   // A task-owned quant names the trigger only while the trigger shows that loaded model.
   const triggerGgufVariant =
@@ -923,14 +717,12 @@ export function ModelSelector({
     // unusable rather than letting the generic fallback hide the failure.
     const missingExternal = found
       ? null
-      : missingExternalModel(selected, externalModels, externalConnections);
+      : missingExternalModel(selected, externalModels);
     // A cached GGUF's checkpoint is a snapshot path; the leaf matches the later catalog row.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (triggerGgufVariant) {
       // The variant is the quant, so it goes in the suffix.
-      const isMlx =
-        activeVariantIsMlx && loadedGgufVariantOverride === undefined;
-      const desc = `${isMlx ? "MLX" : "GGUF"} · ${triggerGgufVariant}`;
+      const desc = `GGUF · ${triggerGgufVariant}`;
       return found
         ? { ...found, description: undefined, descriptionSuffix: desc }
         : { id: selected, name: fallbackName, descriptionSuffix: desc };
@@ -956,10 +748,7 @@ export function ModelSelector({
     optionById,
     catalog,
     triggerGgufVariant,
-    activeVariantIsMlx,
-    loadedGgufVariantOverride,
     externalModels,
-    externalConnections,
     t,
   ]);
 
@@ -975,11 +764,6 @@ export function ModelSelector({
   function handleEject(modelId?: string) {
     onEject?.(modelId);
     if (!modelId) setOpen(false);
-  }
-
-  function handleEjectAll() {
-    onEjectAll?.();
-    setOpen(false);
   }
 
   function handleBrowseHub() {
@@ -1010,32 +794,18 @@ export function ModelSelector({
       additionalOnDeviceModels={additionalOnDeviceModels}
       loadedModelIdOverride={loadedModelIdOverride}
       loadedGgufVariantOverride={loadedGgufVariantOverride}
-      loraModels={loraModels}
       externalModels={externalModels}
       value={selected}
       loaded={loaded}
-      activeGgufVariant={activeGgufVariant}
-      activeModelConfig={activeModelConfig}
-      activeLoadedContextLength={activeLoadedContextLength}
-      selectedConfig={selectedConfig}
-      selectedGgufVariant={selectedGgufVariant}
-      configRequest={configRequest}
-      onConfigRequestAdopted={onConfigRequestAdopted}
       onSelect={handleSelect}
       resolveDownloadFootprint={resolveDownloadFootprint}
       onEject={onEject ? handleEject : undefined}
-      onEjectAll={onEjectAll ? handleEjectAll : undefined}
-      onFoldersChange={onFoldersChange}
       onBrowseHub={
         task && communityModelPolicy === "none" && !hubCapability
           ? undefined
           : handleBrowseHub
       }
       onConfigureConnection={handleConfigureConnection}
-      onModelsChange={onModelsChange}
-      deleteDisabled={deleteDisabled}
-      className={contentClassName}
-      dataTour={contentDataTour}
       task={task}
       catalog={catalog}
       communityModelPolicy={communityModelPolicy}
@@ -1051,15 +821,10 @@ export function ModelSelector({
       <ModelSelectorTrigger
         currentModel={currentModel}
         isLoaded={isLoaded}
-        showCloudIndicator={showCloudIndicator}
         variant={variant}
-        size={size}
         className={className}
-        triggerLabelClassName={triggerLabelClassName}
         dataTour={triggerDataTour}
         onEject={onEject ? () => handleEject() : undefined}
-        loadedCount={loadedCount}
-        loadedNames={loadedNames}
         placeholder={placeholder}
       />
       {content}

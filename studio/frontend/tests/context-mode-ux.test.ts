@@ -63,7 +63,7 @@ test("the existing info hint owns the mode explanation and fitted result", () =>
   );
   assert.match(
     panelCode,
-    /renderWarning=\{\(v\) => isActiveModel && loadedMaxContextLength != null && v > loadedMaxContextLength && \(/,
+    /renderWarning=\{\(v\) => resolvedIsDiffusion \? \( <DiffusionContextNote [^)]*\) : isActiveModel && loadedMaxContextLength != null && v > loadedMaxContextLength && \(/,
   );
   assert.match(panelCode, /\{renderWarning\(shown\)\}/);
   assert.doesNotMatch(

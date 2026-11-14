@@ -26,6 +26,7 @@ import {
   DEFAULT_LIBRARY_SETTINGS,
   type LibrarySortKey,
   SORT_STATES,
+  activityBeforeVisit,
   compareBySort,
   includedBySettings,
   lastActivity,
@@ -283,6 +284,14 @@ table("last activity is the later of modified and opened", lastActivity, [
   [[{ updatedAt: 5, openedAt: 9 }], 9],
   [[{ updatedAt: 9, openedAt: 5 }], 9],
 ]);
+
+test("an item opened during the visit keeps its earlier activity", () => {
+  const openedBefore = new Map<string, number | null>([["a", 3], ["b", null]]);
+  assert.equal(activityBeforeVisit({ id: "a", updatedAt: 1, openedAt: 50 }, openedBefore), 3);
+  assert.equal(activityBeforeVisit({ id: "b", updatedAt: 2, openedAt: 50 }, openedBefore), 2);
+  assert.equal(activityBeforeVisit({ id: "a", updatedAt: 40, openedAt: 50 }, openedBefore), 40);
+  assert.equal(activityBeforeVisit({ id: "c", updatedAt: 1, openedAt: 50 }, openedBefore), 50);
+});
 
 test("every column order has a ?sort value that reads back the same", () => {
   for (const key of ["name", "modified", "size"] as const) {

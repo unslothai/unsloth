@@ -18,6 +18,7 @@ from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
+from core.inference.tool_facts import REPEATABLE, awaits_user, reads_only, repeatable
 
 # Provenance the envelope is trusted on; stamped by mcp_client.
 MCP_TOOL_PREFIX = "mcp__"
@@ -26,7 +27,7 @@ MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 # Never deduplicated: an identical call is new work (the page as it is now, another render).
-REPEATABLE_TOOL_NAMES = BROWSER_TOOL_NAMES | MEDIA_CHAT_TOOLS
+REPEATABLE_TOOL_NAMES = REPEATABLE
 
 
 _CANONICAL_HEAL_ARG = {
@@ -450,8 +451,7 @@ _KNOWN_KEYWORDS = _READ_KEYWORDS | _INERT_KEYWORDS | _UNION_KEYWORDS
 
 
 def _readable(spec: Any) -> bool:
-    """An allowlist, because composition, reference and a later draft's keywords can all move
-    a declaration out of this walk's reach."""
+    """Allowlist: composition, references or newer drafts can move declarations out of reach."""
     return isinstance(spec, Mapping) and spec.keys() <= _KNOWN_KEYWORDS
 
 
@@ -769,8 +769,7 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
 
 
 def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
-    """Provisional-card provenance, MCP display name included so an early or
-    orphaned card (cancel/error before the real tool_start) never shows the id."""
+    """Provisional card provenance with MCP name; an early or orphaned card never shows the id."""
     mcp = mcp_display_parts(tool_name)
     return tool_event_provenance(
         provisional = True,
@@ -1059,9 +1058,7 @@ _MCP_TOOL_PREFIX = "mcp__"
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution", "generate_image"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
-# Invalidated by workspace writes, but reading an image is not new work that licenses a rerun.
-_WORKSPACE_READ_TOOLS = frozenset({"view_image"})
-_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | _WORKSPACE_READ_TOOLS
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file", "view_image"}
 
 
 def _reruns_after_new_work(tool_name: Any) -> bool:
@@ -1069,9 +1066,8 @@ def _reruns_after_new_work(tool_name: Any) -> bool:
     return tool_name in _WORKSPACE_TOOLS or str(tool_name or "").startswith(_MCP_TOOL_PREFIX)
 
 
-# `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
-# the way to the model, which is where it would leave the machine. The mask carries neither prefix,
-# so re-running is a no-op.
+# Cached in the clear for CLI reuse; masked before the model, and the mask has no prefix to
+# re-match.
 _STUDIO_API_KEY_RE = re.compile(
     # 8, not 32: a truncated result can end mid-key. Hex only, so `sk-unsloth-internal-...` survives.
     r"sk-unsloth-[0-9a-fA-F]{8,}"
@@ -1175,15 +1171,24 @@ def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
     return str(name or "")
 
 
-def _noop_result(reason: NoopReason, tool_name: str) -> str:
+def _noop_result(
+    reason: NoopReason,
+    tool_name: str,
+    *,
+    final: bool = False,
+) -> str:
     if reason == "duplicate":
+        follow_up = (
+            "Provide the final answer now without calling more tools."
+            if final
+            else "Answer from the results you have; call a different tool only if it would "
+            "return information you do not have yet."
+        )
         return (
             f"One earlier request to call tool '{tool_name}' in this batch was "
             "not executed because an identical call had already completed "
-            "successfully. Do not repeat the same "
-            "tool call. Continue with a different enabled tool if that would "
-            "materially help, or provide the final answer if you have enough "
-            "information."
+            "successfully and nothing has changed since, so its result above still holds. "
+            f"Do not repeat the same tool call. {follow_up}"
         )
     if reason == "render_html_repeat":
         return (
@@ -1258,6 +1263,15 @@ class ToolLoopController:
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
         self._force_final_answer = False
+        self._awaiting_user = False
+
+    @property
+    def awaiting_user(self) -> bool:
+        """A result in the latest batch said only the user can unblock this turn."""
+        return self._awaiting_user
+
+    def begin_batch(self) -> None:
+        self._awaiting_user = False
 
     @property
     def history(self) -> tuple[_ToolCallRecord, ...]:
@@ -1355,7 +1369,7 @@ class ToolLoopController:
         elif (
             self._deduplicate_tool_calls
             and key in self._successful_keys
-            and tool_name not in REPEATABLE_TOOL_NAMES
+            and not repeatable(tool_name)
             and tool_name != MCP_TOOL_SEARCH_NAME
         ):
             # Not the browser tools: each acts on or reads the page as it is now, so a second
@@ -1394,8 +1408,7 @@ class ToolLoopController:
             provisional = provisional,
             allowed_tool_names = allowed_tool_names,
         )
-        # The second pass receives an argument mapping, so retain provenance from the first parse,
-        # notably whether a local model's bare argument was healed.
+        # Keep first-parse provenance, e.g. whether a local model's bare argument was healed.
         refreshed.provenance.update(decision.provenance)
         return refreshed
 
@@ -1403,6 +1416,8 @@ class ToolLoopController:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
+        # Sticky for the batch: a parallel call that succeeds does not unblock the user.
+        self._awaiting_user = self._awaiting_user or awaits_user(result_text)
         result_text = self._cap_result(result_text, decision.tool_name)
         self._history.append(
             _ToolCallRecord(
@@ -1416,9 +1431,9 @@ class ToolLoopController:
         # otherwise apply the edit twice. Here as well as in the prefilters, which a
         # structured batch skips. A failed command can still have written, so it counts too.
         if _reruns_after_new_work(decision.tool_name):
-            if (
-                decision.tool_name not in _WORKSPACE_READ_TOOLS
-                and decision.key not in self._workspace_ran
+            # A repeatable writer (an unseeded generator) makes something new on every run.
+            if not reads_only(decision.tool_name) and (
+                decision.key not in self._workspace_ran or repeatable(decision.tool_name)
             ):
                 self._workspace_ran.add(decision.key)
                 self._workspace_novel += 1
@@ -1489,6 +1504,7 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
+        result = decision.noop_result
         if decision.action == "duplicate":
             duplicate_count = self._duplicate_noop_counts.get(decision.key, 0) + 1
             self._duplicate_noop_counts[decision.key] = duplicate_count
@@ -1496,9 +1512,12 @@ class ToolLoopController:
                 self._force_final_answer = True
         elif decision.action in ("disabled", "render_html_repeat"):
             self._force_final_answer = True
+        # Any repeat once the rounds have ended, so a later call in the same batch cannot offer a tool again.
+        if decision.action == "duplicate" and self._force_final_answer:
+            result = _noop_result("duplicate", decision.tool_name, final = True)
         return ToolCallCompletion(
             decision = decision,
-            result = decision.noop_result,
+            result = result,
             is_error = False,
             executed = False,
         )
