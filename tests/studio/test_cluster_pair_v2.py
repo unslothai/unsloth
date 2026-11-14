@@ -369,11 +369,13 @@ async def test_a_tunnel_arriving_after_the_window_closed_is_closed(master_dir, m
 
 @_async
 async def test_a_dial_arriving_after_the_join_was_cancelled_is_closed(fake, monkeypatch):
-    gate, net = threading.Event(), _Net()
-    monkeypatch.setattr(remote, "dial", _blocking(gate, (net, 1)))
+    gate, net, dialing = threading.Event(), _Net(), threading.Event()
+    blocked = _blocking(gate, (net, 1))
+    monkeypatch.setattr(remote, "dial", lambda *a, **k: dialing.set() or blocked(*a, **k))
     invite = type("I", (), dict(addrs = ["127.0.0.1"], port = 1, master_fp = "f", tc = "tcX"))()
     task = asyncio.ensure_future(pairing._connect_any(invite, 5))
-    await asyncio.sleep(0.5)
+    # Windows takes about 2 s to refuse the LAN attempt, so cancel only once the tunnel dial is running.
+    assert await asyncio.to_thread(dialing.wait, 10)
     task.cancel()
     gate.set()
     with pytest.raises(asyncio.CancelledError):

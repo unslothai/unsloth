@@ -53,8 +53,15 @@ GOOD = [(M.BINARY, b"#!/bin/sh\necho nodekey:abc\n", "file"), (M.LICENSE, b"BSD"
 
 
 def _archived(data: bytes) -> bytes:
+    # The installer looks for this host's executable name (unsloth-link.exe on Windows), whatever TARGET says.
     try:
-        return package.archived_binary(TARGET, data)
+        with tarfile.open(fileobj = io.BytesIO(data), mode = "r:gz") as tar:
+            return tar.extractfile(M.BINARY).read()
+    except Exception:
+        pass
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            return zf.read(M.BINARY)
     except Exception:
         return b""  # a malformed archive: refused before its executable matters
 
