@@ -32,6 +32,8 @@ _ALIASES: dict[str, str] = {
     "sage": "sage",
     "xformers": "xformers",
     "aiter": "aiter",
+    # Studio's INT8 attention kernel: the automatic native pick, with the strided processors routed to the kernel
+    "unsloth_int8": "unsloth_int8",
 }
 ATTN_ALIASES = (ATTN_AUTO,) + tuple(dict.fromkeys(_ALIASES))
 
@@ -618,6 +620,9 @@ def select_attention_backend(
     bit-identical), and on ROCm with verified flash_attn to ``ROCM_FLASH_CANDIDATE`` (resolved by timing in
     ``apply_attention_backend``) unless speed is explicitly ``off``; elsewhere returns None (native)."""
     alias = normalize_attention_backend(requested)
+    if alias == "unsloth_int8":
+        alias = ATTN_AUTO
+        speed_active = True
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
         if backend == "native":
@@ -3561,8 +3566,30 @@ def apply_attention_backend(
     *,
     logger: Any = None,
     target: Any = None,
+    requested: Optional[str] = None,
 ) -> Optional[str]:
-    """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak)."""
+    """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
+
+    ``requested`` is the load's own attention request: ``unsloth_int8`` (or its env switch) then routes the strided
+    processors of a native pick to the INT8 kernel, and that name is returned."""
+    engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
+    if target is not None and (engaged is None or str(engaged).startswith("_native")):
+        try:
+            from .diffusion_int8_attention import BACKEND, install_requested
+            if install_requested(pipe, requested, target, logger = logger):
+                return BACKEND
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8", exc)
+    return engaged
+
+
+def _apply_attention_backend(
+    pipe: Any,
+    backend: Optional[str],
+    *,
+    logger: Any = None,
+    target: Any = None,
+) -> Optional[str]:
     if target is not None:
         try:
             guard_rocm_fused_sdpa(target, logger)

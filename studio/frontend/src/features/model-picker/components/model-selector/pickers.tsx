@@ -6,6 +6,7 @@ import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
 } from "./reconcile-gguf-pins";
+import { repinExportedGgufAfterDelete } from "./repin-exported-gguf";
 import { loadPickerGgufVariants } from "./gguf-discovery";
 import { firstIndexByKey } from "./option-index";
 
@@ -27,7 +28,6 @@ import {
   deleteFineTunedModel,
   listGgufVariants,
   listRecommendedFolders,
-  listLoras,
   revealFineTunedModel,
 } from "@/features/chat";
 import {
@@ -9003,25 +9003,31 @@ export function HubModelPicker({
                 {ejectButton}
               </div>
             ) : null}
-            <button
-              type="button"
-              data-testid="picker-npu-footer"
-              onClick={() => setFormatFilter("npu")}
-              className="flex w-full items-center gap-2 border-t border-border/60 px-3 pt-2 pb-1.5 text-left text-ui-12 text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <span
-                aria-hidden={true}
-                className="size-1.5 shrink-0 rounded-full bg-format-npu"
-              />
-              <span className="font-medium text-foreground">NPU models</span>
-              <span className="min-w-0 truncate">
-                {npuFooterHint(npuCatalog, showHfSection, npuBrowseRows.length)}
-              </span>
-              <HugeiconsIcon
-                icon={ChevronRightStandardIcon}
-                className="ml-auto size-3 shrink-0"
-              />
-            </button>
+            <div className="border-t border-border/60 px-0.5 pt-2 pb-2.5">
+              <button
+                type="button"
+                data-testid="picker-npu-footer"
+                onClick={() => setFormatFilter("npu")}
+                className="flex w-full items-center gap-2 rounded-full py-1.5 pr-3 pl-2.5 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <span
+                  aria-hidden={true}
+                  className="size-1.5 shrink-0 rounded-full bg-format-npu"
+                />
+                <span className="text-foreground">NPU models</span>
+                <span className="min-w-0 truncate text-muted-foreground">
+                  {npuFooterHint(
+                    npuCatalog,
+                    showHfSection,
+                    npuBrowseRows.length,
+                  )}
+                </span>
+                <HugeiconsIcon
+                  icon={ChevronRightStandardIcon}
+                  className="ml-auto size-3.5 shrink-0 text-muted-foreground"
+                />
+              </button>
+            </div>
           </div>
         ) : ejectButton ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
@@ -9109,21 +9115,6 @@ function FineTunedRows({
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
-  const replacePinned = usePinnedModelsStore((s) => s.replacePinned);
-  // A GGUF export's id is its first file, so deleting a variant can change or end it.
-  const repinExportedGguf = async (oldId: string) => {
-    const folder = oldId.slice(0, Math.max(oldId.lastIndexOf("/"), oldId.lastIndexOf("\\")));
-    const { loras } = await listLoras();
-    const next = loras.find(
-      (lora) =>
-        lora.source === "exported" &&
-        lora.export_type === "gguf" &&
-        (lora.adapter_path.startsWith(`${folder}/`) ||
-          lora.adapter_path.startsWith(`${folder}\\`)),
-    );
-    if (!next) unpinRepo(oldId);
-    else replacePinned(pinKey(oldId), pinKey(next.adapter_path));
-  };
   return (
     <>
       {adapters.map((adapter) => {
@@ -9336,9 +9327,7 @@ function FineTunedRows({
                           exportType: "gguf",
                           ggufVariant: quant,
                         });
-                        if (pinnedKeys.includes(pinKey(adapter.id))) {
-                          await repinExportedGguf(adapter.id).catch(() => unpinRepo(adapter.id));
-                        }
+                        await repinExportedGgufAfterDelete(adapter.id);
                         onModelsChange?.({
                           id: adapter.id,
                           ggufVariant: quant,

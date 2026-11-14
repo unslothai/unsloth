@@ -56,6 +56,8 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  gpuLayersPatch,
+  moeCpuOffloadApplies,
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
@@ -504,6 +506,7 @@ function MaxSeqLengthSetting({
   pinned,
   fittedToMemory,
   windowUnknown,
+  unknownLabel = "—",
   hint,
 }: {
   value: number;
@@ -515,6 +518,7 @@ function MaxSeqLengthSetting({
   pinned?: boolean;
   fittedToMemory?: boolean;
   windowUnknown?: boolean;
+  unknownLabel?: string;
   hint?: string;
 }) {
   const label = isMlx ? "Context Length" : "Max Seq Length";
@@ -546,7 +550,7 @@ function MaxSeqLengthSetting({
           max={inputMax}
           step={MAX_SEQ_LENGTH_STEP}
           onChange={onChange}
-          displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}
+          displayValue={isMlx && windowUnknown && !dragging ? unknownLabel : undefined}
           derived={isMlx && !pinned && !dragging}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
@@ -709,7 +713,8 @@ function GpuMemorySettings({
   const gpuLayersMax = layerCount != null ? layerCount + 1 : 256;
   const nCpuMoe = config.nCpuMoe ?? 0;
   const moeLayersMax = moeLayerCount ?? 0;
-  const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
+  const showMoeSlider =
+    isManual && moeCpuOffloadApplies(gpuLayers) && moeLayersMax > 0;
   const selectedGpuIds = config.selectedGpuIds ?? null;
   const gpuContext = pinnableGpuContext(gpuDevices, isDiffusion);
   const pinnableDevices = gpuContext.devices ?? [];
@@ -850,9 +855,7 @@ function GpuMemorySettings({
             value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
             min={GPU_LAYERS_AUTO}
             max={gpuLayersMax}
-            onChange={(v) =>
-              update(v < 0 ? { gpuLayers: v, tensorSplit: null } : { gpuLayers: v })
-            }
+            onChange={(v) => update(gpuLayersPatch(v))}
             format={(v) => (v < 0 ? "Auto" : undefined)}
             info={
               <>
@@ -2530,6 +2533,7 @@ export function ModelConfigPage({
   const loadedDefaultChatTemplate = useChatRuntimeStore(
     (s) => s.defaultChatTemplate,
   );
+  const npuContextFit = useChatRuntimeStore((s) => s.loadedNpuContextFit);
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.maxContextLength,
   );
@@ -3333,10 +3337,9 @@ export function ModelConfigPage({
     mlxFittedWindow,
     mlxProspectiveWindow,
   );
-  const npuServedWindow = targetIsNpu
-    ? ((isActiveModel ? servedWindow(loadedContextLength) : null) ??
-      Math.min(NPU_DEFAULT_CONTEXT_LENGTH, nativeMaxSeqLength))
-    : null;
+  // Auto is sized to free RAM at load time, so only a resident model knows its window.
+  const npuServedWindow =
+    targetIsNpu && isActiveModel ? servedWindow(loadedContextLength) : null;
   const maxSeqLengthValue =
     servedWindow(savedContextPin(config)) ??
     mlxServedWindow ??
@@ -3641,6 +3644,10 @@ export function ModelConfigPage({
     }
     if (committedMoeLayers != null) {
       pendingPatch.nCpuMoe = committedMoeLayers;
+    }
+    if (committedGpuLayers === 0) {
+      // Typed after the MoE input in the same click: 0 layers still zeroes the hidden count.
+      pendingPatch.nCpuMoe = 0;
     }
     const hasPending =
       committedContext != null ||
@@ -4272,15 +4279,25 @@ export function ModelConfigPage({
                 mlxServedWindow == null &&
                 npuServedWindow == null
               }
+              unknownLabel={targetIsNpu ? "Auto" : undefined}
               hint={
                 targetIsNpu
-                  ? `Context the NPU loads the model with. Default ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if lower.`
+                  ? "Context the NPU loads the model with. Auto fits it to the RAM free at load time, up to 65,536 tokens or the model's limit."
                   : undefined
               }
               onChange={(value) =>
                 update(contextPinPatch(value, pinsContextLength))
               }
             />
+            {targetIsNpu &&
+              isActiveModel &&
+              npuContextFit != null &&
+              maxSeqLengthValue > npuContextFit && (
+                <p className="text-ui-11 text-amber-500">
+                  This window exceeds the free-memory estimate at load time
+                  ({npuContextFit.toLocaleString()} tokens).
+                </p>
+              )}
             {!targetIsNpu && (
               <>
                 <AdvancedSettingsToggle

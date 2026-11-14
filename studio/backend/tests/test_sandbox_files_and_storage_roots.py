@@ -3474,7 +3474,11 @@ def test_clearing_every_chat_reports_the_files_it_kept():
     assert "result.sandboxesKept = backendResult.sandboxesKept" in storage
 
     tab = (src / "features/settings/tabs/data-tab.tsx").read_text(encoding = "utf-8")
-    assert "offerToDeleteKeptSandboxes(result.sandboxesKept)" in tab
+    assert "clearAllChatsWithToast(" in tab
+    shared = (src / "features/chat/utils/clear-all-chats-toast.ts").read_text(
+        encoding = "utf-8",
+    )
+    assert "offerToDeleteKeptSandboxes(result.sandboxesKept)" in shared
 
     offer = (src / "features/chat/utils/offer-kept-sandbox-files.ts").read_text(
         encoding = "utf-8",
