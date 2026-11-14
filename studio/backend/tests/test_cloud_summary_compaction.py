@@ -575,3 +575,46 @@ def test_turns_dropped_after_a_summary_move_the_boundary_past_it(monkeypatch):
     assert "summarized" not in truncation and truncation["summary_failed"] is False
     assert truncation["dropped_messages"] == 2
     assert truncation["boundary_messages"] == saved["covered_messages"] + 2
+
+
+def _recall_chat(thread: str) -> list[dict]:
+    from test_external_conversation_archive import _chat, _persist
+
+    chat = _chat()
+    _persist(thread, chat)
+    return chat
+
+
+def test_a_summarised_chat_recalls_the_exact_wording_the_newest_turn_asks_for(
+    rag_home, rag_conn, stub_embeddings
+):
+    thread = "thread-summary-recall"
+    chat = _recall_chat(thread)
+    chunks, [_], [sent] = _bodies(
+        _SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER
+    )
+    assert _SUMMARY in _system_text(sent)
+    # The summary replaced the turn holding the report; recall brings its wording back.
+    assert all("055 794 3321" not in str(m["content"]) for m in sent["messages"][:-1])
+    assert "055 794 3321" in str(sent["messages"][-1]["content"])
+    assert "Was there a phone number on the report?" in str(sent["messages"][-1]["content"])
+    [truncation] = _truncations(chunks)
+    assert truncation["summarized"] is True and truncation["recalled_chunks"] > 0
+
+
+def test_a_reused_summary_still_recalls_for_the_newest_turn(rag_home, rag_conn, stub_embeddings):
+    thread = "thread-summary-recall-reuse"
+    chat = _recall_chat(thread)
+    _bodies(_SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER)
+    later = [
+        *chat,
+        {"role": "assistant", "content": "I cannot see one."},
+        {"role": "user", "content": "Check the cardiology report again for the telefono."},
+    ]
+    chunks, summaries, [sent] = _bodies(
+        _SummarisingHandler, messages = later, thread_id = thread, **_SMALL_TRIGGER
+    )
+    assert summaries == []
+    assert "055 794 3321" in str(sent["messages"][-1]["content"])
+    [truncation] = _truncations(chunks)
+    assert truncation["recalled_chunks"] > 0

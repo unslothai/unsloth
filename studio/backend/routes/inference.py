@@ -29399,7 +29399,10 @@ async def _finish_external_compaction(
     """Summarise what the plan asked for (falling back to eviction when the call fails), then
     let the evicting fit catch whatever still does not fit."""
     from core.inference import cloud_compaction
-    from core.inference.context_window import estimate_message_tokens_without_unpriced_media
+    from core.inference.context_window import (
+        estimate_message_tokens_without_unpriced_media,
+        retrieval_budget,
+    )
     from core.inference.llama_cpp import _archive_and_recall
 
     thread_id = str(payload.thread_id) if payload.thread_id else None
@@ -29500,18 +29503,32 @@ async def _finish_external_compaction(
             truncation["checkpoint_started"] = True
             if plan.force == "manual":
                 truncation["manual"] = True
-            # Archive only: the summary stands in for the turns, and search_conversation can
-            # still reach their exact wording.
-            archived = await asyncio.to_thread(
-                _archive_and_recall,
-                current,
-                plan.messages,
-                branch_messages = plan.messages,
-                thread_id = thread_id,
-                style = "inline",
-                recall_done = True,
-            )
-            truncation.update(archived["counts"])
+        # The summary carries continuity; recall adds the exact wording of summarised turns the
+        # newest one asks about, within the prompt room left, as the evicting fit does.
+        room_for = plan.context_length or payload.context_window
+        recalled = await asyncio.to_thread(
+            _archive_and_recall,
+            current,
+            plan.messages,
+            branch_messages = plan.messages,
+            query_messages = branch,
+            thread_id = thread_id,
+            style = "inline",
+            recall_done = refusal is not None,
+            recall_budget_tokens = (
+                retrieval_budget(
+                    room_for,
+                    max_tokens,
+                    truncation["prompt_tokens_after"],
+                    reply_returns = tool_loop,
+                )
+                if room_for
+                else 0
+            ),
+            count_tokens = count,
+        )
+        current = recalled["conversation"]
+        truncation.update(recalled["counts"])
     if truncation is None and refusal is not None:
         truncation = {**refusal, "summary_failed": bool(summary_failed)}
     return current, truncation, max_tokens
