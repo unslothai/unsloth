@@ -1166,6 +1166,7 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ('nohup 2>&"$(rm -rf build)" make', True),
         ("make 2>&1 # | tee build.log", False),
         ("exec -a name 2>log make", False),
+        ("echo >&python` python3 -c \"import shutil; shutil.rmtree('build')\"`", True),
         ("script 2>errors.log session.log -qc 'rm -rf build'", True),
         ("script 2> errors.log session.log -qc 'rm -rf build'", True),
         ("trap 'x=1; echo hi' EXIT", False),

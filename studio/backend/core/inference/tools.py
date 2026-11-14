@@ -1065,6 +1065,9 @@ def _redirect_word_is_high_risk(word: str, depth: int) -> bool:
     """A redirection target leaves argv, but bash still runs its substitutions (`> "`rm -rf x`"`)."""
     if not any(mark in word for mark in ("$(", "`", "<(", ">(")):
         return False
+    if word.count("`") % 2 or word.count("(") != word.count(")"):
+        # The substitution runs on past this token (`>&x` python3 -c ...``): not screenable here.
+        return True
     return depth >= 3 or _terminal_is_high_risk(word, depth + 1)
 
 
