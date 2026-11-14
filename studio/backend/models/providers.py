@@ -199,6 +199,16 @@ class ProviderCreate(ExtraHeadersMixin):
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
     )
+    auto_compact_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 1_000,
+        le = 2_000_000,
+        description = (
+            "Optional token count after which chats on this connection compact, "
+            "instead of the default three quarters of the model's context window"
+        ),
+    )
 
     encrypted_api_key: Optional[str] = Field(
         None,
@@ -230,6 +240,16 @@ class ProviderUpdate(ExtraHeadersMixin):
         ge = 64,
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
+    )
+    auto_compact_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 1_000,
+        le = 2_000_000,
+        description = (
+            "Optional token count after which chats on this connection compact, "
+            "instead of the default three quarters of the model's context window"
+        ),
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -283,6 +303,10 @@ class ProviderResponse(BaseModel):
     max_output_tokens: Optional[int] = Field(
         None,
         description = "Configured maximum Max Tokens cap for this connection",
+    )
+    auto_compact_tokens: Optional[int] = Field(
+        None,
+        description = "Configured auto-compact trigger for this connection, in tokens",
     )
     extra_headers: dict[str, str] = Field(
         default_factory = dict,

@@ -727,6 +727,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # One row per summarised prefix, so a branch that forks before a later summary still finds its own.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_thread_summaries (
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            covered_digest TEXT NOT NULL,
+            covered_messages INTEGER NOT NULL,
+            summary TEXT NOT NULL,
+            model TEXT,
+            manual INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (thread_id, covered_digest)
+        )
+        """
+    )
     # Sidebar IDs (incl. comparison pair IDs), so no foreign key to one thread row.
     conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_tombstones (id TEXT NOT NULL PRIMARY KEY)")
     conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_deletions (id TEXT NOT NULL PRIMARY KEY)")
@@ -5000,6 +5015,66 @@ def chat_thread_has_messages(thread_id: str) -> bool:
             "SELECT 1 FROM chat_messages WHERE thread_id = ? LIMIT 1", (thread_id,)
         ).fetchone()
         return row is not None
+    finally:
+        conn.close()
+
+
+# A thread keeps a few summaries (branches, regenerations); older ones are pruned on save.
+_CHAT_THREAD_SUMMARIES_KEPT = 8
+
+
+def list_chat_thread_summaries(thread_id: str) -> list[dict]:
+    """Summaries of this thread's compacted prefixes, deepest first."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT covered_digest, covered_messages, summary, model, manual, created_at "
+            "FROM chat_thread_summaries WHERE thread_id = ? "
+            "ORDER BY covered_messages DESC, created_at DESC",
+            (thread_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def save_chat_thread_summary(
+    thread_id: str,
+    *,
+    covered_digest: str,
+    covered_messages: int,
+    summary: str,
+    model: Optional[str] = None,
+    manual: bool = False,
+) -> bool:
+    """False when the thread is not saved (a temporary chat): the caller keeps its in-memory copy."""
+    conn = get_connection()
+    try:
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO chat_thread_summaries "
+                "(thread_id, covered_digest, covered_messages, summary, model, manual, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    thread_id,
+                    covered_digest,
+                    int(covered_messages),
+                    summary,
+                    model,
+                    1 if manual else 0,
+                    int(time.time() * 1000),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            return False
+        conn.execute(
+            "DELETE FROM chat_thread_summaries WHERE thread_id = ? AND covered_digest NOT IN ("
+            "SELECT covered_digest FROM chat_thread_summaries WHERE thread_id = ? "
+            "ORDER BY created_at DESC LIMIT ?)",
+            (thread_id, thread_id, _CHAT_THREAD_SUMMARIES_KEPT),
+        )
+        conn.commit()
+        return True
     finally:
         conn.close()
 

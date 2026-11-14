@@ -231,6 +231,7 @@ import {
   useLibraryChatHandoffStore,
 } from "@/features/library/chat-handoff-store";
 import { resumesThought } from "@/features/model-picker";
+import { CompactOnReturnChip } from "./compact-on-return-chip";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -1906,8 +1907,9 @@ const PendingCompactionRule: FC = () => {
   const endsWithReply = useAuiState(
     ({ message }) => message.isLast && message.role === "assistant",
   );
+  const cloud = useChatRuntimeStore((s) => isExternalModelId(s.params.checkpoint));
   if (!pending || !endsWithReply) return null;
-  return <CompactionDivider pending={true} className="mt-6" />;
+  return <CompactionDivider pending={true} cloud={cloud} className="mt-6" />;
 };
 
 // The selector returns the persisted record, which keeps its identity between renders, so a
@@ -5785,15 +5787,17 @@ const Composer: FC<{
           return;
         }
         // The compacted turns stay reachable only through search_conversation, so no tools, no reset.
+        // A cloud connection summarizes instead, which needs neither.
         if (
-          !runtime.supportsTools ||
+          !isExternalModelId(runtime.params.checkpoint) &&
+          (!runtime.supportsTools ||
           !resumesThought({
             loadedIsGguf: runtime.loadedIsGguf,
             loadedIsMlx: runtime.loadedIsMlx,
             activeGgufVariant: runtime.activeGgufVariant,
             activeNativePathToken: runtime.activeNativePathToken,
             checkpoint: runtime.params.checkpoint,
-          })
+          }))
         ) {
           toast.info("/compact works with GGUF and MLX models that support tools");
           return;
@@ -7588,6 +7592,7 @@ const ComposerRightControls: FC<{
           !thread.isRunning && !isQueueRunning && !isResearchActive
         }
       >
+        <CompactOnReturnChip />
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
             tooltip={
