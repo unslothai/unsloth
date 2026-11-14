@@ -112,7 +112,8 @@ test("per-GPU subtotals follow load order and warn when one card overflows", () 
   const [rows, details] = html.split("<details");
   assert.match(rows, /Weights \+ cache per GPU[\s\S]*GPU 1 · 24 GiB[\s\S]*≥ 8\.00 GiB[\s\S]*GPU 0 · 16 GiB[\s\S]*text-red-500[\s\S]*3\.00 GiB/);
   assert.doesNotMatch(rows, /cache unknown|0\.00 GiB free/);
-  assert.match(details, /^[^>]*>(?:<summary[^>]*>)Layer and memory details<\/summary>/);
+  const summary = details.slice(0, details.indexOf("</summary>"));
+  assert.match(summary, /<summary\b[^>]*list-none[^>]*><span>Layer and memory details<\/span><svg\b[^>]*aria-hidden="true"/);
   assert.doesNotMatch(details.split(">")[0], /\bopen\b/);
   assert.match(details, /GPU 1 · Large[\s\S]*5 repeating layers · 8\.00 GiB weights · cache unknown/);
   assert.match(details, /GPU 0 · Small[\s\S]*1 repeating layer · output layer · 2\.00 GiB weights · 1\.00 GiB cache/);

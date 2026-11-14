@@ -421,9 +421,14 @@ export function MemoryEstimateRow({
                 exceeds={row.exceedsTotal || row.exceedsFree}
               />
             ))}
-            <details className="text-ui-11 leading-relaxed text-muted-foreground">
-              <summary className="w-fit cursor-pointer rounded-sm focus-visible:outline-ring">
-                Layer and memory details
+            <details className="group/placement text-ui-11 leading-relaxed text-muted-foreground">
+              <summary className="flex min-h-8 cursor-pointer list-none items-center justify-between gap-3 rounded-md text-ui-12 font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden">
+                <span>Layer and memory details</span>
+                <HugeiconsIcon
+                  icon={ChevronDownStandardIcon}
+                  aria-hidden="true"
+                  className="size-3.5 shrink-0 -rotate-90 text-muted-foreground transition-transform duration-200 group-open/placement:rotate-0 group-hover/placement:text-foreground motion-reduce:transition-none"
+                />
               </summary>
               {gpuRows.map((row) => (
                 <p key={row.gpuId} className="mt-2">
