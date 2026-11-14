@@ -71,7 +71,8 @@ def inference_mod(monkeypatch):
         "core.inference.inference" in sys.modules
         or importlib.util.find_spec("unsloth_zoo") is not None
     ):
-        return importlib.import_module("core.inference.inference")
+        yield importlib.import_module("core.inference.inference")
+        return
     from unittest.mock import MagicMock
 
     for name, attrs in (
@@ -85,8 +86,10 @@ def inference_mod(monkeypatch):
         monkeypatch.setitem(sys.modules, name, stub)
     # Dropped again afterwards, so no later test inherits a module bound to these stubs.
     monkeypatch.setattr(package, "inference", None, raising = False)
-    monkeypatch.delitem(sys.modules, "core.inference.inference", raising = False)
-    return importlib.import_module("core.inference.inference")
+    try:
+        yield importlib.import_module("core.inference.inference")
+    finally:
+        sys.modules.pop("core.inference.inference", None)
 
 
 @pytest.mark.parametrize("profile", sorted(DIFFUSION_CONFIGS))
