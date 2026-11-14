@@ -1297,6 +1297,8 @@ class MiniMaxH3StagedReferences:
     videos: tuple[str, ...] = ()
     video_audios: tuple[str, ...] = ()
     audios: tuple[str, ...] = ()
+    # The 0-based ``videos`` index of each ``video_audios`` entry; () when they pair by position (a leading run).
+    video_audio_indices: tuple[int, ...] = ()
 
 
 # Pillow's zlib encoder releases the GIL, so a few threads write a reference video's PNGs in parallel.
@@ -1340,9 +1342,13 @@ def _write_h3_reference_frames(directory: Path, frames: Any) -> None:
 
 
 def stage_h3_references(
-    references: MiniMaxH3References, scratch: Path
+    references: MiniMaxH3References,
+    scratch: Path,
+    *,
+    explicit_pairing: bool = False,
 ) -> MiniMaxH3StagedReferences:
-    """Video soundtracks must form a prefix, as sd-cli pairs audio to video by index position."""
+    """Soundtracks pair with videos by position unless ``explicit_pairing`` (the build takes
+    --ref-video-audio-index), which also allows a silent video before one with audio."""
     images: list[str] = []
     for index, image in enumerate(references.images):
         path = scratch / f"ref-image-{index:02d}.png"
@@ -1352,6 +1358,7 @@ def stage_h3_references(
 
     videos: list[str] = []
     video_audios: list[str] = []
+    video_audio_indices: list[int] = []
     pairing_holds = True
     for index, (frames, waveform, sample_rate) in enumerate(references.videos):
         directory = scratch / f"ref-video-{index:02d}"
@@ -1362,7 +1369,7 @@ def stage_h3_references(
             # Positional pairing cannot express "skip this one", so stop pairing here.
             pairing_holds = False
             continue
-        if not pairing_holds:
+        if not pairing_holds and not explicit_pairing:
             raise ValueError(
                 "stable-diffusion.cpp reference-video soundtracks must form a leading "
                 "sequence without silent gaps."
@@ -1370,6 +1377,7 @@ def stage_h3_references(
         path = scratch / f"ref-video-audio-{index:02d}.wav"
         write_h3_reference_wav(path, waveform, sample_rate)
         video_audios.append(str(path))
+        video_audio_indices.append(index)
 
     audios: list[str] = []
     for index, (waveform, sample_rate) in enumerate(references.audios):
@@ -1382,6 +1390,10 @@ def stage_h3_references(
         videos = tuple(videos),
         video_audios = tuple(video_audios),
         audios = tuple(audios),
+        # Positional pairing needs no indices, so the argv stays what older builds accept.
+        video_audio_indices = ()
+        if video_audio_indices == list(range(len(video_audio_indices)))
+        else tuple(video_audio_indices),
     )
 
 
@@ -2405,7 +2417,7 @@ class H3NativeServerSlot:
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
-    """Convert sd.cpp WebM to H.264/AAC MP4 entirely in PyAV, not Diffusers, so the no-torch native runtime can export the clip."""
+    """Convert sd.cpp's container (MJPG or uncompressed AVI, WebM) to H.264/AAC MP4 entirely in PyAV, not Diffusers, so the no-torch native runtime can export the clip."""
     import av
 
     tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)
@@ -2414,10 +2426,15 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
     try:
         with av.open(str(source)) as src, av.open(str(target), mode = "w", format = "mp4") as dst:
             source_video = src.streams.video[0]
-            output_video = dst.add_stream("libx264", rate = fps)
-            output_video.width = int(source_video.codec_context.width)
-            output_video.height = int(source_video.codec_context.height)
-            output_video.pix_fmt = "yuv420p"
+            from .video_encode import add_x264_stream
+
+            # The Diffusers export's stream: frame threads, and libx264 capped at AVX2 so output depends on frames only.
+            output_video = add_x264_stream(
+                dst,
+                fps,
+                int(source_video.codec_context.width),
+                int(source_video.codec_context.height),
+            )
 
             source_audio = src.streams.audio[0] if src.streams.audio else None
             output_audio = None
@@ -2434,9 +2451,19 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
             for packet in src.demux(*selected):
                 for frame in packet.decode():
                     if packet.stream.type == "video":
-                        for encoded in output_video.encode(frame):
+                        if frame.format.name.startswith("yuvj"):
+                            # MJPG decodes to full-range yuvj, which the yuv420p encoder takes as limited range and
+                            # stretches (x1.14, -16). A fresh RGB frame carries no range, so the conversion is exact.
+                            pts, time_base = frame.pts, frame.time_base
+                            frame = av.VideoFrame.from_ndarray(
+                                frame.to_ndarray(format = "rgb24"), format = "rgb24"
+                            )
+                            frame.pts, frame.time_base = pts, time_base
+                        for encoded in output_video.encode(_unforced_picture_type(frame)):
                             dst.mux(encoded)
                     elif output_audio is not None and audio_resampler is not None:
+                        if frame.format.name in ("flt", "fltp", "dbl", "dblp"):
+                            frame = _finite_audio_frame(frame)
                         for resampled in audio_resampler.resample(frame):
                             for encoded in output_audio.encode(resampled):
                                 dst.mux(encoded)
@@ -2453,6 +2480,38 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
         return target.read_bytes()
     finally:
         target.unlink(missing_ok = True)
+
+
+def _unforced_picture_type(frame: Any) -> Any:
+    """A decoded frame keeps its picture type (every MJPG / raw frame is I), which libx264 obeys: clear it so
+    the encoder picks I / P / B frames, as the Diffusers export does."""
+    try:
+        from av.video.frame import PictureType
+        frame.pict_type = PictureType.NONE
+    except Exception:  # noqa: BLE001 - older PyAV takes the name
+        try:
+            frame.pict_type = "NONE"
+        except Exception:  # noqa: BLE001 - leave the frame as decoded
+            pass
+    return frame
+
+
+def _finite_audio_frame(frame: Any) -> Any:
+    """``frame`` with float samples bounded to [-1, 1] and NaN zeroed: the AAC encoder refuses NaN, which sd.cpp's
+    float PCM (the uncompressed AVI) keeps, and 16-bit PCM clipped the same range."""
+    import av
+    import numpy as np
+
+    samples = frame.to_ndarray()
+    if np.isfinite(samples).all() and np.abs(samples).max(initial = 0.0) <= 1.0:
+        return frame
+    fixed = av.AudioFrame.from_ndarray(
+        np.clip(np.nan_to_num(samples, nan = 0.0), -1.0, 1.0).astype(samples.dtype),
+        format = frame.format.name,
+        layout = frame.layout.name,
+    )
+    fixed.sample_rate, fixed.pts, fixed.time_base = frame.sample_rate, frame.pts, frame.time_base
+    return fixed
 
 
 def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:
@@ -2506,6 +2565,9 @@ def _full_scale_constant(samples: Any) -> Optional[float]:
 
     if samples.size == 0:
         return None
+    if np.issubdtype(samples.dtype, np.floating) and not np.isfinite(samples).any():
+        # sd.cpp's float PCM (uncompressed AVI) carries a NaN render's samples as NaN, not a clamped level.
+        return float("inf")
     lo, hi = samples.min(), samples.max()
     if lo != hi:
         return None
