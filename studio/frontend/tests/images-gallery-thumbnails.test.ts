@@ -105,5 +105,11 @@ test("an image picked during a run takes the stage from the live preview until t
   assert.ok(page.includes("if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);"));
   assert.ok(page.includes('if (finished.some((job) => job.status === "done")) refreshLoadedGallery();'));
   assert.match(page, /setGenStep\(null\);\s*refreshLoadedGallery\(\);\s*void refreshStatus\(\);/);
+  // A pin or archive during the refresh discards it; the refresh retries after the pin queue settles.
+  const refresh = between(page, "const refreshLoadedGallery = useCallback(() => {", "}, [loadGallery, resyncWindow]);");
+  assert.match(
+    refresh,
+    /attempt < PAGE_MAX_ATTEMPTS && refreshSeq\.current === ticket;[\s\S]*?if \(attempt > 0\) await serializeById\("image-pin", async \(\) => \{\}\);[\s\S]*?if \(await resyncWindow\(galleryCache\.images\.length, fresh\)\) return;/,
+  );
   assert.ok(page.includes("selected={!stagePreviewSrc && image.id === selected?.id}"));
 });

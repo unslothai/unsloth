@@ -141,6 +141,7 @@ import {
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
+  PAGE_MAX_ATTEMPTS,
   applyPin,
   fetchNextPage,
   fetchWhileStable,
@@ -2674,6 +2675,7 @@ export function ImagesPage({
   const stripEpoch = useRef(0);
   const pageEpoch = useRef(0);
   const resyncSeq = useRef(0);
+  const refreshSeq = useRef(0);
   // The epoch is an EDGE, so a page starting after the bump sees it unchanged.
   const pendingShelfMutations = useRef(0);
 
@@ -2829,8 +2831,8 @@ export function ImagesPage({
           PAGE_SIZE,
           () => galleryCache.selectedId,
         );
-        if (stillFresh && !stillFresh()) return;
-        if (resyncSeq.current !== ticket) return;
+        if (stillFresh && !stillFresh()) return false;
+        if (resyncSeq.current !== ticket) return false;
         if (pageEpoch.current !== paged) continue;
         galleryCache.images = collected;
         galleryCache.hasMore = more;
@@ -2839,20 +2841,27 @@ export function ImagesPage({
         if (typeof IntersectionObserver === "undefined") {
           collected.forEach((image) => void ensureThumb(image));
         }
-        return;
+        return true;
       }
+      return false;
     },
     [ensureThumb],
   );
 
   const refreshLoadedGallery = useCallback(() => {
+    const ticket = (refreshSeq.current += 1);
     // Bumped FIRST so in-flight reads are discarded.
     stripEpoch.current += 1;
-    const epoch = stripEpoch.current;
-    void resyncWindow(
-      galleryCache.images.length,
-      () => stripEpoch.current === epoch,
-    ).catch(() => void loadGallery());
+    void (async () => {
+      // Retried like fetchWhileStable: a pin or archive mid-fetch discards it, and nothing else refetches the new image.
+      for (let attempt = 0; attempt < PAGE_MAX_ATTEMPTS && refreshSeq.current === ticket; attempt += 1) {
+        // After the pin's PATCH, or this read would snapshot the shelf before it and undo the pin on screen.
+        if (attempt > 0) await serializeById("image-pin", async () => {});
+        const epoch = stripEpoch.current;
+        const fresh = () => stripEpoch.current === epoch && refreshSeq.current === ticket;
+        if (await resyncWindow(galleryCache.images.length, fresh)) return;
+      }
+    })().catch(() => void loadGallery());
   }, [loadGallery, resyncWindow]);
 
   // This page stays mounted across routes, so an archive restore needs a resync.
