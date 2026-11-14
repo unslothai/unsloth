@@ -11,10 +11,14 @@ import ipaddress
 import json
 import re
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 PREFIX = "unsloth-pair-1."
 VERSION = 1
+# v2 adds the master's pairing tailcat address; a v1 code is still issued when there is none.
+PREFIX_V2 = "unsloth-pair-2."
+VERSION_V2 = 2
+_TC_ADDR = re.compile(r"^tc[A-Za-z0-9_\-]{8,2000}$")
 SECRET_BYTES = 32
 _HEX = re.compile(r"^[0-9a-f]+$")
 _ADDR = re.compile(r"^[A-Za-z0-9.:\-]{1,253}$")
@@ -34,6 +38,7 @@ class Invite:
     secret: bytes = field(repr = False)
     exp: float
     v: int = VERSION
+    tc: Optional[str] = field(default = None, repr = False)
 
 
 def _b64e(raw: bytes) -> str:
@@ -70,10 +75,16 @@ def _is_ipv6(addr: str) -> bool:
         return False
 
 
+def is_tc_address(value) -> bool:
+    return isinstance(value, str) and bool(_TC_ADDR.match(value))
+
+
 def encode(invite: Invite) -> str:
     check_addrs(invite.addrs)
+    if invite.tc is not None and not is_tc_address(invite.tc):
+        raise TokenError("bad tailcat address")
     body = {
-        "v": invite.v,
+        "v": VERSION_V2 if invite.tc else VERSION,
         "c": invite.cluster_id,
         "i": invite.invite_id,
         "a": list(invite.addrs),
@@ -82,7 +93,10 @@ def encode(invite: Invite) -> str:
         "s": _b64e(invite.secret),
         "e": int(invite.exp),
     }
-    return PREFIX + _b64e(json.dumps(body, separators = (",", ":")).encode("utf-8"))
+    if invite.tc:
+        body["t"] = invite.tc
+    prefix = PREFIX_V2 if invite.tc else PREFIX
+    return prefix + _b64e(json.dumps(body, separators = (",", ":")).encode("utf-8"))
 
 
 def _hex(value, name: str, length: int) -> str:
@@ -93,14 +107,19 @@ def _hex(value, name: str, length: int) -> str:
 
 def decode(token: str) -> Invite:
     token = (token or "").strip()
-    if not token.startswith(PREFIX) or len(token) > 4096:
+    version = VERSION_V2 if token.startswith(PREFIX_V2) else VERSION
+    prefix = PREFIX_V2 if version == VERSION_V2 else PREFIX
+    if not token.startswith(prefix) or len(token) > 6144:
         raise TokenError("not an unsloth pairing token")
     try:
-        body = json.loads(_b64d(token[len(PREFIX) :]).decode("utf-8"))
+        body = json.loads(_b64d(token[len(prefix) :]).decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         raise TokenError("unreadable pairing token") from None
-    if not isinstance(body, dict) or body.get("v") != VERSION:
+    if not isinstance(body, dict) or body.get("v") != version:
         raise TokenError("unsupported pairing token version")
+    tc = body.get("t")
+    if version == VERSION_V2 and not is_tc_address(tc):
+        raise TokenError("bad tailcat address")
     addrs = body.get("a")
     if not isinstance(addrs, list) or not _addrs_ok(addrs):
         raise TokenError("bad addresses")
@@ -122,4 +141,6 @@ def decode(token: str) -> Invite:
         master_fp = _hex(body.get("f"), "master fingerprint", 64),
         secret = secret,
         exp = float(exp),
+        v = version,
+        tc = tc if version == VERSION_V2 else None,
     )

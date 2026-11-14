@@ -146,6 +146,10 @@ def worker(
         "--allow-any-network",
         help = "Accept the master from a non-private address (e.g. a VPN range). Still needs pairing.",
     ),
+    join_first: bool = typer.Option(
+        False, "--join", help = "Pair with a master first (asks for its code), then serve it."
+    ),
+    name: Optional[str] = typer.Option(None, "--name", help = "This machine's name, with --join."),
 ):
     """Serve this machine's GPUs to the master it was paired with."""
     import asyncio
@@ -153,11 +157,13 @@ def worker(
     identity = _link(crypto = True)
     from studio.cluster_link import AGENT_PORT_DEFAULT, NATIVE_RPC_PORT_DEFAULT, RPC_PORT_DEFAULT
 
+    if join_first:
+        _join_with_code(_read_code(False), name, port)
     me = identity.worker_identity()
     if me is None:
         _fail(
             "This machine is not paired yet. On the master run `unsloth cluster pair`, then run "
-            "`unsloth cluster join` here and paste the token it prints."
+            "`unsloth worker --join` here and paste the code it prints."
         )
     binary = _rpc_server_binary()
     if not binary:
@@ -172,6 +178,10 @@ def worker(
             return _registry(identity).authorize(peer, "master") is not None
         except Exception:
             return False
+
+    def tunnel_allow() -> List[str]:
+        master = _registry(identity).master()
+        return [master.tc_pub] if master is not None and master.tc_pub else []
 
     paired_port = identity.worker_agent_port() or AGENT_PORT_DEFAULT
     if port and port != paired_port:
@@ -203,6 +213,7 @@ def worker(
         rpc_env = _rpc_server_env(binary),
         native_port = native_port,
         native_tls = False if no_native_tls else None,
+        tunnel_allow = tunnel_allow,
     )
     announcer = None
     if not no_discovery:
@@ -228,6 +239,8 @@ def worker(
                     _say(
                         f"  llama.cpp TLS: a master with it is served directly on port {agent.native_port}."
                     )
+                if getattr(agent, "tunnel", None) is not None:
+                    _say("  Also reachable by its master from other networks, through tailcat.")
             else:
                 _say(
                     "ggml-rpc-server has not come up yet; the master will see this worker as rpc down:"
@@ -270,8 +283,11 @@ def pair(
     port: int = typer.Option(
         None, "--port", min = 1, max = 65535, help = "Pairing port, open only while this runs."
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help = "Approve the worker that uses the code without asking."
+    ),
 ):
-    """Print a one-time token that adds one worker to this machine's cluster."""
+    """Print a one-time code that adds one worker to this machine's cluster."""
     import asyncio
 
     identity = _link(crypto = True)
@@ -283,18 +299,29 @@ def pair(
         master = identity.master_identity(create = True)
     except RuntimeError as exc:
         _fail(str(exc))
+
+    def ask(name: str, words: Optional[List[str]]) -> bool:
+        seen = " ".join(words) if words else "an older Unsloth: no words to compare"
+        return typer.confirm(_printable(f"{name} wants to join ({seen}). Allow?"), default = True)
+
     window = PairingWindow(
-        master, host = "0.0.0.0", port = port or PAIR_PORT_DEFAULT, ttl = seconds, addrs = addr or None
+        master,
+        host = "0.0.0.0",
+        port = port or PAIR_PORT_DEFAULT,
+        ttl = seconds,
+        addrs = addr or None,
+        approve = None if yes else (lambda name, words: asyncio.to_thread(ask, name, words)),
     )
 
     async def run() -> Any:
         token = await window.start()
-        # The token is never part of a command line: other local users can read process arguments.
-        _say("On the worker, run `unsloth cluster join` and paste this token when asked:")
+        # The code is never part of a command line: other local users can read process arguments.
+        _say("On the other machine run `unsloth worker --join` and paste this code when asked:")
         _say("")
         _say(f"    {token}")
         _say("")
-        _say(f"(or pipe it to `unsloth cluster join --token-stdin`). It works once, for {ttl}.")
+        where = "on this network or another one" if window.tc else "on this network"
+        _say(f"It works once, for {ttl}, {where}. Keep it private: it lets a machine join.")
         _say("Waiting for the worker to join (Ctrl-C to cancel)...")
         try:
             return await window.wait(seconds)
@@ -315,8 +342,8 @@ def pair(
         _fail(f"Could not open the pairing port: {exc}. Pick another with --port.")
     _say(
         _printable(
-            f"Paired {peer.name} ({peer.node_id[:12]}). Start `unsloth worker` on it to serve; "
-            "`unsloth cluster list` shows whether it is ready."
+            f"Paired {peer.name} ({peer.node_id[:12]}). `unsloth cluster list` shows whether it is "
+            "ready (it serves while `unsloth worker` runs there)."
         )
     )
 
@@ -335,28 +362,44 @@ def join(
         help = "Port `unsloth worker` will serve on here (default 50070).",
     ),
 ):
-    """Pair this machine to a master as a worker."""
+    """Pair this machine to a master as a worker (`unsloth worker --join` also starts serving)."""
+    _link(crypto = True)
+    me = _join_with_code(_read_code(token_stdin), name, port)
+    _say(f"Joined as {me.node_id[:12]}. Now run `unsloth worker` here to serve the master.")
+
+
+def _read_code(from_stdin: bool) -> str:
+    # Only stdin or a hidden prompt: a code in argv is readable by every local user while join runs.
+    token = (
+        sys.stdin.readline().strip()
+        if from_stdin
+        else typer.prompt("Code", hide_input = True).strip()
+    )
+    if not token:
+        _fail("No code given.")
+    return token
+
+
+def _join_with_code(token: str, name: Optional[str], port: Optional[int]) -> Any:
     import asyncio
 
     _link(crypto = True)
     from studio.cluster_link.pairing import PairingError, PairingUnconfirmed, join as join_cluster
     from studio.cluster_link.tokens import TokenError
 
-    # Only stdin or a hidden prompt: a token in argv is readable by every local user while join runs.
-    if token_stdin:
-        token = sys.stdin.readline().strip()
-    else:
-        token = typer.prompt("Token", hide_input = True).strip()
-    if not token:
-        _fail("No token given.")
+    def show(words: List[str]) -> None:
+        _say(f"Check that the master shows these words, then allow it there: {' '.join(words)}")
+
     try:
         kwargs = {"agent_port": port} if port else {}
-        me = asyncio.run(join_cluster(token, name = name or socket.gethostname(), **kwargs))
+        return asyncio.run(
+            join_cluster(token, name = name or socket.gethostname(), on_words = show, **kwargs)
+        )
     except PairingUnconfirmed as exc:
         _fail(_redact(str(exc), token))
     except TokenError as exc:
         _fail(
-            f"That is not a usable pairing token ({_redact(str(exc), token)}). Copy the whole token "
+            f"That is not a usable pairing code ({_redact(str(exc), token)}). Copy the whole code "
             "`unsloth cluster pair` printed on the master; it starts with `unsloth-pair-`."
         )
     except PairingError as exc:
@@ -368,9 +411,8 @@ def join(
             )
         _fail(f"Pairing failed: {message}.")
     except Exception as exc:
-        # The token must never appear in output: report only the kind of failure.
+        # The code must never appear in output: report only the kind of failure.
         _fail(f"Pairing failed: {type(exc).__name__}: {_redact(str(exc), token)}")
-    _say(f"Joined as {me.node_id[:12]}. Now run `unsloth worker` here to serve the master.")
 
 
 DISCOVERY_SETTLE_S = 6.5
@@ -416,6 +458,22 @@ def _unreachable_reason(st: Any) -> str:
             return f"no route to it on the network; {LOCAL_NETWORK_HINT}"
         return "no route to it on the network"
     return raw or "no answer"
+
+
+def _through_tailnet(peer: Any, ask: Any) -> Optional[Tuple[str, Any]]:
+    """("direct" | "relayed", status) for a worker answering through its tailcat address, else None."""
+    from studio.cluster_link import AGENT_PORT_DEFAULT, remote
+
+    if not getattr(peer, "tc_addr", "") or not remote.enabled():
+        return None
+    local = remote.forward(peer.node_id, peer.tc_addr, int(peer.agent_port or AGENT_PORT_DEFAULT))
+    if local is None:
+        return None
+    st = ask(peer, "127.0.0.1", local)
+    if not isinstance(st, dict) or st.get("type") == "error" or st.get("reachable") is False:
+        return None
+    info = remote.path(peer.node_id)
+    return ("direct" if getattr(info, "direct", False) else "relayed"), st
 
 
 @cluster_app.command("list")
@@ -499,13 +557,26 @@ def list_workers(
                             break
             finally:
                 listener.stop()
+        via: dict = {}
+        for peer in [p for p in workers if not answered(found.get(p.node_id, (None, None))[1])]:
+            path = _through_tailnet(peer, ask)
+            if path is not None:
+                found[peer.node_id] = ("through tailcat", path[1], False)
+                via[peer.node_id] = path[0]
         for peer in workers:
             where, st, discovered = found.get(peer.node_id, ("address unknown", None, False))
             line = _printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}")
             if not answered(st):
                 line += _printable(f"  unreachable ({_unreachable_reason(st)})")
+            elif via.get(peer.node_id) == "relayed":
+                line += "  relayed only: too slow to serve models"
             else:
                 state = "busy" if st.get("busy") else ("ready" if st.get("rpc_up") else "rpc down")
+                if state == "ready":
+                    kind = via.get(peer.node_id)
+                    state += (
+                        " (direct internet connection)" if kind == "direct" else " (local network)"
+                    )
                 devices = ", ".join(str(d) for d in st.get("devices") or [])
                 line += f"  {state}" + (f"  [{devices}]" if devices else "")
                 if discovered:
@@ -513,6 +584,11 @@ def list_workers(
             _say(line)
     finally:
         relays.stop()
+        try:
+            from studio.cluster_link import remote
+            remote.close()
+        except Exception:
+            pass
 
 
 @cluster_app.command("discover")
@@ -578,9 +654,19 @@ def leave(yes: bool = typer.Option(False, "--yes", "-y", help = "Do not ask for 
                     "them first, or they lose their master."
                 )
             identity.forget_master()
+        _forget_tailnet_keys()
         _say("Master identity removed. This machine can now join another cluster as a worker.")
         return
     if not yes and not typer.confirm("Forget the master and this machine's cluster identity?"):
         raise typer.Exit(code = 1)
     identity.forget_identity()
-    _say("Left the cluster. Pair again with `unsloth cluster join`.")
+    _forget_tailnet_keys()
+    _say("Left the cluster. Pair again with `unsloth worker --join`.")
+
+
+def _forget_tailnet_keys() -> None:
+    try:
+        from studio.cluster_link import remote
+        remote.forget_keys()
+    except Exception:
+        pass

@@ -28,6 +28,7 @@ from . import (
     SECURE_RPC_ENV,
     framing,
     native,
+    remote,
     tls,
 )
 from .model import LocalIdentity
@@ -207,6 +208,7 @@ class Agent:
         rpc_env: Optional[Mapping[str, str]] = None,
         native_port: int = NATIVE_RPC_PORT_DEFAULT,
         native_tls: Optional[bool] = None,
+        tunnel_allow: Optional[Callable[[], List[str]]] = None,
     ) -> None:
         self.identity = identity
         self._authorize = authorize
@@ -258,6 +260,9 @@ class Agent:
         self._slot_lock = threading.Lock()
         self._raw: set = set()
         self._sessions: set = set()
+        self._tunnel_allow = tunnel_allow
+        self.tunnel: Optional[remote.WorkerTunnel] = None
+        self._tunnel_sync: Optional[asyncio.Task] = None
 
     @property
     def rpc_up(self) -> bool:
@@ -345,6 +350,28 @@ class Agent:
                 self._release_port_locks()
                 raise
             self._supervisor = asyncio.ensure_future(self._supervise())
+        if self._tunnel_allow is not None:
+            await self._open_tunnel()
+
+    async def _open_tunnel(self) -> None:
+        ports = [self.port] + ([self.native_port] if self.native_available else [])
+        tunnel = remote.WorkerTunnel(ports, self._tunnel_allow)
+        try:
+            opened = await asyncio.to_thread(tunnel.start)
+        except Exception as exc:
+            logger.warning("cluster agent: no tailcat tunnel (%s); LAN only", exc)
+            return
+        if opened:
+            self.tunnel = tunnel
+            self._tunnel_sync = asyncio.ensure_future(self._sync_tunnel())
+
+    async def _sync_tunnel(self) -> None:
+        while not self._stopping and self.tunnel is not None:
+            await asyncio.sleep(REVALIDATE_S)
+            try:
+                await asyncio.to_thread(self.tunnel.sync)
+            except Exception as exc:
+                logger.warning("cluster agent: tailcat allowlist update failed (%s)", exc)
 
     async def serve_forever(self) -> None:
         if self._server is None and self._listener is None:
@@ -371,6 +398,12 @@ class Agent:
 
     async def _stop(self) -> None:
         self._stopping = True
+        sync, self._tunnel_sync = self._tunnel_sync, None
+        if sync is not None:
+            sync.cancel()
+        tunnel, self.tunnel = self.tunnel, None
+        if tunnel is not None:
+            await asyncio.to_thread(tunnel.close)
         if self._server is not None:
             self._server.close()
             try:
