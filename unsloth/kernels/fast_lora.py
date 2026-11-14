@@ -67,7 +67,7 @@ def _forward_fake_quant_linears():
     return _FORWARD_FAKE_QUANT_LINEARS
 
 
-def _has_activation_fake_quantizer(proj):
+def _has_activation_fake_quantizer(proj, *, include_weight = False):
     # Fused LoRA skips per-layer activation fake quantizers; explicit children, as proj.modules() is slow per call.
     # A plain nn.Linear (after merge_and_unload / unload) has no lora_A / lora_B: check the layer itself.
     forward_fake_quant_linears = _forward_fake_quant_linears()
@@ -78,8 +78,10 @@ def _has_activation_fake_quantizer(proj):
         *(() if lora_A is None else lora_A.values()),
         *(() if lora_B is None else lora_B.values()),
     ):
-        if module._modules.get("activation_fake_quantizer") is not None or isinstance(
-            module, forward_fake_quant_linears
+        if (
+            module._modules.get("activation_fake_quantizer") is not None
+            or (include_weight and module._modules.get("weight_fake_quantizer") is not None)
+            or isinstance(module, forward_fake_quant_linears)
         ):
             return True
     return False
