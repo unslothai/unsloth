@@ -859,6 +859,19 @@ def offload_flags(
     return out
 
 
+# MiniMax-H3 video under --vae-tiling: the H3 VAE tiler reads --vae-tile-overlap as the minimum overlap fraction of its
+# 256 px tiles (0.5 when unset); 0.25 is the reference layout's 64 px, so tiling adds no extra tiles.
+H3_VAE_TILE_OVERLAP = "0.25"
+
+
+def with_h3_vae_tile_overlap(flags: "tuple[str, ...] | list[str]") -> tuple[str, ...]:
+    """``flags`` plus ``--vae-tile-overlap 0.25`` when they tile the VAE and set no overlap, else unchanged."""
+    flags = tuple(flags)
+    if "--vae-tiling" not in flags or "--vae-tile-overlap" in flags:
+        return flags
+    return flags + ("--vae-tile-overlap", H3_VAE_TILE_OVERLAP)
+
+
 # sd-cli's own <lora:NAME:W> pattern; it loads an absolute NAME from anywhere, whatever --lora-model-dir says.
 _LORA_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
 
