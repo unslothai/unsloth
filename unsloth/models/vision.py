@@ -861,6 +861,32 @@ global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 
 
+def _set_generate_param(
+    kwargs,
+    name,
+    value,
+    overwrite = True,
+    force = False,
+):
+    # A GenerationConfig field passed both as a raw kwarg and on an explicit
+    # generation_config (TRL rollouts) makes transformers warn, so set it on the config.
+    # overwrite=False keeps a value the caller's config already has.
+    caller_generation_config = kwargs.get("generation_config")
+    if caller_generation_config is not None:
+        # Edit a copy: TRL reuses one config for every rollout, so changes would leak into later calls.
+        caller_generation_config = copy.copy(caller_generation_config)
+        kwargs["generation_config"] = caller_generation_config
+        # The raw kwarg used to win the merge, so carry it onto the config unless this call forces its own.
+        if name in kwargs:
+            caller_value = kwargs.pop(name)
+            if not force:
+                value, overwrite = caller_value, True
+        if overwrite or getattr(caller_generation_config, name, None) is None:
+            setattr(caller_generation_config, name, value)
+    else:
+        kwargs[name] = value
+
+
 def _unsloth_generate_accepts_kwarg(model, key):
     # True if the top level accepts this generate kwarg; some models expose it on an inner forward only.
     try:
@@ -2424,7 +2450,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             config_pad_token_id = decoder_pad_token_id
     if (is_dia or _is_text_seq2seq_config(self.config)) and config_pad_token_id is not None:
         default_pad_token_id = config_pad_token_id
-    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
+
+    _set_generate_param(
+        kwargs, "pad_token_id", kwargs.get("pad_token_id", default_pad_token_id), overwrite = False
+    )
 
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
@@ -2460,9 +2489,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         isinstance(unsupported_fields, dict) and "cache_implementation" in unsupported_fields
     )
     if _uses_flash_attention_for_generation(self.config):
-        # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
+        # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL); skip it when the caller passed a cache.
         if kwargs.get("past_key_values") is None and not rejects_cache_fields:
-            kwargs["cache_implementation"] = "dynamic"
+            _set_generate_param(kwargs, "cache_implementation", "dynamic", force = True)
         try:
             with _get_inference_mode_context_manager(self), autocaster:
                 return self._old_generate(*args, **kwargs)
@@ -2532,21 +2561,14 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     compile_config = _decode_compile_config if compile_decode else _compile_config
     if _is_decode_compile_model(self):
         _match_compiled_call(self, compile_decode)
-    if "generation_config" in kwargs:
-        kwargs["generation_config"].cache_implementation = (
-            dynamic_implementation if force_dynamic_cache else cache_implementation
-        )
-        # kwargs are applied after the config merge, so an explicit value survives.
-        if force_dynamic_cache:
-            kwargs["cache_implementation"] = dynamic_implementation
-        if cache_implementation is not None:
-            kwargs["generation_config"].compile_config = compile_config
-    else:
-        kwargs["cache_implementation"] = (
-            dynamic_implementation if force_dynamic_cache else cache_implementation
-        )
-        if cache_implementation is not None:
-            kwargs["compile_config"] = compile_config
+    _set_generate_param(
+        kwargs,
+        "cache_implementation",
+        dynamic_implementation if force_dynamic_cache else cache_implementation,
+        force = force_dynamic_cache,
+    )
+    if cache_implementation is not None:
+        _set_generate_param(kwargs, "compile_config", compile_config)
 
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
 
