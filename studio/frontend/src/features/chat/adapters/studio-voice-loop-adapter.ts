@@ -40,6 +40,7 @@ import {
   getVoiceParkedText,
   getVoiceReplyText,
   getVoiceMode,
+  voiceOffEpoch,
   isVoicePlaybackActive,
   requestVoiceBargeAbort,
   requestVoiceBargeIn,
@@ -317,6 +318,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // The STT clip starts at the first of these before the first loud frame, so a soft opening word is kept.
     const chunkNotSilent: boolean[] = [];
     let voicedMs = 0;
+    const offAtOpen = voiceOffEpoch();
+    // Off now, or off and back on since this recording opened: either way its words are dropped.
+    const switchedOff = () => getVoiceMode() === "off" || voiceOffEpoch() !== offAtOpen;
     // Taken as the session opens: a clear while it still records drops what it hears.
     const epoch = heldEpoch;
     if (vadDisabled && useChatRuntimeStore.getState().selectedVadModelId !== vadDisabledFor) {
@@ -637,7 +641,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           store.setVoiceTranscribing(false);
         }
         // Voice was turned off while this clip was heard: its words are discarded, never held for the next session.
-        if (getVoiceMode() === "off") {
+        if (switchedOff()) {
           finish("cancelled");
           return;
         }

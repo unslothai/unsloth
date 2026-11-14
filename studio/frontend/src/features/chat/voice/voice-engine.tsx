@@ -301,6 +301,7 @@ export const VoiceEngine: FC = () => {
   const spokenRunRef = useRef(false);
   const spokenClipsRef = useRef(0);
   const streamBegunRef = useRef(false);
+  const streamGenRef = useRef(0);
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFallbackAtRef = useRef(0);
   // The filler model answered (say or quiet). A quiet vote is the answer, so the
@@ -655,6 +656,11 @@ export const VoiceEngine: FC = () => {
     if (composer.getState().dictation) composer.stopDictation();
     let text = (spoken ?? composer.getState().text).trim();
     if (draft) text = `${draft} ${text}`;
+    // The chat model went away while this was heard: keep it as a draft, never auto-load a model to send it.
+    if (!hasChatModelRef.current) {
+      if (text && !typed) composer.setText(text);
+      return;
+    }
     voiceTrace("engine.submit", { text });
     const pending = pendingForVoiceRef.current;
     // A reply sent now would land before the voice can speak it: park the turn until the slot loads.
@@ -1025,7 +1031,11 @@ export const VoiceEngine: FC = () => {
   useEffect(() => {
     if (armedForModelRef.current === hasChatModel) return;
     armedForModelRef.current = hasChatModel;
-    if (!hasChatModel) return;
+    if (!hasChatModel) {
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
+      return;
+    }
     if (voiceModeRef.current !== "active") return;
     resumeListen();
   }, [hasChatModel, resumeListen]);
@@ -1072,6 +1082,7 @@ export const VoiceEngine: FC = () => {
         if (composer.getState().dictation) composer.stopDictation();
         beginStreamRef.current();
         streamBegunRef.current = true;
+        streamGenRef.current++;
         spokenRunRef.current =
           speaksWithChatModel() && lastUserTurnHasAudio(auiRef.current.thread().getState().messages);
         spokenClipsRef.current = 0;
@@ -1218,7 +1229,10 @@ export const VoiceEngine: FC = () => {
     spokenReplyRef.current = endTail?.role === "assistant" ? { id: endTail.id, text } : null;
     // Read again after a beat: the last token can land after isRunning flipped.
     if (streamBegun) {
+      const gen = streamGenRef.current;
       setTimeout(() => {
+        // A Regenerate or Continue inside the beat owns the stream now: closing it would speak this reply again.
+        if (gen !== streamGenRef.current || voiceModeRef.current !== "active") return;
         const final = latestAssistantText();
         const said = final.length >= text.length ? final : text;
         if (spokenReplyRef.current) spokenReplyRef.current = { ...spokenReplyRef.current, text: said };
