@@ -446,12 +446,8 @@ export async function listProviderModels(payload: {
   });
 }
 
-export async function fetchModelCatalog(
-  options: { refresh?: boolean } = {},
-): Promise<ModelCatalogResponse> {
-  const response = await authFetch(
-    options.refresh ? "/api/providers/model-catalog?refresh=true" : "/api/providers/model-catalog",
-  );
+export async function fetchModelCatalog(): Promise<ModelCatalogResponse> {
+  const response = await authFetch("/api/providers/model-catalog");
   return parseJsonOrThrow<ModelCatalogResponse>(response);
 }
 

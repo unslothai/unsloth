@@ -180,7 +180,8 @@ test("the connection form stores Auto-compact after with the connection", () => 
   assert.match(dialog, /id="provider-auto-compact-tokens"/);
   assert.match(dialog, /parseAutoCompactTokens\(autoCompactTokensDraft\)/);
   assert.match(dialog, /autoCompactTokens: updated\.auto_compact_tokens \?\? undefined/);
-  assert.match(dialog, /provider\.autoCompactTokens != null \|\|/);
+  // Always visible, so it no longer forces the Advanced fold open.
+  assert.doesNotMatch(dialog, /provider\.autoCompactTokens != null \|\|/);
   const api = readSrc("features/chat/api/providers-api.ts");
   assert.equal(api.match(/auto_compact_tokens: payload\.autoCompactTokens/g)?.length, 2);
   const sync = readSrc("features/chat/sync-external-providers.ts");

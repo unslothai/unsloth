@@ -42,6 +42,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { openExternalLink } from "@/lib/open-link";
 import {
+  ArrowDown01Icon,
   ArrowUpRight01Icon,
   Refresh01Icon,
   ViewIcon,
@@ -50,7 +51,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowLeftIcon,
-  ChevronDownIcon,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -71,7 +71,6 @@ import {
 } from "./connection-status";
 import {
   modelCatalogVersion,
-  modelsDevCatalogFetchedAt,
   subscribeModelCatalog,
 } from "./model-catalog";
 
@@ -143,7 +142,6 @@ import {
   autoTickLimit,
   autoTicksNewlyListedModels,
   codexCapabilitiesWithPlanModels,
-  forceRefreshModelsDevCatalog,
   MAX_AUTO_TICKED_MODELS,
   pruneProviderModelIds,
   refreshModelsDevCatalog,
@@ -396,7 +394,6 @@ export function ChatProvidersSettings({
   const [testingDraft, setTestingDraft] = useState(false);
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   // Re-render when a catalog refresh lands, so the freshness line follows it.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
@@ -1684,7 +1681,6 @@ export function ChatProvidersSettings({
     // Folded settings that are in use must not hide behind the fold.
     setAdvancedOpen(
       provider.maxOutputTokens != null ||
-        provider.autoCompactTokens != null ||
         Object.keys(provider.extraHeaders ?? {}).length > 0 ||
         provider.reasoningConfig?.enabled === true ||
         provider.isReasoningModel === true ||
@@ -1947,20 +1943,6 @@ export function ChatProvidersSettings({
     }
   }
 
-  async function refreshModelCatalog() {
-    setCatalogRefreshing(true);
-    try {
-      await forceRefreshModelsDevCatalog();
-      const registryRows = await listProviderRegistry();
-      setRegistry(registryRows.filter((entry) => !entry.hidden));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Could not refresh model data: ${message}`);
-    } finally {
-      setCatalogRefreshing(false);
-    }
-  }
-
   const modelChecklist = (clearsTypedIds: boolean) => (
     <ConnectionModelList
       providerType={providerType}
@@ -1989,7 +1971,7 @@ export function ChatProvidersSettings({
             type="button"
             variant="ghost"
             size="icon-sm"
-            className="size-8"
+            className="-ml-2 size-8"
             onClick={closeForm}
             aria-label="Back to connections"
             title="Back to connections"
@@ -2327,21 +2309,62 @@ export function ChatProvidersSettings({
             </div>
           </section>
 
+          {supportsAutoCompactTokens ? (
+            <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <Label
+                  htmlFor="provider-auto-compact-tokens"
+                  className="text-sm font-medium"
+                >
+                  Auto-compact after
+                </Label>
+                <p
+                  id="provider-auto-compact-tokens-help"
+                  className="text-xs leading-snug text-muted-foreground"
+                >
+                  Summarize older messages once a chat reaches this many
+                  tokens. Blank uses the default.
+                </p>
+              </div>
+              <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
+                <Input
+                  id="provider-auto-compact-tokens"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={autoCompactTokensDraft}
+                  onChange={(event) =>
+                    setAutoCompactTokensDraft(event.target.value)
+                  }
+                  placeholder="Default"
+                  aria-describedby="provider-auto-compact-tokens-help provider-auto-compact-tokens-note"
+                  className="h-9 text-sm"
+                />
+                <p
+                  id="provider-auto-compact-tokens-note"
+                  className="text-xs leading-snug text-muted-foreground"
+                >
+                  {providerType === "anthropic"
+                    ? "Claude compacts no earlier than 50,000 tokens. A value past the model's context window is lowered to it."
+                    : "A value past the model's context window is lowered to it."}
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+
           <Collapsible
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
             className="overflow-hidden"
           >
-            <CollapsibleTrigger className="group/advanced flex w-full items-center justify-between gap-3 py-3 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-sm font-medium">Advanced</span>
-                <span className="text-xs leading-snug text-muted-foreground">
-                  {providerType === "openai_codex"
-                    ? "How often to look for new models."
-                    : "Token limit, request headers, reasoning and new-model checks."}
-                </span>
-              </span>
-              <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/advanced:rotate-180" />
+            <CollapsibleTrigger className="group/advanced flex items-center gap-1 rounded-md py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+              Advanced settings
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                className="size-3.5 -rotate-90 transition-transform group-data-[state=open]/advanced:rotate-0"
+              />
             </CollapsibleTrigger>
             <CollapsibleContent>
             <div>
@@ -2385,55 +2408,6 @@ export function ChatProvidersSettings({
                     >
                       If the upstream provider does not support this value,
                       requests may fail.
-                    </p>
-                  </div>
-                </div>
-              ) : null}
-
-              {supportsAutoCompactTokens ? (
-                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <Label
-                      htmlFor="provider-auto-compact-tokens"
-                      className="text-sm font-medium"
-                    >
-                      Auto-compact after
-                    </Label>
-                    <p
-                      id="provider-auto-compact-tokens-help"
-                      className="text-xs leading-snug text-muted-foreground"
-                    >
-                      Tokens a chat may reach before older messages are
-                      summarized. Leave blank to compact at 75% of the
-                      model's context window
-                      {providerType === "anthropic" || providerType === "openai"
-                        ? ", or 200,000 tokens if that is lower"
-                        : ""}
-                      .
-                    </p>
-                  </div>
-                  <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
-                    <Input
-                      id="provider-auto-compact-tokens"
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      spellCheck={false}
-                      value={autoCompactTokensDraft}
-                      onChange={(event) =>
-                        setAutoCompactTokensDraft(event.target.value)
-                      }
-                      placeholder="Default"
-                      aria-describedby="provider-auto-compact-tokens-help provider-auto-compact-tokens-note"
-                      className="h-9 text-sm"
-                    />
-                    <p
-                      id="provider-auto-compact-tokens-note"
-                      className="text-xs leading-snug text-muted-foreground"
-                    >
-                      {providerType === "anthropic"
-                        ? "Claude compacts no earlier than 50,000 tokens. A value past the model's context window is lowered to it."
-                        : "A value past the model's context window is lowered to it."}
                     </p>
                   </div>
                 </div>
@@ -2900,8 +2874,6 @@ export function ChatProvidersSettings({
     const at = checks[provider.id]?.checkedAt;
     return at === undefined ? oldest : oldest === null ? at : Math.min(oldest, at);
   }, null);
-  // Seconds, not milliseconds.
-  const catalogFetchedAt = modelsDevCatalogFetchedAt();
 
   return (
     <div ref={pageTopRef} className="settings-page min-h-0">
@@ -3038,30 +3010,6 @@ export function ChatProvidersSettings({
           loading={registryLoading}
           onPick={(type) => openAddProvider(type)}
         />
-
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span>
-            Model data from models.dev
-            {catalogFetchedAt
-              ? `, updated ${formatCheckedAgo(catalogFetchedAt * 1000, now)}.`
-              : ". A bundled copy is in use until the first refresh."}
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-            disabled={catalogRefreshing}
-            onClick={() => void refreshModelCatalog()}
-          >
-            {catalogRefreshing ? (
-              <Spinner className="size-3.5" data-icon="inline-start" />
-            ) : (
-              <HugeiconsIcon icon={Refresh01Icon} data-icon="inline-start" />
-            )}
-            Refresh model data
-          </Button>
-        </div>
       </div>
       <AlertDialog
         open={pendingDeleteProvider !== null}

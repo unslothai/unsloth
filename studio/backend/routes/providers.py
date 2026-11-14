@@ -1207,8 +1207,6 @@ _model_capability_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
 _MODEL_CATALOG_TTL_SECONDS = 24 * 3600.0
-# A forced refresh inside this window is answered from the cache, so a held button cannot hammer models.dev.
-_MODEL_CATALOG_MIN_REFRESH_SECONDS = 60.0
 _model_catalog_cache: dict | None = None
 
 
@@ -1270,14 +1268,14 @@ async def _fetch_models_dev_catalog() -> dict:
 
 
 @router.get("/model-catalog", response_model = ModelCatalogResponse)
-async def get_model_catalog(
-    refresh: bool = False, _current_subject: str = Depends(get_current_subject)
-):
-    """``refresh=true`` refetches models.dev now instead of waiting out the daily TTL."""
+async def get_model_catalog(_current_subject: str = Depends(get_current_subject)):
     global _model_catalog_cache
     cached = _model_catalog_cache or _read_model_catalog_file()
-    max_age = _MODEL_CATALOG_MIN_REFRESH_SECONDS if refresh is True else _MODEL_CATALOG_TTL_SECONDS
-    if cached is not None and "models" in cached and time.time() - cached["fetched_at"] < max_age:
+    if (
+        cached is not None
+        and "models" in cached
+        and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS
+    ):
         _model_catalog_cache = cached
         return cached
     try:

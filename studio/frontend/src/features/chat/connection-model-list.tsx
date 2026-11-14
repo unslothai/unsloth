@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { Search01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useSyncExternalStore } from "react";
 import {
   modelCatalogVersion,
@@ -73,21 +75,22 @@ export function ConnectionModelList({
   const filtered = query.trim().length > 0 || selectedOnly;
   return (
     <>
-      <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
-        <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
-          {filtered
-            ? `${models.length} of ${totalCount} models`
-            : `${totalCount} models`}
-        </span>
-        <Input
-          id={`provider-model-search-${panelKey}`}
-          type="search"
-          value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Search"
-          aria-label="Search models"
-          className="h-8 w-full bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0"
-        />
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-40 flex-1">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <Input
+            id={`provider-model-search-${panelKey}`}
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder={`Search ${totalCount} models`}
+            aria-label="Search models"
+            className="h-control pl-9"
+          />
+        </div>
         <div className="flex items-center justify-end gap-1">
           <Button
             type="button"
@@ -95,8 +98,8 @@ export function ConnectionModelList({
             size="sm"
             aria-pressed={selectedOnly}
             className={cn(
-              "h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45",
-              selectedOnly && "bg-muted/60 text-foreground",
+              "h-8 rounded-full px-3 text-xs font-medium text-muted-foreground hover:text-foreground",
+              selectedOnly && "bg-muted text-foreground",
             )}
             onClick={() => onSelectedOnlyChange(!selectedOnly)}
             title="Show only the models you ticked"
@@ -107,7 +110,7 @@ export function ConnectionModelList({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
+            className="h-8 rounded-full px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
             onClick={onSelectAll}
           >
             Select all
@@ -116,7 +119,7 @@ export function ConnectionModelList({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
+            className="h-8 rounded-full px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
             onClick={onClear}
           >
             Clear
@@ -125,14 +128,14 @@ export function ConnectionModelList({
       </div>
       <ul
         className={cn(
-          // Full-bleed rows of the Models card; the list scrolls only past 10 rows.
-          "-mx-4 divide-y divide-border/60 border-border/60 border-y last:-mb-4 last:border-b-0",
+          // Rows hang into the gutter so their hover pill lines text up with the page; scrolls past 10 rows.
+          "-mx-2.5 flex flex-col gap-0.5",
           rows.length > 10 &&
             "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
         )}
       >
         {rows.length === 0 ? (
-          <li className="px-4 py-2.5 text-xs text-muted-foreground">
+          <li className="px-2.5 py-2.5 text-xs text-muted-foreground">
             {selectedOnly && !query.trim()
               ? "No models selected"
               : "No matching models"}
@@ -142,7 +145,7 @@ export function ConnectionModelList({
             <li key={row.id}>
               <label
                 htmlFor={`provider-model-${panelKey}-${index}`}
-                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-4 py-1.5 hover:bg-muted/35"
+                className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-2.5 py-1.5 transition-colors hover:bg-muted/45"
               >
                 <Checkbox
                   id={`provider-model-${panelKey}-${index}`}
@@ -167,6 +170,11 @@ export function ConnectionModelList({
           ))
         )}
       </ul>
+      {filtered && rows.length > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {`Showing ${models.length} of ${totalCount} models`}
+        </p>
+      ) : null}
     </>
   );
 }

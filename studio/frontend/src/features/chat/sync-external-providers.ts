@@ -651,11 +651,6 @@ export async function refreshModelsDevCatalog(isCurrent?: () => boolean): Promis
   }
 }
 
-/** Throws, unlike the background refresh, so the button can say why it failed. */
-export async function forceRefreshModelsDevCatalog(): Promise<void> {
-  setModelsDevCatalog(await fetchModelCatalog({ refresh: true }));
-}
-
 export async function refreshProviderModelCatalogs(
   providers: readonly ExternalProviderConfig[],
   isCurrent?: () => boolean,

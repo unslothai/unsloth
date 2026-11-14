@@ -564,33 +564,3 @@ def test_a_capped_live_list_keeps_the_connection_saved_models(listed_catalog, mo
     ids = [model.id for model in listed]
     assert len(ids) == 15
     assert ids[:3] == ["openai/older-19", "openai/fresh-a", "openai/fresh-b"]
-
-
-def test_model_catalog_refresh_refetches_inside_the_daily_ttl(catalog_route, monkeypatch):
-    catalog_route()
-    assert _FakeCatalogClient.calls == 1
-
-    def refresh():
-        return asyncio.run(
-            providers_route.get_model_catalog(refresh = True, _current_subject = "tester")
-        )
-
-    # Just fetched: a held button is answered from the cache.
-    refresh()
-    assert _FakeCatalogClient.calls == 1
-    cached = providers_route._model_catalog_cache
-    providers_route._model_catalog_cache = dict(cached, fetched_at = cached["fetched_at"] - 3600)
-    catalog_route()
-    assert _FakeCatalogClient.calls == 1
-    refreshed = refresh()
-    assert _FakeCatalogClient.calls == 2
-    assert refreshed["fetched_at"] > cached["fetched_at"] - 3600
-
-
-def test_model_catalog_refresh_keeps_the_cached_copy_when_models_dev_is_down(catalog_route):
-    first = catalog_route()
-    cached = providers_route._model_catalog_cache
-    providers_route._model_catalog_cache = dict(cached, fetched_at = cached["fetched_at"] - 3600)
-    _FakeCatalogClient.fail = True
-    served = asyncio.run(providers_route.get_model_catalog(refresh = True, _current_subject = "tester"))
-    assert served["providers"] == first["providers"]
