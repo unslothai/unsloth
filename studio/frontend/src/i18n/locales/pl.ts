@@ -6155,4 +6155,11 @@ export const pl = {
       inRam: "{amount} w RAM",
     },
   },
+  voicePanel: {
+    chatModelVoice: "Głos modelu czatu",
+    chatModelVoiceHint: "Słyszy cię i odpowiada własnym głosem",
+    chatModelCannotSpeak: "Model czatu nie potrafi odpowiadać mową. Załaduj LFM3-Audio-2B lub LFM3-Omni-2B albo wybierz inny głos.",
+    speakerFemale: "Żeński",
+    speakerMale: "Męski",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

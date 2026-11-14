@@ -6118,4 +6118,11 @@ export const cs = {
       inRam: "{amount} v RAM",
     },
   },
+  voicePanel: {
+    chatModelVoice: "Hlas chatovacího modelu",
+    chatModelVoiceHint: "Slyší vás a odpovídá vlastním hlasem",
+    chatModelCannotSpeak: "Chatovací model neumí odpovídat řečí. Načtěte LFM3-Audio-2B nebo LFM3-Omni-2B, nebo vyberte jiný hlas.",
+    speakerFemale: "Ženský",
+    speakerMale: "Mužský",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

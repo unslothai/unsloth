@@ -6070,4 +6070,11 @@ export const fa = {
       inRam: "{amount} در RAM",
     },
   },
+  voicePanel: {
+    chatModelVoice: "صدای مدل گفتگو",
+    chatModelVoiceHint: "صدای شما را می‌شنود و با صدای خودش پاسخ می‌دهد",
+    chatModelCannotSpeak: "مدل گفتگو نمی‌تواند با گفتار پاسخ دهد. LFM3-Audio-2B یا LFM3-Omni-2B را بارگیری کنید یا صدای دیگری انتخاب کنید.",
+    speakerFemale: "زن",
+    speakerMale: "مرد",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

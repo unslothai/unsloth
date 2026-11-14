@@ -6147,4 +6147,11 @@ export const uk = {
       inRam: "{amount} у RAM",
     },
   },
+  voicePanel: {
+    chatModelVoice: "Голос чат-моделі",
+    chatModelVoiceHint: "Чує вас і відповідає власним голосом",
+    chatModelCannotSpeak: "Чат-модель не вміє відповідати голосом. Завантажте LFM3-Audio-2B або LFM3-Omni-2B чи виберіть інший голос.",
+    speakerFemale: "Жіночий",
+    speakerMale: "Чоловічий",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -6099,4 +6099,11 @@ export const tr = {
       inRam: "{amount} RAM'de",
     },
   },
+  voicePanel: {
+    chatModelVoice: "Sohbet modelinin sesi",
+    chatModelVoiceHint: "Sizi duyar ve kendi sesiyle yanıt verir",
+    chatModelCannotSpeak: "Sohbet modeli sesli yanıt veremiyor. LFM3-Audio-2B veya LFM3-Omni-2B yükleyin ya da başka bir ses seçin.",
+    speakerFemale: "Kadın",
+    speakerMale: "Erkek",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

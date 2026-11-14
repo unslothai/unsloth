@@ -5824,4 +5824,11 @@ export const th = {
       inRam: "{amount} ใน RAM",
     },
   },
+  voicePanel: {
+    chatModelVoice: "เสียงของโมเดลแชท",
+    chatModelVoiceHint: "ฟังคุณและตอบด้วยเสียงของตัวเอง",
+    chatModelCannotSpeak: "โมเดลแชทตอบเป็นเสียงพูดไม่ได้ โหลด LFM3-Audio-2B หรือ LFM3-Omni-2B หรือเลือกเสียงอื่น",
+    speakerFemale: "หญิง",
+    speakerMale: "ชาย",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

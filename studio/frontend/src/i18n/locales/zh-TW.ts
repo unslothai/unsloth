@@ -5775,4 +5775,11 @@ export const zhTW = {
       inRam: "{amount} 位於 RAM",
     },
   },
+  voicePanel: {
+    chatModelVoice: "聊天模型的語音",
+    chatModelVoiceHint: "聽你說話並用自己的聲音回答",
+    chatModelCannotSpeak: "聊天模型無法以語音回答。請載入 LFM3-Audio-2B 或 LFM3-Omni-2B，或選擇其他語音。",
+    speakerFemale: "女聲",
+    speakerMale: "男聲",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -6161,4 +6161,11 @@ export const nl = {
       inRam: "{amount} in RAM",
     },
   },
+  voicePanel: {
+    chatModelVoice: "Stem van het chatmodel",
+    chatModelVoiceHint: "Hoort je en antwoordt met een eigen stem",
+    chatModelCannotSpeak: "Het chatmodel kan niet met spraak antwoorden. Laad LFM3-Audio-2B of LFM3-Omni-2B, of kies een andere stem.",
+    speakerFemale: "Vrouwelijk",
+    speakerMale: "Mannelijk",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

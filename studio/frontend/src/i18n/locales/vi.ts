@@ -6102,4 +6102,11 @@ export const vi = {
       inRam: "{amount} trong RAM",
     },
   },
+  voicePanel: {
+    chatModelVoice: "Giọng của mô hình chat",
+    chatModelVoiceHint: "Nghe bạn và trả lời bằng giọng của chính nó",
+    chatModelCannotSpeak: "Mô hình chat không thể trả lời bằng giọng nói. Hãy tải LFM3-Audio-2B hoặc LFM3-Omni-2B, hoặc chọn giọng khác.",
+    speakerFemale: "Nữ",
+    speakerMale: "Nam",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;
