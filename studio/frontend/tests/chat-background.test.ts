@@ -57,6 +57,14 @@ test("conversation visibility scales the conversation dim and wash, and 0 keeps 
 	assert.match(css, /\{ opacity: calc\(\.4 \+ \.6 \* var\(--wallpaper-conversation, 0\)\); \}/);
 	assert.match(css, /calc\(\(1 - var\(--wallpaper-safe, 0\)\) \* \(1 - \.65 \* var\(--wallpaper-conversation, 0\)\) \* 100%\)/);
 });
+test("wallpapered assistant replies use the same surface as the conversation preview", async () => {
+	const { readFile } = await import("node:fs/promises");
+	const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(
+		css,
+		/:is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\] \.aui-assistant-message-content \{[\s\S]*?background: var\(--background\);[\s\S]*?border-radius: var\(--radius-lg\);[\s\S]*?padding: \.75rem;/,
+	);
+});
 test("uploads bound processing dimensions", () => {
 	assert.deepEqual(normalizedSize(6000, 4000), [2048, 1365]);
 	assert.deepEqual(normalizedSize(3, 7), [3, 7]);

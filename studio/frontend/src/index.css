@@ -6776,6 +6776,12 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
   --composer-shadow: none !important;
 }
 .wallpaper-preview-prose { background: var(--background); }
+/* Keep assistant replies consistent with the conversation preview when a custom wallpaper is active. */
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-assistant-message-content {
+  background: var(--background);
+  border-radius: var(--radius-lg);
+  padding: .75rem;
+}
 
 /* Plain glass already uses the page colour; only image wallpapers need the header contrast fade. */
 .chat-wallpaper:not([data-glass-backdrop])::after {
