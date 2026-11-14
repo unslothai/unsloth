@@ -113,3 +113,26 @@ test("the delayed composer cleanup clears only the refilled transcript", () => {
 test("frames stay in order when the reply ends while the barge-in probe is out", () => {
   assert.match(loop, /if \(!bargedIn && \(isVoicePlaybackActive\(\) \|\| bargeConfirming\)\) \{/);
 });
+
+test("a short barge-in (\"stop\") that passed its probe is transcribed, not dropped as too short", () => {
+  assert.match(loop, /const minMs = bargedIn \? BARGE_CONFIRMED_MS : MIN_SPEECH_MS;/);
+  assert.match(loop, /detectClip\(wav, bargedIn \? BARGE_VAD_MIN_SPEECH_MS : VAD_MIN_SPEECH_MS\)/);
+});
+
+test("a voice pause survives the engine remount: the new player starts held", () => {
+  assert.match(
+    engine,
+    /useEffect\(\(\) => \{\s*if \(useChatRuntimeStore\.getState\(\)\.voicePaused\) holdPlayback\(true\);\s*\}, \[holdPlayback\]\);/,
+  );
+});
+
+
+test("a voice that failed to load is not warmed (warm, fail, reload looped)", () => {
+  const effect = engine.slice(engine.indexOf("wasSlotLoadingRef.current = voiceSlotLoading;"));
+  assert.match(effect.slice(0, 500), /if \(useChatRuntimeStore\.getState\(\)\.voiceSlotLoaded\) void warmAsides(IfTts)?\(asidePhrases\(\)\);/);
+});
+
+test("an image-share Allow from the floating orb brings the chat card up", () => {
+  const host = readSrc("features/chat/voice/orb-widget-host.ts");
+  assert.match(host, /if \(outcome === "needs_card"\) reveal\(t\);/);
+});

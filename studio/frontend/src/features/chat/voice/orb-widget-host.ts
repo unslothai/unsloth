@@ -282,6 +282,8 @@ export function prewarmOrbWidget(): Promise<boolean> {
         voiceTrace("ui.orbWidget.approval", { decision: payload.decision });
         void decideToolCall(payload.id, payload.decision).then((outcome) => {
           if (outcome !== "ok") voiceTrace("ui.orbWidget.approvalFailed", { outcome });
+          // An image share is decided on the chat card with its disclosure.
+          if (outcome === "needs_card") reveal(t);
           push();
         });
       }),

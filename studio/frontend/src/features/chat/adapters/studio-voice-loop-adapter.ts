@@ -553,7 +553,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       const wav = wavBlob(merged, sampleRate);
       const modelId = useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
       const abort = new AbortController();
-      const vad = detectClip(wav, VAD_MIN_SPEECH_MS);
+      const vad = detectClip(wav, bargedIn ? BARGE_VAD_MIN_SPEECH_MS : VAD_MIN_SPEECH_MS);
       const text = vad.then(async (v) =>
         v?.kept === false
           ? ""
@@ -590,7 +590,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       finalizing = true;
       teardown();
 
-      if (!heardSpeech || chunks.length === 0 || voicedMs < MIN_SPEECH_MS) {
+      // A barge-in already passed its own bar: a quick "stop" is shorter than a turn.
+      const minMs = bargedIn ? BARGE_CONFIRMED_MS : MIN_SPEECH_MS;
+      if (!heardSpeech || chunks.length === 0 || voicedMs < minMs) {
         endWithoutSpeech();
         return;
       }
@@ -994,7 +996,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
           const sinceVoice = now - lastVoiceAt;
           const elapsed = now - startedAt;
-          if (heardSpeech && !finalizing && voicedMs >= MIN_SPEECH_MS && sinceVoice >= SPECULATE_AFTER_MS) {
+          if (heardSpeech && !finalizing && voicedMs >= (bargedIn ? BARGE_CONFIRMED_MS : MIN_SPEECH_MS) && sinceVoice >= SPECULATE_AFTER_MS) {
             const span = utteranceSpan(chunkVoiced, chunkNotSilent, padFrames());
             if (span) early.start(clipKey(span), () => analyseClip(span));
           }

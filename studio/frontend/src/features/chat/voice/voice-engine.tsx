@@ -274,6 +274,10 @@ export const VoiceEngine: FC = () => {
     resumePlayback,
     holdPlayback,
   } = useTtsPlayer(onPlaybackEnd);
+  // A pause outlives this engine (New Chat remounts it): the new player starts held too.
+  useEffect(() => {
+    if (useChatRuntimeStore.getState().voicePaused) holdPlayback(true);
+  }, [holdPlayback]);
   isSpeakingRef.current = isSpeaking;
   isPlayingRef.current = isPlaying;
   useEffect(() => {
@@ -973,7 +977,8 @@ export const VoiceEngine: FC = () => {
     wasSlotLoadingRef.current = voiceSlotLoading;
     if (!was || voiceSlotLoading) return;
     if (voiceModeRef.current !== "active" || !hasChatModelRef.current) return;
-    void warmAsidesIfTts(asidePhrases());
+    // Only a voice that loaded: warming a failed one fails, reloads it and loops.
+    if (useChatRuntimeStore.getState().voiceSlotLoaded) void warmAsidesIfTts(asidePhrases());
     // A failed load also ends loading: re-sending would re-park and reload in a loop.
     if (pendingForVoiceRef.current.length && useChatRuntimeStore.getState().voiceSlotLoaded) {
       // Cutting the session mid-transcription lost a turn; its own finish sends the lot.
