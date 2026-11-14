@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import pytest
+from types import SimpleNamespace
 
 from core.inference import audio_cpp_models as acm
 from core.inference import vad_audiocpp_sidecar as vad
@@ -96,3 +97,30 @@ def test_a_detect_keeps_the_server_it_loaded_until_the_run_ends(monkeypatch):
     result = sidecar.detect(buf.getvalue(), "pulsevad")
     assert result["model"] == "pulsevad"
     assert held_during_load == [True, True]
+
+
+def test_a_download_resolves_the_repo_with_the_callers_token(monkeypatch):
+    from core.inference import audio_cpp_backend
+
+    seen: list = []
+    entry = SimpleNamespace(id = "org/private-vad-GGUF")
+
+    def _resolve(
+        model,
+        *,
+        network = False,
+        hf_token = None,
+    ):
+        seen.append(("resolve", hf_token))
+        return entry
+
+    monkeypatch.setattr(vad, "resolve_vad_model", _resolve)
+    monkeypatch.setattr(
+        audio_cpp_backend.AudioCppBackend,
+        "_download_missing",
+        staticmethod(lambda e, token: seen.append(("download", token))),
+    )
+    monkeypatch.setattr(vad.AudioCppVadSidecar, "__init__", lambda self: None)
+    sidecar = vad.AudioCppVadSidecar()
+    assert sidecar.download("org/private-vad-GGUF", "hf_secret") == "org/private-vad-GGUF"
+    assert seen == [("resolve", "hf_secret"), ("download", "hf_secret")]

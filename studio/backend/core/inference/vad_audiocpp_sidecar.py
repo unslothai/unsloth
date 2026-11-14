@@ -48,12 +48,17 @@ class VadUnavailableError(VadError):
     """The audio runtime cannot run VAD here."""
 
 
-def resolve_vad_model(model: Optional[str], *, network: bool = False) -> AudioCppModel:
+def resolve_vad_model(
+    model: Optional[str],
+    *,
+    network: bool = False,
+    hf_token: Optional[str] = None,
+) -> AudioCppModel:
     identifier = (model or "").strip() or DEFAULT_VAD_MODEL
     base, variant = split_variant_ref(identifier)
     if parse_identifier(base) is None:
         raise VadError(f"'{model}' is not an audio GGUF the audio runtime can detect speech with.")
-    found = resolve(base, variant, network = network)
+    found = resolve(base, variant, hf_token, network = network)
     if found is None and not network:
         raise VadModelNotDownloadedError(f"VAD model '{base}' is not downloaded yet.")
     if found is None:
@@ -207,7 +212,8 @@ class AudioCppVadSidecar:
     ) -> str:
         from core.inference import audio_cpp_backend
 
-        entry = resolve_vad_model(model, network = True)
+        # A private or gated repo needs the caller's token for the lookup too, not only the download.
+        entry = resolve_vad_model(model, network = True, hf_token = hf_token)
         audio_cpp_backend.AudioCppBackend._download_missing(entry, hf_token)
         return entry.id
 
