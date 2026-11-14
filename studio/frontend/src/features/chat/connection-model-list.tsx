@@ -140,12 +140,12 @@ export function ConnectionModelList({
           </Button>
         </div>
       </div>
-      <div className="overflow-hidden rounded-2xl border border-border/60 p-1">
+      <div className="overflow-hidden rounded-2xl border border-border/60 py-1 pl-1">
         <ul
           ref={fadeScrollEdges}
           className={cn(
             // Scrolls past 10 rows.
-            "flex flex-col gap-0.5",
+            "hover-scrollbar flex flex-col gap-0.5 pr-1",
             rows.length > 10 &&
               "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
           )}

@@ -144,7 +144,7 @@ export function ConnectionGallery({
     <SettingsSection
       title="Add a connection"
       action={
-        <div className="relative w-60 max-sm:w-40">
+        <div className="relative w-80 max-sm:w-44">
           <HugeiconsIcon
             icon={Search01Icon}
             className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
