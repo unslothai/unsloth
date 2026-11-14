@@ -54,8 +54,10 @@ class _SSEDecoder:
         values: list[str] = []
         while "\n\n" in self.buffer:
             block, self.buffer = self.buffer.split("\n\n", 1)
+            # SSE lines end only at LF here; splitlines() also cuts at U+2028, U+2029 and U+0085,
+            # which JSON leaves unescaped inside a delta.
             data = "\n".join(
-                line[5:].lstrip() for line in block.splitlines() if line.startswith("data:")
+                line[5:].lstrip() for line in block.split("\n") if line.startswith("data:")
             )
             if data:
                 values.append(data)
