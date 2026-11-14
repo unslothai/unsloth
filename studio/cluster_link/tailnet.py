@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -62,7 +63,7 @@ def helper_path() -> Optional[Path]:
     """``UNSLOTH_LINK_BIN``, else the verified install for the current pins. Never downloads."""
     override = (os.environ.get(ENV_BIN) or "").strip()
     if override:
-        path = Path(override).expanduser()
+        path = Path(override).expanduser().absolute()
         return path if path.is_file() else None
     try:
         return _installer().installed_binary()
@@ -126,8 +127,21 @@ def new_client_key(path: Path) -> str:
     return _genkey("client", Path(path), [])
 
 
+def _lifetime() -> Tuple[Dict[str, Any], Any]:
+    """(Popen kwargs, spawn) tying the helper to this process: PDEATHSIG armed from a lifetime
+    thread on Linux, the Job Object Studio installs on Windows; the helper itself also exits on
+    stdin EOF and once reparented (``--parent-pid``)."""
+    try:
+        lifetime = sys.modules.get("utils.process_lifetime")  # Studio's own instance
+        if lifetime is None:
+            from studio.backend.utils import process_lifetime as lifetime
+        return lifetime.child_popen_kwargs(), lifetime.spawn_on_lifetime_thread
+    except Exception:
+        return {}, lambda spawn: spawn()
+
+
 class Tailnet:
-    """One helper process. It exits when this process closes its stdin, so it dies with its parent."""
+    """One helper process; it dies with this process (see _lifetime) and exits when stdin closes."""
 
     def __init__(self, *, derp_map_url: Optional[str] = None):
         self._derp_map_url = _derp_map_url(derp_map_url)
@@ -138,37 +152,50 @@ class Tailnet:
         self._waiting: Dict[int, Tuple[threading.Event, List[Dict[str, Any]]]] = {}
         self._ready = threading.Event()
         self._dead: Optional[str] = None
+        self._closed = False
         self._stderr: deque = deque(maxlen = 20)
+
+    @property
+    def dead(self) -> bool:
+        return self._dead is not None
 
     def start(self) -> None:
         with self._lock:
+            if self._closed:
+                raise TailnetError(self._dead or f"{BINARY} was closed")
             if self._proc is not None:
                 return
             argv = [*_command(), "stdio"]
             if self._derp_map_url:
                 argv += ["--derpmap-url", self._derp_map_url]
-            kwargs: Dict[str, Any] = {}
+            kwargs, spawn = _lifetime()
             if os.name == "nt":
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            else:
+                argv += ["--parent-pid", str(os.getpid())]
             try:
-                self._proc = subprocess.Popen(
-                    argv,
-                    stdin = subprocess.PIPE,
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.PIPE,
-                    **kwargs,
+                proc = spawn(
+                    lambda: subprocess.Popen(
+                        argv,
+                        stdin = subprocess.PIPE,
+                        stdout = subprocess.PIPE,
+                        stderr = subprocess.PIPE,
+                        **kwargs,
+                    )
                 )
             except OSError as exc:
                 raise TailnetUnavailable(f"cannot start {BINARY}: {exc}") from exc
-        threading.Thread(target = self._read, daemon = True, name = "tailnet-out").start()
-        threading.Thread(target = self._drain_stderr, daemon = True, name = "tailnet-err").start()
+            self._proc = proc
+        threading.Thread(target = self._read, args = (proc,), daemon = True, name = "tailnet-out").start()
+        threading.Thread(
+            target = self._drain_stderr, args = (proc,), daemon = True, name = "tailnet-err"
+        ).start()
         if not self._ready.wait(START_TIMEOUT_S) or self._dead:
             self.close()
             raise TailnetError(self._dead or f"{BINARY} did not start")
 
-    def _read(self) -> None:
-        proc = self._proc
-        assert proc is not None and proc.stdout is not None
+    def _read(self, proc: subprocess.Popen) -> None:
+        assert proc.stdout is not None
         for raw in proc.stdout:
             try:
                 msg = json.loads(raw)
@@ -182,14 +209,14 @@ class Tailnet:
                 slot[1].append(msg)
                 slot[0].set()
         tail = "; ".join(self._stderr)
-        self._dead = f"{BINARY} exited" + (f": {tail}" if tail else "")
+        self._dead = self._dead or f"{BINARY} exited" + (f": {tail}" if tail else "")
         self._ready.set()
         for event, _ in list(self._waiting.values()):
             event.set()
+        _reap(proc)
 
-    def _drain_stderr(self) -> None:
-        proc = self._proc
-        assert proc is not None and proc.stderr is not None
+    def _drain_stderr(self, proc: subprocess.Popen) -> None:
+        assert proc.stderr is not None
         for raw in proc.stderr:
             self._stderr.append(raw.decode("utf-8", "replace").rstrip())
 
@@ -199,22 +226,24 @@ class Tailnet:
         timeout: float = CALL_TIMEOUT_S,
         **fields: Any,
     ) -> Dict[str, Any]:
-        if self._proc is None:
+        proc = self._proc
+        if proc is None:
             self.start()
-        if self._dead:
-            raise TailnetError(self._dead)
+            proc = self._proc
+        if self._dead or proc is None:
+            raise TailnetError(self._dead or f"{BINARY} was closed")
         rid = next(self._ids)
         event, box = threading.Event(), []
         self._waiting[rid] = (event, box)
         line = json.dumps({"id": rid, "op": op, **fields}).encode("utf-8") + b"\n"
         try:
             with self._write_lock:
-                assert self._proc is not None and self._proc.stdin is not None
-                self._proc.stdin.write(line)
-                self._proc.stdin.flush()
+                assert proc.stdin is not None
+                proc.stdin.write(line)
+                proc.stdin.flush()
             if not event.wait(timeout):
                 raise TailnetError(f"{BINARY} did not answer {op} in {timeout:.0f} s")
-        except (BrokenPipeError, OSError) as exc:
+        except (OSError, ValueError) as exc:  # ValueError: stdin closed under us
             raise TailnetError(self._dead or f"{BINARY} is gone: {exc}") from exc
         finally:
             self._waiting.pop(rid, None)
@@ -227,20 +256,18 @@ class Tailnet:
 
     def close(self) -> None:
         with self._lock:
+            self._closed = True
+            self._dead = self._dead or f"{BINARY} was closed"
             proc, self._proc = self._proc, None
         if proc is None:
             return
-        try:
-            if proc.stdin is not None:
-                proc.stdin.close()
-        except OSError:
-            pass
+        # A writer blocked on a full pipe holds stdin: close it on the side so the kill stays reachable.
+        threading.Thread(target = _close_quietly, args = (proc.stdin,), daemon = True).start()
         try:
             proc.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout = 5)
-        self._dead = self._dead or "closed"
 
     def serve(
         self, ports: List[int], *, key_path: Optional[Path], allow: Optional[List[str]]
@@ -309,6 +336,28 @@ class Tailnet:
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
+
+
+def _close_quietly(stream: Any) -> None:
+    try:
+        if stream is not None:
+            stream.close()
+    except (OSError, ValueError):
+        pass
+
+
+def _reap(proc: subprocess.Popen) -> None:
+    """The helper hung up: collect it and drop its pipes, so no zombie or descriptor is left."""
+    try:
+        proc.wait(timeout = 5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout = 5)
+        except subprocess.TimeoutExpired:
+            pass
+    for stream in (proc.stdout, proc.stdin):
+        _close_quietly(stream)
 
 
 class FakeTailnet:

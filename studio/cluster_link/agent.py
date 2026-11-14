@@ -357,11 +357,13 @@ class Agent:
         ports = [self.port] + ([self.native_port] if self.native_available else [])
         tunnel = remote.WorkerTunnel(ports, self._tunnel_allow)
         try:
-            opened = await asyncio.to_thread(tunnel.start)
+            opened = await remote.owned(tunnel.start, close = lambda _ok: tunnel.close())
         except Exception as exc:
             logger.warning("cluster agent: no tailcat tunnel (%s); LAN only", exc)
             return
-        if opened:
+        if opened and self._stopping:
+            await asyncio.to_thread(tunnel.close)
+        elif opened:
             self.tunnel = tunnel
             self._tunnel_sync = asyncio.ensure_future(self._sync_tunnel())
 

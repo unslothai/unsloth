@@ -85,6 +85,14 @@ def _through_tailnet(peer: Any, ask: Callable) -> Optional[Tuple[str, Any]]:
     return ("direct" if getattr(info, "direct", False) else "relayed"), st
 
 
+def _drop_removed(live: set) -> None:
+    """``workers`` is every live worker: a tunnel forward to anyone else belongs to a removed one."""
+    from studio.cluster_link import remote
+    for node_id in remote.forwarded():
+        if node_id not in live:
+            remote.drop(node_id)
+
+
 def remote_relay_allowed() -> bool:
     from studio.cluster_link import remote
     return remote.relay_allowed()
@@ -153,6 +161,7 @@ def check_workers(
                 via[peer.node_id] = path[0]
     finally:
         relays.stop()
+        _drop_removed({p.node_id for p in workers})
     out: List[WorkerStatus] = []
     for peer in workers:
         where, st, discovered = found.get(peer.node_id, ("address unknown", None, False))

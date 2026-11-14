@@ -454,6 +454,8 @@ class PairingWindow:
         self._lock = asyncio.Lock()
         self._used = False
         self._claimed = False
+        self._cancelled = False
+        self.paired: Optional[Peer] = None
         self._attempts = 0
         self._server: Optional[asyncio.AbstractServer] = None
         self._done: Optional[asyncio.Future] = None
@@ -487,11 +489,15 @@ class PairingWindow:
         self._expiry = loop.call_later(self.ttl, self._expire)
         if self._use_tailnet:
             try:
-                served = await asyncio.to_thread(remote.serve, [self.bound_port], None, None)
+                served = await remote.owned(
+                    remote.serve, [self.bound_port], None, None, close = lambda r: r[0].close()
+                )
             except Exception as exc:
                 logger.info("pairing: no tailcat address (%s); LAN only", type(exc).__name__)
                 served = None
-            if served is not None:
+            if served is not None and self._cancelled:
+                _close_net(served[0])
+            elif served is not None:
                 self._net, self.tc = served
         return tokens.encode(
             tokens.Invite(
@@ -527,7 +533,8 @@ class PairingWindow:
         self.close()
 
     def close(self) -> None:
-        self._used = True
+        """Cancel: no worker is recorded after this, unless it already was (``paired``)."""
+        self._used = self._cancelled = True
         if self._expiry is not None:
             self._expiry.cancel()
         if self._server is not None:
@@ -535,11 +542,14 @@ class PairingWindow:
         net, self._net = self._net, None
         if net is not None:
             try:
-                net.close()
-            except Exception:
-                pass
+                asyncio.get_running_loop().run_in_executor(None, _close_net, net)
+            except RuntimeError:
+                _close_net(net)
         if self._done is not None and not self._done.done():
-            self._fail(PairingError("the pairing window was closed"))
+            if self.paired is not None:
+                self._done.set_result(self.paired)
+            else:
+                self._fail(PairingError("the pairing window was closed"))
 
     async def wait(self, timeout: Optional[float] = None) -> Peer:
         if self._done is None:
@@ -689,11 +699,14 @@ class PairingWindow:
             )
             reg = self.registry or identity.Registry()
             async with _identity_lock():
+                if self._cancelled:
+                    raise PairingError("the pairing was cancelled")
                 now_master = identity.master_identity(create = False)
                 if now_master is None or now_master.fingerprint != self.master.fingerprint:
                     raise PairingError("this master was reset while pairing; pair again")
                 with reg.transaction():
                     reg.add(peer)
+                self.paired = peer
             await framing.write_frame(writer, {"type": "pair_ok"})
             if self._net is not None:
                 # Closing the window stops its tunnel: wait for the worker to hang up after pair_ok.
@@ -712,6 +725,13 @@ class PairingWindow:
                 )
             self.close()
             raise
+
+
+def _close_net(net: Any) -> None:
+    try:
+        net.close()
+    except Exception:
+        pass
 
 
 async def _ask(approve: Approve, name: str, words: Optional[List[str]]) -> bool:
@@ -797,13 +817,17 @@ async def _connect_any(invite, timeout: float):
         lan_error = exc
     net = None
     try:
-        net, port = await asyncio.to_thread(remote.dial, invite.tc, invite.port)
+        net, port = await remote.owned(
+            remote.dial, invite.tc, invite.port, close = lambda r: r[0].close()
+        )
         addr, reader, writer = await asyncio.wait_for(
             _connect(["127.0.0.1"], port, invite.master_fp), timeout
         )
-    except Exception as exc:
+    except BaseException as exc:
         if net is not None:
-            net.close()
+            asyncio.get_running_loop().run_in_executor(None, _close_net, net)
+        if not isinstance(exc, Exception):
+            raise
         if isinstance(lan_error, asyncio.TimeoutError):
             raise PairingError(f"could not reach the master on the LAN or through tailcat ({exc})")
         raise PairingError(
@@ -836,7 +860,7 @@ async def _join_locked(
     own = None
     if remote.enabled():
         try:
-            own = await asyncio.to_thread(remote.worker_address, agent_port)
+            own = await asyncio.to_thread(remote.worker_address, agent_port, held = True)
         except Exception as exc:
             logger.info("pairing: no tailcat address for this worker (%s)", type(exc).__name__)
 

@@ -561,19 +561,21 @@ def leave(yes: bool = typer.Option(False, "--yes", "-y", help = "Do not ask for 
                     "them first, or they lose their master."
                 )
             identity.forget_master()
-        _forget_tailnet_keys()
+            _forget_tailnet_keys()
         _say("Master identity removed. This machine can now join another cluster as a worker.")
         return
     if not yes and not typer.confirm("Forget the master and this machine's cluster identity?"):
         raise typer.Exit(code = 1)
-    identity.forget_identity()
-    _forget_tailnet_keys()
+    with identity.identity_lock():
+        identity.forget_identity()
+        _forget_tailnet_keys()
     _say("Left the cluster. Pair again with `unsloth worker --join`.")
 
 
 def _forget_tailnet_keys() -> None:
+    """Called under identity_lock, the lock a pairing makes its keys under."""
     try:
         from studio.cluster_link import remote
-        remote.forget_keys()
+        remote.forget_keys(held = True)
     except Exception:
         pass

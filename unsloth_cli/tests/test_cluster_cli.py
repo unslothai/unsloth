@@ -350,6 +350,26 @@ def test_leave_resets_a_master_nobody_joined_but_not_one_with_workers(fakes):
     assert reset.exit_code == 0 and fakes.left == ["master"]
 
 
+@pytest.mark.parametrize("role", ["worker", "master"])
+def test_leave_deletes_the_tunnel_keys_under_the_identity_lock(fakes, monkeypatch, role):
+    events = []
+
+    @contextlib.contextmanager
+    def lock():
+        events.append("lock")
+        yield
+        events.append("unlock")
+
+    monkeypatch.setattr(link.identity, "identity_lock", lock)
+    remote = SimpleNamespace(forget_keys = lambda held = False: events.append(("keys", held)))
+    monkeypatch.setitem(sys.modules, "studio.cluster_link.remote", remote)
+    monkeypatch.setattr(link, "remote", remote, raising = False)
+    fakes.peers = []
+    fakes.worker = ident("worker") if role == "worker" else None
+    assert invoke("cluster", "leave", "--yes").exit_code == 0
+    assert events == ["lock", ("keys", True), "unlock"]
+
+
 SPOOF = SimpleNamespace(host = "192.168.1.66", agent_port = 50070, fp = "f" * 64, seen_at = 0.0)
 ERRNO = "cannot reach node-aaaa111 at 192.168.1.20:50070: [Errno 111] Connect call failed"
 MOVED = {"node-aaaa1111": [SPOOF, sighting("192.168.1.31", 50123)]}  # the spoof has another key
@@ -438,6 +458,8 @@ def test_list_names_how_each_worker_is_reached(fakes, monkeypatch):
         relay_allowed = lambda: relays_allowed[0],
         forward = lambda node_id, address, port: ports[node_id],
         path = lambda node_id: SimpleNamespace(direct = node_id == "node-bbbb2222"),
+        forwarded = lambda: list(ports),
+        drop = lambda node_id: None,
         close = lambda: None,
     )
     monkeypatch.setitem(sys.modules, "studio.cluster_link.remote", remote)

@@ -12,6 +12,8 @@ import json
 import os
 import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -295,3 +297,143 @@ async def test_the_agent_serves_its_port_through_tailcat_and_closes_it_on_stop(m
         agent.tunnel is None
         and not (Path(os.environ["FAKE_TAILNET_DIR"]) / served["address"]).exists()
     )
+
+
+@_async
+async def test_cancelling_after_approval_enrolls_nothing(master_dir, tmp_path, fake):
+    holder = {}
+
+    def approve(name, words):
+        asyncio.get_running_loop().call_soon(holder["window"].close)
+        return True
+
+    _, window, token = await _open(approve = approve)
+    holder["window"] = window
+    result = await _join(tmp_path / "w", token)
+    assert not result["ok"], result
+    assert _workers() == [] and window.paired is None
+    with pytest.raises(pairing.PairingError):
+        await window.wait(5)
+
+
+@_async
+async def test_closing_after_the_commit_still_reports_the_worker(master_dir, tmp_path, fake):
+    _, window, token = await _open()
+    result = await _join(tmp_path / "w", token)
+    assert result["ok"], result
+    window.close()
+    assert (await window.wait(5)).node_id == result["node_id"] == window.paired.node_id
+
+
+class _Net:
+    def __init__(self):
+        self.closed = threading.Event()
+
+    def close(self):
+        self.closed.set()
+
+
+def _blocking(gate, result):
+    def call(*_a, **_k):
+        gate.wait(10)
+        return result
+
+    return call
+
+
+@_async
+async def test_a_tunnel_arriving_after_the_window_closed_is_closed(master_dir, monkeypatch):
+    for how in ("cancel", "close"):
+        gate, net = threading.Event(), _Net()
+        monkeypatch.setattr(remote, "serve", _blocking(gate, (net, "tcLATE")))
+        master = identity.master_identity()
+        window = pairing.PairingWindow(
+            master, host = "127.0.0.1", port = 0, addrs = ["127.0.0.1"], tailnet = True
+        )
+        task = asyncio.ensure_future(window.start())
+        await asyncio.sleep(0.2)
+        if how == "cancel":
+            task.cancel()
+        else:
+            window.close()
+        gate.set()
+        if how == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+            assert window.tc is None
+        assert await asyncio.to_thread(net.closed.wait, 5), how
+        window.close()
+
+
+@_async
+async def test_a_dial_arriving_after_the_join_was_cancelled_is_closed(fake, monkeypatch):
+    gate, net = threading.Event(), _Net()
+    monkeypatch.setattr(remote, "dial", _blocking(gate, (net, 1)))
+    invite = type("I", (), dict(addrs = ["127.0.0.1"], port = 1, master_fp = "f", tc = "tcX"))()
+    task = asyncio.ensure_future(pairing._connect_any(invite, 5))
+    await asyncio.sleep(0.5)
+    task.cancel()
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await asyncio.to_thread(net.closed.wait, 5)
+
+
+@_async
+async def test_closing_a_window_does_not_wait_for_its_tunnel_on_the_event_loop(master_dir):
+    class Slow(_Net):
+        def close(self):
+            time.sleep(1)
+            super().close()
+
+    master = identity.master_identity()
+    window = pairing.PairingWindow(
+        master, host = "127.0.0.1", port = 0, addrs = ["127.0.0.1"], tailnet = False
+    )
+    await window.start()
+    window._net = net = Slow()
+    t0 = time.monotonic()
+    window.close()
+    assert time.monotonic() - t0 < 0.5
+    assert await asyncio.to_thread(net.closed.wait, 5)
+
+
+@_async
+async def test_a_tunnel_started_while_the_agent_stops_is_closed(master_dir, monkeypatch):
+    from studio.cluster_link import agent as agent_mod
+    for how in ("cancel", "stop"):
+        gate, made = threading.Event(), []
+
+        class Tunnel:
+            def __init__(self, ports, allowed):
+                self.closed = threading.Event()
+                made.append(self)
+
+            def start(self):
+                gate.wait(10)
+                return True
+
+            def close(self):
+                self.closed.set()
+
+        monkeypatch.setattr(remote, "WorkerTunnel", Tunnel)
+        me = identity.master_identity()
+        agent = agent_mod.Agent(
+            me, lambda pid: True, host = "127.0.0.1", port = 0, tunnel_allow = lambda: []
+        )
+        task = asyncio.ensure_future(agent._open_tunnel())
+        await asyncio.sleep(0.2)
+        if how == "cancel":
+            task.cancel()
+        else:
+            agent._stopping = True
+        gate.set()
+        if how == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+        assert await asyncio.to_thread(made[0].closed.wait, 5), how
+        assert agent.tunnel is None
