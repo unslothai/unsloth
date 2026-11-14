@@ -84,13 +84,32 @@ function edges(inner: string): [string, string, string] {
   return [space(head, true), `${marks(head)}${body}${marks(tail)}`, space(tail, tail.includes("\n"))];
 }
 
-const PARAGRAPH = new RegExp(`(\\n[ \\t\\u00a0${FENCE_OPEN}${FENCE_CLOSE}]*\\n)`);
+const PARAGRAPH = new RegExp(`\\n[ \\t\\u00a0${FENCE_OPEN}${FENCE_CLOSE}]*\\n`, "g");
+const CODE = new RegExp(`${FENCE_OPEN}\`[^${FENCE_CLOSE}]*${FENCE_CLOSE}`, "g");
 
-// Emphasis cannot span paragraphs, so each preserved paragraph gets its own markers.
+// Paragraph breaks outside code, as [text, break, text, ...].
+function paragraphs(body: string): string[] {
+  const code = [...body.matchAll(CODE)].map((m) => [m.index, m.index + m[0].length]);
+  const parts: string[] = [];
+  let last = 0;
+  let j = 0;
+  for (const m of body.matchAll(PARAGRAPH)) {
+    while (j < code.length && code[j][1] <= m.index) j++;
+    if (j < code.length && code[j][0] <= m.index) continue;
+    parts.push(body.slice(last, m.index), m[0]);
+    last = m.index + m[0].length;
+  }
+  parts.push(body.slice(last));
+  return parts;
+}
+
+// Emphasis cannot span paragraphs or open a code block, so each paragraph gets its own markers.
 function wrap(marker: string, inner: string): string {
   const [lead, body, trail] = edges(inner);
-  if (!body.replace(MARKS, "")) return inner;
-  const parts = body.split(PARAGRAPH);
+  const core = body.replaceAll(`${FENCE_OPEN}${FENCE_CLOSE}`, "");
+  const block = core.startsWith(`${FENCE_OPEN}\`\`\``) && core.indexOf(FENCE_CLOSE) === core.length - 1;
+  if (block || !body.replace(MARKS, "")) return inner;
+  const parts = paragraphs(body);
   if (parts.length === 1) return `${lead}${marker}${body}${marker}${trail}`;
   // A split can cut a fence; close it at each piece's end and reopen it in the next.
   let open = false;

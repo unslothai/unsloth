@@ -291,3 +291,8 @@ test("random nested markup never leaks internal markers", () => {
     assert.doesNotMatch(out, /[\u0001-\u0003]/);
   }
 });
+
+test("emphasis around a code block never enters the code", () => {
+  const body = el("body", el("del", el("p", "before"), el("pre", el("code", "x = 1\n\ny = 2")), el("p", "after")));
+  assert.equal(htmlNodeToMarkdown(body), "~~before~~\n\n```\nx = 1\n\ny = 2\n```\n\n~~after~~");
+});
