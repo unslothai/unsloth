@@ -416,6 +416,57 @@ def test_no_probability_is_packed_unclamped():
     )
 
 
+ORDERINGS = ("qkw", "pvw", "spread")
+
+
+def test_the_orderings_reach_the_kernel_as_defines():
+    """qkw / pvw / spread are per-card config keys that become compile-time defines; a config without them
+    compiles the kernel as it was."""
+    config = dict(I.kernel_config((12, 0), 128), qkw = 1, pvw = 8, spread = 5)
+    defines = I.kernel_defines(128, config)
+    assert (defines["QKW"], defines["PVW"], defines["SPREAD"]) == (1, 8, 5)
+    assert not {name.upper() for name in ORDERINGS} & set(
+        I.kernel_defines(128, I.kernel_config((8, 0), 128))
+    )
+
+
+@pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
+def test_the_orderings_keep_the_products_and_refuse_bad_combinations():
+    """Each ordering compiles to the same number of tensor-core products and tile copies and adds no int <-> float
+    conversion; spread needs qkw, pvw an even divisor of the channel blocks, and a one-stage kernel has no next
+    tile to spread."""
+    arch = max(a for a in _nvrtc_archs() if a in (80, 86, 89, 120))
+    base = {"bn": 128, "wpc": 8, "nq": 1, "stages": 2}
+
+    def ptx(head_dim, **keys):
+        return K.compile_ptx(
+            K.KERNEL_SOURCE, f"sm_{arch}", I.kernel_defines(head_dim, dict(base, **keys))
+        ).decode(errors = "replace")
+
+    for head_dim in I.HEAD_DIMS:
+        plain = ptx(head_dim)
+        for keys in (
+            {"qkw": 1},
+            {"pvw": 2},
+            {"pvw": 8},
+            {"qkw": 1, "spread": 1},
+            {"qkw": 1, "pvw": 8, "spread": 5},
+            {"qkw": 1, "pvw": 8, "spread": 5, "nq": 2},
+        ):
+            got = ptx(head_dim, **keys)
+            scale = keys.get("nq", 1)
+            assert got.count("mma.sync.aligned.m16n8k32") == scale * plain.count(
+                "mma.sync.aligned.m16n8k32"
+            ), keys
+            assert got.count("ldmatrix") <= scale * plain.count("ldmatrix"), keys
+            assert got.count("cp.async.cg") == plain.count("cp.async.cg"), keys
+            assert "cvt.rn.f32.s32" not in got and "cvt.rni" not in got
+    assert ptx(128, qkw = 1, spread = 5, stages = 1) == ptx(128, qkw = 1, stages = 1)
+    for keys in ({"spread": 1}, {"pvw": 3}, {"pvw": 6}):
+        with pytest.raises(RuntimeError, match = "unsupported combination"):
+            ptx(128, **keys)
+
+
 def test_install_off_cuda_and_kill_switch(monkeypatch):
     dit = _fake_dit()
     assert I.install_int8_attention(dit, device = "cpu", dtype = torch.bfloat16) == 0
@@ -1240,6 +1291,47 @@ def test_the_flush_placement_does_not_change_the_output(head_dim):
     assert torch.equal(
         I.int8_attention(q, k, v, config = dict(config, flush_tail = 1)), I.int8_attention(q, k, v)
     )
+
+
+def _plain(config: dict) -> dict:
+    return {key: value for key, value in config.items() if key not in ORDERINGS}
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+@pytest.mark.parametrize(
+    "case",
+    [
+        (torch.bfloat16, 1039, 1.0, 0.0),
+        (torch.float16, 2500, 1.0, 0.0),
+        (torch.float32, 16 * 128 * 2 + 5, 1.0, 0.0),  # past two removals of the rounding constant
+        (torch.bfloat16, 3000, 2.0, 6.0),  # late keys far above the early ones: the rebase branch
+        (torch.bfloat16, 77, 3.0, 0.0),  # one padded tile
+    ],
+    ids = ["bf16", "fp16", "flush", "rebase", "short"],
+)
+def test_the_orderings_do_not_change_the_output(head_dim, case):
+    """The order the products and the tile copies are issued in gives the bits of the plain order: integer sums
+    are exact and every float accumulator sees the same operations. So a card tuned with them still agrees with
+    the others bit for bit."""
+    dtype, tokens, gain, spike = case
+    generator = torch.Generator().manual_seed(tokens)
+    q, k, v = (torch.randn(2, tokens, 3, head_dim, generator = generator) for _ in range(3))
+    q, k = q * gain, k * gain
+    if spike:
+        k[:, tokens // 2 :] *= spike
+        k[:, -3:] *= 4.0
+    q = q[:, : min(tokens, 700)].contiguous()
+    q, k, v = (x.to("cuda", dtype) for x in (q, k, v))
+    plain = _plain(_cuda_config(head_dim))
+    want = I.int8_attention(q, k, v, config = plain)
+    assert torch.isfinite(want.float()).all()
+    variants = [{"qkw": 1}, {"pvw": 2}, {"pvw": 8}, {"qkw": 1, "pvw": 16 if head_dim == 128 else 4}]
+    if plain["stages"] == 2:
+        variants += [{"qkw": 1, "spread": 1}, {"qkw": 1, "pvw": 8, "spread": 5}]
+    for variant in variants:
+        assert torch.equal(I.int8_attention(q, k, v, config = dict(plain, **variant)), want), variant
+    assert torch.equal(I.int8_attention(q, k, v), want)
 
 
 @needs_kernel

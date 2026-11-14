@@ -51,6 +51,8 @@ LOG2E = 1.4426950408889634
 
 # Per CUDA capability and head dim: keys per tile (bn), warps (wpc), 16-row query tiles per warp (nq), smem stages,
 # qreg (2 = Q from global memory: sm75 has 64 KB smem per SM), flush_tail placement and an optional register cap.
+# qkw / pvw / spread pick the order the products and the tile copies are issued in (see the kernel source): they
+# move no output bit, so they are per card too.
 # Measured per card; a card missing here keeps native. One bn per head dim, so the output does not depend on the card.
 KERNEL_CONFIGS: dict = {
     (7, 5): {
@@ -169,7 +171,7 @@ def kernel_defines(head_dim: int, config: dict) -> dict:
         "STAGES": int(config["stages"]),
         "QREG": int(config.get("qreg", 0)),
     }
-    for name in ("flush", "flush_tail", "sm75"):
+    for name in ("flush", "flush_tail", "sm75", "qkw", "pvw", "spread"):
         if name in config:
             defines[name.upper()] = int(config[name])
     return defines

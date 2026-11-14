@@ -49,7 +49,8 @@ KERNEL_SOURCE = r"""
 // Compile-time: HD (head dim, 64 or 128), BN (keys per tile, 64 or 128), NQ (16-row query tiles per warp),
 // WPC (warps per block), STAGES (1 or 2 shared-memory tile buffers; 2 = the next tile is copied while this one is
 // computed), QREG (1 = the Q operand fragments are read once into registers, 2 = straight from global memory, with
-// no Q rows in shared memory), FLUSH, FLUSH_TAIL, SM75 (set by the target architecture).
+// no Q rows in shared memory), FLUSH, FLUSH_TAIL, SM75 (set by the target architecture), and the orderings below
+// (QKW, PVW, SPREAD), none of which changes an output bit.
 // Launch: blockDim.x = 32 * WPC, grid.x = n_qpad / (16 * NQ * WPC), grid.y = batch * heads,
 // dynamic shared memory = STAGES * STAGE_BYTES + (QREG == 2 ? 0 : WPC * 16 * NQ * KROW) bytes.
 
@@ -88,6 +89,25 @@ typedef long long i64;
 #endif
 #ifndef FLUSH_TAIL
 #define FLUSH_TAIL 0  // 1 = the removal is a block of its own after P.V instead of sharing the rebase branch
+#endif
+// The orderings: the same integer sums and the same float operations per accumulator, issued in another order.
+#ifndef QKW
+#define QKW 0  // 1 = Q.K^T goes one k step at a time over pairs of key blocks: consecutive products never share an
+               // accumulator, so a warp is not held to one product per product latency
+#endif
+#ifndef PVW
+#define PVW 0  // > 0 = the same for P.V over groups of PVW channel blocks (even, a divisor of HD / 8)
+#endif
+#ifndef SPREAD
+#define SPREAD 0  // > 0 = a thread issues its copies of the next tile one chunk per product pair of Q.K^T, from pair
+                  // SPREAD - 1 on, instead of all at once after the barrier (needs QKW; two stages only)
+#endif
+#if STAGES != 2
+#undef SPREAD
+#define SPREAD 0  // one stage has no next tile to copy during the products
+#endif
+#if (SPREAD && !QKW) || (PVW && (PVW % 2 || (HD / 8) % PVW))
+#error "unsupported combination of QKW / PVW / SPREAD"
 #endif
 #define NT (32 * WPC)   // threads per block
 #define KK (HD / 32)    // k steps of Q.K^T
@@ -262,6 +282,103 @@ __device__ __forceinline__ u32 f2h(float x) {
   return (u32)y;
 }
 
+#if SPREAD
+// A thread's share of the copy of the next tile (what load_tile takes), issued one chunk at a time
+struct Copy {
+  u32 kdst, vdst;
+  const s8 *ksrc, *vsrc;
+  bool on, last;
+};
+
+// Chunk i of the share (i < COPIES)
+__device__ __forceinline__ void copy_chunk(const Copy& cp, int i) {
+  if (cp.on && (i + 1 < COPIES || TILE_CHUNKS % NT == 0 || cp.last)) {
+    cp_async16(cp.kdst + i * KSTEP, cp.ksrc + i * NT * 16);
+    cp_async16(cp.vdst + i * VSTEP, cp.vsrc + i * NT * 16);
+  }
+}
+#endif
+
+#if QKW
+// Q.K^T of one 16-row query tile, one k step at a time over pairs of key blocks. qa: the Q operand fragments
+// (QREG), else they are read at qaddr; kaddr: this lane's address of the K tile for matrices (keys 0-7, bytes
+// 0-15), (0-7, 16-31), (8-15, 0-15), (8-15, 16-31).
+__device__ __forceinline__ void qk_pairs(
+    i32 (*c)[4], const u32 (*qa)[4], u32 qaddr, u32 kaddr, i32 magic
+#if SPREAD
+    , const Copy& cp
+#endif
+) {
+#pragma unroll
+  for (int kk = 0; kk < KK; ++kk) {
+#if QREG
+    const u32* a = qa[kk];
+#else
+    u32 a[4];
+    ldmatrix4(a, qaddr + 32 * kk);
+#endif
+#pragma unroll
+    for (int nb = 0; nb < NBK; nb += 2) {
+      u32 b[4];
+      ldmatrix4(b, kaddr + nb * 8 * KROW + 32 * kk);
+      if (kk == 0) {
+        mma_s8s8_c(c[nb], a, b[0], b[1], magic);
+        mma_s8s8_c(c[nb + 1], a, b[2], b[3], magic);
+      } else {
+        mma_s8s8(c[nb], a, b[0], b[1]);
+        mma_s8s8(c[nb + 1], a, b[2], b[3]);
+      }
+#if SPREAD
+      {
+        const int i = kk * (NBK / 2) + nb / 2 - (SPREAD - 1);
+        if (i >= 0 && i < COPIES) copy_chunk(cp, i);
+      }
+#endif
+    }
+  }
+}
+#endif
+
+#if PVW
+// P.V of one key tile for the warp's NQ query tiles, one k step at a time over PVW channel blocks. vaddr: this
+// lane's address of the V tile for matrices (channels 0-7, bytes 0-15), (0-7, 16-31), (8-15, 0-15), (8-15, 16-31).
+__device__ __forceinline__ void pv_groups(
+    float (*acc)[NBD][4], const u32 (*pa)[KB32][4], const float (*w)[2], u32 vaddr, i32 magic) {
+#pragma unroll
+  for (int nb0 = 0; nb0 < NBD; nb0 += PVW) {
+    i32 d[NQ][PVW][4];
+#pragma unroll
+    for (int kb = 0; kb < KB32; ++kb) {
+#pragma unroll
+      for (int i = 0; i < PVW; i += 2) {
+        u32 b[4];
+        ldmatrix4(b, vaddr + (nb0 + i) * 8 * VROW + 32 * kb);
+#pragma unroll
+        for (int qt = 0; qt < NQ; ++qt) {
+          if (kb == 0) {
+            mma_u8s8_c(d[qt][i], pa[qt][kb], b[0], b[1], magic);
+            mma_u8s8_c(d[qt][i + 1], pa[qt][kb], b[2], b[3], magic);
+          } else {
+            mma_u8s8(d[qt][i], pa[qt][kb], b[0], b[1]);
+            mma_u8s8(d[qt][i + 1], pa[qt][kb], b[2], b[3]);
+          }
+        }
+      }
+    }
+#pragma unroll
+    for (int i = 0; i < PVW; ++i) {
+#pragma unroll
+      for (int qt = 0; qt < NQ; ++qt) {
+        acc[qt][nb0 + i][0] = fmaf(__int_as_float(d[qt][i][0]), w[qt][0], acc[qt][nb0 + i][0]);
+        acc[qt][nb0 + i][1] = fmaf(__int_as_float(d[qt][i][1]), w[qt][0], acc[qt][nb0 + i][1]);
+        acc[qt][nb0 + i][2] = fmaf(__int_as_float(d[qt][i][2]), w[qt][1], acc[qt][nb0 + i][2]);
+        acc[qt][nb0 + i][3] = fmaf(__int_as_float(d[qt][i][3]), w[qt][1], acc[qt][nb0 + i][3]);
+      }
+    }
+  }
+}
+#endif
+
 // q   [BH, n_qpad, HD] int8, rows padded with zeros to a multiple of 16 * NQ * warps
 // k   [BH, n_kpad, HD] int8, n_kpad a multiple of BN
 // vt  [BH, n_kpad / BN, HD, BN] int8: per key tile, channel-major V; inside every 16 keys, position 4*t + c holds
@@ -309,6 +426,11 @@ extern "C" __global__ void unsloth_i8attn(
 #endif
   // B fragments: this lane's row / matrix offsets
   const u32 kofs = (lane & 7u) * KROW + 16u * (lane >> 3), vofs = BN * KROW + (lane & 7u) * VROW + 16u * (lane >> 3);
+#if QKW || PVW
+  // the same for one k step of two blocks: matrices (rows 0-7, bytes 0-15), (0-7, 16-31), (8-15, 0-15), (8-15, 16-31)
+  const u32 pair = (lane & 7u) + 8u * (lane >> 4), half = 16u * ((lane >> 3) & 1u);
+  const u32 kofs2 = pair * KROW + half, vofs2 = BN * KROW + pair * VROW + half;
+#endif
 
   float sc[NQ][2], mref[NQ][2], l[NQ][2], wsum[NQ][2];
   float acc[NQ][NBD][4];
@@ -355,11 +477,25 @@ extern "C" __global__ void unsloth_i8attn(
     // tile j is in stage j & 1 once every thread's copies landed; the other stage is free for tile j + 1
     cp_async_wait_all();
     __syncthreads();
+#if SPREAD
+    Copy cpy;
+    {
+      const u32 next = sbase + ((j + 1) & 1) * STAGE_BYTES;
+      const i64 off = (i64)(j + 1) * BN * HD;
+      cpy.on = j + 1 < n_tiles;
+      cpy.last = last;
+      cpy.kdst = next + kdst;
+      cpy.vdst = next + vdst;
+      cpy.ksrc = ksrc + off;
+      cpy.vsrc = vsrc + off;
+    }
+#else
     if (j + 1 < n_tiles) {
       const u32 next = sbase + ((j + 1) & 1) * STAGE_BYTES;
       const i64 off = (i64)(j + 1) * BN * HD;
       load_tile(next + kdst, next + vdst, ksrc + off, vsrc + off, last);
     }
+#endif
     const u32 stage = sbase + (j & 1) * STAGE_BYTES;
 #else
     __syncthreads();  // every warp is done with the previous tile
@@ -381,6 +517,22 @@ extern "C" __global__ void unsloth_i8attn(
     for (int qt = 0; qt < NQ; ++qt) {
       // c[nb] read as floats: MAGIC_F + score of rows (g, g + 8) against keys 8 * nb + 2 * t + {0, 1}
       i32 c[NBK][4];
+#if QKW
+#if QREG
+#define QK_Q qa[qt], 0u
+#else
+#define QK_Q nullptr, qofs + qt * 16 * KROW
+#endif
+#if SPREAD
+#define QK_COPY , cpy
+#else
+#define QK_COPY
+#endif
+      qk_pairs(c, QK_Q, stage + kofs2, magic QK_COPY);
+#if SPREAD
+      cpy.on = false;  // the copies ride the first query tile
+#endif
+#else
 #pragma unroll
       for (int kk = 0; kk < KK; kk += 2) {
 #if QREG
@@ -400,6 +552,7 @@ extern "C" __global__ void unsloth_i8attn(
           mma_s8s8(c[nb], a1, b[2], b[3]);
         }
       }
+#endif
       if (tail) {
         asm volatile("// padded keys");  // keeps this a branch: no selects on the other tiles
 #pragma unroll
@@ -518,6 +671,9 @@ extern "C" __global__ void unsloth_i8attn(
       wsum[qt][1] += w[qt][1];
     }
     // P.V: every V fragment load serves the warp's NQ query tiles
+#if PVW
+    pv_groups(acc, pa, w, stage + vofs2, magic);
+#else
 #pragma unroll
     for (int nb = 0; nb < NBD; ++nb) {
       i32 d[NQ][4];
@@ -541,6 +697,7 @@ extern "C" __global__ void unsloth_i8attn(
         acc[qt][nb][3] = fmaf(__int_as_float(d[qt][3]), w[qt][1], acc[qt][nb][3]);
       }
     }
+#endif
 #if FLUSH > 0 && FLUSH_TAIL
     // after tile j = before tile j + 1: the same operations in the same order as the rebase-branch placement, so
     // the output bits do not depend on the placement
