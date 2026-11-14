@@ -1609,6 +1609,129 @@ def test_cuda_graph_replay_matches_eager():
         assert torch.equal(out, op(*fresh))
 
 
+OTHER = 1  # the second card of the two-card tests
+
+needs_two_cards = pytest.mark.skipif(
+    _cuda_config() is None
+    or torch.cuda.device_count() <= OTHER
+    or I.kernel_config(torch.cuda.get_device_capability(OTHER), 128) is None,
+    reason = "needs two CUDA cards with an INT8 kernel config",
+)
+
+
+@needs_two_cards
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_each_card_loads_its_own_kernels(head_dim):
+    """A loaded module belongs to the context of one card: each card compiles and loads its own kernels and keeps
+    its own launch plans, and a call runs on the card of its operands whatever the current device is."""
+    dtype = _card_dtype()
+    there = torch.device("cuda", OTHER)
+    calls = {
+        index: I.probe_inputs(torch.device("cuda", index), dtype, 700, 3, head_dim)
+        for index in (0, OTHER)
+    }
+    I._plans().clear()
+    assert torch.cuda.current_device() == 0
+    out = {index: I.int8_attention(*calls[index]) for index in (0, OTHER)}
+    assert out[OTHER].device == there and torch.cuda.current_device() == 0
+    with torch.cuda.device(OTHER):
+        swapped = I.int8_attention(*calls[0])
+        assert torch.cuda.current_device() == OTHER
+    assert swapped.device.index == 0 and torch.equal(swapped, out[0])
+    assert sorted(plan["index"] for plan in I._plans().values()) == [0, OTHER]
+    loaded = {}
+    for index in (0, OTHER):
+        config = I.kernel_config(torch.cuda.get_device_capability(index), head_dim)
+        attn, quant, _ = I._functions(index, head_dim, config)
+        loaded[index] = [attn, *quant.values()]
+        assert I.accuracy(out[index], I.reference_attention(*calls[index]))["cos"] >= I.MIN_COSINE
+    assert len(loaded[0]) == 3 and all(a is not b for a, b in zip(loaded[0], loaded[OTHER]))
+    if torch.cuda.get_device_capability(OTHER) == torch.cuda.get_device_capability(0):
+        assert torch.equal(out[OTHER].cpu(), out[0].cpu())
+
+
+@needs_two_cards
+def test_the_card_check_counts_for_its_card_only(monkeypatch):
+    """A check passed on one card says nothing about the other: the verdicts and the verified set are per device,
+    and the op keeps native attention on a card until that card passed its own check."""
+    monkeypatch.setattr(I, "_VERDICTS", {})
+    monkeypatch.setattr(I, "_VERIFIED", set())
+    dtype = _card_dtype()
+    there = torch.device("cuda", OTHER)
+    here_call = I.probe_inputs("cuda:0", dtype, 500, 2, 128)
+    there_call = I.probe_inputs(there, dtype, 500, 2, 128)
+    first = I.verdict("cuda:0", dtype, 2, 128, timed = False)
+    assert first["ok"] and I._verified(*here_call) and not I._verified(*there_call)
+    assert {key[0] for key in I._VERDICTS} == {0} and {key[0] for key in I._VERIFIED} == {0}
+    native, ran = I.STATS["native"], I.STATS["int8"]
+    assert I.int8_attention_impl(*there_call).device == there
+    assert (I.STATS["native"], I.STATS["int8"]) == (native + 1, ran)
+    second = I.verdict(there, dtype, 2, 128, timed = False)
+    assert second["ok"] and second is not first and I._verified(*there_call)
+    assert {key[0] for key in I._VERDICTS} == {0, OTHER}
+    assert {key[0] for key in I._VERIFIED} == {0, OTHER}
+    assert I.int8_attention_impl(*there_call).device == there
+    assert (I.STATS["native"], I.STATS["int8"]) == (native + 1, ran + 1)
+
+
+@needs_two_cards
+def test_a_call_on_another_card_uses_that_cards_stream(monkeypatch):
+    """Every launch of a call goes to the current stream of the card its operands are on, with that card's context
+    current, also while another card is the current device."""
+    q, k, v = I.probe_inputs(torch.device("cuda", OTHER), _card_dtype(), 700, 3, 128)
+    seen = []
+    launch = K.Function.launch
+
+    def spy(self, grid, block, values, shared, stream):
+        seen.append((self.name, stream, torch.cuda.current_device()))
+        return launch(self, grid, block, values, shared, stream)
+
+    monkeypatch.setattr(K.Function, "launch", spy)
+    names = {K.KERNEL_NAME, *K.QUANT_KERNELS}
+    assert torch.cuda.current_device() == 0
+    out = I.int8_attention(q, k, v)
+    usual = torch.cuda.current_stream(OTHER).cuda_stream
+    assert {name for name, _, _ in seen} == names
+    assert all((stream, device) == (usual, OTHER) for _, stream, device in seen)
+    side = torch.cuda.Stream(device = OTHER)
+    assert side.cuda_stream != usual
+    del seen[:]
+    with (
+        torch.cuda.stream(side),
+        torch.cuda.device(0),
+    ):  # card 0 is current, the other card's stream is `side`
+        assert torch.cuda.current_device() == 0
+        again = I.int8_attention(q, k, v)
+    side.synchronize()
+    assert {name for name, _, _ in seen} == names
+    assert all((stream, device) == (side.cuda_stream, OTHER) for _, stream, device in seen)
+    assert torch.equal(again, out)
+
+
+@needs_two_cards
+def test_a_cuda_graph_of_another_card_replays_the_call():
+    """A graph captured on the other card holds the quantisers and the kernel: its replay follows new inputs. The
+    capture names a stream of that card: torch's default capture stream is one per process, on the card of the first
+    capture (after one on card 0 a capture here would be empty)."""
+    there = torch.device("cuda", OTHER)
+    dtype = _card_dtype()
+    q, k, v = (x.clone() for x in I.probe_inputs(there, dtype, 1100, 4, 128))
+    for _ in range(3):  # allocator and JIT warm, as before any capture
+        I.int8_attention(q, k, v)
+    with torch.cuda.device(OTHER):
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream = torch.cuda.Stream(device = OTHER)):
+            out = I.int8_attention(q, k, v)
+        for seed in (5, 6):
+            fresh = I.probe_inputs(there, dtype, 1100, 4, 128, seed = seed)
+            for dst, src in zip((q, k, v), fresh):
+                dst.copy_(src)
+            graph.replay()
+            torch.cuda.synchronize()
+            assert torch.equal(out, I.int8_attention(*fresh))
+
+
 @needs_kernel
 def test_torch_compile_keeps_the_op_opaque():
     dtype = _card_dtype()
