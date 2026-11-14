@@ -98,10 +98,8 @@ ROCM_KERNEL_CONFIGS: dict = {
         64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "f16_t", "kscale": "tile"},
     },
 }
-# NVIDIA cards whose CUDA kernel cannot be built or loaded run the Triton kernel: block shape and P.V mode per CUDA
-# capability and head dim, measured on A100 (sm80), L4 (sm89) and RTX PRO 6000 (sm120) under Triton 3.7 and 3.8; sm86
-# takes the sm80 entry (it fits sm86's 99 KB of shared memory). 16-bit P.V reading V in place was faster than int8 P.V
-# on every card. A missing capability keeps native (sm75: no Triton config).
+# Triton stand-in when the CUDA kernel cannot load, tuned on sm80 / sm89 / sm120 (sm86 = sm80, fits its 99 KB smem).
+# 16-bit P.V beat int8 P.V on every card; sm75 has no entry (Triton cannot compile its int8 dot).
 _TRITON_SM80: dict = {
     128: {"bm": 128, "bn": 32, "warps": 4, "stages": 3, "pv": "half_strided", "kscale": "tile"},
     64: {"bm": 64, "bn": 64, "warps": 4, "stages": 2, "pv": "half_strided", "kscale": "tile"},
@@ -134,7 +132,6 @@ _VERIFIED: set = set()
 _LOADED: dict = {}
 # (device index, head dim) -> why the CUDA kernel cannot run there (NVRTC, compile, module load or launch error)
 _CUDA_FAILED: dict = {}
-# "int8": calls the INT8 kernels ran (either implementation), "triton": those the Triton kernel ran
 STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 
@@ -1004,8 +1001,7 @@ def _install(
             else _sdpa_incumbent(getattr(proc, "_attention_backend", None))
         )
         found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = not force)
-        # the CUDA kernel could not load here and Triton stands in for it: that has to win the race even when the
-        # kernel was asked for (only the env switch, or IMPL=triton, takes it unraced)
+        # a Triton stand-in races even when requested by name (only the env switch or IMPL=triton skip it)
         stand_in = (
             found.get("impl") == "triton"
             and not env_force

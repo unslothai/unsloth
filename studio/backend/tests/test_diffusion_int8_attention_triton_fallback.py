@@ -137,13 +137,10 @@ def test_a_cuda_kernel_that_cannot_load_falls_back_to_triton(monkeypatch, failur
         "module_load": "cuModuleLoadData",
         "first_launch": "cuLaunchKernel",
     }[failure] in I._CUDA_FAILED[(0, 128)]
-    # the Triton kernel ran the accuracy check (plain and sharp probe) with the Triton config of this card
     assert calls == [(128, I.TRITON_KERNEL_CONFIGS[capability][128])] * 2
     assert I._VERIFIED == {(0, 128, "torch.float32", "triton")}
-    # the failed CUDA verdict is kept apart and reported
     cuda_key = (0, "torch.float32", 4, 128, "native", False, "cuda")
     assert I._VERDICTS[cuda_key]["failed"] and not I._VERDICTS[cuda_key]["ok"]
-    # cached: the CUDA kernel is not retried
     assert I.verdict("cuda", torch.float32, 4, 128, timed = False) is found and len(calls) == 2
 
 
@@ -258,7 +255,6 @@ def test_a_cuda_verdict_never_stands_in_for_triton(monkeypatch):
     checks = []
     inner = I._check
     monkeypatch.setattr(I, "_check", lambda *a, **k: checks.append(a[-1]) or inner(*a, **k))
-    # the CUDA path passed its check on this card, dtype and head dim
     cuda_ok = {"ok": True, "ms": {}, "min_tokens": 0, "impl": "cuda", "cos": 1.0}
     I._VERDICTS[(0, "torch.bfloat16", 4, 128, "native", False, "cuda")] = cuda_ok
     I._VERIFIED.add((0, 128, "torch.bfloat16", "cuda"))
@@ -304,7 +300,6 @@ def test_the_triton_race_times_the_triton_kernel(monkeypatch):
     found = I.verdict("cuda", torch.float32, 2, 128, timed = True)
     assert found["ok"] and found["impl"] == "triton" and found["min_tokens"] == 0
     assert timed == [3, 4] and set(found["ms"]) == {64, 32}
-    # the race record names the implementation it timed, apart from the untimed check of the same card
     I.verdict("cuda", torch.float32, 2, 128, timed = False)
     names = [k for k in I.status()["verdicts"] if "impl=triton" in k]
     assert len(names) == 2 and sum(" timed " in k for k in names) == 1
@@ -335,7 +330,6 @@ def test_the_attention_kernel_compiles_through_the_8bit_prefetch_fix(monkeypatch
     T.kernels()
     assert installed == [1] and T.prefetch_fix() is True and installed == [1]
     assert "PREFETCH_FIX" in T.kernels().attn.arg_names
-    # ROCm: the fix does not apply
     monkeypatch.setattr(T, "_PREFETCH_FIX_ON", None)
     monkeypatch.setattr(torch.version, "hip", "6.4")
     assert T.prefetch_fix() is False and installed == [1]
@@ -368,7 +362,6 @@ def test_forced_triton_path_on_the_card(monkeypatch, head_dim):
     q, k, v = qkv.unbind(2)
     got = torch.ops.unsloth_studio.int8_attention_nhd(q, k, v)
     assert I.accuracy(got, I.reference_attention(q, k, v))["cos"] > 0.999
-    # gradients still keep native attention
     qg = q.detach().clone().requires_grad_(True)
     assert I.unsupported_reason(qg, k, v) == "needs gradients"
 
