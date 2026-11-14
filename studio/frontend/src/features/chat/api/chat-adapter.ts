@@ -144,6 +144,7 @@ import {
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
 import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
+import { readAutoLoadModelPreference } from "../utils/auto-load-preference";
 import { resolveModelCatalogEntry } from "../model-catalog";
 import { prepareComparePaneRun } from "../compare-run-ownership";
 import {
@@ -4396,6 +4397,13 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
   loadFailureReported?: boolean;
   modelRuntime: QueuedResolvedModelRuntime | null;
 }> {
+  if (!readAutoLoadModelPreference()) {
+    return {
+      loaded: false,
+      blockedByTrustRemoteCode: false,
+      modelRuntime: null,
+    };
+  }
   // Auto-load does not sweep queues, so follow-ups can be accepted immediately.
   let lifecycleLease = useChatRuntimeStore.getState().beginModelLoading("loading");
   while (lifecycleLease === null) {

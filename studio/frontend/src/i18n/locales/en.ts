@@ -3145,6 +3145,9 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      autoLoadModel: "Auto-load a model when none is selected",
+      autoLoadModelDescription:
+        "When enabled, sending a message without a selected model loads the smallest available local model. Turn this off to keep other local runtimes from losing memory unexpectedly.",
       keepRunningWhenTabClosed: "Keep running after the tab closes",
       keepRunningWhenTabClosedDescription:
         "Replies, web search, and Deep Research keep going on the server after the tab closes. Turn off to stop them instead.",
