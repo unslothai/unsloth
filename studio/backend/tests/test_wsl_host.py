@@ -342,6 +342,9 @@ def test_wsl_launch_command(wsl, monkeypatch):
     assert "CUDA_VISIBLE_DEVICES=0,2" in command and "CUDA_DEVICE_ORDER=PCI_BUS_ID" in command
     assert "LIBRARY_PATH=/usr/lib/wsl/lib" in command
     assert "VLLM_USE_DEEP_GEMM=0" in command and "CUDA_HOME=/env/cuda" in command
+    # vLLM counts FlashInfer as missing unless nvcc is on PATH.
+    path = next(arg for arg in command if arg.startswith("PATH="))
+    assert path.startswith(f"PATH=/env/cuda/bin:{guest.parent}/bin:")
     assert f"HF_HOME={wsl_host.GUEST_ROOT}/hf" in command
     assert "hf_secret" not in joined and "C:\\" not in joined
     assert env["HF_TOKEN"] == "hf_secret" and "HF_TOKEN/u" in env["WSLENV"]
@@ -350,6 +353,12 @@ def test_wsl_launch_command(wsl, monkeypatch):
     assert engine.key not in joined
     assert env["VLLM_API_KEY"] == engine.key and "VLLM_API_KEY/u" in env["WSLENV"]
     assert "/mnt/c/vllm_server.py" in command
+    # No pip nvcc in the environment (or ROCm): PATH keeps the environment's bin/ first.
+    command, _ = engine._wsl_command(
+        {**info, "cuda_environment": {}}, {}, [1], None, False, "m", None, 8123
+    )
+    path = next(arg for arg in command if arg.startswith("PATH="))
+    assert path.startswith(f"PATH={guest.parent}/bin:")
 
 
 def test_a_logged_in_token_file_reaches_the_guest(wsl, monkeypatch, tmp_path):

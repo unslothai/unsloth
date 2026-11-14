@@ -91,6 +91,17 @@ def _point_tls_at_studio_ca_bundle(child_env: dict[str, str]) -> None:
         child_env["REQUESTS_CA_BUNDLE"] = bundle
 
 
+def _apply_cuda_environment(env: dict[str, str], info: dict, separator: str) -> None:
+    """CUDA_HOME, and its bin/ first on PATH so both name the same nvcc: without flashinfer-cubin,
+    which the engines omit, vLLM 0.30 counts FlashInfer as missing unless nvcc is on PATH."""
+    from .engine_install import cuda_environment
+
+    cuda = cuda_environment(info)
+    env.update(cuda)
+    if cuda.get("CUDA_HOME"):
+        env["PATH"] = cuda["CUDA_HOME"] + "/bin" + separator + env["PATH"]
+
+
 def _child_cuda_mask(gpu_ids: list[int]) -> str:
     """Instance UUIDs on an R570+ MIG host (numeric ids would name the whole host), else the numeric mask."""
     try:
@@ -798,10 +809,8 @@ class ManagedEngine:
                     child_env["TRITON_CACHE_DIR"] = str(cache / "triton")
                     # FlashInfer's JIT build files name this env's sources; a shared ~/.cache outlives a replaced env.
                     child_env["FLASHINFER_WORKSPACE_BASE"] = info["path"]
-                    from .engine_install import cuda_environment
-
                     child_env.pop("CUDA_PATH", None)
-                    child_env.update(cuda_environment(info))
+                    _apply_cuda_environment(child_env, info, os.pathsep)
                     measure = (
                         (lambda ids: _engine_memory_rows(info, child_env, ids)) if rocm else None
                     )
@@ -965,9 +974,7 @@ class ManagedEngine:
             # Cache-only mode must hold in the guest too.
             **({"HF_HUB_OFFLINE": "1"} if _offline(env) else {}),
         }
-        from .engine_install import cuda_environment
-
-        guest_env.update(cuda_environment(info))
+        _apply_cuda_environment(guest_env, info, ":")
         guest_env.update(self.adapter.environment(len(gpu_ids or [0])))
         if self.engine == "vllm" and info.get("deep_gemm_unloadable"):
             guest_env["VLLM_USE_DEEP_GEMM"] = "0"
