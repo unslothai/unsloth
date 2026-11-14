@@ -1215,8 +1215,13 @@ def _track_wheel(entry):
     # The dist-info one wheel left half-written when its install raised: other wheels of the run are finished.
     def wrapped(*args, **kwargs):
         before = _dist_stamps()
-        pending = os.path.join(os.environ["PIP_PREFIX"], f"{_PENDING}{os.getpid()}")
+        prefix = os.environ["PIP_PREFIX"]
+        pending = os.path.join(prefix, f"{_PENDING}{os.getpid()}")
         try:
+            # Only into an existing prefix: nothing to protect before the first install, and the path remap
+            # would move a write under a missing folder into the CWD.
+            if not before or not os.path.isdir(prefix):
+                raise OSError
             with open(pending, "w", encoding = "utf-8") as f:
                 f.writelines(f"{os.path.abspath(e)}\t{n}\t{v}\n" for (e, n), v in before.items())
         except OSError:
