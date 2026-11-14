@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  carveOutVramGb,
   gpuMemoryTotalsGb,
   resolveGpuVramUsedGb,
   sharesHostMemoryDevice,
@@ -34,6 +35,14 @@ export interface VramCards {
   showTotal: boolean;
 }
 
+// A carve-out APU's shared part is system RAM, which the RAM row already shows.
+function vramTotalGb(cards: GpuDevice[]): number {
+  return (
+    carveOutVramGb(cards, null, null)?.totalGb ??
+    gpuMemoryTotalsGb(cards).total
+  );
+}
+
 /** Dedicated cards only: an iGPU borrows system RAM, and its missing reading would blank the total. */
 export function vramCards(
   devices: GpuDevice[],
@@ -54,12 +63,12 @@ export function vramCards(
           name: shortCardName(card.name),
           title: card.name ?? "GPU",
           usedGb: Number.isFinite(card.vram_used_gb) ? (card.vram_used_gb as number) : null,
-          totalGb: gpuMemoryTotalsGb([card]).total,
+          totalGb: vramTotalGb([card]),
         }))
       : [];
   const showTotal =
     rows.length === 0 || (usedGb !== null && rows.some((row) => row.usedGb === null));
-  return { cards, totalGb: gpuMemoryTotalsGb(cards).total, usedGb, rows, showTotal };
+  return { cards, totalGb: vramTotalGb(cards), usedGb, rows, showTotal };
 }
 
 export function holdsModelsInVram(cards: readonly GpuDevice[]): boolean {
