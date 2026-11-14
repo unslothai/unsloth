@@ -376,6 +376,20 @@ export function audioCppDisplayName(id: string): string {
   return trimmed.split("/").pop() || trimmed;
 }
 
+// A trailing quant tag on a GGUF file stem: `-q8_0`, `-Q4_K_M`, `-f16`.
+const FILE_STEM_QUANT = /[-_.](?:i?q\d\w*|bf16|f16|f32)$/i;
+
+/** An older clip's model label (a GGUF file stem such as `kokoro-82m-q8_0`) as its catalog folder name. */
+export function audioCppNameForFileStem(stem: string): string | null {
+  const base = stem.trim().toLowerCase().replace(FILE_STEM_QUANT, "");
+  if (!base || base === stem.trim().toLowerCase()) return null;
+  for (const model of AUDIO_CPP_MODELS) {
+    const name = audioCppDisplayName(model.id);
+    if (name.toLowerCase().replace(/-gguf$/, "") === base) return name;
+  }
+  return null;
+}
+
 /** Hub path of an umbrella folder (`<repo>/tree/main/<Folder>`); null for any other id. */
 export function audioCppHubPath(id: string): string | null {
   if (!isAudioCppFolderId(id)) {

@@ -2453,6 +2453,18 @@ export const nl = {
         deviceGpu: "GPU",
         deviceLocked: "Ingesteld door {name}.",
         deviceSaveError: "Kan het embeddingapparaat niet wijzigen",
+        offlineDocs: {
+          folderLabel: "Offline Unsloth-documentatie",
+          folderDescription: "Sla de volledige Unsloth-documentatie op in een map, zodat je die zonder internet kunt gebruiken.",
+          folderHint: "Unsloth downloadt unsloth.ai/docs/llms-full.txt naar deze map als \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" en vervangt de vorige kopie. Koppel de map aan een kennisbank om de documentatie offline in de chat te doorzoeken. De map blijft bewaard bij updates.",
+          choose: "Kiezen",
+          autoUpdateLabel: "Documentatie bijwerken bij elke release",
+          autoUpdateDescription: "Download een nieuwe kopie de eerste keer dat een nieuwe Unsloth-versie start.",
+          downloadNow: "Nu downloaden",
+          downloading: "Documentatie wordt gedownload…",
+          notDownloaded: "Nog niet gedownload",
+          lastUpdated: "Bijgewerkt op {date} voor {release}",
+        },
       },
       storage: {
         sectionTitle: "Opslag",
@@ -4038,6 +4050,8 @@ export const nl = {
       llamaCppVersion: "llama.cpp-versie",
       audioCppVersion: "audio.cpp-versie",
       mlxVersion: "MLX-versie",
+      fastflowlmVersion: "FastFlowLM-versie",
+      lemonadeVersion: "Lemonade-versie",
       whisperCppVersion: "whisper.cpp-versie",
       engines: {
         title: "Engines",

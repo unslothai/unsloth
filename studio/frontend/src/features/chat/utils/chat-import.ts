@@ -15,6 +15,7 @@ import {
   saveStoredChatThread,
   syncStoredChatMessages,
 } from "./chat-history-storage";
+import { COMBINED_CSV_HEADER } from "./csv-export";
 import { parseCsv } from "./csv-parse";
 import {
   decodeTextChunks,
@@ -414,8 +415,33 @@ function markdownToRecords(
   return records;
 }
 
-function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  const rows = parseCsv(csvText).slice(1);
+// A combined export starts each row with the chat's number and title; a new number starts a new chat.
+function csvToConversations(csvText: string, basename: string): ParsedConversation[] {
+  const [header = [], ...rows] = parseCsv(csvText);
+  const baseTs = Date.now();
+  if (header.map((cell) => cell.trim().toLowerCase()).join(",") !== COMBINED_CSV_HEADER) {
+    const threadId = crypto.randomUUID();
+    const messages = csvToRecords(rows, threadId, baseTs);
+    return messages.length > 0 ? [{ title: basename, threadId, messages }] : [];
+  }
+  const chats: Array<{ title: string; rows: string[][] }> = [];
+  let chatKey: string | undefined;
+  for (const row of rows) {
+    if (row.length < 4) continue;
+    if (row[0] !== chatKey) {
+      chatKey = row[0];
+      chats.push({ title: row[1]?.trim() || `${basename} ${chats.length + 1}`, rows: [] });
+    }
+    chats[chats.length - 1].rows.push(row.slice(2));
+  }
+  return chats.flatMap(({ title, rows: chatRows }) => {
+    const threadId = crypto.randomUUID();
+    const messages = csvToRecords(chatRows, threadId, baseTs);
+    return messages.length > 0 ? [{ title, threadId, messages }] : [];
+  });
+}
+
+function csvToRecords(rows: string[][], threadId: string, baseTs: number): MessageRecord[] {
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
   let idx = 0;
@@ -692,9 +718,7 @@ export function parseImportText(
     );
   }
   if (/\.csv$/i.test(filename)) {
-    const threadId = crypto.randomUUID();
-    const messages = csvToRecords(text, threadId, Date.now());
-    return messages.length > 0 ? [{ title: basename, threadId, messages }] : [];
+    return csvToConversations(text, basename);
   }
 
   const results: ParsedConversation[] = [];

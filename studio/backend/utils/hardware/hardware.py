@@ -3633,6 +3633,8 @@ _ROCM_WIN_COUNTER_SPACING = 4.0
 _ROCM_WIN_COUNTER_MAX_AGE_S = 10.0
 # Empty combined reading (localized names, hung PowerShell): each counter runs its own call until this retry.
 _ROCM_WIN_COUNTER_EMPTY_RETRY_S = 60.0
+# -f formats with the host culture: de-DE prints 12,5, which float() rejects.
+_ROCM_WIN_INVARIANT_COOKED = "$_.CookedValue.ToString([cultureinfo]::InvariantCulture)"
 _ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
     ("vram", "Dedicated Usage"): (
         "D",
@@ -3647,7 +3649,7 @@ _ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
     ("util", "3D"): (
         "U",
         "\\GPU Engine(*engtype_3D*)\\Utilization Percentage",
-        "$_.CookedValue",
+        _ROCM_WIN_INVARIANT_COOKED,
     ),
 }
 
@@ -3753,8 +3755,8 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
         ps = (
             "$s=(Get-Counter '\\GPU Engine(*engtype_3D*)\\Utilization Percentage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
-            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
-            "else{'__NONE__'}"
+            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,"
+            f"{_ROCM_WIN_INVARIANT_COOKED}}}}}else{{'__NONE__'}}"
         )
         stdout = _rocm_windows_counter_stdout(("util", "3D"), ps)
         if stdout is None:

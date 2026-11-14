@@ -2243,6 +2243,18 @@ export const en = {
         deviceGpu: "GPU",
         deviceLocked: "Set by {name}.",
         deviceSaveError: "Couldn't change the embedding device",
+        offlineDocs: {
+          folderLabel: "Offline Unsloth docs",
+          folderDescription: "Save the full Unsloth docs to a folder so they work without internet.",
+          folderHint: "Unsloth downloads unsloth.ai/docs/llms-full.txt into this folder as \"Unsloth Docs LLMs Full Text [Documentation] (date).md\", replacing the previous copy. Link the folder to a knowledge base to search the docs in chat while offline. The folder is kept across updates.",
+          choose: "Choose",
+          autoUpdateLabel: "Update docs with each release",
+          autoUpdateDescription: "Download a fresh copy the first time a new Unsloth version starts.",
+          downloadNow: "Download now",
+          downloading: "Downloading the docs…",
+          notDownloaded: "Not downloaded yet",
+          lastUpdated: "Updated {date} for {release}",
+        },
       },
       storage: {
         sectionTitle: "Storage",
@@ -3712,6 +3724,8 @@ export const en = {
       llamaCppVersion: "llama.cpp Version",
       audioCppVersion: "audio.cpp Version",
       mlxVersion: "MLX Version",
+      fastflowlmVersion: "FastFlowLM Version",
+      lemonadeVersion: "Lemonade Version",
       whisperCppVersion: "whisper.cpp Version",
       engines: {
         title: "Engines",
