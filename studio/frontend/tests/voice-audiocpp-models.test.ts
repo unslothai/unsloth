@@ -74,3 +74,9 @@ test("a voice already serving is adopted, not loaded twice", () => {
   assert.equal(servedVoiceTtsModel(["unsloth/gemma-4-12b-it-GGUF"]), null);
   assert.equal(servedVoiceTtsModel(["some/dir/OmniVoice-GGUF"]), omni);
 });
+
+test("voice mode never offers a voice that needs a description it cannot send", () => {
+  const maya = "audio-cpp/audio.cpp-gguf/Maya1-GGUF";
+  assert.ok(!VOICE_TTS_MODELS.some((id) => id.toLowerCase() === maya.toLowerCase()));
+  assert.equal(migrateVoiceTtsModel(maya), VOICE_DEFAULT_TTS_MODEL);
+});

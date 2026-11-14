@@ -13,13 +13,18 @@ import {
 export const VOICE_DEFAULT_TTS_MODEL = `${AUDIO_CPP_REPO}/Kokoro-82M-GGUF`;
 export const VOICE_DEFAULT_STT_MODEL = "audiocpp-parakeet-tdt-0.6b-v3";
 
+// Speak voices that refuse a request without an input voice mode never sends: Maya1 needs a voice
+// description (audio.cpp model_specs/maya1.json marks `instruct` required), so every sentence 400s.
+const VOICE_NEEDS_INPUT = new Set([`${AUDIO_CPP_REPO}/Maya1-GGUF`.toLowerCase()]);
+
 export const VOICE_TTS_MODELS: readonly string[] = [
   VOICE_DEFAULT_TTS_MODEL,
   ...AUDIO_CPP_MODELS.filter(
     (model) =>
       model.task === "tts" &&
       model.id !== VOICE_DEFAULT_TTS_MODEL &&
-      audioCppWorkflowsFor(model).includes("speak"),
+      audioCppWorkflowsFor(model).includes("speak") &&
+      !VOICE_NEEDS_INPUT.has(model.id.toLowerCase()),
   ).map((model) => model.id),
 ];
 
