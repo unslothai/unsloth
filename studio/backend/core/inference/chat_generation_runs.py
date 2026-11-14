@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator, Iterator
 
 from starlette.requests import Request
 
+from core.inference.api_monitor import override_claim
 from core.inference.llama_keepwarm import InferenceActivityReservation
 from core.training.account_jobs import sweepable_job_accounts
 from utils.account_context import current_account_id, run_as
@@ -631,8 +632,16 @@ class ChatGenerationSupervisor:
         cancel_event: threading.Event | None = None,
         activity: InferenceActivityReservation | None = None,
     ) -> None:
-        with track_first_token_wait() as first_token_wait:
-            await self._produce_run(run_id, cancel_event, activity, first_token_wait)
+        from core.inference.api_monitor import override_claim_scope
+        from core.inference.token_limit import refund_if_unused
+
+        # The 202 that queued this run preceded inference, so this run's outcome decides the refund.
+        claim = {"spent": None, "generated": False}
+        with track_first_token_wait() as first_token_wait, override_claim_scope(claim):
+            try:
+                await self._produce_run(run_id, cancel_event, activity, first_token_wait)
+            finally:
+                await refund_if_unused(claim, failed = not claim.get("completed"))
 
     async def _produce_run(
         self,
@@ -736,7 +745,9 @@ class ChatGenerationSupervisor:
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
                 via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
-                request_payload.pop(db.TOKEN_LIMIT_OVERRIDE_FIELD, None)
+                spent = request_payload.pop(db.TOKEN_LIMIT_OVERRIDE_FIELD, None)
+                if (claim := override_claim()) is not None and isinstance(spent, int):
+                    claim["spent"] = spent
                 _attach_embedded_images(request_payload, self._detached_images.pop(run_id, {}))
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 # Prep runs before the first-token budget; one later touch cannot cover prep longer than the lease
@@ -847,6 +858,8 @@ class ChatGenerationSupervisor:
                 error = "Generation stream ended before completion"
             else:
                 status = "completed"
+                if (claim := override_claim()) is not None:
+                    claim["completed"] = True
             await asyncio.to_thread(
                 db.finish_run,
                 run_id,

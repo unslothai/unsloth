@@ -423,17 +423,6 @@ def _append_events_locked(
             ),
         )
         sequences.append(seq)
-        if (
-            event_type == "chunk"
-            and isinstance(payload, dict)
-            and (
-                isinstance(payload.get("usage"), dict)
-                or isinstance(payload.get("timings"), dict)
-                or payload.get("type") == "context_usage"
-            )
-        ):
-            from storage.token_usage_ledger import record_run_usage
-            record_run_usage(conn, run_id, payload)
     if sequences:
         conn.execute(
             "UPDATE chat_generation_runs SET last_event_seq=?, updated_at=? WHERE id=?",
@@ -926,12 +915,7 @@ def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, A
                 [("run.cancelled", {"status": "cancelled", "finishReason": "cancelled"})],
             )
             _sync_assistant_status_locked(conn, run_id, "cancelled")
-            # Terminal here, never through finish_run: settle (and refund) like any other end.
-            from storage.token_usage_ledger import settle_interrupted_run
-
-            refund = settle_interrupted_run(conn, run_id)
         else:
-            refund = None
             conn.execute(
                 """UPDATE chat_generation_runs
                    SET status='cancelling', cancel_requested=1, updated_at=? WHERE id=?""",
@@ -944,7 +928,11 @@ def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, A
             (run_id,),
         ).fetchone()
         _commit(conn, notify = True)
-        _refund_override(refund)
+        spent = _loads(row["request_json"], {}).get(TOKEN_LIMIT_OVERRIDE_FIELD)
+        if status == "queued" and isinstance(spent, int):
+            # Never reaches a worker: nothing was generated, so give the override back.
+            from core.inference.token_limit import restore_override
+            restore_override(spent)
         return _run_from_row(updated_row)
     except Exception:
         conn.rollback()
@@ -998,15 +986,11 @@ def finish_run(
             (status, finish_reason, error, completed, completed, run_id),
         )
         _sync_assistant_status_locked(conn, run_id, status, quote_cut)
-        from storage.token_usage_ledger import settle_interrupted_run
-
-        refund = settle_interrupted_run(conn, run_id, completed = status == "completed")
         updated = conn.execute(
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
         ).fetchone()
         _commit(conn, notify = True)
-        _refund_override(refund)
         return _run_from_row(updated)
     except Exception:
         conn.rollback()
@@ -1083,13 +1067,6 @@ def wait_for_events(
     return read(run_id, after)
 
 
-def _refund_override(refund) -> None:
-    # After commit: restore_override writes app settings on its own connection.
-    if refund:
-        from core.inference.token_limit import restore_override
-        restore_override(refund)
-
-
 def reconcile_runs(
     *, error: str = "Unsloth restarted during generation", stale_after_ms: int | None = None
 ) -> list[str]:
@@ -1120,7 +1097,6 @@ def reconcile_runs(
                 + " ORDER BY created_at, id",
                 (),
             ).fetchall()
-        refunds = []
         for row in rows:
             run_id = row["id"]
             # A recorded Stop is settled as cancelled, not reported as a backend failure.
@@ -1139,13 +1115,8 @@ def reconcile_runs(
             )
             # Marks the assistant message incomplete, which releases the frontend's generating state.
             _sync_assistant_status_locked(conn, run_id, status)
-            from storage.token_usage_ledger import settle_interrupted_run
-
-            refunds.append(settle_interrupted_run(conn, run_id))
             settled.append(str(run_id))
         _commit(conn, notify = bool(settled))
-        for refund in refunds:
-            _refund_override(refund)
         return settled
     except Exception:
         conn.rollback()

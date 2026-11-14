@@ -430,11 +430,9 @@ test("the bar offers the way out in place of a Continue that cannot help", () =>
 test("a continuation request is read only when it carries text", () => {
   assert.deepEqual(
     readContinuationRequest({
-      custom: {
-        unslothContinuation: { partial: "half an answer", sourceMessageId: "original" },
-      },
+      custom: { unslothContinuation: { partial: "half an answer" } },
     }),
-    { partial: "half an answer", sourceMessageId: "original" },
+    { partial: "half an answer" },
   );
   assert.equal(
     readContinuationRequest({

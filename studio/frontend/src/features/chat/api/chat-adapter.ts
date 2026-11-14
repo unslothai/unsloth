@@ -5650,17 +5650,10 @@ export function createOpenAIStreamAdapter(
         .find((message) => message.role === "user");
       // Names the turn whose file changes /rewind can undo; a continuation reuses its turn's prompt.
       // A temporary chat keeps no file history.
-      const temporaryChat = Boolean(
-        resolvedThreadId && isThreadIncognito(resolvedThreadId),
-      );
-      const temporaryUsageFields = temporaryChat
-        ? {
-            temporary_chat: true,
-            temporary_message_id: unstable_assistantMessageId,
-          }
-        : {};
       const userMessageIdField = userMessageIdRequestField(
-        temporaryChat ? undefined : generationUserMessage?.id,
+        resolvedThreadId && isThreadIncognito(resolvedThreadId)
+          ? undefined
+          : generationUserMessage?.id,
       );
 
       // The durability gate keys on THIS turn's attachments only, so an old screenshot does not keep
@@ -5930,41 +5923,7 @@ export function createOpenAIStreamAdapter(
       let contextWindowExceeded = false;
       let quoteCut = false;
       // Provisional reason per yield since aborts skip terminal yields; a reported window outranks it.
-      // Charged only when no usage report ever arrives (an interrupted saved reply).
-      const tokenUsageEstimatedPrompt = Math.ceil(
-        outboundMessages.reduce((total: number, message) => {
-          const content = (message as { content?: unknown }).content;
-          if (typeof content === "string") return total + content.length;
-          if (!Array.isArray(content)) return total;
-          return content.reduce(
-            (sum: number, part) =>
-              sum + (typeof part?.text === "string" ? part.text.length : 0),
-            total,
-          );
-        }, 0) / 4,
-      );
-      // Generated tool arguments, which the text-based token count never sees.
-      const tokenUsageEstimatedToolOutput = () => {
-        let chars = 0;
-        const seen = new Set<string>();
-        for (const part of toolCallParts) {
-          const live = liveArgsTextById.get(part.toolCallId)?.length ?? 0;
-          chars += Math.max(part.argsText?.length ?? 0, live);
-          seen.add(part.toolCallId);
-        }
-        for (const [id, text] of liveArgsTextById) {
-          if (!seen.has(id)) chars += text.length;
-        }
-        return Math.ceil(chars / 4);
-      };
-      const tokenUsageMetadata = () => ({
-        tokenUsageEstimatedPrompt,
-        tokenUsageEstimatedToolOutput: tokenUsageEstimatedToolOutput(),
-        // timing adds the continued reply's count, which its own row already charged.
-        tokenUsagePriorCount: priorTiming?.tokenCount,
-      });
       const liveCustom = () => ({
-        ...tokenUsageMetadata(),
         ...reasoningDurationTracker.metadata(),
         resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
         openaiCodexReasoning: codexReasoningLedger,
@@ -6797,7 +6756,6 @@ export function createOpenAIStreamAdapter(
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
-              ...temporaryUsageFields,
               ...(providerSupportsPreserveThinking(externalProvider?.providerType)
                 ? { preserve_thinking: runtime.preserveThinking }
                 : {}),
@@ -7054,7 +7012,6 @@ export function createOpenAIStreamAdapter(
               : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...userMessageIdField,
-            ...temporaryUsageFields,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...localReasoningFields,
             ...(supportsPreserveThinking
@@ -8970,7 +8927,6 @@ export function createOpenAIStreamAdapter(
             timing: finalTiming,
             custom: {
               ...reasoningDurationTracker.metadata(),
-              ...tokenUsageMetadata(),
               // Persisted so Continue survives a reload; cleared on a normal end.
 
               openaiCodexReasoning: codexReasoningLedger,
@@ -9157,7 +9113,6 @@ export function createOpenAIStreamAdapter(
               timing: partialTiming,
               custom: {
                 ...reasoningDurationTracker.metadata(),
-                ...tokenUsageMetadata(),
                 contextTruncation,
                 compactionMarkers,
                 providerCompaction,

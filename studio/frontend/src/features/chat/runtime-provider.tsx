@@ -2110,10 +2110,7 @@ export async function persistTemporaryThread({
         role: message.role,
         content: cloneContent(message.content),
         ...(attachments.length > 0 && { attachments }),
-        ...(metadata && {
-          // Its temporary receipt already charged the allowance; saving must not charge it again.
-          metadata: message.role === "assistant" ? { ...metadata, tokenUsageCharged: true } : metadata,
-        }),
+        ...(metadata && { metadata }),
         createdAt: message.createdAt?.getTime?.() ?? Date.now(),
       };
     }));

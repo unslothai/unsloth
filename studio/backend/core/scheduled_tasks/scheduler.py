@@ -67,7 +67,6 @@ class Answer:
     checkpoint: Optional[str] = None
     gguf_variant: Optional[str] = None
     provider: Optional[dict] = None
-    usage: Optional[dict] = None
 
 
 @dataclass
@@ -516,11 +515,7 @@ async def generate_answer(
     from fastapi.responses import StreamingResponse
 
     from models.inference import ChatCompletionRequest
-    from core.inference.api_monitor import (
-        TemporaryUsage,
-        override_claim_scope,
-        temporary_usage_scope,
-    )
+    from core.inference.api_monitor import override_claim_scope
     from core.inference.token_limit import refund_if_unused
     from routes.inference import (
         _chat_completion_from_connection_stream,
@@ -618,7 +613,6 @@ async def generate_answer(
             )
 
             serving: dict = {}
-            thread_id = db.chat_id_for_run(run["id"])
 
             async def produce() -> Any:
                 # Settled in this task: slot routing lives in its context, which the caller never sees.
@@ -628,27 +622,21 @@ async def generate_answer(
                 try:
                     with override_claim_scope(claim):
                         await _enforce_token_limit(request)
-                        with temporary_usage_scope(
-                            TemporaryUsage(
-                                thread_id,
-                                str(uuid.uuid5(uuid.NAMESPACE_URL, f"{thread_id}/assistant")),
+                        reply = await produce_openai_chat_completions(
+                            payload,
+                            request,
+                            task["ownerSubject"],
+                            cancel_on_disconnect = False,
+                        )
+                        if provider is not None and isinstance(reply, StreamingResponse):
+                            reply.body_iterator = _relay_split_thinking(
+                                reply.body_iterator,
+                                payload.stop,
+                                parse_thinking = payload.enable_thinking is not False,
                             )
-                        ):
-                            reply = await produce_openai_chat_completions(
-                                payload,
-                                request,
-                                task["ownerSubject"],
-                                cancel_on_disconnect = False,
+                            reply = await _chat_completion_from_connection_stream(
+                                reply, payload.model
                             )
-                            if provider is not None and isinstance(reply, StreamingResponse):
-                                reply.body_iterator = _relay_split_thinking(
-                                    reply.body_iterator,
-                                    payload.stop,
-                                    parse_thinking = payload.enable_thinking is not False,
-                                )
-                                reply = await _chat_completion_from_connection_stream(
-                                    reply, payload.model
-                                )
                     if provider is None:
                         serving.update(_serving_checkpoint())
                     # Checked before the request ends, while nobody else can have loaded a model yet.
@@ -738,7 +726,6 @@ async def generate_answer(
         checkpoint = serving.get("checkpoint"),
         gguf_variant = serving.get("gguf_variant"),
         provider = provider,
-        usage = data.get("usage"),
     )
 
 
@@ -802,15 +789,6 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
             "toolCalls": [],
         },
     }
-    if isinstance(answer.usage, dict):
-        metadata["contextUsage"] = {
-            camel: answer.usage.get(snake, 0)
-            for camel, snake in (
-                ("promptTokens", "prompt_tokens"),
-                ("completionTokens", "completion_tokens"),
-                ("totalTokens", "total_tokens"),
-            )
-        }
     if answer.reasoning.strip():
         parts.append({"type": "reasoning", "text": answer.reasoning})
         seconds = max(0, round((answered_at - started_at) / 1000))
@@ -830,7 +808,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
                     "createdAt": started_at,
                 },
                 {
-                    "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{thread_id}/assistant")),
+                    "id": str(uuid.uuid4()),
                     "threadId": thread_id,
                     "parentId": user_message_id,
                     "role": "assistant",

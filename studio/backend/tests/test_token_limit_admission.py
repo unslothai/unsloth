@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from auth.authentication import get_current_subject
 from routes import inference
 from storage import studio_db
+from storage.api_usage_db import ApiUsageReceipt, record_api_usage
 
 
 @pytest.fixture
@@ -41,27 +42,20 @@ def admission(monkeypatch):
     app.add_api_route("/api/inference/generate/stream", inference.generate_stream, methods = ["POST"])
     app.dependency_overrides[get_current_subject] = lambda: "owner"
     body = {"model": "unsloth/model", "messages": [{"role": "user", "content": "hi"}]}
-    now = int(time.time() * 1000)
-    studio_db.upsert_chat_thread(
-        {
-            "id": "thread",
-            "title": "thread",
-            "modelType": "base",
-            "modelId": body["model"],
-            "createdAt": now,
-        }
-    )
-    studio_db.upsert_chat_message(
-        {
-            "id": "reply",
-            "threadId": "thread",
-            "role": "assistant",
-            "createdAt": now,
-            "content": [{"type": "text", "text": "answer"}],
-            "metadata": {
-                "contextUsage": {"promptTokens": 90, "completionTokens": 10, "totalTokens": 100}
-            },
-        }
+    # 100 tokens already used this period, by an earlier session request.
+    assert record_api_usage(
+        ApiUsageReceipt(
+            id = "earlier",
+            subject = "owner",
+            endpoint = "/v1/chat/completions",
+            model = body["model"],
+            status = "completed",
+            prompt_tokens = 90,
+            completion_tokens = 10,
+            total_tokens = 100,
+            created_at = int(time.time() * 1000),
+            via_api_key = False,
+        )
     )
     with TestClient(app) as client:
         yield client, body, produced
@@ -160,92 +154,6 @@ def test_delegated_request_consumes_one_override(admission, monkeypatch, endpoin
     assert client.post(f"/v1/{endpoint}", json = {"model": body["model"], **extra}).status_code == 429
 
 
-@pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize(
-    "usage_steps,internal_workflow",
-    [([(90, 10)], False), ([(100, 50), (100, 50)], False), ([(90, 10), (90, 10)], True)],
-)
-def test_temporary_chat_counts_without_persisting_its_content(
-    admission, monkeypatch, stream, usage_steps, internal_workflow
-):
-    from fastapi.responses import StreamingResponse
-    from core.inference.api_monitor import ApiMonitor
-    from storage.api_usage_db import record_api_usage
-    from core.inference import token_limit
-
-    client, body, _ = admission
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(record_api_usage)
-    monkeypatch.setattr(inference, "api_monitor", monitor)
-    monkeypatch.setattr(
-        inference, "_request_is_internal_workflow", lambda request: internal_workflow
-    )
-    steps = iter(usage_steps * 2)
-
-    def finish():
-        entry = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = body["model"],
-            prompt = "private prompt",
-            subject = "owner",
-        )
-        prompt, completion = next(steps)
-        inference._monitor_usage(
-            entry,
-            {
-                "prompt_tokens": prompt,
-                "completion_tokens": completion,
-                "total_tokens": prompt + completion,
-            },
-        )
-        monitor.set_reply(entry, "private answer")
-        monitor.finish(entry)
-
-    async def produce(payload, request, current_subject, *, cancel_on_disconnect):
-        if stream:
-
-            async def chunks():
-                finish()
-                yield b"data: [DONE]\n\n"
-
-            return StreamingResponse(chunks(), media_type = "text/event-stream")
-        finish()
-        return JSONResponse({"choices": []})
-
-    monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
-    new_tokens = sum(p + c for p, c in usage_steps)
-    # The fixture's saved reply already used 100.
-    studio_db.upsert_app_settings({"token_limit": {"enabled": True, "limit": 100 + new_tokens}})
-    payload = {
-        **body,
-        "temporary_chat": not internal_workflow,
-        "thread_id": "temporary-thread",
-        "stream": stream,
-    }
-    for index in range(len(usage_steps)):
-        payload["temporary_message_id"] = f"private-msg-{index}"
-        assert client.post("/v1/chat/completions", json = payload).status_code == 200
-    assert token_limit.status()["used"] == 100 + new_tokens
-    assert client.post("/v1/chat/completions", json = payload).status_code == 429
-
-    studio_db.upsert_app_settings({"token_limit": {"enabled": False}})
-    monkeypatch.setattr(inference, "_request_is_internal_workflow", lambda request: False)
-    payload["temporary_chat"] = False
-    assert client.post("/v1/chat/completions", json = payload).status_code == 200
-    conn = studio_db.get_connection()
-    try:
-        assert conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM api_usage_events").fetchone()[0] == 0
-        rows = conn.execute("SELECT * FROM token_usage_ledger").fetchall()
-        assert len(rows) == 1 + len(usage_steps)
-        assert not any(
-            "private" in str(tuple(row)) or "temporary-thread" in str(tuple(row)) for row in rows
-        )
-    finally:
-        conn.close()
-
-
 def test_a_stopped_legacy_stream_settles_an_estimate(admission, monkeypatch):
     from types import SimpleNamespace
     from core.inference import token_limit
@@ -279,30 +187,11 @@ def test_a_stopped_legacy_stream_settles_an_estimate(admission, monkeypatch):
     assert token_limit.status()["used"] - before == 22
 
 
-def test_stateless_requests_never_share_an_accounting_thread(admission, monkeypatch):
-    from core.inference import api_monitor as monitor_module
-
-    client, body, _ = admission
-    threads = []
-
-    async def produce(payload, request, current_subject, *, cancel_on_disconnect):
-        threads.append(monitor_module._temporary_usage.get().thread)
-        return JSONResponse({"choices": []})
-
-    monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
-    for _ in range(2):
-        response = client.post(
-            "/v1/chat/completions",
-            json = {**body, "temporary_chat": True, "cancel_id": "reused"},
-        )
-        assert response.status_code == 200, response.text
-    assert len(set(threads)) == 2
-
-
-def test_a_stateless_session_request_is_charged_without_opting_in(admission, monkeypatch):
+# A saved chat (with a thread) and a stateless call are both charged by their monitor receipt.
+@pytest.mark.parametrize("thread_id", [None, "thread"])
+def test_a_session_request_is_charged_by_its_receipt(admission, monkeypatch, thread_id):
     from core.inference import token_limit
     from core.inference.api_monitor import ApiMonitor
-    from storage.api_usage_db import record_api_usage
 
     client, body, _ = admission
     monitor = ApiMonitor()
@@ -326,66 +215,6 @@ def test_a_stateless_session_request_is_charged_without_opting_in(admission, mon
     monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
     token_limit.update_settings({"enabled": True, "limit": 10_000})
     before = token_limit.status()["used"]
-    stateless = {key: value for key, value in body.items() if key != "thread_id"}
-    assert client.post("/v1/chat/completions", json = stateless).status_code == 200
+    request = {**body, **({"thread_id": thread_id} if thread_id else {})}
+    assert client.post("/v1/chat/completions", json = request).status_code == 200
     assert token_limit.status()["used"] - before == 25
-
-
-@pytest.mark.parametrize(
-    "name", ["openai_completions", "openai_embeddings", "openai_responses", "anthropic_messages"]
-)
-def test_stateless_routes_are_metered(name):
-    import ast
-    import inspect as _inspect
-
-    tree = ast.parse(_inspect.getsource(inference))
-    route = next(
-        node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name
-    )
-    assert any(getattr(d, "id", None) == "_meters_stateless_session" for d in route.decorator_list)
-
-
-@pytest.mark.parametrize("api_key", [False, True])
-@pytest.mark.parametrize("stream", [False, True])
-def test_a_metered_session_route_is_charged(monkeypatch, stream, api_key):
-    from fastapi.responses import StreamingResponse
-    from fastapi import Request
-
-    from core.inference import token_limit
-    from core.inference.api_monitor import ApiMonitor
-    from storage.api_usage_db import record_api_usage
-
-    monitor = ApiMonitor()
-    monitor.set_terminal_callback(record_api_usage)
-    monkeypatch.setattr(inference, "api_monitor", monitor)
-    monkeypatch.setattr(inference, "_request_used_api_key", lambda request: api_key)
-
-    @inference._meters_stateless_session
-    async def route(request: Request):
-        entry = monitor.start(
-            endpoint = "/v1/completions", method = "POST", model = "m", prompt = "hi", subject = "owner"
-        )
-
-        def finish():
-            inference._monitor_usage(
-                entry, {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}
-            )
-            monitor.finish(entry)
-
-        if not stream:
-            finish()
-            return JSONResponse({})
-
-        async def body():
-            finish()
-            yield b"data: {}\n\n"
-
-        return StreamingResponse(body(), media_type = "text/event-stream")
-
-    app = FastAPI()
-    app.add_api_route("/v1/completions", route, methods = ["POST"])
-    token_limit.update_settings({"enabled": True, "limit": 10_000})
-    before = token_limit.status()["used"]
-    assert TestClient(app).post("/v1/completions", json = {}).status_code == 200
-    # An API-key call is settled by the monitor itself (via_api_key), not this scope.
-    assert token_limit.status()["used"] - before == (0 if api_key else 25)

@@ -72,21 +72,6 @@ def test_a_tool_run_that_stops_before_its_final_frame_still_reports_every_pass(m
     )
 
 
-def test_a_shared_preview_reply_gets_a_stateless_receipt():
-    from models.inference import ChatCompletionRequest
-    from routes.preview import _sanitize_preview_payload
-
-    payload = ChatCompletionRequest(
-        model = "m",
-        messages = [{"role": "user", "content": "hi"}],
-        thread_id = "visitor-supplied",
-        temporary_message_id = "visitor-supplied",
-    )
-    clean = _sanitize_preview_payload(payload, is_lora = False)
-    assert clean.temporary_chat is True
-    assert (clean.thread_id, clean.temporary_message_id) == (None, None)
-
-
 def _usage(
     prompt = None,
     completion = None,
@@ -99,7 +84,8 @@ def _usage(
 
 
 @pytest.mark.parametrize(
-    "temporary, prompt, steps, status, expected",
+    # Session (UI) and API-key requests are both charged by their receipt.
+    "session, prompt, steps, status, expected",
     [
         # Stopped before any usage report: estimate both sides from text length.
         (True, 400, [("reply", 80)], "cancelled", (100, 20, 120)),
@@ -136,23 +122,20 @@ def _usage(
     ],
 )
 def test_a_receipt_settles_reported_and_estimated_usage(
-    monkeypatch, temporary, prompt, steps, status, expected
+    monkeypatch, session, prompt, steps, status, expected
 ):
-    from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
-
     receipts = []
     monitor = ApiMonitor()
     monitor.set_terminal_callback(receipts.append)
     monkeypatch.setattr(inference_route, "api_monitor", monitor)
-    with temporary_usage_scope(TemporaryUsage("thread", "message") if temporary else None):
-        entry = monitor.start(
-            endpoint = "/v1/chat/completions",
-            method = "POST",
-            model = "m",
-            prompt = "p" * prompt,
-            subject = "owner",
-            via_api_key = not temporary,
-        )
+    entry = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "p" * prompt,
+        subject = "owner",
+        via_api_key = not session,
+    )
     for kind, value in steps:
         if kind == "reply":
             monitor.append_reply(entry, "r" * value)
@@ -182,38 +165,6 @@ def test_a_receipt_settles_reported_and_estimated_usage(
     monitor.finish(entry, status)
     [receipt] = receipts
     assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == expected
-
-
-@pytest.mark.parametrize("cancel", [False, True])
-def test_a_temporary_stream_closes_or_cancels_the_stream_it_wraps(cancel):
-    import asyncio
-
-    from core.inference.api_monitor import TemporaryUsage
-
-    events = []
-
-    async def inner():
-        try:
-            yield b"one"
-            yield b"two"
-        except asyncio.CancelledError:
-            events.append("inner cancelled")
-            raise
-        finally:
-            events.append("inner closed")
-
-    async def run():
-        outer = inference_route._scoped_stream(inner(), TemporaryUsage("t"))
-        assert await outer.__anext__() == b"one"
-        if cancel:
-            with pytest.raises(asyncio.CancelledError):
-                await outer.athrow(asyncio.CancelledError())
-        else:
-            await outer.aclose()
-
-    asyncio.run(run())
-    # A cancellation reaches the inner stream's cancel handler (slot release, receipt).
-    assert events == (["inner cancelled", "inner closed"] if cancel else ["inner closed"])
 
 
 def test_every_gguf_reasoning_branch_counts_its_length():
@@ -342,13 +293,12 @@ def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
     assert receipt.prompt_tokens == 10_000
 
 
-def test_a_temporary_chatgpt_subscription_stream_settles_a_receipt(monkeypatch):
+def test_a_chatgpt_subscription_stream_settles_a_receipt(monkeypatch):
     import asyncio
     import json
     from types import SimpleNamespace
 
     from core.inference import openai_codex_auth, openai_codex_client
-    from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
     from models.inference import ChatCompletionRequest
 
     receipts = []
@@ -425,14 +375,11 @@ def test_a_temporary_chatgpt_subscription_stream_settles_a_receipt(monkeypatch):
     )
 
     async def run():
-        with temporary_usage_scope(TemporaryUsage("thread")):
-            response = await inference_route._proxy_to_external_provider(
-                payload, _Request(), "owner"
-            )
-            async for _ in response.body_iterator:
-                pass
+        response = await inference_route._proxy_to_external_provider(payload, _Request(), "owner")
+        async for _ in response.body_iterator:
+            pass
 
     asyncio.run(run())
     [receipt] = receipts
     assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (30, 7, 37)
-    assert receipt.temporary_thread == "thread"
+    assert receipt.via_api_key is False

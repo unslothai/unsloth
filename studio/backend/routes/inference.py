@@ -44,7 +44,6 @@ from typing import (
 )
 import dataclasses
 import functools
-import inspect
 import json
 import re
 import httpx
@@ -3728,8 +3727,6 @@ from core.inference.model_ids import display_model_name, model_id_matches, publi
 from core.inference.api_monitor import (
     api_monitor,
     override_claim,
-    TemporaryUsage,
-    temporary_usage_scope,
 )
 from core.inference.image_orientation import exif_upright
 from core.inference.mcp_images import (
@@ -22472,16 +22469,14 @@ async def generate_stream(
         _tracker.__enter__()
         try:
             via_api_key = _request_used_api_key(fastapi_request)
-            temporary = None if via_api_key else TemporaryUsage(uuid.uuid4().hex)
-            with temporary_usage_scope(temporary):
-                monitor_id = api_monitor.start(
-                    endpoint = "/api/inference/generate/stream",
-                    method = "POST",
-                    model = backend.active_model_name,
-                    prompt = "",
-                    subject = current_subject,
-                    via_api_key = via_api_key,
-                )
+            monitor_id = api_monitor.start(
+                endpoint = "/api/inference/generate/stream",
+                method = "POST",
+                model = backend.active_model_name,
+                prompt = "",
+                subject = current_subject,
+                via_api_key = via_api_key,
+            )
             gen = backend.generate_chat_response(
                 messages = request.messages,
                 system_prompt = request.system_prompt,
@@ -31537,28 +31532,12 @@ async def openai_chat_completions(
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
         )
     await _enforce_token_limit(request)
-    temporary = None
-    internal = _request_is_internal_workflow(request)
-    # Server-side, not a client opt-in: with no thread no saved message will ever debit this call.
-    if (payload.temporary_chat or internal or not payload.thread_id) and not _request_used_api_key(
-        request
-    ):
-        # Never cancel_id: a caller could reuse it to merge unrelated requests into one receipt.
-        thread = uuid.uuid4().hex if internal else payload.thread_id or uuid.uuid4().hex
-        message = payload.temporary_message_id if not internal else None
-        temporary = TemporaryUsage(
-            _hashlib.sha256(thread.encode("utf-8")).hexdigest(),
-            _hashlib.sha256(f"{thread}\0{message}".encode()).hexdigest() if message else None,
-        )
-    with temporary_usage_scope(temporary):
-        response = await produce_openai_chat_completions(
-            payload,
-            request,
-            current_subject,
-            cancel_on_disconnect = True,
-        )
-    if temporary and isinstance(response, StreamingResponse):
-        response.body_iterator = _scoped_stream(response.body_iterator, temporary)
+    response = await produce_openai_chat_completions(
+        payload,
+        request,
+        current_subject,
+        cancel_on_disconnect = True,
+    )
     if connection is None or not isinstance(response, StreamingResponse):
         return response
     response.body_iterator = _relay_split_thinking(
@@ -31570,37 +31549,6 @@ async def openai_chat_completions(
     if collect:
         return await _chat_completion_from_connection_stream(response, payload.model)
     return response
-
-
-async def _scoped_stream(iterator, temporary):
-    # async for does not close its source: forward teardown, keeping a cancellation one, so the
-    # inner stream's cancel handler (slot release, monitor receipt) runs in the serving task.
-    cancelled = False
-    try:
-        with temporary_usage_scope(temporary):
-            async for chunk in iterator:
-                yield chunk
-    except asyncio.CancelledError:
-        cancelled = True
-        raise
-    finally:
-        await _close_openai_admitted_stream_iterator(iterator, cancelled = cancelled)
-
-
-def _meters_stateless_session(route):
-    """These routes carry no thread, so no saved message debits them: a session (non API key)
-    call settles its own temporary receipt. Each starts its monitor before returning a stream,
-    and an entry keeps the scope it started under."""
-    signature = inspect.signature(route)
-
-    @functools.wraps(route)
-    async def metered(*args, **kwargs):
-        request = signature.bind(*args, **kwargs).arguments.get("request")
-        temporary = None if _request_used_api_key(request) else TemporaryUsage(uuid.uuid4().hex)
-        with temporary_usage_scope(temporary):
-            return await route(*args, **kwargs)
-
-    return metered
 
 
 async def produce_openai_chat_completions(
@@ -38548,7 +38496,6 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
 
 @router.post("/completions")
 @account_access.gpu_busy_route
-@_meters_stateless_session
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
     OpenAI-compatible text completions endpoint (non-chat).
@@ -39396,7 +39343,6 @@ def _embeddings_input_present(body: dict) -> bool:
 
 @router.post("/embeddings")
 @account_access.gpu_busy_route
-@_meters_stateless_session
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Unsloth's configured embedding model."""
@@ -41996,7 +41942,6 @@ async def _responses_stream(
 
 @router.post("/responses")
 @account_access.gpu_busy_route
-@_meters_stateless_session
 async def openai_responses(
     payload: ResponsesRequest,
     request: Request,
@@ -44675,7 +44620,6 @@ async def _anthropic_in_process_messages(
 
 @router.post("/messages")
 @account_access.gpu_busy_route
-@_meters_stateless_session
 async def anthropic_messages(
     payload: AnthropicMessagesRequest,
     request: Request,

@@ -85,7 +85,7 @@ for (const limited of [false, true]) {
             status: 429,
             headers: {
               "content-type": "application/json",
-              ...(limited ? { "X-Unsloth-Token-Limit": "combined" } : {}),
+              ...(limited ? { "X-Unsloth-Token-Limit": "reached" } : {}),
             },
           })
         : new Response(JSON.stringify(run("queued", 0)), {

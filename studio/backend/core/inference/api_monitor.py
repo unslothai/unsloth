@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import contextmanager
-from contextvars import ContextVar, Token
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -32,15 +32,6 @@ from storage.api_usage_db import (
 
 logger = logging.getLogger(__name__)
 TerminalCallback = Callable[[ApiUsageReceipt], None]
-
-
-@dataclass(frozen = True, slots = True)
-class TemporaryUsage:
-    thread: str
-    message_id: Optional[str] = None
-
-
-_temporary_usage: ContextVar[Optional[TemporaryUsage]] = ContextVar("temporary_usage", default = None)
 
 
 # Shared per request: monitor rows started under it mark it once any output is generated, so a
@@ -70,19 +61,6 @@ def _note_unsuccessful(entry) -> None:
     # A 200 stream cancelled or failed mid-flight: the refund still needs nothing generated.
     if entry.override_claim is not None:
         entry.override_claim["failed"] = True
-
-
-@contextmanager
-def temporary_usage_scope(value: Optional[TemporaryUsage]):
-    token = _temporary_usage.set(value)
-    try:
-        yield
-    finally:
-        # Held across stream yields: a generator closed from another task's context cannot reset.
-        try:
-            _temporary_usage.reset(token)
-        except ValueError:
-            _temporary_usage.set(token.old_value if token.old_value is not Token.MISSING else None)
 
 
 _MAX_ENTRIES = 50
@@ -240,7 +218,6 @@ class ApiMonitorEntry:
     account_id: str = field(default_factory = current_account_id)
     # True for sk-unsloth callers only: the panel auto-opens on these, not Unsloth's chat.
     via_api_key: bool = False
-    temporary_usage: Optional[TemporaryUsage] = None
     override_claim: Optional[dict] = None
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
@@ -470,7 +447,6 @@ class ApiMonitor:
             via_api_key = via_api_key,
             started_monotonic = time.monotonic(),
             context_length = context_length,
-            temporary_usage = _temporary_usage.get(),
             override_claim = _override_claim.get(),
         )
         with self._lock:
@@ -1015,13 +991,7 @@ class ApiMonitor:
     ) -> Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]]:
         callback_owner, callback = self._terminal_callback_locked()
         subject = canonical_api_subject(entry.subject)
-        if (
-            callback is None
-            or entry.kind != "request"
-            or (entry.via_api_key is not True and entry.temporary_usage is None)
-            or not subject
-            or entry.finished_at is None
-        ):
+        if callback is None or entry.kind != "request" or not subject or entry.finished_at is None:
             return None
         self._terminal_callbacks_inflight[callback_owner] = (
             self._terminal_callbacks_inflight.get(callback_owner, 0) + 1
@@ -1041,7 +1011,7 @@ class ApiMonitor:
             if entry.status == "completed"
             else entry.reply_chars - entry.reported_reply_chars
         )
-        if (entry.temporary_usage or entry.via_api_key) and unreported > 0:
+        if unreported > 0:
             # Anthropic streams report input at message_start, so keep a reported prompt.
             prompt_tokens = prompt_tokens or -(-entry.prompt_chars // 4)
             completion_tokens += -(-unreported // 4)
@@ -1061,10 +1031,6 @@ class ApiMonitor:
                 created_at = int(entry.finished_at * 1000),
                 kind = entry.kind,
                 via_api_key = entry.via_api_key,
-                temporary_thread = entry.temporary_usage.thread if entry.temporary_usage else None,
-                temporary_message_id = entry.temporary_usage.message_id
-                if entry.temporary_usage
-                else None,
             ),
         )
 

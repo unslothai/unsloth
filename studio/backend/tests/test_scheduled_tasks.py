@@ -1062,23 +1062,34 @@ def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     assert request.state.keyless_api_admitted is False
 
 
+def _seed_usage(total = 100):
+    from storage.api_usage_db import ApiUsageReceipt, record_api_usage
+    assert record_api_usage(
+        ApiUsageReceipt(
+            id = "earlier",
+            subject = "owner",
+            endpoint = "/v1/chat/completions",
+            model = "m",
+            status = "completed",
+            prompt_tokens = total - 10,
+            completion_tokens = 10,
+            total_tokens = total,
+            created_at = db.now_ms(),
+            via_api_key = False,
+        )
+    )
+
+
 @pytest.mark.parametrize("external", [False, True])
 def test_scheduled_replies_respect_the_cap_and_one_override(monkeypatch, external):
-    import json
-
     from core.inference import token_limit
     from storage import providers_db
 
-    now = db.now_ms()
     config = {"id": "conn-1", "is_enabled": 1, "display_name": "OpenAI", "provider_type": "openai"}
     monkeypatch.setattr(providers_db, "get_provider", lambda provider_id: config)
     monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
     task = make_task(model = "external::conn-1::gpt-5-mini" if external else None)
-    response = json.loads(completion("Done.").body)
-    response["usage"] = {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}
-    answer = generate(monkeypatch, FakeProducer(JSONResponse(response)), task)
-    assert answer.content == "Done."
-    scheduler_module.save_chat(task, {"id": "run-1"}, answer, now, now + 1)
+    _seed_usage()
     token_limit.update_settings({"enabled": True, "limit": 100})
     assert token_limit.status()["used"] == 100
     producer = FakeProducer(completion("Done."))
@@ -1094,19 +1105,13 @@ def test_scheduled_replies_respect_the_cap_and_one_override(monkeypatch, externa
 
 
 def test_a_scheduled_run_refused_before_inference_keeps_its_override(monkeypatch):
-    import json
-
     from fastapi import HTTPException
 
     from core.inference import token_limit
 
-    now = db.now_ms()
     monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
     task = make_task()
-    response = json.loads(completion("Done.").body)
-    response["usage"] = {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}
-    answer = generate(monkeypatch, FakeProducer(JSONResponse(response)), task)
-    scheduler_module.save_chat(task, {"id": "run-1"}, answer, now, now + 1)
+    _seed_usage()
     token_limit.update_settings({"enabled": True, "limit": 100})
     token_limit.grant_override()
     refused = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded"))

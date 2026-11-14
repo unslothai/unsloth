@@ -1224,9 +1224,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         END
         """
     )
-    from storage.token_usage_ledger import ensure_token_usage_ledger
+    from storage.token_usage_ledger import ensure_token_usage_table
 
-    ensure_token_usage_ledger(conn)
+    ensure_token_usage_table(conn)
     inventory_state = conn.execute(
         """
         SELECT inventory_version, dirty
@@ -3917,7 +3917,7 @@ def _detach_terminal_generation_for_edit(
     conn: sqlite3.Connection, thread_id: str, message: dict
 ) -> bool:
     stored = conn.execute(
-        """SELECT parent_id, role, metadata_json, attachments_json, created_at
+        """SELECT parent_id, role, metadata_json, attachments_json
            FROM chat_messages WHERE thread_id = ? AND id = ?""",
         (thread_id, str(message["id"])),
     ).fetchone()
@@ -3930,8 +3930,7 @@ def _detach_terminal_generation_for_edit(
     # Bind by the stamped run id, not createdAt: create_run stamps its own created_at, so a tab's
     # own Date cannot match (issue 15004); the run row is the authority
     row = conn.execute(
-        """SELECT id AS run_id, status AS run_status,
-                  json_extract(request_json, '$.api_monitor_via_api_key') AS api_origin
+        """SELECT id AS run_id, status AS run_status
            FROM chat_generation_runs
            WHERE id = ? AND thread_id = ? AND assistant_message_id = ?""",
         (run_id, thread_id, str(message["id"])),
@@ -3956,14 +3955,6 @@ def _detach_terminal_generation_for_edit(
         stored_attachments, sort_keys = True
     ):
         return False
-    if row["api_origin"]:
-        conn.execute(
-            """INSERT INTO token_usage_ledger
-                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens, total_tokens)
-                VALUES (?, ?, ?, 'api', 0, 0, 0)
-                ON CONFLICT(message_id) DO UPDATE SET source = 'api'""",
-            (str(message["id"]), thread_id, stored["created_at"]),
-        )
     conn.execute("DELETE FROM chat_generation_runs WHERE id = ?", (row["run_id"],))
     return True
 
@@ -4211,34 +4202,6 @@ def _mark_chat_attachment_inventory_clean(conn: sqlite3.Connection) -> None:
     )
 
 
-def _verified_usage_marker(conn, thread_id: str, message: dict) -> dict:
-    """tokenUsageCharged exempts a saved reply only when its temporary receipt exists; client
-    metadata alone must never waive an allowance debit."""
-    metadata = message.get("metadata")
-    if not isinstance(metadata, dict) or not (
-        "tokenUsageCharged" in metadata or "tokenUsageTemporaryKey" in metadata
-    ):
-        return message
-    clean = {
-        k: v
-        for k, v in metadata.items()
-        if k not in ("tokenUsageCharged", "tokenUsageTemporaryKey")
-    }
-    if "tokenUsageCharged" not in metadata:
-        return {**message, "metadata": clean}
-    key = hashlib.sha256(f"{thread_id}\0{message['id']}".encode("utf-8")).hexdigest()
-    try:
-        receipt = conn.execute(
-            "SELECT 1 FROM token_usage_ledger WHERE message_id = ?", (key,)
-        ).fetchone()
-    except sqlite3.OperationalError:
-        receipt = None
-    if receipt is not None:
-        return {**message, "metadata": {**clean, "tokenUsageCharged": True}}
-    # Receipt not written yet: this row is charged, and the receipt merges into it on arrival.
-    return {**message, "metadata": {**clean, "tokenUsageTemporaryKey": key}}
-
-
 def insert_server_chat_message(
     conn: sqlite3.Connection,
     message_id: str,
@@ -4391,13 +4354,9 @@ def upsert_chat_message(
             message["threadId"],
             [message["id"]],
         )
-        reconciled = _verified_usage_marker(
-            conn,
-            message["threadId"],
-            _reconcile_chat_message_uploads(
-                message,
-                *deletions.get(message["id"], (set(), 0)),
-            ),
+        reconciled = _reconcile_chat_message_uploads(
+            message,
+            *deletions.get(message["id"], (set(), 0)),
         )
         content_json = json.dumps(reconciled.get("content", []))
         attachments_json = (
@@ -4549,11 +4508,7 @@ def sync_chat_messages(
             [m["id"] for m in messages],
         )
         reconciled_messages = [
-            _verified_usage_marker(
-                conn,
-                thread_id,
-                _reconcile_chat_message_uploads(m, *deletions.get(m["id"], (set(), 0))),
-            )
+            _reconcile_chat_message_uploads(m, *deletions.get(m["id"], (set(), 0)))
             for m in messages
         ]
         serialized_messages = [
@@ -4951,18 +4906,6 @@ def fork_chat_thread(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             fork_messages,
-        )
-        conn.executemany(
-            """INSERT OR REPLACE INTO token_usage_ledger
-                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens,
-                 total_tokens)
-                SELECT ?, ?, created_at, 'inherited', prompt_tokens, completion_tokens, total_tokens
-                FROM token_usage_ledger WHERE message_id = ?""",
-            [(id_map[row["id"]], new_thread_id, row["id"]) for row in ancestry],
-        )
-        conn.execute(
-            "UPDATE token_usage_ledger SET source = 'inherited' WHERE thread_id = ?",
-            (new_thread_id,),
         )
         for row in ancestry:
             _replace_chat_attachment_inventory(

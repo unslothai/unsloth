@@ -50,8 +50,6 @@ class ApiUsageReceipt:
     created_at: int
     kind: str = "request"
     via_api_key: bool = True
-    temporary_thread: Optional[str] = None
-    temporary_message_id: Optional[str] = None
 
 
 def _valid_token_count(value: object) -> bool:
@@ -111,12 +109,13 @@ def _insert_api_usage(receipt: ApiUsageReceipt) -> bool:
     status = _bounded_text(receipt.status, MAX_STATUS_CHARS, truncate = True)
     if receipt_id is None or not subject or endpoint is None or not model or status is None:
         return False
-    if receipt.via_api_key is not True:
-        from storage.token_usage_ledger import record_temporary_usage
-        return record_temporary_usage(receipt)
 
     conn = get_connection(busy_timeout_seconds = _WRITE_BUSY_TIMEOUT_SECONDS)
     try:
+        if receipt.via_api_key is not True:
+            # A Studio session request: it counts toward the token allowance, not API stats.
+            from storage.token_usage_ledger import record_session_usage
+            return record_session_usage(conn, receipt)
         cursor = conn.execute(
             """
             INSERT OR IGNORE INTO api_usage_events
@@ -145,9 +144,7 @@ def _insert_api_usage(receipt: ApiUsageReceipt) -> bool:
 def record_api_usage(receipt: ApiUsageReceipt) -> bool:
     """Keyed by monitor id so repeated completions cannot double-count; invalid or zero-usage
     receipts are ignored"""
-    if receipt.kind != "request" or (
-        receipt.via_api_key is not True and not receipt.temporary_thread
-    ):
+    if receipt.kind != "request":
         return False
     counts = (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens)
     if not all(_valid_token_count(value) for value in counts) or not any(counts):

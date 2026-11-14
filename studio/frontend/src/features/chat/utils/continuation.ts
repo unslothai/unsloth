@@ -352,7 +352,6 @@ export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 
 export type ContinuationRequest = {
   partial: string;
-  sourceMessageId?: string;
   reasoning?: string;
   reasoningDuration?: number;
   /** The sibling run drops the original message, so replaying this keeps history signed. */
@@ -435,7 +434,6 @@ export function readContinuationRequest(
   const request = custom?.[CONTINUATION_RUN_CONFIG_KEY] as
     | {
         partial?: unknown;
-        sourceMessageId?: unknown;
         reasoning?: unknown;
         reasoningDuration?: unknown;
         thoughtSignature?: unknown;
@@ -474,9 +472,6 @@ export function readContinuationRequest(
   const priorTiming = readPriorPassTiming(request?.priorTiming);
   return {
     partial,
-    ...(typeof request?.sourceMessageId === "string" && request.sourceMessageId
-      ? { sourceMessageId: request.sourceMessageId }
-      : {}),
     ...(reasoning ? { reasoning } : {}),
     ...(reasoning &&
     typeof duration === "number" &&
