@@ -163,6 +163,7 @@ from ..kernels.fused_add_rms_layernorm import (
 )
 from ..kernels import fast_lora as _fast_lora
 from . import _decode_graphs
+from ._lora_fold_generate import lora_fold_generate as _lora_fold_generate
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from ..context_parallel import get_cp_manager
@@ -3170,6 +3171,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
                 _decode_graphs.plan_scope("graph" if graphs else "eager"),
                 _get_inference_mode_context_manager(self),
                 torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
+                # After eager_scope: the fold's graphs-on threshold follows this call's plan.
+                _lora_fold_generate(self, args, kwargs),
             ):
                 output = _decode_graphs.generate_with_fallback(
                     self, self._old_generate, graphs, args, kwargs

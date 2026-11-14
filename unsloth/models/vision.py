@@ -286,6 +286,7 @@ from ._utils import _ignore_block_swap_params_for_ddp
 from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
+from ._lora_fold_generate import lora_fold_generate as _lora_fold_generate
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
@@ -2464,7 +2465,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if kwargs.get("past_key_values") is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
-            with _get_inference_mode_context_manager(self), autocaster:
+            with (
+                _get_inference_mode_context_manager(self),
+                autocaster,
+                _lora_fold_generate(self, args, kwargs),
+            ):
                 return self._old_generate(*args, **kwargs)
         finally:
             _clear_generation_caches(self)
@@ -2561,6 +2566,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             _decode_graphs.plan_scope(plan),
             _get_inference_mode_context_manager(self),
             autocaster,
+            _lora_fold_generate(self, args, kwargs),
         ):
             out = self._old_generate(*args, **kwargs)
             if isinstance(scope, _GraphDecodeSteps):
