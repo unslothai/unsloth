@@ -603,12 +603,15 @@ def _config_chooses_location(
                 os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "pip"
             )
         user_dirs = [os.path.join(home, ".pip"), config]
-    files = [os.path.join(d, name) for d in system]
-    if not isolated and not (env_file and os.path.exists(env_file)):
-        files += [os.path.join(d, name) for d in user_dirs]
-    files += [os.path.join(sys.prefix, name), env_file or ""]
-    files = [f for f in files if f and f != os.devnull and os.path.isfile(f)]
-    if not files:
+
+    def config_files(isolated):
+        files = [os.path.join(d, name) for d in system]
+        if not isolated and not (env_file and os.path.exists(env_file)):
+            files += [os.path.join(d, name) for d in user_dirs]
+        files += [os.path.join(sys.prefix, name), env_file or ""]
+        return [f for f in files if f and f != os.devnull and os.path.isfile(f)]
+
+    if not config_files(False):
         return False
     saved = sys.path[:]
     sys.path[:] = _stdlib_paths()
@@ -617,22 +620,38 @@ def _config_chooses_location(
         import locale
     finally:
         sys.path[:] = saved
-    # One parser per file as pip's Configuration._load_file: a [DEFAULT] applies inside its own file only.
-    merged = {}
-    try:
-        # pip's Configuration._construct_parser: UTF-8 only in UTF-8 mode, else the locale's encoding.
-        encoding = "utf-8" if sys.flags.utf8_mode else locale.getpreferredencoding(False)
-        for name in files:
+    # pip's Configuration._construct_parser: UTF-8 only in UTF-8 mode, else the locale's encoding.
+    encoding = "utf-8" if sys.flags.utf8_mode else locale.getpreferredencoding(False)
+
+    def load(files):
+        # One parser per file as pip's Configuration._load_file: a [DEFAULT] applies inside its own file only;
+        # keys normalised as its _normalize_name (lower case, _ -> -, a leading -- dropped).
+        merged = {}
+        for path in files:
             parser = configparser.RawConfigParser()
-            parser.read(name, encoding = encoding)
+            parser.read(path, encoding = encoding)
             for section in parser.sections():
-                merged.setdefault(section, {}).update(parser.items(section))
+                items = {
+                    k.lower().replace("_", "-").removeprefix("--"): v
+                    for k, v in parser.items(section)
+                }
+                merged.setdefault(section, {}).update(items)
+        return merged
+
+    try:
+        merged = load(config_files(isolated))
+        # The main parser picks --python up before the install command is isolated: from the full set.
+        full = load(config_files(False)) if isolated else merged
     except (configparser.Error, UnicodeDecodeError):
         return False
 
     # pip's precedence per option: [global], then [install], then a PIP_* variable (ignored under --isolated);
     # empty values are skipped, as pip's _get_ordered_configuration_items does.
-    def value(key):
+    def value(
+        key,
+        merged = merged,
+        isolated = isolated,
+    ):
         env = "" if isolated else os.environ.get("PIP_" + key.upper(), "")
         if env.strip() and env != os.environ.get("_UNSLOTH_PIP_PREFIX"):
             return env
@@ -642,12 +661,14 @@ def _config_chooses_location(
                 return found
         return ""
 
+    if any(value(k).strip() for k in ("target", "prefix", "root") if k not in skip):
+        return True
     # python: pip re-runs itself in that interpreter, as --python does, which installs there.
-    if any(value(k).strip() for k in ("target", "prefix", "root", "python") if k not in skip):
+    if "python" not in skip and value("python", full, False).strip():
         return True
     items = []
     for section in ("global", "install"):
-        items += [(k.replace("_", "-"), v) for k, v in merged.get(section, {}).items()]
+        items += list(merged.get(section, {}).items())
     return use_user and _user_site(items, isolated)
 
 

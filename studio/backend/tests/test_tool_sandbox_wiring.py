@@ -804,6 +804,8 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "pip_python_env",
         "last_target_empty",
         "cli_empties_env_target",
+        "config_dashed_user",
+        "user_config_python_isolated",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -868,6 +870,13 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         f" && env -u PYTHONPATH venv/bin/{show}",
         # An empty --target (an unset $DEST) chooses nothing, as pip tests it for truthiness.
         "empty_cli_target": f"{_PIP} --target= {wheel} && {show}",
+        # pip normalises config keys (a leading -- dropped): [install] --user = false turns the user site off.
+        "config_dashed_user": "printf '[global]\\nuser = true\\n[install]\\n--user = false\\n' > pip.ini && "
+        f"PIP_CONFIG_FILE=pip.ini {_PIP} {wheel} && {show}",
+        # The user file's python still applies under --isolated: pip's main parser reads it first.
+        "user_config_python_isolated": "python -m venv venv && mkdir -p .config/pip && "
+        "printf '[global]\\npython = %s\\n' \"$PWD/venv/bin/python\" > .config/pip/pip.conf && "
+        f"python -m pip --isolated install -q --no-index --no-deps {wheel} && env -u PYTHONPATH venv/bin/{show}",
         # The last --target wins, and an empty one chooses nothing; a CLI value overrides PIP_TARGET too.
         "last_target_empty": f"{_PIP} --target vendor --target= {wheel} && {show}",
         "cli_empties_env_target": f"PIP_TARGET=vendor {_PIP} --target= {wheel} && {show}",
@@ -951,6 +960,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "pip_python_env": str(workdir / "venv"),
         "last_target_empty": packages,
         "cli_empties_env_target": packages,
+        "config_dashed_user": packages,
+        "user_config_python_isolated": str(workdir / "venv"),
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
