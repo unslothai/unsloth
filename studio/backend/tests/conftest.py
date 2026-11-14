@@ -65,6 +65,7 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 # Avoid real pip installs for attention backends; setdefault so an override wins.
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
+os.environ.setdefault("UNSLOTH_SPARK_SERVING", "0")
 # Tests that hide nvidia-smi must not find real GPUs via NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
 # A fake CPU host must not take the Vulkan route through this machine's real GPUs.

@@ -198,3 +198,50 @@ def test_shard_load_keeps_integer_buffers_integer(pipeline, tmp_path) -> None:
     pipeline._materialise(model, str(tmp_path), None, "cpu", torch.bfloat16, lambda *a: None)
     assert model.w.dtype == torch.bfloat16
     assert model.ids.dtype == torch.int64 and model.ids.tolist() == [3, 4, 5, 6]
+
+
+def _tiny_gpt2(pipeline, **overrides):
+    transformers = pytest.importorskip("transformers")
+    pytest.importorskip("peft")
+    config = transformers.GPT2Config(
+        n_layer = 1, n_embd = 16, n_head = 2, n_positions = 32, vocab_size = 64, **overrides
+    )
+    model = transformers.GPT2LMHeadModel(config)
+    return pipeline.apply_lora(model, 4), config
+
+
+def test_ddp_flags_unused_parameters_for_optional_cross_attention(pipeline):
+    """Regression: LoRA on GPT-2's cross-attention never runs on a text batch, so DDP must not
+    expect a gradient for it; only MoE turned find_unused_parameters on before."""
+    model, config = _tiny_gpt2(pipeline, add_cross_attention = True)
+    assert any("crossattention" in n and "lora_" in n for n, _ in model.named_parameters())
+    assert pipeline.ddp_unused_parameters_reason(model, config)
+
+
+def test_ddp_flags_unused_parameters_for_layer_drop_and_mtp_modules(pipeline):
+    from types import SimpleNamespace
+
+    import torch
+
+    dense = torch.nn.Module()
+    dense.q_proj = torch.nn.Linear(2, 2)
+    assert pipeline.ddp_unused_parameters_reason(dense, SimpleNamespace(layerdrop = 0.1))
+    assert pipeline.ddp_unused_parameters_reason(dense, SimpleNamespace(layerdrop = 0.0)) is None
+    with_mtp = torch.nn.Module()
+    with_mtp.mtp = torch.nn.Linear(2, 2)
+    assert pipeline.ddp_unused_parameters_reason(with_mtp, SimpleNamespace())
+    with_mtp.mtp.requires_grad_(False)
+    assert pipeline.ddp_unused_parameters_reason(with_mtp, SimpleNamespace()) is None
+
+
+def test_ddp_keeps_the_fast_path_for_a_dense_text_model(pipeline):
+    model, config = _tiny_gpt2(pipeline)
+    assert pipeline.ddp_unused_parameters_reason(model, config) is None
+
+
+def test_ddp_unused_parameter_check_reuses_unsloth_defaults(pipeline):
+    imported = "unsloth" in sys.modules
+    defaults = pipeline._unsloth_ddp_defaults()
+    assert defaults is not None and callable(defaults._config_may_skip)
+    # Loaded by path: importing the unsloth package would patch transformers in the trainer.
+    assert ("unsloth" in sys.modules) == imported

@@ -486,3 +486,22 @@ def test_replica_fit_prices_only_each_replicas_share_of_the_users(cluster) -> No
         split_kv_across_replicas = False,
     )
     assert plan["serving"]["topology"] == "layer_split"
+
+
+def test_training_plan_refuses_a_model_beyond_the_layer_split_capacity(cluster) -> None:
+    budget = cluster.SPARK_USABLE_GIB - cluster.SERVE_OVERHEAD_GIB
+    # Inside the two-node aggregate the layer split is still the plan.
+    assert cluster.plan_training(budget * 1.5, n_nodes = 2, model = "m")["axis"] == (
+        "pipeline-parallel"
+    )
+    # Beyond it no node count helps: the launcher is torchrun --nnodes=2.
+    for nodes in (2, 4):
+        plan = cluster.plan_training(300.0, n_nodes = nodes, model = "m")
+        assert plan["axis"] == "none", plan["recommendation"]
+        assert plan["commands"] == []
+        assert plan["fits_one_node"] is False
+        assert "--layer-split" not in " ".join(plan["commands"])
+        assert "aggregate" in plan["recommendation"]
+    one = cluster.plan_training(300.0, n_nodes = 1, model = "m")
+    assert one["axis"] == "none"
+    assert "Pair a second Spark" not in one["recommendation"]

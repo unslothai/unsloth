@@ -227,6 +227,14 @@
       "reason": "Loader is _FrontmatterLoader, a yaml.SafeLoader subclass that only adds a merge-key pair budget; no Python object construction."
     },
     {
+      "file": "studio/backend/core/inference/spark_serving.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "35d098852cae088c",
+      "count": 1,
+      "reason": "Loads studio/spark_cluster.py from this checkout at a path fixed relative to the module, never a user or model path."
+    },
+    {
       "file": "studio/backend/core/inference/video_wan_fused.py",
       "rule": "dynamic-import",
       "sink": "import_module",
@@ -489,6 +497,14 @@
       "digest": "ebe737f7f7773a19",
       "count": 1,
       "reason": "Imports transformers.models.<model_type>.modeling_<model_type> only for an identifier model_type, so it can only reach an installed transformers module."
+    },
+    {
+      "file": "studio/spark_pipeline.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "99b72ca2fec458c8",
+      "count": 1,
+      "reason": "Loads unsloth/models/_ddp_defaults.py from the installed unsloth package directory (found by find_spec, never a user or model path) without importing the package, which would patch transformers."
     },
     {
       "file": "unsloth/__init__.py",
