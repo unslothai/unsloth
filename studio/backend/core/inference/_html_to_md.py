@@ -1267,16 +1267,27 @@ class _MarkdownRenderer(HTMLParser):
 
     def _link_output_state(self) -> tuple:
         frame = self._header_stack[-1] if self._header_stack else None
+        quote = self._bq_stack[-1] if self._bq_stack else None
+        row = self._current_row if self._in_table else None
         cell = self._cell_seq if self._in_cell else -1
         return (
             frame,
             len(self._heading_marks),
-            len(self._bq_stack),
+            quote,
+            row,
             cell,
-            len(self._table_stack),
+            self._table_depth(),
             len(self._sup_starts),
             self._inline_code_depth,
         )
+
+    def _link_routes_unchanged(self) -> bool:
+        # buffers compare by identity: two empty quotes or rows are equal lists but different targets
+        now = self._link_output_state()
+        return all(
+            saved is cur or (not isinstance(saved, list) and saved == cur)
+            for saved, cur in zip(self._link_open_state, now)
+        ) and len(self._link_open_state) == len(now)
 
     # Link text helper: normalize whitespace so block content in <a> stays single-line.
     def _finish_link(self) -> None:
@@ -1723,7 +1734,7 @@ class _MarkdownRenderer(HTMLParser):
             and self._in_link
             and not self._in_pre
             and not self._link_had_heading
-            and self._link_open_state == self._link_output_state()
+            and self._link_routes_unchanged()
         ):
             if self._header_stack:
                 self._header_stack[-1].link_chars += self._link_header_chars

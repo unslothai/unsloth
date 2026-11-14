@@ -126,3 +126,13 @@ def test_closed_heading_card_does_not_win_main_content():
 def test_nested_anchor_inside_inline_code_keeps_the_inner_link():
     html = "<p><a href='/o'><code>git <a href='/i'>clone</a></code></a></p>"
     assert html_to_markdown(html).startswith("[clone](/i)")
+
+
+def test_outer_link_text_stays_out_of_a_table_opened_inside_it():
+    html = '<a href="/o">Intro<table><caption><a href="/i"></a></caption><tr><td>DATA</td></tr></table>After</a>'
+    assert html_to_markdown(html).startswith("| DATA |")
+
+
+def test_outer_link_text_does_not_move_into_a_sibling_quote():
+    html = '<blockquote><a href="/o">FIRST</blockquote><blockquote><a href="/i">SECOND</a></blockquote>'
+    assert "FIRST" not in html_to_markdown(html)
