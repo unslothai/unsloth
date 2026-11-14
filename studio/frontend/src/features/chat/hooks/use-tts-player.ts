@@ -258,7 +258,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   );
 
   const pausePlayback = useCallback(() => {
-    if (pausedRef.current || clipsRef.current.size === 0) return;
+    // Latched even before the first clip: one synthesized during the barge-in must not play over it.
+    if (pausedRef.current) return;
     pausedRef.current = true;
     void getPlayCtx()?.suspend().catch(() => {});
   }, []);

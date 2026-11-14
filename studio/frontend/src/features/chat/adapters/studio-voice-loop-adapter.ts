@@ -79,9 +79,13 @@ function isHallucinatedTranscript(text: string): boolean {
 }
 
 let heldTurn: { text: string; at: number } | null = null;
+// The fragment cut into the reply: the next session keeps listening as that barge-in, not
+// through the paused reply's barge gate, which resets its clocks and never flushes the fragment.
+let heldFromBarge = false;
 
 export function clearHeldTurn(): void {
   heldTurn = null;
+  heldFromBarge = false;
 }
 
 export class StudioVoiceLoopAdapter implements DictationAdapter {
@@ -116,7 +120,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     let vadReady = false;
     let bargeConfirming = false;
     const preroll: Float32Array[] = [];
-    let bargedIn = false;
+    let bargedIn = heldTurn !== null && heldFromBarge;
     let sampleRate = 16000;
     let heardSpeech = false;
     let lastVoiceAt = 0;
@@ -286,6 +290,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             text: transcript,
             at: heldTurn?.at ?? performance.now(),
           };
+          heldFromBarge = bargedIn;
           for (const cb of speechCallbacks) cb({ transcript, isFinal: false });
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);
@@ -390,7 +395,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const frameMs = (input.length / sampleRate) * 1000;
           if (!bargedIn && isVoicePlaybackActive()) {
             preroll.push(new Float32Array(input));
-            while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
+            // While the detector is asked, keep every frame: the probe's audio opens the utterance.
+            if (!bargeConfirming) while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
             startedAt = now;
             lastVoiceAt = now;
             if (!stepBargeGate(bargeGate, rms, frameMs)) return;
