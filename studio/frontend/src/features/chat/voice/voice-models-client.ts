@@ -53,7 +53,11 @@ function logFields(): { log: boolean; thread_id: string | null } {
   // A temporary chat is never saved, so its transcripts stay out of the voice log too.
   const temporary = useChatRuntimeStore.getState().incognito || (threadId !== null && isThreadIncognito(threadId));
   const log =
-    voice.voiceLogEnabled && !temporary && !(threadId && voice.voiceLogOptOutThreadIds.includes(threadId));
+    // No thread yet (a New Chat's first turn): a row without one would outlive the chat's deletion.
+    threadId !== null &&
+    voice.voiceLogEnabled &&
+    !temporary &&
+    !voice.voiceLogOptOutThreadIds.includes(threadId);
   return { log, thread_id: threadId };
 }
 
