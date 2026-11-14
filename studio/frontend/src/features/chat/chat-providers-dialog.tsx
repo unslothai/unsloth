@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Select,
@@ -43,7 +44,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { openExternalLink } from "@/lib/open-link";
 import {
-  ArrowDown01Icon,
   ArrowUpRight01Icon,
   Refresh01Icon,
   ViewIcon,
@@ -71,6 +71,7 @@ import {
   suggestedModelIds,
 } from "./connection-status";
 import {
+  isOlderModel,
   modelCatalogVersion,
   subscribeModelCatalog,
 } from "./model-catalog";
@@ -190,6 +191,27 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
   }
   top += Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
   content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
+}
+
+/** Fades the picker's top or bottom edge while more rows lie beyond it. */
+function fadeProviderMenuEdges(content: HTMLElement | null) {
+  const viewport = content?.querySelector<HTMLElement>("[data-radix-select-viewport]");
+  if (!viewport) return;
+  const update = () => {
+    const above = viewport.scrollTop > 1;
+    const below = viewport.scrollTop + viewport.clientHeight < viewport.scrollHeight - 1;
+    const mask = `linear-gradient(to bottom, ${above ? "transparent" : "#000"} 0, #000 28px, #000 calc(100% - 28px), ${below ? "transparent" : "#000"} 100%)`;
+    viewport.style.maskImage = mask;
+    viewport.style.setProperty("-webkit-mask-image", mask);
+  };
+  update();
+  // The menu is capped after mount, so measure again once that lands.
+  const frame = requestAnimationFrame(update);
+  viewport.addEventListener("scroll", update, { passive: true });
+  return () => {
+    cancelAnimationFrame(frame);
+    viewport.removeEventListener("scroll", update);
+  };
 }
 
 function hasPublicModelCatalog(providerType: string | null | undefined): boolean {
@@ -583,17 +605,28 @@ export function ChatProvidersSettings({
           : missingModelCatalogApiKey
             ? "Enter an API key before loading models"
             : undefined;
+  const [showOlderModels, setShowOlderModels] = useState(false);
+  const catalogVersion = useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const filteredAvailableModels = useMemo(() => {
     const query = modelSearchQuery.trim().toLowerCase();
-    if (!query) {
-      return availableModels;
+    if (query) {
+      // A search reaches the folded older models too.
+      return availableModels.filter(
+        (model) =>
+          model.toLowerCase().includes(query) ||
+          providerModelDisplayName(providerType, model).toLowerCase().includes(query),
+      );
     }
+    if (showOlderModels) return availableModels;
+    const selected = new Set(selectedModelIds);
     return availableModels.filter(
-      (model) =>
-        model.toLowerCase().includes(query) ||
-        providerModelDisplayName(providerType, model).toLowerCase().includes(query),
+      (model) => selected.has(model) || !isOlderModel(providerType, model),
     );
-  }, [availableModels, modelSearchQuery, providerType]);
+  }, [availableModels, modelSearchQuery, providerType, showOlderModels, selectedModelIds, catalogVersion]);
+  const olderModelCount = useMemo(
+    () => availableModels.filter((model) => isOlderModel(providerType, model)).length,
+    [availableModels, providerType, catalogVersion],
+  );
   const keyOptional = isCustomProvider && !isCloudPresetProviderType(providerType);
   const apiKeyUrl =
     customProviderApiKeyUrl(providerType) ?? selectedProviderContract?.api_key_url ?? null;
@@ -1948,6 +1981,9 @@ export function ChatProvidersSettings({
       selectedIds={selectedModelIds}
       query={modelSearchQuery}
       onQueryChange={setModelSearchQuery}
+      olderCount={olderModelCount}
+      showOlder={showOlderModels}
+      onShowOlderChange={setShowOlderModels}
       onToggle={toggleModel}
       onSelectAll={selectAllModels}
       onClear={() => {
@@ -2013,16 +2049,20 @@ export function ChatProvidersSettings({
                     <SelectValue placeholder="Choose a connection" />
                   </SelectTrigger>
                   {/* No scroll chevrons: the list scrolls by wheel, trackpad and keyboard. */}
-                  <SelectContent className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden">
+                  <SelectContent
+                    ref={fadeProviderMenuEdges}
+                    className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
+                  >
                     {pickerGroups.map((group, groupIndex) => (
                       <Fragment key={group.id}>
-                        {groupIndex > 0 ? <SelectSeparator /> : null}
+                        {groupIndex > 0 ? <SelectSeparator className="mx-2" /> : null}
                         <SelectGroup>
                           <SelectLabel>{group.label}</SelectLabel>
                           {group.items.map((item, itemIndex) => (
                             <SelectItem
                               key={item.providerType}
                               value={item.providerType}
+                              className="rounded-full"
                               ref={
                                 group.id === "even-more" && itemIndex === 0
                                   ? capProviderMenuAtItem
@@ -2332,7 +2372,7 @@ export function ChatProvidersSettings({
             <CollapsibleTrigger className="group/advanced flex items-center gap-1 rounded-md py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               Advanced settings
               <HugeiconsIcon
-                icon={ArrowDown01Icon}
+                icon={ChevronDownStandardIcon}
                 className="size-3.5 -rotate-90 transition-transform group-data-[state=open]/advanced:rotate-0"
               />
             </CollapsibleTrigger>

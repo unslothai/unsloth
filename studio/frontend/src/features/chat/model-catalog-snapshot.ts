@@ -9,6 +9,8 @@ export interface ModelCatalogSnapshotEntry {
   toggle?: true;
   input?: readonly string[];
   context?: number;
+  /** YYYY-MM-DD, served by the backend catalog only. */
+  released?: string;
 }
 
 export const MODEL_CATALOG_SNAPSHOT: Readonly<

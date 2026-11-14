@@ -15,6 +15,7 @@ const HUB_PROVIDER_IDS = new Map([
   ["xai", "xai-org"],
   ["nvidia", "nvidia"],
   ["cohere", "cohere"],
+  ["azure", "microsoft"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(
@@ -35,7 +36,6 @@ const CONNECTION_LOGO_PATHS = new Map([
   ["opencode_go", "/provider-logos/opencode.svg"],
   ["zai", "/provider-logos/zai.svg"],
   ["kimi", "/provider-logos/moonshot.svg"],
-  ["azure", "/provider-logos/microsoft.svg"],
   ["vertex", "/provider-logos/vertex.svg"],
   ["bedrock", "/provider-logos/bedrock.svg"],
   ["perplexity", "/provider-logos/perplexity.svg"],

@@ -426,3 +426,25 @@ test("a mandatory OpenRouter alias keeps its catalog effort ladder", () => {
   assert.equal(fallback.reasoningAlwaysOn, true);
   assert.equal(fallback.supportsReasoningOff, false);
 });
+
+test("a model is older only when the served catalog dates it over a year back", async () => {
+  const { isOlderModel, setModelsDevCatalog } = await import(
+    "../src/features/chat/model-catalog.ts"
+  );
+  setModelsDevCatalog({
+    fetched_at: 1_700_000_000,
+    providers: {
+      gemini: {
+        "gemini-old": { released: "2025-06-17" },
+        "gemini-new": { released: "2026-10-13" },
+        "gemini-undated": {},
+      },
+    },
+  });
+  const now = Date.parse("2026-11-14");
+  assert.equal(isOlderModel("gemini", "gemini-old", now), true);
+  assert.equal(isOlderModel("gemini", "Gemini-Old", now), true);
+  assert.equal(isOlderModel("gemini", "gemini-new", now), false);
+  assert.equal(isOlderModel("gemini", "gemini-undated", now), false);
+  assert.equal(isOlderModel("llama_cpp", "gemini-old", now), false);
+});

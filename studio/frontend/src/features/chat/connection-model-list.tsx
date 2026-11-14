@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -43,6 +44,9 @@ export function ConnectionModelList({
   selectedIds,
   query,
   onQueryChange,
+  olderCount,
+  showOlder,
+  onShowOlderChange,
   onToggle,
   onSelectAll,
   onClear,
@@ -55,6 +59,10 @@ export function ConnectionModelList({
   selectedIds: string[];
   query: string;
   onQueryChange: (query: string) => void;
+  /** Models released over a year ago; folded away unless ticked, searched for or shown. */
+  olderCount: number;
+  showOlder: boolean;
+  onShowOlderChange: (showOlder: boolean) => void;
   onToggle: (modelId: string) => void;
   onSelectAll: () => void;
   onClear: () => void;
@@ -125,7 +133,7 @@ export function ConnectionModelList({
             <li key={row.id}>
               <label
                 htmlFor={`provider-model-${panelKey}-${index}`}
-                className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-3 py-1.5 transition-colors hover:bg-muted/45"
+                className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-3 py-1.5 transition-colors hover:bg-accent"
               >
                 <Checkbox
                   id={`provider-model-${panelKey}-${index}`}
@@ -150,6 +158,23 @@ export function ConnectionModelList({
           ))
         )}
       </ul>
+      {olderCount > 0 && !filtered ? (
+        <button
+          type="button"
+          aria-expanded={showOlder}
+          onClick={() => onShowOlderChange(!showOlder)}
+          className="flex items-center gap-1 self-start rounded-md py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          {`Older models (${olderCount})`}
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
+            className={cn(
+              "size-3.5 transition-transform",
+              !showOlder && "-rotate-90",
+            )}
+          />
+        </button>
+      ) : null}
       {filtered && rows.length > 0 ? (
         <p className="text-xs text-muted-foreground">
           {`Showing ${models.length} of ${totalCount} models`}

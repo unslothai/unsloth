@@ -300,6 +300,14 @@ def test_models_dev_catalog_is_trimmed_and_remapped():
     assert catalog["gemini"]["gemini-9-flash"] == {"reasoning": True, "input": ["text", "image"]}
 
 
+def test_models_dev_release_date_is_kept_only_when_well_formed():
+    from core.inference.provider_model_capabilities import _trim_models_dev_model
+
+    assert _trim_models_dev_model({"release_date": "2025-06-17"}) == {"released": "2025-06-17"}
+    assert _trim_models_dev_model({"release_date": "June 2025"}) == {}
+    assert _trim_models_dev_model({"release_date": None}) == {}
+
+
 # The frontend merges this over its bundled snapshot, so a junk value is worse than none.
 _CONTEXT_CASES = [
     ({"context": 1_050_000, "output": 100_000}, 1_050_000),

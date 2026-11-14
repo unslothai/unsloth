@@ -3,12 +3,9 @@
 
 import { Input } from "@/components/ui/input";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import {
-  ArrowDown01Icon,
-  PlusSignIcon,
-  Search01Icon,
-} from "@hugeicons/core-free-icons";
+import { PlusSignIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import { SettingsSection } from "@/features/settings/components/settings-section";
@@ -186,7 +183,7 @@ export function ConnectionGallery({
                   >
                     {group.label}
                     <HugeiconsIcon
-                      icon={ArrowDown01Icon}
+                      icon={ChevronDownStandardIcon}
                       className={cn(
                         "size-3 transition-transform",
                         collapsed && "-rotate-90",
@@ -210,7 +207,7 @@ export function ConnectionGallery({
                           type="button"
                           onClick={() => onPick(item.providerType)}
                           data-provider-type={item.providerType}
-                          className="group/tile flex min-w-0 items-center gap-3 rounded-full px-3 py-2.5 text-left transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          className="group/tile flex min-w-0 items-center gap-3 rounded-full px-3 py-2.5 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         >
                           <span className="flex size-5 shrink-0 items-center justify-center">
                             <ApiProviderLogo
@@ -232,7 +229,7 @@ export function ConnectionGallery({
                           </span>
                           <span
                             className={cn(
-                              "flex shrink-0 items-center gap-1 pr-1 text-ui-11 text-muted-foreground",
+                              "flex h-5 min-w-5 shrink-0 items-center justify-center gap-1 text-ui-11 text-muted-foreground",
                               !connected &&
                                 "opacity-0 transition-opacity group-hover/tile:opacity-100 group-focus-visible/tile:opacity-100",
                             )}
