@@ -308,6 +308,62 @@ def test_the_video_load_under_off_reports_every_chat_model_it_unloaded(video_cli
 # 6. A chat load that frees an image model names it.
 
 
+def test_idle_only_chat_load_cannot_take_a_new_media_gpu_claim(backends, monkeypatch):
+    primary, _ = backends
+    primary.unload_model()
+    model_slots.slots.clear()
+    _mode(monkeypatch, "off")
+    evicted = _reporting(monkeypatch, gpu_arbiter.DIFFUSION, [])
+
+    async def load(
+        request,
+        *args,
+        allow_gpu_owner_eviction = True,
+        **kwargs,
+    ):
+        # Media admission bypasses the chat gate while configuration is being resolved.
+        gpu_arbiter.acquire_for_request(gpu_arbiter.DIFFUSION, account_id = "alice")
+        await asyncio.to_thread(
+            gpu_arbiter.acquire_for_request,
+            gpu_arbiter.CHAT,
+            allow_evict = allow_gpu_owner_eviction,
+            account_id = "bob",
+        )
+        return LoadResponse.model_construct(status = "loaded", model = request.model_path)
+
+    monkeypatch.setattr(inf, "_load_model_impl", load)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inf.load_model_gated(
+                LoadRequest(model_path = "org/C-GGUF", require_idle = True), None, "bob"
+            )
+        )
+    assert excinfo.value.status_code == 409
+    assert evicted == []
+    assert gpu_arbiter.owner_account(gpu_arbiter.DIFFUSION) == "alice"
+    assert gpu_arbiter.holds(gpu_arbiter.DIFFUSION)
+
+
+def test_idle_only_chat_load_cannot_evict_to_retry_after_a_short_fit(backends, monkeypatch):
+    primary, _ = backends
+    primary.unload_model()
+    model_slots.slots.clear()
+    _mode(monkeypatch, "fit")
+
+    async def short(*args, **kwargs):
+        raise GpuMemoryShortError("not enough room", short_mib = 4096)
+
+    monkeypatch.setattr(inf, "_load_model_impl", short)
+    monkeypatch.setattr(inf, "_free_for_chat", lambda *a, **kw: pytest.fail("attempted eviction"))
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inf.load_model_gated(
+                LoadRequest(model_path = "org/C-GGUF", require_idle = True), None, "bob"
+            )
+        )
+    assert excinfo.value.status_code == 409
+
+
 def test_a_chat_load_that_evicts_an_image_model_lists_it(backends, monkeypatch):
     _mode(monkeypatch, "off")
     monkeypatch.setattr(model_slots, "slots", [])

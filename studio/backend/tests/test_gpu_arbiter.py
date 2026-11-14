@@ -222,6 +222,37 @@ def test_an_unpriced_chat_load_settles_beside_media_as_its_policy_says(cores, mo
     assert (arb.DIFFUSION in arb.residents()) is (policy != "fit")
 
 
+def test_non_evicting_fit_keeps_media_when_chat_price_becomes_unbounded(cores, monkeypatch):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "_on_metal", lambda: True)
+    monkeypatch.setattr(res, "can_load_alongside", lambda *args: (True, {}))
+    arb.acquire_for(
+        arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096}, account_id = "alice"
+    )
+    arb.acquire_for(
+        arb.CHAT,
+        policy = "fit",
+        need_mib = res.ChatNeed({0: 2048}),
+        allow_evict = False,
+        account_id = "bob",
+    )
+    assert arb.holds(arb.CHAT) and arb.holds(arb.DIFFUSION)
+    import asyncio
+    from routes.inference import _settle_unpriced_mlx_load
+
+    cleanup = []
+    worker = types.SimpleNamespace(
+        unload_model = lambda name: cleanup.append(("unload", name)),
+        _shutdown_subprocess = lambda timeout: cleanup.append(("stop", timeout)),
+    )
+    with pytest.raises(arb.GpuOwnerBusyError):
+        asyncio.run(_settle_unpriced_mlx_load(worker, "new-chat", "fit", allow_evict = False))
+    assert cleanup == [("unload", "new-chat"), ("stop", 5.0)]
+    assert arb.holds(arb.DIFFUSION)
+    assert arb.owner_account(arb.DIFFUSION) == "alice"
+
+
 def test_a_renderer_change_forgets_the_media_price(cores):
     import core.inference.gpu_residency as res
 

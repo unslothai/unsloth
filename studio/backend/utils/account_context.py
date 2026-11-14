@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
@@ -16,9 +17,10 @@ ROLE_OWNER = "owner"
 ROLE_USER = "user"
 
 T = TypeVar("T")
+_SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
-@dataclass(frozen = True, slots = True)
+@dataclass(frozen = True, **_SLOTS)
 class AccountContext:
     """The acting account. ``account_id`` is the storage key; ``username`` is not."""
 

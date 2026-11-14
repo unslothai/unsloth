@@ -3,6 +3,9 @@
 
 """Model and LoRA configuration handling."""
 
+from __future__ import annotations
+
+
 from dataclasses import dataclass, replace as _dataclass_replace
 from typing import Optional, Dict, Any
 from utils import gguf_names as _gguf_names
