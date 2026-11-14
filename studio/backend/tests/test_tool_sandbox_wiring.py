@@ -1611,8 +1611,10 @@ def test_the_stdlib_inventory_has_a_fallback_before_python_3_10():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
-def test_a_failed_same_version_reinstall_still_retires_on_retry(monkeypatch, tmp_path):
-    """The failing reinstall rewrote RECORD before dying: the retry still drops what only the old build had."""
+@pytest.mark.parametrize("retry", ["same_version", "new_version"])
+def test_a_failed_same_version_reinstall_still_retires_on_retry(monkeypatch, tmp_path, retry):
+    """The failing reinstall rewrote RECORD before dying: the retry (same build or a new version) still drops
+    what only the old build had."""
     name = "unsloth_retry_same"
     workdir = tmp_path / "chat"
     workdir.mkdir()
@@ -1643,6 +1645,9 @@ def test_a_failed_same_version_reinstall_still_retires_on_retry(monkeypatch, tmp
     assert "rc=0" not in failed, failed
     blocker.rmdir()
     blocker.parent.rmdir()
+    if retry == "new_version":
+        (workdir / "newer").mkdir()
+        second = "newer/" + _wheel(workdir / "newer", name, {f"{name}.py": ""}, "2.0")
     out = tools._bash_exec(
         f"{_PIP} --force-reinstall {second}; echo rc=$?",
         None,
@@ -1852,6 +1857,34 @@ def test_a_killed_reinstall_note_is_read_before_the_next_upgrade(tmp_path):
     _dist(site_dir, "unsloth_noted", "2.0", 2, module = "new.py")
     _prune(prefix, site_dir)
     assert not old.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "symlinked folders")
+def test_a_saved_old_file_list_is_rechecked_before_use(tmp_path):
+    """A folder of a saved list since replaced by a symlink out of the prefix drops that entry."""
+    prefix = tmp_path / "prefix"
+    site_dir = prefix / "lib" / "site-packages"
+    site_dir.mkdir(parents = True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "x.py").write_text("")
+    (site_dir / "sub").symlink_to(outside)
+    inside = site_dir / "kept.py"
+    rows = [
+        f"{os.path.abspath(site_dir)}\tp-1.0.dist-info\t{os.path.normcase(str(p))}\n"
+        for p in (site_dir / "sub" / "x.py", inside)
+    ]
+    (prefix / ".unsloth-old-files").write_text("".join(rows))
+    code = "import sitecustomize as s; print(sorted(p for v in s._saved_inventory().values() for p in v))"
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH"))},
+        "PYTHONPATH": os.pathsep.join([tools._SANDBOX_SITE_DIR, str(site_dir)]),
+        "PIP_PREFIX": str(prefix),
+    }
+    out = subprocess.run(
+        [sys.executable, "-c", code], env = env, capture_output = True, text = True, cwd = tmp_path
+    )
+    assert out.stdout.strip() == repr([os.path.normcase(str(inside))]), out.stderr
 
 
 def test_an_unfinished_install_retires_nothing(tmp_path):

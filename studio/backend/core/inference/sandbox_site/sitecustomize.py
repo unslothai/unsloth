@@ -1151,6 +1151,8 @@ def _prune_stale_dist_info():
             import shutil
         finally:
             sys.path[:] = saved
+        saved = _saved_inventory()
+        count = sum(map(len, saved.values()))
         for found in stale_groups:
             ordered = sorted(found, key = found.get)
             done = [d for d in ordered if _finished(*d)]
@@ -1165,10 +1167,16 @@ def _prune_stale_dist_info():
             # Files another surviving distribution now ships stay too.
             keep |= _claimed(root, set(stale))
             for entry, name in stale:
-                # Also the files only the replaced version had, as pip's uninstall would remove.
-                _remove_files(_recorded_files(entry, name, root) - keep, entry)
+                # Also the files only the replaced version had, as pip's uninstall would remove; a failed
+                # same-version rewrite's saved list too, its RECORD no longer names them.
+                old = _recorded_files(entry, name, root) | saved.pop(
+                    (os.path.abspath(entry), name), set()
+                )
+                _remove_files(old - keep, entry)
                 if _within(os.path.realpath(os.path.join(entry, name)), real):
                     shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
+        if sum(map(len, saved.values())) != count:
+            _write_saved(saved)
     except Exception:  # noqa: BLE001 - a broken shim must never break user code
         pass
 
@@ -1180,10 +1188,17 @@ def _saved_inventory():
     # Old file lists of same-version reinstalls that failed after rewriting RECORD: (site dir, dist-info) -> files.
     saved = {}
     try:
-        with open(os.path.join(os.environ["PIP_PREFIX"], _SAVED), encoding = "utf-8") as f:
+        prefix = os.environ["PIP_PREFIX"]
+        root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
+        real = os.path.join(os.path.normcase(os.path.realpath(prefix)), "")
+        with open(os.path.join(prefix, _SAVED), encoding = "utf-8") as f:
             for line in f:
                 row = line.rstrip("\n").split("\t")
-                if len(row) == 3:
+                # Re-checked now, as _recorded_files does: a folder since replaced by a symlink leads nowhere outside.
+                folder = os.path.join(
+                    os.path.normcase(os.path.realpath(os.path.dirname(row[-1]))), ""
+                )
+                if len(row) == 3 and row[2].startswith(root) and folder.startswith(real):
                     saved.setdefault((row[0], row[1]), set()).add(row[2])
     except (KeyError, OSError):
         pass
