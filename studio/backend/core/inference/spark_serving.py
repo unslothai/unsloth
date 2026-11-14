@@ -3291,6 +3291,16 @@ class SparkServing:
                 )
                 return False
             self.peer_keys = keys
+        if rebuilt != process.argv:
+            generated = generated_launch_files(
+                argv[1:] + env_launch_files(getattr(backend, "launched_env", None))
+            )
+            failed = await replicate_generated_files(peer, generated) if generated else None
+            if failed:
+                logger.warning(
+                    "spark serving: a regenerated launch file could not reach %s: %s", peer, failed
+                )
+                return False
         process.argv = rebuilt
         self._replica_sync_pending = True
         try:
