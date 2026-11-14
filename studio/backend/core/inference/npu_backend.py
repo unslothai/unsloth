@@ -20,6 +20,7 @@ import structlog
 
 from core.inference import npu_memory
 from core.inference.flm_files import (
+    FlmDownloadCancelled,
     FlmDownloadError,
     FlmModelFiles,
     download_files,
@@ -128,6 +129,10 @@ class NpuError(RuntimeError):
 
 class NpuLoadCancelled(NpuError):
     """A load was stopped by cancel_load."""
+
+
+class NpuDownloadCancelled(NpuError):
+    """A download was stopped on request; its partial files stay for a resume."""
 
 
 @dataclass(frozen = True)
@@ -766,9 +771,14 @@ class LemonadeNpuBackend:
             raise NpuError(f"{model.id} is not downloaded yet.")
         return model
 
-    def download(self, model_id: str) -> Iterator[dict[str, Any]]:
+    def download(
+        self,
+        model_id: str,
+        cancel: Optional[threading.Event] = None,
+    ) -> Iterator[dict[str, Any]]:
         """Raises unless lemond sends its complete event, since a cut-short stream leaves a partial
-        model."""
+        model. Setting ``cancel`` raises NpuDownloadCancelled at the next chunk."""
+        cancel = cancel or threading.Event()
         model = self._model(model_id)
         server = self._ensure_running()
         files = (
@@ -776,9 +786,12 @@ class LemonadeNpuBackend:
         )
         if files is not None:
             try:
-                yield from download_files(files)
+                yield from download_files(files, cancel = cancel)
+            except FlmDownloadCancelled as exc:
+                raise NpuDownloadCancelled(f"Downloading {model.id} was cancelled.") from exc
             except FlmDownloadError as exc:
                 raise NpuError(str(exc)) from exc
+            yield {"event": "finishing", "percent": 99}
         elif not model.downloaded:
             logger.warning(
                 "FastFlowLM's file list is unreadable; lemond downloads %s, without resume",
@@ -798,6 +811,8 @@ class LemonadeNpuBackend:
                 response.read()
                 raise NpuError(f"Downloading {model.id} failed: {_error_message(response)}")
             for line in response.iter_lines():
+                if cancel.is_set():
+                    raise NpuDownloadCancelled(f"Downloading {model.id} was cancelled.")
                 if line.startswith("event:"):
                     event = line[len("event:") :].strip() or "progress"
                     continue
@@ -817,8 +832,9 @@ class LemonadeNpuBackend:
                 if isinstance(data, dict) and data.get("status") == "error":
                     raise NpuError(f"Downloading {model.id} failed: {data.get('message') or data}")
                 completed = completed or event == "complete"
-                # lemond's per-file percent would move the bar backwards after Studio's download.
-                if isinstance(data, dict) and (files is None or event == "complete"):
+                # After Studio's own download lemond only registers the files: relay nothing, its
+                # per-file percent would move the bar backwards and its complete precedes Studio's.
+                if isinstance(data, dict) and files is None:
                     yield {"event": event, **data}
                 event = "progress"
         if not completed:

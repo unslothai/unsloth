@@ -16,7 +16,7 @@ from starlette.concurrency import iterate_in_threadpool
 
 from auth import policy
 from auth.authentication import get_current_subject
-from core.inference.npu_backend import NpuError, get_npu_backend
+from core.inference.npu_backend import NpuDownloadCancelled, NpuError, get_npu_backend
 from hub.services.models import account_access
 from loggers import get_logger
 
@@ -52,6 +52,7 @@ class _Download:
         self.events: list[dict] = []
         self.finished = False
         self.changed = threading.Condition()
+        self.cancel = threading.Event()
 
     def publish(self, event: dict) -> None:
         with self.changed:
@@ -99,9 +100,12 @@ def _start_download(npu, model_id: str) -> _Download:
     def _run() -> None:
         logger.info(f"Downloading NPU model {model_id}")
         try:
-            for event in npu.download(model_id):
+            for event in npu.download(model_id, cancel = job.cancel):
                 job.publish(event)
             logger.info(f"Downloaded NPU model {model_id}")
+        except NpuDownloadCancelled:
+            logger.info(f"NPU model download of {model_id} cancelled{_progress()}")
+            job.publish({"event": "cancelled", "model": model_id})
         except NpuError as exc:
             logger.warning(f"NPU model download of {model_id} failed{_progress()}: {exc}")
             job.publish({"event": "error", "error": str(exc)})
@@ -186,6 +190,19 @@ async def follow_npu_download(model_id: str):
     if job is None or job.finished:
         raise HTTPException(status_code = 404, detail = f"{model_id} is not downloading.")
     return _event_stream(job)
+
+
+@router.post(
+    "/models/{model_id}/download/cancel", dependencies = [Depends(_require_installation_owner)]
+)
+async def cancel_npu_download(model_id: str):
+    """Stop the running pull at its next chunk; its partial files stay, so Download resumes."""
+    with _downloads_lock:
+        job = _downloads.get(model_id)
+    if job is None or job.finished:
+        raise HTTPException(status_code = 404, detail = f"{model_id} is not downloading.")
+    job.cancel.set()
+    return {"status": "cancelling", "model": model_id}
 
 
 @router.delete("/models/{model_id}", dependencies = [Depends(_require_installation_owner)])
