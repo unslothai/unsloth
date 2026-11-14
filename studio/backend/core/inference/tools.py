@@ -7837,6 +7837,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         shell_c_pending = False  # a shell `-c` precedes its inline payload
         command_arg_pending = False  # the next word is a command string run later (trap, script -c)
         script_operand_seen = False  # `script` already has its log file operand
+        redir_target_pending = (
+            False  # a bare `2>` precedes its target, ahead of a pending command string
+        )
+        dup_target_pending = False  # the fd / file after a split `>&` belongs to the redirection
+        pending_quoted_redirs: "frozenset[int] | None" = None
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
         git_checkout_positionals = 0  # positionals seen after `git checkout`
@@ -7854,6 +7859,19 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         for _tok_idx, token in enumerate(tokens):
             after_coproc = coproc_kw
             coproc_kw = False
+            if dup_target_pending:
+                dup_target_pending = False
+                continue
+            # shlex splits `2>&1` into `2>`, `&`, `1`; bash needs `>&` contiguous, so this `&` is no separator.
+            if token == "&" and _tok_idx:
+                prev_redir = _REDIRECTION_RE.match(tokens[_tok_idx - 1])
+                if prev_redir and prev_redir.end() == len(tokens[_tok_idx - 1]):
+                    if pending_quoted_redirs is None:
+                        pending_quoted_redirs = _quoted_redirection_indexes(text, tokens, ";&|()")
+                    if _tok_idx - 1 not in pending_quoted_redirs:
+                        dup_target_pending = True
+                        redir_target_pending = False
+                        continue
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
@@ -7879,6 +7897,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 shell_c_pending = False
                 command_arg_pending = False
                 script_operand_seen = False
+                redir_target_pending = False
                 git_glob_pending = False
                 chdir_pending = False
                 continue
@@ -7898,9 +7917,24 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if win_operand_pending:
                 win_operand_pending = False
                 continue
-            if expect_command and _REDIR_PREFIX_RE.match(token):
-                # Bash accepts a redirection before the command word (`</dev/null rm -rf build`); skip it.
+            # Bash drops redirections from argv wherever they sit (`</dev/null rm`, `nohup 2> log rm`,
+            # `trap 2>log 'rm -rf x' EXIT`); a bare operator also takes the next word as its target.
+            if redir_target_pending:
+                redir_target_pending = False
                 continue
+            if expect_command or prefix_pending:
+                redir = _REDIR_PREFIX_RE.match(token)
+                if redir:
+                    redir_target_pending = redir.end() == len(token)
+                    continue
+            elif command_arg_pending or shell_c_pending:
+                redir = _REDIRECTION_RE.match(token)
+                if redir:
+                    if pending_quoted_redirs is None:
+                        pending_quoted_redirs = _quoted_redirection_indexes(text, tokens, ";&|()")
+                    if _tok_idx not in pending_quoted_redirs:
+                        redir_target_pending = redir.end() == len(token)
+                        continue
             if exec_flag_pending and token == "--":
                 # Nothing after fd's `--` is an option.
                 exec_flag_pending = False
