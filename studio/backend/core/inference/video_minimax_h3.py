@@ -2483,8 +2483,8 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
 
 
 def _unforced_picture_type(frame: Any) -> Any:
-    """A decoded frame keeps its picture type (every MJPG / raw frame is I), which libx264 obeys, so the export was
-    all-intra: clear it and let the encoder pick I / P / B frames, as the Diffusers export does."""
+    """A decoded frame keeps its picture type (every MJPG / raw frame is I), which libx264 obeys: clear it so
+    the encoder picks I / P / B frames, as the Diffusers export does."""
     try:
         from av.video.frame import PictureType
         frame.pict_type = PictureType.NONE

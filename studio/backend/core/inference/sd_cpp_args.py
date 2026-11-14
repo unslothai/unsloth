@@ -124,7 +124,7 @@ class SdCppVideoGenParams:
     flow_shift: Optional[float] = None
     # --audio-flow-shift: builds with sd_cpp_supports_flag(binary, "--audio-flow-shift") only; None = model default.
     audio_flow_shift: Optional[float] = None
-    # --sampling-method / --scheduler (h3_sd_cpp_sampler); None leaves the build's default.
+    # --sampling-method / --scheduler; None leaves the build's default.
     sample_method: Optional[str] = None
     scheduler: Optional[str] = None
     # Uncompressed AVI (BGR24 + float PCM) so Studio's x264 / AAC export is the only lossy step.

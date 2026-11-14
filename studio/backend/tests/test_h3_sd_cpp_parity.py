@@ -335,7 +335,7 @@ def test_export_keeps_levels_and_uses_inter_frames(tmp_path, codec, pix_fmt):
     _write_avi(src, codec, pix_fmt, frames)
     out, inter = _decoded(transcode_video_to_mp4(src, fps = 24))
     assert len(out) == len(frames)
-    # Full-range MJPG used to be stretched (gain 1.14, offset -16); levels now survive within x264's error.
+    # Full-range MJPG levels must survive within x264's error, not be stretched to limited range.
     gain = np.polyfit(
         np.stack(frames).reshape(-1)[::7].astype(float),
         np.stack(out).reshape(-1)[::7].astype(float),
