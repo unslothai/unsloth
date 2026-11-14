@@ -39,14 +39,13 @@ test("both model lists share one checklist wired to the scoped handlers", () => 
   assert.match(dialog, /availableModels\.length === 0 \? null : modelChecklist\(false\)/);
 });
 
-test("Clear keeps typed model IDs while a search or the Selected filter is active", () => {
+test("Clear keeps typed model IDs while a search is active", () => {
   assert.match(
     dialog,
-    /clearModelSelection\(\);\s*if \(clearsTypedIds && !modelSearchQuery\.trim\(\) && !selectedOnly\) setManualModelIds\(""\);/,
+    /clearModelSelection\(\);\s*if \(clearsTypedIds && !modelSearchQuery\.trim\(\)\) setManualModelIds\(""\);/,
   );
 });
 
-test("the Selected filter narrows the rows the bulk buttons act on", () => {
-  assert.match(dialog, /const selected = selectedOnly \? new Set\(selectedModelIds\) : null;/);
-  assert.match(dialog, /\(!selected \|\| selected\.has\(model\)\) &&/);
+test("the list has no Selected filter", () => {
+  assert.doesNotMatch(dialog, /selectedOnly/);
 });

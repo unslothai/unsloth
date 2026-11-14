@@ -486,7 +486,7 @@ export const CUSTOM_PROVIDER_PRESETS = [
     providerType: "vertex",
     displayName: "Google Vertex AI",
     baseUrlPlaceholder: "https://aiplatform.googleapis.com/v1/publishers/google",
-    modelIdsPlaceholder: "gemini-2.5-pro\ngemini-2.5-flash",
+    modelIdsPlaceholder: "gemini-4-carbon\ngemini-3.8-flash",
   },
 ] as const;
 

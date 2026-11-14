@@ -393,7 +393,6 @@ export function ChatProvidersSettings({
   const formCheckRequestRef = useRef(0);
   const checkedKeyRef = useRef("");
   const [testingDraft, setTestingDraft] = useState(false);
-  const [selectedOnly, setSelectedOnly] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   // Re-render when a catalog refresh lands, so the freshness line follows it.
@@ -459,7 +458,6 @@ export function ChatProvidersSettings({
     formCheckRequestRef.current += 1;
     checkedKeyRef.current = "";
     setFormCheck(null);
-    setSelectedOnly(false);
     setProviderType(value);
     setReasoningConfig(null);
     setAvailableModels([]);
@@ -587,18 +585,15 @@ export function ChatProvidersSettings({
             : undefined;
   const filteredAvailableModels = useMemo(() => {
     const query = modelSearchQuery.trim().toLowerCase();
-    const selected = selectedOnly ? new Set(selectedModelIds) : null;
-    if (!query && !selected) {
+    if (!query) {
       return availableModels;
     }
     return availableModels.filter(
       (model) =>
-        (!selected || selected.has(model)) &&
-        (!query ||
-          model.toLowerCase().includes(query) ||
-          providerModelDisplayName(providerType, model).toLowerCase().includes(query)),
+        model.toLowerCase().includes(query) ||
+        providerModelDisplayName(providerType, model).toLowerCase().includes(query),
     );
-  }, [availableModels, modelSearchQuery, providerType, selectedOnly, selectedModelIds]);
+  }, [availableModels, modelSearchQuery, providerType]);
   const keyOptional = isCustomProvider && !isCloudPresetProviderType(providerType);
   const apiKeyUrl =
     customProviderApiKeyUrl(providerType) ?? selectedProviderContract?.api_key_url ?? null;
@@ -821,7 +816,6 @@ export function ChatProvidersSettings({
     checkedKeyRef.current = "";
     setFormCheck(null);
     setTestingDraft(false);
-    setSelectedOnly(false);
     setAdvancedOpen(false);
   }
 
@@ -1680,7 +1674,6 @@ export function ChatProvidersSettings({
     // A browser-held key prefilled into the field was not typed, so opening the form does not check it.
     checkedKeyRef.current = legacyKey.trim();
     setFormCheck(null);
-    setSelectedOnly(false);
     // Folded settings that are in use must not hide behind the fold.
     setAdvancedOpen(
       provider.maxOutputTokens != null ||
@@ -1955,13 +1948,11 @@ export function ChatProvidersSettings({
       selectedIds={selectedModelIds}
       query={modelSearchQuery}
       onQueryChange={setModelSearchQuery}
-      selectedOnly={selectedOnly}
-      onSelectedOnlyChange={setSelectedOnly}
       onToggle={toggleModel}
       onSelectAll={selectAllModels}
       onClear={() => {
         clearModelSelection();
-        if (clearsTypedIds && !modelSearchQuery.trim() && !selectedOnly) setManualModelIds("");
+        if (clearsTypedIds && !modelSearchQuery.trim()) setManualModelIds("");
       }}
     />
   );
@@ -2628,7 +2619,7 @@ export function ChatProvidersSettings({
             <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={modelsPanelKey}
-                className="origin-top overflow-hidden"
+                className="-mx-3 origin-top overflow-hidden px-3"
                 initial={reduceMotion ? false : { opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={reduceMotion ? undefined : { opacity: 0, height: 0 }}
@@ -2653,30 +2644,43 @@ export function ChatProvidersSettings({
                     </p>
                   </div>
                   <div data-title-line-control={true} className="shrink-0">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className={
-                        availableModels.length > 0
-                          ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
-                          : "shrink-0"
-                      }
-                      disabled={loadModelsDisabled}
-                      title={loadModelsTitle}
-                      onClick={() => void loadModels()}
-                    >
-                      {modelsLoading || catalogAutoLoading ? (
-                        <>
-                          <Spinner className="mr-2 size-3.5" />
-                          Loading…
-                        </>
-                      ) : availableModels.length > 0 ? (
-                        "Reload models"
-                      ) : (
-                        "Load available models"
-                      )}
-                    </Button>
+                    {availableModels.length > 0 ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="size-7 text-muted-foreground hover:text-foreground"
+                        disabled={loadModelsDisabled}
+                        title={loadModelsTitle ?? "Reload models"}
+                        aria-label="Reload models"
+                        onClick={() => void loadModels()}
+                      >
+                        {modelsLoading || catalogAutoLoading ? (
+                          <Spinner className="size-4" />
+                        ) : (
+                          <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+                        )}
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0"
+                        disabled={loadModelsDisabled}
+                        title={loadModelsTitle}
+                        onClick={() => void loadModels()}
+                      >
+                        {modelsLoading || catalogAutoLoading ? (
+                          <>
+                            <Spinner className="mr-2 size-3.5" />
+                            Loading…
+                          </>
+                        ) : (
+                          "Load available models"
+                        )}
+                      </Button>
+                    )}
                   </div>
                 </div>
                 {formCheck && !keyRejected ? (

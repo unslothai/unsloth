@@ -43,22 +43,18 @@ export function ConnectionModelList({
   selectedIds,
   query,
   onQueryChange,
-  selectedOnly,
-  onSelectedOnlyChange,
   onToggle,
   onSelectAll,
   onClear,
 }: {
   providerType: string;
   panelKey: string;
-  /** Rows after the search and the Selected filter. */
+  /** Rows after the search. */
   models: string[];
   totalCount: number;
   selectedIds: string[];
   query: string;
   onQueryChange: (query: string) => void;
-  selectedOnly: boolean;
-  onSelectedOnlyChange: (selectedOnly: boolean) => void;
   onToggle: (modelId: string) => void;
   onSelectAll: () => void;
   onClear: () => void;
@@ -72,7 +68,7 @@ export function ConnectionModelList({
     name: providerModelDisplayName(providerType, model),
     facts: modelFacts(providerType, model),
   }));
-  const filtered = query.trim().length > 0 || selectedOnly;
+  const filtered = query.trim().length > 0;
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -96,20 +92,6 @@ export function ConnectionModelList({
             type="button"
             variant="ghost"
             size="sm"
-            aria-pressed={selectedOnly}
-            className={cn(
-              "h-8 rounded-full px-3 text-xs font-medium text-muted-foreground hover:text-foreground",
-              selectedOnly && "bg-muted text-foreground",
-            )}
-            onClick={() => onSelectedOnlyChange(!selectedOnly)}
-            title="Show only the models you ticked"
-          >
-            Selected
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
             className="h-8 rounded-full px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
             onClick={onSelectAll}
           >
@@ -129,23 +111,21 @@ export function ConnectionModelList({
       <ul
         className={cn(
           // Rows hang into the gutter so their hover pill lines text up with the page; scrolls past 10 rows.
-          "-mx-2.5 flex flex-col gap-0.5",
+          "-mx-3 flex flex-col gap-0.5",
           rows.length > 10 &&
             "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
         )}
       >
         {rows.length === 0 ? (
-          <li className="px-2.5 py-2.5 text-xs text-muted-foreground">
-            {selectedOnly && !query.trim()
-              ? "No models selected"
-              : "No matching models"}
+          <li className="px-3 py-2.5 text-xs text-muted-foreground">
+            No matching models
           </li>
         ) : (
           rows.map((row, index) => (
             <li key={row.id}>
               <label
                 htmlFor={`provider-model-${panelKey}-${index}`}
-                className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-2.5 py-1.5 transition-colors hover:bg-muted/45"
+                className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-3 py-1.5 transition-colors hover:bg-muted/45"
               >
                 <Checkbox
                   id={`provider-model-${panelKey}-${index}`}
