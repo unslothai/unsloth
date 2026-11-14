@@ -158,6 +158,14 @@ function tableRows(node: PasteNode): PasteNode[] {
   return rows;
 }
 
+// Split, not `/\s*\n\s*/`, which is quadratic on long whitespace runs; input is already trimmed.
+const flatten = (text: string) =>
+  text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ");
+
 function span(cell: PasteNode, name: string, max: number): number {
   const value = Number.parseInt(attr(cell, name), 10);
   return Number.isFinite(value) && value > 0 ? Math.min(value, max) : 1;
@@ -171,10 +179,8 @@ function table(node: PasteNode, ctx: Ctx): string {
     let c = 0;
     for (const cell of elements(row).filter((child) => /^T[DH]$/i.test(child.nodeName))) {
       while (rows[r][c] !== undefined) c++;
-      const text = clean(children(cell, ctx))
-        .replace(new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}]`, "g"), "")
-        .replace(/\s*\n\s*/g, " ")
-        .replace(/\|/g, "\\|");
+      const raw = clean(children(cell, ctx)).replace(new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}]`, "g"), "");
+      const text = flatten(raw).replace(/\|/g, "\\|");
       const cols = span(cell, "colspan", 1000);
       const down = span(cell, "rowspan", physical.length - r);
       for (let dr = 0; dr < down; dr++)
@@ -188,14 +194,14 @@ function table(node: PasteNode, ctx: Ctx): string {
     `| ${Array.from({ length: width }, (_, i) => cells[i] ?? "").join(" | ")} |`;
   const [head, ...body] = rows;
   const caption = elements(node).find((child) => child.nodeName.toUpperCase() === "CAPTION");
-  const title = caption ? clean(children(caption, ctx)).replace(/\s*\n\s*/g, " ") : "";
+  const title = caption ? flatten(clean(children(caption, ctx))) : "";
   return [...(title ? [title, ""] : []), line(head), `| ${Array(width).fill("---").join(" | ")} |`, ...body.map(line)].join("\n");
 }
 
 function convert(node: PasteNode, parent: Ctx): string {
   if (node.nodeType === 3) {
     const text = node.textContent ?? "";
-    if (parent.space === "pre") return `${FENCE_OPEN}${text}${FENCE_CLOSE}`;
+    if (parent.space === "pre") return `${FENCE_OPEN}${text.replaceAll("\u00a0", " ")}${FENCE_CLOSE}`;
     if (parent.space === "collapse") return text.replace(/[^\S\u00a0]+/g, " ");
     return text
       .replace(/[^\S\n\u00a0]+/g, " ")

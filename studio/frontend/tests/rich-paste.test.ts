@@ -240,10 +240,16 @@ test("long whitespace runs convert in linear time", () => {
   const bodies = [
     el("body", el("p", el("b", "x"), run(" "))),
     el("body", el("div", { style: "white-space:pre-wrap" }, el("b", run(" ")))),
+    el("body", el("table", el("tr", el("td", { style: "white-space:pre-wrap" }, run(" ")), el("td", run("\u00a0"))))),
   ];
   const start = performance.now();
   for (const body of bodies) htmlNodeToMarkdown(body);
   const plain = run(" ");
   richPasteMarkdown({ types: ["text/html"], getData: (type: string) => (type === "text/html" ? "<b>x</b>" : plain) }, () => el("body", el("b", "q")));
   assert.ok(performance.now() - start < 1000);
+});
+
+test("layout non-breaking spaces in preformatted spans become spaces", () => {
+  const body = el("body", el("div", { style: "white-space:pre-wrap" }, el("b", "Run"), ":\nx\u00a0=\u00a01"));
+  assert.equal(htmlNodeToMarkdown(body), "**Run**:\nx = 1");
 });
