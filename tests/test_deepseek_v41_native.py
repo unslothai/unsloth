@@ -1,0 +1,237 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
+"""Unsloth's native DeepSeek-V4.1 (unsloth/models/deepseek_v41): registration, the reference semantics of its parts,
+training forward / backward, save / reload, and the released-layout guard. CPU, tiny random configs."""
+
+import os
+
+import pytest
+
+torch = pytest.importorskip("torch")
+
+from unsloth.models.deepseek_v41 import register_deepseek_v41, transformers_has_deepseek_v41  # noqa: E402
+from unsloth.models.deepseek_v41 import modeling as dsv41  # noqa: E402
+from unsloth.models.deepseek_v41.configuration import DeepseekV41Config, DeepseekV41TextConfig  # noqa: E402
+
+needs_native = pytest.mark.skipif(
+    transformers_has_deepseek_v41(),
+    reason = "transformers ships deepseek_v41; the native classes are not registered",
+)
+
+
+def _tiny_config(**over):
+    text = dict(
+        vocab_size = 512,
+        hidden_size = 64,
+        moe_intermediate_size = 32,
+        num_hidden_layers = 6,
+        num_attention_heads = 2,
+        head_dim = 32,
+        qk_rope_head_dim = 8,
+        q_lora_rank = 32,
+        o_groups = 2,
+        o_lora_rank = 16,
+        n_routed_experts = 4,
+        num_experts_per_tok = 2,
+        sliding_window = 8,
+        compress_ratios = [0, 0, 2, 2, 1, 1, 0],
+        kv_source_layer_ids = [2, 4],
+        index_source_layer_ids = [2, 3, 4, 5],
+        candidate_source_layer_id = 4,
+        candidate_topk_blocks = 2,
+        candidate_block_size = 2,
+        index_n_heads = 2,
+        index_head_dim = 16,
+        index_topk = 3,
+        engram_layer_ids = [1, 4],
+        engram_vocab_size = 101,
+        engram_max_ngram_size = 3,
+        engram_n_heads = 2,
+        engram_head_dim = 32,
+        engram_compressed_vocab_size = 97,
+        num_nextn_predict_layers = 1,
+        max_position_embeddings = 1024,
+        rope_scaling = {
+            "rope_type": "yarn",
+            "factor": 4,
+            "beta_fast": 32,
+            "beta_slow": 1,
+            "original_max_position_embeddings": 64,
+        },
+    )
+    text.update(over)
+    primes, offsets = dsv41.engram_layout(
+        tuple(text["engram_layer_ids"]),
+        text["engram_max_ngram_size"],
+        text["engram_n_heads"],
+        text["engram_vocab_size"],
+    )
+    text["engram_num_embeddings"] = [o[-1] + p[-1][-1] for o, p in zip(offsets, primes)]
+    return DeepseekV41Config(text_config = text)
+
+
+def _tiny_model(seed = 0, **over):
+    torch.manual_seed(seed)
+    model = dsv41.DeepseekV41ForCausalLM(_tiny_config(**over)).float()
+    model.bind_token_map([i % 97 for i in range(512)])
+    return model
+
+
+def test_text_fields_are_read_through_the_composite_config():
+    config = _tiny_config()
+    assert isinstance(config.text_config, DeepseekV41TextConfig)
+    assert config.hidden_size == 64 and config.num_experts == 4
+    assert config.text_config.rope_yarn_factor == 4.0
+    assert config.text_config.rope_yarn_original_max_position_embeddings == 64
+    restored = DeepseekV41Config.from_dict(config.to_dict())
+    assert restored.text_config.compress_ratios == config.text_config.compress_ratios
+    assert restored.text_config.rope_yarn_factor == 4.0
+
+
+@needs_native
+def test_auto_classes_resolve_to_the_native_model():
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    assert register_deepseek_v41() is not None
+    assert register_deepseek_v41() is not None  # idempotent
+    config = AutoConfig.for_model("deepseek_v41", text_config = _tiny_config().text_config.to_dict())
+    assert type(config) is DeepseekV41Config
+    model = AutoModelForCausalLM.from_config(config)
+    assert type(model).__name__ == "DeepseekV41ForCausalLM"
+
+
+def test_sparse_attn_reference_matches_a_per_query_loop():
+    torch.manual_seed(0)
+    b, s, h, d, n, k = 2, 5, 3, 8, 7, 4
+    q, kv = torch.randn(b, s, h, d), torch.randn(b, n, d)
+    sink = torch.randn(h)
+    idx = torch.randint(-1, n, (b, s, k), dtype = torch.int32)
+    idx[0, 0] = -1  # no valid slot: zeros (kernel.py's finite running max)
+    out = dsv41.sparse_attn_reference(q, kv, sink, idx, 0.3)
+    for bi in range(b):
+        for si in range(s):
+            keep = idx[bi, si][idx[bi, si] >= 0].long()
+            if keep.numel() == 0:
+                assert torch.equal(out[bi, si], torch.zeros(h, d))
+                continue
+            scores = (q[bi, si] @ kv[bi, keep].T) * 0.3
+            probs = torch.cat([scores, sink[:, None]], -1).softmax(-1)[:, :-1]
+            torch.testing.assert_close(out[bi, si], probs @ kv[bi, keep], rtol = 1e-5, atol = 1e-6)
+
+
+def test_window_indices_follow_the_reference_prefill_rule():
+    got = dsv41._window_idxs_cpu(3, 5)
+    expected = torch.tensor(
+        [[0, -1, -1], [0, 1, -1], [0, 1, 2], [1, 2, 3], [2, 3, 4]], dtype = torch.int32
+    )
+    assert torch.equal(got, expected)
+
+
+def test_candidate_blocks_pin_the_newest_block_and_drop_unreachable_ones():
+    inf = float("-inf")
+    logits = torch.tensor(
+        [[5.0, 4.0, 1.0, 0.5, 9.0, inf]]
+    )  # positions 0..5, block size 2, reachable 0..4
+    keep = dsv41.select_candidate_blocks(logits, torch.tensor([[5]]), topk_blocks = 2, block_size = 2)
+    # block 2 holds position 4 (the newest) and is pinned; block 0 outscores block 1
+    assert keep.tolist() == [[True, True, False, False, True, True]]
+
+
+def test_hyper_connection_mix_is_doubly_stochastic():
+    config = _tiny_config().text_config
+    hc = dsv41.DeepseekV41HyperConnection(config)
+    torch.nn.init.normal_(hc.fn, std = 0.5)
+    pre, post, comb = hc(torch.randn(2, 3, config.hc_mult, config.hidden_size))
+    # Sinkhorn ends on a column normalization (kernel.py:458-462): columns sum to 1, rows close to it after 20 steps
+    torch.testing.assert_close(comb.sum(-2), torch.ones(2, 3, 4), atol = 1e-5, rtol = 0)
+    torch.testing.assert_close(comb.sum(-1), torch.ones(2, 3, 4), atol = 0.1, rtol = 0)
+    assert bool((pre > 0).all()) and bool((post >= 0).all()) and bool((post <= 2).all())
+
+
+def test_engram_layout_hands_out_distinct_primes_with_cumulative_offsets():
+    primes, offsets = dsv41.engram_layout((1, 4), 3, 2, 101)
+    flat = [p for layer in primes for per in layer for p in per]
+    assert len(set(flat)) == len(flat) and all(dsv41._is_prime(p) and p > 100 for p in flat)
+    for layer_primes, layer_offsets in zip(primes, offsets):
+        sizes = [p for per in layer_primes for p in per]
+        assert list(layer_offsets) == [sum(sizes[:i]) for i in range(len(sizes))]
+
+
+def test_engram_hashes_stop_at_the_row_start_and_at_padding():
+    model = _tiny_model()
+    hash_state = model.model.ngram_hash
+    ids = torch.randint(0, 512, (1, 6))
+    mask = torch.tensor([[True, True, True, False, True, True]])
+    full, masked = hash_state(ids), hash_state(ids, mask)
+    assert torch.equal(full[:, :3], masked[:, :3])  # before the pad: same history
+    assert not torch.equal(full[:, 4], masked[:, 4])  # after it: the look-back is cut
+    first = hash_state(ids[:, :1])
+    assert torch.equal(first[0, 0], full[0, 0])  # position 0 hashes only padding history either way
+
+
+def test_training_forward_backward_reaches_every_trainable_part():
+    model = _tiny_model().train()
+    ids = torch.randint(0, 512, (2, 24))
+    out = model(input_ids = ids, labels = ids)
+    assert torch.isfinite(out.loss)
+    out.loss.backward()
+    graded = {
+        n
+        for n, p in model.named_parameters()
+        if p.grad is not None and float(p.grad.abs().sum()) > 0
+    }
+    for needle in (
+        "self_attn.q_a_proj",
+        "self_attn.kv_proj",
+        "self_attn.o_a_proj",
+        "self_attn.sinks",
+        "compressor.kv_proj",
+        "compressor.gate_proj",
+        "engram.wkv",
+        "experts.gate_up_proj",
+        "shared_experts.down_proj",
+        "attn_hc.fn",
+        "lm_head",
+    ):
+        assert any(needle in n for n in graded), needle
+    # selection only: the indexer and the router's correction bias get no gradient from the LM loss
+    assert not any(".indexer." in n or "e_score_correction_bias" in n for n in graded)
+
+
+def test_save_and_reload_keep_the_logits(tmp_path):
+    from transformers import AutoModelForCausalLM
+
+    register_deepseek_v41()
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 20))
+    with torch.no_grad():
+        before = model(input_ids = ids).logits
+    model.save_pretrained(tmp_path)
+    if dsv41.has_core_model_loading():
+        # transformers 5 writes the released key names back (the renames run in reverse)
+        from safetensors import safe_open
+        with safe_open(os.path.join(tmp_path, "model.safetensors"), "pt") as f:
+            keys = set(f.keys())
+        assert not any("$" in k for k in keys)
+    loaded = AutoModelForCausalLM.from_pretrained(tmp_path, dtype = torch.float32).eval()
+    loaded.bind_token_map([i % 97 for i in range(512)])
+    with torch.no_grad():
+        after = loaded(input_ids = ids).logits
+    assert torch.equal(before, after)
+
+
+def test_released_layout_is_refused_without_core_model_loading(tmp_path, monkeypatch):
+    from safetensors.torch import save_file
+
+    _tiny_config().save_pretrained(tmp_path)
+    save_file({"embed.weight": torch.zeros(2, 2)}, os.path.join(tmp_path, "model.safetensors"))
+    monkeypatch.setattr(dsv41, "has_core_model_loading", lambda: False)
+    with pytest.raises(RuntimeError, match = "released layout"):
+        dsv41.DeepseekV41ForCausalLM.from_pretrained(tmp_path)
+
+
+def test_packed_position_ids_are_refused():
+    model = _tiny_model()
+    ids = torch.randint(0, 512, (1, 8))
+    with pytest.raises(NotImplementedError, match = "packed"):
+        model(input_ids = ids, position_ids = torch.tensor([[0, 1, 2, 3, 0, 1, 2, 3]]))

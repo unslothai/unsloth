@@ -31,7 +31,6 @@ renaming table and existing Unsloth / unsloth_zoo hooks (non-reentrant checkpoin
 ``shared`` group state, grouped LoRA for ``o_a_proj``, the engram table store) apply unchanged.
 """
 
-import importlib.util
 import math
 import os
 from functools import lru_cache
@@ -960,6 +959,16 @@ def _checkpoint_key_names(path, **hub_kwargs):
     return None
 
 
+def has_core_model_loading():
+    """transformers 5's renaming / merging loader. Checked by attribute: on transformers 4 other packages can leave a
+    placeholder ``transformers.core_model_loading`` module (no spec) behind."""
+    try:
+        import transformers.core_model_loading as core
+    except Exception:
+        return False
+    return hasattr(core, "WeightConverter") and hasattr(core, "WeightRenaming")
+
+
 def _released_layout(names):
     return bool(names) and ("embed.weight" in names or any(n.startswith("layers.") for n in names))
 
@@ -1002,7 +1011,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         # The released files use DeepSeek's own key names and per-expert weights; only transformers 5's
         # core_model_loading can rename + stack them while loading. Older releases would silently skip every
         # tensor, so refuse instead.
-        if importlib.util.find_spec("transformers.core_model_loading") is None:
+        if not has_core_model_loading():
             hub = {
                 k: kwargs[k]
                 for k in ("cache_dir", "token", "revision", "subfolder", "local_files_only")
@@ -1089,6 +1098,10 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
     def bind_tokenizer(self, tokenizer):
         if self.ngram_hash is not None:
             self.ngram_hash.bind_tokenizer(tokenizer)
+
+    def bind_token_map(self, token_map):
+        if self.ngram_hash is not None:
+            self.ngram_hash.bind_token_map(token_map)
 
     def _maybe_autobind(self):
         if self.ngram_hash is None or self.ngram_hash.bound:
@@ -1197,6 +1210,9 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
 
     def bind_tokenizer(self, tokenizer):
         self.model.bind_tokenizer(tokenizer)
+
+    def bind_token_map(self, token_map):
+        self.model.bind_token_map(token_map)
 
     def forward(
         self,
