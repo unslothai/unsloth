@@ -519,9 +519,11 @@ def test_pinned_turns_stay_verbatim_inside_the_summarised_range():
     pinned = chat[1]
     compacted = cloud_compaction.apply_summary(chat, "sum", 4, keep_ids = {id(pinned)})
     assert compacted[0] is chat[0] and compacted[0]["content"] == "Answer in French."
-    assert compacted[1]["role"] == "user" and compacted[1]["content"].endswith("sum")
+    # Quoted in the summary turn, so user and assistant turns still alternate.
+    assert compacted[1]["role"] == "user" and pinned["content"].strip() in compacted[1]["content"]
     assert compacted[2] == {"role": "assistant", "content": cloud_compaction.SUMMARY_ACK}
-    assert compacted[3] is pinned and compacted[-1] is chat[-1] and len(compacted) == 5
+    assert compacted[3] is chat[-1] and len(compacted) == 4
+    assert [m["role"] for m in compacted[1:]] == ["user", "assistant", "user"]
     assert cloud_compaction.summary_turn_ids(compacted) == {id(compacted[1]), id(compacted[2])}
 
 

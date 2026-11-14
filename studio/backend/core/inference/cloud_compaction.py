@@ -494,11 +494,17 @@ def apply_summary(
     keep_ids: Optional[set[int]] = None,
 ) -> list[dict]:
     """``messages`` with its first ``covered`` non-system turns replaced by a summary turn and its
-    acknowledgement, placed after the system prompt. Kept dicts are the same objects, so callers
-    can tell what left by identity."""
+    acknowledgement, placed after the system prompt. Pinned instructions in that range are quoted
+    verbatim in the summary turn: kept as messages they would follow it without their replies, and
+    strict templates reject two user turns in a row. Kept dicts are the same objects."""
     keep_ids = keep_ids or set()
+    body = [m for m in messages if m.get("role") not in ("system", "developer")]
+    pinned = [message_text(m).strip() for m in body[:covered] if id(m) in keep_ids]
+    block = summary_block(summary)
+    if any(pinned):
+        block += "\n\n## Instructions kept word for word\n" + "\n\n".join(p for p in pinned if p)
     turns = [
-        {"role": "user", "content": summary_block(summary)},
+        {"role": "user", "content": block},
         {"role": "assistant", "content": SUMMARY_ACK},
     ]
     result: list[dict] = []
@@ -511,9 +517,8 @@ def apply_summary(
             result.extend(turns)
             turns = []
         seen += 1
-        if seen <= covered and id(message) not in keep_ids:
-            continue
-        result.append(message)
+        if seen > covered:
+            result.append(message)
     return result + turns
 
 
