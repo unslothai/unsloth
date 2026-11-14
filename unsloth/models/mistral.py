@@ -338,7 +338,7 @@ def MistralForCausalLM_fast_forward(
             attentions = outputs.attentions,
         )
 
-    if bsz == 1 and q_len == 1:
+    if bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
         logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
         logits = logits.unsqueeze(0).unsqueeze(0)
     elif num_logits_to_keep != 0:
