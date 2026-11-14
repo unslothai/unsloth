@@ -454,6 +454,8 @@ def test_shared_group_state_survives_accelerate_device_hooks(monkeypatch, skip_s
     skip = list(dsv41.DeepseekV41PreTrainedModel._skip_keys_device_placement)
     if not skip_shared:
         skip = [k for k in skip if k != "shared"]
+        # the group state is not a dict, so the hooks pass it through regardless; the flip needs the old dict
+        monkeypatch.setattr(dsv41, "DeepseekV41GroupState", dict)
     for layer in model.model.layers:
         accelerate_hooks.add_hook_to_module(
             layer, accelerate_hooks.AlignDevicesHook(execution_device = "cpu", skip_keys = skip)
@@ -774,3 +776,58 @@ def test_a_flat_text_config_loads_into_the_composite(tmp_path):
     loaded.bind_token_map([i % 97 for i in range(512)])
     with torch.no_grad():
         assert torch.equal(loaded(input_ids = ids).logits, before)
+
+
+def _fsdp2_style_input_rebuild(model):
+    """What FSDP2's _cast_forward_inputs does to every fully_shard'ed layer's inputs: torch.distributed.utils.
+    _apply_to_tensors rebuilds each dict (subclasses included); other objects pass through."""
+    from torch.distributed.utils import _apply_to_tensors
+
+    def hook(module, args, kwargs):
+        return _apply_to_tensors(lambda t: t, (args, kwargs))
+
+    return [layer.register_forward_pre_hook(hook, with_kwargs = True) for layer in model.model.layers]
+
+
+def test_group_state_survives_fsdp2_input_casting(monkeypatch):
+    pytest.importorskip("torch.distributed.utils")
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 16))
+    with torch.no_grad():
+        want = model(input_ids = ids).logits
+    handles = _fsdp2_style_input_rebuild(model)
+    with torch.no_grad():
+        assert torch.equal(model(input_ids = ids).logits, want)
+    # Flip: the dict the model used to pass is rebuilt per layer, so the readers miss the sources' writes.
+    monkeypatch.setattr(dsv41, "DeepseekV41GroupState", dict)
+    with pytest.raises(KeyError):
+        with torch.no_grad():
+            model(input_ids = ids)
+    for h in handles:
+        h.remove()
+
+
+def test_group_state_survives_fsdp2_input_casting_under_gradient_checkpointing():
+    """unsloth_zoo replays each checkpointed layer with a copy of the group state; the copy is a group state too."""
+    from unsloth_zoo.temporary_patches.deepseek_v41 import patch_deepseek_v41_gradient_checkpointing
+
+    patch_deepseek_v41_gradient_checkpointing()
+    ids = torch.randint(0, 512, (2, 16))
+
+    def grads(model):
+        model.train()
+        out = model(input_ids = ids, labels = ids)
+        out.loss.backward()
+        return out.loss.detach(), {
+            n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None
+        }
+
+    loss0, g0 = grads(_tiny_model())
+    model = _tiny_model()
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    _fsdp2_style_input_rebuild(model)
+    loss1, g1 = grads(model)
+    torch.testing.assert_close(loss0, loss1)
+    assert g0.keys() == g1.keys()
+    for name in g0:
+        torch.testing.assert_close(g0[name], g1[name], rtol = 1e-4, atol = 1e-6, msg = name)

@@ -79,6 +79,7 @@ __all__ = [
     "DeepseekV41Experts",
     "DeepseekV41EngramEmbedding",
     "DeepseekV41NgramHashState",
+    "DeepseekV41GroupState",
     "sparse_attn",
     "sparse_attn_reference",
     "DSV41_STATS",
@@ -1010,6 +1011,61 @@ class DeepseekV41Engram(nn.Module):
 # ----------------------------------------------------------------------------------------------------------------
 # Decoder layer and models
 # ----------------------------------------------------------------------------------------------------------------
+class DeepseekV41GroupState:
+    """The per-forward group state that KV / index source layers publish and the later layers of their group read:
+    compressed KV, indexer keys, top-k positions, candidate blocks (model.py:1169-1183). Deliberately not a dict:
+    FSDP2's input casting (torch.distributed.utils._apply_to_tensors) and accelerate's device hooks rebuild dict
+    arguments, subclasses included, so a layer's writes would land in a copy the next layer never sees. Also the
+    pipeline-parallel handoff: ``to_tensors`` / ``from_tensors`` (see ``pipeline_handoff_keys``)."""
+
+    __slots__ = ("_d",)
+
+    def __init__(self, items = None):
+        self._d = dict(items) if items else {}
+
+    def __getitem__(self, key):
+        return self._d[key]
+
+    def __setitem__(self, key, value):
+        self._d[key] = value
+
+    def __contains__(self, key):
+        return key in self._d
+
+    def __len__(self):
+        return len(self._d)
+
+    def get(
+        self,
+        key,
+        default = None,
+    ):
+        return self._d.get(key, default)
+
+    def keys(self):
+        return self._d.keys()
+
+    def items(self):
+        return self._d.items()
+
+    def clear(self):
+        self._d.clear()
+
+    def update(self, other):
+        self._d.update(other.items() if isinstance(other, DeepseekV41GroupState) else other)
+
+    def copy(self):
+        return DeepseekV41GroupState(self._d)
+
+    def to_tensors(self, keys = None):
+        """{name: tensor} to send to the next pipeline stage (all keys, or ``keys``)."""
+        return {k: v for k, v in self._d.items() if keys is None or k in keys}
+
+    @classmethod
+    def from_tensors(cls, tensors):
+        return cls(tensors)
+
+
 class DeepseekV41DecoderLayer(GradientCheckpointingLayer):
     """model.py:909-996. Each sublayer's hyper-connection coefficients are used by the *next* sublayer: attention
     collapses the stream with the previous FFN's ``pre`` mix, the FFN with this attention's."""
@@ -1038,7 +1094,7 @@ class DeepseekV41DecoderLayer(GradientCheckpointingLayer):
         **kwargs,
     ):
         if shared is None:
-            shared = {}
+            shared = DeepseekV41GroupState()
         x = hidden_states
         if self.engram is not None and engram_rows is not None:
             x = self.engram(x, engram_rows, engram_mask)
@@ -1502,7 +1558,7 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         h = inputs_embeds.unsqueeze(2).repeat(1, 1, self.hc_mult, 1)
         pre_mix = h.new_zeros(bsz, seqlen, self.hc_mult, dtype = torch.float32)
         pre_mix[:, :, 0] = 1.0  # model.py:1162-1166
-        shared = {}
+        shared = DeepseekV41GroupState()
         all_hidden = () if output_hidden_states else None
         for layer in self.layers:
             if output_hidden_states:
