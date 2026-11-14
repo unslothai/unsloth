@@ -922,6 +922,43 @@ def test_pipeline_stages_with_the_group_state_handoff_match_the_whole_model(cut)
         torch.testing.assert_close(got[name], want[name], rtol = 1e-4, atol = 1e-6, msg = name)
 
 
+@pytest.mark.parametrize("install", [True, False])
+def test_building_the_model_installs_grouped_lora_for_plain_peft(monkeypatch, install):
+    """The CPU backend (and plain transformers + PEFT) never ran the zoo patch that gives o_a_proj a grouped LoRA,
+    so PEFT's plain LoRA failed with a shape error. Building the attention installs it. Flip: without it, the
+    plain LoRA's shape error."""
+    peft = pytest.importorskip("peft")
+    pytest.importorskip("unsloth_zoo.temporary_patches.deepseek_v41")
+    from peft.tuners.lora.model import LoraModel
+
+    create = LoraModel.__dict__["_create_new_module"]
+    func = getattr(create, "__func__", create)
+    while getattr(func, "_unsloth_dsv41_grouped", False):
+        func = func.__wrapped__  # back to PEFT's own dispatcher
+    monkeypatch.setattr(LoraModel, "_create_new_module", staticmethod(func))
+    monkeypatch.setattr(dsv41, "_GROUPED_LORA_READY", [False])
+    if not install:
+        monkeypatch.setattr(dsv41, "ensure_grouped_lora", lambda: None)
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 16))
+    lora = peft.get_peft_model(
+        model, peft.LoraConfig(r = 4, target_modules = ["self_attn.o_a_proj"], init_lora_weights = False)
+    ).eval()
+    if not install:
+        with pytest.raises(RuntimeError, match = "size"):
+            with torch.no_grad():
+                lora(input_ids = ids)
+        return
+    assert (
+        type(lora.base_model.model.model.layers[0].self_attn.o_a_proj).__name__
+        == "DeepseekV41GroupedLoraLinear"
+    )
+    with torch.no_grad():
+        adapted = lora(input_ids = ids).logits
+        merged = lora.merge_and_unload()(input_ids = ids).logits
+    torch.testing.assert_close(adapted, merged, rtol = 1e-4, atol = 1e-4)
+
+
 def test_cpu_backend_import_registers_deepseek_v41(tmp_path):
     """The CPU fallback never runs _gpu_init, where the native registration hook lived: AutoConfig rejected
     deepseek_v41 there. It is installed on both backends now."""

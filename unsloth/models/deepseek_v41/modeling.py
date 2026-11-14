@@ -259,6 +259,24 @@ class DeepseekV41GroupedLinear(nn.Linear):
         return out
 
 
+_GROUPED_LORA_READY = [False]
+
+
+def ensure_grouped_lora():
+    """Install unsloth_zoo's grouped LoRA for DeepseekV41GroupedLinear (PEFT would wrap o_a_proj with a plain LoRA
+    whose delta multiplies every group by the whole stacked weight, a shape error). Unsloth's GPU import applies the
+    zoo patches; the CPU backend, plain transformers + PEFT and distributed launchers may not, so building the
+    attention installs it. Idempotent; a no-op without unsloth_zoo."""
+    if _GROUPED_LORA_READY[0]:
+        return
+    _GROUPED_LORA_READY[0] = True
+    try:
+        from unsloth_zoo.temporary_patches.deepseek_v41 import patch_deepseek_v41_grouped_lora
+        patch_deepseek_v41_grouped_lora()
+    except Exception:
+        pass
+
+
 def grouped_projection(module, x, out_per_group):
     """``wo_a`` on x [..., G, in_g] -> [..., G, out_per_group]. A DeepseekV41GroupedLinear (or a LoRA wrapper around
     one) applies each group's block itself. A plain Linear in its place (bitsandbytes' Linear4bit swap when a load did
@@ -481,6 +499,7 @@ class DeepseekV41Attention(nn.Module):
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.n_heads * self.head_dim, bias = False)
         self.kv_proj = nn.Linear(config.hidden_size, self.head_dim, bias = False)
         self.kv_norm = DeepseekV41RMSNorm(self.head_dim, config.rms_norm_eps)
+        ensure_grouped_lora()
         self.o_a_proj = DeepseekV41GroupedLinear(
             self.n_heads * self.head_dim // self.n_groups,
             self.n_groups * self.o_lora_rank,
