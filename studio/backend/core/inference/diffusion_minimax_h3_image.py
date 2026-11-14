@@ -66,6 +66,7 @@ H3_IMAGE_MIN_GENERATION_AREA_RANGE = (1024, 4096 * 4096)
 H3_IMAGE_MAX_SEQUENCE_LENGTH = 4096
 H3_IMAGE_TEXT_ENCODER_LAYER = 50
 H3_IMAGE_MAX_REFERENCES = 16
+H3_IMAGE_DEFAULT_SIZE = 2048
 H3_IMAGE_CANVAS_MULTIPLE = 32
 H3_IMAGE_VAE_SCALE = 16
 H3_IMAGE_PIXEL_MEAN = (0.485, 0.456, 0.406)
@@ -1572,9 +1573,13 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         generators = generator if isinstance(generator, list) else [generator] * len(jobs)
         if len(generators) != len(jobs):
             raise ValueError(f"got {len(generators)} generators for {len(jobs)} images")
-        height = int(height or 2048)
-        width = int(width or 2048)
         vae_refs, vision_refs = self.prepare_references(image)
+        # no size: an edit renders at Image 1's reference size, text-to-image at 2048x2048
+        default_w, default_h = (
+            vae_refs[0].size if vae_refs else (H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE)
+        )
+        height = int(height or default_h)
+        width = int(width or default_w)
         self._interrupt = False
         images = []
         for index, (text, gen) in enumerate(zip(jobs, generators)):

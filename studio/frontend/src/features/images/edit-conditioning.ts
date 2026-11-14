@@ -200,14 +200,39 @@ function joinWords(words: readonly string[]): string {
 
 export type EditSizing = "source" | "custom";
 
+/** MiniMax-H3-Image's edit size: Image 1 at the size its reference latent is encoded at (short edge clamped to
+ *  1024..2048, aspect kept, both sides on the 32 grid). Mirrors the backend's size_short_edge. */
+export function h3ImageSourceSize(width: number, height: number): { width: number; height: number } {
+  const m = 32;
+  const short = Math.min(width, height);
+  const scale = Math.min(Math.max(short, 1024), 2048) / short;
+  // Python's round(): halves go to the even neighbour
+  const round = (x: number) => {
+    const f = Math.floor(x);
+    const d = x - f;
+    if (d > 0.5) return f + 1;
+    if (d < 0.5) return f;
+    return f % 2 === 0 ? f : f + 1;
+  };
+  return {
+    width: Math.max(m, round((width * scale) / m) * m),
+    height: Math.max(m, round((height * scale) / m) * m),
+  };
+}
+
 export function resolveEditSize(
   sizing: EditSizing,
   source: { width: number; height: number } | null,
   matchResolution: number,
   custom: { width: number; height: number },
   limits: SizeLimits,
+  family?: string | null,
 ): { width: number; height: number } {
   if (sizing === "source" && source && source.width > 0 && source.height > 0) {
+    if (isMinimaxH3Image(family)) {
+      const native = h3ImageSourceSize(source.width, source.height);
+      return fitSize(native.width, native.height, limits);
+    }
     return matchSourceSize(
       source.width,
       source.height,
