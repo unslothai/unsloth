@@ -33,6 +33,7 @@ import {
   SelectContent,
   SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectSeparator,
   SelectTrigger,
   SelectValue,
@@ -53,13 +54,13 @@ import {
   ArrowLeftIcon,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { useIsAccountOwner, useLoginMode } from "@/features/auth";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
-import { ConnectionGallery } from "./connection-gallery";
+import { ConnectionGallery, buildConnectionGallery } from "./connection-gallery";
 import { ConnectionModelList } from "./connection-model-list";
 import { ConnectionRow, ConnectionStatusLine } from "./connection-row";
 import {
@@ -486,9 +487,11 @@ export function ChatProvidersSettings({
       ...visible.filter(isDecision),
     ];
   }, [registry]);
-  const firstBelowFoldProviderType = menuRegistry.find((entry) =>
-    isDecisionConnection({ providerType: entry.provider_type }),
-  )?.provider_type;
+  // The form's picker lists what the gallery lists, in the same groups.
+  const pickerGroups = useMemo(
+    () => buildConnectionGallery(menuRegistry),
+    [menuRegistry],
+  );
   const selectedProviderContract = registryByType.get(
     toExternalBackendProviderType(providerType),
   );
@@ -2020,58 +2023,34 @@ export function ChatProvidersSettings({
                   </SelectTrigger>
                   {/* No scroll chevrons: the list scrolls by wheel, trackpad and keyboard. */}
                   <SelectContent className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden">
-                    <SelectGroup>
-                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
-                        <span className="flex min-w-0 items-center gap-2">
-                          <ApiProviderLogo
-                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
-                            className="size-4"
-                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
-                          />
-                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
-                        </span>
-                      </SelectItem>
-                      {CUSTOM_PROVIDER_PRESETS.map((preset) => (
-                        <SelectItem
-                          key={preset.providerType}
-                          value={preset.providerType}
-                        >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <ApiProviderLogo
-                              providerType={preset.providerType}
-                              className="size-4"
-                              title={preset.displayName}
-                            />
-                            <span className="truncate">{preset.displayName}</span>
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                    <SelectSeparator />
-                    <SelectGroup>
-                      {menuRegistry.map((entry) => (
-                          <SelectItem
-                            key={entry.provider_type}
-                            value={entry.provider_type}
-                            ref={
-                              entry.provider_type === firstBelowFoldProviderType
-                                ? capProviderMenuAtItem
-                                : undefined
-                            }
-                          >
-                            <span className="flex min-w-0 items-center gap-2">
-                              <ApiProviderLogo
-                                providerType={entry.provider_type}
-                                className="size-4"
-                                title={entry.display_name}
-                              />
-                              <span className="truncate">
-                                {entry.provider_type === "opencode" ? "OpenCode" : entry.display_name}
+                    {pickerGroups.map((group, groupIndex) => (
+                      <Fragment key={group.id}>
+                        {groupIndex > 0 ? <SelectSeparator /> : null}
+                        <SelectGroup>
+                          <SelectLabel>{group.label}</SelectLabel>
+                          {group.items.map((item, itemIndex) => (
+                            <SelectItem
+                              key={item.providerType}
+                              value={item.providerType}
+                              ref={
+                                group.id === "even-more" && itemIndex === 0
+                                  ? capProviderMenuAtItem
+                                  : undefined
+                              }
+                            >
+                              <span className="flex min-w-0 items-center gap-2">
+                                <ApiProviderLogo
+                                  providerType={item.providerType}
+                                  className="size-4"
+                                  title={item.name}
+                                />
+                                <span className="truncate">{item.name}</span>
                               </span>
-                            </span>
-                          </SelectItem>
-                        ))}
-                    </SelectGroup>
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </Fragment>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -3003,7 +2982,7 @@ export function ChatProvidersSettings({
         </SettingsSection>
       </div>
 
-      <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
+      <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3 pb-8">
         <ConnectionGallery
           registry={menuRegistry}
           connectedTypes={connectedTypes}

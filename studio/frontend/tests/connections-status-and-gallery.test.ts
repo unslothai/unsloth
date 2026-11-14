@@ -198,11 +198,11 @@ test("the gallery leads with popular providers and always offers the self-hosted
   );
   assert.deepEqual(
     groups[0].items.map((item) => item.providerType),
-    ["openai_codex", "openai", "anthropic", "deepseek"],
+    ["openai_codex", "openai", "anthropic", "deepseek", "custom"],
   );
   assert.deepEqual(
     groups[1].items.map((item) => item.providerType),
-    ["custom", "llama_cpp", "vllm", "sglang", "ollama"],
+    ["llama_cpp", "vllm", "sglang", "ollama"],
   );
   assert.deepEqual(
     groups[2].items.map((item) => item.name),

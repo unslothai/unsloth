@@ -80,14 +80,14 @@ export function buildConnectionGallery(
       name: preset.displayName as string,
     }),
   );
-  // Custom leads: it is the one most self-hosted setups end up using.
-  const local: ConnectionGalleryItem[] = [
-    {
-      providerType: LEGACY_CUSTOM_PROVIDER_TYPE,
-      name: CUSTOM_PROVIDER_DISPLAY_NAME,
-    },
-    ...presets.filter((item) => !isCloudPresetProviderType(item.providerType)),
-  ];
+  // Custom sits with the popular ones: most self-hosted setups end up on it.
+  popular.push({
+    providerType: LEGACY_CUSTOM_PROVIDER_TYPE,
+    name: CUSTOM_PROVIDER_DISPLAY_NAME,
+  });
+  const local = presets.filter(
+    (item) => !isCloudPresetProviderType(item.providerType),
+  );
   const chat = registry.filter(
     (entry) =>
       !popularTypes.has(entry.provider_type) &&
@@ -111,7 +111,7 @@ export function buildConnectionGallery(
     EVEN_MORE_PROVIDER_TYPES.has(item.providerType);
   const groups: ConnectionGalleryGroup[] = [
     { id: "popular", label: "Popular", items: popular.filter(matches) },
-    { id: "local", label: "Local and custom", items: local.filter(matches) },
+    { id: "local", label: "Local", items: local.filter(matches) },
     {
       id: "more",
       label: "More providers",
@@ -146,7 +146,6 @@ export function ConnectionGallery({
   return (
     <SettingsSection
       title="Add a connection"
-      description="Paste a key or point at your own server."
       action={
         <div className="relative w-60 max-sm:w-40">
           <HugeiconsIcon
@@ -220,8 +219,7 @@ export function ConnectionGallery({
                               title={item.name}
                               name={
                                 item.providerType ===
-                                  LEGACY_CUSTOM_PROVIDER_TYPE ||
-                                item.providerType === "sglang"
+                                LEGACY_CUSTOM_PROVIDER_TYPE
                                   ? undefined
                                   : item.name
                               }

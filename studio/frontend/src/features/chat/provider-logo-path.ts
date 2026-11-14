@@ -26,6 +26,7 @@ const CONNECTION_LOGO_PATHS = new Map([
   ["anthropic", "/provider-logos/claude.svg"],
   ["openrouter", "/provider-logos/openrouter-mark.svg"],
   ["vllm", "/provider-logos/vllm.svg"],
+  ["sglang", "/provider-logos/sglang.png"],
   ["ollama", "/provider-logos/ollama.svg"],
   ["llama_cpp", "/provider-logos/llama_cpp.svg"],
   ["liquid", "/provider-logos/liquid.svg"],
