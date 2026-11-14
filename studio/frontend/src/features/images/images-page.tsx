@@ -130,6 +130,7 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { type StripDropCue, useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaApiButton } from "@/components/media-api-button";
+import { adjacentGalleryId } from "./gallery-keyboard-navigation";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
 import {
@@ -1711,7 +1712,40 @@ const GalleryStripTile = memo(function GalleryStripTile({
       draggable={true}
       onDragStart={(event: DragEvent<HTMLElement>) => actions.get().tileProps(id).onDragStart(event)}
       onDragEnd={() => actions.get().tileProps(id).onDragEnd()}
-      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => actions.get().tileProps(id).onKeyDown(event)}
+      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => {
+        // Keep the existing Alt+arrow reorder shortcut, while plain arrows move
+        // selection and focus through the visible gallery tiles.
+        if (
+          event.currentTarget.contains(event.target as Node) &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          (event.key === "ArrowLeft" || event.key === "ArrowRight")
+        ) {
+          const strip = event.currentTarget.parentElement;
+          const tiles = strip
+            ? [...strip.querySelectorAll<HTMLElement>("[data-reorder-id]")]
+            : [];
+          const ids = tiles.flatMap((tile) =>
+            tile.dataset.reorderId ? [tile.dataset.reorderId] : [],
+          );
+          const nextId = adjacentGalleryId(
+            ids,
+            id,
+            event.key === "ArrowLeft" ? "previous" : "next",
+          );
+          const nextTile = nextId
+            ? tiles.find((tile) => tile.dataset.reorderId === nextId)
+            : null;
+          if (nextId && nextTile) {
+            event.preventDefault();
+            actions.get().select(nextId);
+            nextTile.querySelector<HTMLButtonElement>("button")?.focus();
+            return;
+          }
+        }
+        actions.get().tileProps(id).onKeyDown(event);
+      }}
       // Desktop only: a browser's own image menu works on these thumbnails, so keep it there.
       // Portalled children (the New project dialog) bubble here too: leave their menu alone.
       onContextMenu={(event) => {

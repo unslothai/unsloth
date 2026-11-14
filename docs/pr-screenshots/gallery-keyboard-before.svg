@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420">
+  <rect width="960" height="420" rx="24" fill="#10131a"/>
+  <text x="48" y="68" fill="#f5f7fb" font-family="Inter,Arial,sans-serif" font-size="30" font-weight="700">Images gallery · Before</text>
+  <text x="48" y="108" fill="#aeb7c8" font-family="Inter,Arial,sans-serif" font-size="20">Arrow keys do not move between generated images.</text>
+  <rect x="48" y="156" width="864" height="150" rx="18" fill="#1b2230" stroke="#394357" stroke-width="2"/>
+  <g stroke="#47536a" stroke-width="2">
+    <rect x="82" y="190" width="92" height="82" rx="10" fill="#7c4f65"/>
+    <rect x="196" y="190" width="92" height="82" rx="10" fill="#477b8c"/>
+    <rect x="310" y="190" width="92" height="82" rx="10" fill="#a16d3b"/>
+    <rect x="424" y="190" width="92" height="82" rx="10" fill="#52658f"/>
+  </g>
+  <rect x="196" y="190" width="92" height="82" rx="10" fill="none" stroke="#f5f7fb" stroke-width="3"/>
+  <text x="82" y="356" fill="#aeb7c8" font-family="Inter,Arial,sans-serif" font-size="19">Focus stays on the current tile.</text>
+</svg>
