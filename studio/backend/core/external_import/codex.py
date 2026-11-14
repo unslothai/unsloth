@@ -44,7 +44,9 @@ def _meta(path: Path) -> dict:
         payload = payload if isinstance(payload, dict) else {}
         # Only what is read below: the payload also carries the full base instructions.
         _META[path] = {
-            k: payload[k] for k in ("id", "cwd", "source", "history_base") if k in payload
+            k: payload[k]
+            for k in ("id", "cwd", "source", "history_base", "history_mode")
+            if k in payload
         }
     return _META[path]
 
@@ -201,8 +203,11 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         created_at_ms = messages[0]["createdAt"] if messages else file_created,
         updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
         messages = messages,
-        # Imports before completed items were read missed their turns: re-read them.
-        revision = f"{revision}:items" if reread else revision,
+        # Imports before completed items were read missed their turns: re-read them. Keyed on
+        # the file's own mode so a deleted base rollout cannot drop the tag.
+        revision = f"{revision}:items"
+        if reread or _meta(path).get("history_mode") == "paginated"
+        else revision,
         inherited = inherited,
         reread = frozenset(reread),
     )

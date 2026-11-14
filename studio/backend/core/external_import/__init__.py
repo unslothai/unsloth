@@ -234,6 +234,7 @@ def _reread_messages(
         )
     fresh = transcript.reread | {m["id"] for m in old[start:]}
     rows = {m["id"]: m for m in stored}
+    late = {m["id"]: m for m in _late_tool_results(transcript, stored)}
     pending = []
     for message in transcript.messages:
         row = rows.get(message["id"])
@@ -241,8 +242,7 @@ def _reread_messages(
             if message["id"] in fresh:
                 pending.append(message)
         elif row.get("parentId") != message.get("parentId"):
-            row = next(iter(_late_tool_results(transcript, [row])), row)
-            pending.append({**row, "parentId": message.get("parentId")})
+            pending.append({**late.get(row["id"], row), "parentId": message.get("parentId")})
     return pending
 
 
@@ -263,7 +263,7 @@ def _pending_messages(
     elif revision in transcript.earlier:
         ends = transcript.earlier[revision]
         pending = transcript.messages[ends[min(turns, len(ends) - 1)] :]
-    elif transcript.reread and revision.partition(":")[2] != transcript.revision.partition(":")[2]:
+    elif revision.partition(":")[2] != transcript.revision.partition(":")[2]:
         pending = _reread_messages(transcript, turns, revision, stored)
     else:
         pending = transcript.messages[transcript.inherited :]

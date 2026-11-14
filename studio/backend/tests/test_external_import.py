@@ -1008,10 +1008,14 @@ _PAGINATED_ROLLOUT = Path(__file__).parent / "fixtures" / "codex_paginated_rollo
 _PAGINATED_SID = "01a1d5af-1734-7651-b549-42d9e5803184"
 
 
-def _paginated_rollout(home, keep = lambda record: True):
+def _paginated_rollout(home, old = False):
+    """``old``: what the reader before completed items saw, so the import stores an untagged mark."""
     records = [json.loads(line) for line in _PAGINATED_ROLLOUT.read_text().splitlines()]
+    if old:
+        records = [r for r in records if r["payload"].get("type") != "item_completed"]
+        records[0]["payload"].pop("history_mode")
     name = f"rollout-2026-11-13T16-13-04-{_PAGINATED_SID}.jsonl"
-    return _write(home / "sessions" / "2026" / "11" / "13" / name, list(filter(keep, records)))
+    return _write(home / "sessions" / "2026" / "11" / "13" / name, records)
 
 
 def _turns(sid):
@@ -1053,9 +1057,7 @@ def _completed(
 
 
 def test_codex_reimport_brings_turns_an_older_import_missed(codex_home):
-    path = _paginated_rollout(
-        codex_home, keep = lambda r: r["payload"].get("type") != "item_completed"
-    )
+    path = _paginated_rollout(codex_home, old = True)
     assert run_import(codex.SOURCE).messages == 1
     _paginated_rollout(codex_home)
 
@@ -1069,7 +1071,7 @@ def test_codex_reimport_brings_turns_an_older_import_missed(codex_home):
 
 
 def _old_import(home):
-    _paginated_rollout(home, keep = lambda r: r["payload"].get("type") != "item_completed")
+    _paginated_rollout(home, old = True)
     run_import(codex.SOURCE)
     _paginated_rollout(home)
     tid = thread_id_for(codex.SOURCE, _PAGINATED_SID)
@@ -1125,7 +1127,7 @@ def test_an_empty_tool_output_still_completes_the_call(claude_home):
 
 
 def test_codex_revert_after_an_older_import_brings_the_missed_prefix(codex_home):
-    _paginated_rollout(codex_home, keep = lambda r: r["payload"].get("type") != "item_completed")
+    _paginated_rollout(codex_home, old = True)
     assert run_import(codex.SOURCE).messages == 1
     _paginated_rollout(codex_home)
     meta = {
@@ -1143,3 +1145,34 @@ def test_codex_revert_after_an_older_import_brings_the_missed_prefix(codex_home)
     )
     run_import(codex.SOURCE)
     assert _turns(_PAGINATED_SID) == [*_PAGINATED_TURNS[:4], ("user", "Try again")]
+
+
+def test_codex_deleting_the_base_rollout_keeps_studio_edits(codex_home):
+    base = _paginated_rollout(codex_home)
+    meta = {
+        "id": _PAGINATED_SID,
+        "cwd": "/Users/me/webshop",
+        "history_mode": "paginated",
+        "history_base": {"thread_id": _PAGINATED_SID, "end_ordinal_exclusive": 38},
+    }
+    call = {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c2"}
+    name = f"rollout-2026-11-14T10-00-00-{_PAGINATED_SID}_r2.jsonl"
+    _write(
+        codex_home / "sessions" / "2026" / "11" / "14" / name,
+        [
+            {**x_line("session_meta", meta), "ordinal": 38},
+            {**x_line("response_item", call, ts = "2026-11-14T10:00:01Z"), "ordinal": 39},
+        ],
+    )
+    run_import(codex.SOURCE)
+    tid = thread_id_for(codex.SOURCE, _PAGINATED_SID)
+    rows = _messages(codex.SOURCE, _PAGINATED_SID)
+    tip = next(m for m in rows if m["content"][0].get("toolCallId") == "c2")
+    edited = [{**tip["content"][0], "result": "edited in Studio"}]
+    studio_db.sync_chat_messages(tid, [{**tip, "content": edited}], prune_missing = False)
+
+    base.unlink()
+    run_import(codex.SOURCE)
+    after = {m["id"]: m for m in _messages(codex.SOURCE, _PAGINATED_SID)}
+    assert after[tip["id"]]["content"] == edited
+    assert len(after) == len(rows)
