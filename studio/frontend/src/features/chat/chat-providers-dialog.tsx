@@ -2654,7 +2654,7 @@ export function ChatProvidersSettings({
             <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={modelsPanelKey}
-                className="-mx-3 origin-top overflow-hidden px-3"
+                className="origin-top overflow-hidden"
                 initial={reduceMotion ? false : { opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={reduceMotion ? undefined : { opacity: 0, height: 0 }}

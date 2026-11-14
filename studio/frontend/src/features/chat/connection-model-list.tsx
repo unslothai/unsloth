@@ -118,8 +118,8 @@ export function ConnectionModelList({
       </div>
       <ul
         className={cn(
-          // Rows hang into the gutter so their hover pill lines text up with the page; scrolls past 10 rows.
-          "-mx-3 flex flex-col gap-0.5",
+          // Scrolls past 10 rows.
+          "flex flex-col gap-0.5",
           rows.length > 10 &&
             "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
         )}
@@ -137,6 +137,8 @@ export function ConnectionModelList({
               >
                 <Checkbox
                   id={`provider-model-${panelKey}-${index}`}
+                  // Solid fill and a firmer edge: the default box vanishes into the row's hover pill.
+                  className="border-foreground/30 bg-background dark:bg-background"
                   checked={selected.has(row.id)}
                   onCheckedChange={() => onToggle(row.id)}
                 />
