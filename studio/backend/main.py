@@ -1151,12 +1151,14 @@ async def lifespan(app: FastAPI):
     )
     # Persist only authenticated third-party usage; the monitor stays storage-agnostic until startup.
     from core.inference.api_monitor import api_monitor as _api_monitor
+    from utils.api_monitor_settings import apply_api_monitor_setting
     from storage.api_usage_db import (
         acquire_api_usage_writer as _acquire_api_usage_writer,
         enqueue_api_usage as _enqueue_api_usage,
         release_api_usage_writer as _release_api_usage_writer,
     )
 
+    apply_api_monitor_setting()
     _api_usage_writer_lease = _acquire_api_usage_writer()
     _api_usage_callback_lease = _api_monitor.acquire_terminal_callback(_enqueue_api_usage)
     yield

@@ -1737,6 +1737,47 @@ def _unload_idle_models() -> None:
     release_chat_after_kept_models()
 
 
+class ApiMonitorSettingsPayload(BaseModel):
+    """Owner preference for recording new API activity."""
+
+    enabled: StrictBool
+
+
+class ApiMonitorSettingsResponse(BaseModel):
+    """Configured and effective recording state, including the environment override."""
+
+    enabled: bool
+    effective_enabled: bool
+    disabled_by_env: bool
+
+
+def _api_monitor_settings_response() -> ApiMonitorSettingsResponse:
+    """Describe the stored preference and the process-wide monitor state."""
+    from core.inference.api_monitor import _api_monitor_disabled, api_monitor
+    from utils.api_monitor_settings import configured_api_monitor_enabled
+
+    return ApiMonitorSettingsResponse(
+        enabled = configured_api_monitor_enabled(),
+        effective_enabled = api_monitor.enabled,
+        disabled_by_env = _api_monitor_disabled(),
+    )
+
+
+@_shared_settings_router.get("/api-monitor", response_model = ApiMonitorSettingsResponse)
+def get_api_monitor_settings() -> ApiMonitorSettingsResponse:
+    """Read the installation-wide API recording setting."""
+    return _api_monitor_settings_response()
+
+
+@_owner_settings_router.put("/api-monitor", response_model = ApiMonitorSettingsResponse)
+def update_api_monitor_settings(payload: ApiMonitorSettingsPayload) -> ApiMonitorSettingsResponse:
+    """Save the owner's setting and apply it to newly started requests."""
+    from utils.api_monitor_settings import set_api_monitor_enabled
+
+    set_api_monitor_enabled(payload.enabled)
+    return _api_monitor_settings_response()
+
+
 @_shared_settings_router.get("/upload-limit", response_model = UploadLimitResponse)
 def get_upload_limit(current_subject: str = Depends(get_current_subject)) -> UploadLimitResponse:
     return _upload_limit_response(get_upload_limit_mb())

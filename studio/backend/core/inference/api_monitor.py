@@ -351,8 +351,14 @@ class ApiMonitor:
 
     @property
     def enabled(self) -> bool:
-        """Read-only; the kill switch is a startup env var, so live monitors cannot flip it."""
-        return self._enabled
+        """Return whether new requests are recorded."""
+        with self._lock:
+            return self._enabled
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Change admission for new entries while letting existing requests finish."""
+        with self._lock:
+            self._enabled = enabled
 
     def set_terminal_callback(self, callback: Optional[TerminalCallback]) -> None:
         """Replace the unleased terminal sink used by tests and embedders."""
@@ -410,6 +416,8 @@ class ApiMonitor:
             context_length = context_length,
         )
         with self._lock:
+            if not self._enabled:
+                return ""
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
             remaining = _MAX_PROMPT_BYTES
@@ -459,6 +467,8 @@ class ApiMonitor:
             subject = subject,
         )
         with self._lock:
+            if not self._enabled:
+                return ""
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
         return entry.id
