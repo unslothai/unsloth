@@ -393,6 +393,13 @@ def _sentence(text: str) -> str:
     return text[:1].upper() + text[1:] if text else text
 
 
+# macOS answers "No route to host" for every outgoing LAN connection until the app has Local Network access.
+LOCAL_NETWORK_HINT = (
+    "on macOS, allow Local Network access for the app running Unsloth in "
+    "System Settings > Privacy & Security > Local Network"
+)
+
+
 def _unreachable_reason(st: Any) -> str:
     if not isinstance(st, dict):
         return "not found on the LAN"
@@ -405,6 +412,8 @@ def _unreachable_reason(st: Any) -> str:
     if "certificate" in low or "ssl" in low or "tls" in low:
         return f"TLS refused: {raw}; re-pair it if it was reset"
     if "no route" in low or "unreachable" in low or "errno 113" in low:
+        if sys.platform == "darwin":
+            return f"no route to it on the network; {LOCAL_NETWORK_HINT}"
         return "no route to it on the network"
     return raw or "no answer"
 

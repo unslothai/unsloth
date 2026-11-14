@@ -74,6 +74,65 @@ def test_lost_connection_names_the_workers_of_the_split(monkeypatch):
         assert len(text) <= 200  # the chat error bubble shows two lines
 
 
+def test_a_non_streaming_chat_names_the_workers_when_the_split_dies(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import ChatCompletionRequest
+    from state.tool_policy import reset_tool_policy
+
+    def _generate(**kwargs):
+        raise RuntimeError("Lost connection to llama-server")
+        yield
+
+    async def _no_auto_switch(*_args, **_kwargs):
+        return None
+
+    class _Request:
+        state = SimpleNamespace(skip_api_monitor = True)
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope = {}
+
+        async def is_disconnected(self):
+            return False
+
+    reset_tool_policy()
+    llama = SimpleNamespace(
+        is_loaded = True,
+        is_vision = False,
+        supports_tools = False,
+        supports_reasoning = False,
+        reasoning_always_on = False,
+        _is_audio = False,
+        model_identifier = "unsloth/M-GGUF",
+        context_length = 4096,
+        generate_chat_completion = _generate,
+        _maybe_recover_from_mtp_crash = lambda exc: False,
+    )
+    monkeypatch.setattr(routes, "_automatic_model_load_may_run", lambda: False)
+    monkeypatch.setattr(routes, "_maybe_auto_switch_model", _no_auto_switch)
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: llama)
+    payload = ChatCompletionRequest(
+        model = "local-model", messages = [{"role": "user", "content": "hi"}]
+    )
+
+    def _detail():
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(routes.openai_chat_completions(payload, _Request(), "test-user"))
+        assert caught.value.status_code == 500
+        return caught.value.detail
+
+    assert _detail() == "Could not reach an upstream service. Please try again."
+    _loaded_split(monkeypatch)
+    detail = _detail()
+    assert detail.startswith("Lost connection to the model, which is split across this machine")
+    assert _WORKERS in detail
+    assert routes._cluster_lost_connection_detail(httpx.ReadError("gone")) == detail
+    assert routes._cluster_lost_connection_detail(httpx.ReadTimeout("slow")) is None
+    assert routes._cluster_lost_connection_detail(ValueError("bad")) is None
+
+
 def test_a_model_too_big_for_the_cluster_is_refused_in_plain_words(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 900 * GIB)
     with pytest.raises(ss.SparkLoadDoesNotFit) as caught:
@@ -120,6 +179,24 @@ def test_a_local_load_gets_no_cluster_wording_but_names_a_left_out_worker(monkey
     # A pass-through load reports no dropped worker.
     cs.state()._passthrough = True
     assert cluster_ux.dropped_worker_notice() is None
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_a_mac_master_with_no_route_is_pointed_at_local_network_access(monkeypatch, platform):
+    _cluster_env(monkeypatch, model_bytes = 10 * GIB)
+    run(ss.before_load(_request(), 4))
+    monkeypatch.setattr(cluster_ux.sys, "platform", platform)
+    cs.LINK_DROPPED["studio-2"] = "OSError: [Errno 65] No route to host"
+    notice = cluster_ux.dropped_worker_notice()
+    hint = (
+        " On macOS, allow Local Network access for the app running Unsloth in "
+        "System Settings > Privacy & Security > Local Network."
+    )
+    assert notice.endswith(
+        "then reload the model to use it." + (hint if platform == "darwin" else "")
+    )
+    cs.LINK_DROPPED["studio-2"] = "[Errno 61] Connection refused"
+    assert "Local Network" not in cluster_ux.dropped_worker_notice()
 
 
 def test_status_keeps_the_dropped_worker_notice_until_the_next_load():
