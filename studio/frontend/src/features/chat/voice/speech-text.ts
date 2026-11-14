@@ -101,14 +101,6 @@ const SENTENCE_FINAL_ABBREVIATIONS = new Set(["etc", "inc", "ltd", "co", "jr", "
 
 const speakable = (s: string) => /[\p{L}\p{N}]/u.test(s);
 
-export function sentenceMayContinue(sentence: string, textEndsWithSpace: boolean): boolean {
-  if (!textEndsWithSpace) return true;
-  const tail = sentence.replace(/["')\]]+$/, "");
-  if (/(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail)) return true;
-  const word = /(?:^|\s)([A-Za-z]+)\.$/.exec(tail)?.[1];
-  return word !== undefined && (word.length === 1 || SPEECH_ABBREVIATIONS.has(word.toLowerCase()));
-}
-
 export function splitIntoSentences(text: string): string[] {
   const norm = text
     .replace(/[^\S\n]+/g, " ")
@@ -157,17 +149,14 @@ export function splitIntoSentences(text: string): string[] {
   return out;
 }
 
-export function splitStreaming(raw: string): {
-  complete: string[];
-  partial: string;
-} {
-  const text = speakableReply(raw);
-  const parts = splitIntoSentences(text);
-  if (parts.length === 0) return { complete: [], partial: "" };
-  // "about 2." may be "2.5" mid-stream: speaking it as a sentence shifts every later index.
-  const last = parts[parts.length - 1] ?? "";
-  if (/[.!?]["')\]]?\s*$/.test(text) && !sentenceMayContinue(last, /\s$/.test(text))) {
-    return { complete: parts, partial: "" };
-  }
-  return { complete: parts.slice(0, -1), partial: parts[parts.length - 1] ?? "" };
+/**
+ * Sentences of a reply still streaming that can no longer change. The last part may still grow
+ * ("Dr." before "Dr. Smith", "about 2." before "2.5"), and whether it joins the one before turns
+ * on its first two characters, so it stays partial until endStream.
+ */
+export function splitStreaming(raw: string): { complete: string[]; partial: string } {
+  const parts = splitIntoSentences(speakableReply(raw));
+  const tail = parts[parts.length - 1] ?? "";
+  const settled = Math.max(0, parts.length - (tail.length >= 2 ? 1 : 2));
+  return { complete: parts.slice(0, settled), partial: parts.slice(settled).join(" ") };
 }
