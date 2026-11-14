@@ -103,6 +103,22 @@ def test_unreadable_limit_never_spawns_a_worker(monkeypatch, use_xet):
     assert spawned == []
 
 
+def test_unreadable_limit_is_a_503_on_the_settings_route(monkeypatch, client):
+    _unreadable_limit(monkeypatch)
+    response = client.get("/download-speed-limit")
+    assert response.status_code == 503
+    assert "Retry" in response.json()["detail"]
+    assert "/private" not in response.text
+
+
+def test_unreadable_limit_keeps_capabilities_answering_as_limited(monkeypatch):
+    import main
+
+    _unreadable_limit(monkeypatch)
+    caps = main.studio_download_transport_capabilities(_current_subject = "admin")
+    assert main.TransportCapabilities(**caps).speed_limited is True
+
+
 @pytest.mark.parametrize("retry", [False, True])
 def test_unreadable_limit_releases_a_claim_for_recovery(monkeypatch, retry):
     import logging
