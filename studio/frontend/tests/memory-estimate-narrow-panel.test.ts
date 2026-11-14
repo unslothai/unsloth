@@ -117,6 +117,12 @@ test("per-GPU subtotals follow load order and warn when one card overflows", () 
   assert.match(details, /GPU 1 · Large[\s\S]*5 repeating layers · 8\.00 GiB weights · cache unknown/);
   assert.match(details, /GPU 0 · Small[\s\S]*1 repeating layer · output layer · 2\.00 GiB weights · 1\.00 GiB cache/);
   assert.match(html, /GPU 0 needs more than its currently free VRAM/);
+  const reload = placement({ residentGpuIds: [0], reclaimableGpuBytes: 3 * GIB });
+  assert.doesNotMatch(reload, /GPU 0 needs more than its currently free VRAM|text-red-500/);
+  assert.match(reload, /0\.00 GiB free/);
+  assert.doesNotMatch(placement({ residentGpuIds: null }), /needs more than its currently free VRAM/);
+  assert.match(placement({ residentGpuIds: [1] }), /GPU 0 needs more than its currently free VRAM/);
+  assert.match(placement({ residentGpuIds: null, gpuDevices: devices.map((gpu) => ({ ...gpu, memoryTotalGb: 1 })) }), /GPU 1 needs more than its total VRAM/);
   assert.match(html, /Compute buffers and other runtime allocations need additional memory/);
   assert.doesNotMatch(html, /can change when a model unloads/);
   assert.match(placement({ estimate: { ...estimate, perGpuBasis: "free_memory" } }), /can change when a model unloads/);

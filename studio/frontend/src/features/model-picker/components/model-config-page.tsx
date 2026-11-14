@@ -4168,6 +4168,11 @@ export function ModelConfigPage({
             loading={memoryEstimate.loading}
             stale={memoryEstimate.stale}
             gpuDevices={estimateGpuDevices}
+            residentGpuIds={
+              !isActiveModel || loadedCpuFallback ? undefined
+              : loadedGpuIds?.length && loadedGpuIndexKind != null && loadedGpuIndexKind === gpuIndexKind
+                ? loadedGpuIds : null
+            }
             placementMode={
               target.isGguf && (pinnedGpuIds ?? gpuSelectionContext.ids ?? []).length > 1
                 ? memoryBudgetGovernsLaunch ? "auto" : "manual"

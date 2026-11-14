@@ -157,7 +157,11 @@ function MemoryBreakdownLine({
   );
 }
 
-function gpuPlacementRow(estimate: GpuMemoryEstimate, device?: SystemGpuDevice) {
+function gpuPlacementRow(
+  estimate: GpuMemoryEstimate,
+  device: SystemGpuDevice | undefined,
+  residentGpuIds: readonly number[] | null | undefined,
+) {
   const { gpuId, weightsBytes, cacheBytes, layerCount, outputLayer } = estimate;
   const subtotal = weightsBytes + (cacheBytes ?? 0);
   const gib = 1024 ** 3;
@@ -168,7 +172,9 @@ function gpuPlacementRow(estimate: GpuMemoryEstimate, device?: SystemGpuDevice) 
     ? device.memoryFreeGb * gib
     : null;
   const exceedsTotal = total !== null && subtotal > total;
-  const exceedsFree = free !== null && subtotal > free;
+  // Free VRAM on a resident GPU includes no credit for memory released by reload.
+  const mayReleaseMemory = residentGpuIds === null || residentGpuIds?.includes(gpuId);
+  const exceedsFree = !mayReleaseMemory && free !== null && subtotal > free;
   const name = `GPU ${gpuId}`;
   const details = [
     `${layerCount} repeating ${layerCount === 1 ? "layer" : "layers"}`,
@@ -207,6 +213,7 @@ export function MemoryEstimateRow({
   loading,
   stale,
   gpuDevices,
+  residentGpuIds,
   placementMode,
   gpuCapacityGb,
   totalCapacityGb,
@@ -228,6 +235,8 @@ export function MemoryEstimateRow({
   loading: boolean;
   stale: boolean;
   gpuDevices?: SystemGpuDevice[];
+  /** Reloading devices, null when their identities are unknown, undefined for a fresh load. */
+  residentGpuIds?: readonly number[] | null;
   placementMode?: "auto" | "manual";
   /** GiB; 0 means unknown. */
   gpuCapacityGb: number;
@@ -272,7 +281,7 @@ export function MemoryEstimateRow({
   const gpuRows = stale
     ? []
     : estimate.perGpu.map((gpu) =>
-        gpuPlacementRow(gpu, gpuDevices?.find((device) => device.index === gpu.gpuId)),
+        gpuPlacementRow(gpu, gpuDevices?.find((device) => device.index === gpu.gpuId), residentGpuIds),
       );
   const overCapacity = gpuRows.find((row) => row.exceedsTotal);
   const pressured = overCapacity ?? gpuRows.find((row) => row.exceedsFree);
