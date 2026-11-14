@@ -350,6 +350,7 @@ from .import_fixes import (
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_flex_mask_graph_breaks,
     fix_transformers_longcat_lsa_config,
+    fix_transformers_deepseek_v41_native,
     fix_transformers_rope_scaling_drops_theta,
     fix_transformers_fp8_modulelist_experts,
     fix_transformers_fp8_unscaled_checkpoint_linears,
@@ -440,6 +441,7 @@ fix_transformers_validate_rope_ignore_keys()
 fix_transformers5_remote_code_legacy_defaults()
 fix_transformers_config_only_remote_code()
 fix_transformers_longcat_lsa_config()
+fix_transformers_deepseek_v41_native()
 # Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
 fix_transformers_remote_rope_scaling_none()
 fix_transformers_is_torch_fx_available()
@@ -517,6 +519,7 @@ del fix_transformers_fp8_modulelist_experts
 del fix_transformers_fp8_unscaled_checkpoint_linears
 del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
+del fix_transformers_deepseek_v41_native
 del fix_transformers_remote_rope_scaling_none
 del fix_transformers_is_torch_fx_available
 del fix_transformers5_remote_code_model_api
