@@ -12,7 +12,8 @@
 (function () {
   "use strict";
 
-  const PREFIX = "CVPOT ";
+  // eslint-disable-next-line no-var -- the studiobench selftest pins this exact declaration
+var PREFIX = "CVPOT ";
   const MESSAGE_SELECTOR = "[data-message-id]";
   const VIEWPORT_SELECTOR = ".aui-thread-viewport";
   const SAMPLE_MS = 2000;

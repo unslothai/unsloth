@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-// Selector adapter for surfaces outside the chat thread.
+// Selector adapter for surfaces outside the chat thread. Digests go through `window.__sb.parity.capture()` so they stay comparable with the film's actions.
 
 (() => {
   if (window.__sb && window.__sb.surfaces) return;
