@@ -289,6 +289,7 @@ def _case_parity(
         info["tables"] = {k: type(v).__name__ for k, v in tables.items()}
         layers = model.get_base_model().model.layers
         info["owned"] = [i for i, layer in enumerate(layers) if "_pp_index" not in layer.__dict__]
+        info["stage_forward"] = pp.ctx.stage_forward is not None
     opt = torch.optim.SGD(params, lr = 1e-2)
     losses, grads = [], None
     for s in range(steps):
@@ -321,7 +322,27 @@ def _case_parity(
     return {"ref": ref, "losses": losses, "grads": grads, "saved": saved, "info": info}
 
 
-CASES = {"parity": _case_parity}
+def _case_attention_units(rank, world, tmp):
+    """FSDP2 on each self_attn by hand (not Unsloth's units): the group state dict handed to the attention by
+    keyword is rebuilt by FSDP2's forward-input cast, so a layer's writes never reach the next layer."""
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
+
+    model = build()
+    mesh = init_device_mesh("cpu", (world,))
+    policy = MixedPrecisionPolicy(param_dtype = torch.float32)
+    for layer in model.get_base_model().model.layers:
+        fully_shard(layer.self_attn, mesh = mesh, mp_policy = policy)
+    fully_shard(model, mesh = mesh, mp_policy = policy)
+    ids, labels = batch(2)
+    try:
+        model(input_ids = ids, labels = labels).loss.backward()
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    return {"error": None}
+
+
+CASES = {"parity": _case_parity, "attention_units": _case_attention_units}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -466,6 +487,8 @@ def test_deepseek_v41_parallel_matches_one_process(cell):
             for key, kind in info["tables"].items():
                 owner = int(key) in info["owned"]
                 assert (kind != "_PPTableStub") == owner, (key, kind, info["owned"])
+            # the stages ran through the model's own pipeline_stage_forward, not the pass-through fallback
+            assert info["stage_forward"]
 
 
 def test_pp_cut_at_an_unsafe_layer_breaks_parity():
@@ -542,6 +565,25 @@ def test_tp_plan_shards_heads_sinks_and_groups():
 def test_tp_refuses_a_size_that_splits_an_output_group():
     with pytest.raises(ValueError, match = "o_groups = 2"):
         tpn.derive_tp_plan(build(lora = False, o_groups = 2), 4)
+
+
+def test_fsdp2_shards_whole_decoder_layers():
+    """The group state crosses decoder layers as an opaque object FSDP2 passes through, but inside a layer the
+    attention and the indexer get its plain dict by keyword: an FSDP2 unit at or below self_attn would rebuild that
+    dict. Unsloth's units are the decoder layers, and a unit inside one is refused."""
+    native = _load("fsdp2_native")
+    model = build()
+    layers = list(model.get_base_model().model.layers)
+    units = native.find_shard_units(model)
+    assert [id(u) for u in units] == [id(layer) for layer in layers]
+    with pytest.raises(RuntimeError, match = "its own"):
+        native.check_shard_units(model, [layers[0].self_attn])
+
+
+def test_fsdp2_on_the_attention_alone_loses_the_group_state():
+    """Flip for the rule above: wrapping self_attn by hand fails on the group state the next layer reads."""
+    (res,) = _spawn("attention_units", 1)
+    assert res["error"] is not None and "KeyError" in res["error"], res
 
 
 def test_tp_still_refuses_mla_key_value_expansion():

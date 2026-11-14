@@ -383,11 +383,17 @@ class _PPTableStub(nn.Module):
 
 
 def _cut_points(parts):
-    """Layer indices where a stage may start, from the model's own `pipeline_safe_cut_points(config)` (layers
-    sharing per-forward state with earlier layers: a stage starting between them would cut that state), else
-    None (anywhere)."""
+    """Layer indices where a stage may start: where the model's `pipeline_handoff_keys(config, cut)` is empty (no
+    per-forward state of an earlier layer is read after the cut), else its `pipeline_safe_cut_points(config)`,
+    else None (anywhere)."""
     import sys
 
+    n = len(parts.layers)
+    config = getattr(parts.inner, "config", None)
+    for obj in (parts.inner, parts.decoder):
+        keys = getattr(sys.modules.get(type(obj).__module__), "pipeline_handoff_keys", None)
+        if callable(keys):
+            return [cut for cut in range(1, n) if not keys(config, cut)]
     for obj in (parts.inner, parts.decoder):
         fn = getattr(type(obj), "pipeline_safe_cut_points", None)
         if fn is None:
@@ -1210,6 +1216,9 @@ class _StageContext:
         self.carry = (
             carry  # [(trailing shape, dtype)] for layers carrying several tensors, else None
         )
+        # (decoder, causal LM, sequence_segments or None) when the model runs one stage's layers itself
+        # (pipeline_stage_forward), else None: the whole model forward with pass-through layers.
+        self.stage_forward = None
         self.active = False
         self.stage_input = None
         # The step's token count, given to every stage forward from here rather than as a schedule kwarg:
@@ -1290,6 +1299,41 @@ class _PPStageModule(nn.Module):
         finally:
             for container, key, original in originals:
                 container._modules[key] = original
+
+    def _model_stage_forward(self, input_ids, kwargs):
+        """This stage's layers through the model's own pipeline_stage_forward (DeepSeek-V4.1): only the owned
+        layers run and only their engram tables are read. The last stage forms the causal LM loss exactly as the
+        model's forward does (lm_head, loss_function with num_items_in_batch)."""
+        ctx = self._pp_ctx
+        decoder, inner, segments = ctx.stage_forward
+        mask = kwargs.get("attention_mask")
+        if kwargs.get("position_ids") is not None or (
+            segments is not None and segments(None, mask, *input_ids.shape[:2]) is not None
+        ):
+            raise ValueError(
+                f"Unsloth: pipeline parallelism over {type(inner).__name__} takes one right-padded sequence per row; "
+                "packed or left-padded rows are not supported yet."
+            )
+        h, pre_mix = (None, None) if ctx.is_first else ctx.stage_input
+        h, pre_mix, _ = decoder.pipeline_stage_forward(
+            ctx.start,
+            ctx.end,
+            hidden_states = h,
+            pre_mix = pre_mix,
+            input_ids = input_ids,
+            attention_mask = mask,
+        )
+        if not ctx.is_last:
+            return self._wire((h, pre_mix))
+        labels = kwargs.get("labels")
+        if labels is None:
+            raise RuntimeError("Unsloth: the last pipeline stage needs labels to return a loss.")
+        extra = (
+            {} if ctx.num_items_in_batch is None else {"num_items_in_batch": ctx.num_items_in_batch}
+        )
+        return inner.loss_function(
+            logits = inner.lm_head(h), labels = labels, vocab_size = inner.vocab_size, **extra
+        )
 
     def _wire(self, tensors):
         """The carried tensors as sent: [micro-batch, seq, prod(trailing shape)], in their declared dtypes."""
@@ -1377,6 +1421,8 @@ class _PPStageModule(nn.Module):
                 # here from every stage's statistics instead.
                 kwargs["output_router_logits"] = False
                 ctx.router_logits = []
+            if ctx.stage_forward is not None:
+                return self._model_stage_forward(input_ids, kwargs)
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
         except _StageOutput as stop:
             hidden = stop.args[0]
@@ -2565,6 +2611,14 @@ def apply_pipeline_parallel(
         stages_per_rank = stages_per_rank,
         carry = carry,
     )
+    stage_fn = getattr(type(parts.decoder), "pipeline_stage_forward", None)
+    if carry is not None and callable(stage_fn) and moe is None:
+        module = sys.modules.get(type(parts.decoder).__module__)
+        pp_stage.ctx.stage_forward = (
+            parts.decoder,
+            parts.inner,
+            getattr(module, "sequence_segments", None),
+        )
     local = pp_stage.local_stages
     owned = sorted({i for k in local for i in range(*bounds[k])})
     start, end = bounds[local[0]]
