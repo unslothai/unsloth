@@ -36,6 +36,30 @@ export function modelFacts(providerType: string, modelId: string): string {
   return facts.join(" · ");
 }
 
+/** Fades the list's top or bottom edge while more rows lie beyond it. */
+function fadeScrollEdges(list: HTMLElement | null) {
+  if (!list) return;
+  const update = () => {
+    const above = list.scrollTop > 1;
+    const below = list.scrollTop + list.clientHeight < list.scrollHeight - 1;
+    const mask =
+      above || below
+        ? `linear-gradient(to bottom, ${above ? "transparent" : "#000"} 0, #000 32px, #000 calc(100% - 32px), ${below ? "transparent" : "#000"} 100%)`
+        : "";
+    list.style.maskImage = mask;
+    list.style.setProperty("-webkit-mask-image", mask);
+  };
+  update();
+  list.addEventListener("scroll", update, { passive: true });
+  // Rows come and go with the search and the Older models fold.
+  const observer = new MutationObserver(update);
+  observer.observe(list, { childList: true });
+  return () => {
+    list.removeEventListener("scroll", update);
+    observer.disconnect();
+  };
+}
+
 export function ConnectionModelList({
   providerType,
   panelKey,
@@ -116,50 +140,53 @@ export function ConnectionModelList({
           </Button>
         </div>
       </div>
-      <ul
-        className={cn(
-          // Scrolls past 10 rows.
-          "flex flex-col gap-0.5",
-          rows.length > 10 &&
-            "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
-        )}
-      >
-        {rows.length === 0 ? (
-          <li className="px-3 py-2.5 text-xs text-muted-foreground">
-            No matching models
-          </li>
-        ) : (
-          rows.map((row, index) => (
-            <li key={row.id}>
-              <label
-                htmlFor={`provider-model-${panelKey}-${index}`}
-                className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-3 py-1.5 transition-colors hover:bg-accent"
-              >
-                <Checkbox
-                  id={`provider-model-${panelKey}-${index}`}
-                  // Solid fill and a firmer edge: the default box vanishes into the row's hover pill.
-                  className="border-foreground/30 bg-background dark:bg-background"
-                  checked={selected.has(row.id)}
-                  onCheckedChange={() => onToggle(row.id)}
-                />
-                <span className="min-w-0 flex-1 break-all text-sm leading-tight">
-                  {row.name}
-                  {row.name === row.id ? null : (
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {row.id}
-                    </span>
-                  )}
-                </span>
-                {row.facts ? (
-                  <span className="shrink-0 whitespace-nowrap text-ui-11 text-muted-foreground/80">
-                    {row.facts}
-                  </span>
-                ) : null}
-              </label>
+      <div className="overflow-hidden rounded-2xl border border-border/60 p-1">
+        <ul
+          ref={fadeScrollEdges}
+          className={cn(
+            // Scrolls past 10 rows.
+            "flex flex-col gap-0.5",
+            rows.length > 10 &&
+              "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
+          )}
+        >
+          {rows.length === 0 ? (
+            <li className="px-3 py-2.5 text-xs text-muted-foreground">
+              No matching models
             </li>
-          ))
-        )}
-      </ul>
+          ) : (
+            rows.map((row, index) => (
+              <li key={row.id}>
+                <label
+                  htmlFor={`provider-model-${panelKey}-${index}`}
+                  className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-full px-3 py-1.5 transition-colors hover:bg-accent"
+                >
+                  <Checkbox
+                    id={`provider-model-${panelKey}-${index}`}
+                    // Solid fill and a firmer edge: the default box vanishes into the row's hover pill.
+                    className="border-muted-foreground/60 bg-background dark:bg-background"
+                    checked={selected.has(row.id)}
+                    onCheckedChange={() => onToggle(row.id)}
+                  />
+                  <span className="min-w-0 flex-1 break-all text-sm leading-tight">
+                    {row.name}
+                    {row.name === row.id ? null : (
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        {row.id}
+                      </span>
+                    )}
+                  </span>
+                  {row.facts ? (
+                    <span className="shrink-0 whitespace-nowrap text-ui-11 text-muted-foreground/80">
+                      {row.facts}
+                    </span>
+                  ) : null}
+                </label>
+              </li>
+            ))
+          )}
+        </ul>
+      </div>
       {olderCount > 0 && !filtered ? (
         <button
           type="button"
