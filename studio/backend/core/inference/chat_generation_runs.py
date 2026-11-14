@@ -636,12 +636,17 @@ class ChatGenerationSupervisor:
         from core.inference.token_limit import refund_if_unused
 
         # The 202 that queued this run preceded inference, so this run's outcome decides the refund.
-        claim = {"spent": None, "generated": False}
+        # Loaded first: a Stop between mark_running and the run load exits before the payload is read.
+        claim = {
+            "spent": await asyncio.to_thread(db.spent_token_override, run_id),
+            "generated": False,
+        }
         with track_first_token_wait() as first_token_wait, override_claim_scope(claim):
             try:
                 await self._produce_run(run_id, cancel_event, activity, first_token_wait)
             finally:
-                await refund_if_unused(claim, failed = not claim.get("completed"))
+                if claim.get("owned"):
+                    await refund_if_unused(claim, failed = not claim.get("completed"))
 
     async def _produce_run(
         self,
@@ -727,6 +732,10 @@ class ChatGenerationSupervisor:
                     return
                 if not await asyncio.to_thread(db.mark_running, run_id, worker_token):
                     return
+                if (claim := override_claim()) is not None:
+                    # Only the worker that started the run settles its override (a queued cancel
+                    # refunds in request_cancel); a run that already finished is never refunded.
+                    claim["owned"] = True
                 worker_run = await asyncio.to_thread(db.get_worker_run, run_id, worker_token)
                 if worker_run is None:
                     return
@@ -745,9 +754,7 @@ class ChatGenerationSupervisor:
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
                 via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
-                spent = request_payload.pop(db.TOKEN_LIMIT_OVERRIDE_FIELD, None)
-                if (claim := override_claim()) is not None and isinstance(spent, int):
-                    claim["spent"] = spent
+                request_payload.pop(db.TOKEN_LIMIT_OVERRIDE_FIELD, None)
                 _attach_embedded_images(request_payload, self._detached_images.pop(run_id, {}))
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 # Prep runs before the first-token budget; one later touch cannot cover prep longer than the lease

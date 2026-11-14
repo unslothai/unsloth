@@ -36393,6 +36393,10 @@ async def produce_openai_chat_completions(
             else:
                 _monitor_reply = _reply_text(_msg, _finish)
             api_monitor.set_reply(monitor_id, _monitor_reply)
+            api_monitor.count_output(
+                monitor_id,
+                sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies),
+            )
             if len(_choices) <= 1:
                 # Suppressed for n > 1: choices can end differently.
                 api_monitor.set_perf(monitor_id, stop_reason = _finish)

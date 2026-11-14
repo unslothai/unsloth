@@ -301,6 +301,34 @@ def test_a_durable_run_refunds_its_override_only_when_it_generated_nothing(
     assert _refused() is not refunded
 
 
+@pytest.mark.parametrize("finished_first", [False, True])
+def test_a_durable_run_stopped_before_its_payload_loads_refunds_only_once_owned(
+    monkeypatch, finished_first
+):
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    _reach_cap()
+    token_limit.grant_override()
+    _durable_run(token_limit.enforce())
+    if finished_first:
+        # Already settled by its own worker: a stray re-dispatch must not refund it.
+        token = runs.get_worker_token("run")
+        runs.mark_running("run", token)
+        runs.finish_run("run", worker_token = token, status = "completed")
+    else:
+        mark_running = runs.mark_running
+
+        def stop_after_mark(run_id, token):
+            started = mark_running(run_id, token)
+            runs.request_cancel(run_id)
+            return started
+
+        monkeypatch.setattr(runs, "mark_running", stop_after_mark)
+    app = SimpleNamespace(state = SimpleNamespace(bind_host = "127.0.0.1"))
+    asyncio.run(ChatGenerationSupervisor(app)._produce("run"))
+    assert _refused() is finished_first
+
+
 def test_cancelling_a_queued_run_refunds_its_override():
     _reach_cap()
     token_limit.grant_override()

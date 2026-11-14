@@ -796,6 +796,16 @@ class ApiMonitor:
                 entry.first_decode_monotonic = now
             entry.running_phase = "token_generation" if decoded else None
 
+    def count_output(self, entry_id: Optional[str], chars: int) -> None:
+        """Generated text the reply buffer never shows (non-streaming reasoning), for estimates."""
+        if not entry_id or chars <= 0:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is not None:
+                entry.reply_chars += chars
+                _note_generated(entry)
+
     def set_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id:
             return

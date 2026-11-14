@@ -684,6 +684,20 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | N
         conn.close()
 
 
+def spent_token_override(run_id: str) -> int | None:
+    """The period start of the one-time token override this run's admission spent, if any."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT json_extract(request_json, ?) FROM chat_generation_runs WHERE id=?",
+            (f"$.{TOKEN_LIMIT_OVERRIDE_FIELD}", run_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    spent = row[0] if row else None
+    return spent if isinstance(spent, int) else None
+
+
 def get_run_state(run_id: str) -> dict[str, Any] | None:
     """Status, lastEventSeq and updatedAt of get_run's row, without reading or parsing request_json."""
     conn = _connect()

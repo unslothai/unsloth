@@ -94,6 +94,7 @@ def _usage(
         (True, 0, [("reply", 12_000)] * 4, "cancelled", (0, 12_000, 12_000)),
         # Generated text the reply buffer never shows still counts.
         (True, 0, [("reasoning", 400)], "cancelled", (0, 100, 100)),
+        (True, 0, [("hidden", 400)], "cancelled", (0, 100, 100)),
         (False, 0, [_usage(10), ("thinking", 400)], "cancelled", (10, 100, 110)),
         (False, 0, [("tool_args", 4000)], "cancelled", (0, 1000, 1000)),
         (False, 0, [("tool_args", 4000), ("flush", 0)], "cancelled", (0, 1000, 1000)),
@@ -143,6 +144,8 @@ def test_a_receipt_settles_reported_and_estimated_usage(
             monitor.set_usage(entry, **value)
         elif kind == "route_usage":
             inference_route._monitor_usage(entry, value)
+        elif kind == "hidden":
+            monitor.count_output(entry, value)
         elif kind == "reasoning":
             chunk = {"choices": [{"index": 0, "delta": {"reasoning_content": "t" * value}}]}
             inference_route._monitor_openai_chunk(entry, chunk, None)
@@ -263,6 +266,8 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     import inspect
 
     source = inspect.getsource(inference_route)
+    # Non-streaming reasoning never reaches the reply preview, so it is counted beside it.
+    assert 'sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies)' in source
     assert '_sf_streamed_calls.add(event.get("tool_call_id"))' in source
     assert 'event.get("tool_call_id") not in _sf_streamed_calls' in source
 
