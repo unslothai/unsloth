@@ -122,6 +122,10 @@ def _trim_models_dev_model(model: dict[str, Any]) -> dict[str, Any]:
     context = limit.get("context") if isinstance(limit, dict) else None
     if isinstance(context, int) and not isinstance(context, bool) and context > 0:
         entry["context"] = context
+    # The prompt's own cap where it is below the window (gpt-5.5: 922K of 1.05M).
+    prompt = limit.get("input") if isinstance(limit, dict) else None
+    if isinstance(prompt, int) and not isinstance(prompt, bool) and prompt > 0:
+        entry["input_tokens"] = prompt
     return entry
 
 

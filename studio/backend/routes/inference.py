@@ -3765,6 +3765,8 @@ from core.inference.external_provider import (
     llama_cpp_template_controls,
     _is_kimi_k3,
     _is_openai_family_cloud,
+    _ANTHROPIC_COMPACTION_MIN,
+    _OPENAI_COMPACTION_MIN,
     compacts_server_side,
 )
 from core.inference.external_tool_transport import OAICompatTransport
@@ -29097,6 +29099,9 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
 
 # keep these limits aligned with auto-compaction.ts, which derives catalogued-window thresholds.
 _EXTERNAL_COMPACTION_HEADROOM = 0.25
+# /compact on Anthropic lowers the native trigger to its 50K floor, which only fires on a prompt
+# past it; the margin covers the estimate running high. Shorter threads get Unsloth's summary.
+_ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS = 60_000
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
@@ -29170,39 +29175,10 @@ def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[d
     return fitted[:-1] + [last] + messages[n:]
 
 
-def _fit_external_context(
-    messages: list[dict],
-    payload,
-    *,
-    tools: Optional[list[dict]] = None,
-    branch: Optional[list[dict]] = None,
-    tool_loop: bool = False,
-    can_reset: bool = False,
-    first_pass: bool = True,
-    replays_manual: bool = False,
-) -> tuple[list[dict], Optional[dict], Optional[int]]:
-    """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
-    queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
-    ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
-    replays a /compact epoch on a request that may not start one."""
+def _external_token_counter(payload, tools: Optional[list[dict]]):
     from core.inference.context_window import (
-        estimate_message_tokens_without_unpriced_media,
         estimate_messages_tokens_conservative,
         messages_without_unpriced_media,
-        prompt_budget,
-        retrieval_budget,
-    )
-    from core.inference.llama_cpp import (
-        _archive_and_recall,
-        _boundary_metadata,
-        _can_reset_epoch,
-        _compaction_fit_kwargs,
-        _conversation_recall_reserve,
-        _fit_with_instruction_pins,
-        _keeps_compaction_boundary,
-        _records_boundary,
-        _sticky_compaction_details,
-        _sticky_compaction_state,
     )
 
     tool_tokens = _openai_llama_admission_injected_tool_tokens(tools)
@@ -29222,10 +29198,14 @@ def _fit_external_context(
             + tool_tokens
         )
 
+    return _count
+
+
+def _external_fit_limits(payload, prompt_tokens: int) -> tuple[int, Optional[int]]:
+    """The context length to fit a prompt of ``prompt_tokens`` into, and the reply cap to send."""
     context_length = payload.compaction_threshold
     max_tokens = _effective_max_tokens(payload)
     window = payload.context_window
-    prompt_tokens = _count(messages)
     if window and max_tokens:
         # reserve the full reply cap while leaving at least half the window for the prompt.
         margin = window // 32
@@ -29234,6 +29214,46 @@ def _fit_external_context(
             max_tokens = min(max_tokens, window - room - margin)
             # The largest context whose prompt_budget stays within room.
             context_length = min(context_length, room + max_tokens, room * 4 // 3)
+    return context_length, max_tokens
+
+
+def _fit_external_context(
+    messages: list[dict],
+    payload,
+    *,
+    tools: Optional[list[dict]] = None,
+    branch: Optional[list[dict]] = None,
+    tool_loop: bool = False,
+    can_reset: bool = False,
+    first_pass: bool = True,
+    replays_manual: bool = False,
+    keep_ids: Optional[set[int]] = None,
+) -> tuple[list[dict], Optional[dict], Optional[int]]:
+    """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
+    queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
+    ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
+    replays a /compact epoch on a request that may not start one."""
+    from core.inference.context_window import (
+        estimate_message_tokens_without_unpriced_media,
+        prompt_budget,
+        retrieval_budget,
+    )
+    from core.inference.llama_cpp import (
+        _archive_and_recall,
+        _boundary_metadata,
+        _can_reset_epoch,
+        _compaction_fit_kwargs,
+        _conversation_recall_reserve,
+        _fit_with_instruction_pins,
+        _keeps_compaction_boundary,
+        _records_boundary,
+        _sticky_compaction_details,
+        _sticky_compaction_state,
+    )
+
+    _count = _external_token_counter(payload, tools)
+    prompt_tokens = _count(messages)
+    context_length, max_tokens = _external_fit_limits(payload, prompt_tokens)
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
     thread_id = payload.thread_id
@@ -29271,7 +29291,13 @@ def _fit_external_context(
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = _active_turn_anchors(messages, branch) if can_reset or replays_manual else None,
+        anchor_ids = (
+            (_active_turn_anchors(messages, branch) or set())
+            if can_reset or replays_manual
+            else set()
+        )
+        | (keep_ids or set())
+        or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
@@ -29315,6 +29341,261 @@ def _fit_external_context(
         fitted = recall["conversation"]
         truncation = {**truncation, **recall["counts"]}
     return fitted, truncation, max_tokens
+
+
+class _ExternalCompactionPlan:
+    """What a cloud request's fit found before any summary call: ``to_summarise`` is non-empty
+    when the same connection has to be asked for a summary first."""
+
+    __slots__ = (
+        "messages",
+        "body",
+        "current",
+        "covered",
+        "summary",
+        "pins",
+        "budget",
+        "context_length",
+        "max_tokens",
+        "prompt_tokens",
+        "to_summarise",
+        "cut",
+        "auto",
+        "force",
+        "summarise",
+        "summary_failed",
+    )
+
+
+def _plan_external_compaction(
+    messages: list[dict],
+    payload,
+    *,
+    tools: Optional[list[dict]] = None,
+    auto: bool = True,
+    force: Optional[str] = None,
+    summarise: bool = True,
+) -> _ExternalCompactionPlan:
+    """``auto`` fits to the request's compaction_threshold; without it only a saved summary is
+    replayed. ``force`` summarises everything before the newest user turn whether or not the
+    prompt fits: "manual" for /compact, "overflow" after the provider refused the prompt."""
+    from core.inference import cloud_compaction
+    from core.inference.context_window import (
+        estimate_message_tokens_without_unpriced_media,
+        prompt_budget,
+    )
+
+    plan = _ExternalCompactionPlan()
+    plan.messages = messages
+    plan.auto = bool(auto and payload.compaction_threshold)
+    plan.force = force
+    plan.summarise = summarise
+    plan.summary_failed = None
+    plan.to_summarise = []
+    plan.body = cloud_compaction.body_messages(messages)
+    count = _external_token_counter(payload, tools)
+    plan.prompt_tokens = count(messages)
+    if plan.auto:
+        plan.context_length, plan.max_tokens = _external_fit_limits(payload, plan.prompt_tokens)
+        plan.budget = prompt_budget(plan.context_length, plan.max_tokens)
+    else:
+        plan.context_length, plan.max_tokens = None, _effective_max_tokens(payload)
+        plan.budget = None
+    try:
+        from core.inference import instruction_pin
+        plan.pins = instruction_pin.pinned_instruction_ids(messages, prompt_target = plan.budget or 0)
+    except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
+        plan.pins = set()
+
+    thread_id = str(payload.thread_id) if payload.thread_id else None
+    record = cloud_compaction.stored_summary(thread_id, plan.body) if summarise else None
+    plan.covered = int(record["covered_messages"]) if record else 0
+    plan.summary = record["summary"] if record else None
+    plan.current = (
+        cloud_compaction.apply_summary(messages, plan.summary, plan.covered, keep_ids = plan.pins)
+        if record
+        else messages
+    )
+    plan.cut = plan.covered
+    over = plan.budget is not None and count(plan.current) > plan.budget
+    if summarise and (force or over):
+        tail_tokens = 0 if force else cloud_compaction.tail_token_budget(plan.budget)
+        cut = cloud_compaction.tail_start(
+            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens
+        )
+        if cut <= plan.covered and tail_tokens:
+            # The tail is within its share and the prompt still does not fit (a large tool
+            # catalogue, a long system prompt): summarise up to the newest turn before evicting.
+            cut = cloud_compaction.tail_start(
+                plan.body, estimate_message_tokens_without_unpriced_media, 0
+            )
+        if cut > plan.covered:
+            plan.cut = cut
+            plan.to_summarise = plan.body[plan.covered : cut]
+        elif over:
+            # Nothing older than the newest turn is left to summarise.
+            plan.summary_failed = False
+    return plan
+
+
+async def _finish_external_compaction(
+    plan: _ExternalCompactionPlan,
+    payload,
+    *,
+    client,
+    model: str,
+    tools: Optional[list[dict]] = None,
+    branch: Optional[list[dict]] = None,
+    tool_loop: bool = False,
+) -> tuple[list[dict], Optional[dict], Optional[int]]:
+    """Summarise what the plan asked for (falling back to eviction when the call fails), then
+    let the evicting fit catch whatever still does not fit."""
+    from core.inference import cloud_compaction
+    from core.inference.context_window import (
+        estimate_message_tokens_without_unpriced_media,
+        retrieval_budget,
+    )
+    from core.inference.llama_cpp import _archive_and_recall
+
+    thread_id = str(payload.thread_id) if payload.thread_id else None
+    count = _external_token_counter(payload, tools)
+    current = plan.current
+    summary_failed = plan.summary_failed
+    summarised_now = False
+    if plan.to_summarise:
+        reply_tokens = cloud_compaction.summary_max_tokens(plan.budget)
+        # The whole window when it is known: the threshold only says when to compact.
+        room = payload.context_window or plan.context_length
+        chunks = cloud_compaction.summary_chunks(
+            plan.to_summarise,
+            estimate_message_tokens_without_unpriced_media,
+            # Room for the instructions, the summary so far and the reply.
+            max(1_000, room - 2 * reply_tokens - 1_000) if room else None,
+        )
+        summary = plan.summary
+        try:
+            for chunk in chunks:
+                summary = await cloud_compaction.collect_summary(
+                    client.stream_chat_completion(
+                        messages = cloud_compaction.summary_request_messages(summary, chunk),
+                        model = model,
+                        temperature = None,
+                        top_p = None,
+                        max_tokens = reply_tokens,
+                        tool_choice = "none",
+                        enable_prompt_caching = False,
+                        thread_id = payload.thread_id,
+                    )
+                )
+        except cloud_compaction.SummaryFailed as exc:
+            logger.warning("external_provider.summary_failed", error = str(exc), model = model)
+            summary_failed = True
+        else:
+            await asyncio.to_thread(
+                cloud_compaction.save_summary,
+                thread_id,
+                covered = plan.body[: plan.cut],
+                summary = summary,
+                model = model,
+                manual = plan.force == "manual",
+            )
+            plan.summary, plan.covered = summary, plan.cut
+            current = cloud_compaction.apply_summary(
+                plan.messages, summary, plan.covered, keep_ids = plan.pins
+            )
+            summarised_now = True
+
+    truncation = None
+    refusal = None
+    max_tokens = plan.max_tokens
+    fit_payload = payload if plan.auto else None
+    if plan.force == "overflow" and not summarised_now:
+        # The provider counted more than the estimate allowed for: evict down to half of it.
+        fit_payload = payload.model_copy(
+            update = {"compaction_threshold": max(1, count(current) // 2), "context_window": None}
+        )
+    if fit_payload is not None:
+        fitted, evicted, max_tokens = await asyncio.to_thread(
+            _fit_external_context,
+            current,
+            fit_payload,
+            tools = tools,
+            branch = branch,
+            tool_loop = tool_loop,
+            keep_ids = cloud_compaction.summary_turn_ids(current),
+        )
+        current = fitted
+        if evicted and not plan.summarise:
+            truncation = evicted
+        elif evicted and evicted.get("dropped_messages"):
+            truncation = {**evicted, "summary_failed": bool(summary_failed)}
+            if plan.covered and plan.summary is not None:
+                # Counted on the summarised prompt: the boundary is past the summary's own.
+                truncation["boundary_messages"] = plan.covered + int(
+                    evicted.get("boundary_messages") or evicted["dropped_messages"]
+                )
+                # The fit archived only what it cut from the summarised prompt.
+                archived = await asyncio.to_thread(
+                    _archive_and_recall,
+                    current,
+                    plan.messages,
+                    branch_messages = plan.messages,
+                    thread_id = thread_id,
+                    style = "inline",
+                    recall_done = True,
+                )
+                truncation.update(archived["counts"])
+        elif evicted:
+            # Nothing could be dropped: the prompt is still too long, and any summary still stands.
+            refusal = evicted
+    if truncation is None and plan.summary is not None and plan.covered > 0:
+        kept = sum(1 for message in plan.body[: plan.covered] if id(message) in plan.pins)
+        truncation = {
+            "dropped_messages": plan.covered - kept,
+            "boundary_messages": plan.covered,
+            "fits": True,
+            "summarized": True,
+            "summary_source": "unsloth",
+            "prompt_tokens_before": plan.prompt_tokens,
+            "prompt_tokens_after": count(current),
+        }
+        if plan.context_length:
+            truncation["context_length"] = plan.context_length
+        if refusal is not None:
+            truncation = {**refusal, **truncation, "fits": bool(refusal.get("fits"))}
+        if summarised_now:
+            truncation["checkpoint_started"] = True
+            if plan.force == "manual":
+                truncation["manual"] = True
+        # The summary carries continuity; recall adds the exact wording of summarised turns the
+        # newest one asks about, within the prompt room left, as the evicting fit does.
+        room_for = plan.context_length or payload.context_window
+        recalled = await asyncio.to_thread(
+            _archive_and_recall,
+            current,
+            plan.messages,
+            branch_messages = plan.messages,
+            query_messages = branch,
+            thread_id = thread_id,
+            style = "inline",
+            recall_done = refusal is not None,
+            recall_budget_tokens = (
+                retrieval_budget(
+                    room_for,
+                    max_tokens,
+                    truncation["prompt_tokens_after"],
+                    reply_returns = tool_loop,
+                )
+                if room_for
+                else 0
+            ),
+            count_tokens = count,
+        )
+        current = recalled["conversation"]
+        truncation.update(recalled["counts"])
+    if truncation is None and refusal is not None:
+        truncation = {**refusal, "summary_failed": bool(summary_failed)}
+    return current, truncation, max_tokens
 
 
 def _is_compaction_block_sse(line: str) -> bool:
@@ -30097,91 +30378,199 @@ async def _proxy_to_external_provider(
 
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
-    _external_context_fitter = None
     _compaction_fallback = None
-    if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
-        _request_branch = chat_messages
-        _checkpoint_pass: dict = {}
-        _first_payload = payload
+    _request_branch = chat_messages
+    _rolling = _rolling_context_policy(payload) is not None
+    # The connection's "Auto-compact after" may pass the 200K default, never the model's window.
+    _compaction_uncapped = bool(payload.compaction_uncapped and payload.compaction_threshold)
+    if _compaction_uncapped and payload.context_window:
+        payload = payload.model_copy(
+            update = {
+                "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
+            }
+        )
+    # Eviction's replacement: providers that compact server-side keep doing so themselves.
+    _auto_summary = bool(payload.compaction_threshold) and _rolling and not _provider_compacts
+    # /compact. A saved thread only, so the summary outlives this request.
+    _compact_now = managed is None and payload.compact_context is True and bool(payload.thread_id)
+    _first_turn_overrides: dict = {}
+    if _compact_now and _provider_compacts:
+        _native_trigger = None
+        if provider_type != "anthropic":
+            _native_trigger = _OPENAI_COMPACTION_MIN
+        elif (
+            await asyncio.to_thread(
+                _external_token_counter(payload, _external_fit_tools), chat_messages
+            )
+            >= _ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS
+        ):
+            _native_trigger = _ANTHROPIC_COMPACTION_MIN
+        if _native_trigger is not None:
+            # The provider compacts on this request because its trigger is already behind us.
+            _first_turn_overrides = {"compaction_threshold": _native_trigger}
+    _manual_summary_pending = _compact_now and not _first_turn_overrides
+    _has_saved_summary = False
+    if managed is None and payload.thread_id and not _auto_summary and not _manual_summary_pending:
+        from core.inference import cloud_compaction as _cloud_compaction
+        _has_saved_summary = await asyncio.to_thread(
+            _cloud_compaction.thread_has_summaries, str(payload.thread_id)
+        )
+    # A managed local engine keeps the evicting fit it always had.
+    _fit_active = _auto_summary or (
+        managed is None and (_manual_summary_pending or _has_saved_summary)
+    )
 
-        # The loop passes this turn's catalogue: a withdrawn one (tool_choice "none", spent budget) costs nothing.
-        async def _external_context_fitter(messages, tools = _external_fit_tools):
-            nonlocal _external_truncation, _first_payload
-            # After a checkpoint fit, later passes extend its result, as the GGUF loop does.
-            candidate = _extend_checkpoint_fit(_checkpoint_pass, messages)
-            later = candidate is not None
+    # Managed local engines keep the evicting fit, with its /compact checkpoint epochs.
+    _checkpoint_pass: dict = {}
+    _first_payload = payload
 
-            def fit(conversation, fit_payload, first_pass):
-                return _fit_external_context(
-                    conversation,
-                    fit_payload,
+    async def _managed_context_fitter(messages, tools):
+        nonlocal _first_payload
+        # After a checkpoint fit, later passes extend its result, as the GGUF loop does.
+        candidate = _extend_checkpoint_fit(_checkpoint_pass, messages)
+        later = candidate is not None
+
+        def fit(conversation, fit_payload, first_pass):
+            return _fit_external_context(
+                conversation,
+                fit_payload,
+                tools = tools,
+                branch = _request_branch,
+                tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
+                # The NPU has no compaction of its own, so /compact resets here as on GGUF.
+                can_reset = not _tool_calls_are_disabled(payload),
+                first_pass = first_pass,
+                replays_manual = True,
+            )
+
+        refit = not later
+        if later:
+            fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                fit, candidate, payload, False
+            )
+            refit = bool(
+                truncation and (truncation.get("dropped_messages") or not truncation.get("fits"))
+            )
+            if refit:
+                # Boundaries must count the full branch, so an overflow refits it without /compact.
+                fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                    fit, messages, payload.model_copy(update = {"compact_context": None}), True
+                )
+        else:
+            # /compact applies to the loop's first fit only, whether or not it evicted anything.
+            fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                fit, messages, _first_payload, True
+            )
+            _first_payload = payload.model_copy(update = {"compact_context": None})
+        # A refit moves the boundary, so the next pass extends this result, not the stale one.
+        if (later and not refit) or (refit and truncation and truncation.get("checkpoint") is True):
+            _checkpoint_pass.update(input = list(messages), fitted = fitted)
+        return fitted, truncation, fallback_max_tokens
+
+    # The loop passes this turn's catalogue: a withdrawn one (tool_choice "none", spent budget) costs nothing.
+    async def _external_fit_steps(
+        messages,
+        tools = _external_fit_tools,
+        *,
+        force = None,
+        auto = None,
+        plan = None,
+    ):
+        """Yields a progress line when a summary has to be written first, then
+        ``(messages, max_tokens, truncation_line)``."""
+        nonlocal _external_truncation, _manual_summary_pending
+        from core.inference import cloud_compaction
+
+        if force is None and _manual_summary_pending:
+            force = "manual"
+        _manual_summary_pending = False
+        if managed is not None:
+            fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
+        else:
+            if plan is None:
+                plan = await asyncio.to_thread(
+                    _plan_external_compaction,
+                    messages,
+                    payload,
                     tools = tools,
-                    branch = _request_branch,
-                    tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
-                    # The NPU has no compaction of its own, so /compact resets here as on GGUF.
-                    can_reset = managed is not None and not _tool_calls_are_disabled(payload),
-                    first_pass = first_pass,
-                    replays_manual = managed is not None,
+                    auto = _auto_summary if auto is None else auto,
+                    force = force,
                 )
+            if plan.to_summarise and not _non_stream_custom_responses:
+                yield cloud_compaction.COMPACTING_SSE_LINE
+            fitted, truncation, fallback_max_tokens = await _finish_external_compaction(
+                plan,
+                payload,
+                client = client,
+                model = model,
+                tools = tools,
+                branch = _request_branch,
+                tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
+            )
+        _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
+        fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
+        if truncation and truncation.get("dropped_messages"):
+            _external_truncation = truncation
+        truncation_line = None
+        if truncation and truncation.get("dropped_messages") and not _non_stream_custom_responses:
+            truncation_line = _context_truncated_sse_chunk(
+                f"chatcmpl-{uuid.uuid4().hex}", model, truncation
+            ).rstrip("\n")
+        yield fitted, fallback_max_tokens, truncation_line
 
-            refit = not later
-            if later:
-                fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                    fit, candidate, payload, False
-                )
-                refit = bool(
-                    truncation
-                    and (truncation.get("dropped_messages") or not truncation.get("fits"))
-                )
-                if refit:
-                    # Boundaries must count the full branch, so an overflow refits it without /compact.
-                    fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                        fit, messages, payload.model_copy(update = {"compact_context": None}), True
-                    )
-            else:
-                # /compact applies to the loop's first fit only, whether or not it evicted anything.
-                fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                    fit, messages, _first_payload, True
-                )
-                _first_payload = payload.model_copy(update = {"compact_context": None})
-            # A refit moves the boundary, so the next pass extends this result, not the stale one.
-            if (later and not refit) or (
-                refit and truncation and truncation.get("checkpoint") is True
-            ):
-                _checkpoint_pass.update(input = list(messages), fitted = fitted)
-            _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
-            fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
-            if truncation and truncation.get("dropped_messages"):
-                _external_truncation = truncation
-            truncation_line = None
-            if (
-                truncation
-                and truncation.get("dropped_messages")
-                and not _non_stream_custom_responses
-            ):
-                truncation_line = _context_truncated_sse_chunk(
-                    f"chatcmpl-{uuid.uuid4().hex}", model, truncation
-                ).rstrip("\n")
-            return fitted, fallback_max_tokens, truncation_line
+    async def _external_context_fitter(
+        messages,
+        tools = _external_fit_tools,
+        **options,
+    ):
+        fit = None
+        async for step in _external_fit_steps(messages, tools, **options):
+            if not isinstance(step, str):
+                fit = step
+        return fit
 
-        if _provider_compacts and (provider_type == "openai" or api_type == "responses"):
-            _compaction_fallback = _external_context_fitter
+    async def _external_overflow_refit(messages, tools = _external_fit_tools):
+        """The provider refused the prompt as too long: summarise everything before the newest
+        turn. ``(None, None, None)`` when that changes nothing, so the refusal stands."""
+        nonlocal _external_truncation
+        earlier, _external_truncation = _external_truncation, None
+        async for step in _external_fit_steps(messages, tools, force = "overflow"):
+            if isinstance(step, str):
+                yield step
+                continue
+            truncation = _external_truncation or {}
+            changed = truncation.get("checkpoint_started") or (
+                truncation.get("dropped_messages") and not truncation.get("summarized")
+            )
+            if not changed:
+                _external_truncation = earlier
+            yield step if changed else (None, None, None)
+
+    # Only with auto-compact on: a user who switched it off gets the provider's refusal as is.
+    _overflow_recovery = managed is None and _rolling
 
     if (
         payload.compaction_threshold
-        and not _provider_compacts
-        and not run_studio_tool_loop
-        and _rolling_context_policy(payload) is not None
+        and _rolling
+        and _provider_compacts
+        and (provider_type == "openai" or api_type == "responses")
     ):
+
+        async def _compaction_fallback(messages):
+            return await _external_context_fitter(messages, auto = True)
+
+    _deferred_fit_plan = None
+    # An overflow refit starts from the transcript, not from a prompt that already holds a summary.
+    _unfitted_messages = chat_messages
+    if _fit_active and not run_studio_tool_loop and managed is not None:
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
             _fit_external_context,
             chat_messages,
             payload,
             tools = _external_fit_tools,
             # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
-            can_reset = bool(managed is not None and managed.supports_tools)
-            and not _tool_calls_are_disabled(payload),
-            replays_manual = managed is not None,
+            can_reset = bool(managed.supports_tools) and not _tool_calls_are_disabled(payload),
+            replays_manual = True,
         )
         try:
             _refuse_what_ollama_would_cut(
@@ -30190,6 +30579,26 @@ async def _proxy_to_external_provider(
         except context_refusal.ContextBudgetExceeded as exc:
             raise _context_budget_http_error(exc)
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
+    elif _fit_active and not run_studio_tool_loop:
+        _prefit_plan = await asyncio.to_thread(
+            _plan_external_compaction,
+            chat_messages,
+            payload,
+            tools = _external_fit_tools,
+            auto = _auto_summary,
+            force = "manual" if _manual_summary_pending else None,
+        )
+        _manual_summary_pending = False
+        if _prefit_plan.to_summarise and payload.stream and not _non_stream_custom_responses:
+            # The summary call takes seconds: run it inside the stream, behind a progress frame.
+            _deferred_fit_plan = _prefit_plan
+        else:
+            try:
+                chat_messages, _external_max_tokens, _ = await _external_context_fitter(
+                    chat_messages, plan = _prefit_plan
+                )
+            except context_refusal.ContextBudgetExceeded as exc:
+                raise _context_budget_http_error(exc)
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
@@ -30226,6 +30635,7 @@ async def _proxy_to_external_provider(
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
             compaction_threshold = payload.compaction_threshold,
+            compaction_uncapped = _compaction_uncapped,
             compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
@@ -30254,7 +30664,9 @@ async def _proxy_to_external_provider(
                     client,
                     model = model,
                     continue_final_message = _continue_final_message(payload),
-                    message_fitter = (_external_context_fitter if not _provider_compacts else None),
+                    message_fitter = _external_fit_steps if _fit_active else None,
+                    overflow_refitter = _external_overflow_refit if _overflow_recovery else None,
+                    first_turn_overrides = _first_turn_overrides,
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,
@@ -30298,16 +30710,58 @@ async def _proxy_to_external_provider(
                 mcp_image = _mcp_image,
             )
         else:
-            gen = client.stream_chat_completion(
-                messages = chat_messages,
-                model = model,
-                enabled_tools = payload.enabled_tools,
-                tools = payload.tools,
-                tool_choice = payload.tool_choice,
-                continue_final_message = _continue_final_message(payload),
-                stream = payload.stream,
-                **_provider_kwargs,
-            )
+            _sent_messages = chat_messages
+
+            def _send_plain(messages, **overrides):
+                return client.stream_chat_completion(
+                    messages = messages,
+                    model = model,
+                    enabled_tools = payload.enabled_tools,
+                    tools = payload.tools,
+                    tool_choice = payload.tool_choice,
+                    continue_final_message = _continue_final_message(payload),
+                    stream = payload.stream,
+                    **{**_provider_kwargs, **overrides},
+                )
+
+            async def _plain_turn():
+                nonlocal _sent_messages
+                overrides = dict(_first_turn_overrides)
+                if _deferred_fit_plan is not None:
+                    fit = None
+                    async for step in _external_fit_steps(chat_messages, plan = _deferred_fit_plan):
+                        if isinstance(step, str):
+                            yield step
+                        else:
+                            fit = step
+                    _sent_messages, overrides["max_tokens"], truncation_line = fit
+                    if truncation_line:
+                        yield truncation_line
+                async for line in _send_plain(_sent_messages, **overrides):
+                    yield line
+
+            async def _recover_plain():
+                fit = None
+                async for step in _external_overflow_refit(_unfitted_messages):
+                    if not isinstance(step, str):
+                        fit = step
+                if fit is None or fit[0] is None:
+                    return None
+                refit_messages, max_tokens, truncation_line = fit
+
+                async def _resend():
+                    if truncation_line:
+                        yield truncation_line
+                    async for line in _send_plain(refit_messages, max_tokens = max_tokens):
+                        yield line
+
+                return _resend
+
+            if _overflow_recovery and not _non_stream_custom_responses:
+                from core.inference import cloud_compaction
+                gen = cloud_compaction.stream_with_overflow_retry(_plain_turn, _recover_plain)
+            else:
+                gen = _plain_turn()
         if managed is not None:
             # Stopping the read stops FastFlowLM, which a model swap is waiting on.
             gen = _stop_on_cancel(gen, cancel_event)
@@ -30382,7 +30836,15 @@ async def _proxy_to_external_provider(
                     yield _context_truncated_sse_chunk(
                         f"chatcmpl-{uuid.uuid4().hex}",
                         model,
-                        _provider_compaction_truncation(chat_messages),
+                        {
+                            **_provider_compaction_truncation(chat_messages),
+                            # /compact lowered the provider's trigger for this request.
+                            **(
+                                {"manual": True, "checkpoint_started": True}
+                                if _first_turn_overrides
+                                else {}
+                            ),
+                        },
                     )
                 # inspect the line directly because a disabled monitor would duplicate [DONE].
                 if _is_openai_sse_done(line):
