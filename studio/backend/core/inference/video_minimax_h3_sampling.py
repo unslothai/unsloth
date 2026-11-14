@@ -573,6 +573,25 @@ def _snapped_reference(reference: Any) -> Any:
     return dataclasses.replace(reference, frames = reference.frames[:n])
 
 
+# ── condition encode ──
+
+
+@functools.lru_cache(maxsize = None)
+def _fixed_conv_encode_class(base: type) -> type:
+    class StudioMiniMaxH3ConditionEncodeStep(base):
+        """The condition VAE encode with ``cudnn.benchmark`` held off: a timed search picks the convolution
+        algorithm per process, so the same keyframe or reference encoded to different latents in every fresh
+        process (and the whole render followed). The heuristic pick is the same every time."""
+
+        def __call__(self, components: Any, state: Any) -> Any:
+            from .diffusion_speed import cudnn_benchmark_scope
+            with cudnn_benchmark_scope(False):
+                return super().__call__(components, state)
+
+    StudioMiniMaxH3ConditionEncodeStep.__qualname__ = StudioMiniMaxH3ConditionEncodeStep.__name__
+    return StudioMiniMaxH3ConditionEncodeStep
+
+
 # ── install ──
 
 
@@ -613,6 +632,12 @@ def install_h3_reference_recipe(pipe: Any, *, pdd: bool = False) -> dict:
         ),
         encoders.MiniMaxH3FL2VATextEncoderStep: _fl2va_text_encoder_class(
             encoders.MiniMaxH3FL2VATextEncoderStep
+        ),
+        encoders.MiniMaxH3KeyframeVaeEncoderStep: _fixed_conv_encode_class(
+            encoders.MiniMaxH3KeyframeVaeEncoderStep
+        ),
+        encoders.MiniMaxH3Ref2VAReferenceEncoderStep: _fixed_conv_encode_class(
+            encoders.MiniMaxH3Ref2VAReferenceEncoderStep
         ),
     }
     report: dict = dict(_swap_blocks(pipe, swaps))

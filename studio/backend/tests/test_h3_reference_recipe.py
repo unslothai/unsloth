@@ -618,6 +618,8 @@ def test_install_is_idempotent_and_scoped():
         "MiniMaxH3PrepareConditionLatentsStep": 0,
         "MiniMaxH3Ref2VATextEncoderStep": 0,
         "MiniMaxH3FL2VATextEncoderStep": 0,
+        "MiniMaxH3KeyframeVaeEncoderStep": 0,
+        "MiniMaxH3Ref2VAReferenceEncoderStep": 0,
         "sampler": None,
     }
     other = blocks_mod.MiniMaxH3Blocks().init_pipeline()
@@ -645,3 +647,25 @@ def test_last_keyframe_centre_crop(source, target):
         y = round((oh - oh * (old_aspect / new_aspect)) / 2)
     expect = pil.crop((x, y, ow - x, oh - y)).resize(target, Image.LANCZOS)
     assert np.array_equal(np.asarray(got), np.asarray(expect))
+
+
+def test_condition_encode_holds_cudnn_benchmark_off(monkeypatch):
+    """A timed cuDNN search picks the conv algorithm per process; the condition encode must not depend on it."""
+    from diffusers.modular_pipelines import PipelineState
+    from diffusers.modular_pipelines.minimax_h3 import encoders
+
+    pipe = _pipeline()
+    seen = []
+    monkeypatch.setattr(torch.backends.cudnn, "benchmark", True)
+    monkeypatch.setattr(
+        encoders,
+        "encode_vae_condition",
+        lambda *a, **k: seen.append(torch.backends.cudnn.benchmark) or torch.zeros(1),
+    )
+    step = _find(pipe, "MiniMaxH3KeyframeVaeEncoderStep")
+    state = PipelineState()
+    state.set("keyframes", [Image.fromarray(np.zeros((64, 64, 3), np.uint8))])
+    step(types.SimpleNamespace(_execution_device = "cpu", vae = None, pixel_mean = (0, 0, 0), pixel_std = (1, 1, 1),
+                               keyframe_encode_seed = 42), state)  # fmt: skip
+    assert seen == [False]
+    assert torch.backends.cudnn.benchmark is True
