@@ -13,6 +13,7 @@ from core.inference import diffusion_engine_router as r
 from core.inference.diffusion_families import (
     _FAMILIES,
     detect_family,
+    detect_family_for_pick,
     family_gguf_loadable,
     family_sd_cpp_supported,
     sd_cpp_text_encoders_for,
@@ -42,6 +43,11 @@ _SNAP = "unsloth/MOSS-Image-SFT-FP8"
 _TE = ("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q8_0.gguf", "llm")
 _TOKENIZER = (_SNAP, "tokenizer/tokenizer.json")
 
+_PICKS = [
+    pytest.param(_REPO, _GGUF, id = "moss"),
+    pytest.param("molbal/Kromoss-GGUF", "kromoss-Q4_K_M.gguf", id = "kromoss"),
+]
+
 
 def _moss():
     fam = detect_family(_REPO)
@@ -70,10 +76,13 @@ def test_only_moss_declares_a_tokenizer_or_native_only_transformer_files():
     assert [f.name for f in _FAMILIES if f.native_transformer_files_only] == ["moss-image"]
 
 
-def test_the_asset_specs_fetch_the_tokenizer():
-    specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(_REPO, _GGUF, _moss())
+@pytest.mark.parametrize("repo, gguf", _PICKS)
+def test_the_asset_specs_fetch_the_tokenizer(repo, gguf):
+    fam = detect_family_for_pick(repo, gguf)
+    assert fam is _moss()
+    specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(repo, gguf, fam)
     assert specs == [
-        (_REPO, _GGUF, "diffusion_model"),
+        (repo, gguf, "diffusion_model"),
         (_SNAP, "vae/diffusion_pytorch_model.safetensors", "vae"),
         _TE,
         (*_TOKENIZER, "tokenizer"),
@@ -136,11 +145,13 @@ def test_the_marker_is_the_model_version_string(tmp_path):
 
 
 @pytest.mark.parametrize("backend", ["cuda", "cpu"])
-def test_a_moss_gguf_goes_native_even_on_a_gpu_host(monkeypatch, tmp_path, backend):
+@pytest.mark.parametrize("repo, gguf", _PICKS)
+def test_a_moss_gguf_goes_native_even_on_a_gpu_host(monkeypatch, tmp_path, backend, repo, gguf):
     _set_device(monkeypatch, backend)
     _set_runnable(monkeypatch)
     _set_binary(monkeypatch, _binary(tmp_path, "sd-cli", marker = True))
-    fam = _moss()
+    fam = detect_family_for_pick(repo, gguf)
+    assert fam is _moss()
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
     r.select_and_activate_engine(fam, model_kind = "gguf")
     assert r.active_engine_name() == ENGINE_SD_CPP
@@ -189,7 +200,8 @@ def test_the_native_disable_wins_and_diffusers_refuses_the_gguf(monkeypatch, env
         DiffusionBackend().validate_load_request(_REPO, gguf_filename = _GGUF, model_kind = "gguf")
 
 
-def test_the_route_validation_passes_a_gguf_native_can_take(monkeypatch, tmp_path):
+@pytest.mark.parametrize("repo, gguf", _PICKS)
+def test_the_route_validation_passes_a_gguf_native_can_take(monkeypatch, tmp_path, repo, gguf):
     # Diffusers validation runs before routing: pass a GGUF bound for sd.cpp, refuse it once native cannot take it.
     from core.inference.diffusion import DiffusionBackend
 
@@ -197,14 +209,14 @@ def test_the_route_validation_passes_a_gguf_native_can_take(monkeypatch, tmp_pat
     _set_runnable(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
     _set_binary(monkeypatch, _binary(tmp_path, "sd-cli", marker = True))
-    fam = DiffusionBackend().validate_load_request(_REPO, gguf_filename = _GGUF, model_kind = "gguf")
+    fam = DiffusionBackend().validate_load_request(repo, gguf_filename = gguf, model_kind = "gguf")
     assert fam.name == "moss-image"
-    assert r.family_buildable_here(fam, model_kind = "gguf", gguf_filename = _GGUF)
+    assert r.family_buildable_here(fam, model_kind = "gguf", gguf_filename = gguf)
 
     _set_binary(monkeypatch, _binary(tmp_path, "sd-cli-old", marker = False))
-    assert not r.family_buildable_here(fam, model_kind = "gguf", gguf_filename = _GGUF)
+    assert not r.family_buildable_here(fam, model_kind = "gguf", gguf_filename = gguf)
     with pytest.raises(ValueError, match = "only on the native stable-diffusion.cpp engine"):
-        DiffusionBackend().validate_load_request(_REPO, gguf_filename = _GGUF, model_kind = "gguf")
+        DiffusionBackend().validate_load_request(repo, gguf_filename = gguf, model_kind = "gguf")
     assert r.family_buildable_here(fam, model_kind = "pipeline") == r.family_pipeline_available(fam)
 
 
