@@ -647,9 +647,8 @@ def h3_float_rgb_to_uint8(pixels: Any) -> Any:
 
 
 def h3_video_frame_rgb(frame: Any) -> Any:
-    """One decoded frame as an RGB PIL image. YUV is converted to float RGB first (``gbrpf32le``), with a frame whose
-    width is off the 32 px grid padded by edge smearing for the conversion and cropped back, so swscale's alignment
-    padding never reaches the picture; full-range JPEG YUV and RGB sources convert to 8-bit RGB directly."""
+    """Decoded frame to RGB PIL. YUV goes through float RGB (``gbrpf32le``), smear-padded to the 32 px grid and cropped
+    back so swscale's alignment padding never reaches the picture."""
     import numpy as np
     from PIL import Image
 
@@ -743,9 +742,8 @@ def resample_h3_audio(waveform: Any, orig_freq: int, new_freq: int) -> Any:
 
 
 def conform_h3_reference_audio(waveform: Any, sample_rate: int) -> tuple[Any, int]:
-    """A decoded ``(samples, channels)`` reference waveform as the audio VAE reads it: resampled to 32 kHz, centre
-    cropped to whole 800-sample latent frames, the first two channels kept (mono copied to both). Shared by both
-    engines, so stable-diffusion.cpp gets the same samples Diffusers does."""
+    """``(samples, channels)`` waveform as the audio VAE reads it: 32 kHz, centre cropped to whole 800-sample latent
+    frames, two channels (mono duplicated). Shared so both engines get the same samples."""
     import numpy as np
     import torch
 
@@ -774,9 +772,8 @@ def h3_output_audio_samples(sample_rate: int, fps: int, frames: int) -> int:
 
 
 def h3_output_audio(audio: Any, sample_rate: int, fps: int, frames: int) -> Any:
-    """The decoded ``(channels, samples)`` soundtrack as the reference saves it: divided by ``max(1, 5 * std)`` over
-    the whole decode (a loud track is brought under full scale instead of clipping), then cut to end with the last
-    frame."""
+    """Soundtrack as the reference saves it: divided by ``max(1, 5 * std)`` so loud tracks do not clip, then cut to end
+    with the last frame."""
     import torch
 
     std = torch.std(audio.float()) * 5.0

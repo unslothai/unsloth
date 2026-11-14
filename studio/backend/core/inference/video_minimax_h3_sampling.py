@@ -1,23 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 on Diffusers, made to follow the reference implementation's sampling and conditioning.
+"""MiniMax-H3 on Diffusers, following the reference implementation's sampling and conditioning.
 
-Installed per render by ``install_h3_reference_recipe(pipe, ...)``, which swaps classes in place on the pipeline's own
-blocks and schedulers (as ``keep_h3_reference_image_sizes`` does); nothing global is patched.
+``install_h3_reference_recipe(pipe, ...)`` swaps classes per render on the pipeline's own blocks and schedulers;
+nothing global is patched.
 
-- Sigma grid: the ``simple`` schedule read off the 1000-entry shifted table, so N steps that do not divide 1000 floor
-  to it; the transformer's video and audio timesteps are derived the way the reference does it (the audio one from
-  the video sigma, not from its own grid).
-- Sampler: ``res_multistep`` (second-order multistep, eta 0, one evaluation per step) by default. The audio stream is
-  stepped in the carried variable ``(sigma_v / sigma_a) * x_a`` on the video sigmas, which is what makes it equal the
-  reference rather than a second-order step in the audio space. Euler stays for PDD (turbo) banks.
-  ``UNSLOTH_H3_SAMPLER=euler`` brings back Euler for every checkpoint.
-- Noise: video then audio from one CPU generator seeded with the request seed, audio drawn as ``[1, 32, 2, T]``;
-  conditioning noise from its own CPU generator re-seeded with the seed for every condition, in packed-row shape.
-- Ref2VA vision input: each two-frame block sized on its own (3136 to 12,845,056 pixels, factor 32, bilinear), from
-  the frames after the ``17 n + 5`` snap; image references get the same limits. ``UNSLOTH_H3_VISION_BUDGET=clip``
-  brings back the processor's whole-clip budget for videos (fewer tokens on long references).
+- Sigma grid: the ``simple`` schedule off the 1000-entry shifted table; the audio timestep comes from the video sigma.
+- Sampler: ``res_multistep`` (eta 0). Audio is stepped in the carried variable ``(sigma_v / sigma_a) * x_a`` on the
+  video sigmas, which matches the reference where a second-order step in audio space would not. Euler for PDD
+  banks; ``UNSLOTH_H3_SAMPLER=euler`` forces it everywhere.
+- Noise: video then audio from one CPU generator seeded with the request seed; conditioning noise re-seeds per
+  condition, in packed-row shape.
+- Ref2VA vision: each two-frame block gets its own pixel budget, from the frames after the ``17 n + 5`` snap.
+  ``UNSLOTH_H3_VISION_BUDGET=clip`` restores the whole-clip budget (fewer tokens on long references).
 """
 
 from __future__ import annotations
@@ -137,8 +133,7 @@ def res_multistep_update(
 @functools.lru_cache(maxsize = None)
 def _scheduler_class(base: type) -> type:
     class StudioMiniMaxH3Scheduler(base):
-        """The stock scheduler on the reference grid, with res_multistep or Euler. ``_studio_stream`` is "video" or
-        "audio"; the audio one reads its sigmas off the video scheduler it is bound to."""
+        """Stock scheduler on the reference grid. The "audio" ``_studio_stream`` reads sigmas off its video scheduler."""
 
         def set_timesteps(
             self,
@@ -512,8 +507,7 @@ def _ref2va_text_encoder_class(base: type) -> type:
 
 
 class _ReferenceImageProcessor:
-    """Stands in for Qwen3-VL's image processor inside one call: the reference limits and arithmetic for pictures,
-    everything else read through to the processor it wraps."""
+    """Qwen3-VL image processor stand-in for one call: reference limits for pictures, all else delegated."""
 
     def __init__(self, inner: Any):
         self._inner = inner
@@ -579,9 +573,8 @@ def _snapped_reference(reference: Any) -> Any:
 @functools.lru_cache(maxsize = None)
 def _fixed_conv_encode_class(base: type) -> type:
     class StudioMiniMaxH3ConditionEncodeStep(base):
-        """The condition VAE encode with ``cudnn.benchmark`` held off: a timed search picks the convolution
-        algorithm per process, so the same keyframe or reference encoded to different latents in every fresh
-        process (and the whole render followed). The heuristic pick is the same every time."""
+        """Condition VAE encode with ``cudnn.benchmark`` off: the timed algorithm search varies per process and
+        changed the latents (and the render); the heuristic pick is deterministic."""
 
         def __call__(self, components: Any, state: Any) -> Any:
             from .diffusion_speed import cudnn_benchmark_scope
@@ -614,8 +607,7 @@ def _swap_blocks(pipe: Any, swaps: dict) -> dict:
 
 
 def install_h3_reference_recipe(pipe: Any, *, pdd: bool = False) -> dict:
-    """Put one MiniMax-H3 Diffusers pipeline on the reference recipe for the next render. Idempotent; returns what it
-    switched (block class -> count, plus the sampler)."""
+    """Put a MiniMax-H3 pipeline on the reference recipe. Idempotent; returns block class -> count plus the sampler."""
     try:
         from diffusers.modular_pipelines.minimax_h3 import before_denoise, encoders
     except Exception:  # noqa: BLE001 - diffusers wraps a failed lazy import in RuntimeError
