@@ -13,7 +13,6 @@ test("voice mode going off releases the speech detector, which has no idle unloa
     chatPage,
     /function releaseVoiceDetector\(\): void \{\s*void unloadVadModel\(\);\s*useChatRuntimeStore\.getState\(\)\.setVadSlotLoaded\(false\);/,
   );
-  // Only on the change to off: a page that mounts with voice off sends no unload.
   assert.match(chatPage, /if \(was !== "off"\) releaseVoiceDetector\(\);/);
 });
 

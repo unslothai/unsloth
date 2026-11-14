@@ -23,7 +23,6 @@ interface VadModelSelectorProps {
 const detectRow = (row: Parameters<typeof audioRowMatchesWorkflow>[0]) =>
   audioRowMatchesWorkflow(row, "detect");
 
-/** Voice mode's "Detect speech with" picker: the audio.cpp voice activity detectors. */
 export const VadModelSelector: FC<VadModelSelectorProps> = ({
   value,
   onValueChange,

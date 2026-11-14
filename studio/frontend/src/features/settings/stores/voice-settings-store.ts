@@ -38,8 +38,7 @@ const QUOTA_TRIM_KEEP = 200;
 const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
-// Raw-string key the chat header's mic picker wrote (chat-runtime-store), read
-// once by merge() below so an existing pin survives that picker's removal.
+// Legacy key the removed chat-header mic picker wrote; adopted once by merge().
 const LEGACY_LOOP_MIC_KEY = "unsloth_chat_mic_device_id";
 
 const HF_REPO_ID =
@@ -405,17 +404,11 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         )
           ? savedSttModel
           : DEFAULT_STT_MODEL;
-        // The voice loop briefly kept its own mic pin under this key, in a picker
-        // inside the chat header. That picker is gone and the loop reads this
-        // store now, so a pin made there must carry over or the loop silently
-        // drops to the OS default input -- on a box with a webcam mic that is a
-        // different microphone. Adopted only when nothing was ever set here.
         let micDeviceId = asString(saved?.micDeviceId, "default");
         if (micDeviceId === "default") {
           try {
             micDeviceId = localStorage.getItem(LEGACY_LOOP_MIC_KEY) || "default";
           } catch {
-            // storage unavailable: keep the default
           }
         }
         return {

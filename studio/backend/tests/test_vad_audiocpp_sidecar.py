@@ -77,7 +77,6 @@ def test_a_detect_keeps_the_server_it_loaded_until_the_run_ends(monkeypatch):
         process = type("P", (), {"poll": lambda self: None})()
 
         def post_json(self, path, body, timeout):
-            # Another request's load would need the lock here; it must still be held.
             held_during_load.append(not lock_free_elsewhere())
             return 200, b'{"segments": [], "sample_rate": 16000}'
 

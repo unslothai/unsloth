@@ -131,7 +131,6 @@ export function audioWorkflowForPick(pick: {
     return "music";
   }
   if (catalog?.workflows) {
-    // Voice mode's "detect" has no Audio page to route to.
     const pages = catalog.workflows.filter((w): w is AudioWorkflowId => w !== "detect");
     return pages.includes("speak") ? workflow : (pages[0] ?? workflow);
   }

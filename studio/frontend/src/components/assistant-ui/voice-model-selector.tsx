@@ -30,9 +30,7 @@ interface VoiceModelSelectorProps {
   value: string;
   onValueChange: (id: string) => void;
   loading?: boolean;
-  /** The voice is loaded on the backend, not only picked. */
   loaded?: boolean;
-  /** No chat model yet: a voice would have nothing to speak for. */
   disabled?: boolean;
   className?: string;
 }
@@ -44,10 +42,6 @@ const TTS_TASKS = ["text-to-speech", "text-to-audio"] as const;
 const speakRow = (row: Parameters<typeof audioRowMatchesWorkflow>[0]) =>
   audioRowMatchesWorkflow(row, "speak");
 
-/**
- * Voice mode's "Speak with" picker: the Audio tab's model picker, narrowed to the audio.cpp
- * voices the loop can load, plus the saved Audio voice when the pick can clone.
- */
 export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   value,
   onValueChange,

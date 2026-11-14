@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Voice mode listens and speaks with audio.cpp models; a pick left over from the
-// llama-server voice slot must not survive into a load that cannot work.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -28,7 +26,6 @@ test("voice mode defaults to audio.cpp on both sides", () => {
 
 test("only voices that speak plain text are offered", () => {
   assert.ok(VOICE_TTS_MODELS.includes(POCKET));
-  // Clone-only and voice-conversion models need a reference clip for every line.
   assert.ok(!VOICE_TTS_MODELS.includes("audio-cpp/audio.cpp-gguf/Chatterbox-GGUF"));
   assert.ok(!VOICE_TTS_MODELS.includes("audio-cpp/audio.cpp-gguf/RVC-GGUF"));
   assert.equal(new Set(VOICE_TTS_MODELS).size, VOICE_TTS_MODELS.length);

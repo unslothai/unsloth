@@ -30,7 +30,6 @@ class ExtraSlot:
     last_used: float = 0.0
     generations: set = field(default_factory = set)
     refs: int = 0
-    # Voice mode's speaking model, kept with multi-model off; voice mode unloads it.
     voice: bool = False
 
 

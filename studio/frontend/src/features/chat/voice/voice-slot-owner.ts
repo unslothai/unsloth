@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The chat page's hold on the voice slot: it only ever unloads the voice it loaded
-// itself. One load at a time; whichever voice is picked when it settles is the one
-// that ends up loaded.
 
 type VoiceSlotApi = {
   loadVoice(id: string): Promise<void>;
@@ -30,8 +27,7 @@ export type VoiceSlotOwner = {
   readonly pending: Promise<boolean> | null;
 };
 
-// Every owner's loads and unloads run one after another: a page that left can
-// still be unloading the voice a new page is about to adopt by id.
+// Serialized across owners: a page that left can still be unloading the voice a new page adopts.
 let slotTail: Promise<unknown> = Promise.resolve();
 function serial<T>(op: () => Promise<T>): Promise<T> {
   const next = slotTail.then(op, op);
@@ -41,12 +37,9 @@ function serial<T>(op: () => Promise<T>): Promise<T> {
 
 export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
   let loaded: string | null = null;
-  // False for a voice found already serving (the Audio page's): voice mode borrows it, never unloads it.
   let owned = false;
   let pending: Promise<boolean> | null = null;
   let closed = false;
-  // Voice turned off, or the page left, while the load was in flight: the off
-  // path already ran and found nothing of ours to unload.
   const stale = () => closed || deps.voiceOff();
 
   const unloadOwn = () => {
@@ -69,7 +62,6 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
         const { loadVoice, unloadVoice, voiceServing } = await deps.api();
         if (await voiceServing(id)) {
           if (stale()) return false;
-          // Borrowing another voice still releases the one voice mode loaded itself.
           if (owned && loaded && loaded !== id) {
             const previous = loaded;
             loaded = null;
@@ -81,8 +73,6 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
           deps.setLoaded(true);
           return true;
         }
-        // With no chat model the voice would take the empty seat, and the next chat
-        // load would replace it.
         if (!deps.hasChatModel()) return false;
         deps.setLoaded(false);
         deps.setLoading(true);

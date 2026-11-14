@@ -9,8 +9,6 @@ import { splitIntoSentences, stripForSpeech } from "../voice/speech-text";
 import { getVoicePlayContext } from "../voice/voice-loop-bridge";
 import { voiceTtsCanClone } from "../voice/voice-models";
 
-// While the LLM is still writing, only terminated sentences are safe to speak;
-// the trailing chunk is the sentence in progress.
 export function splitStreaming(text: string): {
   complete: string[];
   partial: string;
@@ -21,12 +19,9 @@ export function splitStreaming(text: string): {
   return { complete: parts.slice(0, -1), partial: parts[parts.length - 1] ?? "" };
 }
 
-// Loudness of what is playing (RMS, ~0..0.3), read by the speaking orb each frame.
 export const voiceOutputLevel = { current: 0 };
 
-// audio.cpp serializes requests per model, so synthesizing further ahead only
-// queues work a barge-in throws away. One clip queued behind the playing one hides
-// the gap between sentences.
+// audio.cpp serializes per model, so synthesizing further ahead only queues work a barge-in discards.
 const MAX_QUEUED_CLIPS = 2;
 const ENVELOPE_BUCKET_S = 1 / 60;
 
@@ -66,21 +61,14 @@ interface Stream {
   final: boolean;
 }
 
-/**
- * Speaks a reply sentence by sentence through voice mode's audio.cpp voice while the
- * LLM is still writing it. Each sentence is one /audio/generate call; clips play in
- * order on one AudioContext playhead.
- */
 export function useTtsPlayer(onPlaybackEnd?: () => void): {
   isSpeaking: boolean;
-  /** True only while a clip is audible (not while the first one synthesizes). */
   isPlaying: boolean;
   speak(text: string): void;
   beginStream(): void;
   feedText(text: string): void;
   endStream(finalText: string): void;
   stop(): void;
-  /** Hold the reply while a possible barge-in is checked; resumePlayback picks it back up. */
   pausePlayback(): void;
   resumePlayback(): void;
   primeAudio(): void;
@@ -131,7 +119,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       try {
         clip.source.stop();
       } catch {
-        // never started
       }
     }
     clipsRef.current.clear();
@@ -160,8 +147,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         url = await request();
       } catch (error) {
         if (reqRef.current !== reqId) return null;
-        // The voice may have been evicted (a bigger load, the backend restarting):
-        // load it again once rather than going quiet for the rest of the session.
         const ensure = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
         if (!ensure || !(await ensure())) throw error;
         if (reqRef.current !== reqId) return null;
@@ -177,9 +162,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     (buffer: AudioBuffer) => {
       const ctx = getPlayCtx();
       if (!ctx) return;
-      // WebKit parks the context ("interrupted"/"suspended") when another surface takes
-      // the audio session, e.g. the Audio tab mounting its players; a start() on a parked
-      // context is silent, so wake it first.
+      // WebKit parks the context when another surface takes audio; start() on a parked context is silent.
       if (ctx.state !== "running") void ctx.resume().catch(() => {});
       const source = ctx.createBufferSource();
       source.buffer = buffer;
@@ -220,7 +203,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
             if (buffer) schedule(buffer);
           } catch (error) {
             if (!live()) return;
-            // One toast per reply: a voice that is down fails every sentence.
             if (failedReqRef.current !== reqId) {
               failedReqRef.current = reqId;
               toast.error("Could not synthesize speech", {
@@ -234,8 +216,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           await sleep(40);
         }
       }
-      // Bounded by the timeline itself, so a source that never fires onended
-      // cannot keep the mic shut.
       const ctx = getPlayCtx();
       while (live() && clipsRef.current.size > 0) {
         if (ctx && ctx.currentTime > playHeadRef.current + 0.5) break;
@@ -268,8 +248,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     }
   }, []);
 
-  // A stream stopped by a barge-in or a thread switch is gone, and ending it is a
-  // no-op: the mic that cut it in is already the next turn's.
   const endStream = useCallback((finalText: string) => {
     const st = streamRef.current;
     if (!st || st.reqId !== reqRef.current) return;
@@ -288,8 +266,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     [beginStream, endStream],
   );
 
-  // Suspending the context freezes every scheduled clip in place; the run loop's tail wait
-  // reads the frozen clock, so nothing ends early while held.
   const pausePlayback = useCallback(() => {
     if (pausedRef.current || clipsRef.current.size === 0) return;
     pausedRef.current = true;

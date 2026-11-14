@@ -14,7 +14,6 @@ export interface AudioPickerRow {
   audioWorkflows?: readonly string[] | null;
 }
 
-/** Voice mode's speech check is a picker workflow with no Audio page of its own. */
 export type AudioPickerWorkflow = AudioWorkflowId | "detect";
 
 const VAD_HUB_TASK = "voice-activity-detection";

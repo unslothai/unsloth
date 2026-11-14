@@ -21,12 +21,9 @@ import { cn } from "@/lib/utils";
 import { type FC, useMemo, useState } from "react";
 
 interface SttModelSelectorProps {
-  /** The transcription model the loop listens with (a dictation key or an audio.cpp folder id). */
   value: string;
   onValueChange: (id: string) => void;
-  /** No chat model yet: listening has nothing to reply with. */
   disabled?: boolean;
-  /** The listener is loaded, so the row shows as resident. */
   ready?: boolean;
   loading?: boolean;
   className?: string;
@@ -35,7 +32,6 @@ interface SttModelSelectorProps {
 const transcribeRow = (row: Parameters<typeof audioRowMatchesWorkflow>[0]) =>
   audioRowMatchesWorkflow(row, "transcribe");
 
-/** The picker row for a saved dictation key: the Transcribe tab lists repos, dictation saves keys. */
 function sttRepoForKey(key: string): string {
   if (isAudioCppFolderId(key)) return key;
   if (key.startsWith("audiocpp-"))
@@ -45,7 +41,6 @@ function sttRepoForKey(key: string): string {
   return sttRepoIdForSidecarKey(key, "transformers");
 }
 
-/** Voice mode's "Listen with" picker: the Audio tab's Transcribe picker, saving the dictation key. */
 export const SttModelSelector: FC<SttModelSelectorProps> = ({
   value,
   onValueChange,

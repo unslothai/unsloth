@@ -9,7 +9,6 @@ import {
   type VoiceOrbInputs,
 } from "../src/features/chat/voice/orb-state.ts";
 
-/** Every input false, voice running: the resting state of a live loop. */
 function idle(overrides: Partial<VoiceOrbInputs> = {}): VoiceOrbInputs {
   return {
     voiceMode: "active",
@@ -27,8 +26,6 @@ function idle(overrides: Partial<VoiceOrbInputs> = {}): VoiceOrbInputs {
 
 test("the orb is blank unless the loop is actually running", () => {
   for (const voiceMode of ["off", "configuring"] as const) {
-    // Even with everything else lit: configuring opens the picker, it does not
-    // start the mic, so an orb state here would claim a loop that is not running.
     const decision = deriveOrbState(
       idle({ voiceMode, voiceSlotLoading: true, isPlaying: true }),
     );
@@ -44,9 +41,6 @@ test("a warming model reads as loading, not as a ready orb", () => {
 });
 
 test("hearing you outranks the model speaking, so barge-in is visible", () => {
-  // This is the ordering that makes talking over the model legible: the mic is
-  // live during playback on the streaming engine, and the moment it picks you up
-  // the orb must stop claiming the model has the floor.
   assert.deepEqual(
     deriveOrbState(idle({ voiceHearing: true, isPlaying: true, isSpeaking: true })),
     { kind: "set", state: "hearing" },
@@ -54,8 +48,6 @@ test("hearing you outranks the model speaking, so barge-in is visible", () => {
 });
 
 test("playback outranks the work still running behind it", () => {
-  // The model keeps writing and the next sentence keeps synthesizing while the
-  // first one plays. Playback is what the user perceives, so it wins.
   assert.deepEqual(
     deriveOrbState(
       idle({ isPlaying: true, isThreadRunning: true, isSpeaking: true }),
@@ -76,9 +68,6 @@ test("transcribing is reported ahead of generating, the order they happen in", (
 });
 
 test("a synthesis gap holds the current state instead of switching", () => {
-  // A TTS session with nothing playing is usually two already-synthesized
-  // sentences swapping the audio element. Deciding "synthesizing" here would
-  // flicker the orb at every sentence boundary; the caller waits it out instead.
   assert.deepEqual(deriveOrbState(idle({ isSpeaking: true })), { kind: "hold" });
 });
 
@@ -87,9 +76,6 @@ test("an armed mic with nothing else happening is listening", () => {
 });
 
 test("no chat model waits instead of claiming to listen", () => {
-  // The orb is reachable from the + menu before a model is picked. The mic stays
-  // shut in that state, so "listening" would be a lie that leaves the user
-  // talking at nothing.
   assert.deepEqual(deriveOrbState(idle({ hasChatModel: false })), {
     kind: "set",
     state: "waiting",
@@ -97,8 +83,6 @@ test("no chat model waits instead of claiming to listen", () => {
 });
 
 test("waiting outranks a warming voice slot", () => {
-  // A voice slot can load fine with no chat model behind it. Showing "loading"
-  // would put the wait on the machine when it is actually on the user.
   assert.deepEqual(
     deriveOrbState(idle({ hasChatModel: false, voiceSlotLoading: true })),
     { kind: "set", state: "waiting" },
@@ -121,6 +105,5 @@ test("a reasoning model reads as thinking until answer text arrives", () => {
     kind: "set",
     state: "generating",
   });
-  // Reasoning with nothing running is a stale flag, not a phase.
   assert.deepEqual(deriveOrbState(idle({ isReasoning: true })), { kind: "set", state: "listening" });
 });

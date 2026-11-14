@@ -121,7 +121,6 @@ export function audioTaskFor(repoId: string): AudioTask | null {
   return groupForRepoId(repoId, AUDIO_CATALOG)?.task ?? null;
 }
 
-/** The Audio page's slot for a model; speech detectors belong to voice mode, not a page. */
 export function audioPageTaskFor(repoId: string): "tts" | "stt" | null {
   const task = audioTaskFor(repoId);
   return task === "vad" ? null : task;

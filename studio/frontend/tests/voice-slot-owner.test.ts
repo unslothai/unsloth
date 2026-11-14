@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Turning Voice off (or leaving Chat) while the voice model is still loading used
-// to find nothing to unload, and the load then settled as the page's own, leaving
-// the extra model resident with voice off.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -92,8 +89,6 @@ test("reopening after a close loads again (StrictMode remount)", async () => {
   assert.equal(h.owner.loadedId, "kokoro");
 });
 
-// A page that left mid-load unloads by model id. A new page adopting the same
-// voice in that window must not have it unloaded under it.
 test("a new page keeps the voice an old page's stale cleanup would unload", async () => {
   const served = new Set<string>();
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

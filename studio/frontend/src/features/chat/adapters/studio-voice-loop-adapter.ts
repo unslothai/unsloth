@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The store directly, not the feature barrel: the barrel pulls in the runtime
-// provider, which reaches back here through the dictation dispatcher.
+// The store directly: the feature barrel imports back here through the dictation dispatcher.
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   createBargeGate,
@@ -37,58 +36,23 @@ import {
 } from "./studio-model-dictation-adapter";
 import { isMissingDeviceError } from "./studio-web-speech-dictation-adapter";
 
-// Voice mode's listener: capture the mic, detect end-of-utterance with a
-// simple energy VAD, then transcribe the recording with the picked STT model and
-// emit the transcript. Unlike the Web Speech adapter this needs no browser cloud
-// speech service, so it works in Edge/Brave and the Tauri desktop webview.
-//
-// STT is batch, not streaming, so there are no interim results: one final
-// transcript per utterance, mirroring how the Web Speech adapter ends a session
-// on silence and lets the voice loop re-arm.
 
-const SILENCE_RMS = 0.012; // RMS below this counts as silence (ends the utterance)
-// A frame only counts as real SPEECH toward the transcribe gate (voicedMs /
-// heardSpeech) at or above this, comfortably over the ambient-noise floor. Frames
-// between SILENCE_RMS and SPEECH_RMS keep the utterance alive but don't count, so
-// room noise or a mic click can't quietly accumulate the 350ms of "speech" that
-// would get fed to STT (which then hallucinates "Thank you." etc. from noise).
-// Lower it if genuinely soft speech is being dropped.
+const SILENCE_RMS = 0.012;
 const SPEECH_RMS = 0.02;
-const SILENCE_HANG_MS = 1000; // silence after speech ends the utterance
-// A transcript that reads cut off ("Could you tell me just like") is held, not
-// sent, and the next window gets a longer hang so the rest of the thought can
-// land. If nothing more is said, the fragment goes as-is after the flush wait.
+const SILENCE_HANG_MS = 1000;
 const CONTINUATION_HANG_MS = 1800;
 const CONTINUATION_FLUSH_MS = 4000;
-const CONTINUATION_MAX_MS = 20000; // a fragment never waits longer than this in total
-const MAX_UTTERANCE_MS = 30000; // hard cap so a stuck mic can't record forever
-const NO_SPEECH_TIMEOUT_MS = 8000; // give up quietly if no speech is heard
-// Minimum total voiced audio required to treat a window as real speech and
-// transcribe it. Coughs, clicks, a blip of the model's own voice, or ambient
-// noise fall under this and are dropped -- this is what stops STT being fed
-// junk (and hallucinating repeated tokens) during barge-in / idle listening.
+const CONTINUATION_MAX_MS = 20000;
+const MAX_UTTERANCE_MS = 30000;
+const NO_SPEECH_TIMEOUT_MS = 8000;
 const MIN_SPEECH_MS = 350;
-// Audio kept from just before a barge-in fires, so the first word of what cut in
-// still reaches STT.
 const BARGE_PREROLL_MS = 600;
-// A burst this long cuts the reply on loudness alone (no detector); with the detector confirming
-// a voice, half of it is enough and a cough no longer needs the long hold to be ruled out.
 const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
-// What the detector must hear in a clip for it to count as speech at all.
 const VAD_MIN_SPEECH_MS = 300;
 
-// The backend said it cannot detect speech here (no runtime, model refused): stop asking for
-// the rest of the app session and fall back to the loudness gate alone.
 let vadDisabled = false;
-// Silence trimmed around the voiced span before sending to STT (STT
-// hallucinates on long leading/trailing silence). Keep a little context.
 const SILENCE_PAD_MS = 200;
-// Faked streaming reveal: STT is batch (one transcript per utterance), but
-// once it lands we replay it as growing interim results so the composer types it
-// out char-by-char like the streaming Web Speech engine, instead of the whole
-// line appearing at once. REVEAL_MAX_MS caps the total so long transcripts don't
-// lag the send much.
 const REVEAL_CHAR_MS = 12;
 const REVEAL_MAX_MS = 1000;
 
@@ -103,8 +67,6 @@ const getAudioContextCtor = (): AudioContextCtor | undefined => {
   );
 };
 
-// Encode mono float samples as a 16-bit PCM WAV blob (soundfile reads this; no
-// ffmpeg needed server-side).
 function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
@@ -117,8 +79,8 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   writeStr(8, "WAVE");
   writeStr(12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, 1, true); // mono
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * 2, true);
   view.setUint16(32, 2, true);
@@ -134,10 +96,6 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   return new Blob([view], { type: "audio/wav" });
 }
 
-// STT hallucinates a repeated word/phrase on non-speech audio (noise,
-// breath, silence) -- e.g. "Ha, ha, ha..." or "Thank you. Thank you...". Reject
-// a transcript dominated by one repeated token (very low unique-word ratio) so
-// it isn't sent as a prompt. Short utterances (< 6 words) are always allowed.
 function isHallucinatedTranscript(text: string): boolean {
   const words = text
     .toLowerCase()
@@ -148,11 +106,8 @@ function isHallucinatedTranscript(text: string): boolean {
   return new Set(words).size / words.length < 0.3;
 }
 
-// The unfinished fragment carried across listen() sessions; the re-arm clears
-// the composer, so the text lives here until the turn is whole.
 let heldTurn: { text: string; at: number } | null = null;
 
-/** Drop a fragment waiting for its continuation: a thread switch or voice going off. */
 export function clearHeldTurn(): void {
   heldTurn = null;
 }
@@ -181,8 +136,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     let processor: ScriptProcessorNode | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
     const chunks: Float32Array[] = [];
-    // Parallel to chunks: whether each frame was above the silence floor, used to
-    // measure voiced duration and to trim silence before transcription.
     const chunkVoiced: boolean[] = [];
     let voicedMs = 0;
     const bargeGate = createBargeGate(
@@ -209,8 +162,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         await endedPromise;
       },
       cancel: () => {
-        // The fragment outlives the session: the engine cancels and reopens the mic
-        // around every run end, and a held turn must survive that.
         teardown();
         finish("cancelled");
       },
@@ -229,8 +180,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     };
 
     const teardown = () => {
-      // Mic is closing: no longer hearing the user, so drop the orb's salmon
-      // "hearing you" state (the utterance ended or was cancelled).
       useChatRuntimeStore.getState().setVoiceHearing(false);
       if (processor) {
         processor.onaudioprocess = null;
@@ -258,7 +207,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       resolveEnded?.();
     };
 
-    // Whether the clip holds a voice. null: no detector, decide on loudness as before.
     const clipHasSpeech = async (blob: Blob): Promise<boolean | null> => {
       if (!vadReady || vadDisabled) return null;
       try {
@@ -273,14 +221,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       }
     };
 
-    // Nothing said this window (or only a sub-threshold blip: cough, click, a bit of the
-    // model's own voice, ambient noise). End quietly and re-arm, mirroring the Web Speech
-    // "no-speech" path so the loop keeps listening without feeding STT junk to hallucinate on.
     const endWithoutSpeech = () => {
-      // A burst that held the reply was not the user after all.
       if (bargedIn) requestVoiceBargeAbort();
       if (heldTurn) {
-        // The rest never came: the fragment was the whole turn after all.
         const text = heldTurn.text;
         heldTurn = null;
         for (const cb of speechCallbacks)
@@ -293,7 +236,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       setTimeout(() => requestVoiceResume(), 0);
     };
 
-    // End the utterance: tear down capture, transcribe the buffer, emit result.
     let finalizing = false;
     const finalize = async () => {
       if (finalizing || ended) return;
@@ -305,8 +247,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         return;
       }
 
-      // Trim to the voiced span (+ a little padding) so STT isn't handed long
-      // leading/trailing silence, which it tends to hallucinate words from.
       const frameMs = chunks[0] ? (chunks[0].length / sampleRate) * 1000 : 0;
       const padFrames = frameMs > 0 ? Math.ceil(SILENCE_PAD_MS / frameMs) : 0;
       const firstVoiced = chunkVoiced.indexOf(true);
@@ -324,8 +264,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       }
       const wav = encodeWav(merged, sampleRate);
 
-      // Loud is not the same as spoken: a cough, a hum or a chair clears the loudness gate.
-      // The detector rules those out before anything reaches STT.
       if ((await clipHasSpeech(wav)) === false) {
         if (ended) return;
         endWithoutSpeech();
@@ -334,16 +272,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (ended) return;
 
       try {
-        // The PR posted its own multipart to /api/audio/transcribe and let the
-        // backend pick a model. Upstream since grew a real STT stack: a curated
-        // model list, per-model engines, downloads, and language handling. Go
-        // through its helper so the loop transcribes with the model the Voice
-        // settings tab actually downloaded, instead of whatever the route
-        // defaults to (which is how this asked for an absent "small").
         const modelId =
           useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
-        // Flag transcribing so the orb shows a processing state (not idle green)
-        // while STT runs -- the first call can take many seconds on ROCm.
         const store = useChatRuntimeStore.getState();
         store.setVoiceTranscribing(true);
         let transcript = "";
@@ -353,9 +283,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           ).trim();
           if (ended) return;
         } catch (error) {
-          // A model the user has selected but never downloaded is the common
-          // first-run case, not a failure: raise the same download prompt the
-          // Dictate button raises and keep the loop alive.
           if (error instanceof SttModelNotDownloadedError) {
             requestSttDownload(
               modelId ?? useVoiceSettingsStore.getState().sttModel,
@@ -366,14 +293,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           store.setVoiceTranscribing(false);
         }
         if (transcript && isHallucinatedTranscript(transcript)) {
-          // STT invents a repeated token ("Ha, ha, ha...", "Thank you.
-          // Thank you...") from noise/breath/silence. Drop it and keep listening
-          // rather than sending garbage as a prompt.
           transcript = "";
         }
         if (transcript && isBackchannel(transcript)) {
-          // A breath or "mm" that cleared the speech gate. Not a turn: keep listening,
-          // and keep any held fragment waiting for its real continuation.
           if (bargedIn) requestVoiceBargeAbort();
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);
@@ -388,7 +310,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           performance.now() - (heldTurn?.at ?? performance.now()) <
             CONTINUATION_MAX_MS
         ) {
-          // Mid-thought: show it in the composer, keep it, and listen for the rest.
           heldTurn = {
             text: transcript,
             at: heldTurn?.at ?? performance.now(),
@@ -400,9 +321,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         heldTurn = null;
         if (transcript) {
-          // Fake a streaming reveal: replay the transcript as growing interim
-          // results so the composer types it out char-by-char (like Web Speech),
-          // then commit + send. Bails immediately if the session is superseded.
           const total = transcript.length;
           const stepChars = Math.max(
             1,
@@ -416,16 +334,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
           }
           if (ended) return;
-          // onSpeech(isFinal) commits the full transcript into the composer text;
-          // onSpeechEnd (via finish) ends the session. Then, deferred so those
-          // state updates land first, submit the turn. requestVoiceSubmit is a
-          // no-op outside voice mode, so plain Dictate-button use just fills the
-          // composer as before.
           for (const cb of speechCallbacks) cb({ transcript, isFinal: true });
           finish("stopped", transcript);
           setTimeout(() => requestVoiceSubmit(), 0);
         } else {
-          // STT heard nothing usable in the burst that held the reply.
           if (bargedIn) requestVoiceBargeAbort();
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);
@@ -436,19 +348,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         toast.error("Transcription failed.");
         if (bargedIn) requestVoiceBargeAbort();
         finish("error");
-        // Keep the voice loop alive: a transcribe failure (transient backend
-        // hiccup, etc.) shouldn't leave the mic dead so it never hears you again.
-        // Re-arm so the next utterance still gets a shot.
         setTimeout(() => requestVoiceResume(), 0);
       }
     };
 
     void (async () => {
       try {
-        // Pin capture to the input device chosen in Settings > Voice, so the loop
-        // listens to their headset mic and not a loopback / "Stereo Mix" /
-        // default-communications device that mixes in system/app audio (e.g.
-        // Discord). "default" -> browser default.
         const micDeviceId = useVoiceSettingsStore.getState().micDeviceId;
         const pinnedMic = micDeviceId && micDeviceId !== "default";
         const baseAudio: MediaTrackConstraints = {
@@ -462,8 +367,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               : baseAudio,
           });
         } catch (error) {
-          // Same fallback as the Dictate adapters: a pinned headset that is
-          // unplugged must not kill the loop, just lose its pin for this turn.
           if (pinnedMic && isMissingDeviceError(error)) {
             stream = await navigator.mediaDevices.getUserMedia({
               audio: baseAudio,
@@ -477,8 +380,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           return;
         }
         audioCtx = new AudioCtx();
-        // Created after the mic await, outside the user gesture; a suspended context delivers
-        // no audioprocess callbacks and the loop only ever hits its no-speech timeout.
+        // Created outside the user gesture: a suspended context never fires audioprocess.
         await audioCtx.resume();
         sampleRate = audioCtx.sampleRate;
         source = audioCtx.createMediaStreamSource(stream);
@@ -487,17 +389,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         lastVoiceAt = startedAt;
         session.status = { type: "running" };
 
-        // Warm the STT model while the user is still drawing breath. The STT model's
-        // first load is slow enough (tens of seconds on ROCm) that paying it
-        // after the first utterance reads as the loop having missed what was
-        // said. Fire-and-forget: transcription awaits the same load, so a
-        // failure here surfaces there rather than killing the session.
         void loadSttModel(
           useChatRuntimeStore.getState().selectedSttModelId ??
             useVoiceSettingsStore.getState().sttModel,
         ).catch(() => {});
-        // The speech detector is small and loads in seconds; until it is up, clips pass on
-        // loudness alone as before.
         if (!vadDisabled) {
           void loadVadModel(useChatRuntimeStore.getState().selectedVadModelId)
             .then(() => {
@@ -521,9 +416,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const now = performance.now();
 
           const frameMs = (input.length / sampleRate) * 1000;
-          // The reply is playing: listen only for the user cutting in. Nothing is
-          // recorded and the no-speech clock waits, so when playback ends this
-          // session simply becomes the next turn's listener.
           if (!bargedIn && isVoicePlaybackActive()) {
             preroll.push(new Float32Array(input));
             while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
@@ -543,15 +435,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               for (const cb of speechStartCallbacks) cb();
             };
             if (!vadReady || vadDisabled) {
-              // No detector: only a long burst cuts in, so a cough decays before it counts.
               if (bargeGate.loudMs < BARGE_UNCONFIRMED_MS) return;
               commitBarge();
               return;
             }
             if (bargeConfirming) return;
-            // Loud enough for long enough: ask the detector whether it is a voice before
-            // cutting the reply. The preroll keeps filling meanwhile, so a confirmed barge
-            // still carries its first word.
             bargeConfirming = true;
             const total = preroll.reduce((n, c) => n + c.length, 0);
             const probe = new Float32Array(total);
@@ -572,9 +460,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             return;
           }
           chunks.push(new Float32Array(input));
-          // notSilent keeps the utterance alive (resets the silence-hang timer);
-          // speech is the stricter bar that actually counts toward transcription,
-          // so noise/clicks between the two thresholds never reach STT.
           const notSilent = rms >= SILENCE_RMS;
           const speech = rms >= SPEECH_RMS;
           chunkVoiced.push(speech);
@@ -583,8 +468,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             voicedMs += frameMs;
             if (!heardSpeech) {
               heardSpeech = true;
-              // Light the orb's salmon "hearing you" state the instant the mic
-              // picks up real voice -- immediate proof the mic is capturing you.
               useChatRuntimeStore.getState().setVoiceHearing(true);
               for (const cb of speechStartCallbacks) cb();
             }
@@ -605,7 +488,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         };
 
         // onaudioprocess only fires while the processor reaches a destination; a muted sink
-        // keeps it running without ever playing the mic back.
         const sink = audioCtx.createGain();
         sink.gain.value = 0;
         source.connect(processor);

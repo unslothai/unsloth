@@ -17,9 +17,6 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, type FC } from "react";
 
 export const orbConfig = {
-  // Voice is open but no chat model is loaded, so nothing can answer a turn. The
-  // resting theme tones, a slow breathe, and a caption that names the block --
-  // it is the one state that is waiting on the user, not on the machine.
   waiting: {
     gradient:
       "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))",
@@ -33,45 +30,30 @@ export const orbConfig = {
     duration: "3s",
     shadow: "0 0 32px 8px rgba(52,211,153,0.35)",
   },
-  // Salmon pink: the mic is actively hearing your voice (distinct from the idle
-  // green "listening"). A quicker breathe so it reads as responsive/live.
   hearing: {
     gradient: "radial-gradient(circle at 40% 35%, #ffb0a0, #fb7185)",
     animation: "voice-orb-breathe",
     duration: "1.4s",
     shadow: "0 0 32px 8px rgba(251,113,133,0.4)",
   },
-  // Grey-blue slow pulse: a model is loading / warming (the voice slot, or the
-  // transcription model),
-  // so it clearly reads as "not ready yet" -- distinct from the idle grey and the
-  // ready green. Separate from lilac, which now means only TTS generating speech.
   loading: {
     gradient: "radial-gradient(circle at 40% 35%, #94a3b8, #475569)",
     animation: "voice-orb-pulse",
     duration: "2s",
     shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
   },
-  // Fuchsia quick pulse: the transcription engine is turning your captured
-  // speech into text. A
-  // magenta hue -- the farthest from the idle/listening green on the palette -- so
-  // "transcribing" never reads as "ready", and its pencil icon plus this colour
-  // keep it distinct from the amber "generating LLM response" below.
   transcribing: {
     gradient: "radial-gradient(circle at 40% 35%, #e879f9, #c026d3)",
     animation: "voice-orb-pulse",
     duration: "1.1s",
     shadow: "0 0 30px 7px rgba(217,70,239,0.4)",
   },
-  // Indigo slow breathe: a reasoning model is thinking, no answer text yet. Slower
-  // than generating on purpose; this is the long wait of a thinking turn.
   thinking: {
     gradient: "radial-gradient(circle at 40% 35%, #a5b4fc, #4f46e5)",
     animation: "voice-orb-breathe",
     duration: "2.4s",
     shadow: "0 0 32px 8px rgba(129,140,248,0.35)",
   },
-  // Amber pulse: the LLM is writing its reply, nothing playing yet. The typing
-  // dots are the classic "assistant is generating a response" indicator.
   generating: {
     gradient: "radial-gradient(circle at 40% 35%, #fbbf24, #d97706)",
     animation: "voice-orb-pulse",
@@ -94,16 +76,10 @@ export const orbConfig = {
 
 type OrbStateName = keyof typeof orbConfig;
 
-// The orb at rest, before the loop starts. Theme tokens rather than fixed greys
-// (index.css, :root and .dark): a flat mid-grey reads as disabled chrome on the
-// light page and as a hole on the dark one.
 export const ORB_IDLE_GRADIENT =
   "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
 export const ORB_IDLE_SHADOW = "0 0 26px 6px var(--voice-orb-idle-glow)";
 
-// The full-overlay orb is a dark 3D glass sphere. Each state carves an icon into
-// it as a recessed "black hole" (near-black fill + a light bottom rim so the
-// shape reads as pressed into the surface) and shows a one-word caption below.
 const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
   waiting: { label: "Select a model", icon: "mic-off" },
   listening: { label: "Listening", icon: "mic" },
@@ -127,20 +103,13 @@ type IconKind =
   | "pencil"
   | "waveform";
 
-// Deboss: near-black fill with a faint highlight below and a dark cut above, so
-// the glyph looks carved into the sphere rather than sitting on top of it.
 const HOLE = "#08080b";
 const DEBOSS =
   "drop-shadow(0 1px 0.5px rgba(255,255,255,0.22)) drop-shadow(0 -1px 1.5px rgba(0,0,0,0.6))";
-// The same deboss as a box-shadow, for glyphs that move every frame. WebKit keeps a
-// filtered element's raster when only its transform changes, so a drop-shadow under
-// a per-frame scaleY leaves ghost bands at the unscaled edges (seen on macOS).
+// box-shadow, not drop-shadow: WebKit leaves ghost bands when a filtered element's transform changes per frame.
 const DEBOSS_BOX =
   "0 1px 0.5px rgba(255,255,255,0.22), 0 -1px 1.5px rgba(0,0,0,0.6)";
 
-// Three dots that jump left-to-right in sequence (thinking). This is a vertical
-// translate, not a scale, so the dots never grow or shrink independently -- their
-// size stays locked to the ball's breathe.
 const Dots: FC = () => (
   <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
     {[0, 1, 2].map((i) => (
@@ -154,10 +123,6 @@ const Dots: FC = () => (
   </div>
 );
 
-// Speaking: black equalizer bars driven by the ACTUAL TTS output loudness
-// (voiceOutputLevel), set imperatively per animation frame so there are no React
-// re-renders. The group still rides the ball's breathe; the bar HEIGHTS move with
-// the audio. SPEAK_GAIN scales the RMS toward full height on loud speech (tunable).
 const SPEAK_GAIN = 5.5;
 const SpeakingBars: FC = () => {
   const refs = useRef<Array<HTMLSpanElement | null>>([]);
@@ -169,7 +134,6 @@ const SpeakingBars: FC = () => {
       const lvl = Math.min(1, voiceOutputLevel.current * SPEAK_GAIN);
       const t = performance.now() / 1000;
       for (let i = 0; i < refs.current.length; i++) {
-        // Per-bar shimmer so the band isn't a flat block, scaled by loudness.
         const shimmer = 0.78 + 0.22 * Math.sin(t * 9 + i * 1.7);
         const target = Math.min(1, 0.16 + lvl * weights[i] * shimmer);
         smooth[i] += (target - smooth[i]) * 0.4;
@@ -205,10 +169,7 @@ const SpeakingBars: FC = () => {
 };
 
 const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
-  // Speaking: live equalizer bars that move with the audio output.
   if (icon === "bars-live") return <SpeakingBars />;
-  // Soundwave (hearing): a static glyph -- the ball's pulse supplies the motion
-  // and the icon rides it, growing/shrinking with the sphere, not on its own.
   if (icon === "wave")
     return (
       <AudioLinesIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
@@ -227,32 +188,22 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
       </motion.div>
     );
   if (icon === "pencil")
-    // Transcribing: a pencil writing down what you said. Static, rides the breathe.
     return (
       <PencilLineIcon size={44} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
     );
   if (icon === "waveform")
-    // Generating voice: a single audio waveform being built. Static like the rest,
-    // so it grows/shrinks with the sphere instead of animating on its own.
     return (
       <AudioWaveformIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
     );
   if (icon === "mic-off")
-    // Waiting on a chat model: the struck-through mic says the loop is open but
-    // not capturing, without needing the caption to be read first.
     return (
       <MicOffIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
     );
-  // mic (listening): a resting state, so the icon gets NO independent animation.
-  // It rides the ball's breathe scale only, so it grows and shrinks in perfect
-  // sync with the sphere -- reading as carved into the surface, not floating.
   return <MicIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
 };
 
 export const VoiceOrb: FC = () => {
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
-  // Minimized: the loop keeps running (orbState stays set) but the full-screen
-  // overlay is hidden so the chat is visible underneath.
   const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
   const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
   const showOverlay = Boolean(orbState) && !collapsed;
@@ -260,10 +211,6 @@ export const VoiceOrb: FC = () => {
   const cfg = orbState ? orbConfig[orbState] : null;
   const meta = orbState ? orbMeta[orbState] : null;
 
-  // Esc only minimizes the orb back to chat -- it does NOT stop voice mode. The
-  // single place to turn voice off is the + menu's Voice toggle, so exiting the
-  // orb view is never confused with ending the session. Listener attached only
-  // while the overlay is showing.
   useEffect(() => {
     if (!showOverlay) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -295,55 +242,30 @@ export const VoiceOrb: FC = () => {
 
       <div
         className={cn(
-          // When active, the backdrop must intercept pointer events so hovers
-          // don't fall through to hidden chat history underneath (tooltips,
-          // hover menus, side panels). The composer dock sits at z-40 above this
-          // and keeps its own pointer-events-auto, so it stays interactive. When
-          // inactive the backdrop is still mounted (opacity-0), so it must let
-          // clicks pass through.
           "absolute inset-0 z-30 flex flex-col items-center justify-center gap-8 bg-background",
-          // Fast, and on its own compositor layer: this is a full-viewport
-          // cross-fade over a chat that keeps rendering underneath, and at 500ms
-          // the swap read as lag rather than a transition.
           "transition-opacity duration-200 ease-out will-change-[opacity]",
           showOverlay
             ? "pointer-events-auto opacity-100"
             : "pointer-events-none opacity-0",
         )}
       >
-        {/* Original sphere: a single radial-gradient ball with a soft glow that
-            breathes/pulses via the CSS keyframes. The state icon is a near-black
-            deboss ("door hole") carved into the surface. It lives INSIDE the ball,
-            so it grows and shrinks with the sphere -- reading as part of the
-            surface rather than floating on top. */}
         <div
-          // Transition the two things that change between states, not `all`:
-          // that was also animating transform, which fights the breathe keyframe
-          // on every state swap.
+          // Not `all`: transitioning transform fights the breathe keyframe.
           className="grid place-items-center transition-[background,box-shadow] duration-300"
           aria-hidden
           style={{
             width: 140,
             height: 140,
             borderRadius: "50%",
-            // No state yet falls back to the resting tones, not to listening's
-            // green: a green orb with no loop behind it reads as live.
             background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
             boxShadow: cfg?.shadow ?? "none",
-            // The keyframe and its 32px blurred shadow only run while the orb is
-            // on screen. Minimized, the loop keeps going and orbState stays set,
-            // so without this the sphere kept repainting under an invisible
-            // layer for the whole conversation, and that is what made the swap
-            // back to chat stutter.
+            // Only while on screen: a minimized orb kept repainting and made the swap back to chat stutter.
             animation:
               cfg && showOverlay
                 ? `${cfg.animation} ${cfg.duration} ease-in-out infinite`
                 : undefined,
           }}
         >
-          {/* Keyed on visibility too, so the icon unmounts when minimized: the
-              speaking bars run a requestAnimationFrame loop that has no business
-              ticking under a hidden overlay. */}
           <AnimatePresence mode="wait">
             <motion.div
               key={showOverlay ? (meta?.icon ?? "none") : "hidden"}
@@ -358,8 +280,6 @@ export const VoiceOrb: FC = () => {
           </AnimatePresence>
         </div>
 
-        {/* Live caption: names the current state so the color never needs a
-            legend. Studio heading font (Hellix / Space Grotesk) to match chrome. */}
         <div className="h-5">
           <AnimatePresence mode="wait">
             {meta && (
