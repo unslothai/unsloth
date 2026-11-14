@@ -61,7 +61,6 @@ function sample(segs: Seg[], per = 40): Pt[] {
 const radius = ([x, y]: Pt) => Math.hypot(x, y);
 const max = (a: ArrayLike<number>) => Array.from(a).reduce((m, v) => Math.max(m, v), 0);
 
-/** The original edge's offset at screen angle `a` (e0f704eba0^ voice-orb.tsx), plus the pinch. */
 function original(bands: Float32Array, a: number, phase: number): number {
   const x = ((1 - Math.cos(a + phase)) / 2) * (BANDS - 1);
   const lo = Math.floor(x);
@@ -84,7 +83,6 @@ test("every control point is the original edge with its gaps pinched in, at any 
     const bands = bump(9);
     const { ctl } = shape(bands, phase);
     for (let i = 0; i < BLOB_CONTROLS; i++) {
-      // The points turn with the edge, so each keeps its band.
       assert.ok(Math.abs(ctl.angle[i] - ((i * 2 * Math.PI) / BLOB_CONTROLS - phase)) < 1e-6);
       assert.ok(Math.abs(ctl.offset[i] - original(bands, ctl.angle[i], phase)) < 1e-6);
     }
@@ -100,7 +98,6 @@ test("tangents are continuous at every joint", () => {
       const a: Pt = [into.p1[0] - into.c2[0], into.p1[1] - into.c2[1]];
       const b: Pt = [out.c1[0] - out.p0[0], out.c1[1] - out.p0[1]];
       const cos = (a[0] * b[0] + a[1] * b[1]) / (Math.hypot(...a) * Math.hypot(...b));
-      // Coordinates are rounded to 0.1 px in the path, hence the small tolerance.
       assert.ok(cos > 0.995, `joint ${i} at phase ${phase}: ${cos}`);
     }
   }
@@ -108,7 +105,6 @@ test("tangents are continuous at every joint", () => {
 
 test("at rest, low bands at the bottom and high at the top, mirrored left and right", () => {
   const n = BLOB_CONTROLS;
-  // At rest point 0 sits at the bottom (screen angle pi/2) and point n/2 at the top.
   assert.ok(Math.abs(shape(bump(0)).ctl.angle[0] - Math.PI / 2) < 1e-6);
   const bottom = 0;
   const top = n / 2;
@@ -127,7 +123,6 @@ test("a voice reads as a big blob on one side and a little one on the other", ()
   );
   const { ctl } = shape(bands);
   const n = BLOB_CONTROLS;
-  // Lower half of the screen (sin > 0) against the upper half.
   const lower = Array.from(ctl.offset).filter((_, i) => Math.sin(ctl.angle[i]) > 0);
   const upper = Array.from(ctl.offset).filter((_, i) => Math.sin(ctl.angle[i]) < 0);
   const big = max(lower);
@@ -147,11 +142,9 @@ test("the curve never overshoots: its furthest point is the loudest band at +40%
 });
 
 test("the gaps between blobs pinch inside the ball by 6-10 px on a loud voice", () => {
-  // The loudest band on a control point (band 0 sits on point 0), so its reach is exact.
   const pts = sample(shape(bump(0, 3, 1)).segs);
   const dip = BASE - Math.min(...pts.map(radius));
   assert.ok(dip >= 6 && dip <= 10, `${dip}`);
-  // And only where it is quiet: the loud blob is untouched.
   assert.ok(Math.abs(max(pts.map(radius)) - (BASE + BLOB_AMP_PX)) < 0.3);
 });
 

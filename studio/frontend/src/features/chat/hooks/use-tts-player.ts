@@ -21,8 +21,6 @@ export const voiceOutputLevel = { current: 0 };
 
 // audio.cpp serializes per model, so synthesizing further ahead only queues work a barge-in discards.
 const MAX_QUEUED_CLIPS = 2;
-// Paused: nothing plays and no barge-in can land, so run ahead so the reply is
-// ready on resume. Bounded: a decoded sentence is a few MB.
 const MAX_QUEUED_CLIPS_HELD = 8;
 const ENVELOPE_BUCKET_S = 1 / 60;
 
@@ -54,22 +52,14 @@ interface Stream {
   sentences: string[];
   next: number;
   final: boolean;
-  /** Sentences spoken that are not part of the reply text (thinking fillers). */
   extra: number;
 }
 
-/** The voice a clip is synthesized in now: model, saved (cloned) voice and built-in speaker. */
 function currentVoiceKey(): string {
   const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker } = useChatRuntimeStore.getState();
   return `${selectedVoiceModelId ?? ""}\u0000${selectedVoiceId ?? ""}\u0000${selectedVoiceSpeaker ?? ""}`;
 }
 
-/**
- * Speaks a reply through voice mode's audio.cpp voice while the LLM is still
- * writing it. The first sentence is one /audio/generate call; later sentences are
- * merged per planTtsChunk. Clips play in order on one AudioContext playhead.
- */
-// An aside that took this long to synthesize has missed its moment.
 const ASIDE_MAX_LATE_MS = 4000;
 
 export function useTtsPlayer(onPlaybackEnd?: () => void): {
@@ -79,18 +69,11 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   beginStream(): void;
   feedText(text: string): void;
   endStream(finalText: string): void;
-  /** Queue a sentence that is not in the reply text, e.g. a thinking filler. */
-  /**
-   * Speak a short aside now. `standIns`: cached phrases to say instead when this one
-   * is not ready yet. `patient`: still play it however long synthesis took.
-   */
   sayAside(text: string, opts?: AsideOptions): void;
   warmAsides(texts: readonly string[]): Promise<void>;
   stop(): void;
   pausePlayback(): void;
   resumePlayback(): void;
-  /** The user's pause: freezes the clock whether or not a reply is open, and survives
-   *  stop() so a reply that starts while held stays silent until holdPlayback(false). */
   holdPlayback(held: boolean): void;
   primeAudio(): void;
 } {
@@ -112,14 +95,12 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     }
     return asideCacheRef.current;
   }, []);
-  // Keep a clip only while the voice it was made in is still the pick.
   const keepAside = useCallback(
     (text: string, buffer: AudioBuffer, voice: string) => {
       if (voice === currentVoiceKey()) asides().set(text, buffer);
     },
     [asides],
   );
-  // A reply sentence is at the synthesizer: an aside now would land right before it.
   const realSynthRef = useRef(false);
   const failedReqRef = useRef(-1);
   const rafRef = useRef<number | null>(null);
@@ -212,8 +193,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       try {
         decoded = await ctx.decodeAudioData(bytes.slice(0));
       } catch (error) {
-        // A clip the decoder refused once has decoded on the second try; one retry
-        // before the sentence is given up as unspeakable.
         voiceTrace("tts.decodeRetry", { bytes: bytes.byteLength });
         decoded = await ctx.decodeAudioData(bytes.slice(0));
       }
@@ -234,9 +213,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     (buffer: AudioBuffer, text: string) => {
       const ctx = getPlayCtx();
       if (!ctx) return;
-      // WebKit parks the context ("interrupted"/"suspended") when another surface takes
-      // the audio session, e.g. the Audio tab mounting its players; a start() on a parked
-      // context is silent, so wake it first.
       if (ctx.state !== "running" && !pausedRef.current && !heldRef.current)
         void ctx.resume().catch(() => {});
       const source = ctx.createBufferSource();
@@ -303,7 +279,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
               i,
               message: error instanceof Error ? error.message : String(error),
             });
-            // One toast per reply: a voice that is down fails every sentence.
             if (failedReqRef.current !== reqId) {
               failedReqRef.current = reqId;
               toast.error(translate("voiceControls.synthFailed"), {
@@ -323,9 +298,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         await sleep(50);
       }
       if (!live()) return;
-      // onended fires when the graph is done, not the speaker: the last word is
-      // still in the output buffer (a Bluetooth headset holds a few hundred ms),
-      // and re-arming the mic that instant reconfigures the audio route under it.
       const latencyMs =
         ((ctx?.outputLatency ?? 0) + (ctx?.baseLatency ?? 0)) * 1000;
       voiceTrace("tts.streamDone", { latencyMs: Math.round(latencyMs) });
@@ -357,19 +329,11 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     }
   }, []);
 
-  // Asides ("one sec", "almost there") used to join the sentence queue, so they
-  // were synthesized in turn and came out seconds after the moment they were for,
-  // often right before the answer itself. Now one plays only when nothing is on
-  // the timeline and no reply sentence is being synthesized, straight from a cache
-  // when it has been said before; a miss is dropped if the reply has caught up by
-  // the time it is ready.
   const sayAside = useCallback(
     (text: string, opts?: AsideOptions) => {
       const st = streamRef.current;
       if (!st || st.reqId !== reqRef.current || st.final) return;
       const patient = Boolean(opts?.patient);
-      // Paused, or held by a barge-in check: the reply keeps synthesizing ahead and
-      // plays the moment playback resumes, so a filler would only delay it.
       if (heldRef.current || (pausedRef.current && !patient)) {
         voiceTrace("tts.asideDropped", { text, paused: true });
         return;
@@ -395,8 +359,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         voiceTrace("tts.asideDropped", { text, cached: false, clips: clipsRef.current.size, synth: realSynthRef.current });
         return;
       }
-      // Live synthesis competes with the model for the GPU and can take many seconds:
-      // say a ready stand-in now and cache this one for the next turn.
       const standIn = opts?.standIns?.find((t) => asides().has(t));
       if (standIn) {
         voiceTrace("tts.asideStandIn", { text, standIn });
@@ -413,8 +375,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         .then((buffer) => {
           if (!buffer) return;
           keepAside(text, buffer, voice);
-          // Synthesized too late for the moment it was meant for: keep it for next
-          // time, but do not play it now, right on top of the reply.
           const late = performance.now() - askedAt;
           if (late > ASIDE_MAX_LATE_MS && !patient) {
             voiceTrace("tts.asideDropped", { text, cached: false, late: Math.round(late) });
@@ -427,17 +387,13 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     [synthesize, schedule, asides, keepAside],
   );
 
-  // Fill the aside cache while the loop is idle, one phrase at a time, so the
-  // first "one sec" of a session is not itself three seconds late.
   const warmAsides = useCallback(
     async (texts: readonly string[]) => {
       let added = 0;
       const voice = currentVoiceKey();
       for (const text of texts) {
         if (asides().has(text)) continue;
-        // The pick changed mid-warm: the next idle call warms the new voice.
         if (voice !== currentVoiceKey()) break;
-        // A live reply owns the synthesizer; stop here and let the next idle call carry on.
         if (streamRef.current || realSynthRef.current) break;
         try {
           const buffer = await synthesize(text, reqRef.current);
@@ -454,8 +410,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     [synthesize, asides, keepAside],
   );
 
-  // A stream stopped by a barge-in or a thread switch is gone, and ending it is a
-  // no-op: the mic that cut it in is already the next turn's.
   const endStream = useCallback((finalText: string) => {
     const st = streamRef.current;
     if (!st || st.reqId !== reqRef.current) return;
@@ -475,10 +429,6 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     [beginStream, endStream],
   );
 
-  // Suspending the context freezes every scheduled clip in place; the run loop's tail wait
-  // reads the frozen clock, so nothing ends early while held.
-  // Held even with no clip scheduled yet: the next sentence is often still
-  // synthesizing when a burst lands, and it must not start under the check.
   const pausePlayback = useCallback(() => {
     voiceTrace("tts.pause", { paused: pausedRef.current, stream: Boolean(streamRef.current), clips: clipsRef.current.size });
     if (pausedRef.current || !streamRef.current) return;

@@ -134,7 +134,6 @@ def test_a_non_owner_first_call_resolves_the_installation_wide_pick(monkeypatch,
     ft = catalog.Checkpoint("laya-ft:my_run", str(tmp_path / "my_run"), None, "", layout = "laya")
 
     def owner_only_fine_tune(name):
-        # A fine-tune lives in the owner's outputs: other accounts can't see it.
         return ft if name == ft.name and current_account() == OWNER else None
 
     monkeypatch.setattr(catalog, "fine_tune", owner_only_fine_tune)

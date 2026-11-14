@@ -24,7 +24,6 @@ export type VoiceOrbInputs = {
   isThreadRunning: boolean;
   isReasoning: boolean;
   isSpeaking: boolean;
-  /** The user paused the loop: mic muted, playback frozen, the run left to finish. */
   voicePaused?: boolean;
 };
 
@@ -40,12 +39,7 @@ const set = (state: VoiceOrbState | null): VoiceOrbDecision => ({
 export function deriveOrbState(inputs: VoiceOrbInputs): VoiceOrbDecision {
   if (inputs.voiceMode !== "active") return set(null);
   if (!inputs.hasChatModel) return set("waiting");
-  // Paused by the user: nothing is heard or played until they resume, whatever
-  // the run behind it is doing.
   if (inputs.voicePaused) return set("paused");
-  // A model is warming up (~35s on ROCm). Grey-blue rather than the lilac
-  // "generating speech", so it does not read as a ready green, and so loading
-  // does not collide with TTS synthesis on the same colour.
   if (inputs.voiceSlotLoading) return set("loading");
   if (inputs.voiceHearing) return set("hearing");
   if (inputs.isPlaying) return set("speaking");

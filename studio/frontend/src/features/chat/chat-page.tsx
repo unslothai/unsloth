@@ -378,7 +378,6 @@ const FullViewChatBar = lazyWithoutSuspense(() =>
 const FullViewChatButton = lazyWithoutSuspense(() =>
   import("@/features/browser/full-view-chat").then((module) => module.FullViewChatButton),
 );
-// Voice mode's header panel only shows once it is on.
 const VoicePanel = lazy(() =>
   loadVoiceMode().then((module) => ({
     default: module.VoicePanel,
@@ -3171,14 +3170,11 @@ export function ChatPage({
   const setSelectedSttModelId = useChatRuntimeStore(
     (s) => s.setSelectedSttModelId,
   );
-  // The voice this page holds, and whether it loaded it (only its own is ever unloaded).
-  // One load at a time; whichever voice is picked when it settles is the one that ends up loaded.
   const loadedVoiceRef = useRef<VoiceHold | null>(null);
   const voiceLoadRef = useRef<Promise<boolean> | null>(null);
   // Bumped whenever voice mode lets go, so a load still in flight knows it is no longer wanted.
   const voiceEpochRef = useRef(0);
   const ensureVoiceSlotLoaded = useCallback((): Promise<boolean> => {
-    // A clip still queued when voice mode let go retries through here: nothing to load then.
     if (useChatRuntimeStore.getState().voiceMode !== "active") return Promise.resolve(false);
     if (voiceLoadRef.current) return voiceLoadRef.current;
     const run = (async () => {
@@ -3198,8 +3194,6 @@ export function ChatPage({
           store.setVoiceSlotLoaded(true);
           return true;
         }
-        // Nothing loaded by this page yet (a restored pick): a voice already serving becomes
-        // the Speak pick instead of a second voice loading beside it. A later pick replaces it.
         const served = loadedVoiceRef.current === null ? await servedVoice() : null;
         if (served) {
           if (epoch !== voiceEpochRef.current) return false;
@@ -3208,8 +3202,6 @@ export function ChatPage({
           store.setVoiceSlotLoaded(true);
           return true;
         }
-        // With no chat model the voice would take the empty seat, and the next chat
-        // load would replace it.
         if (!store.params.checkpoint) return false;
         store.setVoiceSlotLoaded(false);
         store.setVoiceSlotLoading(true);
@@ -3268,15 +3260,12 @@ export function ChatPage({
     if (loadedVoiceRef.current?.id !== selectedVoiceModelId) {
       useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
     }
-    // Voice off while the earlier load runs bumps the epoch: then nothing follows it.
     const epoch = voiceEpochRef.current;
     void (voiceLoadRef.current ?? Promise.resolve(true)).then(() =>
       epoch === voiceEpochRef.current ? ensureVoiceSlotLoaded() : false,
     );
   }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, ensureVoiceSlotLoaded]);
 
-  // Voice mode off unloads what the loop loaded (voice, STT, speech detector) and
-  // keeps the chat model.
   const prevVoiceModeRef = useRef(voiceMode);
   useEffect(() => {
     const was = prevVoiceModeRef.current;
@@ -3288,8 +3277,6 @@ export function ChatPage({
     useChatRuntimeStore.getState().setVadSlotLoaded(false);
   }, [voiceMode, unloadOwnVoice]);
 
-  // Leaving Chat with voice mode on unmounts this without voiceMode going "off": release what
-  // voice-off would, the transcriber and the speech detector too (the detector has no idle unload).
   useEffect(
     () => () => {
       unloadOwnVoice();
@@ -5139,7 +5126,6 @@ export function ChatPage({
                 onAutoSwitch={handleAutoSwitchToChatModel}
               />
             )}
-            {/* One pill for the pipeline: listen, transcribe, decide, speak, voice. */}
             <Suspense fallback={null}>
               {view.mode !== "compare" && voiceMode !== "off" && (
                 <VoicePanel

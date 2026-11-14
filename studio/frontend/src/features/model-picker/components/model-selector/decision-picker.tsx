@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Voice mode's Decide list, built from the model picker's own parts: the search field, the
-// Recommended / On Device pills, the filter and sort menus, ListLabel groups, ModelRow rows and
-// the Custom Folders section.
 
 import { Input } from "@/components/ui/input";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -49,7 +46,6 @@ const NO_CAPABILITIES = {
   videoGen: false,
 };
 
-// The picker's own control classes (pickers.tsx), so the menus line up the same way.
 const SORT_TRIGGER =
   "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
 const SORT_MENU =
@@ -81,7 +77,6 @@ export function DecisionPicker({
   state: "loaded" | "loading" | "not_loaded" | "error" | null;
   error: string | null;
   launchDefault: string | null;
-  /** The pick is stored, so the launch default can be put back. */
   fromSetting: boolean;
   onPick: (name: string | null) => void;
   onFoldersChange: () => void;

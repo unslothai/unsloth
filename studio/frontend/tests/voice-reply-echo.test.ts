@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A transcript that reads back the reply's own words is the speaker leaking, not a turn.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -26,7 +25,6 @@ test("a one-word command the reply also says is still the user's", () => {
   assert.equal(isReplyEcho("Stop.", long), false);
   assert.equal(isReplyEcho("yes", long), false);
   assert.equal(isReplyEcho("stop the server", long), true);
-  // Any other lone word the reply says is its own leak.
   assert.equal(isReplyEcho("Sure.", long), true);
 });
 

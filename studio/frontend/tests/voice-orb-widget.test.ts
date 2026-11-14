@@ -39,7 +39,6 @@ test("a saved position round-trips and junk falls back to nothing", () => {
 
 test("the widget reopens where it was left while that spot is on a monitor", () => {
   assert.deepEqual(placeOrbWidget({ x: 2000, y: 100 }, [laptop, external], laptop), { x: 2000, y: 100 });
-  // Mostly off the right edge of the only monitor still counts while its centre is on it.
   const nearEdge = { x: laptop.width - ORB_WIDGET_WIDTH / 2 - 1, y: 10 };
   assert.deepEqual(placeOrbWidget(nearEdge, [laptop], laptop), nearEdge);
 });
@@ -67,9 +66,6 @@ test("only the control bar's actions are accepted from the widget", () => {
 });
 
 test("the ball, its widest wave, its glow and the bar fit inside the window", () => {
-  // voice-orb.tsx at 140 px: the edge reaches 70 + 3 + BLOB_AMP_PX (22.4); the glow's visible tail
-  // 70 + 8 + 1.5 * 32; the speaking pulse scales both by 1.1. Measured in a browser at
-  // 72 px: edge 50.3, glow 71.3 from the centre.
   const k = ORB_WIDGET_BALL / 140;
   const wave = (70 + 3 + BLOB_AMP_PX) * k * 1.1;
   const glow = (70 + 8 + 48) * k * 1.1;
@@ -80,7 +76,6 @@ test("the ball, its widest wave, its glow and the bar fit inside the window", ()
   for (const room of [x - reach, ORB_WIDGET_WIDTH - x - reach, y - reach, ORB_WIDGET_HEIGHT - y - reach]) {
     assert.ok(room >= 24, `only ${room} px of margin`);
   }
-  // A small gap under the ball, then the bar; the edge is the in-app orb's and may cross it.
   const gap = ORB_WIDGET_BAR_TOP -( y + ORB_WIDGET_BALL / 2);
   assert.ok(gap >= 6 && gap <= 8, `gap ${gap}`);
   assert.ok(ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT + 8 <= ORB_WIDGET_HEIGHT);
@@ -91,12 +86,9 @@ test("the ball, its widest wave, its glow and the bar fit inside the window", ()
 test("the widget opens centred on the cursor, kept on the cursor's screen", () => {
   const c = ORB_WIDGET_CENTER;
   assert.deepEqual(placeAtCursor({ x: 700, y: 400 }, [laptop, external]), { x: 700 - c.x, y: 400 - c.y });
-  // On the second, taller screen, above the first one's top.
   assert.deepEqual(placeAtCursor({ x: 2000, y: -150 }, [laptop, external]), { x: 2000 - c.x, y: -150 - c.y });
-  // In a corner, the whole ball stays on that screen.
   const r = ORB_WIDGET_BALL / 2;
   assert.deepEqual(placeAtCursor({ x: 2, y: 1 }, [laptop, external]), { x: r - c.x, y: r - c.y });
-  // At the bottom the bar, which hangs below the ball, is what has to stay on screen.
   assert.deepEqual(placeAtCursor({ x: 1511, y: 981 }, [laptop, external]), {
     x: laptop.width - r - c.x,
     y: laptop.height - ORB_WIDGET_BAR_TOP - ORB_WIDGET_BAR_HEIGHT,
@@ -116,7 +108,6 @@ test("a drag past an edge keeps the ball's centre on the screen", () => {
   const farRight = clampToScreens({ x: 9000, y: 9000 }, [laptop, external]);
   assert.equal(farRight.x + ORB_WIDGET_CENTER.x, external.x + external.width - 1);
   assert.equal(farRight.y + ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT, external.y + external.height);
-  // Crossing onto the second screen is free.
   assert.deepEqual(clampToScreens({ x: 2000, y: -150 }, [laptop, external]), { x: 2000, y: -150 });
   assert.deepEqual(clampToScreens({ x: 5, y: 5 }, []), { x: 5, y: 5 });
 });
@@ -145,12 +136,9 @@ test("a click or a jitter inside the slop never moves the window", () => {
 
 test("a drag keeps the grabbed point under the pointer, with no jump at the start", () => {
   const start = { screen: { x: 500, y: 300 }, grab: { x: 70, y: 60 } };
-  // The window's top left at press is screen - grab, so the first move lands next to it.
   assert.deepEqual(dragTarget(start, { x: 506, y: 300 }, false), { x: 436, y: 240 });
-  // Once moving, small steps follow the pointer exactly, back to the start included.
   assert.deepEqual(dragTarget(start, { x: 501, y: 301 }, true), { x: 431, y: 241 });
   assert.deepEqual(dragTarget(start, { x: 500, y: 300 }, true), { x: 430, y: 240 });
-  // Fractional points (a 2x screen reports halves) round to whole logical pixels.
   assert.deepEqual(dragTarget(start, { x: 600.5, y: 10.5 }, true), { x: 531, y: -49 });
 });
 
@@ -158,7 +146,6 @@ test("past any edge, on any screen, at least half the ball stays visible", () =>
   const r = ORB_WIDGET_BALL / 2;
   const screens = [laptop, external];
   const visibleWidth = (p: { x: number; y: number }) => {
-    // The ball's horizontal and vertical spans clipped to whichever screen holds its centre.
     const cx = p.x + ORB_WIDGET_CENTER.x;
     const cy = p.y + ORB_WIDGET_CENTER.y;
     const m = screens.find((s) => cx >= s.x && cx < s.x + s.width && cy >= s.y && cy < s.y + s.height);
@@ -184,17 +171,14 @@ test("at the bottom of a screen the ball stops where the bar's bottom meets the 
   const dragged = clampToScreens({ x: 800, y: 2000 }, [m]);
   const barBottom = dragged.y + ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT;
   assert.equal(barBottom, 1040);
-  // Without a known visible frame, the screen's own bottom.
   const plain = clampToScreens({ x: 800, y: 2000 }, [
     { x: 0, y: 0, width: 1920, height: 1080 },
   ]);
   assert.equal(plain.y + ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT, 1080);
-  // Opening at a cursor on the bottom edge does the same.
   const opened = placeAtCursor({ x: 900, y: 1075 }, [m]);
   assert.ok(
     opened && opened.y + ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT <= 1040,
   );
-  // The other sides are unchanged: the ball's centre may still reach the top and the sides.
   assert.equal(
     clampToScreens({ x: 800, y: -500 }, [m]).y + ORB_WIDGET_CENTER.y,
     0,

@@ -131,7 +131,6 @@ def test_env_var_picks_the_models_dir(monkeypatch, tmp_path):
 
 
 def test_local_torch_judge_weights_win_over_the_hub(tmp_path, monkeypatch):
-    # No int8 export, only the first-pass weights _Judge falls back to: still the local folder.
     weights = tmp_path / "judge" / "models" / "modernbert_base"
     weights.mkdir(parents = True)
     (weights / "config.json").write_text("{}")
@@ -144,7 +143,6 @@ def test_local_torch_judge_weights_win_over_the_hub(tmp_path, monkeypatch):
 
 
 def test_nothing_is_fetched_without_a_dir_or_hub(monkeypatch):
-    # No personal default: unset, the routes answer 503 and the app keeps its word rules.
     import huggingface_hub
 
     monkeypatch.delenv(vm.ENV_DIR, raising = False)

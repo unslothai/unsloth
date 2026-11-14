@@ -69,66 +69,39 @@ import { isMissingDeviceError } from "./studio-web-speech-dictation-adapter";
 const wavBlob = (samples: Float32Array, rate: number) =>
   new Blob([encodeWav(samples, rate)], { type: "audio/wav" });
 
-// Loudness floors, scaled from the room: both thresholds sit a fixed ratio above the
-// ambient RMS measured while nothing is being said, never below these minimums.
-// A frame only counts as real SPEECH toward the transcribe gate (voicedMs /
-// heardSpeech) at or above the speech bar; frames between the two keep the
-// utterance alive but don't count, so room noise or a mic click can't quietly
-// accumulate the 350ms of "speech" that would get fed to STT. The fixed 0.02 bar
-// this replaced needed a loud first word on a quiet mic; the detector checks every
-// clip for a real voice anyway, so the bar can follow the room.
 const SILENCE_RMS_MIN = 0.006;
 const SPEECH_RMS_MIN = 0.011;
 const SILENCE_OVER_FLOOR = 1.6;
 const SPEECH_OVER_FLOOR = 2.6;
 const SILENCE_HANG_MS = 1000; // silence after speech ends the utterance
-// A transcript that reads cut off ("Could you tell me just like") is held, not
-// sent, and the next window gets a longer hang so the rest of the thought can
-// land. If nothing more is said, the fragment goes as-is after the flush wait.
 const CONTINUATION_HANG_MS = 1800;
 const CONTINUATION_FLUSH_MS = 4000;
 const CONTINUATION_MAX_MS = 20000;
 const MAX_UTTERANCE_MS = 30000;
 const NO_SPEECH_TIMEOUT_MS = 8000;
 const MIN_SPEECH_MS = 350;
-// A run of all-zero mic frames this long is traced as the device going deaf.
 const ZERO_RUN_TRACE_MS = 200;
-// Audio kept from just before a barge-in fires, so the first word of what cut in
-// still reaches STT.
 const BARGE_PREROLL_MS = 600;
 const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
 const VAD_MIN_SPEECH_MS = 300;
-// The barge-in probe is asked after BARGE_CONFIRMED_MS of loudness, so the clip can only hold
-// about that much voice yet; the full bar made the first check fail every time and the reply
-// only stopped on the second or third burst.
 const BARGE_VAD_MIN_SPEECH_MS = 200;
 
-// The backend said it cannot detect speech here (no runtime, model refused): stop asking for
-// the rest of the app session and fall back to the loudness gate alone. Scoped to the detector
-// pick that failed: choosing another one asks again.
 let vadDisabled = false;
 let vadDisabledFor: string | null = null;
 function disableVad(failedPick: string): void {
   vadDisabled = true;
   vadDisabledFor = failedPick;
 }
-// Silence trimmed around the voiced span before sending to STT (STT
-// hallucinates on long leading/trailing silence). Keep a little context.
 const SILENCE_PAD_MS = 200;
 const REVEAL_CHAR_MS = 12;
-// The typed-out reveal delays the send: keep it short.
 const REVEAL_MAX_MS = 250;
-// The reveal in progress: what the box will hold once it is done, and whether Enter
-// asked for the rest at once (the box is then a prefix, not a typed turn).
 let reveal: { shown: string; rush: boolean } | null = null;
 
-/** The full box text the transcript reveal is typing out, or null when none is running. */
 export function voiceRevealText(): string | null {
   return reveal?.shown ?? null;
 }
 
-/** Enter mid-reveal: skip the rest of the typing and send the whole transcript now. */
 export function rushVoiceReveal(): void {
   if (reveal) reveal.rush = true;
 }
@@ -162,12 +135,8 @@ let heldFromBarge = false;
 // in STT or the turn judge when it runs belongs to the cleared turn and must not be held.
 let heldEpoch = 0;
 
-// Mute keeps the session open and drops its frames; the no-speech clock waits.
 let micMuted = false;
 
-// The one open session. A second listen() while it is live (two re-arms racing)
-// used to leave an orphan holding the mic beside the real one, and the loop went
-// deaf until a thread switch tore both down; now the older one is cancelled.
 let liveSession: { cancel: () => void; reacquire: (reason: string) => void } | null = null;
 export function setMicMuted(muted: boolean): void {
   micMuted = muted;
@@ -176,17 +145,10 @@ export function setMicMuted(muted: boolean): void {
 const openMicOnce = createSingleFlight();
 const reacquireBackoff = createReacquireBackoff();
 
-/**
- * Drop the live session's mic and open a fresh one: back from the floating orb, where
- * WebKit may have left the track open but silent.
- */
 export function reacquireMic(reason: string): void {
   liveSession?.reacquire(reason);
 }
 
-// The decision log rows behind the judge's last answers, so the loop can report what
-// happened: the "hold" row behind heldTurn, and a "finished" row watched for more speech
-// landing inside QUICK_CONTINUE_MS (a turn the judge cut short).
 let heldJudgeId: string | null = null;
 let finishedJudge: {
   id: string;
@@ -205,8 +167,6 @@ function watchFinished(id: string): void {
   finishedJudge = entry;
 }
 
-// Speech inside the window is not yet a continuation: a cough clears the gate too, so
-// the report waits for the transcript.
 function noteSpeechStart(): void {
   const f = finishedJudge;
   if (!f || f.quick || !f.timer) return;
@@ -223,7 +183,6 @@ function settleFinished(realSpeech: boolean): void {
   reportLayaOutcome(f.id, realSpeech ? "continued_quickly" : "sent", { gap_ms: gapMs });
 }
 
-// The turn judge decides whether to wait for more; without it the turn is sent.
 async function turnUnfinished(text: string): Promise<boolean> {
   const r = await judgeTurnComplete(text);
   const unfinished = r !== null && r.p < JUDGE_SEND_THRESHOLD;
@@ -232,7 +191,6 @@ async function turnUnfinished(text: string): Promise<boolean> {
   return unfinished;
 }
 
-/** The fragment the judge is holding for its continuation, shown in the composer meanwhile. */
 export function getHeldTurnText(): string {
   return heldTurn?.text ?? "";
 }
@@ -255,10 +213,6 @@ const heldEdit = createHeldEdit({
   trace: voiceTrace,
 });
 
-/**
- * A click on the composer while a fragment is held: the box is the user's now, so
- * nothing more is sent by itself until they send it or clear it.
- */
 export function claimHeldTurnForEdit(): boolean {
   if (!heldTurn || !heldEdit.claim(heldTurn.text)) return false;
   heldTurn = null;
@@ -267,12 +221,10 @@ export function claimHeldTurnForEdit(): boolean {
   return true;
 }
 
-/** True while the composer holds a turn the user is editing; an emptied box ends it. */
 export function isComposerHeldForEdit(): boolean {
   return !heldEdit.autoSend();
 }
 
-/** End the open session without delivering what it captured: a typed send replaces it. */
 export function cancelVoiceSession(): void {
   liveSession?.cancel();
 }
@@ -281,8 +233,6 @@ export function endHeldEdit(): void {
   heldEdit.sent();
 }
 
-// True from the first voiced frame until the session has emitted its transcript
-// (or given up), so a mic cycle elsewhere can wait instead of losing the turn.
 let utteranceInFlight = false;
 export function isUtteranceInFlight(): boolean {
   return utteranceInFlight;
@@ -313,17 +263,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     let source: MediaStreamAudioSourceNode | null = null;
     const chunks: Float32Array[] = [];
     const chunkVoiced: boolean[] = [];
-    // Parallel too: above the silence floor. The clip sent to STT starts at the first
-    // of these before the first loud frame, so a soft opening word is not trimmed off.
     const chunkNotSilent: boolean[] = [];
     let voicedMs = 0;
-    // The held turn this session belongs to, taken as it opens: a clear while it is still
-    // recording (voice off, a chat switch, Stop, a typed send) drops what it hears.
     const epoch = heldEpoch;
     if (vadDisabled && useChatRuntimeStore.getState().selectedVadModelId !== vadDisabledFor) {
       vadDisabled = false;
     }
-    // Ambient RMS, a slow average of the quiet frames before speech is heard.
     let noiseFloor = 0;
     let noiseFrames = 0;
     const bargeGate = createBargeGate(
@@ -331,16 +276,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     );
     let vadReady = false;
     let bargeConfirming = false;
-    // The longest loud run seen while the detector was asked: the gate resets on the first
-    // quiet frame, so a word that ends before the answer would otherwise count as no speech.
     let bargePeakMs = 0;
     const preroll: Float32Array[] = [];
     let bargedIn = heldTurn !== null && heldFromBarge;
-    // What the mic delivered, for the trace: a session that heard nothing at all
-    // (a muted or silent device) shows as peakRms 0 against a named device.
     let peakRms = 0;
-    // All-zero frames: the device handing over digital silence (a reopen, a route change),
-    // as opposed to a quiet room. Runs of them are traced so deaf stretches show up.
     let zeroMs = 0;
     let zeroRunMs = 0;
     let speechBarSeen = 0;
@@ -363,8 +302,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       resolveEnded = resolve;
     });
 
-    // Every transcript shown is the whole turn so far, led by the turns parked for a
-    // loading voice (display only: the engine joins those itself when it sends).
     const shown = (transcript: string): string => {
       const parked = getVoiceParkedText();
       return parked && transcript ? `${parked} ${transcript}` : parked || transcript;
@@ -394,9 +331,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       },
       onSpeech: (cb) => {
         speechCallbacks.add(cb);
-        // The composer starts each session empty and every transcript emitted
-        // here is the whole turn so far, so show the parked turns and the held
-        // fragment through the same path instead of pre-filling the box (that doubled it).
         const lead = shown(heldTurn?.text ?? "");
         if (lead) cb({ transcript: lead, isFinal: false });
         return () => speechCallbacks.delete(cb);
@@ -417,10 +351,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     };
     liveSession = handle;
     voiceTrace("session.start", { playback: isVoicePlaybackActive() });
-    // A mic picked in Settings mid-session: this session keeps the old device, so
-    // end it (once nothing is being said) and the re-arm opens the new one.
-    // Reopen on the current device: a mic picked in Settings, an earbud pulled out
-    // (its track ends), or the device list changing under a "default" pin.
     const reopen = (why: string, detail?: Record<string, unknown>) => {
       if (ended || utteranceInFlight) return;
       voiceTrace("session.reopen", { why, ...detail });
@@ -433,9 +363,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         if (state.micDeviceId !== prev.micDeviceId) reopen("micSwitch", { to: state.micDeviceId });
       },
     );
-    // Output routes change too (a reply starting to play fires this on macOS), and
-    // reopening the mic for that cut sessions mid-turn: only a changed set of
-    // inputs reopens, so a plugged or pulled headset is picked up and nothing else.
     let inputIds: string | null = null;
     const audioInputIds = async () => {
       const devices = await navigator.mediaDevices.enumerateDevices?.();
@@ -456,9 +383,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       });
     };
     navigator.mediaDevices.addEventListener?.("devicechange", onDevicesChanged);
-    // WebKit mutes a capture track while the window is away and does not always
-    // unmute it: a muted track that is still muted when the window comes back is
-    // reopened rather than left delivering silence.
     const onFocus = () => {
       const t = stream?.getAudioTracks()[0];
       if (t?.muted) reopen("mutedOnFocus", { mutedMs: Math.round(performance.now() - trackMutedAt) });
@@ -473,8 +397,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       unsubMic = null;
       navigator.mediaDevices.removeEventListener?.("devicechange", onDevicesChanged);
       window.removeEventListener("focus", onFocus);
-      // Mic is closing: no longer hearing the user, so drop the orb's salmon
-      // "hearing you" state (the utterance ended or was cancelled).
       useChatRuntimeStore.getState().setVoiceHearing(false);
       if (processor) {
         processor.onaudioprocess = null;
@@ -504,7 +426,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         transcript: transcript ?? null,
         bargedIn,
         peakRms: Number(peakRms.toFixed(4)),
-        // How much of the window counted as speech, against MIN_SPEECH_MS, and the bar it had to clear.
         voicedMs: Math.round(voicedMs),
         speechBar: Number(speechBarSeen.toFixed(4)),
         zeroMs: Math.round(zeroMs),
@@ -517,7 +438,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       resolveEnded?.();
     };
 
-    // Whether the clip holds a voice. null: no detector, decide on loudness as before.
     const detectClip = async (
       blob: Blob,
       minSpeechMs: number,
@@ -541,7 +461,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     const clipHasSpeech = async (blob: Blob, minSpeechMs: number) =>
       publishVad(await detectClip(blob, minSpeechMs));
 
-    // VAD then STT of the clip; started early while the silence hang runs (same clip, same answer).
     type ClipAnalysis = {
       modelId: string | undefined;
       vad: Promise<{ kept: boolean; speech_ms: number } | null>;
@@ -594,7 +513,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         setTimeout(() => requestVoiceSubmit(text), 0);
         return;
       }
-      // A burst that held the reply was not the user after all.
       if (bargedIn) requestVoiceBargeAbort();
       finish("stopped");
       setTimeout(() => requestVoiceResume(), 0);
@@ -646,16 +564,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           store.setVoiceTranscribing(false);
         }
         if (transcript && isHallucinatedTranscript(transcript)) {
-          // STT invents a repeated token ("Ha, ha, ha...", "Thank you.
-          // Thank you...") from noise/breath/silence. Drop it and keep listening
-          // rather than sending garbage as a prompt.
           publishSttDecision(false, "repeated word");
           transcript = "";
         }
         voiceTrace("stt", { transcript, bargedIn, heldTurn: heldTurn?.text ?? null });
         if (transcript && bargedIn && isReplyEcho(transcript, getVoiceReplyText())) {
-          // The reply's own voice got through the detector. Not a turn: let the
-          // reply pick back up and keep listening.
           voiceTrace("barge.abort", { why: "echo" });
           settleFinished(false);
           publishSttDecision(false, "echo of the reply");
@@ -665,9 +578,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           return;
         }
         if (transcript && (isBackchannel(transcript) || isSttNoise(transcript))) {
-          // A breath or "mm" that cleared the speech gate, or the "Thank you." STT
-          // writes for a cough. Not a turn: keep listening, and keep any held
-          // fragment waiting for its real continuation.
           voiceTrace("stt.drop", { transcript, why: "noise" });
           settleFinished(false);
           publishSttDecision(false, isBackchannel(transcript) ? "breath" : "cough");
@@ -680,7 +590,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           return;
         }
         settleFinished(Boolean(transcript));
-        // Clicked into: what was said joins the box and waits for the user's send.
         const editing = !heldEdit.autoSend();
         if (transcript && heldTurn) {
           transcript = joinTurn(heldTurn.text, transcript);
@@ -692,10 +601,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           !editing &&
           (await turnUnfinished(transcript));
         if (epoch !== heldEpoch) {
-          // Cleared while STT or the judge ran: the speech went with that turn.
           voiceTrace("stt.drop", { transcript, why: "cleared" });
           finish("stopped");
-          // The clear's own re-arm found this session still live and skipped.
           setTimeout(() => requestVoiceResume(), 0);
           return;
         }
@@ -709,7 +616,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             at: heldTurn?.at ?? performance.now(),
           };
           heldFromBarge = bargedIn;
-          // A run being talked over need not wait for the rest to be asked about.
           requestVoiceEarlyInterject(transcript);
           emitSpeech(transcript, false);
           finish("stopped");
@@ -737,17 +643,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
           if (ended) return;
           if (epoch !== heldEpoch) {
-            // A Stop or reset during the reveal let this turn go.
             voiceTrace("stt.drop", { transcript, why: "cleared" });
             finish("stopped");
             setTimeout(() => requestVoiceResume(), 0);
             return;
           }
-          // onSpeech(isFinal) commits the full transcript into the composer text;
-          // onSpeechEnd (via finish) ends the session. Then, deferred so those
-          // state updates land first, submit the turn. requestVoiceSubmit is a
-          // no-op outside voice mode, so plain Dictate-button use just fills the
-          // composer as before.
           emitSpeech(transcript, true);
           finish("stopped", transcript);
           if (editing) {
@@ -757,7 +657,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             setTimeout(() => requestVoiceSubmit(transcript), 0);
           }
         } else {
-          // STT heard nothing usable in the burst that held the reply.
           if (bargedIn) {
             voiceTrace("barge.abort", { why: "empty" });
             requestVoiceBargeAbort();
@@ -783,8 +682,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           echoCancellation: true,
           noiseSuppression: true,
         };
-        // One open at a time, and a session cancelled while it waited stops its own
-        // tracks before the next open starts.
         stream = await openMicOnce(async () => {
           if (ended) return null;
           let opened: MediaStream;
@@ -818,7 +715,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         audioCtx = new AudioCtx();
         // Created outside the user gesture: a suspended context never fires audioprocess.
         await audioCtx.resume();
-        // A cancel during that await tore the context down.
         if (ended || !audioCtx) {
           teardown();
           return;
@@ -833,7 +729,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           });
           track.addEventListener("unmute", () => {
             voiceTrace("mic.unmuted", { label: track.label, mutedMs: Math.round(performance.now() - trackMutedAt) });
-            // The silence while muted was not the user's.
             const t = performance.now();
             startedAt = t;
             lastVoiceAt = t;
@@ -887,7 +782,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             return;
           }
           if (wasMuted) {
-            // Unmuted: the silence since is not a timeout.
             wasMuted = false;
             const t = performance.now();
             startedAt = t;
@@ -910,9 +804,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           } else if (zeroRunMs > 0) {
             endZeroRun();
           }
-          // The reply is playing: listen only for the user cutting in. Nothing is
-          // recorded and the no-speech clock waits, so when playback ends this
-          // session simply becomes the next turn's listener.
           if (!bargedIn && isVoicePlaybackActive()) {
             preroll.push(new Float32Array(input));
             while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
@@ -981,7 +872,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             return;
           }
           chunks.push(new Float32Array(input));
-          // The reply went quiet under a hint with no speech since: let the orb go.
           if (
             hearingHint.on &&
             !heardSpeech &&
@@ -997,8 +887,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const notSilent = rms >= Math.max(SILENCE_RMS_MIN, noiseFloor * SILENCE_OVER_FLOOR);
           const speech = rms >= speechBar;
           if (!heardSpeech && !speech) {
-            // The first quiet frames set the floor; after that it drifts slowly, so a
-            // soft word does not lift it under itself.
             noiseFrames++;
             const w = noiseFrames <= 4 ? 1 / noiseFrames : 0.05;
             noiseFloor += (rms - noiseFloor) * w;
@@ -1012,8 +900,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               heardSpeech = true;
               utteranceInFlight = true;
               noteSpeechStart();
-              // Light the orb's salmon "hearing you" state the instant the mic
-              // picks up real voice -- immediate proof the mic is capturing you.
               useChatRuntimeStore.getState().setVoiceHearing(true);
               for (const cb of speechStartCallbacks) cb();
             }
@@ -1049,7 +935,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         const name = error instanceof Error ? error.name : "";
         const message = error instanceof Error ? error.message : String(error);
         voiceTrace("session.error", { name, message, ended });
-        // A session cancelled while the mic was still opening is not a mic fault.
         if (!ended) {
           toast.error("Could not access the microphone for dictation.", {
             description: name ? `${name}: ${message}` : message,

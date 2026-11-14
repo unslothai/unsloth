@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Transcript helpers for the voice loop: what is not a turn at all, and how a
-// held fragment joins the speech that followed it. Free of app imports for the
-// node tests.
 
 const BACKCHANNEL = new Set([
   "mm", "mmm", "hmm", "hm", "mhm", "mm-hmm", "mmhmm", "uh", "um", "uhm", "umm", "ah", "ahh",
@@ -15,16 +12,12 @@ export function isBackchannel(text: string): boolean {
   return words.length > 0 && words.every((w) => BACKCHANNEL.has(w) || /^(m+|h+m+|u+h+|a+h+|o+h+)$/.test(w));
 }
 
-// What STT writes for a cough, a breath or a clipped burst of the reply when there
-// were no words in it. Only ever dropped as the whole transcript.
 const STT_NOISE = new Set(["you", "thank you", "thank you very much", "thanks", "thanks for watching", "bye", "the end"]);
 
-/** True when the transcript is one of the phrases STT invents on non-speech audio. */
 export function isSttNoise(text: string): boolean {
   return STT_NOISE.has(text.toLowerCase().replace(/[^\p{L}\s]/gu, " ").trim().replace(/\s+/g, " "));
 }
 
-/** Join a held fragment and the speech that followed it into one turn. */
 export function joinTurn(held: string, next: string): string {
   const a = held.trim();
   const b = next.trim();
@@ -37,10 +30,6 @@ export function joinTurn(held: string, next: string): string {
 const wordsOf = (t: string) =>
   t.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
 
-// A barge-in the detector confirmed can still be the reply itself leaking past
-// echo cancellation: the transcript then reads back a run of the reply's words.
-// A lone command word ("stop", "wait", "yes") is the user's even when the reply says it
-// too; any other single word ("sure", "okay") that the reply contains is its leak.
 const ONE_WORD_COMMANDS = new Set([
   "stop", "wait", "pause", "cancel", "hold", "enough", "quiet", "no", "nope", "yes", "yeah", "yep",
 ]);
@@ -49,7 +38,6 @@ export function isReplyEcho(transcript: string, reply: string): boolean {
   const t = wordsOf(transcript);
   if (t.length === 0 || !reply) return false;
   if (t.length === 1 && ONE_WORD_COMMANDS.has(t[0])) return false;
-  // Whole words only: "hey" is not inside "they", nor "skip" inside "skipping".
   const r = ` ${wordsOf(reply).join(" ")} `;
   return r.includes(` ${t.join(" ")} `);
 }

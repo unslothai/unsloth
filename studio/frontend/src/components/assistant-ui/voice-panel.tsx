@@ -38,7 +38,6 @@ import {
 
 type Role = "listen" | "transcribe" | "decide" | "speak" | "voice";
 const ROLES: Role[] = ["listen", "transcribe", "decide", "speak", "voice"];
-// Roles that drill into a model picker, which brings its own padding.
 const PICKER_ROLES = new Set<Role>(["listen", "transcribe", "decide", "speak"]);
 
 export interface VoicePanelProps {
@@ -51,7 +50,6 @@ export interface VoicePanelProps {
   onTtsModelChange: (id: string) => void;
   ttsLoading: boolean;
   ttsLoaded: boolean;
-  /** No chat model yet: voice has nothing to answer with. */
   disabled?: boolean;
 }
 
@@ -62,13 +60,11 @@ const STATE_KEY: Record<VoiceLoadState, TranslationKey> = {
   error: "voicePanel.state.error",
 };
 
-/** A repo id or folder id as the row shows it: the last segment, without the -GGUF suffix. */
 function shortName(id: string): string {
   const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
   return leaf.replace(/-GGUF$/i, "");
 }
 
-// The picker's row: pill-shaped, the sidebar-accent wash on hover, focus and selection.
 const ROW =
   "group/row flex w-full items-center gap-2 rounded-full py-1.5 pl-2.5 pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
 
@@ -92,7 +88,6 @@ const StateTag: FC<{ state: VoiceLoadState; label: string }> = ({
   />
 );
 
-/** Voice mode's one header pill: a row per role, each drilling into that role's picker. */
 export const VoicePanel: FC<VoicePanelProps> = ({
   vadModelId,
   onVadModelChange,
@@ -131,7 +126,6 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       name: string;
       state: VoiceLoadState | null;
       enabled: boolean;
-      /** Hover text when the name alone is not the story, e.g. why a load failed. */
       title?: string;
     }
   > = {
@@ -140,7 +134,6 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       state: vadLoaded ? "loaded" : "not_loaded",
       enabled: true,
     },
-    // The listener loads per utterance; the old pill always showed it as ready.
     transcribe: {
       name: shortName(sttRepoForKey(sttModelId)),
       state: "loaded",

@@ -18605,7 +18605,6 @@ def _retire_other_voices(request: LoadRequest) -> None:
     ]
     for slot in doomed:
         reports = _kept_slot_reports(slot)
-        # A voice a request still holds stays; the next load of this role retires it.
         if not model_slots.claim_victim(slot):
             continue
         try:
@@ -18803,7 +18802,6 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     orchestrator = _peek_inference_backend()
     if getattr(orchestrator, "_managed_engine", None) is not None:
         if request.voice:
-            # As the primary it would stop the vLLM / SGLang chat it is meant to speak for.
             raise HTTPException(
                 status_code = 409,
                 detail = "Voice mode cannot load a voice beside a vLLM or SGLang chat model. "
@@ -27041,7 +27039,6 @@ async def voice_models_status(current_subject: str = Depends(get_current_subject
 
 
 class VoiceDecisionPick(BaseModel):
-    # None clears the pick, so UNSLOTH_VOICE_DECISION_CHECKPOINT applies again.
     name: Optional[str] = None
 
 
@@ -27127,7 +27124,6 @@ def _warm_voice_decision() -> None:
     try:
         models.judge("hello")
     except Exception as exc:  # noqa: BLE001 - the state reports it
-        # A load still running is not a failure: it keeps going in the runtime.
         if "still loading" not in str(exc) and "reloading" not in str(exc):
             models.note_decision_error(str(exc))
 

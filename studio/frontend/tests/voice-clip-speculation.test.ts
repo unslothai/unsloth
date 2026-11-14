@@ -14,7 +14,6 @@ const frames = (pattern: string) => [...pattern].map((c) => c === "v");
 const quiet = (pattern: string) => [...pattern].map((c) => c !== "_");
 
 test("the clip stops changing once the pad of silence after the last voiced frame is in", () => {
-  // _ silent, q quiet but not silent, v voiced
   const p = "__qvvv_v";
   const at = utteranceSpan(frames(p + "__"), quiet(p + "__"), 2);
   assert.deepEqual(at, { start: 0, end: 9 });

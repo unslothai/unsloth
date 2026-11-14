@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The model picker's Custom Folders section: the scan folders, the add-by-path and browse
-// controls, and the folders worth suggesting. Shared by the chat picker and the voice Decide list.
 
 import { useIsAccountOwner } from "@/features/auth";
 import { listRecommendedFolders } from "@/features/chat";
@@ -23,7 +21,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type Ref, useCallback, useEffect, useState } from "react";
 import { FolderBrowser } from "./folder-browser";
 
-// The folders come from the shared store, so the chat picker and the Decide list stay in step.
 export function useScanFolders(onChanged?: () => void) {
   const { folders: scanFolders } = useScanFolderStore();
   const [folderInput, setFolderInput] = useState("");
@@ -35,13 +32,11 @@ export function useScanFolders(onChanged?: () => void) {
 
   const handleAddFolder = useCallback(
     async (overridePath?: string) => {
-      // An explicit path avoids racing the `setFolderInput` update.
       const raw = overridePath !== undefined ? overridePath : folderInput;
       const trimmed = raw.trim();
       if (!trimmed || folderLoading) return;
       setFolderError(null);
       setFolderLoading(true);
-      // The typed-input panel is closed here, so surface failures via toast.
       const fromBrowser = overridePath !== undefined;
       try {
         const { folder, alreadyAdded } = await addScanFolderToStore(trimmed);
@@ -131,7 +126,6 @@ export function useScanFolders(onChanged?: () => void) {
 
 export type ScanFolders = ReturnType<typeof useScanFolders>;
 
-/** The heading with its add, browse and collapse controls, the folder list, suggestions and the path input. */
 export function CustomFoldersControls({
   folders,
   collapsed,
@@ -231,7 +225,6 @@ export function CustomFoldersControls({
         </div>
       </div>
 
-      {/* Folder paths */}
       {!customFoldersCollapsed &&
         scanFolders.map((f) => {
           const problem = scanFolderStatusCopy(f.status);
@@ -272,7 +265,6 @@ export function CustomFoldersControls({
           );
         })}
 
-      {/* Recommended folders */}
       {!customFoldersCollapsed &&
         (() => {
           const registered = new Set(scanFolders.map((f) => f.path));
@@ -299,7 +291,6 @@ export function CustomFoldersControls({
           );
         })()}
 
-      {/* Add folder input */}
       {!customFoldersCollapsed && showFolderInput && (
         <div className="px-2.5 pb-1 pt-0.5">
           <div className="flex items-center gap-1">
@@ -367,7 +358,6 @@ export function CustomFoldersControls({
         onSelect={(picked) => {
           setFolderInput(picked);
           setFolderError(null);
-          // Pass the path explicitly: `folderInput` state has not flushed yet.
           void handleAddFolder(picked);
         }}
       />

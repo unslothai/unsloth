@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Stage-2 fillers and the pending slot the run reads once.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -76,7 +75,6 @@ test("the approval line names the Allow card and is warmed with the other asides
   for (const p of [pickApproval(() => 0), pickApproval(() => 0.99)]) assert.ok(asidePhrases().includes(p));
 });
 
-// The model decides the answer, so nothing said before it may sound like a yes, a no or a promise.
 const AGREEMENT_OR_REFUSAL =
   /\b(ok|okay|sure|got it|alright|all right|yes|yeah|yep|no|nope|no problem|sounds good|will do|on it|of course|absolutely|good question|(?<!if )i can do that|can't|cannot|right|almost there|here we go)\b/i;
 

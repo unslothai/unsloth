@@ -8,8 +8,6 @@ import {
 } from "@/components/assistant-ui/tool-arg-text";
 import { describeToolCall } from "./voice-loop-bridge";
 
-// How the voice surfaces (the full orb's card and the floating orb's popup) name a tool
-// call waiting for approval. The call itself is looked up in the thread by the voice loop.
 
 function hostOf(url: string): string {
   try {
@@ -21,7 +19,6 @@ function hostOf(url: string): string {
   }
 }
 
-/** What the chat card's header says for the call, as near as its arguments allow. */
 export function toolLabel(toolCallId: string): string {
   const call = describeToolCall(toolCallId);
   const name = call?.toolName ?? "";
@@ -47,7 +44,6 @@ export function toolLabel(toolCallId: string): string {
   return toolArgText(name) || toolCallId;
 }
 
-/** The tool's name and the gist of its arguments, cut short: web_search · "who is the...". */
 export function toolBrief(toolCallId: string): string {
   const call = describeToolCall(toolCallId);
   const name = call?.toolName || "tool";

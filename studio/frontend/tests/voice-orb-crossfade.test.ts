@@ -27,7 +27,6 @@ test("the same state again changes nothing", () => {
 });
 
 test("hearing arriving mid-fade keeps the earlier fade going instead of snapping it", () => {
-  // transcribing fades in over listening, then hearing lands before it has finished.
   const mid = pushGradient(pushGradient(start, "transcribing"), "hearing");
   assert.deepEqual(
     mid.map((l) => [l.g, l.fading]),
@@ -37,7 +36,6 @@ test("hearing arriving mid-fade keeps the earlier fade going instead of snapping
       ["hearing", true],
     ],
   );
-  // The earlier fade ending clears only what is under it; hearing is still fading.
   const after = settleGradient(mid, 1);
   assert.deepEqual(
     after.map((l) => [l.g, l.fading]),

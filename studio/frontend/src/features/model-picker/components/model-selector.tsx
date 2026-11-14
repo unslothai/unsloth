@@ -130,7 +130,6 @@ interface ModelSelectorProps {
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
-  /** Render only the picker panel, inline, for a host popover that drills into it. */
   embedded?: boolean;
 }
 
@@ -315,7 +314,6 @@ function ModelSelectorContent({
   moreModels,
   embedded = false,
 }: {
-  /** No popover of its own: the caller's popover is the surface. */
   embedded?: boolean;
   open: boolean;
   models: ModelOption[];
@@ -500,7 +498,6 @@ function ModelSelectorContent({
           disableHoverableContent={true}
         >
           {visibleConfigTarget ? (
-            // 28px sides like the list's text; the right is 20px plus the bar, an overlay strip capped at 8px.
             <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
               <ModelConfigPage
                 key={modelConfigInstanceKey(
@@ -555,7 +552,6 @@ function ModelSelectorContent({
                 section={effectiveHubSection}
                 sectionToggle={
                   <PillTabs
-                    // The panel reserves --picker-tab-pad per pill, so keep the two in step.
                     className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
                     ariaLabel={t("picker.hubSectionAriaLabel")}
                     tabs={hubSectionTabs}

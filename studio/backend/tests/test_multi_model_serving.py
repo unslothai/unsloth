@@ -252,11 +252,9 @@ def test_a_second_voice_replaces_the_first_of_its_role(backends, monkeypatch):
 
     kokoro = kept("audio-cpp/Kokoro-82M-GGUF")
     stt = kept("audio-cpp/parakeet-GGUF")
-    # Loading B while A speaks unloads A; the listening model and the chat model stay.
     omni = kept("audio-cpp/OmniVoice-GGUF")
     assert model_slots.slots == [extra, stt, omni]
     assert kokoro not in model_slots.slots
-    # Reloading the voice already kept reuses its slot and unloads nothing.
     assert _selected(LoadRequest(model_path = "audio-cpp/OmniVoice-GGUF", voice = True)) is omni
     assert model_slots.slots == [extra, stt, omni]
 

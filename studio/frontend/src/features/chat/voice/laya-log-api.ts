@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The voice decision log's read side: stats for the settings cards, the JSONL
-// export (saved through the app's file-save path) and clearing it.
 
 import { authFetch } from "@/features/auth";
 import { downloadFile } from "@/lib/native-files";
@@ -40,12 +38,10 @@ export interface LayaExportOptions {
   model?: LayaModel | "all";
   only?: "disagreements" | "all";
   threadId?: string | null;
-  /** ISO time; rows logged before it are left out. */
   since?: string | null;
   mix?: boolean;
 }
 
-/** Download the export as JSONL; resolves to the row count. Throws on a failed fetch or a cancelled save. */
 export async function exportLayaLog(opts: LayaExportOptions = {}): Promise<number> {
   const params = new URLSearchParams();
   params.set("model", opts.model ?? "all");

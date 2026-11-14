@@ -19,7 +19,6 @@ test("back from the widget shows the in-app orb again and hands the window back"
   assert.equal(returnFromWidget(r.w, r.setCollapsed, r.showMain), true);
   assert.equal(r.w.floating, false);
   assert.deepEqual(r.calls, ["collapsed:false", "showMain"]);
-  // A second return (the Back button after a Dock click) does nothing.
   assert.equal(returnFromWidget(r.w, r.setCollapsed, r.showMain), false);
   assert.deepEqual(r.calls, ["collapsed:false", "showMain"]);
 });

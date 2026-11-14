@@ -13,7 +13,6 @@ import {
   voiceNotesEpoch,
 } from "../src/features/chat/voice/thinking-filler.ts";
 
-// What the chat adapter attaches to the next outgoing run.
 function nextRunNotes(): string[] {
   const notes: string[] = [];
   const filler = consumePendingFiller();

@@ -49,7 +49,6 @@ _unloads = 0
 _last_used = 0.0
 _idle_timer: threading.Timer | None = None
 _fallback_reason: str | None = None
-# Why the resident decision model runs on the CPU although the GPU was asked for: another model holds it.
 _placement_reason: str | None = None
 # A Clef a training run unloaded, reloading once the run ends; an unload cancels it instead of waiting.
 _reloading: Checkpoint | None = None
@@ -348,7 +347,6 @@ def _mlx_choice(
             return None
         if not native.is_local and is_cached(native) and not is_cached(target):
             return None
-        # Beside a resident chat, image or video model the smaller GGUF goes first, and serves on the CPU where MLX would not fit.
         if _gpu_taken() and (_fits_beside(native) or not _fits_beside(target)):
             return None
     return target
@@ -555,7 +553,6 @@ def select(
         reason = request_gap(questions or {})
         if reason is None:
             # Auto keeps a resident PyTorch Clef for text rather than reloading the model.
-            # A resident PyTorch Laya was a fallback (a training run, a busy GPU): once that ends, its GGUF serves.
             resident = _loaded == checkpoint and _agent is not None
             if preference == "auto" and not images:
                 if resident and checkpoint.layout != "laya":
@@ -621,7 +618,6 @@ def _gpu_taken() -> bool:
     return any(owner != gpu_arbiter.DECISIONS for owner in gpu_arbiter.residents())
 
 
-# Left free after a decision model joins a resident chat, image or video model.
 _BESIDE_HEADROOM_MIB = 2048
 
 
@@ -742,7 +738,6 @@ def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | Non
     if checkpoint.layout == "clef" and clef_unsupported_reason(wait = False) is not None:
         return None
     if checkpoint.layout == "laya" and _native_gpu() and _training_active():
-        # PyTorch Laya moves to CPU for the run; llama.cpp would wait for the GPU.
         return "A training run is using the GPU."
     if _native_gpu() and _gpu_taken():
         return "Another model is using the GPU."
@@ -1913,7 +1908,6 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
         and _gpu_taken()
         and not (_loaded == checkpoint and _agent is not None)
     ):
-        # Outside _state_lock: pricing it probes the GPU.
         placement = _placement(checkpoint)
     with _state_lock:
         if _loaded == checkpoint and _agent is not None and not misplaced:

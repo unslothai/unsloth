@@ -36,7 +36,6 @@ function rig() {
     },
     clearTimer: (id) => (timers = timers.filter((t) => t.id !== id)),
   });
-  // Advance wall time; the audio clock moves only while `clock` is true.
   const advance = (ms: number, clock: boolean) => {
     const until = now + ms;
     for (;;) {
@@ -74,7 +73,6 @@ test("a stand-in that never sounds is force-ended after its duration + grace", (
   r.ctx.state = "suspended";
   const s = r.add("Let me think.", 1.1);
   assert.equal(r.state.playing, true);
-  // "Still thinking." at +3.5 s: the stuck clip still blocks a filler.
   r.advance(1100, false);
   assert.equal(asideBlocked(r.ledger, { patient: false, replySynth: false }), true);
   r.advance(1100 + CLIP_WATCHDOG_GRACE_MS, false);
@@ -112,7 +110,6 @@ test("a clip started late on a moving clock gets its time", () => {
   const r = rig();
   r.add("Late.", 2);
   r.advance(1000, false);
-  // The context came back and is now partway through the clip.
   r.advance(2500, true);
   assert.equal(r.ledger.size, 1);
   assert.equal(r.events.some((e) => e.event === "tts.clipWatchdog"), false);
@@ -138,9 +135,7 @@ test("the approval aside plays over a stuck clip instead of being dropped", () =
   r.add("Let me think.", 1.1);
   r.advance(500, false);
   r.ctx.state = "running";
-  // A filler still defers to anything on the timeline...
   assert.equal(asideBlocked(r.ledger, { patient: false, replySynth: false }), true);
-  // ...but the patient line only to something audible. Nothing is: reap and play.
   r.ctx.currentTime += 5;
   assert.equal(asideBlocked(r.ledger, { patient: true, replySynth: false }), false);
   assert.equal(r.ledger.size, 0);
@@ -165,7 +160,6 @@ test("the player routes stand-ins, pauses and patient asides through the ledger"
   assert.match(src, /asideBlocked\(clipsRef\.current, \{ patient, replySynth: realSynthRef\.current \}\)/);
   assert.match(src, /play\(asides\(\)\.get\(standIn\)!, true, standIn\)/);
   assert.match(src, /heldRef\.current \|\| \(pausedRef\.current && !patient\)/);
-  // isPlaying is set only by the ledger's busy/idle callbacks.
   assert.equal((src.match(/setIsPlaying\(true\)/g) ?? []).length, 1);
   assert.match(src, /onBusy: \(\) => setIsPlaying\(true\)/);
 });

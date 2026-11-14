@@ -89,7 +89,6 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
         "laya-ft:v4",
     )
     stock = {m["name"]: m for m in got["models"]}["laya-multilingual"]
-    # The picker row's badges: family, size; a stock entry has no folder, so no age or GGUF export.
     assert (stock["family"], stock["gguf"], stock["mtime"]) == ("Laya", None, None)
     assert stock["size_bytes"] > 0
 
@@ -127,7 +126,6 @@ def test_custom_folder_decision_models_are_found_and_kept_in_bounds(monkeypatch,
     model = _clef_folder(root / "voice-decisions-v4-qwen")
     (root / "notes").mkdir()
     outside = _clef_folder(tmp_path / "elsewhere")
-    # The picker's custom folders; the real list refuses tmp paths (/private/var is denied).
     monkeypatch.setattr(catalog, "_custom_roots", lambda: [(root, False)])
 
     found = catalog.folder_decisions()

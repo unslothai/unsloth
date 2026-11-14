@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Loop events for offline debugging. Sent only when the backend has a VAD debug
-// dir (UNSLOTH_VAD_DEBUG_DIR), where they land in voice-trace.jsonl beside the clips.
 
 import { authFetch } from "@/features/auth";
 
@@ -11,9 +9,6 @@ let probe: Promise<boolean> | null = null;
 
 async function check(): Promise<boolean> {
   if (enabled !== null) return enabled;
-  // A probe that fails (the backend still starting after a relaunch) is not an
-  // answer: leave it unknown so the next event asks again.
-  // Not /voice/models/status: that one loads every decision model to report on it.
   probe ??= authFetch("/api/inference/voice/trace")
     .then(async (r) => {
       if (!r.ok) return null;

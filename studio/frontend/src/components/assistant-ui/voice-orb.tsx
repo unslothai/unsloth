@@ -40,9 +40,6 @@ import { OrbApprovalCard } from "./orb-approval-card";
 
 export type { OrbStateName, SpectrumReader };
 
-// The full-overlay orb is a dark 3D glass sphere. Each state carves an icon into
-// it as a recessed "black hole" (near-black fill + a light bottom rim so the
-// shape reads as pressed into the surface) and shows a one-word caption below.
 const orbMeta: Record<OrbStateName, { label: TranslationKey; icon: IconKind }> = {
   waiting: { label: "voiceOrb.states.waiting", icon: "mic-off" },
   listening: { label: "voiceOrb.states.listening", icon: "mic" },
@@ -60,16 +57,8 @@ type IconKind = "mic" | "mic-off" | "wave" | "dots" | "brain" | "spinner" | "pen
 
 const HOLE = "#08080b";
 const DEBOSS = "drop-shadow(0 1px 0.5px rgba(255,255,255,0.22)) drop-shadow(0 -1px 1.5px rgba(0,0,0,0.6))";
-// The same deboss as a box-shadow, for glyphs that move every frame. WebKit keeps a
-// filtered element's raster when only its transform changes, so a drop-shadow under
-// a per-frame scaleY leaves ghost bands at the unscaled edges (seen on macOS).
 const DEBOSS_BOX = "0 1px 0.5px rgba(255,255,255,0.22), 0 -1px 1.5px rgba(0,0,0,0.6)";
 
-// Three dots that jump left-to-right in sequence (thinking). This is a vertical
-// translate, not a scale, so the dots never grow or shrink independently -- their
-// size stays locked to the ball's breathe.
-// A CSS keyframe, not a scripted tween: three scripted dots over the pulsing
-// amber body dropped frames in the desktop webview.
 const Dots: FC = () => (
   <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
     {[0, 1, 2].map((i) => (
@@ -89,39 +78,26 @@ const Dots: FC = () => (
   </div>
 );
 
-// The sphere's edge is the live spectrum of whoever is talking: your mic while the
-// loop listens or hears you, the reply while it speaks. Log bands from low to high and
-// back round the ring, mirrored and slowly turning so a held vowel still moves
-// (blob-shape.ts). A quiet orb is a plain circle; nothing reaches the ring.
-// Wide enough for the edge's full reach (70 + 3 + BLOB_AMP_PX), or the peaks are cut flat.
 const ORB_BOX = 196;
 const ORB_R = 70;
 const BLOB_AMP = BLOB_AMP_PX;
-// The speech detector's ring keeps the size it had before the edge grew.
 const VAD_RIPPLE_BOX = 184;
-// The bezier spans are cheap to rebuild; the frame rate is the display's.
 const BLOB_FRAME_MS = 1000 / 61;
-// Attack and release on each band per 30 fps frame, on top of the analyser's own
-// smoothing, so a burst swells the edge and lets it sink back instead of jittering.
-// Scaled by the real frame time, so the feel holds at any frame rate.
 const BLOB_ATTACK = 0.45;
 const BLOB_RELEASE = 0.2;
 const BLOB_EASE_FRAME_MS = 1000 / 30;
 const BLOB_KERNEL = Float32Array.from({ length: 7 }, (_, k) => Math.exp(-((k - 3) ** 2) / 4));
 const BLOB_KERNEL_SUM = BLOB_KERNEL.reduce((a, b) => a + b, 0);
-// One orb on screen at a time, so the per-frame buffers live for the module.
 const blobRaw = new Float32Array(SPECTRUM_BANDS);
 const blobEased = new Float32Array(SPECTRUM_BANDS);
 const blobControls = createBlobControls();
 
 function blobPath(bands: Float32Array, level: number, k = 1): string {
   const c = (ORB_BOX * k) / 2;
-  // Held still with the mirror axis horizontal: lows on the right, highs on the left.
   foldControls(bands, 0, blobControls);
   return `path("${blobBezierPath(blobControls, ORB_R + level * 3, BLOB_AMP, c, c, k)}")`;
 }
 
-/** Blur round the ring so bands blend into a contour, then ease each band toward it. */
 function easeBands(raw: Float32Array, eased: Float32Array, dtMs: number): void {
   const frames = dtMs / BLOB_EASE_FRAME_MS;
   const attack = 1 - Math.pow(1 - BLOB_ATTACK, frames);
@@ -140,11 +116,6 @@ function easeBands(raw: Float32Array, eased: Float32Array, dtMs: number): void {
 
 let blobLevel = 0;
 
-/**
- * Drives one element's clip-path from the live spectrum of `side`; a circle when idle.
- * When the voice stops the edge decays flat before it becomes the circle again, and a
- * starting voice eases in, so neither end snaps.
- */
 function useBlobClip(
   ref: React.RefObject<HTMLDivElement | null>,
   side: "input" | "output" | undefined,
@@ -155,8 +126,6 @@ function useBlobClip(
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    // The body is drawn bigger than the sphere so the spectrum has room; with no
-    // voice to show it is clipped back to the sphere's own size.
     const plain = `circle(${ORB_R * k}px at 50% 50%)`;
     const live = side && active ? side : null;
     if (!live && isFlat(blobEased, blobLevel)) {
@@ -187,7 +156,6 @@ function useBlobClip(
       el.style.clipPath = blobPath(blobEased, blobLevel, k);
     };
     raf = requestAnimationFrame(tick);
-    // The clip is left where it is: the next run carries on from it.
     return () => cancelAnimationFrame(raf);
   }, [ref, side, active, read, k]);
 }
@@ -200,11 +168,6 @@ function scaleOf(el: Element): number {
   }
 }
 
-/**
- * Glides the pulse from the scale it had at a state change to rest, instead of the new
- * keyframe snapping it to 1. A class for getSnapshotBeforeUpdate: the only hook that
- * still sees the old pulse before the DOM changes.
- */
 class ScaleHandoff extends Component<{
   animationKey: string;
   className?: string;
@@ -218,15 +181,11 @@ class ScaleHandoff extends Component<{
     const wrap = this.wrap.current;
     const el = wrap?.querySelector("[data-orb-pulse]");
     if (!wrap || !el) return null;
-    // Times the glide still running from the last change, when states flip quickly.
     return scaleOf(el) * scaleOf(wrap);
   }
 
   componentDidUpdate(_: unknown, __: unknown, from: number | null): void {
     if (from === null) return;
-    // A new duration on the same keyframe (listening's slow breathe into hearing's quick
-    // one) keeps the old start time, so the pulse jumped to another point of its cycle.
-    // Start it over at rest instead; the glide below carries the old scale into it.
     const pulse = this.wrap.current?.querySelector("[data-orb-pulse]");
     for (const a of pulse?.getAnimations?.() ?? []) {
       if ("animationName" in a) a.currentTime = 0;
@@ -249,7 +208,6 @@ class ScaleHandoff extends Component<{
   }
 }
 
-/** The body's gradient; a new state's colour fades in over whatever is showing. */
 const GradientCrossfade: FC<{ gradient: string }> = ({ gradient }) => {
   const [layers, setLayers] = useState<FadeLayer[]>(() => [{ g: gradient, id: 0, fading: false }]);
   const next = pushGradient(layers, gradient);
@@ -271,9 +229,6 @@ const GradientCrossfade: FC<{ gradient: string }> = ({ gradient }) => {
   );
 };
 
-// A plain circle that leaves the orb's edge once per speech-detector verdict: green
-// when the clip was kept, grey when it was dropped. A circle on purpose, so it reads
-// as a call on your audio whichever voice the blob is showing.
 const VadRipple: FC = () => {
   const d = useVoiceDecisions();
   if (!d.vad) return null;
@@ -293,16 +248,10 @@ const VadRipple: FC = () => {
 };
 
 const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
-  // Soundwave (hearing): a static glyph; the spectrum edge supplies the motion.
   if (icon === "wave") return <AudioLinesIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
   if (icon === "dots") return <Dots />;
-  // The orb borrows the app's own glyphs where one exists for the same idea, so a
-  // state reads the same here as in the composer and the message action bar.
   if (icon === "brain")
-    // Thinking: the composer's Thinking toggle bulb.
     return (
-      // The glyph's own viewBox runs to the bulb's edge, and the filtered raster is
-      // clipped to the box, so the top of the bulb was lost some frames: inset it.
       <span
         style={{
           color: HOLE,
@@ -330,40 +279,28 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
       </motion.div>
     );
   if (icon === "pencil")
-    // Transcribing: a pencil writing down what you said. Static, rides the breathe.
-    // Transcribing: the action bar's Edit pencil.
     return (
       <span style={{ color: HOLE, filter: DEBOSS, display: "grid" }}>
         <HugeiconsIcon icon={Edit03Icon} size={44} strokeWidth={2.2} />
       </span>
     );
   if (icon === "synth")
-    // Generating voice: a waveform being built, not the speaker, which means
-    // audio is actually playing.
     return <AudioWaveformIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
   if (icon === "waveform")
-    // Speaking: the action bar's Read aloud speaker.
     return (
       <span style={{ color: HOLE, filter: DEBOSS, display: "grid" }}>
         <HugeiconsIcon icon={ReadAloudIcon} size={46} strokeWidth={2.2} />
       </span>
     );
   if (icon === "mic-off")
-    // Waiting on a chat model: the struck-through mic says the loop is open but
-    // not capturing, without needing the caption to be read first.
     return <MicOffIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
   if (icon === "pause")
     return (
-      // Two slim bars, matching the composer button, not lucide's filled blocks.
       <svg width={46} height={46} viewBox="0 0 24 24" fill={HOLE} style={{ filter: DEBOSS }} aria-hidden={true}>
         <rect x="7" y="5" width="2.6" height="14" rx="1.3" />
         <rect x="14.4" y="5" width="2.6" height="14" rx="1.3" />
       </svg>
     );
-  // mic (listening): a resting state, so the icon gets NO independent animation.
-  // It rides the ball's breathe scale only, so it grows and shrinks in perfect
-  // sync with the sphere -- reading as carved into the surface, not floating.
-  // The same mic the composer's Dictate button uses, so the two read as one control.
   return (
     <span
       style={{
@@ -379,17 +316,9 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   );
 };
 
-// What the three turn models last decided, drawn as three arcs around the orb,
-// each in the colour of the orb state it belongs to: the turn judge on the left
-// in "hearing you" salmon (how sure the turn is over), the filler across the top
-// in "speaking" sky (lit while a line was chosen), the mid-think call on the
-// right in "thinking" indigo (how sure of its call). Faint tracks until a model
-// has spoken; a filled arc never moves on its own.
 const RING_R = 110;
 const RING_W = 6.5;
 const RING = Math.ceil(2 * (RING_R + RING_W));
-// Three thirds with rounded ends and a small gap at each seam; the judge owns the
-// left third, the filler the top-right, the mid-think call the bottom-right.
 const ARC_DEG = 120;
 const GAP_DEG = 7;
 const ARCS: Array<{
@@ -403,7 +332,6 @@ const ARCS: Array<{
   { key: "interject", start: 60, color: "#818cf8", label: "interrupt" },
 ];
 
-/** Short value for the label beside each arc. */
 function arcValue(d: VoiceDecisions, key: keyof VoiceDecisions): string {
   if (key === "turn") return d.turn ? `${Math.round(d.turn.p * 100)}% ${d.turn.sent ? "sent" : "wait"}` : "";
   if (key === "filler")
@@ -416,7 +344,6 @@ const VoiceDecisionRing: FC = () => {
   // The canvas is wider than the ring so the labels outside it are never clipped.
   const PAD = 110;
   const circ = 2 * Math.PI * RING_R;
-  // The gap is split between both ends, and a round cap adds half the width on each side.
   const arcLen = (circ * (ARC_DEG - GAP_DEG)) / 360 - RING_W;
   const SIZE = RING + PAD * 2;
   const C = SIZE / 2;
@@ -436,13 +363,11 @@ const VoiceDecisionRing: FC = () => {
     >
       {ARCS.map((arc) => {
         const v = fill(arc.key);
-        // Label at the arc's midpoint, just outside the ring; left arc reads right-aligned.
         const mid = ((arc.start + ARC_DEG / 2) * Math.PI) / 180;
         const lx = C + Math.sin(mid) * (RING_R + 18);
         const ly = C - Math.cos(mid) * (RING_R + 18);
         const anchor = Math.sin(mid) < -0.1 ? "end" : Math.sin(mid) > 0.1 ? "start" : "middle";
         const value = arcValue(d, arc.key);
-        // The top arc's two lines stack upward, away from the ring; the side arcs stack down.
         const above = Math.cos(mid) > 0.5;
         const labelY = above ? ly - 14 : ly;
         const valueY = above ? ly : ly + 14;
@@ -464,7 +389,6 @@ const VoiceDecisionRing: FC = () => {
             >
               {arc.label}
             </text>
-            {/* A new value fades in over the old one rather than swapping. */}
             <AnimatePresence initial={false}>
               {value && (
                 <motion.text
@@ -524,7 +448,6 @@ const VoiceDecisionRing: FC = () => {
   );
 };
 
-// A small "?" beside the state caption: what the ring and the orb colours mean.
 const HELP_ROWS: { color: string; name?: TranslationKey; text: TranslationKey }[] = [
   { color: "#fb7185", name: "voiceOrb.help.turnName", text: "voiceOrb.help.turn" },
   { color: "#38bdf8", name: "voiceOrb.help.fillerName", text: "voiceOrb.help.filler" },
@@ -685,19 +608,11 @@ const ORB_KEYFRAMES = `
         }
 `;
 
-/** Largest distance of the spectrum edge from the centre, at the full orb's size. */
 const ORB_EDGE_MAX_R = ORB_R + 3 + BLOB_AMP;
 
 const scalePx = (shadow: string, k: number) =>
   shadow.replace(/(\d+(?:\.\d+)?)px/g, (_, n: string) => `${Number(n) * k}px`);
 
-/**
- * The bare sphere for the floating orb window: the full orb's body, glow, motion,
- * spectrum edge and carved icon at any size, without the decision ring or caption.
- * `read` supplies the bands, which the widget gets streamed from the main window.
- * Sized natively rather than through a scale transform, so the edge's clip and the
- * glow are laid out at their real extent.
- */
 export const OrbBall: FC<{
   orbState: OrbStateName | null;
   muted: boolean;
@@ -706,7 +621,6 @@ export const OrbBall: FC<{
 }> = ({ orbState, muted, size, read }) => {
   const k = size / 140;
   const cfg = orbState ? orbConfig[orbState] : null;
-  // Only the glyph: the ball has no caption.
   const icon =
     orbState && muted && (orbState === "listening" || orbState === "hearing")
       ? ("mic-off" as const)
@@ -714,7 +628,6 @@ export const OrbBall: FC<{
         ? orbMeta[orbState].icon
         : null;
   const blobRef = useRef<HTMLDivElement | null>(null);
-  // The same edge as the in-app orb; the widget keeps its control bar below the edge's reach.
   useBlobClip(blobRef, orbState ? SPECTRUM_SIDE[orbState] : undefined, Boolean(read), read, k);
   return (
     <ScaleHandoff animationKey={cfg ? `${cfg.animation} ${cfg.duration}` : ""} style={{ width: size, height: size }}>
@@ -741,14 +654,11 @@ export const OrbBall: FC<{
             top: (size - ORB_BOX * k) / 2,
             borderRadius: "50%",
             clipPath: `circle(${ORB_R * k}px at 50% 50%)`,
-            // Its own layer: the edge repaints every frame, and inside the pulse's layer it
-            // made the glow's blurred shadow repaint with it.
             transform: "translateZ(0)",
           }}
         >
           <GradientCrossfade gradient={cfg?.gradient ?? ORB_IDLE_GRADIENT} />
         </div>
-        {/* Only the glyph is scaled: it was drawn for the 140 px sphere. */}
         <div
           style={{
             gridArea: "1 / 1",
@@ -764,22 +674,13 @@ export const OrbBall: FC<{
   );
 };
 
-/** Room kept between the approval card and the composer under the orb. */
 const COMPOSER_CLEARANCE = 24;
 
-/**
- * How far to lift the orb's column so the approval card's bottom stays COMPOSER_CLEARANCE
- * above the composer, read from the layout when the card shows and whenever the window,
- * the composer or the card change size: events only, nothing per frame. The column never
- * lifts past the top of the overlay.
- */
 function useComposerClearance(
   rootRef: React.RefObject<HTMLDivElement | null>,
   columnRef: React.RefObject<HTMLDivElement | null>,
   ringRef: React.RefObject<HTMLDivElement | null>,
-  /** The card's top below the ball's centre (orbStackLayout), or null with no card. */
   cardTop: number | null,
-  /** Which call the card shows: a new one is a new element to watch. */
   cardKey: string,
 ): number {
   const [lift, setLift] = useState(0);
@@ -798,8 +699,6 @@ function useComposerClearance(
       const card = column.querySelector("[data-orb-approval]");
       const composer = composerOf();
       if (!card || !composer) return setLift(0);
-      // From the layout, not the screen: offsetTop and offsetHeight ignore the lift and the
-      // stack's glide, so this is where the card comes to rest without any lift.
       const orbCentre = root.getBoundingClientRect().top + ring.offsetTop + ring.offsetHeight / 2;
       const cardBottom = orbCentre + cardTop + (card as HTMLElement).offsetHeight;
       const need = composer.getBoundingClientRect().top - COMPOSER_CLEARANCE - cardBottom;
@@ -823,7 +722,6 @@ function useComposerClearance(
   return lift;
 }
 
-/** One item of the stack under the ball, gliding to its offset from the ball's centre. */
 const StackItem: FC<{ y: number; children: React.ReactNode }> = ({ y, children }) => (
   <div
     className="pointer-events-auto absolute top-0 left-0 w-max"
@@ -843,8 +741,6 @@ export const VoiceOrb: FC = () => {
   const voiceOff = useChatRuntimeStore((s) => s.voiceMode === "off");
   const showOverlay = Boolean(orbState) && !collapsed && !voiceOff;
 
-  // Desktop: build the floating orb's window while voice is up, so holding the mini
-  // orb only has to show it.
   useEffect(() => {
     if (!isTauri || voiceOff) return;
     void import("@/features/chat/voice/orb-widget-host").then((m) => m.prewarmOrbWidget());
@@ -853,7 +749,6 @@ export const VoiceOrb: FC = () => {
   const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
   const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
   const hasDecision = latestDecision(useVoiceDecisions()) !== undefined;
-  // Only the voiced chat's calls: the store also holds Compare panes' and background chats'.
   const confirmations = useChatRuntimeStore((s) => s.toolConfirmations);
   const voiceThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const approval = pendingApproval(confirmations, voiceThreadId, (id) => describeToolCall(id) !== null);
@@ -870,7 +765,6 @@ export const VoiceOrb: FC = () => {
   const heldForEdit = useChatRuntimeStore((s) => s.voiceHeldForEdit);
   const t = useT();
   const cfg = orbState ? orbConfig[orbState] : null;
-  // Muted while it would be listening: the struck mic and a plain caption.
   const meta =
     orbState && muted && (orbState === "listening" || orbState === "hearing")
       ? { label: t("voiceOrb.states.muted"), icon: "mic-off" as const }
@@ -935,7 +829,6 @@ export const VoiceOrb: FC = () => {
                         initial={{ opacity: 0, y: 3 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -3 }}
-                        // mode="wait" plays exit then enter, so the swap costs twice this.
                         transition={{ duration: 0.09 }}
                         className="text-ui-13 font-medium uppercase tracking-[0.28em] text-foreground/55"
                         style={{ fontFamily: "var(--font-heading)" }}
@@ -960,16 +853,12 @@ export const VoiceOrb: FC = () => {
             </div>
             {showOverlay && showArcs && <VoiceDecisionRing />}
             <VadRipple />
-            {/* Glides the pulse from its old scale into the new state's. */}
             <ScaleHandoff
               animationKey={cfg && showOverlay ? `${cfg.animation} ${cfg.duration}` : ""}
               className="relative grid place-items-center"
             >
               <div
                 data-orb-pulse
-                // Transition the two things that change between states, not `all`:
-                // that was also animating transform, which fights the breathe keyframe
-                // on every state swap.
                 className="relative grid place-items-center transition-[box-shadow] duration-300 ease-out"
                 aria-hidden
                 style={{
@@ -977,11 +866,6 @@ export const VoiceOrb: FC = () => {
                   height: 140,
                   borderRadius: "50%",
                   boxShadow: cfg?.shadow ?? "none",
-                  // The keyframe and its 32px blurred shadow only run while the orb is
-                  // on screen. Minimized, the loop keeps going and orbState stays set,
-                  // so without this the sphere kept repainting under an invisible
-                  // layer for the whole conversation, and that is what made the swap
-                  // back to chat stutter.
                   animation: cfg && showOverlay ? `${cfg.animation} ${cfg.duration} ease-in-out infinite` : undefined,
                 }}
               >
@@ -1014,8 +898,6 @@ export const VoiceOrb: FC = () => {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    // Speaking and hearing trade places on every barge-in; a slow swap
-                    // read as lag, so this is a quick fade and nothing else.
                     transition={{ duration: 0.09 }}
                     style={{
                       display: "grid",

@@ -10,8 +10,6 @@ import {
   type EarlyAnswer,
 } from "../src/features/chat/voice/early-interject.ts";
 
-// The adapter's hold flushes a fragment as the whole turn after this long with no
-// more speech; the early cut has to land well before it.
 const JUDGE_FLUSH_MS = 4000;
 
 function rig(answer: EarlyAnswer | null) {
@@ -35,8 +33,6 @@ function rig(answer: EarlyAnswer | null) {
     now: () => t,
     trace: (event, data) => log.push(`${event}:${JSON.stringify(data)}`),
   });
-  // The engine's submit: an early restart sends the whole utterance as that restart;
-  // otherwise it asks interject about the whole utterance, as before.
   const submit = (text: string) => {
     const done = early.complete();
     if (done.restarted) submitted.push({ text, replace: done.kind === "replace" });
@@ -70,7 +66,6 @@ test("a held fragment over a thinking run cuts it before the judge's flush, then
   assert.ok(r.cancels[0].gapMs < JUDGE_FLUSH_MS);
   assert.ok(r.log.includes('interject.early:{"verdict":"restart","words":8}'));
 
-  // A continuation is still unfinished: no second ask, no second cut.
   r.early.fragment("Okay, now tell me about like the mountain that");
   await r.answer();
   assert.equal(r.asked.length, 1);
@@ -81,7 +76,6 @@ test("a held fragment over a thinking run cuts it before the judge's flush, then
   assert.deepEqual(r.submitted, [{ text: "Okay, now tell me about like the mountain that we climbed", replace: false }]);
   assert.ok(!r.log.some((l) => l.startsWith("reask:")));
 
-  // The next utterance is a fresh one.
   r.submit("thanks");
   assert.equal(r.submitted.length, 1);
   assert.ok(r.log.includes("reask:thanks"));

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The three small voice-mode models served by the backend: is the turn over, what to
-// say while thinking, what to do with speech that lands mid-think. Every call resolves
-// null when the model is not served or does not answer in time, so the caller keeps
-// its word-rule fallback. With the decision log on, each answer carries the log row's
-// id and the loop reports what happened next through reportLayaOutcome.
 
 import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -19,10 +14,7 @@ import {
 import { voiceTrace } from "./voice-trace";
 
 const TIMEOUT_MS = 400;
-// The interrupt verdict is asked while the chat model is generating on the same GPU,
-// where a cold call took 500 ms; nothing waits on it the way end-of-turn does.
 const INTERJECT_TIMEOUT_MS = 1500;
-/** 0.65 trades a few more waits for fewer cut-offs; the sweep is in the model card. */
 export const JUDGE_SEND_THRESHOLD = 0.65;
 
 async function post<T>(path: string, body: unknown, timeoutMs = TIMEOUT_MS): Promise<T | null> {
@@ -53,7 +45,6 @@ async function post<T>(path: string, body: unknown, timeoutMs = TIMEOUT_MS): Pro
   return Promise.race([call, late]).finally(() => clearTimeout(settle));
 }
 
-/** The log fields for this call: on from the settings toggle, off for a chat that opted out. */
 function logFields(): { log: boolean; thread_id: string | null } {
   const threadId = useChatRuntimeStore.getState().activeThreadId ?? null;
   const voice = useVoiceSettingsStore.getState();
@@ -61,7 +52,6 @@ function logFields(): { log: boolean; thread_id: string | null } {
   return { log, thread_id: threadId };
 }
 
-/** Report what happened after a logged verdict. A null id (log off, model unanswered) is a no-op. */
 export function reportLayaOutcome(
   id: string | null | undefined,
   outcome: string,
@@ -78,11 +68,9 @@ export function reportLayaOutcome(
 
 export interface JudgeAnswer {
   p: number;
-  /** The log row, when this call was logged. */
   id: string | null;
 }
 
-/** P(the user has finished the turn), or null without the judge. */
 export async function judgeTurnComplete(text: string): Promise<JudgeAnswer | null> {
   const fields = logFields();
   const r = await post<{ p_complete: number; id?: string | null }>("judge", { text, ...fields });
@@ -115,7 +103,6 @@ export async function fillerFromModel(
 
 export type InterjectAction = "restart" | "ignore" | "queue";
 
-/** A v2 Decision model tells a restart that folds the words in from one that drops the ask. */
 export type InterjectKind = "amend" | "replace";
 
 export interface InterjectAnswer {

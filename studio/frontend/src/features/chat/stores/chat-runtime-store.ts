@@ -2672,9 +2672,7 @@ type ChatRuntimeStore = {
   voiceMode: "off" | "configuring" | "active";
   selectedVoiceModelId: string;
   selectedVoiceId: string;
-  /** A built-in speaker of a voice that lists several; "" is the model's default. Persisted. */
   selectedVoiceSpeaker: string;
-  /** The transcription model the loop listens with. Persisted. */
   selectedSttModelId: string;
   selectedVadModelId: string;
   vadSlotLoaded: boolean;
@@ -2682,14 +2680,9 @@ type ChatRuntimeStore = {
   voiceSlotLoaded: boolean;
   voiceTranscribing: boolean;
   voiceHearing: boolean;
-  /** The user clicked into a held voice fragment: the turn waits for their send. */
   voiceHeldForEdit: boolean;
-  /** The loop keeps running but the mic frames are dropped. */
   voiceMuted: boolean;
-  /** The composer's pause: mic muted and playback frozen until resumed. */
   voicePaused: boolean;
-  /** Derived orb state written by the voice control; consumed by VoiceOrb. The
-   *  union lives with deriveOrbState, which is what produces every value here. */
   voiceOrbState: VoiceOrbState | null;
   voiceOrbCollapsed: boolean;
   ensureVoiceSlotLoaded: (() => Promise<boolean>) | null;
@@ -4699,10 +4692,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { loadingModelPick: null };
     }),
   setVoiceMode: (voiceMode) =>
-    // Leaving voice mode always resets the minimized/collapsed orb view so the
-    // next session starts expanded, and clears any lingering "hearing" state and
-    // the orb's last state: a stale "listening" came back over the welcome
-    // composer when voice was reopened to "configuring".
     set(
       voiceMode === "off"
         ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false, voiceOrbState: null, voicePaused: false }

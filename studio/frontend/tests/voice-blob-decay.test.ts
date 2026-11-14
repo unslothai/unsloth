@@ -30,7 +30,6 @@ function framesToFlat(start: number): number {
 test("a full wave settles flat in roughly a third of a second, easing out", () => {
   const ms = framesToFlat(1) * FRAME;
   assert.ok(ms >= 250 && ms <= 400, `${ms} ms`);
-  // Ease-out: the first frame moves the edge far more than the last.
   const first = 1 - decayFactor(FRAME);
   const atEnd = BLOB_FLAT * 2 * (1 - decayFactor(FRAME));
   assert.ok(first > 10 * atEnd);

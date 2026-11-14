@@ -15,7 +15,6 @@ const SR = 48000;
 const FFT = 2048;
 const BIN = SR / FFT;
 
-/** A voiced frame: harmonics of f0 falling 12 dB an octave, two formants, in dB per bin. */
 function voice(f0: number, f1: number, f2: number, gain = 1): Float32Array {
   const raw = new Float32Array(FFT / 2);
   for (let i = 0; i < raw.length; i++) {
@@ -35,7 +34,6 @@ function voice(f0: number, f1: number, f2: number, gain = 1): Float32Array {
   return raw;
 }
 
-/** Talks for `ms` cycling vowels, returns the last frame's bands. */
 function talk(f0: number, ms = 3000): Float32Array {
   const vowels = [
     [700, 1200],

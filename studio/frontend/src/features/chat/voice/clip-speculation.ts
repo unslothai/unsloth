@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Silence after which the clip is analysed while the end-of-turn hang still runs. */
 export const SPECULATE_AFTER_MS = 400;
 
-/** Frames sent to STT: the voiced span, widened back over quiet onset frames, then padded. */
 export function utteranceSpan(
   voiced: readonly boolean[],
   notSilent: readonly boolean[],
@@ -20,7 +18,6 @@ export function utteranceSpan(
   };
 }
 
-/** One analysis per clip key: the same key reuses it, a new key cancels and replaces it. */
 export function createClipSpeculation<T extends { cancel(): void }>() {
   let spec: { key: string; result: T } | null = null;
   return {

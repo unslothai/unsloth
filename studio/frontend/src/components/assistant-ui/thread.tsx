@@ -2454,7 +2454,6 @@ export const Thread: FC<{
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
           />
-          {/* Only the pane with the composer voices; a Compare pane has none. */}
           {voiceRequested && !hideComposer && (
             <Suspense fallback={null}>
               <VoiceOrb />
@@ -5730,8 +5729,6 @@ const Composer: FC<{
     }
     wasDictatingRef.current = false;
     if (!sendAfterDictationRef.current) return;
-    // Voice mode's turn ends through the loop (requestVoiceSubmit), which appends the utterance
-    // itself; submitting the box too would queue a copy behind the running reply.
     if (voiceEngaged) {
       sendAfterDictationRef.current = false;
       heldTextRef.current = null;
@@ -5789,9 +5786,6 @@ const Composer: FC<{
         event.preventDefault();
         return;
       }
-      // Enter or Send while the voice loop is listening ends the turn; the loop
-      // delivers the words. Sending or queueing the box here too doubled them.
-      // Typed words are the exception: the loop sends the box itself, paused or not.
       if (voiceEngaged && isDictating) {
         event.preventDefault();
         if (requestVoiceTypedSubmit(composerText)) return;
@@ -6141,8 +6135,6 @@ const Composer: FC<{
           {!showDictationUi ? pills : null}
         </div>
         {showDictationUi ? (
-          // The recording UI replaces the input and send controls; only the
-          // left plus stays visible alongside it.
           <ChatDictationBar
             onSend={sendAfterDictation}
             // Every state handleSubmit would reject after transcription; text comes from the transcript.

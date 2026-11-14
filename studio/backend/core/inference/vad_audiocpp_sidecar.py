@@ -133,7 +133,6 @@ class AudioCppVadSidecar:
         self._server: Optional[AudioCppServer] = None
         self._model: Optional[AudioCppModel] = None
         self._loading: Optional[str] = None
-        # Where the live server runs: on the CPU while training holds the GPU, as STT does.
         self._on_cpu = False
 
     @property
@@ -188,8 +187,6 @@ class AudioCppVadSidecar:
         from core.inference.stt_sidecar import _training_active
 
         with self._lock:
-            # Decided under the lock training admission's release takes, so a load cannot read
-            # "no training" and then start on the GPU after admission has freed it.
             on_cpu = _training_active()
             if (
                 self._model is not None
@@ -229,7 +226,6 @@ class AudioCppVadSidecar:
 
         entry = resolve_vad_model(model, network = True)
         audio_cpp_backend.AudioCppBackend._download_missing(entry, hf_token)
-        # The load right after reads the cache-only resolution, which still remembers the miss.
         forget(entry.id)
         return entry.id
 

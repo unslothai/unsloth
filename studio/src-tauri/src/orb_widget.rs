@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-//! The floating voice orb's handoff. The voice loop runs in the main webview, and WebKit
-//! defers getUserMedia (and mutes capture) while a view is not visible, so on macOS the main
-//! window is kept ordered in but transparent and click-through instead of hidden, with the
-//! webview told to ignore occlusion.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -18,7 +14,6 @@ pub(crate) fn is_floating() -> bool {
     FLOATING.load(Ordering::SeqCst)
 }
 
-/// Place and show the warm widget at `x`, `y` (logical, top left), then fade the main window.
 #[tauri::command]
 pub(crate) fn enter_orb_widget_mode(
     app: tauri::AppHandle,
@@ -31,8 +26,6 @@ pub(crate) fn enter_orb_widget_mode(
     set_main_floating(&app, true)
 }
 
-/// Undo `enter_orb_widget_mode` and hide the widget, kept warm for the next time; the caller
-/// shows the main window.
 pub(crate) fn leave(app: &tauri::AppHandle) {
     if !FLOATING.swap(false, Ordering::SeqCst) {
         return;
@@ -43,8 +36,6 @@ pub(crate) fn leave(app: &tauri::AppHandle) {
     }
 }
 
-/// A status-bar level window: above the menu bar, and AppKit stops constraining its frame
-/// to the area below it (a floating window is clamped to the visible frame).
 #[cfg(target_os = "macos")]
 const STATUS_WINDOW_LEVEL: isize = 25;
 
@@ -56,14 +47,12 @@ fn show_widget(widget: &tauri::WebviewWindow, at: Option<(f64, f64)>) -> Result<
             use objc2::{class, msg_send};
             use objc2_app_kit::NSWindow;
             use objc2_foundation::{NSPoint, NSRect};
-            // Safety: wry's live window, on the main thread.
             unsafe {
                 let Some(window) = (platform.ns_window() as *const NSWindow).as_ref() else {
                     return;
                 };
                 window.setLevel(STATUS_WINDOW_LEVEL);
                 if let Some((x, y)) = at {
-                    // Cocoa counts up from the primary screen's bottom edge.
                     let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
                     let primary: *mut AnyObject = msg_send![screens, firstObject];
                     if let Some(primary) = primary.as_ref() {
@@ -95,7 +84,6 @@ fn set_main_floating(app: &tauri::AppHandle, floating: bool) -> Result<(), Strin
             use objc2::runtime::{AnyObject, Bool};
             use objc2::{msg_send, sel};
             use objc2_app_kit::NSWindow;
-            // Safety: wry's live view and its window, on the main thread.
             unsafe {
                 if let Some(view) = (platform.inner() as *const AnyObject).as_ref() {
                     let occlusion = sel!(_setWindowOcclusionDetectionEnabled:);

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Live spectrum of the two voices in the loop, for the orb. One analyser on the mic
-// graph and one on the playback graph; the orb reads log-spaced bands per frame.
-//
-// The bands cover the speaking range only, and each is measured against its own recent
-// peak. Over 80 Hz - 8 kHz on a coarse FFT a normal voice lit the lower half and left the
-// rest dark, so the orb leaned to one side unless you talked unnaturally high.
 
 export const SPECTRUM_BANDS = 32;
 const FFT_SIZE = 2048;
@@ -14,8 +8,6 @@ const F_LO = 90;
 const F_HI = 4000;
 const DB_FLOOR = -85;
 const DB_CEIL = -25;
-// A voice loses about 12 dB an octave above its lowest notes; tilting the bands back up
-// (the usual speech pre-emphasis) gives the upper half of the ring something to show.
 const TILT_DB_PER_OCTAVE = 6;
 const TILT_FROM_HZ = 300;
 const ATTACK = 0.5;
@@ -24,21 +16,15 @@ const RELEASE = 0.14;
 // noise in a band that is always quiet is not blown up to a full band.
 const NORM_TAU_MS = 4000;
 const NORM_FLOOR = 0.15;
-// How far each band is evened out against its own peak: 1 would make a held vowel a
-// plain round swell, 0 is the raw spectrum that leans to one side.
 const NORM_STRENGTH = 1;
-// Share of the quietest band taken off every band, so an evened-out voice still shows
-// lobes rather than swelling round as a whole.
 const FLOOR_CUT = 0.9;
 
 type Side = "input" | "output";
 
 export interface BandState {
   raw: Float32Array;
-  /** dB added to each band for the tilt. */
   tilt: Float32Array;
   bands: Float32Array;
-  /** Each band's recent peak, for its own normalisation. */
   peaks: Float32Array;
   edges: Int32Array;
   lastMs: number;
@@ -46,7 +32,6 @@ export interface BandState {
 
 interface Tap extends BandState {
   analyser: AnalyserNode;
-  /** Fires on the audio clock, which keeps time when the window's timers are throttled. */
   clock: ScriptProcessorNode | null;
   raw: Float32Array<ArrayBuffer>;
   out: Float32Array;
@@ -56,7 +41,6 @@ interface Tap extends BandState {
 
 const READ_REUSE_MS = 8;
 
-/** Bin index of each band edge, log-spaced over the speaking range. */
 export function bandEdges(
   sampleRate: number,
   fftSize: number = FFT_SIZE,): Int32Array {
@@ -89,12 +73,6 @@ export function createBandState(
   };
 }
 
-/**
- * Turns one frame of dB bins (`state.raw`) into bands in `out`, 0..1, and returns the
- * mean level before normalisation. Each band is divided by its own recent peak, then the
- * whole set is scaled back to the frame's loudest band, so the shape spreads round the
- * ring while the size still follows how loud it is.
- */
 export function shapeBands(
   state: BandState,
   out: Float32Array,
@@ -141,11 +119,6 @@ export function shapeBands(
 const taps: Record<Side, Tap | null> = { input: null, output: null };
 const frameListeners = new Set<(side: Side) => void>();
 
-/**
- * Calls `cb` every ~5 ms of audio on a side that is tapped. Driven by the audio clock,
- * not a timer: with the floating orb up the main window is hidden, and macOS slows its
- * timers there, which left the floating orb's feed stuttering.
- */
 export function onSpectrumFrame(cb: (side: Side) => void): () => void {
   frameListeners.add(cb);
   return () => frameListeners.delete(cb);
@@ -189,7 +162,6 @@ function makeTap(ctx: AudioContext): Tap {
   };
 }
 
-/** Tap the mic graph. Call once per capture session; the adapter detaches on teardown. */
 export function attachInputSpectrum(ctx: AudioContext, source: AudioNode): void {
   const tap = makeTap(ctx);
   source.connect(tap.analyser);
@@ -205,12 +177,10 @@ export function detachInputSpectrum(): void {
     taps.input?.clock?.disconnect();
     taps.input?.analyser.disconnect();
   } catch {
-    // already gone with its context
   }
   taps.input = null;
 }
 
-/** The node TTS clips play into (analyser → destination), made once per play context. */
 export function outputSpectrumNode(ctx: AudioContext): AudioNode {
   if (!taps.output || taps.output.analyser.context !== ctx) {
     const tap = makeTap(ctx);
@@ -218,7 +188,6 @@ export function outputSpectrumNode(ctx: AudioContext): AudioNode {
     taps.output = tap;
   }
   const tap = taps.output;
-  // Paused when voice turned off; the next clip brings the clock back.
   if (!tap.clock) {
     tap.clock = audioClock(ctx, tap.analyser, () =>
       taps.output === tap ? "output" : null,
@@ -227,7 +196,6 @@ export function outputSpectrumNode(ctx: AudioContext): AudioNode {
   return tap.analyser;
 }
 
-/** Voice turned off: stop the output clock (~187 callbacks/s) until the next clip plays. */
 export function pauseOutputSpectrum(): void {
   const tap = taps.output;
   if (!tap?.clock) return;
@@ -238,22 +206,15 @@ export function pauseOutputSpectrum(): void {
     tap.analyser.disconnect(clock);
     clock.disconnect();
   } catch {
-    // already gone with its context
   }
 }
 
-/**
- * Current bands for one side, 0..1 each, smoothed (fast attack, slow release).
- * Returns the mean level, 0 when that side has no tap.
- */
 export function readSpectrum(side: Side, out: Float32Array): number {
   const tap = taps[side];
   if (!tap) {
     out.fill(0);
     return 0;
   }
-  // The in-app orb and the floating one's feed both read each frame; a second read in
-  // the same frame gets the first one's bands, or the smoothing would step twice.
   const now = performance.now();
   if (now - tap.readAt < READ_REUSE_MS) {
     out.set(tap.out);

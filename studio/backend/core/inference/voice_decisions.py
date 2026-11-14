@@ -51,7 +51,6 @@ FILLER_INSTRUCTIONS = (
     "kind of line fits, or none?"
 )
 
-# The app's own action set; amend and replace are both a restart, told apart by ``kind``.
 ACTION_OF = {"amend": "restart", "replace": "restart", "queue": "queue", "ignore": "ignore"}
 
 
@@ -134,9 +133,6 @@ class DecisionVoice:
         from core.systemone import catalog, laya_runtime
         from utils.account_context import OWNER, run_as
 
-        # The pick is installation-wide (set_checkpoint), so resolve it as the owner who made it:
-        # under a non-owner's account a fine-tune or custom folder is out of reach, and the shared
-        # VoiceModels would cache that failure for every account.
         checkpoint = run_as(OWNER, catalog.resolve, name)
         if checkpoint is None or not hasattr(checkpoint, "layout"):
             raise RuntimeError(f"{ENV_CHECKPOINT}={name!r} is not a Decision checkpoint")

@@ -6,8 +6,6 @@ import test from "node:test";
 
 import { createHeldEdit } from "../src/features/chat/voice/held-edit.ts";
 
-// The adapter's hold, reduced to what the click changes: a parked fragment is sent
-// by itself when the flush timer fires, unless the user has clicked into the box.
 function loop() {
   let box = "";
   const sent: string[] = [];
@@ -87,7 +85,6 @@ test("a click during the hold stops the timer sending; Enter sends; the next tur
   assert.deepEqual(l.sent, []);
   assert.equal(l.box, "could you tell me just like");
 
-  // Speaking again appends to the box and still waits.
   l.hear("the weather", false);
   assert.deepEqual(l.sent, []);
   assert.equal(l.box, "could you tell me just like the weather");
