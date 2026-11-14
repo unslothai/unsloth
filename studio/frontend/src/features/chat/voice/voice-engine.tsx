@@ -207,16 +207,24 @@ export const VoiceEngine: FC = () => {
       return;
     }
 
+    const before = thread.getState().messages.length;
     let appended = false;
-    try {
-      auiRef.current.thread().append({
-        role: "user",
-        content: [{ type: "text", text }],
-        createdAt: new Date(),
-        startRun: false,
-      } as never);
+    if (composer.getState().attachments.length > 0) {
+      // The composer's send carries its attachments; it lands asynchronously, so the window waits for it.
+      composer.setText(text);
+      composer.send({ startRun: false });
       appended = true;
-    } catch {
+    } else {
+      try {
+        auiRef.current.thread().append({
+          role: "user",
+          content: [{ type: "text", text }],
+          createdAt: new Date(),
+          startRun: false,
+        } as never);
+        appended = true;
+      } catch {
+      }
     }
 
     if (!appended) {
@@ -244,6 +252,10 @@ export const VoiceEngine: FC = () => {
         return;
       }
       const msgs = t.getState().messages;
+      if (msgs.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES) {
+        voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_MS);
+        return;
+      }
       const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
       if (!last || last.role !== "user") return;
       try {

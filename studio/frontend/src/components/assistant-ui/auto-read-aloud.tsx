@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { decideAutoRead, useChatActive } from "@/features/chat";
+import { decideAutoRead, useChatActive, useChatRuntimeStore } from "@/features/chat";
 import { useVoiceSettingsStore } from "@/features/settings";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
 import {
@@ -36,6 +36,8 @@ export const AutoReadAloud: FC = () => {
     pendingRef.current = false;
     if (decision.kind !== "speak" || !active) return;
     if (!useVoiceSettingsStore.getState().autoReadAloud) return;
+    // Voice mode speaks the reply itself: a second read-aloud doubled it and talked over barge-ins.
+    if (useChatRuntimeStore.getState().voiceMode === "active") return;
     if (lastSpokenRef.current === decision.messageId) return;
     lastSpokenRef.current = decision.messageId;
     try {
@@ -82,6 +84,7 @@ export const AutoReadAloud: FC = () => {
     if (
       !ttsEnabled ||
       !autoReadAloud ||
+      useChatRuntimeStore.getState().voiceMode === "active" ||
       state.speech ||
       decision.kind !== "speak" ||
       typeof source?.taskId !== "string" ||

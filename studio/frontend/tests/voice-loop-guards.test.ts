@@ -38,3 +38,18 @@ test("the re-arm clears only the transcript the loop wrote, never a typed draft"
   assert.equal((loop.match(/for \(const cb of speechCallbacks\)/g) ?? []).length, 1);
   assert.match(loop, /const emitSpeech = \(transcript: string, isFinal: boolean\) => \{\s*voiceBoxText = transcript;/);
 });
+
+test("a voice turn with attachments goes through the composer, and the run waits for it to land", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const commit = engine.slice(engine.indexOf("const submitTranscript = useCallback("));
+  assert.match(
+    commit,
+    /if \(composer\.getState\(\)\.attachments\.length > 0\) \{[\s\S]*?composer\.setText\(text\);\s*composer\.send\(\{ startRun: false \}\);/,
+  );
+  assert.match(commit, /if \(msgs\.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES\) \{/);
+});
+
+test("a barge-in that ends before the detector answers keeps its voiced length", () => {
+  assert.match(loop, /if \(bargeConfirming\) bargePeakMs = Math\.max\(bargePeakMs, bargeGate\.loudMs\);/);
+  assert.match(loop, /voicedMs = Math\.max\(bargeGate\.loudMs, bargePeakMs\);/);
+});

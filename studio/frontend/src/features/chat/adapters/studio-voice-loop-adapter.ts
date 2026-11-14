@@ -126,6 +126,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     );
     let vadReady = false;
     let bargeConfirming = false;
+    // The longest loud run while the detector was asked: quiet frames reset the gate meanwhile.
+    let bargePeakMs = 0;
     const preroll: Float32Array[] = [];
     let bargedIn = heldTurn !== null && heldFromBarge;
     let sampleRate = 16000;
@@ -408,7 +410,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             if (!bargeConfirming) while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
             startedAt = now;
             lastVoiceAt = now;
-            if (!stepBargeGate(bargeGate, rms, frameMs)) return;
+            const cut = stepBargeGate(bargeGate, rms, frameMs);
+            if (bargeConfirming) bargePeakMs = Math.max(bargePeakMs, bargeGate.loudMs);
+            if (!cut) return;
             const commitBarge = () => {
               bargedIn = true;
               requestVoiceBargeIn();
@@ -416,7 +420,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
                 chunks.push(frame);
                 chunkVoiced.push(true);
               }
-              voicedMs = bargeGate.loudMs;
+              voicedMs = Math.max(bargeGate.loudMs, bargePeakMs);
+              bargePeakMs = 0;
               heardSpeech = true;
               useChatRuntimeStore.getState().setVoiceHearing(true);
               for (const cb of speechStartCallbacks) cb();
@@ -428,6 +433,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             }
             if (bargeConfirming) return;
             bargeConfirming = true;
+            bargePeakMs = bargeGate.loudMs;
             const total = preroll.reduce((n, c) => n + c.length, 0);
             const probe = new Float32Array(total);
             let at = 0;
@@ -440,6 +446,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               if (ended || bargedIn) return;
               if (voiced === false) {
                 bargeGate.loudMs = 0;
+                bargePeakMs = 0;
                 return;
               }
               commitBarge();
