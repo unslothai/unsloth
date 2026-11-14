@@ -360,6 +360,19 @@ test("a cancelled pull ends quietly and is not followed again", async () => {
   assert.equal(activity.at(-1), false);
 });
 
+test("a cancel that lands while finishing never reports success, even if the model registered", async () => {
+  const { store, pulls, listings, toasts } = harness();
+  const id = "gemma3-4b-FLM";
+  const job = store.followNpuDownload(id);
+  await tick();
+  pulls[0].onProgress({ event: "finishing", percent: 100 });
+  pulls[0].finish(new NpuDownloadCancelled("The download was cancelled"));
+  await until(() => listings.length === 1);
+  listings[0].resolve([{ id, downloaded: true }] as never);
+  assert.equal(await job, false);
+  assert.deepEqual(toasts, []);
+});
+
 test("a repeated percent leaves the store untouched", () => {
   const { store, pulls } = harness();
   void store.followNpuDownload("gemma3-4b-FLM");

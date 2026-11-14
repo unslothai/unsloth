@@ -203,8 +203,10 @@ export function followNpuDownload(
           }
         }
         await refreshNpuModels();
-        if (listedDownloaded(id)) return true;
+        // A cancel that lands while finishing can still leave the model registered: the list
+        // shows it, but the caller asked for nothing to happen (no model switch).
         if (error instanceof NpuDownloadCancelled) return false;
+        if (listedDownloaded(id)) return true;
         return fail(error instanceof Error ? error.message : String(error));
       }
     }
