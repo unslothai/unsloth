@@ -8,12 +8,12 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from loggers import get_logger
-
-logger = get_logger(__name__)
-
 DOWNLOAD_SPEED_LIMIT_SETTING_KEY = "download_speed_limit_mbps"
 DOWNLOAD_SPEED_LIMIT_ENV = "UNSLOTH_DOWNLOAD_SPEED_LIMIT_MBPS"
+
+
+class DownloadSpeedLimitUnavailableError(RuntimeError):
+    """The saved policy could not be read, so a download must not start."""
 
 
 def normalize_speed_limit_mbps(value: Any) -> Optional[float]:
@@ -32,9 +32,11 @@ def get_download_speed_limit_mbps() -> Optional[float]:
 
         stored = run_as(OWNER, get_app_setting, DOWNLOAD_SPEED_LIMIT_SETTING_KEY, None)
         return normalize_speed_limit_mbps(stored)
-    except Exception as exc:  # noqa: BLE001 - an unreadable db reports no limit, not a 500
-        logger.debug("download speed limit read failed (%s)", exc)
-        return None
+    except Exception:  # noqa: BLE001 - an unreadable policy must not remove the limit
+        raise DownloadSpeedLimitUnavailableError(
+            "Cannot read the saved download speed limit. "
+            "Retry when the settings database is available."
+        ) from None
 
 
 def set_download_speed_limit_mbps(value: Any) -> Optional[float]:
