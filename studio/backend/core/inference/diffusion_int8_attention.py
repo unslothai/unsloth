@@ -30,7 +30,8 @@ the race, unset races it where INT8 attention is already wanted (an INT8 checkpo
 Where the CUDA kernel cannot be built or loaded on an NVIDIA card (no NVRTC, as on a Windows install without the CUDA
 runtime wheels, or a failed compile, module load or first launch), the same calls run the Triton kernel of
 ``diffusion_int8_attention_triton`` instead (int8 Q.K^T, 16-bit P.V), when Triton imports and ``TRITON_KERNEL_CONFIGS``
-has the card. That path passes its own accuracy check and race before it engages. ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL``: ``auto`` (default),
+has the card. That path passes its own accuracy check, and it races the incumbent even where the kernel was asked for
+by name (only the env switch ``1`` skips that race), so it stands in only where it is faster. ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL``: ``auto`` (default),
 ``cuda`` (never Triton on NVIDIA) or ``triton`` (skip the CUDA kernel).
 """
 
@@ -950,7 +951,8 @@ def install_int8_attention(
     ``modules`` limits the attention modules considered (default: every one with a strided processor).
     ``incumbent`` is ``(name, callable(q, k, v))`` for what those modules run now (default: their native backend).
     The kernel must match fp32 attention on this card; unless ``force`` (or the env switch is ``1``) it must also be
-    more than 2% faster than the incumbent on the timed probe. Never raises."""
+    more than 2% faster than the incumbent on the timed probe. The Triton stand-in for a CUDA kernel that cannot load
+    must be faster also under ``force`` (not under the env switch). Never raises."""
     try:
         return _install(transformer, device, dtype, modules, incumbent, force, logger)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors stay as they were
@@ -984,7 +986,8 @@ def _install(
     ]
     if not candidates:
         return 0
-    force = force or setting == "force"
+    env_force = setting == "force"
+    force = force or env_force
     int8_attention_op()
     engaged = 0
     report: dict = {}
@@ -1001,11 +1004,21 @@ def _install(
             else _sdpa_incumbent(getattr(proc, "_attention_backend", None))
         )
         found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = not force)
+        # the CUDA kernel could not load here and Triton stands in for it: that has to win the race even when the
+        # kernel was asked for (only the env switch, or IMPL=triton, takes it unraced)
+        stand_in = (
+            found.get("impl") == "triton"
+            and not env_force
+            and impl_setting() == "auto"
+            and not _is_rocm()
+        )
+        if force and stand_in and found.get("ok"):
+            found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = True)
         report[(int(m.heads), head_dim, name)] = found
         proc._unsloth_int8_impl = found.get("impl")
         if not found.get("ok"):
             continue
-        if force:
+        if force and not stand_in:
             minimum = 0
         elif found.get("min_tokens") is None:
             continue
@@ -1045,7 +1058,8 @@ def install_requested(
     logger: Any = None,
 ) -> int:
     """For ``apply_attention_backend``: engage on the pipeline's DiT when the load asked for ``unsloth_int8`` by name
-    or the env switch forces it (no race either way: the accuracy check still gates it). Returns the count."""
+    or the env switch forces it (no race either way: the accuracy check still gates it; the Triton stand-in for a CUDA
+    kernel that cannot load still races when only the name asked for it). Returns the count."""
     import torch
 
     setting = mode()

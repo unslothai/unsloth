@@ -150,6 +150,9 @@ def test_a_cuda_kernel_that_cannot_load_falls_back_to_triton(monkeypatch, failur
 def test_the_fallback_engages_on_install_and_serves_the_op(monkeypatch):
     calls = _fake_nvidia(monkeypatch)
     _no_nvrtc(monkeypatch)
+    monkeypatch.setenv(
+        I.INT8_ATTENTION_ENV, "1"
+    )  # unraced: the race is test_a_requested_stand_in_still_has_to_win_its_race
     dit = _fake_dit()
     assert I.install_int8_attention(dit, device = "cuda", dtype = torch.float32, force = True) == 2
     assert [m.processor._unsloth_int8 for m in dit.blocks] == [True, True, False]
@@ -368,3 +371,55 @@ def test_forced_triton_path_on_the_card(monkeypatch, head_dim):
     # gradients still keep native attention
     qg = q.detach().clone().requires_grad_(True)
     assert I.unsupported_reason(qg, k, v) == "needs gradients"
+
+
+@pytest.mark.parametrize("wins", [True, False])
+def test_a_requested_stand_in_still_has_to_win_its_race(monkeypatch, wins):
+    """Asked for by name (force) on a card whose CUDA kernel cannot load: the Triton stand-in is timed against the
+    incumbent and engages only where it is faster; the env switch 1 and IMPL=triton take it unraced."""
+    calls = _fake_nvidia(monkeypatch)
+    _no_nvrtc(monkeypatch)
+    raced = []
+
+    def median_ms(fns, rounds = 5):
+        fns["int8"]()
+        raced.append(1)
+        return {"incumbent": 1.0, "int8": 0.5 if wins else 1.5}
+
+    monkeypatch.setattr(I, "_median_ms", median_ms)
+    monkeypatch.setattr(I, "RACE_TOKENS", (64, 32))
+    target = types.SimpleNamespace(device = "cuda", dtype = torch.float32)
+    dit = _fake_dit()
+    n = I.install_requested(types.SimpleNamespace(transformer = dit), "unsloth_int8", target)
+    assert raced and n == (2 if wins else 0)
+    assert [m.processor._unsloth_int8 for m in dit.blocks[:2]] == [wins, wins]
+    timed = [k for k in I.status()["verdicts"] if " timed " in k]
+    assert timed and all("impl=triton" in k for k in timed)
+    for env, value in ((I.INT8_ATTENTION_ENV, "1"), (I.IMPL_ENV, "triton")):
+        raced.clear()
+        monkeypatch.setenv(env, value)
+        dit = _fake_dit()
+        assert (
+            I.install_requested(types.SimpleNamespace(transformer = dit), "unsloth_int8", target) == 2
+        )
+        assert not raced and [m.processor._unsloth_int8_min_tokens for m in dit.blocks[:2]] == [
+            0,
+            0,
+        ]
+        monkeypatch.delenv(env)
+    assert calls
+
+
+def test_a_requested_cuda_kernel_is_not_raced(monkeypatch):
+    """The CUDA kernel itself keeps its forced semantics: asked for by name it engages on accuracy alone."""
+    _fake_nvidia(monkeypatch)
+    monkeypatch.setattr(I, "quantise", lambda *a, **k: None)
+    monkeypatch.setattr(I, "attend", lambda p: None)
+    monkeypatch.setattr(
+        I, "_check", lambda *a, **k: {"ok": True, "ms": {}, "min_tokens": None, "impl": a[-1]}
+    )
+    target = types.SimpleNamespace(device = "cuda", dtype = torch.float32)
+    dit = _fake_dit()
+    assert I.install_requested(types.SimpleNamespace(transformer = dit), "unsloth_int8", target) == 2
+    assert not [k for k in I.status()["verdicts"] if " timed " in k]
+    assert {m.processor._unsloth_int8_impl for m in dit.blocks[:2]} == {"cuda"}
