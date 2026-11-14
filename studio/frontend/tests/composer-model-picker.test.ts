@@ -584,14 +584,17 @@ test("a downloaded MLX repo still resolves its precision folder", () => {
   assert.match(src, /row\.kind === "cached" && !\(mlx && quant\)/);
 });
 
-test("cached MLX snapshots load whole and favorites show quant offers", () => {
+test("cached MLX repos offer their precisions, plain snapshots load whole, and favorites show quant offers", () => {
   const src = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  // The offer's whole-checkpoint fallback is hub-only, so a cached snapshot must not open one.
+  // As the header picker: an MLX repo with precision folders expands into them.
+  assert.match(src, /\(row\.kind === "cached" \|\|\s+offerAll \|\|/);
+  assert.match(src, /\(row\.kind === "cached" && row\.format === "mlx"\);/);
+  // With none, the cached copy loads whole (it may be partial, so cachedMeta, not the hub meta).
   assert.match(
     src,
-    /row\.kind !== "cached" &&\s+\(offerAll \|\| \(target\.remote/,
+    /row\.kind === "cached" \? cachedMeta\(row\) : wholeHubMeta\(row\)/,
   );
   // The Favorites wrapper renders an open offer as the plain list does.
   const fav = src.slice(src.indexOf("{...drag.rowProps(favoriteKey)}"));
@@ -1322,6 +1325,7 @@ test("Favorites lists each pinned quant of a repo as its own row, as the header 
     kind: "gguf" as const,
     loaded: true,
     loadedQuant: "Q8_0",
+    favoriteQuant: undefined as string | undefined,
   };
   const other = {
     ...repo,
@@ -1437,5 +1441,30 @@ test("an open on-device quant list asks the Hub for updates, as the header picke
   assert.match(
     picker,
     /const \{ quants \} = await rowQuants\(\{\s*\.\.\.target,\s*remote: true,\s*everyQuant: true,\s*\}\);/,
+  );
+});
+
+test("Discover keeps the header picker's runtime gate on Hub results", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /classifyUnslothSupport\(\{\s*modelId: r\.id,/);
+  assert.match(
+    picker,
+    /\(supported\(r\) \|\|\s*\(r\.quantMethod\?\.toLowerCase\(\) === "compressed-tensors" &&/,
+  );
+});
+
+test("deleting a whole cached repo sends the token and keeps quant pins another copy still holds", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const token = useHfTokenStore\.getState\(\)\.token \|\| undefined;\s*await deleteCachedModel\(\s*repo\.repo_id,\s*undefined,\s*token,/,
+  );
+  assert.match(
+    picker,
+    /if \(row\.gguf && isChatGgufTask\(row\.gguf\.task\)\) \{\s*await reconcileGgufPinsAfterDelete\(repo\.repo_id, token\);/,
   );
 });

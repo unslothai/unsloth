@@ -5,8 +5,8 @@ import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron
 import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
-  repinExportedGgufAfterDelete,
 } from "./reconcile-gguf-pins";
+import { repinExportedGgufAfterDelete } from "./repin-exported-gguf";
 import { loadPickerGgufVariants } from "./gguf-discovery";
 import { firstIndexByKey } from "./option-index";
 

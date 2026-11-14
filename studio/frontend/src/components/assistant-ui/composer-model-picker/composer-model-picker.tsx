@@ -60,6 +60,7 @@ import {
   downloadManager,
   formatBytes,
   formatParamCount,
+  classifyUnslothSupport,
   hfApiToken,
   isHiddenModelId,
   jobKeyOf,
@@ -122,9 +123,11 @@ import {
   usePinnedRowDrag,
 } from "@/features/model-picker";
 import {
+  isChatGgufTask,
   reconcileGgufPinsAfterDelete,
-  repinExportedGgufAfterDelete,
 } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
+import { repinExportedGgufAfterDelete } from "@/features/model-picker/components/model-selector/repin-exported-gguf";
+import { isCapableCheckpointQuant } from "@/features/model-picker/components/model-selector/recommended-fit";
 import {
   type NpuModel,
   NpuSetupNotice,
@@ -1600,7 +1603,8 @@ export function ComposerModelPicker({
   const hfToken = useHfTokenStore((s) => s.token);
   const gpuInfo = useGpuInfo(open);
   const quantFormats = gpuInfo.checkpointQuantFormats;
-  const isMac = usePlatformStore((s) => s.deviceType === "mac");
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const isMac = deviceType === "mac";
   // The field already waits SEARCH_DEBOUNCE_MS; together they keep the Hub's 300 ms.
   const hubQuery = useDebouncedValue(
     onRecommended ? query.trim() : "",
@@ -1752,9 +1756,28 @@ export function ComposerModelPicker({
     [hubScrollRef],
   );
   const recommended = useMemo<ModelOption[]>(() => {
+    // The header picker's runtime gate; vLLM loads compressed-tensors checkpoints the gate refuses.
+    const supported = (r: (typeof hubResults)[number]) =>
+      classifyUnslothSupport({
+        modelId: r.id,
+        pipelineTag: r.pipelineTag,
+        tags: r.tags,
+        libraryName: r.libraryName,
+        quantMethod: r.quantMethod,
+        deviceType,
+      }).status !== "unsupported";
     const fromHub = hubResults
       .filter(
         (r) =>
+          (supported(r) ||
+            (r.quantMethod?.toLowerCase() === "compressed-tensors" &&
+              isCapableCheckpointQuant(
+                r.id,
+                r.quantMethod,
+                quantFormats,
+                r.isGguf,
+              ) &&
+              supported({ ...r, quantMethod: undefined }))) &&
           (matchesRecommendedBrowse(r, quantFormats, !hubQuery) ||
             // A Mac also runs MLX and plain safetensors; the browse gates still apply.
             (isMac &&
@@ -1777,7 +1800,7 @@ export function ComposerModelPicker({
       return fromHub;
     }
     return (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
-  }, [hubResults, quantFormats, hubQuery, isMac, source?.models]);
+  }, [hubResults, quantFormats, hubQuery, isMac, deviceType, source?.models]);
   // Hub results marked MLX only by their card, which the ModelOption rows drop.
   const mlxTaggedHub = useMemo(
     () =>
@@ -2774,7 +2797,9 @@ export function ComposerModelPicker({
       failed: false,
       target,
     });
-    const mlxRepo = row.kind === "hub" && !row.hub?.isGguf;
+    const mlxRepo =
+      (row.kind === "hub" && !row.hub?.isGguf) ||
+      (row.kind === "cached" && row.format === "mlx");
     const pickWhole = () => {
       if (pickSeq.current !== seq || !source) {
         return;
@@ -2783,7 +2808,10 @@ export function ComposerModelPicker({
       if (row.id !== chosen?.id) {
         setPending(row);
       }
-      source.onPick(row.id, wholeHubMeta(row));
+      source.onPick(
+        row.id,
+        row.kind === "cached" ? cachedMeta(row) : wholeHubMeta(row),
+      );
       resetView();
     };
     try {
@@ -3028,12 +3056,13 @@ export function ComposerModelPicker({
       row.kind === "gguf" &&
       useChatRuntimeStore.getState().showAllQuantizations;
     // Discover always offers its quants, even with one on disk: that one is ticked, not loaded unasked.
+    // A cached MLX repo offers its precisions, as the header picker did; a plain snapshot loads whole.
     if (
       target &&
       !row.favoriteQuant &&
-      // A cached MLX snapshot resolves in pickQuantRow, which loads it whole when it has no precisions.
-      row.kind !== "cached" &&
-      (offerAll || (target.remote && (row.kind === "hub" || !row.onDevice)))
+      (row.kind === "cached" ||
+        offerAll ||
+        (target.remote && (row.kind === "hub" || !row.onDevice)))
     ) {
       await toggleOffer(
         row,
@@ -3576,9 +3605,13 @@ export function ComposerModelPicker({
       : undefined;
 
   const deleteQuantFor = (row: Row, variant: GgufVariantDetail) => {
+    // The quant rows' own rule for which one is loaded.
     const inMemory =
       Boolean(row.loaded) &&
-      variant.quant.toLowerCase() === row.loadedQuant?.toLowerCase();
+      variant.quant.toLowerCase() ===
+        (
+          row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null)
+        )?.toLowerCase();
     if (row.lora?.source === "exported" && row.lora.exportType === "gguf") {
       return {
         title: "Delete exported GGUF variant?",
@@ -3762,13 +3795,19 @@ export function ComposerModelPicker({
       successMessage: `Deleted ${repo.repo_id}`,
       disabled: row.loaded || source?.deleteDisabled,
       onConfirm: async () => {
+        const token = useHfTokenStore.getState().token || undefined;
         await deleteCachedModel(
           repo.repo_id,
           undefined,
-          undefined,
+          token,
           repo.cache_path || undefined,
         );
-        unpinRepo(repo.repo_id);
+        // As the header picker: another remembered folder may still hold a pinned quant.
+        if (row.gguf && isChatGgufTask(row.gguf.task)) {
+          await reconcileGgufPinsAfterDelete(repo.repo_id, token);
+        } else {
+          unpinRepo(repo.repo_id);
+        }
       },
       onDeleted: () => {
         void inventory.refreshInventory();
