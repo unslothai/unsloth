@@ -214,7 +214,6 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         models = row.get("models") or [],
         available_models = row.get("available_models") or [],
         max_output_tokens = row.get("max_output_tokens"),
-        auto_compact_tokens = row.get("auto_compact_tokens"),
         shared = bool(row.get("shared")),
         shared_by_owner = bool(row.get("shared_by_owner")),
         created_at = row["created_at"],
@@ -429,7 +428,6 @@ async def create_provider_config(
             reasoning_config = payload.reasoning_config,
             extra_headers = payload.extra_headers,
             shared = payload.shared,
-            auto_compact_tokens = payload.auto_compact_tokens,
         )
         try:
             if api_key:
@@ -530,7 +528,6 @@ async def update_provider_config(
         "models",
         "available_models",
         "max_output_tokens",
-        "auto_compact_tokens",
         "api_type",
         "reasoning_config",
         "extra_headers",
@@ -569,8 +566,6 @@ async def update_provider_config(
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
-        if "auto_compact_tokens" in payload.model_fields_set:
-            metadata_updates["auto_compact_tokens"] = payload.auto_compact_tokens
         if reasoning_config_requested:
             metadata_updates["reasoning_config"] = (
                 payload.reasoning_config.model_dump()
@@ -588,7 +583,6 @@ async def update_provider_config(
         models = existing.get("models") or [],
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
-        auto_compact_tokens = existing.get("auto_compact_tokens"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
         extra_headers = existing.get("extra_headers") or {},
@@ -615,7 +609,6 @@ async def update_provider_config(
             # Explicit null clears nullable overrides; elsewhere it means "not sent".
             if written is None and field not in {
                 "max_output_tokens",
-                "auto_compact_tokens",
                 "reasoning_config",
                 "extra_headers",
             }:

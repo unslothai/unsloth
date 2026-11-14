@@ -691,25 +691,8 @@ _ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
 _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
 # thresholds below 50K tokens return an upstream 400.
 _ANTHROPIC_COMPACTION_MIN = 50_000
-# The default ceiling: compaction above this is slow and costly on 1M-token windows (Anthropic's own
-# default is 150K). Neither vendor documents an upper limit, only a floor, so a connection's
-# "Auto-compact after" setting may go past it up to the model's window (compaction_uncapped):
-#   Anthropic: trigger "value must be at least 50,000 tokens", default 150,000
-#     https://platform.claude.com/docs/en/build-with-claude/compaction-threshold
-#   OpenAI: context_management[].compact_threshold "minimum: 1000"
-#     https://developers.openai.com/api/reference/resources/responses/methods/create
+# compaction above this is slow and costly on 1M-token windows; Anthropic defaults to 150K.
 _SERVER_COMPACTION_MAX = 200_000
-_OPENAI_COMPACTION_MIN = 1_000
-
-
-def anthropic_compaction_trigger(threshold: int, uncapped: bool = False) -> int:
-    trigger = max(int(threshold), _ANTHROPIC_COMPACTION_MIN)
-    return trigger if uncapped else min(trigger, _SERVER_COMPACTION_MAX)
-
-
-def openai_compaction_threshold(threshold: int, uncapped: bool = False) -> int:
-    trigger = max(int(threshold), _OPENAI_COMPACTION_MIN)
-    return trigger if uncapped else min(trigger, _SERVER_COMPACTION_MAX)
 
 
 # Anthropic fast mode is limited to Opus 5/4.8; Opus 4.7 rejects speed, 4.6 reports standard, and Priority conflicts.
@@ -1755,7 +1738,6 @@ class ExternalProviderClient:
         preserve_thinking: Optional[bool] = None,
         thread_id: Optional[str] = None,
         compaction_fallback: Optional[CompactionFallback] = None,
-        compaction_uncapped: bool = False,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
         self.set_header_context(thread_id, model)
@@ -1823,7 +1805,6 @@ class ExternalProviderClient:
                 fast_mode = fast_mode,
                 tools = tools,
                 response_format = response_format,
-                compaction_uncapped = compaction_uncapped,
             ):
                 yield line
             return
@@ -1848,7 +1829,6 @@ class ExternalProviderClient:
                 stream = stream if self.provider_type == "custom" else True,
                 compaction_fallback = compaction_fallback,
                 thread_id = thread_id,
-                compaction_uncapped = compaction_uncapped,
             ):
                 yield line
             return
@@ -2666,7 +2646,6 @@ class ExternalProviderClient:
         fast_mode: Optional[bool] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         response_format: Optional[dict[str, Any]] = None,
-        compaction_uncapped: bool = False,
     ) -> AsyncGenerator[str, None]:
         """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
@@ -3215,7 +3194,10 @@ class ExternalProviderClient:
             and _anthropic_supports_compaction(model)
         )
         if compaction_active and compaction_threshold is not None:
-            trigger_value = anthropic_compaction_trigger(compaction_threshold, compaction_uncapped)
+            trigger_value = min(
+                max(int(compaction_threshold), _ANTHROPIC_COMPACTION_MIN),
+                _SERVER_COMPACTION_MAX,
+            )
             body["context_management"] = {
                 "edits": [
                     {
@@ -5638,7 +5620,6 @@ class ExternalProviderClient:
         stream: bool = True,
         compaction_fallback: Optional[CompactionFallback] = None,
         thread_id: Optional[str] = None,
-        compaction_uncapped: bool = False,
     ) -> AsyncGenerator[str, None]:
         """Responses takes input and instructions, not messages; presence_penalty and top_k are dropped."""
         import json as _json
@@ -6009,9 +5990,7 @@ class ExternalProviderClient:
             body["context_management"] = [
                 {
                     "type": "compaction",
-                    "compact_threshold": openai_compaction_threshold(
-                        compaction_threshold, compaction_uncapped
-                    ),
+                    "compact_threshold": min(int(compaction_threshold), _SERVER_COMPACTION_MAX),
                 }
             ]
 

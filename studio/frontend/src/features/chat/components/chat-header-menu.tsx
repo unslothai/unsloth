@@ -55,7 +55,6 @@ import {
   useActiveChatMenuStore,
 } from "../stores/active-chat-menu-store";
 import { requestThreadCompaction } from "../stores/compact-request-store";
-import { isExternalModelId } from "../external-providers";
 import {
   liveThreadBranch,
   liveThreadRunning,
@@ -195,14 +194,13 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       toast.info(t("chatMenu.compactEmpty"));
       return;
     }
-    // A cloud connection summarizes, which needs neither tools nor a resumable local model.
-    if (!isExternalModelId(runtime.params.checkpoint) && (!runtime.supportsTools || !resumesThought({
+    if (!runtime.supportsTools || !resumesThought({
       loadedIsGguf: runtime.loadedIsGguf,
       loadedIsMlx: runtime.loadedIsMlx,
       activeGgufVariant: runtime.activeGgufVariant,
       activeNativePathToken: runtime.activeNativePathToken,
       checkpoint: runtime.params.checkpoint,
-    }))) {
+    })) {
       toast.info(t("chatMenu.compactUnsupported"));
       return;
     }

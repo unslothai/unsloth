@@ -45,51 +45,6 @@ export function shouldShowCompactionNotice(
   );
 }
 
-/**
- * What a compaction did, for the notice in the thread. Local models keep "compacted"; a cloud
- * connection says whether history was summarized (and by whom) or turns had to be dropped.
- */
-export type CompactionNoticeKind =
-  | "compacted"
-  | "summarized"
-  | "summarized-by-provider"
-  | "dropped"
-  | "dropped-after-failed-summary";
-
-export function compactionNoticeKind(
-  truncation: ContextTruncation,
-): CompactionNoticeKind {
-  if (truncation.summarized === true) {
-    return truncation.summary_source === "unsloth"
-      ? "summarized"
-      : "summarized-by-provider";
-  }
-  if (truncation.summary_failed === true) return "dropped-after-failed-summary";
-  if (truncation.summary_failed === false) return "dropped";
-  return "compacted";
-}
-
-export const COMPACTION_NOTICE_LABEL: Record<CompactionNoticeKind, string> = {
-  compacted: "Context compacted",
-  summarized: "Earlier messages summarized",
-  "summarized-by-provider": "Earlier messages summarized",
-  dropped: "Older messages dropped",
-  "dropped-after-failed-summary": "Older messages dropped",
-};
-
-/** One sentence on what happened; the divider and the toast add what stays available. */
-export const COMPACTION_NOTICE_TEXT: Record<CompactionNoticeKind, string> = {
-  compacted: "Older messages were dropped from the model's context to make room.",
-  summarized:
-    "The model wrote a summary of the older messages, and the chat continues from it and the most recent ones.",
-  "summarized-by-provider":
-    "The provider summarized older messages to make room.",
-  dropped:
-    "The latest messages left no room for the rest, so the oldest were dropped from the model's context.",
-  "dropped-after-failed-summary":
-    "A summary of the older messages could not be written, so the oldest were dropped from the model's context instead.",
-};
-
 /** afterToolCallId is null when the fit ran before the reply began. */
 export interface CompactionMarker {
   afterToolCallId: string | null;

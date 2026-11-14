@@ -373,8 +373,7 @@ def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_c
     response = asyncio.run(run())
     assert response.status_code == 200
     body = json.loads(response.body)
-    # The cloud fit says whether a summary was tried before turns were dropped.
-    assert body["context_truncated"] == {**truncation, "summary_failed": False}
+    assert body["context_truncated"] == truncation
     assert "old" not in json.dumps(requests[-1]["input"])
     assert "latest" in json.dumps(requests[-1]["input"])
     assert len(requests) == (2 if server_compaction_rejected else 1)

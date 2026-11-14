@@ -255,14 +255,9 @@ export type {
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
-  COMPACTION_NOTICE_LABEL,
-  COMPACTION_NOTICE_TEXT,
-  type CompactionNoticeKind,
   type ContextTruncation,
-  compactionNoticeKind,
   promptWasShortened,
 } from "./utils/context-truncation";
-export { cloudCompactionTrigger } from "./utils/auto-compaction";
 export { SectionNameDialog } from "./components/section-name-dialog";
 export { removeCustomSectionWithUndo } from "./stores/remove-custom-section";
 export {

@@ -128,38 +128,6 @@ class _OpenAICompactionRejectingHandler(BaseHTTPRequestHandler):
         self.wfile.write(sse)
 
 
-def _is_summary_call(body: dict) -> bool:
-    first = (body.get("messages") or [{}])[0]
-    return first.get("role") == "system" and str(first.get("content") or "").startswith(
-        "You write the handover summary"
-    )
-
-
-class _SummaryRefusingHandler(_Handler):
-    """Answers chat turns and refuses the summary call, as a provider out of credit would."""
-
-    def do_POST(self) -> None:  # noqa: N802
-        length = int(self.headers.get("Content-Length") or 0)
-        body = json.loads(self.rfile.read(length) or b"{}")
-        if not _is_summary_call(body):
-            self.server.recorded.append(body)  # type: ignore[attr-defined]
-            sse = (
-                'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n'
-                'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
-                "data: [DONE]\n\n"
-            ).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-        else:
-            self.server.summary_calls = getattr(self.server, "summary_calls", 0) + 1  # type: ignore[attr-defined]
-            sse = json.dumps({"error": {"message": "insufficient credit"}}).encode()
-            self.send_response(402)
-            self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(sse)))
-        self.end_headers()
-        self.wfile.write(sse)
-
-
 def _proxy(
     provider_type: str,
     messages: list[dict],
@@ -326,8 +294,7 @@ def test_a_reply_cap_near_the_window_is_lowered_rather_than_emptying_the_chat():
         compaction_threshold = 12_288,
         context_window = 16_384,
     )
-    # The summary stands in for the rest; the newest turns stay verbatim.
-    assert sum(m["content"].startswith("question") for m in sent["messages"]) >= 2
+    assert sum(m["content"].startswith("question") for m in sent["messages"]) >= 3
     assert sent["max_tokens"] <= 16_384 // 2
     assert estimate_messages_tokens_conservative(sent["messages"]) + sent["max_tokens"] < 16_384
 
@@ -370,11 +337,9 @@ def test_a_tool_enabled_chat_starts_from_the_saved_boundary(monkeypatch):
 
     # The tool loop polls for a disconnect and would stop before reaching the provider.
     monkeypatch.setattr(Request, "is_disconnected", connected)
-    # The saved boundary belongs to the evicting fit, which now runs when no summary can be had.
     _, sent = _proxy(
         "openrouter",
         _long_chat(),
-        handler = _SummaryRefusingHandler,
         thread_id = "saved-thread",
         enable_tools = True,
         enabled_tools = ["python"],

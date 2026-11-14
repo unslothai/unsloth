@@ -342,7 +342,6 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
-        autoCompactTokens: config.auto_compact_tokens ?? undefined,
         extraHeaders: extraHeadersFromSaved(config.extra_headers),
         reasoningConfig:
           config.provider_type === "custom" &&

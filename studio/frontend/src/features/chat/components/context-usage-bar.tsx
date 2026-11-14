@@ -34,15 +34,10 @@ function getSeverityColor(percent: number): {
 const RING_RADIUS = 6.25;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
 
-// Just past the 2-unit ring on both sides, and inside the 16-unit box.
-const MARK_HALF_LENGTH = 1.6;
-
-export const UsageRing: FC<{
-  percent: number | null;
-  stroke: string;
-  /** Share of the window where the chat compacts, drawn as a tick across the ring. */
-  mark?: number | null;
-}> = ({ percent, stroke, mark }) => (
+export const UsageRing: FC<{ percent: number | null; stroke: string }> = ({
+  percent,
+  stroke,
+}) => (
   <svg viewBox="0 0 16 16" aria-hidden={true} className="size-icon shrink-0 -rotate-90">
     <circle cx={8} cy={8} r={RING_RADIUS} fill="none" strokeWidth={2} className="stroke-(--track)" />
     {percent ? (
@@ -56,17 +51,6 @@ export const UsageRing: FC<{
         strokeDasharray={RING_LENGTH}
         strokeDashoffset={RING_LENGTH * (1 - percent / 100)}
         className={cn("transition-[stroke-dashoffset]", stroke)}
-      />
-    ) : null}
-    {typeof mark === "number" ? (
-      <line
-        data-slot="compaction-mark"
-        x1={8 + (RING_RADIUS - MARK_HALF_LENGTH) * Math.cos((mark / 100) * 2 * Math.PI)}
-        y1={8 + (RING_RADIUS - MARK_HALF_LENGTH) * Math.sin((mark / 100) * 2 * Math.PI)}
-        x2={8 + (RING_RADIUS + MARK_HALF_LENGTH) * Math.cos((mark / 100) * 2 * Math.PI)}
-        y2={8 + (RING_RADIUS + MARK_HALF_LENGTH) * Math.sin((mark / 100) * 2 * Math.PI)}
-        strokeWidth={1.1}
-        className="stroke-foreground"
       />
     ) : null}
   </svg>
@@ -229,7 +213,7 @@ export const ContextUsageBar: FC<
             >
               {compactFace === null ? (
                 <span className={cn("flex size-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center justify-center", hover)}>
-                  <UsageRing percent={percent} stroke={severity.stroke} mark={state.compactMarkPercent} />
+                  <UsageRing percent={percent} stroke={severity.stroke} />
                 </span>
               ) : (
                 <span className={cn("flex h-full shrink-0 items-center", hover)} style={padStyle}><Face face={compactFace} /></span>
@@ -244,9 +228,9 @@ export const ContextUsageBar: FC<
                 className={cn("flex h-full items-center", fitContent ? "gap-1.5" : "w-(--full) gap-2", hover)}
                 style={padStyle}
               >
-                {showRing && ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} mark={state.compactMarkPercent} /> : null}
+                {showRing && ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
                 <Face face={face} />
-                {showRing && !ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} mark={state.compactMarkPercent} /> : null}
+                {showRing && !ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
               </span>
             </span>
           </button>
@@ -291,17 +275,6 @@ export const ContextUsageBar: FC<
               <span className="text-muted-foreground">Compactions</span>
               <span className="font-mono tabular-nums">
                 {input.compactionCount}
-              </span>
-            </div>
-          )}
-          {typeof input.compactAt === "number" && input.compactAt > 0 && (
-            <div
-              className="flex items-center justify-between gap-4"
-              data-slot="compaction-trigger-row"
-            >
-              <span className="text-muted-foreground">Auto-compacts at</span>
-              <span className="font-mono tabular-nums">
-                {formatTokenCountFull(input.compactAt)}
               </span>
             </div>
           )}

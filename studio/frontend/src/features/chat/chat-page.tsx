@@ -197,8 +197,6 @@ import {
   type ChatModelSwitchTarget,
 } from "./components/chat-model-notice-switch";
 import { LiveContextUsageBar } from "./components/live-context-usage-bar";
-import { resolveModelCatalogEntry } from "./model-catalog";
-import { cloudCompactionTrigger } from "./utils/auto-compaction";
 import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -3203,24 +3201,6 @@ export function ChatPage({
   }, [externalProvidersForChat, inferenceCheckpoint]);
   const activeExternalProviderType =
     activeExternalProvider?.providerType ?? null;
-  const autoCompactEnabled = useChatRuntimeStore((s) => s.autoCompactEnabled);
-  // A cloud model's window comes from the catalogue; the meter marks where the chat compacts.
-  const cloudContextWindow = useMemo(() => {
-    const selection = parseExternalModelId(inferenceCheckpoint);
-    if (!selection || !activeExternalProviderType) return null;
-    return (
-      resolveModelCatalogEntry(activeExternalProviderType, selection.modelId)
-        ?.contextLength ?? null
-    );
-  }, [activeExternalProviderType, inferenceCheckpoint]);
-  const cloudCompactAt =
-    isExternalModel && autoCompactEnabled && activeExternalProviderType !== "openai_codex"
-      ? cloudCompactionTrigger({
-          providerType: activeExternalProviderType,
-          contextLength: cloudContextWindow,
-          autoCompactTokens: activeExternalProvider?.autoCompactTokens,
-        })
-      : null;
   const activeProviderCapabilities = useMemo(() => {
     const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return null;
@@ -5046,10 +5026,8 @@ export function ChatPage({
                 liveThreadKey={activeThreadId ?? "__default"}
                 compactUnknownAsIcon={view.mode === "single"}
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
-                // A cloud model shows its catalogued window; null when the catalogue has none.
-                total={isExternalModel ? cloudContextWindow : loadedContextLength}
-                cloud={isExternalModel}
-                compactAt={cloudCompactAt}
+                // null on external providers; the bar handles that.
+                total={loadedContextLength}
                 cached={usageRows.cached}
                 cacheWrites={usageRows.cacheWrites}
                 promptTokens={usageRows.promptTokens}
