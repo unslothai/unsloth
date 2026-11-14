@@ -247,6 +247,7 @@ import {
   isNpuModelId,
   refreshNpuModels,
   useNpuCatalogStore,
+  useNpuDisplayName,
   useNpuStatus,
 } from "../../npu";
 import {
@@ -2675,6 +2676,7 @@ export function ModelConfigPage({
   );
   const configId = target.configId ?? target.id;
   const targetIsNpu = isNpuModelId(target.id);
+  const npuName = useNpuDisplayName(targetIsNpu ? target.id : null);
   const npuCatalogVision = useNpuCatalogStore(
     (s) => s.models?.some((m) => m.model_path === target.id && m.supports_vision) ?? false,
   );
@@ -4270,7 +4272,7 @@ export function ModelConfigPage({
               Run settings
             </div>
             <div data-config-title="" className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
-              {target.displayName}
+              {npuName ?? target.displayName}
             </div>
           </div>
         </div>
