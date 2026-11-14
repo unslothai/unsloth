@@ -62,6 +62,7 @@ H3_IMAGE_SIGMAS: tuple[float, ...] = (
 # Smaller requests are generated on a canvas of this area at the same aspect and resized back (LANCZOS).
 H3_IMAGE_MIN_GENERATION_AREA = 2048 * 2048
 H3_IMAGE_MIN_GENERATION_AREA_RANGE = (1024, 4096 * 4096)
+# Kept for callers that pass max_sequence_length; the prompt is not truncated (the reference implementation has no cap).
 H3_IMAGE_MAX_SEQUENCE_LENGTH = 4096
 H3_IMAGE_TEXT_ENCODER_LAYER = 50
 H3_IMAGE_MAX_REFERENCES = 16
@@ -72,6 +73,13 @@ H3_IMAGE_PIXEL_STD = (0.229, 0.224, 0.225)
 H3_IMAGE_REFERENCE_NOISE_AUG = 0.999
 H3_IMAGE_REFERENCE_SHORT_EDGE = (1024, 2048)
 H3_IMAGE_VISION_SHORT_EDGE = (1024, 1024)
+# The reference posterior is sampled with a fixed CPU seed, so a reference latent never depends on the request seed.
+H3_IMAGE_POSTERIOR_SEED = 42
+# An empty conditioning (empty prompt, no references) is this one token, the Qwen pad.
+H3_IMAGE_EMPTY_TOKEN = "<|endoftext|>"
+# The Qwen3-VL resize bounds of the reference implementation; inside them a multiple-of-32 picture is not resized.
+H3_IMAGE_VISION_MIN_PIXELS = 3136
+H3_IMAGE_VISION_MAX_PIXELS = 12845056
 # Per-row modality tags index the AdaLN table: a checkpoint contract.
 H3_IMAGE_IMAGE_TAG = 0
 H3_IMAGE_TEXT_TAG = 1
@@ -594,22 +602,65 @@ def canvas_size(
     return (max(m, round(height * scale / m) * m), max(m, round(width * scale / m) * m))
 
 
-def bound_short_edge(
+def size_short_edge(
     width: int,
     height: int,
     lo: int,
     hi: int,
     multiple: int = H3_IMAGE_CANVAS_MULTIPLE,
 ) -> tuple:
-    """Reference resize rule: keep a short edge in ``[lo, hi]``, else scale to the nearer bound (multiples of 32)."""
+    """Reference size rule: the short edge clamped to ``[lo, hi]`` at the same aspect, then both sides rounded to
+    multiples of 32, so an in-range picture is still snapped to the grid (never cropped)."""
     short = min(width, height)
-    if lo <= short <= hi:
-        return width, height
-    scale = (lo if short < lo else hi) / short
+    scale = min(max(short, lo), hi) / short
     return (
         max(multiple, round(width * scale / multiple) * multiple),
         max(multiple, round(height * scale / multiple) * multiple),
     )
+
+
+def request_seed(generator: Any) -> int:
+    """The seed a request's generator was made with (every random draw of a render is on CPU generators seeded from
+    it, so a seed reproduces across devices); a fresh random seed without one."""
+    import torch
+
+    gens = generator if isinstance(generator, (list, tuple)) else [generator]
+    gen = gens[0] if gens else None
+    if isinstance(gen, torch.Generator):
+        return int(gen.initial_seed())
+    return int(torch.Generator().seed())
+
+
+def cpu_generator(seed: int) -> Any:
+    import torch
+    return torch.Generator("cpu").manual_seed(int(seed))
+
+
+def initial_noise(shape: Sequence[int], seed: int) -> Any:
+    """The starting latent: float32 standard normal from a CPU generator seeded with the request seed."""
+    import torch
+    return torch.randn(tuple(shape), generator = cpu_generator(seed), dtype = torch.float32)
+
+
+def reference_noise(rows: Any, seed: int) -> Any:
+    """Augmentation noise for one reference's patch rows ``(rows, C * patch)``: the CPU stream restarts from the
+    request seed for every reference."""
+    import torch
+    return torch.randn(tuple(rows.shape), generator = cpu_generator(seed), dtype = torch.float32)
+
+
+def reference_posterior_latents(posterior: Any, latents_mean: Any, latents_std: Any) -> Any:
+    """A reference's normalized latent: the posterior sampled in float32 with a CPU generator seeded
+    ``H3_IMAGE_POSTERIOR_SEED`` (deterministic, so it is cached per picture)."""
+    import torch
+
+    moments = posterior.parameters.float()
+    mean, logvar = moments.chunk(2, dim = 1)
+    noise = torch.randn(
+        tuple(mean.shape), generator = cpu_generator(H3_IMAGE_POSTERIOR_SEED), dtype = torch.float32
+    ).to(mean.device)
+    latents = torch.addcmul(mean, torch.exp(0.5 * logvar.clamp(-30.0, 20.0)), noise)
+    return (latents - latents_mean.to(latents)) / latents_std.to(latents)
 
 
 def patchify(latents: Any, patch: tuple) -> Any:
@@ -701,6 +752,128 @@ def row_timestep_plan(timesteps: Any, seq_len: int, reference_rows: Any) -> list
         unique, index = torch.unique(row, sorted = True, return_inverse = True)
         plan.append((unique, index))
     return plan
+
+
+# "0": the text refiner runs every step again (the stock forward); the cached rows are bit-identical to it.
+REFINER_CACHE_ENV = "UNSLOTH_H3_IMAGE_REFINER_CACHE"
+# "1": the output norm and head run on the generated rows only, as the reference implementation does. Off by default:
+# on a GPU the smaller row count can select other kernels, so an edit is not bit-identical to the stock forward (a
+# rounding-level difference that grows over the steps), and the head is too small for it to save measurable time.
+TARGET_HEAD_ENV = "UNSLOTH_H3_IMAGE_TARGET_HEAD"
+
+
+def refiner_cache_enabled() -> bool:
+    return not _env_off(REFINER_CACHE_ENV)
+
+
+def target_head_enabled() -> bool:
+    return (os.environ.get(TARGET_HEAD_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def refined_text(transformer: Any, encoder_hidden_states: Any) -> Any:
+    """``context_embedder`` + ``token_refiner`` over the conditioning: the text rows every step of a render reads."""
+    from diffusers.models.modeling_utils import get_parameter_dtype
+
+    dtype = get_parameter_dtype(transformer.context_embedder)
+    return transformer.token_refiner(transformer.context_embedder(encoder_hidden_states.to(dtype)))
+
+
+def _h3_image_forward(
+    self: Any,
+    hidden_states: Any,
+    encoder_hidden_states: Any,
+    timestep: Any,
+    timestep_indices: Any,
+    token_tags: Any,
+    position_ids: Any,
+    image_indices: Any,
+    text_indices: Any,
+    pdd_step_index: int,
+    return_dict: bool = True,
+    text_embeds: Any = None,
+    output_indices: Any = None,
+) -> Any:
+    """The transformer's forward op for op, plus two inputs: ``text_embeds`` (the refined text rows, computed once per
+    render by ``refined_text``) and ``output_indices`` (the rows the output norm and head run on; the generated image
+    only, instead of every image row). Without either it is the stock forward."""
+    stock = type(self).forward
+    if text_embeds is None and output_indices is None:
+        return stock(
+            self,
+            hidden_states = hidden_states,
+            encoder_hidden_states = encoder_hidden_states,
+            timestep = timestep,
+            timestep_indices = timestep_indices,
+            token_tags = token_tags,
+            position_ids = position_ids,
+            image_indices = image_indices,
+            text_indices = text_indices,
+            pdd_step_index = pdd_step_index,
+            return_dict = return_dict,
+        )
+    import torch
+    from diffusers.models.modeling_outputs import Transformer2DModelOutput
+    from diffusers.models.modeling_utils import get_parameter_dtype
+
+    if position_ids.ndim != 2 or position_ids.shape[-1] != 3:
+        raise ValueError(
+            f"`position_ids` must be a `(seq_len, 3)` tensor, got {list(position_ids.shape)}."
+        )
+    sequence_length = position_ids.shape[0]
+    if token_tags.shape != (sequence_length,) or timestep_indices.shape != (sequence_length,):
+        raise ValueError(
+            "`token_tags` and `timestep_indices` must both be `(seq_len,)` tensors matching `position_ids`, got "
+            f"{list(token_tags.shape)} and {list(timestep_indices.shape)} for seq_len={sequence_length}."
+        )
+    rotary_emb = self.rope(position_ids)
+    image_embeds = self.proj_in(hidden_states.to(get_parameter_dtype(self.proj_in)))
+    if text_embeds is None:
+        text_embeds = refined_text(self, encoder_hidden_states)
+    hidden_states = text_embeds.new_zeros(
+        (text_embeds.shape[0], sequence_length, text_embeds.shape[-1])
+    )
+    hidden_states = hidden_states.index_copy(1, text_indices, text_embeds)
+    hidden_states = hidden_states.index_copy(1, image_indices, image_embeds.to(text_embeds.dtype))
+    temb = self.time_proj(timestep)
+    temb = self.time_embedder(temb.to(get_parameter_dtype(self.time_embedder)))
+    adaln_indices = timestep_indices * H3_IMAGE_MODALITY_NUM + token_tags
+    for block in self.transformer_blocks:
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            hidden_states = self._gradient_checkpointing_func(
+                block, hidden_states, temb, adaln_indices, rotary_emb
+            )
+        else:
+            hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb)
+    proj_out = self.pdd_proj_out[pdd_step_index]
+    rows = image_indices if output_indices is None else output_indices
+    hidden_states = self.norm_out(
+        hidden_states.index_select(1, rows), temb, timestep_indices.index_select(0, rows)
+    ).to(get_parameter_dtype(proj_out))
+    output = proj_out(hidden_states)
+    if not return_dict:
+        return (output,)
+    return Transformer2DModelOutput(sample = output)
+
+
+def h3_image_forward_active(transformer: Any) -> bool:
+    """Whether a call to ``transformer`` reaches ``_h3_image_forward`` directly. Anything wrapping or replacing the
+    forward since (a graph or offload wrapper) gets the stock call, without the two extra inputs."""
+    forward = transformer.__dict__.get("forward") if transformer is not None else None
+    return getattr(forward, "__func__", None) is _h3_image_forward
+
+
+def install_h3_image_forward(transformer: Any) -> bool:
+    """Route the transformer through ``_h3_image_forward`` (an instance attribute, so the class stays stock). Done at
+    load, before anything wraps ``forward``; returns whether it is installed."""
+    if transformer is None:
+        return False
+    if h3_image_forward_active(transformer):
+        return True
+    if "forward" in transformer.__dict__:
+        # someone already wraps this instance's forward: keep theirs, the render takes the stock call
+        return False
+    transformer.forward = types.MethodType(_h3_image_forward, transformer)
+    return True
 
 
 def _close_diffusers_import_window() -> None:
@@ -1209,21 +1382,28 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         import torch
 
         tokenizer = self.tokenizer
-        max_len = H3_IMAGE_MAX_SEQUENCE_LENGTH
         token_ids: list[int] = []
         tags: list[int] = []
         vision_inputs: dict = {}
         if vision_images:
             processor = self._processor()
-            vision = processor.image_processor(images = vision_images, return_tensors = "pt")
+            # prepare_references already sized them to multiples of 32: the processor must not resample again
+            on_grid = all(
+                i.size[0] % H3_IMAGE_CANVAS_MULTIPLE == 0
+                and i.size[1] % H3_IMAGE_CANVAS_MULTIPLE == 0
+                and H3_IMAGE_VISION_MIN_PIXELS
+                <= i.size[0] * i.size[1]
+                <= H3_IMAGE_VISION_MAX_PIXELS
+                for i in vision_images
+            )
+            extra = {"do_resize": False} if on_grid else {}
+            vision = processor.image_processor(images = vision_images, return_tensors = "pt", **extra)
             merge = int(processor.image_processor.merge_size) ** 2
             start = tokenizer.convert_tokens_to_ids("<|vision_start|>")
             pad = tokenizer.convert_tokens_to_ids("<|image_pad|>")
             end = tokenizer.convert_tokens_to_ids("<|vision_end|>")
             for index, grid in enumerate(vision["image_grid_thw"]):
-                label = tokenizer(f"Picture {index + 1}: ", add_special_tokens = False)["input_ids"][
-                    :max_len
-                ]
+                label = tokenizer(f"Picture {index + 1}: ", add_special_tokens = False)["input_ids"]
                 block = [start] + [pad] * (int(grid.prod()) // merge) + [end]
                 token_ids += label + block
                 tags += [H3_IMAGE_TEXT_TAG] * len(label) + [H3_IMAGE_IMAGE_TAG] * len(block)
@@ -1231,11 +1411,13 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 "pixel_values": vision["pixel_values"],
                 "image_grid_thw": vision["image_grid_thw"],
             }
-        prompt_ids = tokenizer(prompt, add_special_tokens = False)["input_ids"][:max_len]
+        prompt_ids = tokenizer(prompt, add_special_tokens = False)["input_ids"] if prompt else []
         token_ids += prompt_ids
         tags += [H3_IMAGE_TEXT_TAG] * len(prompt_ids)
         if not token_ids:
-            raise ValueError("MiniMax-H3-Image needs a non-empty prompt.")
+            # nothing to condition on (empty prompt, no references): one pad token, tagged as text
+            token_ids = [int(tokenizer.convert_tokens_to_ids(H3_IMAGE_EMPTY_TOKEN))]
+            tags = [H3_IMAGE_TEXT_TAG]
         encoder = self._enter("text_encoder")
         try:
             embeds = qwen3vl_hidden_state(
@@ -1267,7 +1449,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         stats = getattr(cache, "stats", None)
         return int(stats.get("hits", 0)) if isinstance(stats, dict) else 0
 
-    def _encode_references(self, images: list, generator: Any) -> list:
+    def _encode_references(self, images: list) -> list:
+        """Normalized reference latents ``(1, C, h, w)`` float32, one per picture (sized to multiples of 32 by
+        ``prepare_references``). The posterior sample is seeded, so the whole latent is cached per picture."""
         import numpy as np
         import torch
 
@@ -1283,36 +1467,40 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             r = H3_IMAGE_VAE_SCALE
             for image in images:
                 array = np.array(image)
+                if array.shape[0] % (2 * r) or array.shape[1] % (2 * r):
+                    raise ValueError(
+                        f"a reference must be sized to multiples of {2 * r} pixels, got {array.shape[1]}x{array.shape[0]}"
+                    )
                 key = None
                 if ref_cache_enabled():
                     digest = hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
                     key = (id(vae), str(vae_dtype), str(device), tuple(array.shape), digest)
                 cache = self.__dict__.setdefault("_unsloth_h3_ref_posteriors", OrderedDict())
                 stats = self.__dict__.setdefault("_unsloth_h3_ref_stats", {"hits": 0, "misses": 0})
-                posterior = cache.get(key) if key is not None else None
-                if posterior is not None:
+                latents = cache.get(key) if key is not None else None
+                if latents is not None:
                     cache.move_to_end(key)
                     stats["hits"] += 1
                 else:
                     pixels = torch.from_numpy(array).to(device).permute(2, 0, 1)[None]
-                    pixels = pixels[..., : pixels.shape[-2] // r * r, : pixels.shape[-1] // r * r]
                     pixels = (pixels.to(torch.float32).div(255.0) - mean) / std
                     posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                    latents = reference_posterior_latents(posterior, lmean, lstd)
+                    del posterior
                     if key is not None:
                         stats["misses"] += 1
-                        cache[key] = posterior
+                        cache[key] = latents
                         while len(cache) > REF_CACHE_ENTRIES:
                             cache.popitem(last = False)
-                latents = posterior.sample(generator = generator).to(torch.float16).float()
-                latents = latents[..., : latents.shape[-2] // 2 * 2, : latents.shape[-1] // 2 * 2]
-                out.append((latents - lmean) / lstd)
+                out.append(latents)
             return out
         finally:
             self._leave("vae")
 
     @staticmethod
     def prepare_references(images: Any) -> tuple[list, list]:
-        """(VAE copies, encoder copies) of the references: upright, RGB, short edge bounded per consumer."""
+        """(VAE copies, encoder copies) of the references: upright, RGB, each resized (LANCZOS) to its consumer's
+        short-edge rule with both sides on the 32 grid; a picture already at that size is passed through."""
         from PIL import Image, ImageOps
 
         if images is None:
@@ -1334,7 +1522,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             prepared.append(image)
 
         def resize(image: Any, lo: int, hi: int) -> Any:
-            size = bound_short_edge(*image.size, lo, hi)
+            size = size_short_edge(*image.size, lo, hi)
             return image if image.size == size else image.resize(size, resample = Image.LANCZOS)
 
         vae_images = [resize(i, *H3_IMAGE_REFERENCE_SHORT_EDGE) for i in prepared]
@@ -1376,8 +1564,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 "diffusion.minimax_h3_image: negative prompt ignored (the model has no unconditional branch)"
             )
         prompts = [prompt] if isinstance(prompt, str) else list(prompt or [])
-        if not prompts or any(not isinstance(p, str) or not p for p in prompts):
-            raise ValueError("MiniMax-H3-Image needs a non-empty prompt.")
+        if not prompts or any(not isinstance(p, str) for p in prompts):
+            raise ValueError(
+                "MiniMax-H3-Image needs a prompt (an empty one conditions on the references only)."
+            )
         jobs = [p for p in prompts for _ in range(max(1, int(num_images_per_prompt or 1)))]
         generators = generator if isinstance(generator, list) else [generator] * len(jobs)
         if len(generators) != len(jobs):
@@ -1440,14 +1630,15 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         channels = int(self.vae.config.latent_channels) if self.vae is not None else 24
         lh, lw = canvas_h // H3_IMAGE_VAE_SCALE, canvas_w // H3_IMAGE_VAE_SCALE
         shape = (1, channels, 1, lh, lw)
+        seed = request_seed(generator)
+        stats["seed"] = seed
         if latents is None:
-            from diffusers.utils.torch_utils import randn_tensor
-            noise = randn_tensor(shape, generator = generator, device = device, dtype = torch.float32)
+            noise = initial_noise(shape, seed).to(device)
         else:
             noise = latents.to(device, torch.float32).reshape(shape)
         target_rows = patchify(noise, patch)
         ref_hits = int(self.__dict__.get("_unsloth_h3_ref_stats", {}).get("hits", 0))
-        reference_latents = self._encode_references(vae_refs, generator) if vae_refs else []
+        reference_latents = self._encode_references(vae_refs) if vae_refs else []
         if vae_refs:
             stats["reference_cached"] = (
                 int(self.__dict__.get("_unsloth_h3_ref_stats", {}).get("hits", 0)) - ref_hits
@@ -1455,18 +1646,13 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         grids = [tuple(r.shape[-2:]) for r in reference_latents]
         pos, tags, image_idx, text_idx, n_ref = build_packed_layout(text_tags, grids, lh, lw, patch)
         if reference_latents:
-            from diffusers.utils.torch_utils import randn_tensor
-
             cond = []
             for ref in reference_latents:
-                ref = ref.to(device, torch.float32)
-                ref_noise = randn_tensor(
-                    ref.shape, generator = generator, device = device, dtype = torch.float32
+                ref_rows = patchify(ref.to(device, torch.float32)[:, :, None], patch)
+                ref_noise = reference_noise(ref_rows, seed).to(device)
+                cond.append(
+                    self.scheduler.scale_noise(ref_rows, H3_IMAGE_REFERENCE_NOISE_AUG, ref_noise)
                 )
-                noised = self.scheduler.scale_noise(
-                    ref, torch.tensor(H3_IMAGE_REFERENCE_NOISE_AUG), ref_noise
-                )
-                cond.append(patchify(noised[:, :, None], patch))
             cond = torch.cat(cond)
             if cond.shape[0] != n_ref:
                 raise ValueError(
@@ -1492,6 +1678,15 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         try:
             dtype = _module_dtype(transformer, skip_fp32 = True)
             prompt_embeds = embeds.to(device = device, dtype = dtype)
+            extra: dict = {}
+            if h3_image_forward_active(transformer):
+                if target_head_enabled():
+                    # the output norm and head run on the generated rows only
+                    extra["output_indices"] = image_idx[n_ref:].to(device)
+                if refiner_cache_enabled():
+                    # the text rows do not change across steps: refine them once per render
+                    extra["text_embeds"] = refined_text(transformer, prompt_embeds)
+            stats["refiner_cached"] = "text_embeds" in extra
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     return None
@@ -1504,8 +1699,11 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                     pdd_step_index = i,
                     return_dict = False,
                     **fields,
+                    **extra,
                 )[0]
-                rows[n_ref:] = self.scheduler.step(velocity[0, n_ref:].float(), t, rows[n_ref:])[0]
+                if "output_indices" not in extra:
+                    velocity = velocity[:, n_ref:]
+                rows[n_ref:] = self.scheduler.step(velocity[0].float(), t, rows[n_ref:])[0]
                 if callback is not None:
                     view = unpatchify(rows[n_ref:], lh, lw, channels, patch)
                     payload = {"latents": view} if "latents" in callback_inputs else {}
@@ -2337,6 +2535,33 @@ class H3ImageLoadReport:
         }
 
 
+def apply_checkpoint_inv_freq(model: Any, checkpoint: Any) -> str:
+    """Check the checkpoint's ``rope.inv_freq`` against the one the model computes from ``rope_theta``: "match" when
+    they are equal; otherwise the checkpoint's frequencies are used ("checkpoint")."""
+    import torch
+
+    rope = getattr(model, "rope", None)
+    current = getattr(rope, "inv_freq", None)
+    if current is None:
+        raise ValueError(
+            "the transformer has no rope.inv_freq buffer to check the checkpoint's against"
+        )
+    ck = checkpoint.detach().to("cpu", torch.float32).reshape(-1)
+    if ck.shape == current.shape and torch.equal(ck, current.detach().to("cpu", torch.float32)):
+        return "match"
+    if ck.shape != current.shape:
+        raise ValueError(
+            f"the checkpoint's rope.inv_freq has {ck.numel()} frequencies, the transformer {current.numel()}"
+        )
+    logger.warning(
+        "diffusion.minimax_h3_image: the checkpoint's rope.inv_freq differs from the theta formula (max %.3g); "
+        "using the checkpoint's",
+        float((ck - current.detach().to("cpu", torch.float32)).abs().max()),
+    )
+    rope.inv_freq = ck.to(current.device)
+    return "checkpoint"
+
+
 def load_h3_image_transformer(
     root: Path,
     *,
@@ -2416,6 +2641,8 @@ def load_h3_image_transformer(
         model.transformer_blocks = torch.nn.ModuleList()
         _assign(model, top, where = "transformer (top level)")
         model.transformer_blocks = blocks
+        if "rope.inv_freq" in shard_map:
+            stats["rope_inv_freq"] = apply_checkpoint_inv_freq(model, reader.get("rope.inv_freq"))
         temb = grid_temb((model.time_proj, model.time_embedder), grid) if grid is not None else None
         if temb is not None:
             lin = model.norm_out.linear
@@ -3222,6 +3449,7 @@ def load_minimax_h3_image_pipeline(
             check_cancelled = check,
         )
     check()
+    install_h3_image_forward(transformer)
     vae = load_h3_image_vae(root)
     check()
     early_streamer = None
