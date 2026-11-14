@@ -268,3 +268,8 @@ test("speech before the reply's first word is judged, not taken as a barge-in", 
   assert.match(engine, /thread\.getState\(\)\.isRunning && \(latestAssistantIsReasoning\(\) \|\| replyNotStarted\(\)\)/);
   assert.match(engine, /if \(!latestAssistantIsReasoning\(\) && !replyNotStarted\(\)\) return \{ verdict: "restart", kind: null \};/);
 });
+
+test("Compare's read-only threads never mount the voice orb", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(thread, /\{voiceRequested && !hideComposer && \(\s*<Suspense fallback=\{null\}>\s*<VoiceOrb \/>/);
+});
