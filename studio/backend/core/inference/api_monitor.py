@@ -829,6 +829,8 @@ class ApiMonitor:
                 return
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
             entry.reply_chars = len(text)
+            if text:
+                _note_generated(entry)
             _advance_updated_at(entry)
 
     def set_perf(

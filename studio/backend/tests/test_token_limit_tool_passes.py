@@ -123,7 +123,16 @@ def _usage(
         ),
         (False, 0, [("reply", 400), _usage(90, 7, 97)], "completed", (90, 7, 97)),
         # A reported zero is real (max_tokens 0 scoring), not missing usage.
-        (False, 4, [("reply", 17), _usage(1, 0, 1)], "completed", (1, 0, 1)),
+        (
+            False,
+            4,
+            [
+                ("reply", 17),
+                ("route_usage", {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1}),
+            ],
+            "completed",
+            (1, 0, 1),
+        ),
     ],
 )
 def test_a_receipt_settles_reported_and_estimated_usage(
@@ -149,6 +158,8 @@ def test_a_receipt_settles_reported_and_estimated_usage(
             monitor.append_reply(entry, "r" * value)
         elif kind == "usage":
             monitor.set_usage(entry, **value)
+        elif kind == "route_usage":
+            inference_route._monitor_usage(entry, value)
         elif kind == "reasoning":
             chunk = {"choices": [{"index": 0, "delta": {"reasoning_content": "t" * value}}]}
             inference_route._monitor_openai_chunk(entry, chunk, None)

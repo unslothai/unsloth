@@ -7225,7 +7225,15 @@ def _monitor_usage(
         api_monitor.set_usage(
             monitor_id,
             prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens"),
-            completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens"),
+            # A reported 0 (max_tokens 0 scoring) is real output usage, not a missing count.
+            completion_tokens = next(
+                (
+                    usage[key]
+                    for key in ("completion_tokens", "output_tokens")
+                    if usage.get(key) is not None
+                ),
+                None,
+            ),
             total_tokens = usage.get("total_tokens"),
             context_length = context_length,
         )

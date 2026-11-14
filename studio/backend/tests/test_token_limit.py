@@ -267,6 +267,8 @@ async def _ignore(message):
         (200, False, "completed", False, False),
         # Input-only usage (Anthropic's message_start) before a cancel generated nothing.
         (200, "prompt", "cancelled", False, True),
+        # A non-streaming reply records its text in one set_reply.
+        (200, "whole", "cancelled", False, False),
     ],
 )
 def test_the_override_is_refunded_exactly_when_nothing_was_generated(
@@ -292,6 +294,8 @@ def test_the_override_is_refunded_exactly_when_nothing_was_generated(
             )
             if output == "prompt":
                 monitor.set_usage(entry, prompt_tokens = 50)
+            elif output == "whole":
+                monitor.set_reply(entry, "partial answer")
             elif output:
                 monitor.append_reply(entry, "partial answer")
             monitor.finish(entry, finish)
@@ -301,6 +305,25 @@ def test_the_override_is_refunded_exactly_when_nothing_was_generated(
 
     asyncio.run(token_limit.OverrideRefundMiddleware(app)({"type": "http"}, None, _ignore))
     assert _refused() is not refunded
+
+
+def test_a_request_that_raises_after_its_response_start_refunds_the_override():
+    from routes.inference import _enforce_token_limit
+
+    now = _now_ms()
+    _thread("t1", now)
+    _reply("a1", "t1", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override()
+
+    async def app(scope, receive, send):
+        await _enforce_token_limit(SimpleNamespace(state = SimpleNamespace()))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        raise ConnectionResetError
+
+    with pytest.raises(ConnectionResetError):
+        asyncio.run(token_limit.OverrideRefundMiddleware(app)({"type": "http"}, None, _ignore))
+    assert not _refused()
 
 
 # Refused before inference (e.g. no model loaded), or cancelled while still queued.

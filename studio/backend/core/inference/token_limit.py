@@ -213,6 +213,7 @@ class OverrideRefundMiddleware:
         from core.inference.llama_keepwarm import _RESPONSE_FAILED_SCOPE_KEY
 
         status = None
+        raised = False
 
         async def send_status(message):
             nonlocal status
@@ -223,11 +224,15 @@ class OverrideRefundMiddleware:
         with override_claim_scope({"spent": None, "generated": False}) as claim:
             try:
                 await self.app(scope, receive, send_status)
+            except BaseException:
+                raised = True
+                raise
             finally:
                 # A 200 stream can still fail in band (flagged for the keep-warm middleware).
                 await refund_if_unused(
                     claim,
-                    failed = status is None
+                    failed = raised
+                    or status is None
                     or status >= 400
                     or bool(scope.get(_RESPONSE_FAILED_SCOPE_KEY)),
                 )
