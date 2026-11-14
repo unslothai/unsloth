@@ -2349,6 +2349,18 @@ export const sv = {
         deviceGpu: "GPU",
         deviceLocked: "Anges av {name}.",
         deviceSaveError: "Det gick inte att ändra enheten för inbäddning",
+        offlineDocs: {
+          folderLabel: "Unsloth-dokumentation offline",
+          folderDescription: "Sparar hela Unsloth-dokumentationen i en mapp så att den fungerar utan internet.",
+          folderHint: "Unsloth laddar ner unsloth.ai/docs/llms-full.txt till den här mappen som \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" och ersätter den tidigare kopian. Länka mappen till en kunskapsbas för att söka i dokumentationen i chatten offline. Mappen behålls vid uppdateringar.",
+          choose: "Välj",
+          autoUpdateLabel: "Uppdatera dokumentationen vid varje version",
+          autoUpdateDescription: "Laddar ner en ny kopia första gången en ny Unsloth-version startar.",
+          downloadNow: "Ladda ner nu",
+          downloading: "Laddar ner dokumentationen…",
+          notDownloaded: "Inte nedladdad än",
+          lastUpdated: "Uppdaterad {date} för {release}",
+        },
       },
       storage: {
         sectionTitle: "Lagring",

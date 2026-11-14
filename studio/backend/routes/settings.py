@@ -246,6 +246,13 @@ from utils.llama_cpp_path_settings import (
     custom_llama_cpp_path_status,
     set_custom_llama_cpp_path,
 )
+from utils.offline_docs_settings import (
+    MAX_PATH_LENGTH as MAX_OFFLINE_DOCS_PATH_LENGTH,
+    OfflineDocsBusyError,
+    offline_docs_status,
+    refresh_offline_docs,
+    set_offline_docs_settings,
+)
 from utils.media_generation_preset_settings import (
     delete_media_generation_preset,
     get_media_generation_preset_settings,
@@ -1096,6 +1103,22 @@ class LlamaCppPathResponse(BaseModel):
     reload_required: bool = False
 
 
+class OfflineDocsPayload(BaseModel):
+    path: Optional[str] = Field(default = None, max_length = MAX_OFFLINE_DOCS_PATH_LENGTH)
+    auto_update: Optional[bool] = None
+
+
+class OfflineDocsResponse(BaseModel):
+    path: Optional[str] = None
+    auto_update: bool
+    file: Optional[str] = None
+    updated_at: Optional[str] = None
+    release: Optional[str] = None
+    current_release: str
+    error: Optional[str] = None
+    refreshing: bool = False
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     # Optional too, so a row saved outside API keys (Model memory) can't resend a stale value.
     enabled: Optional[bool] = None
@@ -1591,6 +1614,52 @@ async def purge_caches_endpoint(
             log = logger,
         ) from exc
     return CachePurgeResponse(**result)
+
+
+@_owner_settings_router.get("/offline-docs", response_model = OfflineDocsResponse)
+def get_offline_docs(current_subject: str = Depends(get_current_subject)) -> OfflineDocsResponse:
+    return OfflineDocsResponse(**offline_docs_status())
+
+
+@_owner_settings_router.put("/offline-docs", response_model = OfflineDocsResponse)
+def update_offline_docs(
+    payload: OfflineDocsPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> OfflineDocsResponse:
+    require_ui_session(via_api_key)  # only the UI may pick a folder Unsloth writes into
+    changes = {
+        k: v
+        for k, v in payload.model_dump(exclude_unset = True).items()
+        if k == "path" or v is not None
+    }
+    try:
+        set_offline_docs_settings(**changes)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return OfflineDocsResponse(**offline_docs_status())
+
+
+@_owner_settings_router.post("/offline-docs/refresh", response_model = OfflineDocsResponse)
+def refresh_offline_docs_now(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> OfflineDocsResponse:
+    require_ui_session(via_api_key)
+    try:
+        return OfflineDocsResponse(**refresh_offline_docs())
+    except OfflineDocsBusyError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            offline_docs_status().get("error") or "Could not download the Unsloth docs.",
+            event = "settings.refresh_offline_docs_failed",
+            log = logger,
+        ) from exc
 
 
 @_owner_settings_router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)

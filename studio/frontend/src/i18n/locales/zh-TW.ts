@@ -2299,6 +2299,18 @@ export const zhTW = {
         deviceGpu: "GPU",
         deviceLocked: "由 {name} 設定。",
         deviceSaveError: "無法變更嵌入裝置",
+        offlineDocs: {
+          folderLabel: "離線 Unsloth 文件",
+          folderDescription: "將完整的 Unsloth 文件儲存到資料夾,無網路時也能使用。",
+          folderHint: "Unsloth 會將 unsloth.ai/docs/llms-full.txt 下載到此資料夾,檔名為 \"Unsloth Docs LLMs Full Text [Documentation] (date).md\",並取代先前的副本。將此資料夾連結到知識庫,即可在離線時於聊天中搜尋文件。更新後仍會保留此資料夾。",
+          choose: "選擇",
+          autoUpdateLabel: "每次發布時更新文件",
+          autoUpdateDescription: "新版 Unsloth 首次啟動時下載最新副本。",
+          downloadNow: "立即下載",
+          downloading: "正在下載文件…",
+          notDownloaded: "尚未下載",
+          lastUpdated: "已於 {date} 更新({release})",
+        },
       },
       storage: {
         sectionTitle: "儲存空間",

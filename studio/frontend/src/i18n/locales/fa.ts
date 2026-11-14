@@ -2404,6 +2404,18 @@ export const fa = {
         deviceGpu: "GPU",
         deviceLocked: "با {name} تنظیم شده است.",
         deviceSaveError: "تغییر دستگاه جاسازی ممکن نشد",
+        offlineDocs: {
+          folderLabel: "مستندات آفلاین Unsloth",
+          folderDescription: "مستندات کامل Unsloth را در یک پوشه ذخیره کنید تا بدون اینترنت در دسترس باشد.",
+          folderHint: "Unsloth فایل unsloth.ai/docs/llms-full.txt را با نام \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" در این پوشه دانلود می‌کند و جایگزین نسخهٔ قبلی می‌شود. پوشه را به یک پایگاه دانش وصل کنید تا در حالت آفلاین در گفتگو در مستندات جستجو کنید. پوشه پس از به‌روزرسانی‌ها حفظ می‌شود.",
+          choose: "انتخاب",
+          autoUpdateLabel: "به‌روزرسانی مستندات با هر انتشار",
+          autoUpdateDescription: "نخستین بار که نسخهٔ جدید Unsloth اجرا شود، نسخهٔ تازه دانلود می‌شود.",
+          downloadNow: "اکنون دانلود کن",
+          downloading: "در حال دانلود مستندات…",
+          notDownloaded: "هنوز دانلود نشده",
+          lastUpdated: "به‌روزشده در {date} برای {release}",
+        },
       },
       storage: {
         sectionTitle: "فضای ذخیره‌سازی",

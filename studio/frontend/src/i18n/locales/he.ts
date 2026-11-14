@@ -2279,6 +2279,18 @@ export const he = {
         deviceGpu: "GPU",
         deviceLocked: "מוגדר על ידי {name}.",
         deviceSaveError: "לא ניתן היה לשנות את התקן ההטמעה",
+        offlineDocs: {
+          folderLabel: "תיעוד Unsloth במצב לא מקוון",
+          folderDescription: "שומר את התיעוד המלא של Unsloth בתיקייה כדי שיעבוד בלי אינטרנט.",
+          folderHint: "Unsloth מוריד את unsloth.ai/docs/llms-full.txt לתיקייה הזו בשם \"Unsloth Docs LLMs Full Text [Documentation] (date).md\" ומחליף את העותק הקודם. קשרו את התיקייה למאגר ידע כדי לחפש בתיעוד מהצ׳אט גם בלי חיבור. התיקייה נשמרת בין עדכונים.",
+          choose: "בחירה",
+          autoUpdateLabel: "עדכון התיעוד בכל גרסה",
+          autoUpdateDescription: "הורדת עותק חדש בהפעלה הראשונה של גרסת Unsloth חדשה.",
+          downloadNow: "הורדה עכשיו",
+          downloading: "מוריד את התיעוד…",
+          notDownloaded: "עדיין לא הורד",
+          lastUpdated: "עודכן ב-{date} עבור {release}",
+        },
       },
       storage: {
         sectionTitle: "אחסון",
