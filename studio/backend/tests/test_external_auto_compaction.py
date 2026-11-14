@@ -209,6 +209,12 @@ def _proxy(
         return chunks, server.bodies[-1]
 
 
+def _sent_turns(sent: dict) -> int:
+    """Messages sent, not counting the summary turn and its reply."""
+    from core.inference import cloud_compaction
+    return len(sent["messages"]) - len(cloud_compaction.summary_turn_ids(sent["messages"]))
+
+
 def _truncations(chunks: list[dict]) -> list[dict]:
     return [c["context_truncated"] for c in chunks if "context_truncated" in c]
 
@@ -226,7 +232,7 @@ def test_auto_compact_drops_the_oldest_turns_before_a_provider_without_compactio
     assert sent["messages"][-1]["content"] == "latest question"
     [truncation] = _truncations(chunks)
     assert truncation["fits"] is True
-    assert truncation["dropped_messages"] == len(_long_chat()) - len(sent["messages"])
+    assert truncation["dropped_messages"] == len(_long_chat()) - _sent_turns(sent)
 
 
 def test_auto_compact_off_forwards_the_whole_chat():
@@ -313,7 +319,7 @@ def test_the_trimmed_prompt_leaves_the_whole_reply_room_in_the_window():
     assert estimate_messages_tokens_conservative(sent["messages"]) + 8_192 < 16_384
     assert sent["messages"][-1]["content"] == "latest question"
     [truncation] = _truncations(chunks)
-    assert truncation["dropped_messages"] == len(chat) - len(sent["messages"])
+    assert truncation["dropped_messages"] == len(chat) - _sent_turns(sent)
 
 
 def test_a_reply_cap_near_the_window_is_lowered_rather_than_emptying_the_chat():

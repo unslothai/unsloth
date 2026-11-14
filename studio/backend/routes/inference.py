@@ -29182,6 +29182,7 @@ def _fit_external_context(
     can_reset: bool = False,
     first_pass: bool = True,
     replays_manual: bool = False,
+    keep_ids: Optional[set[int]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
@@ -29245,7 +29246,13 @@ def _fit_external_context(
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = _active_turn_anchors(messages, branch) if can_reset or replays_manual else None,
+        anchor_ids = (
+            (_active_turn_anchors(messages, branch) or set())
+            if can_reset or replays_manual
+            else set()
+        )
+        | (keep_ids or set())
+        or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
@@ -29470,6 +29477,7 @@ async def _finish_external_compaction(
             tools = tools,
             branch = branch,
             tool_loop = tool_loop,
+            keep_ids = cloud_compaction.summary_turn_ids(current),
         )
         current = fitted
         if evicted and not plan.summarise:
