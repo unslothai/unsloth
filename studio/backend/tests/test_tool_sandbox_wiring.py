@@ -792,6 +792,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "empty_env_target",
         "no_user_abbrev",
         "option_operand",
+        "config_no_user_key",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -839,6 +840,9 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         # --no-user on the command line cancels PIP_USER.
         "no_user": f"PIP_USER=1 {_PIP} --no-user {wheel} && {show}",
         "no_user_abbrev": f"PIP_USER=1 {_PIP} --no-u {wheel} && {show}",
+        # pip assigns no-user's value to the same option as user: false here turns the user site off.
+        "config_no_user_key": "printf '[global]\\nuser = true\\n[install]\\nno-user = false\\n' > pip.ini && "
+        f"PIP_CONFIG_FILE=pip.ini {_PIP} {wheel} && {show}",
         # --prefix=... here is the build-backend setting -C carries, not pip's own --prefix.
         "option_operand": f"{_PIP} -C --prefix=buildtmp {wheel} && {show}",
         # [install] overrides [global], as pip resolves it: user ends up off.
@@ -897,6 +901,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "no_user": packages,
         "no_user_abbrev": packages,
         "option_operand": packages,
+        "config_no_user_key": packages,
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1420,6 +1425,35 @@ def test_another_python_sharing_studios_prefix_is_not_redirected():
     assert list(runs.values()) == ["chat /nonexistent/.unsloth-packages", "chat None"], runs
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix paths")
+def test_python_m_pip_without_orig_argv_is_routed_once_pip_starts(tmp_path):
+    """Python 3.9: -m pip is recognised when runpy loads pip.__main__; -m of anything else is left alone."""
+    wheel = tmp_path / _wheel(tmp_path, "unsloth_late_pip", {"unsloth_late_pip.py": ""})
+    packages = tmp_path / ".unsloth-packages"
+    env = {
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("PIP_", "_UNSLOTH", "PYTHONPATH"))
+        },
+        "_UNSLOTH_PIP_PREFIX": str(packages),
+        "_UNSLOTH_PIP_PREFIX_FOR": sys.prefix,
+    }
+    code = (
+        "import os, runpy, sys; del sys.orig_argv; sys.argv[:] = ['-m'] + sys.argv[1:]; "
+        "sys.path.insert(0, %r); import sitecustomize; "
+        "runpy.run_module(sys.argv.pop(1), run_name = '__main__', alter_sys = True)"
+    ) % tools._SANDBOX_SITE_DIR
+    run = [sys.executable, "-c", code]
+    pip = subprocess.run(
+        run + ["pip", "install", "-q", "--no-index", "--no-deps", str(wheel)],
+        env = env,
+        capture_output = True,
+        text = True,
+    )
+    assert list(packages.rglob("unsloth_late_pip.py")), pip.stderr
+
+
 def test_a_module_launch_without_orig_argv_is_not_taken_for_pip():
     """Python 3.9 has no sys.orig_argv: python -m venv --upgrade-deps must not get the chat PIP_PREFIX."""
     code = (
@@ -1450,14 +1484,14 @@ def test_the_stdlib_inventory_has_a_fallback_before_python_3_10():
     code = (
         "import sys; del sys.stdlib_module_names; sys.path.insert(0, %r); "
         "import sitecustomize as s; names = s._stdlib_names(); "
-        "print('shutil' in names, 'json' in names, 'unsloth_chat_mod' in names)"
+        "print('shutil' in names, 'json' in names, 'msvcrt' in names, 'unsloth_chat_mod' in names)"
         % tools._SANDBOX_SITE_DIR
     )
     env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "_UNSLOTH", "PYTHON"))}
     out = subprocess.run(
         [sys.executable, "-S", "-c", code], env = env, capture_output = True, text = True
     )
-    assert out.stdout.split() == ["True", "True", "False"], out.stderr
+    assert out.stdout.split() == ["True", "True", "True", "False"], out.stderr
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")

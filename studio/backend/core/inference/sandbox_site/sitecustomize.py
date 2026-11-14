@@ -530,13 +530,49 @@ def _config_chooses_location(isolated = False, use_user = True):
 
     if any(value(k).strip() for k in ("target", "prefix", "root", "home")):
         return True
-    return use_user and value("user").strip().lower() in ("y", "yes", "t", "true", "on", "1")
+    items = []
+    for section in ("global", "install"):
+        if parser.has_section(section):
+            items += [(k.replace("_", "-"), v) for k, v in parser.items(section)]
+    return use_user and _user_site(items, isolated)
+
+
+def _user_site(items = (), isolated = False):
+    # user and no-user set one option (pip assigns either key's boolean as given); the last non-empty one in
+    # pip's order ([global], [install], then PIP_USER / PIP_NO_USER) wins.
+    if not isolated:
+        items = list(items) + [
+            (k[4:].lower().replace("_", "-"), v)
+            for k, v in os.environ.items()
+            if k.startswith("PIP_")
+        ]
+    chosen = False
+    for key, val in items:
+        if key in ("user", "no-user") and val.strip():
+            chosen = val.strip().lower() in ("y", "yes", "t", "true", "on", "1")
+    return chosen
 
 
 _chat_prefix = None
 
 
-def _route_pip():
+class _LatePipFinder:
+    # Python < 3.10 without orig_argv: a -m launch is pip only once runpy asks for pip.__main__.
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if name == "pip.__main__":
+            sys.meta_path[:] = [f for f in sys.meta_path if f is not self]
+            _route_pip(True)
+            if os.environ.get("PIP_PREFIX"):
+                _start_cleanup(True)
+        return None
+
+
+def _route_pip(is_pip = None):
     try:
         prefix = os.environ.get("_UNSLOTH_PIP_PREFIX")
         owner = os.environ.get("_UNSLOTH_PIP_PREFIX_FOR")
@@ -555,7 +591,10 @@ def _route_pip():
             global _chat_prefix
             _chat_prefix = prefix
             # Only a pip process gets PIP_PREFIX: anything else it spawns (venv --upgrade-deps) must not inherit it.
-            is_pip = _is_pip_launch()
+            if is_pip is None:
+                is_pip = _is_pip_launch()
+                if not is_pip and not hasattr(sys, "orig_argv") and sys.argv[:1] == ["-m"]:
+                    sys.meta_path.insert(0, _LatePipFinder())
             # pip --target/--prefix/--user/... already chose a location; PIP_PREFIX would conflict with it.
             cli_user = _cli_user()
             options = _pip_options()
@@ -563,12 +602,10 @@ def _route_pip():
             isolated = "--isolated" in options
             if not isolated:
                 # --isolated makes pip ignore these, so then they choose nothing.
-                truthy = ("y", "yes", "t", "true", "on", "1")
                 placed = placed or any(
                     os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT", "PIP_HOME")
                 )
-                user = os.environ.get("PIP_USER", "").strip().lower() in truthy
-                placed = placed or (cli_user is None and user)
+                placed = placed or (cli_user is None and _user_site())
                 placed = placed or os.environ.get("PIP_PREFIX", prefix) not in ("", prefix)
             placed = placed or (is_pip and _config_chooses_location(isolated, cli_user is None))
             if is_pip and not placed:
@@ -731,6 +768,13 @@ def _stdlib_names():
     if _stdlib is None:
         _stdlib = set(getattr(sys, "stdlib_module_names", ())) | set(sys.builtin_module_names)
         if not hasattr(sys, "stdlib_module_names"):
+            # Modules only some platforms build (no file here to list): what 3.10's inventory names.
+            _stdlib.update(
+                "msvcrt winreg winsound _winapi _overlapped nt _msi msilib posix pwd grp fcntl termios "
+                "resource _posixsubprocess _posixshmem spwd crypt _crypt nis syslog ossaudiodev readline "
+                "curses _curses _curses_panel _scproxy _dbm _gdbm _tkinter _uuid _ctypes _lzma _bz2 "
+                "_sqlite3 _ssl _hashlib _decimal _multiprocessing audioop".split()
+            )
             for folder in _stdlib_paths():
                 try:
                     names = os.listdir(folder)
@@ -1184,14 +1228,18 @@ def _after_pip(snapshot):
         pass
 
 
-if os.environ.get("PIP_PREFIX"):
+def _start_cleanup(is_pip):
     import atexit
     _prune_stale_dist_info()
-    if _is_pip_launch():
+    if is_pip:
         sys.meta_path.insert(0, _PipStatusFinder())
         atexit.register(_after_pip, _record_snapshot())
     else:
         atexit.register(_prune_stale_dist_info)
+
+
+if os.environ.get("PIP_PREFIX"):
+    _start_cleanup(_is_pip_launch())
 
 
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
