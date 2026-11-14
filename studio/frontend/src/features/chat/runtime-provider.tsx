@@ -50,6 +50,7 @@ import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
 import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import {
   ThreadAutosaveHandle,
+  autoLoadDefaultChatModelOnStartup,
   createOpenAIStreamAdapter,
   findLatestUserAudioBase64,
   findLatestUserVideoBase64,
@@ -61,6 +62,7 @@ import {
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
 import { compactionDividerCount } from "@/components/assistant-ui/message-derived";
+import { isTauri } from "@/lib/api-base";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -4426,6 +4428,20 @@ export function useInComparePane(): boolean {
   return useContext(ComparePaneContext);
 }
 
+function DefaultChatModelStartupLoader({ enabled }: { enabled: boolean }) {
+  const attempted = useRef(false);
+  useEffect(() => {
+    if (!enabled || attempted.current) return;
+    attempted.current = true;
+    const controller = new AbortController();
+    void autoLoadDefaultChatModelOnStartup(controller.signal).catch(() => {
+      // Startup loading is best effort; the normal picker/send path remains available.
+    });
+    return () => controller.abort();
+  }, [enabled]);
+  return null;
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -4509,6 +4525,11 @@ export function ChatRuntimeProvider({
             !newThreadNonce &&
             !initialThreadId &&
             !backgrounded
+          }
+        />
+        <DefaultChatModelStartupLoader
+          enabled={
+            isTauri && modelType === "base" && !pairId && !backgrounded
           }
         />
         {/* Compare clears activeThreadId on the way in and this view is hidden rather than unmounted, so

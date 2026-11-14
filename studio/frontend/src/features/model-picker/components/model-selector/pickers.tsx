@@ -25,6 +25,14 @@ import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat";
 import {
+  clearDefaultChatModel,
+  isDefaultChatModel,
+  isDefaultChatModelLoadOnStartup,
+  setDefaultChatModel,
+  setDefaultChatModelLoadOnStartup,
+  type DefaultChatModel,
+} from "@/features/chat/utils/default-chat-model";
+import {
   deleteFineTunedModel,
   listGgufVariants,
   listRecommendedFolders,
@@ -1697,6 +1705,89 @@ interface DeviceRowExpanderProps {
 }
 
 const EMPTY_LOADED_QUANTS: readonly string[] = [];
+const NON_CHAT_DEFAULT_TASKS = new Set([
+  "text-to-image",
+  "text-to-video",
+  "image-diffusion-unsupported",
+  "text-to-speech",
+  "text-to-audio",
+  "audio-to-audio",
+  "automatic-speech-recognition",
+  "speech-recognition-unsupported",
+]);
+
+function canUseDefaultChatModel(model: {
+  model_format?: string | null;
+  task?: string | null;
+  capabilities?: { can_chat?: boolean } | null;
+}): boolean {
+  return (
+    model.model_format !== "adapter" &&
+    model.capabilities?.can_chat !== false &&
+    !NON_CHAT_DEFAULT_TASKS.has(model.task ?? "")
+  );
+}
+
+function defaultChatModelMenuItems(model: DefaultChatModel) {
+  const isDefault = isDefaultChatModel(model);
+  const items = [
+    {
+      key: isDefault ? "clear-default-model" : "set-default-model",
+      label: isDefault ? "Clear default model" : "Set as default model",
+      icon: (
+        <HugeiconsIcon
+          icon={StarIcon}
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      ),
+      onSelect: () => {
+        if (isDefault) {
+          clearDefaultChatModel(model);
+          toast.success("Default model cleared");
+        } else {
+          setDefaultChatModel(model);
+          toast.success("Default model set", {
+            description: "New chats can load this model automatically.",
+          });
+        }
+      },
+    },
+  ];
+  if (isDefault) {
+    items.push({
+      key: "toggle-default-model-startup",
+      label: isDefaultChatModelLoadOnStartup()
+        ? "Disable default model on startup"
+        : "Load default model on startup",
+      icon: (
+        <HugeiconsIcon
+          icon={StarIcon}
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      ),
+      onSelect: () => {
+        const enabled = !isDefaultChatModelLoadOnStartup();
+        setDefaultChatModelLoadOnStartup(enabled);
+        toast.success(
+          enabled
+            ? "Default model will load on startup"
+            : "Default model startup load disabled",
+        );
+      },
+    });
+  }
+  return items;
+}
+
+function defaultChatModelDeleteWarning(model: DefaultChatModel) {
+  return isDefaultChatModel(model) ? (
+    <span className="mt-1 block font-medium text-destructive">
+      This is your default chat model. Deleting it clears the default.
+    </span>
+  ) : null;
+}
 
 function ejectMenuItemsFor(
   actions: DeviceRowActionsBox,
@@ -1815,6 +1906,11 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
   const configTarget = canConfigure
     ? modelConfigTarget(c.repo_id, gearMeta)
     : undefined;
+  const defaultModel: DefaultChatModel = {
+    id: c.repo_id,
+    kind: "model",
+    ggufVariant: null,
+  };
   return (
     <div className={downloadedRowShellClassName(isSelected)}>
       <div className="min-w-0 flex-1">
@@ -1856,7 +1952,12 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
         <ModelRowMenu
           ariaLabel={`More options for ${c.repo_id}`}
           cachePath={{ repoId: c.repo_id }}
-          items={ejectMenuItemsFor(actions, c.repo_id, ejectable)}
+          items={[
+            ...(ejectMenuItemsFor(actions, c.repo_id, ejectable) ?? []),
+            ...(!isPartial && canUseDefaultChatModel(c)
+              ? defaultChatModelMenuItems(defaultModel)
+              : []),
+          ]}
           runSettings={configTarget}
           pin={{
             pinned,
@@ -1872,6 +1973,7 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
                 This will remove{" "}
                 <span className="font-medium text-foreground">{c.repo_id}</span>{" "}
                 from disk. You can re-download it later.
+                {defaultChatModelDeleteWarning(defaultModel)}
               </>
             ),
             successMessage: `Deleted ${c.repo_id}`,
@@ -1884,6 +1986,7 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
                 a.hfToken || undefined,
                 c.cache_path || undefined,
               );
+              clearDefaultChatModel(defaultModel);
               // Repo-wide, so quant pins go too.
               actions.get().unpinRepo(c.repo_id);
             },
@@ -2023,6 +2126,11 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
   const configTarget = canConfigure
     ? modelConfigTarget(c.repo_id, selectMeta)
     : undefined;
+  const defaultModel: DefaultChatModel = {
+    id: c.repo_id,
+    kind: "gguf",
+    ggufVariant: variant.quant,
+  };
   return (
     <div>
       <div className={downloadedRowShellClassName(isSelected, true)}>
@@ -2086,6 +2194,9 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
             // The expander reads Hub-only state (updates, companions); a collapsed row never asks.
             items={[
               ...(ejectMenuItemsFor(actions, c.repo_id, ejectable) ?? []),
+              ...(expander.diffusionLoad || isPartial || !canUseDefaultChatModel(c)
+                ? []
+                : defaultChatModelMenuItems(defaultModel)),
               {
                 key: "quantizations",
                 label: expanderOpen ? "Hide quantizations" : "Show quantizations",
@@ -2127,6 +2238,7 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
                     {onDeviceRepoLabel(c.repo_id)} ({variant.quant})
                   </span>{" "}
                   from disk. You can re-download it later.
+                  {defaultChatModelDeleteWarning(defaultModel)}
                 </>
               ),
               successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`,
@@ -2142,6 +2254,7 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
                     (mediaPageForTask(c.task) ? c.cache_path : undefined) ??
                     undefined,
                 );
+                clearDefaultChatModel(defaultModel);
                 if (isChatGgufTask(c.task)) {
                   await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
                 } else if (isPinned) {
@@ -2351,6 +2464,11 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
   const isGguf = localModelIsGguf(m);
   const name = m.model_id ?? m.display_name;
   const showExpander = isGguf && !isDirectGguf && expanded;
+  const defaultModel: DefaultChatModel = {
+    id: m.id,
+    kind: isGguf ? "gguf" : "model",
+    ggufVariant: null,
+  };
   return (
     <div>
       <div className={downloadedRowShellClassName(isSelected)}>
@@ -2393,6 +2511,11 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
           <ModelRowMenu
             ariaLabel={`More options for ${name}`}
             onReveal={() => revealLocalModel(m.path, m.id)}
+            items={
+              expander.diffusionLoad || !canUseDefaultChatModel(m)
+                ? undefined
+                : defaultChatModelMenuItems(defaultModel)
+            }
             del={
               DELETABLE_LOCAL_SOURCES.has(m.source)
                 ? {
@@ -2403,11 +2526,15 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
                         <span className="font-medium text-foreground">{name}</span>{" "}
                         from{" "}
                         <span className="break-all font-mono text-xs">{m.path}</span>.
+                        {defaultChatModelDeleteWarning(defaultModel)}
                       </>
                     ),
                     successMessage: `Deleted ${name}`,
                     disabled: deleteDisabled,
-                    onConfirm: () => deleteLocalModel(m.path, m.id),
+                    onConfirm: async () => {
+                      await deleteLocalModel(m.path, m.id);
+                      clearDefaultChatModel(defaultModel);
+                    },
                     onDeleted: () => actions.get().refreshLocalModelsList(),
                   }
                 : undefined
@@ -3199,6 +3326,11 @@ function GgufVariantExpander({
         const configTarget = onConfigure
           ? modelConfigTarget(repoId, selectMeta)
           : undefined;
+        const defaultModel: DefaultChatModel = {
+          id: repoId,
+          kind: "gguf",
+          ggufVariant: v.quant,
+        };
         const rowButton = (
           <button
             type="button"
@@ -3318,6 +3450,14 @@ function GgufVariantExpander({
                 ariaLabel={`More options for ${repoId} ${v.quant}`}
                 iconClassName="size-3"
                 runSettings={configTarget}
+                items={
+                  !diffusionLoad &&
+                  v.downloaded &&
+                  !unusableLocal &&
+                  canUseDefaultChatModel({ task: pipelineTag })
+                    ? defaultChatModelMenuItems(defaultModel)
+                    : undefined
+                }
                 cachePath={
                   isLocalPath ? undefined : { repoId, variant: v.quant }
                 }
@@ -3373,6 +3513,7 @@ function GgufVariantExpander({
                               {repoId} ({v.quant})
                             </span>{" "}
                             from disk. You can re-download it later.
+                            {defaultChatModelDeleteWarning(defaultModel)}
                           </>
                         ),
                         successMessage:
@@ -3381,6 +3522,7 @@ function GgufVariantExpander({
                         disabled: deleteDisabled,
                         onConfirm: async () => {
                           await onDeleteVariant(v.quant, v.cache_ref ?? v.cache_path);
+                          clearDefaultChatModel(defaultModel);
                           if (isChatGgufTask(pipelineTag)) {
                             await reconcileGgufPinsAfterDelete(repoId, hfToken);
                           } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
