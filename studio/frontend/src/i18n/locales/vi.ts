@@ -3739,6 +3739,81 @@ export const vi = {
       title: "Kết nối",
       description: "Quản lý nhà cung cấp và các kết nối bên ngoài.",
     },
+    namedTunnel: {
+      mode: "Loại kết nối",
+      quick: "Liên kết tạm thời",
+      named: "Tên miền tùy chỉnh",
+      method: "Phương thức thiết lập",
+      automatic: "Tự động",
+      existing: "Kết nối bằng token Cloudflare",
+      hostname: "Tên miền",
+      token: "Token Cloudflare",
+      keepToken: "Để trống để giữ token đã lưu.",
+      originHint:
+        "Trong bảng điều khiển Cloudflare, định tuyến tên máy chủ này đến {origin}. Studio không thay đổi tuyến đó.",
+      prepareHint:
+        "Thiết lập kết nối tại đây, rồi dùng nút Bắt đầu để kết nối. Cài đặt tự khởi động không thay đổi.",
+      remove: "Xóa",
+      removeTitle: "Xóa quyền truy cập qua tên miền tùy chỉnh?",
+      removeAuto:
+        "Xóa kết nối Cloudflare cho {hostname}? Bản ghi DNS vẫn còn trong tài khoản Cloudflare của bạn và phải được xóa thủ công.",
+      removeToken:
+        "Xóa thông tin xác thực cục bộ cho {hostname}? Kết nối Cloudflare và bản ghi DNS vẫn còn trong tài khoản của bạn.",
+      authorizeAgain: "Ủy quyền lại",
+      setup: "Thiết lập",
+      openLogin: "Mở đăng nhập Cloudflare",
+      dnsCleanup:
+        "Bản ghi DNS {hostname} vẫn còn trong Cloudflare. Hãy xóa thủ công nếu không còn cần đến.",
+      dnsConflictTitle: "Bản ghi DNS đã tồn tại",
+      dnsConflict:
+        "{hostname} đã có bản ghi DNS. Thay bằng tuyến đến Unsloth? Bản ghi trước đó sẽ không được khôi phục.",
+      overwrite: "Ghi đè",
+      quickDescription:
+        "Nhận liên kết công khai. Địa chỉ có thể thay đổi khi bạn khởi động lại.",
+      namedDescription:
+        "Dùng địa chỉ cố định như studio.example.com. Bạn cần một tên miền do Cloudflare quản lý.",
+      quickAutoStart:
+        "Tạo URL truy cập từ xa mới khi Unsloth khởi động. Dừng lúc này không tắt tính năng tự khởi động.",
+      namedAutoStart:
+        "Tự động kết nối tên miền tùy chỉnh khi Unsloth khởi động.",
+      states: {
+        preparing: "Đang chuẩn bị Cloudflare…",
+        awaiting_login:
+          "Ủy quyền kết nối trong trình duyệt. Nếu không có thẻ nào mở ra, hãy dùng liên kết đăng nhập.",
+        configuring: "Đang thiết lập kết nối và định tuyến tên miền…",
+        dns_conflict: "Đang chờ quyết định của bạn về bản ghi DNS hiện có.",
+        ready: "Đã cấu hình. Dùng nút Bắt đầu để kết nối.",
+        removing: "Đang xóa kết nối Cloudflare…",
+        removed: "Đã xóa quyền truy cập qua tên miền tùy chỉnh.",
+        error: "Thiết lập thất bại.",
+      },
+      errors: {
+        hostname:
+          "Nhập tên máy chủ DNS không có giao thức, cổng, đường dẫn, địa chỉ IP hoặc ký tự đại diện.",
+        token: "Nhập token Cloudflare Tunnel hợp lệ.",
+        removeFirst:
+          "Xóa kết nối tên miền đã lưu trước khi thay đổi địa chỉ hoặc phương thức thiết lập.",
+        busy: "Dừng truy cập từ xa và chờ thao tác hiện tại hoàn tất.",
+        login:
+          "Ủy quyền Cloudflare thất bại hoặc đã hết hạn. Hãy ủy quyền lại để tiếp tục.",
+        timeout:
+          "Thao tác đã hết thời gian chờ. Thử lại để tiếp tục quá trình thiết lập đã lưu.",
+        cancelled:
+          "Đã hủy thiết lập. Kết nối đã được tạo trước đó vẫn được giữ lại.",
+        dns:
+          "Định tuyến DNS thất bại. Kiểm tra tên máy chủ và vùng Cloudflare, rồi thử lại.",
+        zone:
+          "Kiểm tra vùng Cloudflare đã chọn và thông tin dọn dẹp DNS trước khi thử lại.",
+        remove: "Không thể xóa kết nối. Hãy thử lại.",
+        stillActive:
+          "Cloudflare vẫn báo kết nối này đang hoạt động. Đợi vài phút rồi thử lại.",
+        statusUnavailable:
+          "Không thể kiểm tra trạng thái kết nối với Cloudflare. Hãy thử lại sau.",
+        credentials:
+          "Không thể đọc thông tin xác thực đã lưu hoặc thông tin không hợp lệ.",
+        generic: "Thao tác thất bại. Kiểm tra kết nối rồi thử lại.",
+      },
+    },
     remoteLan: {
       title: "Từ xa và LAN",
       description:

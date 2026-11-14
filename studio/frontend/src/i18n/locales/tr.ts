@@ -3737,6 +3737,81 @@ export const tr = {
       title: "Bağlantılar",
       description: "Sağlayıcıları ve harici bağlantıları yönetin.",
     },
+    namedTunnel: {
+      mode: "Bağlantı türü",
+      quick: "Geçici bağlantı",
+      named: "Özel alan adı",
+      method: "Kurulum yöntemi",
+      automatic: "Otomatik",
+      existing: "Cloudflare belirteciyle bağlan",
+      hostname: "Alan adı",
+      token: "Cloudflare belirteci",
+      keepToken: "Kayıtlı belirteci korumak için boş bırakın.",
+      originHint:
+        "Cloudflare panelinde bu ana makine adını {origin} adresine yönlendirin. Studio bu yönlendirmeyi değiştirmez.",
+      prepareHint:
+        "Bağlantıyı burada kurun, ardından bağlanmak için Başlat'ı kullanın. Otomatik başlatma değişmez.",
+      remove: "Kaldır",
+      removeTitle: "Özel alan adı erişimi kaldırılsın mı?",
+      removeAuto:
+        "{hostname} için Cloudflare bağlantısı kaldırılsın mı? DNS kaydı Cloudflare hesabınızda kalır ve elle kaldırılmalıdır.",
+      removeToken:
+        "{hostname} için yerel kimlik bilgileri kaldırılsın mı? Cloudflare bağlantınız ve DNS kaydınız hesabınızda kalır.",
+      authorizeAgain: "Yeniden yetkilendir",
+      setup: "Kur",
+      openLogin: "Cloudflare girişini aç",
+      dnsCleanup:
+        "{hostname} DNS kaydı Cloudflare'de kalır. Artık gerekmiyorsa elle kaldırın.",
+      dnsConflictTitle: "DNS kaydı zaten var",
+      dnsConflict:
+        "{hostname} için zaten bir DNS kaydı var. Unsloth'a yönlendiren bir kayıtla değiştirilsin mi? Önceki kayıt geri yüklenmez.",
+      overwrite: "Üzerine yaz",
+      quickDescription:
+        "Herkese açık bir bağlantı alın. Yeniden başlattığınızda adres değişebilir.",
+      namedDescription:
+        "studio.example.com gibi kalıcı bir adres kullanın. Cloudflare tarafından yönetilen bir alan adına ihtiyacınız var.",
+      quickAutoStart:
+        "Unsloth başladığında yeni bir uzak URL oluşturun. Şimdi durdurmak otomatik başlatmayı devre dışı bırakmaz.",
+      namedAutoStart:
+        "Unsloth başladığında özel alan adınızı otomatik olarak bağlayın.",
+      states: {
+        preparing: "Cloudflare hazırlanıyor…",
+        awaiting_login:
+          "Bağlantıyı tarayıcınızda yetkilendirin. Sekme açılmadıysa giriş bağlantısını kullanın.",
+        configuring: "Bağlantınız ve alan adı yönlendirmesi ayarlanıyor…",
+        dns_conflict: "Mevcut DNS kaydıyla ilgili kararınız bekleniyor.",
+        ready: "Yapılandırıldı. Bağlanmak için Başlat'ı kullanın.",
+        removing: "Cloudflare bağlantısı kaldırılıyor…",
+        removed: "Özel alan adı erişimi kaldırıldı.",
+        error: "Kurulum başarısız oldu.",
+      },
+      errors: {
+        hostname:
+          "Şema, bağlantı noktası, yol, IP adresi veya joker karakter içermeyen bir DNS ana makine adı girin.",
+        token: "Geçerli bir Cloudflare Tunnel belirteci girin.",
+        removeFirst:
+          "Adresi veya kurulum yöntemini değiştirmeden önce kayıtlı alan adı bağlantısını kaldırın.",
+        busy: "Uzak erişimi durdurun ve geçerli işlemin bitmesini bekleyin.",
+        login:
+          "Cloudflare yetkilendirmesi başarısız oldu veya süresi doldu. Devam etmek için yeniden yetkilendirin.",
+        timeout:
+          "İşlem zaman aşımına uğradı. Kayıtlı kuruluma devam etmek için yeniden deneyin.",
+        cancelled:
+          "Kurulum iptal edildi. Daha önce oluşturulan bağlantı korundu.",
+        dns:
+          "DNS yönlendirmesi başarısız oldu. Ana makine adını ve Cloudflare bölgesini kontrol edip yeniden deneyin.",
+        zone:
+          "Yeniden denemeden önce seçili Cloudflare bölgesini ve DNS temizliği bilgilerini kontrol edin.",
+        remove: "Bağlantı kaldırılamadı. Yeniden deneyin.",
+        stillActive:
+          "Cloudflare bu bağlantıyı hâlâ etkin olarak bildiriyor. Birkaç dakika bekleyip yeniden deneyin.",
+        statusUnavailable:
+          "Bağlantı durumu Cloudflare üzerinden kontrol edilemedi. Daha sonra yeniden deneyin.",
+        credentials: "Kayıtlı kimlik bilgileri okunamıyor veya geçersiz.",
+        generic:
+          "İşlem başarısız oldu. Bağlantınızı kontrol edip yeniden deneyin.",
+      },
+    },
     remoteLan: {
       title: "Uzak ve LAN",
       description:

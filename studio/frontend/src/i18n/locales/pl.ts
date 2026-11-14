@@ -3784,6 +3784,84 @@ export const pl = {
       title: "Połączenia",
       description: "Zarządzaj dostawcami i połączeniami zewnętrznymi.",
     },
+    namedTunnel: {
+      mode: "Typ połączenia",
+      quick: "Tymczasowy link",
+      named: "Własna domena",
+      method: "Metoda konfiguracji",
+      automatic: "Automatycznie",
+      existing: "Połącz za pomocą tokena Cloudflare",
+      hostname: "Domena",
+      token: "Token Cloudflare",
+      keepToken: "Pozostaw puste, aby zachować zapisany token.",
+      originHint:
+        "W panelu Cloudflare skieruj tę nazwę hosta na {origin}. Studio nie zmienia tej trasy.",
+      prepareHint:
+        "Skonfiguruj tutaj połączenie, a następnie użyj przycisku Uruchom, aby się połączyć. Automatyczne uruchamianie pozostaje bez zmian.",
+      remove: "Usuń",
+      removeTitle: "Usunąć dostęp przez własną domenę?",
+      removeAuto:
+        "Usunąć połączenie Cloudflare dla {hostname}? Rekord DNS pozostanie na Twoim koncie Cloudflare i trzeba go usunąć ręcznie.",
+      removeToken:
+        "Usunąć lokalne dane uwierzytelniające dla {hostname}? Połączenie Cloudflare i rekord DNS pozostaną na Twoim koncie.",
+      authorizeAgain: "Autoryzuj ponownie",
+      setup: "Skonfiguruj",
+      openLogin: "Otwórz logowanie Cloudflare",
+      dnsCleanup:
+        "Rekord DNS {hostname} pozostaje w Cloudflare. Usuń go ręcznie, jeśli nie jest już potrzebny.",
+      dnsConflictTitle: "Rekord DNS już istnieje",
+      dnsConflict:
+        "{hostname} ma już rekord DNS. Zastąpić go trasą do Unsloth? Poprzedni rekord nie zostanie przywrócony.",
+      overwrite: "Nadpisz",
+      quickDescription:
+        "Uzyskaj publiczny link. Adres może się zmienić po ponownym uruchomieniu.",
+      namedDescription:
+        "Użyj stałego adresu, np. studio.example.com. Potrzebujesz domeny zarządzanej przez Cloudflare.",
+      quickAutoStart:
+        "Twórz nowy zdalny adres URL przy uruchamianiu Unsloth. Zatrzymanie teraz nie wyłącza automatycznego uruchamiania.",
+      namedAutoStart:
+        "Automatycznie łącz własną domenę przy uruchamianiu Unsloth.",
+      states: {
+        preparing: "Przygotowywanie Cloudflare…",
+        awaiting_login:
+          "Autoryzuj połączenie w przeglądarce. Jeśli nie otworzyła się żadna karta, użyj linku do logowania.",
+        configuring: "Konfigurowanie połączenia i routingu domeny…",
+        dns_conflict:
+          "Oczekiwanie na Twoją decyzję dotyczącą istniejącego rekordu DNS.",
+        ready: "Skonfigurowano. Użyj przycisku Uruchom, aby się połączyć.",
+        removing: "Usuwanie połączenia Cloudflare…",
+        removed: "Usunięto dostęp przez własną domenę.",
+        error: "Konfiguracja nie powiodła się.",
+      },
+      errors: {
+        hostname:
+          "Wpisz nazwę hosta DNS bez schematu, portu, ścieżki, adresu IP ani symbolu wieloznacznego.",
+        token: "Wpisz prawidłowy token Cloudflare Tunnel.",
+        removeFirst:
+          "Usuń zapisane połączenie domeny przed zmianą adresu lub metody konfiguracji.",
+        busy:
+          "Zatrzymaj dostęp zdalny i poczekaj na zakończenie bieżącej operacji.",
+        login:
+          "Autoryzacja Cloudflare nie powiodła się lub wygasła. Autoryzuj ponownie, aby kontynuować.",
+        timeout:
+          "Przekroczono limit czasu operacji. Spróbuj ponownie, aby kontynuować zapisaną konfigurację.",
+        cancelled:
+          "Anulowano konfigurację. Wcześniej utworzone połączenie zostało zachowane.",
+        dns:
+          "Routing DNS nie powiódł się. Sprawdź nazwę hosta i strefę Cloudflare, a następnie spróbuj ponownie.",
+        zone:
+          "Przed ponowną próbą sprawdź wybraną strefę Cloudflare i informacje dotyczące usunięcia rekordów DNS.",
+        remove: "Nie udało się usunąć połączenia. Spróbuj ponownie.",
+        stillActive:
+          "Cloudflare nadal zgłasza to połączenie jako aktywne. Poczekaj kilka minut i spróbuj ponownie.",
+        statusUnavailable:
+          "Nie udało się sprawdzić stanu połączenia w Cloudflare. Spróbuj ponownie później.",
+        credentials:
+          "Zapisanych danych uwierzytelniających nie można odczytać lub są nieprawidłowe.",
+        generic:
+          "Operacja nie powiodła się. Sprawdź połączenie i spróbuj ponownie.",
+      },
+    },
     remoteLan: {
       title: "Zdalnie i LAN",
       description:

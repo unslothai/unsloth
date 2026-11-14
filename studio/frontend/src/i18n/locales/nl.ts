@@ -3783,6 +3783,83 @@ export const nl = {
       title: "Verbindingen",
       description: "Beheer providers en externe verbindingen.",
     },
+    namedTunnel: {
+      mode: "Verbindingstype",
+      quick: "Tijdelijke link",
+      named: "Eigen domein",
+      method: "Instelmethode",
+      automatic: "Automatisch",
+      existing: "Verbinden met een Cloudflare-token",
+      hostname: "Domein",
+      token: "Cloudflare-token",
+      keepToken: "Laat leeg om het opgeslagen token te behouden.",
+      originHint:
+        "Stuur deze hostnaam in het Cloudflare-dashboard door naar {origin}. Studio wijzigt die route niet.",
+      prepareHint:
+        "Stel de verbinding hier in en gebruik daarna Starten om verbinding te maken. Automatisch starten blijft ongewijzigd.",
+      remove: "Verwijderen",
+      removeTitle: "Toegang via eigen domein verwijderen?",
+      removeAuto:
+        "De Cloudflare-verbinding voor {hostname} verwijderen? Het DNS-record blijft in je Cloudflare-account staan en moet handmatig worden verwijderd.",
+      removeToken:
+        "De lokale inloggegevens voor {hostname} verwijderen? Je Cloudflare-verbinding en DNS-record blijven in je account staan.",
+      authorizeAgain: "Opnieuw autoriseren",
+      setup: "Instellen",
+      openLogin: "Cloudflare-login openen",
+      dnsCleanup:
+        "Het DNS-record {hostname} blijft in Cloudflare staan. Verwijder het handmatig als het niet meer nodig is.",
+      dnsConflictTitle: "DNS-record bestaat al",
+      dnsConflict:
+        "{hostname} heeft al een DNS-record. Vervangen door een route naar Unsloth? Het vorige record wordt niet hersteld.",
+      overwrite: "Overschrijven",
+      quickDescription:
+        "Ontvang een openbare link. Het adres kan veranderen wanneer je opnieuw opstart.",
+      namedDescription:
+        "Gebruik een vast adres zoals studio.example.com. Je hebt een domein nodig dat door Cloudflare wordt beheerd.",
+      quickAutoStart:
+        "Maak een nieuwe externe URL wanneer Unsloth start. Nu stoppen schakelt automatisch starten niet uit.",
+      namedAutoStart:
+        "Verbind je eigen domein automatisch wanneer Unsloth start.",
+      states: {
+        preparing: "Cloudflare voorbereiden…",
+        awaiting_login:
+          "Autoriseer de verbinding in je browser. Gebruik de inloglink als er geen tabblad is geopend.",
+        configuring: "Je verbinding en domeinroutering instellen…",
+        dns_conflict: "Wachten op je beslissing over het bestaande DNS-record.",
+        ready: "Ingesteld. Gebruik Starten om verbinding te maken.",
+        removing: "Cloudflare-verbinding verwijderen…",
+        removed: "Toegang via eigen domein verwijderd.",
+        error: "Instellen mislukt.",
+      },
+      errors: {
+        hostname:
+          "Voer een DNS-hostnaam in zonder schema, poort, pad, IP-adres of jokerteken.",
+        token: "Voer een geldig Cloudflare Tunnel-token in.",
+        removeFirst:
+          "Verwijder de opgeslagen domeinverbinding voordat je het adres of de instelmethode wijzigt.",
+        busy:
+          "Stop externe toegang en wacht tot de huidige bewerking is voltooid.",
+        login:
+          "Cloudflare-autorisatie is mislukt of verlopen. Autoriseer opnieuw om door te gaan.",
+        timeout:
+          "De bewerking duurde te lang. Probeer het opnieuw om de opgeslagen configuratie voort te zetten.",
+        cancelled:
+          "Instellen geannuleerd. Een verbinding die al was aangemaakt, is behouden.",
+        dns:
+          "DNS-routering mislukt. Controleer de hostnaam en Cloudflare-zone en probeer het opnieuw.",
+        zone:
+          "Controleer de geselecteerde Cloudflare-zone en eventuele informatie over het opruimen van DNS-records voordat je het opnieuw probeert.",
+        remove:
+          "De verbinding kon niet worden verwijderd. Probeer het opnieuw.",
+        stillActive:
+          "Cloudflare meldt nog dat deze verbinding actief is. Wacht een paar minuten en probeer het opnieuw.",
+        statusUnavailable:
+          "De verbindingsstatus kon niet bij Cloudflare worden gecontroleerd. Probeer het later opnieuw.",
+        credentials: "De opgeslagen inloggegevens zijn onleesbaar of ongeldig.",
+        generic:
+          "De bewerking is mislukt. Controleer je verbinding en probeer het opnieuw.",
+      },
+    },
     remoteLan: {
       title: "Extern en LAN",
       description:

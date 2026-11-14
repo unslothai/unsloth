@@ -3756,6 +3756,83 @@ export const cs = {
       title: "Připojení",
       description: "Spravujte poskytovatele a externí připojení.",
     },
+    namedTunnel: {
+      mode: "Typ připojení",
+      quick: "Dočasný odkaz",
+      named: "Vlastní doména",
+      method: "Způsob nastavení",
+      automatic: "Automaticky",
+      existing: "Připojit pomocí tokenu Cloudflare",
+      hostname: "Doména",
+      token: "Token Cloudflare",
+      keepToken: "Ponechte prázdné, pokud chcete zachovat uložený token.",
+      originHint:
+        "Na panelu Cloudflare nasměrujte tento název hostitele na {origin}. Studio toto směrování nemění.",
+      prepareHint:
+        "Zde nastavte připojení a poté se připojte tlačítkem Spustit. Automatické spouštění zůstává beze změny.",
+      remove: "Odebrat",
+      removeTitle: "Odebrat přístup přes vlastní doménu?",
+      removeAuto:
+        "Odebrat připojení Cloudflare pro {hostname}? DNS záznam zůstane ve vašem účtu Cloudflare a je nutné ho odebrat ručně.",
+      removeToken:
+        "Odebrat místní přihlašovací údaje pro {hostname}? Připojení Cloudflare a DNS záznam zůstanou ve vašem účtu.",
+      authorizeAgain: "Znovu autorizovat",
+      setup: "Nastavit",
+      openLogin: "Otevřít přihlášení do Cloudflare",
+      dnsCleanup:
+        "DNS záznam {hostname} zůstává v Cloudflare. Pokud ho už nepotřebujete, odeberte ho ručně.",
+      dnsConflictTitle: "DNS záznam již existuje",
+      dnsConflict:
+        "Pro {hostname} již existuje DNS záznam. Nahradit ho směrováním do Unsloth? Původní záznam nebude obnoven.",
+      overwrite: "Přepsat",
+      quickDescription:
+        "Získejte veřejný odkaz. Po restartu se může adresa změnit.",
+      namedDescription:
+        "Používejte stálou adresu, například studio.example.com. Potřebujete doménu spravovanou přes Cloudflare.",
+      quickAutoStart:
+        "Při spuštění Unsloth vytvořit novou vzdálenou URL. Zastavení nyní nevypne automatické spouštění.",
+      namedAutoStart:
+        "Při spuštění Unsloth automaticky připojit vlastní doménu.",
+      states: {
+        preparing: "Příprava Cloudflare…",
+        awaiting_login:
+          "Autorizujte připojení v prohlížeči. Pokud se žádná karta neotevřela, použijte přihlašovací odkaz.",
+        configuring: "Nastavování připojení a směrování domény…",
+        dns_conflict: "Čeká se na vaše rozhodnutí o existujícím DNS záznamu.",
+        ready: "Nastaveno. Připojte se tlačítkem Spustit.",
+        removing: "Odebírání připojení Cloudflare…",
+        removed: "Přístup přes vlastní doménu byl odebrán.",
+        error: "Nastavení se nezdařilo.",
+      },
+      errors: {
+        hostname:
+          "Zadejte DNS název hostitele bez schématu, portu, cesty, IP adresy nebo zástupného znaku.",
+        token: "Zadejte platný token Cloudflare Tunnel.",
+        removeFirst:
+          "Před změnou adresy nebo způsobu nastavení odeberte uložené připojení domény.",
+        busy:
+          "Zastavte vzdálený přístup a počkejte na dokončení probíhající operace.",
+        login:
+          "Autorizace Cloudflare se nezdařila nebo vypršela. Pro pokračování ji proveďte znovu.",
+        timeout:
+          "Operace překročila časový limit. Zkuste to znovu a pokračujte v uloženém nastavení.",
+        cancelled:
+          "Nastavení bylo zrušeno. Již vytvořené připojení bylo zachováno.",
+        dns:
+          "Směrování DNS se nezdařilo. Zkontrolujte název hostitele a zónu Cloudflare a zkuste to znovu.",
+        zone:
+          "Před dalším pokusem zkontrolujte vybranou zónu Cloudflare a případné pokyny k odstranění DNS záznamu.",
+        remove: "Připojení se nepodařilo odebrat. Zkuste to znovu.",
+        stillActive:
+          "Cloudflare stále hlásí připojení jako aktivní. Počkejte několik minut a zkuste to znovu.",
+        statusUnavailable:
+          "Stav připojení se nepodařilo ověřit u Cloudflare. Zkuste to později.",
+        credentials:
+          "Uložené přihlašovací údaje nelze přečíst nebo nejsou platné.",
+        generic:
+          "Operace se nezdařila. Zkontrolujte připojení a zkuste to znovu.",
+      },
+    },
     remoteLan: {
       title: "Vzdálený přístup a LAN",
       description:

@@ -310,6 +310,131 @@ def test_stop_terminates_process():
     t.stop()
 
 
+def test_named_connector_keeps_lease_until_process_exit(monkeypatch):
+    from utils import cloudflare_named_tunnel as named
+
+    releases, popen_calls = [], []
+    bundle = {"hostname": "studio.example.com", "configuration_id": "configuration"}
+    monkeypatch.setattr(
+        named,
+        "prepare_connector",
+        lambda *args: (
+            ["cloudflared", "tunnel", "run"],
+            {"TUNNEL_TOKEN": "private"},
+            lambda: releases.append(True),
+        ),
+    )
+    proc = _FakePopen()
+    monkeypatch.setattr(ct, "_spawn_child", lambda spawn: spawn())
+    monkeypatch.setattr(ct, "_adopt_pid", lambda pid: None)
+    monkeypatch.setattr(ct, "_forget_pid", lambda pid: None)
+    monkeypatch.setattr(
+        ct.subprocess, "Popen", lambda cmd, **kwargs: (popen_calls.append((cmd, kwargs)), proc)[1]
+    )
+    tunnel = ct.CloudflareTunnel(9123, "cloudflared", origin_host = "::1", named_tunnel = bundle)
+    monkeypatch.setattr(tunnel, "_reader", lambda p: None)
+    tunnel.start()
+    assert tunnel.url == "https://studio.example.com"
+    assert popen_calls[0][1]["env"] == {"TUNNEL_TOKEN": "private"}
+    monkeypatch.setattr(proc, "terminate", lambda: (_ for _ in ()).throw(OSError()))
+    assert tunnel.stop() is False
+    assert releases == []
+    proc._alive = False
+    assert tunnel.stop() is True
+    assert releases == [True]
+
+
+def test_named_stop_waits_for_reader_cleanup_before_retry(monkeypatch):
+    module = _load_ct()
+    monkeypatch.setattr(module, "_forget_pid", lambda pid: None)
+    tunnel = module.CloudflareTunnel(
+        8888, "cloudflared", named_tunnel = {"hostname": "studio.example.com"}
+    )
+    proc = _FakePopen()
+    proc._alive = False
+    proc.stdout = io.StringIO("")
+    tunnel._proc = proc
+    cleanup_started, finish_cleanup, stop_started, stopped = (
+        _real_threading.Event() for _ in range(4)
+    )
+    releases, results = [], []
+
+    def cleanup():
+        cleanup_started.set()
+        assert finish_cleanup.wait(3)
+        releases.append(True)
+
+    def stop():
+        stop_started.set()
+        results.append(tunnel.stop())
+        stopped.set()
+
+    tunnel._named_cleanup = cleanup
+    reader = _real_threading.Thread(target = tunnel._reader, args = (proc,))
+    stopper = _real_threading.Thread(target = stop)
+    reader.start()
+    try:
+        assert cleanup_started.wait(1)
+        stopper.start()
+        assert stop_started.wait(1)
+        assert not stopped.wait(0.1), "stop returned while the named tunnel lease was still held"
+    finally:
+        finish_cleanup.set()
+        reader.join(3)
+        if stopper.ident is not None:
+            stopper.join(3)
+    assert not reader.is_alive() and not stopper.is_alive()
+    assert results == [True]
+    assert releases == [True]
+
+
+def test_quick_connector_cannot_inherit_named_tunnel_options(monkeypatch):
+    calls = []
+    monkeypatch.setenv("TUNNEL_TOKEN", "parent-token")
+    monkeypatch.setenv("TUNNEL_FORCE_PROVISIONING_DNS", "true")
+    monkeypatch.setattr(ct, "_spawn_child", lambda spawn: spawn())
+    monkeypatch.setattr(ct, "_adopt_pid", lambda pid: None)
+    monkeypatch.setattr(ct, "_forget_pid", lambda pid: None)
+    monkeypatch.setattr(
+        ct.subprocess, "Popen", lambda cmd, **kwargs: (calls.append(kwargs), _FakePopen())[1]
+    )
+    tunnel = ct.CloudflareTunnel(8888, "cloudflared")
+    monkeypatch.setattr(tunnel, "_reader", lambda proc: None)
+    try:
+        tunnel.start()
+        assert "TUNNEL_TOKEN" not in calls[0]["env"]
+        assert "TUNNEL_FORCE_PROVISIONING_DNS" not in calls[0]["env"]
+    finally:
+        tunnel.stop()
+
+
+@pytest.mark.parametrize(
+    "served_id,expected",
+    [("local-installation", True), ("other-installation", False), (None, False)],
+)
+def test_verify_public_url_named_requires_same_installation(monkeypatch, served_id, expected):
+    import json
+
+    edges = []
+    monkeypatch.setattr(ct, "_verify_through_edge", lambda *args: (edges.append(True), True)[1])
+    _patch_urlopen(
+        monkeypatch,
+        lambda req: _FakeResponse(
+            json.dumps({"service": ct._PUBLIC_PROBE_MARKER, "studio_root_id": served_id}).encode()
+        ),
+    )
+    assert (
+        ct.verify_public_url(
+            "https://studio.example.com",
+            timeout = 0,
+            expected_root_id = "local-installation",
+            named = True,
+        )
+        is expected
+    )
+    assert edges == []
+
+
 def test_runtime_callback_covers_process_start_through_stop(monkeypatch):
     events = []
     starts_admitted = []

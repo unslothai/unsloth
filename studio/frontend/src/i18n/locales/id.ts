@@ -3738,6 +3738,82 @@ export const id = {
       title: "Koneksi",
       description: "Kelola penyedia dan koneksi eksternal.",
     },
+    namedTunnel: {
+      mode: "Jenis koneksi",
+      quick: "Tautan sementara",
+      named: "Domain kustom",
+      method: "Metode penyiapan",
+      automatic: "Otomatis",
+      existing: "Hubungkan dengan token Cloudflare",
+      hostname: "Domain",
+      token: "Token Cloudflare",
+      keepToken: "Biarkan kosong untuk mempertahankan token tersimpan.",
+      originHint:
+        "Di dasbor Cloudflare, arahkan nama host ini ke {origin}. Studio tidak mengubah rute tersebut.",
+      prepareHint:
+        "Siapkan koneksi di sini, lalu gunakan Mulai untuk terhubung. Pengaturan mulai otomatis tidak berubah.",
+      remove: "Hapus",
+      removeTitle: "Hapus akses domain kustom?",
+      removeAuto:
+        "Hapus koneksi Cloudflare untuk {hostname}? Catatan DNS tetap ada di akun Cloudflare Anda dan harus dihapus secara manual.",
+      removeToken:
+        "Hapus kredensial lokal untuk {hostname}? Koneksi Cloudflare dan catatan DNS tetap ada di akun Anda.",
+      authorizeAgain: "Otorisasi ulang",
+      setup: "Siapkan",
+      openLogin: "Buka login Cloudflare",
+      dnsCleanup:
+        "Catatan DNS {hostname} tetap ada di Cloudflare. Hapus secara manual jika tidak diperlukan lagi.",
+      dnsConflictTitle: "Catatan DNS sudah ada",
+      dnsConflict:
+        "{hostname} sudah memiliki catatan DNS. Ganti dengan rute ke Unsloth? Catatan sebelumnya tidak akan dipulihkan.",
+      overwrite: "Timpa",
+      quickDescription:
+        "Dapatkan tautan publik. Alamat dapat berubah saat Anda memulai ulang.",
+      namedDescription:
+        "Gunakan alamat tetap seperti studio.example.com. Anda memerlukan domain yang dikelola Cloudflare.",
+      quickAutoStart:
+        "Buat URL jarak jauh baru saat Unsloth dimulai. Menghentikan sekarang tidak menonaktifkan mulai otomatis.",
+      namedAutoStart:
+        "Hubungkan domain kustom Anda secara otomatis saat Unsloth dimulai.",
+      states: {
+        preparing: "Menyiapkan Cloudflare…",
+        awaiting_login:
+          "Otorisasi koneksi di browser Anda. Jika tidak ada tab yang terbuka, gunakan tautan login.",
+        configuring: "Menyiapkan koneksi dan perutean domain…",
+        dns_conflict: "Menunggu keputusan Anda tentang catatan DNS yang ada.",
+        ready: "Sudah dikonfigurasi. Gunakan Mulai untuk terhubung.",
+        removing: "Menghapus koneksi Cloudflare…",
+        removed: "Akses domain kustom dihapus.",
+        error: "Penyiapan gagal.",
+      },
+      errors: {
+        hostname:
+          "Masukkan nama host DNS tanpa skema, port, jalur, alamat IP, atau karakter pengganti.",
+        token: "Masukkan token Cloudflare Tunnel yang valid.",
+        removeFirst:
+          "Hapus koneksi domain tersimpan sebelum mengubah alamat atau metode penyiapannya.",
+        busy:
+          "Hentikan akses jarak jauh dan tunggu hingga operasi saat ini selesai.",
+        login:
+          "Otorisasi Cloudflare gagal atau kedaluwarsa. Otorisasi ulang untuk melanjutkan.",
+        timeout:
+          "Waktu operasi habis. Coba lagi untuk melanjutkan penyiapan tersimpan.",
+        cancelled:
+          "Penyiapan dibatalkan. Koneksi yang sudah dibuat tetap disimpan.",
+        dns:
+          "Perutean DNS gagal. Periksa nama host dan zona Cloudflare, lalu coba lagi.",
+        zone:
+          "Periksa zona Cloudflare yang dipilih dan informasi pembersihan DNS sebelum mencoba lagi.",
+        remove: "Koneksi tidak dapat dihapus. Coba lagi.",
+        stillActive:
+          "Cloudflare masih melaporkan koneksi ini aktif. Tunggu beberapa menit dan coba lagi.",
+        statusUnavailable:
+          "Status koneksi tidak dapat diperiksa di Cloudflare. Coba lagi nanti.",
+        credentials:
+          "Kredensial tersimpan tidak dapat dibaca atau tidak valid.",
+        generic: "Operasi gagal. Periksa koneksi Anda dan coba lagi.",
+      },
+    },
     remoteLan: {
       title: "Jarak jauh & LAN",
       description:
