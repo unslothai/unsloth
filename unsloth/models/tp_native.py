@@ -590,9 +590,11 @@ def _region(path, module, kind, compiled, text, tp):
     latent = kind == "attention" and _is_latent_mqa(module, text)
     for name, param in module.named_parameters(recurse = False):
         key, style = _style_for(f"{path}.{name}", compiled) if compiled else (None, None)
+        # By heads only when the plan says so, or for a latent-query MQA's own sinks: another attention's direct
+        # parameter has no known layout and stays refused.
         per_head = kind == "attention" and (
             (style is not None and _STYLES.get(style) == COLWISE)
-            or (style is None and name in _HEAD_PARAMS)
+            or (style is None and latent and name in _HEAD_PARAMS)
         )
         if per_head and param.ndim == 1:
             head_params.append(name)  # sizes checked once the head count is known
