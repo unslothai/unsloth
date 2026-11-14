@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import {
   CONNECTIONS_ENABLED_KEY,
+  DISABLED_EXTERNAL_PROVIDERS_KEY,
   EXTERNAL_PROVIDERS_KEY,
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -14,7 +15,7 @@ import {
 
 interface ExternalProvidersState {
   providers: ExternalProviderConfig[];
-  /** Switched off in Settings > Connections: listed there, offered nowhere else. Not persisted; every sync refills it. */
+  /** Switched off in Settings > Connections: listed there, offered nowhere else. Every sync refills it; persisted so the rows' browser-only options outlive a reload. */
   disabledProviders: ExternalProviderConfig[];
   connectionsEnabled: boolean;
   setProviders: (providers: ExternalProviderConfig[]) => void;
@@ -28,13 +29,16 @@ export const providerSavesInFlight = new Set<string>();
 export const useExternalProvidersStore = create<ExternalProvidersState>(
   (set) => ({
     providers: loadExternalProviders(),
-    disabledProviders: [],
+    disabledProviders: loadExternalProviders(DISABLED_EXTERNAL_PROVIDERS_KEY),
     connectionsEnabled: loadConnectionsEnabled(),
     setProviders: (providers) => {
       set({ providers });
       saveExternalProviders(providers);
     },
-    setDisabledProviders: (disabledProviders) => set({ disabledProviders }),
+    setDisabledProviders: (disabledProviders) => {
+      set({ disabledProviders });
+      saveExternalProviders(disabledProviders, DISABLED_EXTERNAL_PROVIDERS_KEY);
+    },
     setConnectionsEnabled: (enabled) => {
       set({ connectionsEnabled: enabled });
       saveConnectionsEnabled(enabled);
@@ -47,6 +51,11 @@ if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === EXTERNAL_PROVIDERS_KEY || event.key === null) {
       useExternalProvidersStore.setState({ providers: loadExternalProviders() });
+    }
+    if (event.key === DISABLED_EXTERNAL_PROVIDERS_KEY || event.key === null) {
+      useExternalProvidersStore.setState({
+        disabledProviders: loadExternalProviders(DISABLED_EXTERNAL_PROVIDERS_KEY),
+      });
     }
     if (event.key === CONNECTIONS_ENABLED_KEY || event.key === null) {
       useExternalProvidersStore.setState({

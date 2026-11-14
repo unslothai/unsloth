@@ -878,10 +878,15 @@ export function saveNewModelCheckAt(providerId: string, at: number): void {
   }
 }
 
-export function loadExternalProviders(): ExternalProviderConfig[] {
+// Switched-off rows, kept so their browser-only options survive a reload while they are off.
+export const DISABLED_EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers_disabled";
+
+export function loadExternalProviders(
+  key: string = EXTERNAL_PROVIDERS_KEY,
+): ExternalProviderConfig[] {
   if (!canUseStorage()) return [];
   try {
-    const raw = localStorage.getItem(EXTERNAL_PROVIDERS_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -927,10 +932,11 @@ function saveRawKeyMap(map: Record<string, string>): void {
 
 export function saveExternalProviders(
   providers: ExternalProviderConfig[],
+  key: string = EXTERNAL_PROVIDERS_KEY,
 ): void {
   if (!canUseStorage()) return;
   try {
-    localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(providers));
+    localStorage.setItem(key, JSON.stringify(providers));
     // Keep unmatched legacy keys until the backend confirms the exact key was stored.
   } catch {
     // ignore

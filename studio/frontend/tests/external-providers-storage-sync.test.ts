@@ -43,3 +43,26 @@ test("turning connections off in another window applies here", () => {
   fireWindowEvent("storage", { key: "unsloth_chat_connections_enabled" });
   assert.equal(useExternalProvidersStore.getState().connectionsEnabled, false);
 });
+
+test("a switched-off connection keeps its browser-only options across a reload", () => {
+  const row = {
+    id: "conn-off",
+    providerType: "openai",
+    name: "Off",
+    baseUrl: "https://api.openai.com/v1",
+    models: ["gpt-x"],
+    maxOutputTokens: 1234,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  useExternalProvidersStore.getState().setDisabledProviders([row]);
+  const saved = store.get("unsloth_chat_external_providers_disabled");
+  assert.equal(saved?.includes('"maxOutputTokens":1234'), true);
+
+  useExternalProvidersStore.setState({ disabledProviders: [] });
+  fireWindowEvent("storage", { key: "unsloth_chat_external_providers_disabled" });
+  assert.deepEqual(
+    useExternalProvidersStore.getState().disabledProviders.map((p) => p.id),
+    ["conn-off"],
+  );
+});
