@@ -8,6 +8,11 @@ import {
   createBargeGate,
   stepBargeGate,
 } from "@/features/chat/voice/barge-gate";
+import {
+  createClipSpeculation,
+  SPECULATE_AFTER_MS,
+  utteranceSpan,
+} from "@/features/chat/voice/clip-speculation";
 import { createHearingHint } from "@/features/chat/voice/hearing-hint";
 import { createHeldEdit } from "@/features/chat/voice/held-edit";
 import { QUICK_CONTINUE_MS } from "@/features/chat/voice/laya-outcomes";
@@ -112,7 +117,8 @@ function disableVad(failedPick: string): void {
 // hallucinates on long leading/trailing silence). Keep a little context.
 const SILENCE_PAD_MS = 200;
 const REVEAL_CHAR_MS = 12;
-const REVEAL_MAX_MS = 1000;
+// The typed-out reveal delays the send: keep it short.
+const REVEAL_MAX_MS = 250;
 // The reveal in progress: what the box will hold once it is done, and whether Enter
 // asked for the rest at once (the box is then a prefix, not a typed turn).
 let reveal: { shown: string; rush: boolean } | null = null;
@@ -375,6 +381,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       },
       cancel: () => {
         teardown();
+        early.clear();
         finish("cancelled");
       },
       onSpeechStart: (cb) => {
@@ -511,23 +518,66 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     };
 
     // Whether the clip holds a voice. null: no detector, decide on loudness as before.
-    const clipHasSpeech = async (
+    const detectClip = async (
       blob: Blob,
-      minSpeechMs: number = VAD_MIN_SPEECH_MS,
-    ): Promise<boolean | null> => {
+      minSpeechMs: number,
+    ): Promise<{ kept: boolean; speech_ms: number } | null> => {
       if (!vadReady || vadDisabled) return null;
       const vadPick = useChatRuntimeStore.getState().selectedVadModelId;
       try {
-        const result = await detectSpeech(blob, vadPick);
-        const kept = result.speech_ms >= minSpeechMs;
-        publishVadDecision(kept);
-        voiceTrace("vad", { kept, speech_ms: result.speech_ms, bargedIn, bargeConfirming });
-        return kept;
+        const { speech_ms } = await detectSpeech(blob, vadPick);
+        return { kept: speech_ms >= minSpeechMs, speech_ms };
       } catch (error) {
         if (error instanceof VadUnavailableError) disableVad(vadPick);
         return null;
       }
     };
+    const publishVad = (vad: { kept: boolean; speech_ms: number } | null): boolean | null => {
+      if (!vad) return null;
+      publishVadDecision(vad.kept);
+      voiceTrace("vad", { ...vad, bargedIn, bargeConfirming });
+      return vad.kept;
+    };
+    const clipHasSpeech = async (blob: Blob, minSpeechMs: number) =>
+      publishVad(await detectClip(blob, minSpeechMs));
+
+    // VAD then STT of the clip; started early while the silence hang runs (same clip, same answer).
+    type ClipAnalysis = {
+      modelId: string | undefined;
+      vad: Promise<{ kept: boolean; speech_ms: number } | null>;
+      text: Promise<string>;
+      cancel(): void;
+    };
+    const padFrames = () => {
+      const frameMs = chunks[0] ? (chunks[0].length / sampleRate) * 1000 : 0;
+      return frameMs > 0 ? Math.ceil(SILENCE_PAD_MS / frameMs) : 0;
+    };
+    const clipKey = (span: { start: number; end: number }) => {
+      const rt = useChatRuntimeStore.getState();
+      const vad = vadReady && !vadDisabled ? rt.selectedVadModelId : "off";
+      return `${span.start}:${span.end}:${rt.selectedSttModelId ?? ""}:${vad}`;
+    };
+    const analyseClip = (span: { start: number; end: number }): ClipAnalysis => {
+      const total = chunks.slice(span.start, span.end + 1).reduce((n, c) => n + c.length, 0);
+      const merged = new Float32Array(total);
+      let offset = 0;
+      for (let i = span.start; i <= span.end; i++) {
+        merged.set(chunks[i], offset);
+        offset += chunks[i].length;
+      }
+      const wav = wavBlob(merged, sampleRate);
+      const modelId = useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
+      const abort = new AbortController();
+      const vad = detectClip(wav, VAD_MIN_SPEECH_MS);
+      const text = vad.then(async (v) =>
+        v?.kept === false
+          ? ""
+          : (await transcribeAudioBlob(wav, { model: modelId, signal: abort.signal })).trim(),
+      );
+      text.catch(() => {});
+      return { modelId, vad, text, cancel: () => abort.abort() };
+    };
+    const early = createClipSpeculation<ClipAnalysis>();
 
     const endWithoutSpeech = () => {
       voiceTrace("session.noSpeech", { bargedIn });
@@ -561,25 +611,16 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         return;
       }
 
-      const frameMs = chunks[0] ? (chunks[0].length / sampleRate) * 1000 : 0;
-      const padFrames = frameMs > 0 ? Math.ceil(SILENCE_PAD_MS / frameMs) : 0;
-      let firstVoiced = chunkVoiced.indexOf(true);
-      const lastVoiced = chunkVoiced.lastIndexOf(true);
-      while (firstVoiced > 0 && chunkNotSilent[firstVoiced - 1]) firstVoiced--;
-      const start = Math.max(0, firstVoiced - padFrames);
-      const end = Math.min(chunks.length - 1, lastVoiced + padFrames);
-      const span = chunks.slice(start, end + 1);
-
-      const total = span.reduce((n, c) => n + c.length, 0);
-      const merged = new Float32Array(total);
-      let offset = 0;
-      for (const c of span) {
-        merged.set(c, offset);
-        offset += c.length;
+      const span = utteranceSpan(chunkVoiced, chunkNotSilent, padFrames());
+      if (!span) {
+        endWithoutSpeech();
+        return;
       }
-      const wav = wavBlob(merged, sampleRate);
-
-      if ((await clipHasSpeech(wav)) === false) {
+      const key = clipKey(span);
+      const ready = early.take(key);
+      const analysis = ready ?? analyseClip(span);
+      voiceTrace("stt.clip", { early: ready !== null });
+      if (publishVad(await analysis.vad) === false) {
         if (ended) return;
         endWithoutSpeech();
         return;
@@ -587,15 +628,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (ended) return;
 
       try {
-        const modelId =
-          useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
+        const modelId = analysis.modelId;
         const store = useChatRuntimeStore.getState();
         store.setVoiceTranscribing(true);
         let transcript = "";
         try {
-          transcript = (
-            await transcribeAudioBlob(wav, { model: modelId })
-          ).trim();
+          transcript = await analysis.text;
           if (ended) return;
         } catch (error) {
           if (error instanceof SttModelNotDownloadedError) {
@@ -982,6 +1020,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
           const sinceVoice = now - lastVoiceAt;
           const elapsed = now - startedAt;
+          if (heardSpeech && !finalizing && voicedMs >= MIN_SPEECH_MS && sinceVoice >= SPECULATE_AFTER_MS) {
+            const span = utteranceSpan(chunkVoiced, chunkNotSilent, padFrames());
+            if (span) early.start(clipKey(span), () => analyseClip(span));
+          }
           if (
             (heardSpeech &&
               sinceVoice >=

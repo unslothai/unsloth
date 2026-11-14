@@ -116,7 +116,10 @@ function voicedApprovalCount(s: ReturnType<typeof useChatRuntimeStore.getState>)
   return pending ? pending.more + 1 : 0;
 }
 
-const VOICE_COALESCE_MS = 650;
+// Each committed turn already ended on a silence hang and the turn judge, so the run starts
+// soon; a turn begun meanwhile shows as hearing and re-checks every VOICE_COALESCE_POLL_MS.
+const VOICE_COALESCE_MS = 250;
+const VOICE_COALESCE_POLL_MS = 250;
 // After a barge-in cut a run that had not answered yet: the user tends to keep
 // going ("can you hear me?" ... "hello?"), and each restart threw the model's
 // thinking away, so the next run waits longer for the rest to stack up.
@@ -127,9 +130,8 @@ const VOICE_HOLD_COALESCE_MS = 6000;
 const VOICE_HEARING_HOLD_MAX_MS = 30000;
 // thread.cancelRun() is asynchronous, so the old run can still read as running
 // when the coalesce window closes. Rather than give up and leave the appended
-// bubbles unanswered, re-check every VOICE_COALESCE_MS up to this many times
-// (~10s) before concluding the run will never settle.
-const VOICE_COALESCE_MAX_RETRIES = 15;
+// bubbles unanswered, re-check every VOICE_COALESCE_POLL_MS for ~10 s.
+const VOICE_COALESCE_MAX_RETRIES = 40;
 // How long to wait for the backend to settle a cancelled run before starting the next.
 const VOICE_RUN_SETTLE_MAX_MS = 6000;
 const VOICE_RUN_SETTLE_POLL_MS = 150;
@@ -479,7 +481,7 @@ export const VoiceEngine: FC = () => {
       const rt = useChatRuntimeStore.getState();
       if ((rt.voiceHearing || rt.voiceTranscribing) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
         voiceTrace("engine.coalesceWaitHearing", {});
-        voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt), VOICE_COALESCE_MS);
+        voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt), VOICE_COALESCE_POLL_MS);
         return;
       }
       const t = auiRef.current.thread();
@@ -488,7 +490,7 @@ export const VoiceEngine: FC = () => {
         if (attempt < VOICE_COALESCE_MAX_RETRIES) {
           voiceCoalesceTimerRef.current = setTimeout(
             () => fireCoalescedRun(attempt + 1),
-            VOICE_COALESCE_MS,
+            VOICE_COALESCE_POLL_MS,
           );
         }
         return;
