@@ -930,3 +930,30 @@ def test_vad_status_and_unload_leave_another_accounts_detector_alone(monkeypatch
     )
     assert alice.post("/api/inference/audio/vad/unload").json() == {"released": True}
     assert calls == [("unload",)]
+
+
+def test_a_detect_that_loads_the_detector_records_its_account(monkeypatch):
+    sidecar, _ = _fake_vad(monkeypatch)
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    monkeypatch.setattr(access, "require_model_access", lambda *a, **k: None)
+
+    def _detect(wav, model):
+        sidecar.loaded_model = model
+        return {"segments": [], "speech_ms": 0, "model": model}
+
+    sidecar.detect = _detect
+    bob = client_for(BOB)
+    assert (
+        bob.post("/api/inference/audio/vad/detect?model=bob/vad-GGUF", content = b"RIFF").status_code
+        == 200
+    )
+    assert bob.get("/api/inference/audio/vad/status").json()["loaded_model"] == "bob/vad-GGUF"
+    # Using a detector that was already resident claims nothing.
+    alice = client_for(ALICE)
+    assert (
+        alice.post(
+            "/api/inference/audio/vad/detect?model=bob/vad-GGUF", content = b"RIFF"
+        ).status_code
+        == 200
+    )
+    assert access._resident_accounts["vad"][0] == BOB.account_id
