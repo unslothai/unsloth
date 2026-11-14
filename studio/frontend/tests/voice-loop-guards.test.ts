@@ -94,7 +94,7 @@ test("the barge-in probe is judged on the shorter bar its clip can meet", () => 
 });
 
 test("a draft typed before speaking leads the spoken turn instead of being cleared", () => {
-  assert.match(engine, /const draft = spoken \? takeTypedDraft\(composer\.getState\(\)\.text\) : "";/);
+  assert.match(engine, /const draft = spoken && !typed \? takeTypedDraft\(composer\.getState\(\)\.text\) : "";/);
   assert.match(engine, /if \(draft\) text = `\$\{draft\} \$\{text\}`;/);
   assert.match(loop, /export function takeTypedDraft\(box: string\): string \{/);
 });

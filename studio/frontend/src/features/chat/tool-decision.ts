@@ -4,7 +4,7 @@
 import { resolveToolConfirmation, ToolApprovalGoneError } from "./api/chat-api";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
-export type ToolDecisionResult = "ok" | "retry" | "gone" | "missing";
+export type ToolDecisionResult = "ok" | "retry" | "gone" | "missing" | "needs_card";
 
 // The pending entry clears only once the backend took the decision, so a failed post stays answerable.
 export async function decideToolCall(
@@ -14,7 +14,9 @@ export async function decideToolCall(
 ): Promise<ToolDecisionResult> {
   const store = useChatRuntimeStore.getState();
   if (!Object.prototype.hasOwnProperty.call(store.toolConfirmations, toolCallId)) return "missing";
-  const { sessionId, approvalId, autoAllowKey } = store.toolConfirmations[toolCallId];
+  const { sessionId, approvalId, autoAllowKey, imageDisclosure } = store.toolConfirmations[toolCallId];
+  // Sharing an image is allowed only on the chat card, which names where it goes and that it may be kept.
+  if (decision === "allow" && imageDisclosure) return "needs_card";
   try {
     if (!(await resolveToolConfirmation(sessionId, approvalId, decision))) return "retry";
   } catch (err) {
