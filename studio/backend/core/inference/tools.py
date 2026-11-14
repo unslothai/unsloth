@@ -7974,7 +7974,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if expect_command:
                 redir = _REDIR_PREFIX_RE.match(token)
             elif (
-                (prefix_pending and not wrapper_value_pending)
+                ((prefix_pending or scan_forward) and not wrapper_value_pending)
                 or command_arg_pending
                 or shell_c_pending
             ):
@@ -8386,25 +8386,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 else:
                     redir_target_pending = _REDIRECTION_RE.match(token).end() == len(token)
             elif current_command == "script" and not script_operand_seen:
-                # util-linux permutes argv, so options after the log file still count.
+                # util-linux permutes argv, so options after the log file still count; on BSD/macOS
+                # (`script [opts] file command ...`) the next word is a command, judged like xargs'.
                 script_operand_seen = True
-            elif current_command == "script":
-                # BSD/macOS `script [opts] file command ...`: the second operand starts the command.
-                current_command = ""
-                script_argv: "list[str]" = []
-                skip_target = False
-                for rest in tokens[_tok_idx:]:
-                    if rest in _SHELL_SEPARATORS or not set(rest) - set(";&|()"):
-                        break
-                    redir = _REDIR_PREFIX_RE.match(rest)
-                    if skip_target or redir:
-                        skip_target = bool(redir) and redir.end() == len(rest)
-                        continue
-                    script_argv.append(rest)
-                if script_argv and (
-                    _depth >= 3 or _terminal_is_high_risk(shlex.join(script_argv), _depth + 1)
-                ):
-                    return True
+                scan_forward = True
             elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
                 # The database name is the whole request; no path is mentioned.
                 return True
