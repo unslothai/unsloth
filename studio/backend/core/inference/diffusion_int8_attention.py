@@ -63,8 +63,7 @@ LOG2E = 1.4426950408889634
 # move no output bit, so they are per card too.
 # long_keys / long: overrides from that many keys on (select_config). A card runs one block per SM, so a call of a
 # few thousand tokens is a handful of blocks per SM and the last round leaves SMs idle: smaller blocks waste less of
-# it (sm80, head dim 128: 4 warps instead of 8 take 2-10% off the kernel up to 4176 tokens; sm89, head dim 64: 13-20%
-# up to 2048), and bigger ones copy each tile for more rows (3-5% on sm80 from 10011 tokens on).
+# it, and bigger ones copy each tile for more rows on long calls.
 # Measured per card; a card missing here keeps native. One bn per head dim, so the output does not depend on the card.
 KERNEL_CONFIGS: dict = {
     (7, 5): {
