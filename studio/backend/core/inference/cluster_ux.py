@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any, List, Optional
 
 _GIB = float(2**30)
 _LIST_HINT = "`unsloth cluster list` shows which workers are ready"
+_LOCAL_NETWORK = "System Settings > Privacy & Security > Local Network"
 
 
 def _state() -> Any:
@@ -128,7 +130,7 @@ def dropped_worker_notice() -> Optional[str]:
         return None
     try:
         from core.inference import cluster_serving
-        dropped = list(cluster_serving.LINK_DROPPED)
+        dropped = dict(cluster_serving.LINK_DROPPED)
     except Exception:
         return None
     if not dropped:
@@ -140,6 +142,12 @@ def dropped_worker_notice() -> Optional[str]:
         return None
     named = _join(missing)
     verb = "was" if len(missing) == 1 else "were"
+    why = " ".join(str(dropped[name] or "") for name in missing).lower()
+    mac = (
+        f" On macOS, allow Local Network access for the app running Unsloth in {_LOCAL_NETWORK}."
+        if sys.platform == "darwin" and ("no route" in why or "errno 65" in why)
+        else ""
+    )
     where = (
         f"split across {_join(_machines(state, plan))} instead"
         if plan is not None and held
@@ -147,7 +155,7 @@ def dropped_worker_notice() -> Optional[str]:
     )
     return (
         f"Paired worker {named} {verb} not reachable, so this model is {where}. "
-        f"Start `unsloth worker` on {named} ({_LIST_HINT}), then reload the model to use it."
+        f"Start `unsloth worker` on {named} ({_LIST_HINT}), then reload the model to use it.{mac}"
     )
 
 
