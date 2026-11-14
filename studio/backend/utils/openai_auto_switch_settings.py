@@ -373,6 +373,7 @@ DRAFTER_MODEL_SPEC_TYPES = DRAFT_N_MAX_SPEC_TYPES | {"auto", "default"}
 SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
 # Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp default and is not stored: an entry holding it would pin what a build may redefine.
 VALID_LOAD_MODES = frozenset({"none", "mmap", "mlock", "mmap+mlock", "dio"})
+_ENGRAM_PRECISION_RE = re.compile(r"[A-Za-z0-9_]{1,32}")
 # Mirrors CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX_MIB in llama_server_args.py.
 CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MIN_MIB = -1
@@ -529,6 +530,13 @@ def normalize_model_override(
     load_mode = _clean_str(payload.get("load_mode"), VALID_LOAD_MODES)
     if load_mode:
         entry["load_mode"] = load_mode
+
+    # A repo's standalone Engram table by precision; absent loads the quant's own table.
+    engram_precision = payload.get("engram_precision")
+    if isinstance(engram_precision, str) and _ENGRAM_PRECISION_RE.fullmatch(
+        engram_precision.strip()
+    ):
+        entry["engram_precision"] = engram_precision.strip()
 
     # 0 and -1 are meaningful (no checkpoints; no cache limit), so these store on "is not None" rather than on truth, unlike the batch sizes above.
     ctx_checkpoints = _bounded_int(
@@ -724,7 +732,13 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:
             kwargs["n_ubatch"] = override["n_ubatch"]
-        for key in ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram"):
+        for key in (
+            "load_mode",
+            "spec_draft_cache_type",
+            "ctx_checkpoints",
+            "cache_ram",
+            "engram_precision",
+        ):
             if override.get(key) is not None:
                 kwargs[key] = override[key]
         if override.get("gpu_memory_mode") is not None:

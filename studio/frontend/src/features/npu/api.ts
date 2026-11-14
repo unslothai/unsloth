@@ -4,11 +4,9 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
+import { npuVersionTag } from "./runtime-versions";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
-
-/** Keep in sync with npu_backend.py's DEFAULT_CONTEXT_LENGTH. */
-export const NPU_DEFAULT_CONTEXT_LENGTH = 8192;
 
 export function isNpuModelId(
   value: string | null | undefined,
@@ -74,12 +72,39 @@ export function npuRowsFor(
   },
 ): NpuModel[] {
   const needle = query.trim().toLowerCase();
-  return (models ?? []).filter(
-    (model) =>
-      (!onDevice || model.downloaded) &&
-      (!needle ||
-        `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
-  );
+  return (models ?? [])
+    .filter(
+      (model) =>
+        (!onDevice || model.downloaded) &&
+        (!needle ||
+          `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
+    )
+    .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
+}
+
+// The AMD NPU launch blog's headline models lead, then the newest ones that fit a Strix laptop
+// NPU, then the backend's order.
+const NPU_RECOMMENDED = [
+  "qwen3.6-moe:35b-a3b",
+  "qwen3.8-mtp:27b",
+  "qwen3.8-dflash2:27b",
+  "qwen3.5:9b",
+  "qwen3.5:4b",
+  "gemma4-it:e4b",
+  "gpt-oss:20b",
+  "lfm3:1.7b",
+  "nemotron3.5-bolt:e4b",
+  "qwen3vl-it:4b",
+  "gemma4-it:e2b",
+  "qwen3.5:2b",
+  "qwen3.5:0.8b",
+  "phi4-mini-it:4b",
+  "llama3.2:3b",
+];
+
+function npuRank(checkpoint: string): number {
+  const rank = NPU_RECOMMENDED.indexOf(checkpoint);
+  return rank === -1 ? NPU_RECOMMENDED.length : rank;
 }
 
 /** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */
@@ -91,7 +116,8 @@ export function npuRuntimeLabel(
     ["FastFlowLM", versions?.fastflowlm],
     ["Lemonade", versions?.lemonade],
   ] as const) {
-    if (version) parts.push(`${name} v${version.replace(/^v/, "")}`);
+    const tag = npuVersionTag(version);
+    if (tag) parts.push(`${name} ${tag}`);
   }
   return parts.length > 0 ? parts.join(" · ") : null;
 }

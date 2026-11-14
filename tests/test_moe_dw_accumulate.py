@@ -608,3 +608,54 @@ def test_side_stream_use_keeps_the_returned_gradient_path(monkeypatch):
         (W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item()
     )
     _fallback_check(W, cfgs, c, lambda: c.backward(W, cfgs))
+
+
+def test_autotune_handles_an_empty_expert(monkeypatch):
+    """The routing cases above pass explicit configs; here the autotuner picks between two M tiles with two
+    starved experts. torch.empty is NaN-filled so a skipped expert tile shows, and a seeded grad checks autotune
+    keeps the returned gradient path (its benchmarks re-run the dW kernel)."""
+    from unsloth.kernels.moe.grouped_gemm.kernels import autotuning as at
+
+    monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1")
+    # Two configs per kernel, not the full grid: compiling and benchmarking each is the cost. X needs no dX.
+    small = dict(BLOCK_M = [64, 128], BLOCK_N = [64], BLOCK_K = [64], num_warps = [4], num_stages = [2])
+    kernels = {
+        gg._autotuned_grouped_gemm_forward_kernel: at.get_forward_configs,
+        gg._autotuned_grouped_gemm_dW_kernel: at.get_dW_kernel_configs,
+        gg._autotuned_grouped_gemm_dW_per_expert_kernel: at.get_dW_kernel_configs,
+    }
+    for kernel, make in kernels.items():
+        monkeypatch.setattr(kernel, "configs", make(**small))
+        monkeypatch.setattr(kernel, "cache", {})
+    monkeypatch.setattr(gg, "_DEVICE_AUTOTUNERS", {})
+    monkeypatch.setattr(gg, "_MODEL_AUTOTUNE_CACHES", {})
+
+    E, N, K, T, topk = 8, 64, 64, 64, 2
+    c = _Case(E, N, K, T, topk, "permute_x", torch.bfloat16, empty = (1, 5), seed = 7)
+    assert int(c.m_sizes[1]) == 0 and int(c.m_sizes[5]) == 0
+    W = _param(E, N, K, torch.bfloat16)
+    empty = torch.empty
+
+    def nan_empty(*args, **kwargs):
+        t = empty(*args, **kwargs)
+        return t.fill_(float("nan")) if t.is_floating_point() else t
+
+    def run():
+        with monkeypatch.context() as m:
+            m.setattr(torch, "empty", nan_empty)
+            gg.grouped_gemm(
+                X = c.X, W = W, m_sizes = c.m_sizes, topk = topk, gather_indices = c.gather,
+                permute_x = True, autotune = True,
+            ).backward(c.G)  # fmt: skip
+
+    W.grad = None
+    run()
+    fresh = W.grad.clone()
+    tuned = [k for k in kernels if gg._autotuner_for(k, c.X.device).cache]
+    assert len(tuned) == 2 and tuned[0] is gg._autotuned_grouped_gemm_forward_kernel
+    g0, _ = _fallback_check(W, None, c, run)
+    for got, start in ((fresh, torch.zeros_like(g0)), (W.grad, g0)):
+        for e in (1, 5):
+            assert torch.equal(got[e], start[e])
+        err = (got.double() - start.double() - c.ref).abs().max()
+        assert err <= 2e-2 * (c.absref.max() + start.double().abs().max()), f"{err:.3e}"

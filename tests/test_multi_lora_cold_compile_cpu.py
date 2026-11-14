@@ -29,6 +29,9 @@ def _load_experts():
         "_grouped_disabled",
         "_warn_once",
         "_is_quantized",
+        "MultiLoraLinear",
+        "_layers",
+        "set_multi_lora_batch",
     }
     tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
     tree.body = [
@@ -102,10 +105,8 @@ def test_cold_fullgraph_does_not_run_grouped_probes(monkeypatch, dtype, probe):
             for A, B in zip(adapter.lora_A, adapter.lora_B):
                 A.fill_(0.01)
                 B.fill_(0.02)
-    batch = ml.MultiLoraBatch.from_adapter_ids(torch.tensor([0, 1, 0, 1]), 2)
-    for adapter in experts.adapters.values():
-        adapter.batch = batch
-    ml._adapter_groups(batch)
+    batch = ml.set_multi_lora_batch(experts, torch.tensor([0, 1, 0, 1]))
+    assert all(adapter.batch is batch for adapter in experts.adapters.values())
     hidden = torch.full((4, 8), 0.1, dtype = dtype, requires_grad = True)
     index = torch.zeros(4, 1, dtype = torch.long)
     weights = torch.ones(4, 1, dtype = dtype, requires_grad = True)

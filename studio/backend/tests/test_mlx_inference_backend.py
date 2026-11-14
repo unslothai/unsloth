@@ -138,6 +138,8 @@ PLAIN_HELPERS = {
     ),
     "_VERIFY_GDN_MAX_ROWS": 16,
     "_FIRST_USE_WORK": [0],
+    # Read by zoo's speculative.py head replay (unsloth_zoo #2474); the stub holds no QSA cache trims.
+    "_QSA_TRIM_HELD": [],
 }
 
 
@@ -152,10 +154,20 @@ def _unless_failed_buffer(error):
     """zoo re-raises a failed Metal command buffer (unsloth_zoo #2333); the stub has none to fail."""
 
 
+def _no_replay(*_args, **_kwargs):
+    """zoo's head-replay and lazy-verify helpers (unsloth_zoo #2474) need Metal and a QSA cache;
+    the stub answers as if no replay can be bound."""
+    return None
+
+
 NEUTRAL_PLAIN_HELPERS = {
     "fused_drafter_ops": _fused_drafter_ops,
     "fused_drafter_layers": _fused_drafter_ops,
     "_unless_failed_buffer": _unless_failed_buffer,
+    "_ast_fingerprint": _no_replay,
+    "_bindings_intact": _no_replay,
+    "_resolved_bindings": _no_replay,
+    "_verify_with_lazy_replay": _no_replay,
 }
 
 
@@ -7927,6 +7939,54 @@ def test_the_context_budget_counts_the_request_in_tokens_the_processor_would_pro
     utils.prepare_inputs = _unpreparable
     assert backend._count_prompt_tokens(prompt, [object(), object()]) == 4
     backend._check_context_budget(prompt, 16, images = [object(), object()])
+
+
+def test_a_count_prices_the_pictures_it_is_given_as_the_processor_expands_them(monkeypatch):
+    _stub_prepare_inputs(monkeypatch)
+    backend, rendered = _vision_backend(), []
+    turn = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "what"}]}]
+
+    def _render(messages, images, **_kwargs):
+        rendered.append(images)
+        return "placeholder describe this picture", None, None
+
+    backend._render_vlm_prompt = _render
+    picture = object()
+
+    assert backend.count_chat_tokens(turn, images = [picture]) == 524
+    assert backend.count_chat_tokens(turn[:0]) == 4
+    assert rendered == [[picture], None]
+
+
+def test_a_count_prices_one_picture_where_the_template_marks_one(monkeypatch):
+    _stub_prepare_inputs(monkeypatch)
+    backend, rendered = _vision_backend(), []
+    turn = {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "what"}]}
+
+    def _render(messages, images, **_kwargs):
+        rendered.append((sum(len(m["content"]) == 2 for m in messages), images))
+        return "placeholder describe this picture", None, None
+
+    backend._render_vlm_prompt = _render
+    old, new = object(), object()
+
+    assert backend.count_chat_tokens([turn, turn], images = [old, new]) == 524
+    assert rendered == [(1, [new])]
+
+
+def test_a_count_through_mlx_lm_prices_the_ids_generation_embeds(monkeypatch):
+    backend = _vision_backend()
+    backend._is_vlm, backend._reads_vision = False, True
+    backend._tokenizer._unsloth_image_processor = "processor"
+    backend._render_text_prompt = lambda *_a, **_k: SimpleNamespace(prompt = "P")
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader._mlx_lm_image_inputs = lambda _tok, processor, images, prompt: {
+        "input_ids": [[0] * (len(prompt) + 300 * len(images) * (processor == "processor"))]
+    }
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    turn = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "what"}]}]
+
+    assert backend.count_chat_tokens(turn, images = [object()]) == 301
 
 
 def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monkeypatch):

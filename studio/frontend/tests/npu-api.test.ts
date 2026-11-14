@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { matchesFormatFilter } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import type * as NpuApi from "../src/features/npu/api.ts";
+import * as runtimeVersions from "../src/features/npu/runtime-versions.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import * as sseJsonEvents from "../src/lib/sse-json-events.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -22,6 +23,7 @@ function client(response: () => Response) {
       },
       "@/lib/format-fastapi-error": formatFastApiError,
       "@/lib/sse-json-events": sseJsonEvents,
+      "./runtime-versions": runtimeVersions,
     },
   );
   return { api, requests };
@@ -157,6 +159,36 @@ test("NPU rows: downloaded ones on device, all of them to browse, by query", () 
   assert.deepEqual(ids(false, " GEMMA "), ["gemma3-4b-FLM"]);
   assert.deepEqual(ids(true, "gemma"), []);
   assert.deepEqual(api.npuRowsFor(null, { onDevice: false, query: "" }), []);
+
+  const backendOrder = [
+    ["d3-edge-FLM", "d3:edge"],
+    ["gemma3-4b-FLM", "gemma3:4b"],
+    ["lfm3-1.7b-FLM", "lfm3:1.7b"],
+    ["qwen3-4b-FLM", "qwen3:4b"],
+    ["qwen3.5-0.8b-FLM", "qwen3.5:0.8b"],
+    ["qwen3.5-4b-FLM", "qwen3.5:4b"],
+    ["qwen3.5-9b-FLM", "qwen3.5:9b"],
+    ["qwen3.6-moe-35b-a3b-FLM", "qwen3.6-moe:35b-a3b"],
+    ["qwen3.8-dflash2-27b-FLM", "qwen3.8-dflash2:27b"],
+    ["qwen3.8-mtp-27b-FLM", "qwen3.8-mtp:27b"],
+  ].map(([id, checkpoint]) => ({ ...model(id, false), checkpoint }));
+  assert.deepEqual(
+    api
+      .npuRowsFor(backendOrder, { onDevice: false, query: "" })
+      .map((m) => m.id),
+    [
+      "qwen3.6-moe-35b-a3b-FLM",
+      "qwen3.8-mtp-27b-FLM",
+      "qwen3.8-dflash2-27b-FLM",
+      "qwen3.5-9b-FLM",
+      "qwen3.5-4b-FLM",
+      "lfm3-1.7b-FLM",
+      "qwen3.5-0.8b-FLM",
+      "d3-edge-FLM",
+      "gemma3-4b-FLM",
+      "qwen3-4b-FLM",
+    ],
+  );
 });
 
 test("an interrupted NPU download says how much it kept", () => {
