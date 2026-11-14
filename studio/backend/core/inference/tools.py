@@ -1056,8 +1056,8 @@ def _quoted_redirection_indexes(
     )
 
 
-def _fd_dup_amp_indexes(text: str, tokens: "list[str]") -> "frozenset[int]":
-    """`&` tokens of a written `>&` / `<&`: shlex splits `2>&1`, but only a contiguous unquoted `>&` duplicates."""
+def _split_redirect_punct_indexes(text: str, tokens: "list[str]") -> "frozenset[int]":
+    """Punctuation tokens shlex split off a contiguous unquoted `>&`, `<&` or `>|` (`2>&1`, `>|log`)."""
     states = _shell_quote_states(text)
     runs: "list[bool]" = []
     i, n = 0, len(text)
@@ -1066,7 +1066,10 @@ def _fd_dup_amp_indexes(text: str, tokens: "list[str]") -> "frozenset[int]":
             j = i
             while j < n and text[j] in ";&|()" and not states[j]:
                 j += 1
-            runs.append(text[i:j] == "&" and i > 0 and text[i - 1] in "<>" and not states[i - 1])
+            prev = text[i - 1] if i and not states[i - 1] else ""
+            runs.append(
+                (text[i:j] == "&" and prev in ("<", ">")) or (text[i:j] == "|" and prev == ">")
+            )
             i = j
         else:
             i += 1
@@ -7861,8 +7864,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         redir_target_pending = (
             False  # a bare `2>` precedes its target, ahead of a pending command string
         )
-        dup_target_pending = False  # the fd / file after a split `>&` belongs to the redirection
-        fd_dup_amps: "frozenset[int] | None" = None
+        dup_target_pending = (
+            False  # the fd / file after a split `>&` / `>|` belongs to the redirection
+        )
+        split_redirect_puncts: "frozenset[int] | None" = None
         pending_quoted_redirs: "frozenset[int] | None" = None
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
@@ -7884,10 +7889,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if dup_target_pending:
                 dup_target_pending = False
                 continue
-            if token == "&" and _tok_idx:
-                if fd_dup_amps is None:
-                    fd_dup_amps = _fd_dup_amp_indexes(text, tokens)
-                if _tok_idx in fd_dup_amps:
+            if token in ("&", "|") and _tok_idx:
+                if split_redirect_puncts is None:
+                    split_redirect_puncts = _split_redirect_punct_indexes(text, tokens)
+                if _tok_idx in split_redirect_puncts:
                     dup_target_pending = True
                     redir_target_pending = False
                     continue
