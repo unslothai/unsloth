@@ -1138,6 +1138,14 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("script -qc 'echo done' session.log; python3 -c 'import json; print(1)'", False),
         ("script -Tdoc/timing.log -qc 'echo done' session.log", False),
         ("script -Tdoc/timing.log -qc 'rm -rf build' session.log", True),
+        ("trap 'status=$?; git clean -fd' EXIT", True),
+        ("script -c 'cleanup=1 rm -rf build' session.log", True),
+        ("bash -c 'x=1; rm -rf build'", True),
+        ("script --log-timing timing.log -qc 'rm -rf build' session.log", True),
+        ("script --comm='rm -rf build' session.log", True),
+        ("script session.log -qc 'rm -rf build'", True),
+        ("trap 'x=1; echo hi' EXIT", False),
+        ("script --log-out out.log -q session.log", False),
     ],
 )
 def test_command_string_run_by_trap_or_script_is_screened(command, high_risk):

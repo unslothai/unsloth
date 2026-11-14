@@ -7326,6 +7326,16 @@ _GIT_GLOBAL_VALUE_FLAGS = frozenset(
 _SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
 # `script` short options taking a value (util-linux -TIOBEom, BSD -t), plus -c's command.
 _SCRIPT_VALUE_LETTERS = "cTIOBEomt"
+_SCRIPT_LONG_VALUE_OPTS = (
+    "--command",
+    "--echo",
+    "--log-in",
+    "--log-io",
+    "--log-out",
+    "--log-timing",
+    "--logging-format",
+    "--output-limit",
+)
 # Command-position substitutions ($(printf rm) -rf build) are unreadable; argument ones are not.
 _COMMAND_SUBST_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
@@ -7826,6 +7836,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_subcommand = ""  # the first positional after `git`
         shell_c_pending = False  # a shell `-c` precedes its inline payload
         command_arg_pending = False  # the next word is a command string run later (trap, script -c)
+        script_operand_seen = False  # `script` already has its log file operand
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
         git_checkout_positionals = 0  # positionals seen after `git checkout`
@@ -7867,6 +7878,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 awk_program_pending = False
                 shell_c_pending = False
                 command_arg_pending = False
+                script_operand_seen = False
                 git_glob_pending = False
                 chdir_pending = False
                 continue
@@ -7977,9 +7989,15 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 # getopt: the first value-taking letter owns the rest of the cluster (-chalt, -Tdoc/c.log).
                 if current_command == "script":
                     letter, payload = "", None
-                    if flag == "--command":
-                        letter, payload = "c", token.split("=", 1)[1] if "=" in token else ""
-                    elif not token.startswith("--"):
+                    if token.startswith("--"):
+                        # getopt_long takes an exact name or a unique prefix (--comm=, --log-t FILE).
+                        longs = [o for o in _SCRIPT_LONG_VALUE_OPTS if o.startswith(flag)]
+                        if len(longs) == 1 or flag in longs:
+                            letter = (
+                                "c" if (flag if flag in longs else longs[0]) == "--command" else "T"
+                            )
+                            payload = token.split("=", 1)[1] if "=" in token else ""
+                    else:
                         for i, ch in enumerate(token[1:]):
                             if ch in _SCRIPT_VALUE_LETTERS:
                                 letter, payload = ch, token[i + 2 :]
@@ -8072,7 +8090,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     if not git_subcommand and "=" not in token and flag in _GIT_GLOBAL_VALUE_FLAGS:
                         git_glob_pending = True
                 continue
-            if _ASSIGNMENT_RE.match(token):
+            # A pending command string may itself start with an assignment (`trap 'rc=$?; rm -rf x' EXIT`).
+            if _ASSIGNMENT_RE.match(token) and not (shell_c_pending or command_arg_pending):
                 _assign_name, _, _assign_value = token.partition("=")
                 # `alias zap='rm -rf'` stores a command bash runs when invoked, like a git alias body.
                 if current_command == "alias" and _assign_value:
@@ -8269,12 +8288,15 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 and not git_submodule_action
             ):
                 git_submodule_action = base
+            elif current_command == "script" and not script_operand_seen:
+                # util-linux permutes argv, so options after the log file still count.
+                script_operand_seen = True
             elif current_command == "script":
-                # BSD/macOS `script [opts] file command ...` runs everything after the log file.
+                # BSD/macOS `script [opts] file command ...`: the second operand starts the command.
                 current_command = ""
                 script_argv: "list[str]" = []
                 skip_target = False
-                for rest in tokens[_tok_idx + 1 :]:
+                for rest in tokens[_tok_idx:]:
                     if rest in _SHELL_SEPARATORS or not set(rest) - set(";&|()"):
                         break
                     redir = _REDIR_PREFIX_RE.match(rest)
