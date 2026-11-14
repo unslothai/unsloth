@@ -7664,7 +7664,8 @@ const ComposerRightControls: FC<{
           change width under the orb. Tap pauses or resumes; a hold cuts whatever
           is in flight (reply, run, held utterances) and goes back to listening.
           Voice mode stays on; the plus-menu Voice item turns it off and unloads. */}
-      {voiceEngaged ? (
+      {/* A research run keeps its own Stop: the voice button cancels only a chat run. */}
+      {voiceEngaged && !isResearchActive ? (
         <VoicePauseStopButton />
       ) : (
       <AuiIf
@@ -7741,7 +7742,7 @@ const ComposerRightControls: FC<{
           )}
         </AuiIf>
       ) : null}
-      {voiceEngaged ? null : isResearchActive ? (
+      {isResearchActive ? (
         <Button
           type="button"
           variant="primary"
@@ -7757,7 +7758,7 @@ const ComposerRightControls: FC<{
             <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
           )}
         </Button>
-      ) : (
+      ) : voiceEngaged ? null : (
         <AuiIf condition={({ thread }) => thread.isRunning}>
           {/* Classed so the narrow-screen rules can treat this like the
               sibling send/stop buttons; it is the flex item, not the button. */}

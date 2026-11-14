@@ -117,6 +117,7 @@ function voicedApprovalCount(s: ReturnType<typeof useChatRuntimeStore.getState>)
   return pending ? pending.more + 1 : 0;
 }
 
+const IGNORE_MAX_WORDS = 3;
 const VOICE_COALESCE_MS = 250;
 const VOICE_COALESCE_POLL_MS = 250;
 // After a barge-in cut an unanswered run the user tends to keep going; each restart threw the thinking away.
@@ -720,13 +721,15 @@ export const VoiceEngine: FC = () => {
     // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
     // on its own, and the two go as one when the reply ends.
     const continuing = queuedUtteranceRef.current.length > 0 && !repeated;
+    // An "ignore" drops the words; past a backchannel's length a wrong one loses a whole correction, so it waits instead.
+    const tooLongToIgnore = text.trim().split(/\s+/).length > IGNORE_MAX_WORDS;
     const awaitingApproval = voicedApprovalCount(useChatRuntimeStore.getState()) > 0;
     const action = interjectUnderApproval(
       sameAsk
         ? "ignore"
         : verdict !== "restart" && repeated
           ? "restart"
-          : continuing && verdict === "ignore"
+          : (continuing || tooLongToIgnore) && verdict === "ignore"
             ? "queue"
             : verdict,
       awaitingApproval,

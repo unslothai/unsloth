@@ -242,3 +242,16 @@ test("a re-arm strips only the voice fragment after a typed draft", () => {
   assert.match(engine, /withoutVoiceText\(fresh\.getState\(\)\.text\);\s*if \(typed !== null\) fresh\.setText\(typed\);/);
   assert.match(loop, /if \(!said \|\| !box\.endsWith\(said\)\) return null;[\s\S]{0,200}if \(before && !\/\\s\$\/\.test\(before\)\) return null;/);
 });
+
+test("a long utterance the interject model would ignore is queued instead", () => {
+  const override = engine.slice(engine.indexOf("function overrideInterject("));
+  assert.match(override.slice(0, 1400), /const tooLongToIgnore = text\.trim\(\)\.split\(\/\\s\+\/\)\.length > IGNORE_MAX_WORDS;/);
+  assert.match(override.slice(0, 1400), /\(continuing \|\| tooLongToIgnore\) && verdict === "ignore"\s*\? "queue"/);
+});
+
+test("a research run keeps its own Stop while voice mode is on", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(thread, /\{voiceEngaged && !isResearchActive \? \(\s*<VoicePauseStopButton \/>/);
+  assert.match(thread, /\{isResearchActive \? \(\s*<Button[\s\S]{0,200}aria-label=\{researchStopping \? "Stopping research" : "Stop research"\}/);
+  assert.match(thread, /\) : voiceEngaged \? null : \(\s*<AuiIf condition=\{\(\{ thread \}\) => thread\.isRunning\}>/);
+});
