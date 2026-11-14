@@ -797,6 +797,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "download_into_install",
         "isolated_terminator",
         "pip_home_env",
+        "isolated_as_log_operand",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -851,6 +852,8 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "upgrade_isolated": f"python -m pip install -q --no-index --no-deps --upgrade --isolated {wheel} && {show}",
         # pip --isolated -- install: the word after a leading -- is still the subcommand.
         "isolated_terminator": f"python -m pip --isolated -- install -q --no-index --no-deps {wheel} && {show}",
+        # pip isolates on the raw word, even when it is --log's operand.
+        "isolated_as_log_operand": f"{_PIP} --log --isolated {wheel} && {show}",
         # PIP_HOME is no pip option (no --home): it chooses nothing.
         "pip_home_env": f"PIP_HOME=elsewhere {_PIP} {wheel} && {show}",
         # A download destination literally named install is no install subcommand to add --prefix to.
@@ -919,6 +922,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "download_into_install": str(workdir / "install"),
         "isolated_terminator": packages,
         "pip_home_env": packages,
+        "isolated_as_log_operand": packages,
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1604,6 +1608,49 @@ def test_the_stdlib_inventory_has_a_fallback_before_python_3_10():
         [sys.executable, "-S", "-c", code], env = env, capture_output = True, text = True
     )
     assert out.stdout.split() == ["True", "True", "True", "False"], out.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
+def test_a_failed_same_version_reinstall_still_retires_on_retry(monkeypatch, tmp_path):
+    """The failing reinstall rewrote RECORD before dying: the retry still drops what only the old build had."""
+    name = "unsloth_retry_same"
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    (workdir / "again").mkdir()
+    first = _wheel(workdir, name, {f"{name}.py": "", f"{name}_gone.py": ""})
+    info = f"{name}-1.0.dist-info"
+    second = "again/" + _wheel(
+        workdir / "again",
+        name,
+        {
+            f"{name}.py": "",
+            f"{info}/entry_points.txt": f"[console_scripts]\n{name}_cli = {name}:main\n",
+            f"{info}/RECORD": f"{name}.py,,\n{info}/RECORD,,\n",
+        },
+    )
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    tools._bash_exec(f"{_PIP} {first}", None, 120, _SESSION, tool_execution_mode = "software")
+    blocker = packages / "bin" / f"{name}_cli" / "x"
+    blocker.mkdir(parents = True)
+    failed = tools._bash_exec(
+        f"{_PIP} --force-reinstall {second}; echo rc=$?",
+        None,
+        120,
+        _SESSION,
+        tool_execution_mode = "software",
+    )
+    assert "rc=0" not in failed, failed
+    blocker.rmdir()
+    blocker.parent.rmdir()
+    out = tools._bash_exec(
+        f"{_PIP} --force-reinstall {second}; echo rc=$?",
+        None,
+        120,
+        _SESSION,
+        tool_execution_mode = "software",
+    )
+    assert "rc=0" in out and not list(packages.rglob(f"{name}_gone.py")), out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")

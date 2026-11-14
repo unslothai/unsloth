@@ -634,7 +634,8 @@ def _route_pip(is_pip = None):
             cli_user = _cli_user()
             options = _pip_options()
             placed = cli_user is True or any(_chooses_location(a) for a in options)
-            isolated = "--isolated" in options
+            # pip's own trigger is the raw word anywhere after the subcommand, even as an operand (--log --isolated).
+            isolated = "--isolated" in options or "--isolated" in sys.argv[1:]
             if not isolated:
                 # --isolated makes pip ignore these, so then they choose nothing.
                 placed = placed or any(os.environ.get(k) for k in ("PIP_TARGET", "PIP_ROOT"))
@@ -1172,12 +1173,45 @@ def _prune_stale_dist_info():
         pass
 
 
+_SAVED = ".unsloth-old-files"
+
+
+def _saved_inventory():
+    # Old file lists of same-version reinstalls that failed after rewriting RECORD: (site dir, dist-info) -> files.
+    saved = {}
+    try:
+        with open(os.path.join(os.environ["PIP_PREFIX"], _SAVED), encoding = "utf-8") as f:
+            for line in f:
+                row = line.rstrip("\n").split("\t")
+                if len(row) == 3:
+                    saved.setdefault((row[0], row[1]), set()).add(row[2])
+    except (KeyError, OSError):
+        pass
+    return saved
+
+
+def _write_saved(saved):
+    path = os.path.join(os.environ["PIP_PREFIX"], _SAVED)
+    try:
+        if not saved:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        with open(path, "w", encoding = "utf-8") as f:
+            f.writelines(
+                f"{e}\t{n}\t{p}\n" for (e, n), files in saved.items() for p in sorted(files)
+            )
+    except OSError:
+        pass
+
+
 def _record_snapshot():
     # What each chat-local distribution's RECORD lists before this pip run: a same-version reinstall (an
     # editable over a wheel) rewrites RECORD in place, so the old file list is gone by the time pip exits.
     snapshot = {}
     try:
         root = os.path.join(os.path.normcase(os.path.abspath(os.environ["PIP_PREFIX"])), "")
+        saved = _saved_inventory()
         for entry in _site_dirs(root):
             try:
                 names = [n for n in os.listdir(entry) if n.endswith(".dist-info")]
@@ -1188,13 +1222,16 @@ def _record_snapshot():
                     stamp = os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns
                 except OSError:
                     continue
-                snapshot[(entry, name)] = (stamp, _recorded_files(entry, name, root, True), root)
+                files = _recorded_files(entry, name, root, True)
+                files = files | saved.get((os.path.abspath(entry), name), set())
+                snapshot[(entry, name)] = (stamp, files, root)
     except Exception:  # noqa: BLE001
         pass
     return snapshot
 
 
 def _retire_rewritten(snapshot, skip = ()):
+    saved = _saved_inventory()
     for (entry, name), (stamp, files, root) in snapshot.items():
         if (entry, name) in skip:
             continue
@@ -1206,6 +1243,12 @@ def _retire_rewritten(snapshot, skip = ()):
         except OSError:
             continue
         _remove_files(files - _claimed(root, ()), entry)
+        saved.pop((os.path.abspath(entry), name), None)
+    # A failed rewrite keeps the pre-run list, so a successful retry still retires what only the old one had.
+    for key in skip:
+        if key in snapshot:
+            saved.setdefault((os.path.abspath(key[0]), key[1]), set()).update(snapshot[key][1])
+    _write_saved(saved)
 
 
 _pip_status = []
