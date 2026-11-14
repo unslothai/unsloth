@@ -790,6 +790,7 @@ _PIP = "python -m pip install -q --no-index --no-deps"
         "no_user",
         "config_user_no_user",
         "empty_env_target",
+        "no_user_abbrev",
     ],
 )
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -836,6 +837,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         f"PIP_TARGET= {_PIP} {wheel} && PYTHONPATH=vendor {show}",
         # --no-user on the command line cancels PIP_USER.
         "no_user": f"PIP_USER=1 {_PIP} --no-user {wheel} && {show}",
+        "no_user_abbrev": f"PIP_USER=1 {_PIP} --no-u {wheel} && {show}",
         # [install] overrides [global], as pip resolves it: user ends up off.
         "config_user_overridden": "printf '[global]\\nuser = true\\n[install]\\nuser = false\\n' > pip.ini && "
         f"PIP_CONFIG_FILE=pip.ini {_PIP} {wheel} && {show}",
@@ -890,6 +892,7 @@ def test_a_pip_install_without_os_isolation_stays_out_of_studio(monkeypatch, tmp
         "isolated_global_config": str(workdir / "vendor"),
         "config_user_overridden": packages,
         "no_user": packages,
+        "no_user_abbrev": packages,
         "config_user_no_user": packages,
         "empty_env_target": str(workdir / "vendor"),
         "flat_then_venv": str(workdir / "venv"),
@@ -1436,6 +1439,9 @@ def test_a_failed_upgrade_keeps_the_old_versions_files(monkeypatch, tmp_path):
     )
     assert "rc=0" not in out, out
     assert list(packages.rglob(f"{name}/old.py")), out
+    # Nor does a later process take the half-written 2.0 for a finished replacement.
+    tools._bash_exec("python -m pip --version", None, 120, _SESSION, tool_execution_mode = "software")
+    assert list(packages.rglob(f"{name}/old.py")), out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix shell commands")
@@ -1454,18 +1460,21 @@ def test_an_editable_mapping_never_replaces_a_stdlib_module(monkeypatch, tmp_pat
     payload.write_text(f"open({str(marker)!r}, 'w').close()\n")
     finder = "__editable___planted_1_0_finder"
     (site_dir / "__editable__.planted-1.0.pth").write_text(f"import {finder}; {finder}.install()\n")
-    (site_dir / f"{finder}.py").write_text(
-        f"MAPPING = {{'shutil': {str(payload)[:-3]!r}}}\nNAMESPACES = {{}}\n"
-    )
+    # msvcrt: a stdlib name absent on Linux, so only setuptools' own finder behind PathFinder could supply it.
+    mapped = {"shutil": str(payload)[:-3], "msvcrt": str(payload)[:-3]}
+    (site_dir / f"{finder}.py").write_text(f"MAPPING = {mapped!r}\nNAMESPACES = {{}}\n")
     for version in ("1.0", "2.0"):
         info = site_dir / f"unsloth_twice-{version}.dist-info"
         info.mkdir()
         (info / "RECORD").write_text(f"{info.name}/RECORD,,\n")
         time.sleep(0.05)
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
-    command = "python -m pip --version; python -c 'import shutil; print(shutil.__file__)'"
+    command = (
+        "python -m pip --version; python -c 'import shutil; print(shutil.__file__)'; "
+        "python -c 'import msvcrt' 2>/dev/null || echo no-msvcrt"
+    )
     out = tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
-    assert "pip" in out and str(payload) not in out, out
+    assert "pip" in out and str(payload) not in out and "no-msvcrt" in out, out
     assert not marker.exists()
 
 

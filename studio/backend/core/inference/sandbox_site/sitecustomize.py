@@ -368,8 +368,8 @@ def _cli_user():
         name = arg.split("=", 1)[0]
         if len(name) >= 6 and "--user".startswith(name):
             chosen = True
-        elif name == "--no-user":
-            chosen = False
+        elif len(name) >= 6 and "--no-user".startswith(name):
+            chosen = False  # pip accepts unambiguous abbreviations (--no-u)
     return chosen
 
 
@@ -610,9 +610,11 @@ def _install_editable_finder(module, mapping, namespaces):
             sysconfig.get_paths()["purelib"], "setuptools", "command", "editable_wheel.py"
         )
         _finder_template.append(_literal(source, {"_FINDER_TEMPLATE"})["_FINDER_TEMPLATE"])
-    code = _finder_template[0].format(
-        name = module, mapping = dict(sorted(mapping.items())), namespaces = namespaces
-    )
+    # The finder registers on its own behind PathFinder: a stdlib name (msvcrt on Linux) is never mapped.
+    stdlib = _stdlib_names()
+    mapping = {k: v for k, v in sorted(mapping.items()) if k.partition(".")[0] not in stdlib}
+    namespaces = {k: v for k, v in namespaces.items() if k.partition(".")[0] not in stdlib}
+    code = _finder_template[0].format(name = module, mapping = mapping, namespaces = namespaces)
     import types
 
     finder_module = types.ModuleType(module)
@@ -846,11 +848,38 @@ def _recorded_files(
     return files
 
 
+_INCOMPLETE = ".unsloth-incomplete"
+_incomplete = []
+
+
+def _failed_installs():
+    # (site dir, dist-info, RECORD mtime) a failed pip run left behind, kept beside the prefix's site dirs.
+    if not _incomplete:
+        found = set()
+        try:
+            with open(os.path.join(os.environ["PIP_PREFIX"], _INCOMPLETE), encoding = "utf-8") as f:
+                for line in f:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) == 3:
+                        found.add(tuple(parts))
+        except (KeyError, OSError):
+            pass
+        _incomplete.append(found)
+    return _incomplete[0]
+
+
 def _finished(entry, dist_info):
     # pip and uv record INSTALLER in the RECORD they write last; a wheel's own RECORD (copied in
     # mid-install) never lists it, so an install that died halfway does not count as a replacement.
+    record = os.path.join(entry, dist_info, "RECORD")
     try:
-        with open(os.path.join(entry, dist_info, "RECORD"), encoding = "utf-8") as f:
+        stamp = str(os.stat(record).st_mtime_ns)
+    except OSError:
+        return False
+    if (os.path.abspath(entry), dist_info, stamp) in _failed_installs():
+        return False  # a wheel that ships INSTALLER itself, from a pip run that failed
+    try:
+        with open(record, encoding = "utf-8") as f:
             return any(line.startswith(f"{dist_info}/INSTALLER,") for line in f)
     except OSError:
         return False
@@ -1034,10 +1063,34 @@ class _PipStatusFinder:
         return spec
 
 
-def _after_pip(action, *args):
-    # Only once pip's main() returned 0: an install that failed halfway leaves the old version's files alone.
-    if _pip_status and all(s == 0 for s in _pip_status):
-        action(*args)
+def _after_pip(snapshot):
+    # Only once pip's main() returned 0: an install that failed halfway leaves the old version's files alone,
+    # and what it wrote is remembered so a later process does not take it for a finished replacement.
+    if not _pip_status:
+        return
+    if all(s == 0 for s in _pip_status):
+        _retire_rewritten(snapshot)
+        _prune_stale_dist_info()
+        return
+    try:
+        prefix = os.environ["PIP_PREFIX"]
+        root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
+        lines = []
+        for entry in _site_dirs(root):
+            for name in os.listdir(entry):
+                if not name.endswith(".dist-info"):
+                    continue
+                try:
+                    stamp = os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns
+                except OSError:
+                    continue
+                if snapshot.get((entry, name), (None,))[0] != stamp:
+                    lines.append(f"{os.path.abspath(entry)}\t{name}\t{stamp}\n")
+        if lines:
+            with open(os.path.join(prefix, _INCOMPLETE), "a", encoding = "utf-8") as f:
+                f.writelines(lines)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 if os.environ.get("PIP_PREFIX"):
@@ -1045,8 +1098,7 @@ if os.environ.get("PIP_PREFIX"):
     _prune_stale_dist_info()
     if _is_pip_launch():
         sys.meta_path.insert(0, _PipStatusFinder())
-        atexit.register(_after_pip, _prune_stale_dist_info)
-        atexit.register(_after_pip, _retire_rewritten, _record_snapshot())
+        atexit.register(_after_pip, _record_snapshot())
     else:
         atexit.register(_prune_stale_dist_info)
 
