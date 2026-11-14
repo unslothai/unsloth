@@ -3,6 +3,8 @@
 
 // Dependency-free so the node test runner loads it directly.
 
+import { encodeWav } from "../adapters/pcm-recorder.ts";
+
 function bytesOf(base64: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -76,19 +78,5 @@ export function joinWavBase64(chunks: readonly string[]): string {
 }
 
 export function pcmWavBase64(samples: Float32Array, sampleRate: number): string {
-  const fmt = new Uint8Array(16);
-  const fv = new DataView(fmt.buffer);
-  fv.setUint16(0, 1, true);
-  fv.setUint16(2, 1, true);
-  fv.setUint32(4, sampleRate, true);
-  fv.setUint32(8, sampleRate * 2, true);
-  fv.setUint16(12, 2, true);
-  fv.setUint16(14, 16, true);
-  const data = new Uint8Array(samples.length * 2);
-  const dv = new DataView(data.buffer);
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i] ?? 0));
-    dv.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-  }
-  return base64Of(wavBytes(fmt, data));
+  return base64Of(encodeWav(samples, sampleRate));
 }
