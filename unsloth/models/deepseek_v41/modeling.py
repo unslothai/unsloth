@@ -562,7 +562,10 @@ class DeepseekV41TopKRouter(nn.Module):
         elif self.score_func == "sigmoid":
             scores = scores.sigmoid()
         else:
-            scores = F.softplus(scores).sqrt()
+            # model.py:819. softplus underflows to exactly 0 for logits <= ~-104 (fp32), where sqrt's backward is
+            # 0 / 0 = NaN even for experts that are not picked. Clamping at the smallest normal changes the forward
+            # by < 1.1e-19 and gives those rows a zero gradient.
+            scores = F.softplus(scores).clamp_min(torch.finfo(torch.float32).tiny).sqrt()
         indices = (scores + self.e_score_correction_bias.float()).topk(self.top_k, dim = -1)[1]
         weights = scores.gather(1, indices)
         if self.norm_topk_prob and self.top_k > 1:
@@ -1187,10 +1190,13 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
-        # The released files use DeepSeek's own key names and per-expert weights; only transformers 5's
-        # core_model_loading can rename + stack them while loading. Older releases would silently skip every
-        # tensor, so refuse instead.
-        if not has_core_model_loading():
+        # The released files use DeepSeek's own key names, per-expert weights and ue8m0 fp8 / fp4 blocks. transformers
+        # 5 with core_model_loading and an FP8 quantizer that knows fp4 experts loads them directly (the conversion
+        # rules registered in __init__.py). Older releases would silently skip every tensor, so the files are
+        # converted once into this layout (convert.py) and loaded from there.
+        from .convert import convert_released_checkpoint, released_needs_conversion
+
+        if released_needs_conversion():
             hub = {
                 k: kwargs[k]
                 for k in ("cache_dir", "token", "revision", "subfolder", "local_files_only")
@@ -1201,10 +1207,18 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
             except Exception:
                 names = None
             if _released_layout(names):
-                raise RuntimeError(
-                    "Unsloth: this DeepSeek-V4.1 checkpoint is in DeepSeek's released layout, which loads on "
-                    "transformers >= 5 only. Upgrade transformers, or load a checkpoint saved by Unsloth."
+                hub.pop("subfolder", None)
+                pretrained_model_name_or_path = convert_released_checkpoint(
+                    pretrained_model_name_or_path, **hub
                 )
+                config = kwargs.get("config")
+                if config is not None and not isinstance(config, (str, os.PathLike)):
+                    for c in (config, getattr(config, "text_config", None)):
+                        if c is not None and getattr(c, "quantization_config", None) is not None:
+                            try:
+                                del c.quantization_config
+                            except AttributeError:
+                                c.quantization_config = None
         model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
         # The engram hashes need the tokenizer's compressed token map; the checkpoint ships the tokenizer.
         target = model[0] if isinstance(model, tuple) else model

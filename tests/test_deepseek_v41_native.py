@@ -223,14 +223,123 @@ def test_save_and_reload_keep_the_logits(tmp_path):
     assert torch.equal(before, after)
 
 
-def test_released_layout_is_refused_without_core_model_loading(tmp_path, monkeypatch):
-    from safetensors.torch import save_file
+_TO_RELEASED = [
+    ("embed_tokens.", "embed."),
+    (".input_layernorm.", ".attn_norm."),
+    (".post_attention_layernorm.", ".ffn_norm."),
+    (".attn_hc.fn", ".hc_attn_fn"),
+    (".attn_hc.base", ".hc_attn_base"),
+    (".attn_hc.scale", ".hc_attn_scale"),
+    (".ffn_hc.fn", ".hc_ffn_fn"),
+    (".ffn_hc.base", ".hc_ffn_base"),
+    (".ffn_hc.scale", ".hc_ffn_scale"),
+    (".self_attn.sinks", ".self_attn.attn_sink"),
+    (".q_a_proj.", ".wq_a."),
+    (".q_a_norm.", ".q_norm."),
+    (".q_b_proj.", ".wq_b."),
+    (".self_attn.kv_proj.", ".self_attn.wkv."),
+    (".compressor.kv_proj.", ".compressor.wkv."),
+    (".compressor.gate_proj.", ".compressor.wgate."),
+    (".compressor.kv_norm.", ".compressor.norm."),
+    (".indexer.k_proj.", ".indexer.wk."),
+    (".o_a_proj.", ".wo_a."),
+    (".o_b_proj.", ".wo_b."),
+    (".gate.e_score_correction_bias_vl", ".gate.bias_vl"),
+    (".gate.e_score_correction_bias", ".gate.bias"),
+    (".shared_experts.gate_proj.", ".shared_experts.w1."),
+    (".shared_experts.down_proj.", ".shared_experts.w2."),
+    (".shared_experts.up_proj.", ".shared_experts.w3."),
+    (".self_attn.", ".attn."),
+    (".mlp.", ".ffn."),
+]
 
-    _tiny_config().save_pretrained(tmp_path)
-    save_file({"embed.weight": torch.zeros(2, 2)}, os.path.join(tmp_path, "model.safetensors"))
-    monkeypatch.setattr(dsv41, "has_core_model_loading", lambda: False)
-    with pytest.raises(RuntimeError, match = "released layout"):
-        dsv41.DeepseekV41ForCausalLM.from_pretrained(tmp_path)
+
+def _released_state_dict(model):
+    """The tiny model under DeepSeek's released names (written from the reference checkpoint, independently of
+    convert.py's table): per-expert w1 / w3 / w2, engram rows under layers.<i>.engram.embed, mtp keys present."""
+    import re
+
+    out = {}
+    for name, t in model.state_dict().items():
+        t = t.detach().clone()
+        if name == "lm_head.weight":
+            out["head.weight"] = t
+            continue
+        name = name[len("model.") :]
+        m = re.match(r"layers\.(\d+)\.mlp\.experts\.(gate_up_proj|down_proj)$", name)
+        if m:
+            layer = m.group(1)
+            for e in range(t.shape[0]):
+                p = f"layers.{layer}.ffn.experts.{e}"
+                if m.group(2) == "down_proj":
+                    out[f"{p}.w2.weight"] = t[e].clone()
+                else:
+                    w1, w3 = t[e].chunk(2, dim = 0)
+                    out[f"{p}.w1.weight"], out[f"{p}.w3.weight"] = w1.clone(), w3.clone()
+            continue
+        for a, b in _TO_RELEASED:
+            name = name.replace(a, b)
+        out[name] = t
+    text = model.config.text_config
+    for layer_id in text.engram_layer_ids:
+        out[f"layers.{layer_id}.engram.embed.weight"] = model.model.engram_tables[
+            str(layer_id)
+        ].frozen_table_store.weight.clone()
+    out["mtp.0.norm.weight"] = torch.ones(
+        text.hidden_size
+    )  # DSpark / MTP head: never built, never loaded
+    return out
+
+
+def test_released_layout_converts_to_the_native_layout_on_any_transformers(tmp_path, monkeypatch):
+    """transformers 4.57 (no core_model_loading) and FP8 quantizers without fp4 experts load the released layout
+    through convert.py; forced here so every transformers version runs it."""
+    from safetensors.torch import save_file
+    from unsloth.models.deepseek_v41 import convert
+
+    model = (
+        _tiny_model().to(torch.bfloat16).float().eval()
+    )  # bf16-exact: the converter stacks experts in bf16
+    src = tmp_path / "released"
+    model.config.save_pretrained(src)
+    released = _released_state_dict(model)
+    for name in released:
+        if not name.startswith("mtp.") and ".experts." not in name and ".engram.embed." not in name:
+            assert convert.native_key(name) is not None
+    save_file(released, os.path.join(src, "model.safetensors"))
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    ids = torch.randint(0, 512, (1, 20))
+    with torch.no_grad():
+        want = model(input_ids = ids).logits
+    loaded = dsv41.DeepseekV41ForCausalLM.from_pretrained(src, dtype = torch.float32).eval()
+    loaded.bind_token_map([i % 97 for i in range(512)])
+    assert not any("mtp" in n for n, _ in loaded.named_parameters())
+    with torch.no_grad():
+        assert torch.equal(loaded(input_ids = ids).logits, want)
+    # converted once, then reused
+    stamp = os.listdir(tmp_path / "converted")
+    dsv41.DeepseekV41ForCausalLM.from_pretrained(src, dtype = torch.float32)
+    assert os.listdir(tmp_path / "converted") == stamp
+
+
+def test_released_fp4_and_fp8_blocks_dequantize_like_the_reference_converter():
+    """inference/convert.py: fp4 e2m1 two per byte, low nibble first; fp8 e4m3 times one scale per 32x32 block."""
+    from unsloth.models.deepseek_v41 import convert
+
+    packed = torch.full((1, 16), 0x21, dtype = torch.uint8).view(
+        torch.int8
+    )  # low nibble 1 (0.5), high 2 (1.0)
+    scale = torch.tensor([[2.0]])
+    got = convert._dequant_fp4(packed, scale)
+    assert got.shape == (1, 32)
+    assert torch.equal(got[0, 0::2].float(), torch.full((16,), 1.0))
+    assert torch.equal(got[0, 1::2].float(), torch.full((16,), 2.0))
+    if hasattr(torch, "float8_e4m3fn"):
+        w = torch.randn(64, 32).to(torch.float8_e4m3fn)
+        s = torch.tensor([[0.5], [4.0]])
+        want = w.float() * torch.repeat_interleave(s, 32, dim = 0)
+        assert torch.equal(convert._dequant_fp8(w, s).float(), want.to(torch.bfloat16).float())
 
 
 def test_packed_position_ids_are_refused():
@@ -410,3 +519,121 @@ def test_attention_runs_with_a_tensor_parallel_shard_of_heads_and_groups():
 def test_pipeline_cut_points_follow_the_group_sources():
     real = DeepseekV41TextConfig()
     assert dsv41.pipeline_safe_cut_points(real) == [0, 1, 2, 8, 14, 20]
+
+
+def test_router_sqrtsoftplus_backward_stays_finite_when_softplus_underflows():
+    """model.py:819 is inference only: softplus(z) is exactly 0 in fp32 for z <= ~-104, and sqrt's backward there
+    is 0 / 0 = NaN for every expert (picked or not). The clamp keeps the gradient finite."""
+    config = _tiny_config().text_config
+    router = dsv41.DeepseekV41TopKRouter(config, 4, 2)
+    with torch.no_grad():
+        router.weight.zero_()
+        router.weight[0, 0] = 1.0
+    x = torch.zeros(3, config.hidden_size)
+    x[:, 0] = -500.0
+    x.requires_grad_(True)
+    raw = torch.nn.functional.softplus(
+        torch.nn.functional.linear(x, router.weight) / router.gate_temp
+    )
+    assert float(raw[0, 0]) == 0.0
+    (g,) = torch.autograd.grad(raw.sqrt().sum(), x)
+    assert not torch.isfinite(g).all()  # the trap is real for a plain sqrt
+    weights, _ = router(x)
+    weights.sum().backward()
+    assert torch.isfinite(x.grad).all() and torch.isfinite(router.weight.grad).all()
+
+
+def test_swiglu_clamp_is_asymmetric_like_the_reference():
+    """model.py:845-850: gate clamped from above only, up clamped to [-limit, limit]."""
+    config = _tiny_config(swiglu_limit = 10.0).text_config
+    experts = dsv41.DeepseekV41Experts(config, 2)
+    gate = torch.tensor([-50.0, 50.0, 3.0])
+    up = torch.tensor([-50.0, 50.0, 3.0])
+    got = experts._apply_gate(torch.cat([gate, up]))
+    silu = torch.nn.functional.silu
+    want = torch.stack(
+        [
+            silu(torch.tensor(-50.0)) * -10.0,
+            silu(torch.tensor(10.0)) * 10.0,
+            silu(torch.tensor(3.0)) * 3.0,
+        ]
+    )
+    assert torch.equal(got, want)
+
+
+def test_eps_1e20_is_added_in_fp32_so_half_precision_zero_rows_stay_finite():
+    """rms_norm_eps / hc_eps / the router denominator use 1e-20, which is 0 in fp16: every one of those sums runs in
+    fp32 first."""
+    torch.manual_seed(0)
+    config = _tiny_config(rms_norm_eps = 1e-20).text_config
+    flushed = torch.zeros(16, dtype = torch.float16) * torch.rsqrt(
+        torch.zeros(16, dtype = torch.float16) + torch.tensor(1e-20, dtype = torch.float16)
+    )
+    assert torch.isnan(flushed).all()  # what an fp16 sum would do
+    norm = dsv41.DeepseekV41RMSNorm(16, 1e-20).half()
+    x = torch.zeros(2, 16, dtype = torch.float16)
+    assert torch.equal(norm(x), x)
+    # the exact derivative at a zero row is rsqrt(1e-20) = 1e10 (the reference eps): finite in fp32 / bf16
+    x32 = torch.zeros(2, 16, requires_grad = True)
+    dsv41.DeepseekV41RMSNorm(16, 1e-20)(x32).sum().backward()
+    assert torch.isfinite(x32.grad).all()
+    hc = dsv41.DeepseekV41HyperConnection(config)
+    pre, post, comb = hc(torch.zeros(1, 3, config.hc_mult, config.hidden_size, dtype = torch.float16))
+    assert all(torch.isfinite(t).all() for t in (pre, post, comb))
+    router = dsv41.DeepseekV41TopKRouter(config, 4, 2).half()
+    weights, _ = router(torch.zeros(3, config.hidden_size, dtype = torch.float16))
+    assert torch.isfinite(weights).all()
+
+
+def test_loss_function_receives_num_items_in_batch():
+    """Gradient accumulation passes num_items_in_batch; dropping it rescales the loss per micro-batch."""
+    model = _tiny_model()
+    seen = {}
+
+    def loss_function(logits, labels, vocab_size, **kwargs):
+        seen.update(kwargs)
+        return logits.float().mean()
+
+    model.loss_function = loss_function
+    ids = torch.randint(0, 512, (1, 8))
+    model(input_ids = ids, labels = ids, num_items_in_batch = torch.tensor(7))
+    assert int(seen["num_items_in_batch"]) == 7
+
+
+def test_a_callers_cache_is_left_alone():
+    """No KV cache: a cache handed in is neither filled nor replaced, and none is returned."""
+    cache_utils = pytest.importorskip("transformers.cache_utils")
+    try:
+        cache = cache_utils.DynamicCache()
+    except TypeError:
+        pytest.skip("DynamicCache needs a config on this transformers")
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 8))
+    with torch.no_grad():
+        out = model(input_ids = ids, past_key_values = cache, use_cache = True)
+    assert out.past_key_values is None
+    assert cache.get_seq_length() == 0
+
+
+def test_each_layer_reads_only_its_own_source_compressed_kv(monkeypatch):
+    """Without a cache every compressing layer attends to the window plus the seqlen // ratio latents of its group's
+    source layer (model.py:740-760), never a concatenation over several source layers."""
+    model = _tiny_model().eval()
+    calls = []
+    real = dsv41.sparse_attn
+
+    def spy(q, kv, sink, idxs, scale):
+        calls.append(kv)
+        return real(q, kv, sink, idxs, scale)
+
+    monkeypatch.setattr(dsv41, "sparse_attn", spy)
+    seqlen = 12
+    with torch.no_grad():
+        model(input_ids = torch.randint(0, 512, (1, seqlen)), use_cache = False)
+    ratios = model.config.text_config.compress_ratios[: model.config.text_config.num_hidden_layers]
+    assert len(calls) == len(ratios)
+    for kv, ratio in zip(calls, ratios):
+        assert kv.shape[1] == seqlen + (seqlen // ratio if ratio else 0)
+    # layers 2, 3 share source 2's latents; layers 4, 5 share source 4's
+    assert torch.equal(calls[2][:, seqlen:], calls[3][:, seqlen:])
+    assert torch.equal(calls[4][:, seqlen:], calls[5][:, seqlen:])
