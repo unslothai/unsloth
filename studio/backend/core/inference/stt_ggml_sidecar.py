@@ -1090,7 +1090,6 @@ class GgmlSttSidecar:
         language: Optional[str] = None,
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
-        prompt: Optional[str] = None,
     ) -> dict:
         """Accepts any container PyAV decodes, under the same validation and caps as the
         Transformers sidecar."""
@@ -1117,9 +1116,7 @@ class GgmlSttSidecar:
                     self.load(model_id)
                 else:
                     self.load(model_id, request_cancel_event = cancel_event)
-                text = self._post_inference(
-                    wav_bytes, lang, fast, cancel_event, prompt = (prompt or "").strip() or None
-                )
+                text = self._post_inference(wav_bytes, lang, fast, cancel_event)
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
             except Exception:
@@ -1147,7 +1144,6 @@ class GgmlSttSidecar:
         lang: Optional[str],
         fast: bool,
         cancel_event: Optional[threading.Event] = None,
-        prompt: Optional[str] = None,
     ) -> str:
         boundary = uuid.uuid4().hex
         fields = {
@@ -1157,8 +1153,6 @@ class GgmlSttSidecar:
             "beam_size": "1" if fast else "5",
             "language": lang or "auto",
         }
-        if prompt:
-            fields["prompt"] = prompt
         parts: list[bytes] = []
         for name, value in fields.items():
             parts.append(

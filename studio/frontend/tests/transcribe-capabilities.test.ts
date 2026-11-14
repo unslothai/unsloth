@@ -259,10 +259,10 @@ test("the source hint names how long this model's audio can run", () => {
 
 test("speaker accent: sent only to a model that takes the hint, tidied", () => {
   const prefs = { ...off, speakerAccent: "  Chinese-accented\n  English " };
-  const whisper = switches({ engine: "transformers", accent_hint: true }, prefs);
-  assert.equal(whisper.accent.disabled, false);
-  assert.match(whisper.accent.hint, /stays in the spoken language/);
-  assert.equal(whisper.request.speakerAccent, "Chinese-accented English");
+  const qwen = switches({ engine: "mtmd", accent_hint: true }, prefs);
+  assert.equal(qwen.accent.disabled, false);
+  assert.match(qwen.accent.hint, /stays in the spoken language/);
+  assert.equal(qwen.request.speakerAccent, "Chinese-accented English");
   assert.equal(
     switches({ accent_hint: true }, { ...off, speakerAccent: "x".repeat(300) })
       .request.speakerAccent.length,
@@ -286,7 +286,7 @@ test("speaker accent: a model without the hint says so and sends nothing", () =>
 });
 
 test("speaker accent: a connection passes it on as the transcription prompt", () => {
-  for (const model of ["whisper-1", "gpt-4o-transcribe"]) {
+  for (const model of ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"]) {
     const result = connectionTranscribeSwitches(
       { timestamps: false, speakerAccent: "Indian English" },
       model,
@@ -296,11 +296,13 @@ test("speaker accent: a connection passes it on as the transcription prompt", ()
   }
 });
 
-test("speaker accent: a diarizing connection model takes no prompt", () => {
-  const result = connectionTranscribeSwitches(
-    { timestamps: false, speakerAccent: "Indian English" },
-    "gpt-4o-transcribe-diarize",
-  );
-  assert.equal(result.accent.disabled, true);
-  assert.equal(result.request.speakerAccent, "");
+test("speaker accent: Whisper and diarizing connection models take no prompt", () => {
+  for (const model of ["gpt-4o-transcribe-diarize", "whisper-1", "Systran/faster-whisper-small"]) {
+    const result = connectionTranscribeSwitches(
+      { timestamps: false, speakerAccent: "Indian English" },
+      model,
+    );
+    assert.equal(result.accent.disabled, true);
+    assert.equal(result.request.speakerAccent, "");
+  }
 });

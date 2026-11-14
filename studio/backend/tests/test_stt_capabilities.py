@@ -91,8 +91,7 @@ def test_other_engines_and_unknown_models_are_plain_text(
         "family": None,
         "timestamps": "unsupported",
         "speakers": False,
-        # Whisper's prompt and Qwen3-ASR's context carry it; audio.cpp takes no text hint.
-        "accent_hint": expected_engine in ("transformers", "gguf", "mtmd"),
+        "accent_hint": expected_engine == "mtmd",
         "aligner": None,
         "cpu_only": False,
         "max_seconds": 4 * 3600 if expected_engine == "audiocpp" else 30 * 60,
@@ -127,15 +126,6 @@ def test_a_failing_lookup_still_answers(hub, monkeypatch):
     monkeypatch.setattr(acm, "family_from_names", broken)
     result = caps.capabilities_for(f"{REPO}/MOSS-Transcribe-Diarize-GGUF", "audiocpp")
     assert result["timestamps"] == "unsupported" and result["speakers"] is False
-
-
-def test_an_mlx_audio_checkpoint_takes_no_accent_hint(monkeypatch):
-    from core.inference import stt_sidecar
-
-    # On Apple Silicon a Qwen3-ASR checkpoint runs through mlx-audio, which has no prompt input.
-    monkeypatch.setattr(stt_sidecar, "runs_whisper", lambda model: model != "mlx/Qwen3-ASR")
-    assert caps.capabilities_for("mlx/Qwen3-ASR", "transformers")["accent_hint"] is False
-    assert caps.capabilities_for("openai/whisper-small", "transformers")["accent_hint"] is True
 
 
 def test_speakers_are_labelled_in_the_order_they_first_speak():

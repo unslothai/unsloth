@@ -112,11 +112,6 @@ def transcribe_window(
 
     segment = np.frombuffer(pcm, dtype = np.float32)
     kwargs = dict(generate_kwargs)
-    prompt = kwargs.pop("prompt", None)
-    if prompt:
-        kwargs["prompt_ids"] = processor.get_prompt_ids(prompt, return_tensors = "pt").to(
-            model.device
-        )
     return_timestamps = bool(kwargs.get("return_timestamps"))
     if return_timestamps:
         kwargs["force_unique_generate_call"] = True
@@ -144,10 +139,6 @@ def transcribe_window(
         row = generated[0]
         # One host copy: iterating an accelerator tensor syncs once per token.
         raw_tokens = row.tolist() if hasattr(row, "tolist") else [int(token) for token in row]
-        start = getattr(model.generation_config, "decoder_start_token_id", None)
-        if prompt and start in raw_tokens:
-            # The single-call path returns the prompt ahead of <|startoftranscript|>; keep it out.
-            raw_tokens = raw_tokens[raw_tokens.index(start) :]
         indices, end = _complete_segment_indices(raw_tokens, model.generation_config)
         if end:
             consumed = end * _TARGET_SAMPLE_RATE // _TIMESTAMPS_PER_SECOND

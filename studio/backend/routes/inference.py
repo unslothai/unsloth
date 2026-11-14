@@ -26287,9 +26287,7 @@ async def _transcribe_audio_result(
         functools.partial(sidecar.transcribe, task = "translate") if translate else sidecar.transcribe
     )
     if serving_engine == "mtmd":
-        transcribe = functools.partial(transcribe, context_length = context_length)
-    if prompt and serving_engine != "audiocpp":
-        transcribe = functools.partial(transcribe, prompt = prompt)
+        transcribe = functools.partial(transcribe, context_length = context_length, prompt = prompt)
     cancel_event = threading.Event() if request is not None or on_progress is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
@@ -26552,8 +26550,8 @@ def _source_transcript(result: dict, source, speakers: bool) -> dict:
 def _accent_refused() -> HTTPException:
     return HTTPException(
         status_code = 422,
-        detail = "This model cannot take a speaker accent hint. Clear it, or pick Whisper, "
-        "Qwen3-ASR (llama.cpp) or a connection.",
+        detail = "This model cannot take a speaker accent hint. Clear it, or pick Qwen3-ASR "
+        "(llama.cpp) or a connection to a non-Whisper transcription model.",
     )
 
 

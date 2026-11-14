@@ -382,11 +382,7 @@ def test_a_connection_refuses_a_source_past_its_cap_before_upload(stub, connecti
     assert connection == [] and not (stub.loads or stub.bytes)
 
 
-@pytest.mark.parametrize(
-    "model,engine",
-    [("small", "transformers"), ("small", "gguf"), ("qwen3-asr-0.6b", "mtmd")],
-)
-def test_a_speaker_accent_reaches_an_engine_that_takes_a_prompt(stub, monkeypatch, model, engine):
+def test_a_speaker_accent_reaches_qwen3_asr_on_llama_cpp(stub, monkeypatch):
     calls = []
     original = stub.transcribe
 
@@ -399,8 +395,8 @@ def test_a_speaker_accent_reaches_an_engine_that_takes_a_prompt(stub, monkeypatc
     with _client(ALICE) as client:
         response, events = _post(
             client,
-            model = model,
-            engine = engine,
+            model = "qwen3-asr-0.6b",
+            engine = "mtmd",
             source = source,
             language = "en",
             speaker_accent = "  Chinese-accented\n English ",
@@ -418,18 +414,24 @@ def test_no_accent_sends_no_prompt(stub, monkeypatch):
     with _client(ALICE) as client:
         response, _ = _post(
             client,
-            model = "small",
-            engine = "transformers",
+            model = "qwen3-asr-0.6b",
+            engine = "mtmd",
             source = {"input_id": _input(ALICE)},
             speaker_accent = "   ",
         )
     assert response.status_code == 200, response.text
-    assert "prompt" not in calls[0]
+    assert calls[0]["prompt"] is None
 
 
-@pytest.mark.parametrize("model", [MOSS, QWEN3])
-def test_an_accent_for_a_model_that_cannot_take_it_is_422_not_ignored(stub, model):
-    body = {"model": model, "source": {"input_id": _input(ALICE)}}
+@pytest.mark.parametrize(
+    "model,engine", [(MOSS, None), (QWEN3, None), ("small", "transformers"), ("small", "gguf")]
+)
+def test_an_accent_for_a_model_that_cannot_take_it_is_422_not_ignored(stub, model, engine):
+    body = {
+        "model": model,
+        "source": {"input_id": _input(ALICE)},
+        **({"engine": engine} if engine else {}),
+    }
     with _client(ALICE) as client:
         response, _ = _post(client, **body, speaker_accent = "Indian English")
     assert response.status_code == 422
@@ -471,12 +473,13 @@ def test_a_connection_without_an_accent_gets_no_prompt(stub, connection):
     assert "prompt" not in call["data"]
 
 
-def test_an_accent_for_a_diarizing_connection_model_is_422(stub, connection):
+@pytest.mark.parametrize("model", ["gpt-4o-transcribe-diarize", "whisper-1"])
+def test_an_accent_for_a_whisper_or_diarizing_connection_model_is_422(stub, connection, model):
     with _client(ALICE) as client:
         response, _ = _post(
             client,
             provider_id = "conn-1",
-            model = "gpt-4o-transcribe-diarize",
+            model = model,
             source = {"input_id": _input(ALICE)},
             speaker_accent = "Japanese-accented English",
         )

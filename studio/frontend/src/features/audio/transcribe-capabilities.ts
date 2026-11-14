@@ -48,7 +48,7 @@ const ACCENT_HINT =
   "Describe how the speaker sounds. The transcript stays in the spoken language, and the hint may not always help.";
 
 const ACCENT_UNSUPPORTED =
-  "This model cannot use an accent hint, so none is sent. Whisper, Qwen3-ASR (llama.cpp) and connections can use one.";
+  "This model cannot use an accent hint, so none is sent. Qwen3-ASR (llama.cpp) and non-Whisper connections can use one.";
 
 function accentFor(
   supported: boolean,
@@ -159,9 +159,9 @@ export function connectionTranscribeSwitches(
   model: string,
 ): TranscribeSwitches {
   const untimed = OPENAI_UNTIMED_MODEL.test(model);
-  // OpenAI: "prompt ... is not supported when using gpt-4o-transcribe-diarize".
+  // Mirrors connection_takes_accent_hint in stt_capabilities.py.
   const { accent, speakerAccent } = accentFor(
-    !/diarize/i.test(model),
+    !/diarize|whisper/i.test(model),
     prefs.speakerAccent ?? "",
   );
   return {

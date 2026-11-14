@@ -138,7 +138,6 @@ class _RoutedHandler(http.server.BaseHTTPRequestHandler):
 
     route = "/" + "ab" * 16
     posts: list = []
-    bodies: list = []
 
     def do_GET(self):
         if self.path != f"{self.route}/":
@@ -152,7 +151,7 @@ class _RoutedHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
-        type(self).bodies.append(self.rfile.read(length))
+        self.rfile.read(length)
         if self.path != f"{self.route}/inference":
             self.send_error(404)
             return
@@ -206,22 +205,3 @@ def test_probe_and_inference_use_the_route(monkeypatch, routed_server):
     monkeypatch.setattr(sidecar, "load", unrouted_load)
     with pytest.raises(ggml_module.SttEngineUnavailableError, match = "HTTP 404"):
         sidecar.transcribe(b"RIFF", model = "small")
-
-
-def test_a_prompt_goes_to_whisper_server_as_its_prompt_field(monkeypatch, routed_server):
-    sidecar = GgmlSttSidecar()
-
-    def fake_load(model = None, request_cancel_event = None):
-        sidecar._port = routed_server
-        sidecar._route = _RoutedHandler.route
-        sidecar._model_id = ggml_module.resolve_ggml_model_id(model)
-
-    monkeypatch.setattr(sidecar, "load", fake_load)
-    try:
-        sidecar.transcribe(b"RIFF", model = "small", prompt = " Speaker accent: Indian English. ")
-        field = b'name="prompt"\r\n\r\nSpeaker accent: Indian English.\r\n'
-        assert field in _RoutedHandler.bodies[-1]
-        sidecar.transcribe(b"RIFF", model = "small")
-        assert b'name="prompt"' not in _RoutedHandler.bodies[-1]
-    finally:
-        sidecar.unload()
