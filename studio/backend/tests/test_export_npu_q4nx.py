@@ -133,11 +133,61 @@ def test_without_the_flag_nothing_is_converted(monkeypatch, tmp_path):
     assert not (save_dir / "npu-q4nx").exists()
 
 
-def test_source_follows_the_selection_order(monkeypatch, tmp_path):
+def _real_gguf(
+    path: Path,
+    architecture: str,
+    vocab: int = 0,
+    template = None,
+) -> str:
+    import gguf
+
+    path.parent.mkdir(parents = True, exist_ok = True)
+    writer = gguf.GGUFWriter(str(path), architecture)
+    if vocab:
+        writer.add_token_list([f"t{i}" for i in range(vocab)])
+        writer.add_token_scores([0.0] * vocab)
+    if template is not None:
+        writer.add_chat_template(template)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "architecture, expected",
+    [("llama", "Q4_0"), ("qwen3", "Q4_0"), ("qwen35", "Q4_K_M"), ("qwen35moe", "Q4_K_M")],
+)
+def test_source_prefers_a_quant_the_converter_packs_directly(
+    monkeypatch, tmp_path, architecture, expected
+):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
-    ggufs = ["/x/M.Q4_0.gguf", "/x/M.Q4_K_M.gguf", "/x/M.Q8_0.gguf"]
-    assert export_mod.q4nx.source_gguf(ggufs, ["q8_0", "q4_k_m", "q4_0"]) == "/x/M.Q4_K_M.gguf"
+    ggufs = [_real_gguf(tmp_path / f"M.{q}.gguf", architecture) for q in ("Q4_0", "Q4_K_M", "Q8_0")]
+    chosen = export_mod.q4nx.source_gguf(ggufs, ["q8_0", "q4_k_m", "q4_0"])
+    assert chosen == str(tmp_path / f"M.{expected}.gguf")
     assert export_mod.q4nx.source_gguf(ggufs, ["q8_0"]) is None
+
+
+def test_source_falls_back_to_a_requantized_q4_k_m(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    ggufs = [_real_gguf(tmp_path / f"M.{q}.gguf", "llama") for q in ("Q4_K_M", "Q8_0")]
+    assert export_mod.q4nx.source_gguf(ggufs, ["q8_0", "q4_k_m"]) == ggufs[0]
+
+
+def test_header_reads_skip_the_vocab_without_gguf_reader(monkeypatch, tmp_path):
+    import gguf
+
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    path = _real_gguf(tmp_path / "M.Q4_0.gguf", "qwen35", vocab = 5000, template = "{{ chat }}")
+
+    def _no_full_parse(*_a, **_k):
+        raise AssertionError("GGUFReader parses every vocab array")
+
+    monkeypatch.setattr(gguf, "GGUFReader", _no_full_parse)
+    assert export_mod.q4nx._gguf_architecture(path) == "qwen35"
+    assert export_mod.q4nx._gguf_chat_template(Path(path)) == "{{ chat }}"
+    assert export_mod.q4nx._gguf_architecture(str(tmp_path / "missing.gguf")) == ""
 
 
 def _stub_installer(

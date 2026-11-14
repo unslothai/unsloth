@@ -21,8 +21,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# GGUF types FastFlowLM's Q4NX packs directly; any other quant is dequantized and rounded again.
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
+# What each pinned converter packs as is; anything else is dequantized and rounded again.
+DIRECT_QUANTS = {"q4nx": ("q4_0", "q4_1"), "q4k": SOURCE_QUANTS}
 # Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
 # No config.json is written: without FLM's flm_version, FLM deletes the weights and re-pulls.
@@ -40,14 +41,19 @@ def _installer():
 
 
 def source_gguf(ggufs: List[str], quant_methods: List[str]) -> Optional[str]:
-    """The exported GGUF to convert: the first selected quant Q4NX packs directly."""
-    for quant in quant_methods:
-        if quant not in SOURCE_QUANTS:
-            continue
-        for path in ggufs:
-            if os.path.basename(path).lower().endswith(f".{quant}.gguf"):
-                return path
-    return None
+    """The first selected source quant the architecture's converter packs as is, else the first one."""
+    candidates = [
+        (quant, path)
+        for quant in quant_methods
+        if quant in SOURCE_QUANTS
+        for path in ggufs
+        if os.path.basename(path).lower().endswith(f".{quant}.gguf")
+    ]
+    if not candidates:
+        return None
+    converter = _installer().converter_for_architecture(_gguf_architecture(candidates[0][1]))
+    direct = DIRECT_QUANTS[converter]
+    return next((path for quant, path in candidates if quant in direct), candidates[0][1])
 
 
 def require_converter_deps() -> None:
@@ -60,10 +66,10 @@ def require_converter_deps() -> None:
         )
 
 
+# Header scans: gguf.GGUFReader parses every vocab array.
 def _gguf_architecture(gguf_path: str) -> str:
-    import gguf
-    field = gguf.GGUFReader(gguf_path).fields.get("general.architecture")
-    return field.contents() if field is not None else ""
+    from utils.models.gguf_metadata import read_gguf_architecture
+    return read_gguf_architecture(str(gguf_path)) or ""
 
 
 # convert.py's __main__ overwrites sys.argv and importing it first is circular.
@@ -161,9 +167,8 @@ def _fetch_base_file(base_model: str, name: str, token) -> Optional[Path]:
 
 
 def _gguf_chat_template(gguf_path: Path) -> Optional[str]:
-    import gguf
-    field = gguf.GGUFReader(str(gguf_path)).fields.get("tokenizer.chat_template")
-    return field.contents() if field is not None else None
+    from utils.models.gguf_metadata import read_gguf_chat_template
+    return read_gguf_chat_template(str(gguf_path))
 
 
 def _token_ids(value) -> List[int]:
