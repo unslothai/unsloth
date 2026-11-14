@@ -6380,6 +6380,7 @@ def _unsloth_save_lora_gguf(
             private = private,
             exist_ok = True,
         )
+        _refuse_private_push_to_public_repo(save_directory, private, api = api)
         # huggingface_hub>=1.20 refuses create_pr with a revision in upload_folder, so a branch made first would be left behind.
         if revision is not None and not create_pr and not revision.startswith("refs/pr/"):
             api.create_branch(
@@ -8990,6 +8991,7 @@ def _unsloth_save_openvino(
         if push_to_hub:
             api = HfApi(token = token)
             api.create_repo(repo_id = repo_id, repo_type = "model", private = private, exist_ok = True)
+            _refuse_private_push_to_public_repo(repo_id, private, api = api)
 
         print("Unsloth: Merging to 16bit before OpenVINO export...")
         unsloth_generic_save(
