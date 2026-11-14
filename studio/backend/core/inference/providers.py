@@ -27,6 +27,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "openai": {
         "display_name": "OpenAI",
+        "api_key_url": "https://platform.openai.com/api-keys",
         "base_url": "https://api.openai.com/v1",
         "supports_streaming": True,
         "supports_vision": True,
@@ -63,6 +64,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "anthropic": {
         "display_name": "Anthropic",
+        "api_key_url": "https://platform.claude.com/settings/keys",
         "base_url": "https://api.anthropic.com/v1",
         # No denylist: `-YYYYMMDD` ids are canonical for pre-4.6 Claude models.
         "supports_streaming": True,
@@ -81,6 +83,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "gemini": {
         "display_name": "Google Gemini",
+        "api_key_url": "https://aistudio.google.com/apikey",
         # Native Gemini REST, not OpenAI-compatible; translated in `_stream_gemini`.
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "supports_streaming": True,
@@ -109,6 +112,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "deepseek": {
         "display_name": "DeepSeek",
+        "api_key_url": "https://platform.deepseek.com/api_keys",
         "base_url": "https://api.deepseek.com/v1",
         "supports_streaming": True,
         "supports_vision": False,
@@ -120,6 +124,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "openrouter": {
         "display_name": "OpenRouter",
+        "api_key_url": "https://openrouter.ai/settings/keys",
         "base_url": "https://openrouter.ai/api/v1",
         "supports_streaming": True,
         "supports_vision": True,
@@ -137,6 +142,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "zai": {
         "display_name": "Z.ai",
+        "api_key_url": "https://z.ai/manage-apikey/apikey-list",
         "base_url": "https://api.z.ai/api/paas/v4",
         "model_capabilities": {
             "glm-5.3": {"vision": False},
@@ -164,6 +170,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "kimi": {
         "display_name": "Kimi",
+        "api_key_url": "https://platform.kimi.ai/console/api-keys",
         "base_url": "https://api.moonshot.ai/v1",
         # Docs: https://platform.kimi.ai/docs/models
         # Listing/overview: https://platform.kimi.ai/docs/api/list-models
@@ -185,6 +192,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "mistral": {
         "display_name": "Mistral AI",
+        "api_key_url": "https://console.mistral.ai/api-keys",
         "base_url": "https://api.mistral.ai/v1",
         "supports_streaming": True,
         "supports_vision": True,
@@ -201,6 +209,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "minimax": {
         "display_name": "MiniMax",
+        "api_key_url": "https://platform.minimax.io/user-center/basic-information/interface-key",
         "base_url": "https://api.minimax.io/v1",
         "model_capabilities": {
             "MiniMax-M3.1-Flash": {"vision": True},
@@ -221,6 +230,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     # Console is pay as you go, Go a subscription; both translate every text model to /chat/completions.
     "opencode": {
         "display_name": "OpenCode Console",
+        "api_key_url": "https://opencode.ai/auth",
         "base_url": "https://opencode.ai/inference/v1",
         "supports_streaming": True,
         "supports_vision": True,
@@ -234,6 +244,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "opencode_go": {
         "display_name": "OpenCode Go",
+        "api_key_url": "https://opencode.ai/auth",
         # _chat_headers adds the x-opencode-session header Go requires.
         "base_url": "https://opencode.ai/inference/go/v1",
         "supports_streaming": True,
@@ -257,6 +268,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "qwencloud": {
         "display_name": "QwenCloud",
+        "api_key_url": "https://home.qwencloud.com/api-keys",
         "base_url": "https://maas.qwencloudapi.com/compatible-mode/v1",
         "supports_streaming": True,
         "supports_vision": True,
@@ -273,6 +285,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "huggingface": {
         "display_name": "Hugging Face",
+        "api_key_url": "https://huggingface.co/settings/tokens",
         "base_url": "https://router.huggingface.co/v1",
         "supports_streaming": True,
         "supports_vision": True,
@@ -938,6 +951,7 @@ def list_available_providers(
                 "hidden": bool(info.get("hidden")),
                 "model_list_mode": info.get("model_list_mode", "remote"),
                 "auth_kind": info.get("auth_kind", "api_key"),
+                "api_key_url": info.get("api_key_url"),
                 "base_url_editable": info.get("base_url_editable", True),
                 "model_ids_editable": info.get("model_ids_editable", True),
             }

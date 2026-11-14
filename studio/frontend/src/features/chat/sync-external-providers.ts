@@ -247,13 +247,19 @@ export async function syncExternalProvidersFromBackend(
   pruneExternalProviderApiKeys(loadedConfigRows.map((config) => config.id));
 
   const existingById = new Map<string, ExternalProviderConfig>();
+  // Switched-off rows first, so a row in both lists keeps the caller's copy.
+  for (const provider of useExternalProvidersStore.getState().disabledProviders) {
+    existingById.set(provider.id, provider);
+  }
   for (const provider of existingProviders) {
     existingById.set(provider.id, provider);
   }
 
   const backfillTasks: Array<() => Promise<unknown>> = [];
-  const syncedProviders = configRows
-    .filter((config) => config.is_enabled)
+  const enabledIds = new Set(
+    configRows.filter((config) => config.is_enabled).map((config) => config.id),
+  );
+  const syncedRows = configRows
     .map((config) => {
       const existing = existingById.get(config.id);
       const uiProviderType = resolveUiProviderTypeFromConfig(
@@ -356,8 +362,12 @@ export async function syncExternalProvidersFromBackend(
       };
       return mergeLocalProviderOptions(existing, synced);
     });
+  const syncedProviders = syncedRows.filter((provider) => enabledIds.has(provider.id));
 
   if (isCurrent && !isCurrent()) return existingProviders;
+  useExternalProvidersStore
+    .getState()
+    .setDisabledProviders(syncedRows.filter((provider) => !enabledIds.has(provider.id)));
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
   void refreshProviderModelCatalogs(syncedProviders, isCurrent);
@@ -634,6 +644,11 @@ export async function refreshModelsDevCatalog(isCurrent?: () => boolean): Promis
     // Offline: the bundled snapshot answers until the next sync.
     return false;
   }
+}
+
+/** Throws, unlike the background refresh, so the button can say why it failed. */
+export async function forceRefreshModelsDevCatalog(): Promise<void> {
+  setModelsDevCatalog(await fetchModelCatalog({ refresh: true }));
 }
 
 export async function refreshProviderModelCatalogs(

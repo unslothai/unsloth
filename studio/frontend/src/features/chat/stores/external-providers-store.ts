@@ -14,8 +14,11 @@ import {
 
 interface ExternalProvidersState {
   providers: ExternalProviderConfig[];
+  /** Switched off in Settings > Connections: listed there, offered nowhere else. Not persisted; every sync refills it. */
+  disabledProviders: ExternalProviderConfig[];
   connectionsEnabled: boolean;
   setProviders: (providers: ExternalProviderConfig[]) => void;
+  setDisabledProviders: (providers: ExternalProviderConfig[]) => void;
   setConnectionsEnabled: (enabled: boolean) => void;
 }
 
@@ -25,11 +28,13 @@ export const providerSavesInFlight = new Set<string>();
 export const useExternalProvidersStore = create<ExternalProvidersState>(
   (set) => ({
     providers: loadExternalProviders(),
+    disabledProviders: [],
     connectionsEnabled: loadConnectionsEnabled(),
     setProviders: (providers) => {
       set({ providers });
       saveExternalProviders(providers);
     },
+    setDisabledProviders: (disabledProviders) => set({ disabledProviders }),
     setConnectionsEnabled: (enabled) => {
       set({ connectionsEnabled: enabled });
       saveConnectionsEnabled(enabled);
