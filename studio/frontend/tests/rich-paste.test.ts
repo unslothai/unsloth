@@ -241,6 +241,7 @@ test("long whitespace runs convert in linear time", () => {
     el("body", el("p", el("b", "x"), run(" "))),
     el("body", el("div", { style: "white-space:pre-wrap" }, el("b", run(" ")))),
     el("body", el("table", el("tr", el("td", { style: "white-space:pre-wrap" }, run(" ")), el("td", run("\u00a0"))))),
+    el("body", el("div", { style: "white-space:pre-wrap" }, el("b", "a\n\n".repeat(20_000)))),
   ];
   const start = performance.now();
   for (const body of bodies) htmlNodeToMarkdown(body);
@@ -252,4 +253,14 @@ test("long whitespace runs convert in linear time", () => {
 test("layout non-breaking spaces in preformatted spans become spaces", () => {
   const body = el("body", el("div", { style: "white-space:pre-wrap" }, el("b", "Run"), ":\nx\u00a0=\u00a01"));
   assert.equal(htmlNodeToMarkdown(body), "**Run**:\nx = 1");
+});
+
+test("a non-breaking space inside inline code is kept as data", () => {
+  const body = el("body", el("p", el("b", "Check:"), " ", el("code", "ord('\u00a0') == 160")));
+  assert.equal(htmlNodeToMarkdown(body), "**Check:** `ord('\u00a0') == 160`");
+});
+
+test("emphasis closes and reopens around preserved paragraph breaks", () => {
+  const body = el("body", el("div", { style: "white-space:pre-wrap" }, el("b", "first\n\nsecond"), " tail"));
+  assert.equal(htmlNodeToMarkdown(body), "**first**\n\n**second** tail");
 });

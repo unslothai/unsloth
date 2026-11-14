@@ -84,9 +84,14 @@ function edges(inner: string): [string, string, string] {
   return [space(head, true), `${marks(head)}${body}${marks(tail)}`, space(tail, tail.includes("\n"))];
 }
 
+const PARAGRAPH = new RegExp(`(\\n[ \\t\\u00a0${FENCE_OPEN}${FENCE_CLOSE}]*\\n)`);
+
+// Emphasis cannot span paragraphs, so each preserved paragraph gets its own markers.
 function wrap(marker: string, inner: string): string {
   const [lead, body, trail] = edges(inner);
   if (!body.replace(MARKS, "")) return inner;
+  const parts = body.split(PARAGRAPH);
+  if (parts.length > 1) return `${lead}${parts.map((part, i) => (i % 2 ? part : wrap(marker, part))).join("")}${trail}`;
   return `${lead}${marker}${body}${marker}${trail}`;
 }
 
@@ -244,7 +249,7 @@ function convert(node: PasteNode, parent: Ctx): string {
     case "STRIKE":
       return wrap("~~", children(node, ctx));
     case "CODE":
-      return codeSpan(node.textContent ?? "");
+      return `${FENCE_OPEN}${codeSpan(node.textContent ?? "")}${FENCE_CLOSE}`;
     case "PRE":
       return preBlock(node);
     case "H1":
