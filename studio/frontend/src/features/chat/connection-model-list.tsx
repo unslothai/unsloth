@@ -145,7 +145,7 @@ export function ConnectionModelList({
       .querySelector("[data-model-name]")
       ?.getBoundingClientRect();
     if (!text) return;
-    const width = 240;
+    const width = 190;
     setCard({
       name: row.name,
       details: row.details,
@@ -153,7 +153,7 @@ export function ConnectionModelList({
         8,
         Math.min(text.right + 24, window.innerWidth - width - 8),
       ),
-      top: text.top - 12,
+      top: text.top - 8,
     });
   };
   return (
@@ -202,16 +202,16 @@ export function ConnectionModelList({
             <div
               role="tooltip"
               style={{ left: card.left, top: card.top }}
-              className="tooltip-rich pointer-events-none fixed z-[999999] flex w-[calc(240px*var(--ui-space-scale,1))] flex-col gap-2 text-xs"
+              className="tooltip-rich pointer-events-none fixed z-[999999] flex w-[calc(190px*var(--ui-space-scale,1))] flex-col gap-1 rounded-xl px-3 py-2 text-ui-11"
             >
-              <div className="flex min-w-0 items-center gap-4">
+              <div className="flex min-w-0 items-center gap-3">
                 <span className="shrink-0 text-muted-foreground">Model</span>
                 <span className="ml-auto min-w-0 truncate text-right">
                   {card.name}
                 </span>
               </div>
               {card.details.map(([name, value]) => (
-                <div key={name} className="flex min-w-0 items-start gap-4">
+                <div key={name} className="flex min-w-0 items-start gap-3">
                   <span className="shrink-0 text-muted-foreground">{name}</span>
                   <span className="ml-auto min-w-0 text-right">{value}</span>
                 </div>
