@@ -18,6 +18,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { modelDisplayName } from "../../model-picker/model-config/model-identity";
+import { npuDisplayNameNow } from "@/features/npu";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   type ChatHistoryUpdatedDetail,
@@ -170,6 +171,7 @@ export function ChatModelNotice({
   const switchTarget = { ...createdModel, modelId: selectableId };
   const label =
     externalModelLabel(createdModel.modelId) ??
+    npuDisplayNameNow(createdModel.modelId) ??
     modelDisplayName(createdModel.modelId);
   return (
     <Popover key={threadId}>

@@ -158,7 +158,6 @@ test("passing through chats with the panel open leaves no empty tabs behind, and
   store.renameTab(useBrowserStore.getState().activeTabId ?? "", "Kept");
   store.showChat(chatKeyOfThread("start"));
   const state = useBrowserStore.getState();
-  // Only the renamed tab stays: the untouched ones are remade when their chat shows again.
   assert.equal(state.tabs.length, before + 1);
   assert.deepEqual(urls(), ["https://start.example/"]);
   assert.equal(state.fullView, false);

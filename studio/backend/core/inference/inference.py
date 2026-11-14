@@ -582,6 +582,30 @@ class _StopSequenceStreamer:
         self.next_tokens_are_prompt = bool(getattr(streamer, "skip_prompt", False))
         self.is_harmony = isinstance(streamer, HarmonyTextStreamer)
         self.cleans_up = _decoder_cleans_up(streamer)
+        self.special_stop_ids = self._hidden_stop_ids() if self.sequences else frozenset()
+
+    def _hidden_stop_ids(self):
+        # The decoder can hide added special tokens beyond all_special_tokens, so ask it per stop.
+        owner = self.streamer.tokenizer
+        if isinstance(owner, NativeToolTokenDecoder):
+            # Its decode() ignores skip_special_tokens, so round-trip on the wrapped tokenizer.
+            owner = owner._tokenizer
+        convert = getattr(owner, "convert_tokens_to_ids", None)
+        if not callable(convert):
+            return frozenset()
+        ids = set()
+        for sequence in self.sequences:
+            try:
+                token_id = convert(sequence)
+                if (
+                    isinstance(token_id, int)
+                    and owner.decode([token_id], skip_special_tokens = False) == sequence
+                    and self._decode([token_id]) == ""
+                ):
+                    ids.add(token_id)
+            except Exception:  # noqa: BLE001 -- third-party tokenizer adapters vary
+                continue
+        return frozenset(ids)
 
     def __next__(self):
         return next(self.streamer)
@@ -602,11 +626,24 @@ class _StopSequenceStreamer:
         if self.next_tokens_are_prompt:
             self.next_tokens_are_prompt = False
             return
-        self.token_ids.extend(value.tolist())
+        new_tokens = value.tolist()
+        stop_index = None
+        if self.special_stop_ids:
+            stop_index = next(
+                (i for i, token in enumerate(new_tokens) if token in self.special_stop_ids), None
+            )
+        token_matched = stop_index is not None
+        self.token_ids.extend(new_tokens[:stop_index])
         self._decode_new_tokens()
         # Earlier text was already scanned; only a stop overlapping new text can match.
         start = self.scan_from
         cut, matched = _mlx_stop_cut(self.text[start:], self.sequences)
+        if token_matched and not matched:
+            if self.read_offset < len(self.token_ids):
+                # As end() does on a natural EOS: unresolved bytes still belong to the reply.
+                self.text = self._decode(self.token_ids)
+            cut = len(self.text) - start
+        matched = matched or token_matched
         self.cut = start + cut
         if matched:
             # This runs in the producer, before model.generate checks criteria.

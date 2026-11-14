@@ -60,6 +60,7 @@ import {
   downloadManager,
   formatBytes,
   formatParamCount,
+  classifyUnslothSupport,
   hfApiToken,
   isHiddenModelId,
   jobKeyOf,
@@ -121,7 +122,12 @@ import {
   usePinnedModelsStore,
   usePinnedRowDrag,
 } from "@/features/model-picker";
-import { reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
+import {
+  isChatGgufTask,
+  reconcileGgufPinsAfterDelete,
+} from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
+import { repinExportedGgufAfterDelete } from "@/features/model-picker/components/model-selector/repin-exported-gguf";
+import { isCapableCheckpointQuant } from "@/features/model-picker/components/model-selector/recommended-fit";
 import {
   type NpuModel,
   NpuSetupNotice,
@@ -219,6 +225,8 @@ import {
   pickerAlignOffset,
   pickerDropOffset,
   pickerSide,
+  expandQuantFavorites,
+  favoritePinKey,
   pinCoversId,
   readBounded,
   repoSection,
@@ -241,6 +249,8 @@ interface Row extends PickerRow {
   resumable?: boolean;
   /** Runs on the Audio page: a pick opens it there instead of loading into Chat. */
   media?: "audio";
+  favoriteQuant?: string;
+  inventoryKey?: string;
 }
 
 function cachedMeta(row: Row): ModelSelectorChangeMeta {
@@ -1593,7 +1603,8 @@ export function ComposerModelPicker({
   const hfToken = useHfTokenStore((s) => s.token);
   const gpuInfo = useGpuInfo(open);
   const quantFormats = gpuInfo.checkpointQuantFormats;
-  const isMac = usePlatformStore((s) => s.deviceType === "mac");
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const isMac = deviceType === "mac";
   // The field already waits SEARCH_DEBOUNCE_MS; together they keep the Hub's 300 ms.
   const hubQuery = useDebouncedValue(
     onRecommended ? query.trim() : "",
@@ -1745,9 +1756,28 @@ export function ComposerModelPicker({
     [hubScrollRef],
   );
   const recommended = useMemo<ModelOption[]>(() => {
+    // The header picker's runtime gate; vLLM loads compressed-tensors checkpoints the gate refuses.
+    const supported = (r: (typeof hubResults)[number]) =>
+      classifyUnslothSupport({
+        modelId: r.id,
+        pipelineTag: r.pipelineTag,
+        tags: r.tags,
+        libraryName: r.libraryName,
+        quantMethod: r.quantMethod,
+        deviceType,
+      }).status !== "unsupported";
     const fromHub = hubResults
       .filter(
         (r) =>
+          (supported(r) ||
+            (r.quantMethod?.toLowerCase() === "compressed-tensors" &&
+              isCapableCheckpointQuant(
+                r.id,
+                r.quantMethod,
+                quantFormats,
+                r.isGguf,
+              ) &&
+              supported({ ...r, quantMethod: undefined }))) &&
           (matchesRecommendedBrowse(r, quantFormats, !hubQuery) ||
             // A Mac also runs MLX and plain safetensors; the browse gates still apply.
             (isMac &&
@@ -1770,7 +1800,7 @@ export function ComposerModelPicker({
       return fromHub;
     }
     return (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
-  }, [hubResults, quantFormats, hubQuery, isMac, source?.models]);
+  }, [hubResults, quantFormats, hubQuery, isMac, deviceType, source?.models]);
   // Hub results marked MLX only by their card, which the ModelOption rows drop.
   const mlxTaggedHub = useMemo(
     () =>
@@ -2402,13 +2432,7 @@ export function ComposerModelPicker({
       if (row.kind === "external") {
         return pinnedConnected.includes(row.id) ? row.id : null;
       }
-      const base = row.id.toLowerCase();
-      return (
-        pinned.find((key) => {
-          const k = key.toLowerCase();
-          return k === base || k.startsWith(`${base}::`);
-        }) ?? null
-      );
+      return favoritePinKey(pinned, row.id, row.favoriteQuant);
     },
     [pinned, pinnedConnected],
   );
@@ -2561,7 +2585,9 @@ export function ComposerModelPicker({
         ? pinned.length + pinnedConnected.indexOf(key ?? "")
         : pinned.indexOf(key ?? "");
     };
-    return [...found].sort((a, b) => rank(a) - rank(b));
+    return expandQuantFavorites(found, pinned).sort(
+      (a, b) => rank(a) - rank(b),
+    );
   }, [
     viewed,
     favoriteKeyOf,
@@ -2694,7 +2720,14 @@ export function ComposerModelPicker({
     return pickSeq.current;
   };
 
-  const pickQuantRow = async (row: Row, target: QuantTarget, seq: number) => {
+  // Close, tab change or unmount abandons a resolving quant; not pickSeq, so an NPU download still loads.
+  const resolveGen = useRef(0);
+  const pickQuantRow = async (
+    row: Row,
+    target: QuantTarget,
+    seq: number,
+    gen: number,
+  ) => {
     if (!source) {
       return;
     }
@@ -2704,14 +2737,17 @@ export function ComposerModelPicker({
       mlx,
       hasVision,
     } = await rowQuants(target);
-    if (pickSeq.current !== seq) {
+    if (pickSeq.current !== seq || resolveGen.current !== gen) {
       return;
     }
     const fetched = list.filter((v) => v.downloaded === true);
-    const quant = chooseQuant(
-      target.remote && fetched.length > 0 ? fetched : list,
-      [row.loadedQuant, defaultVariant],
-    );
+    const favorite = row.favoriteQuant?.toLowerCase();
+    const quant =
+      (favorite && list.find((v) => v.quant.toLowerCase() === favorite)) ||
+      chooseQuant(target.remote && fetched.length > 0 ? fetched : list, [
+        row.loadedQuant,
+        defaultVariant,
+      ]);
     // A plain MLX snapshot has no precision folders: it loads as one checkpoint.
     if (row.kind === "cached" && !(mlx && quant)) {
       if (row.id !== chosen?.id) {
@@ -2760,7 +2796,9 @@ export function ComposerModelPicker({
       failed: false,
       target,
     });
-    const mlxRepo = row.kind === "hub" && !row.hub?.isGguf;
+    const mlxRepo =
+      (row.kind === "hub" && !row.hub?.isGguf) ||
+      (row.kind === "cached" && row.format === "mlx");
     const pickWhole = () => {
       if (pickSeq.current !== seq || !source) {
         return;
@@ -2769,7 +2807,10 @@ export function ComposerModelPicker({
       if (row.id !== chosen?.id) {
         setPending(row);
       }
-      source.onPick(row.id, wholeHubMeta(row));
+      source.onPick(
+        row.id,
+        row.kind === "cached" ? cachedMeta(row) : wholeHubMeta(row),
+      );
       resetView();
     };
     try {
@@ -2833,10 +2874,17 @@ export function ComposerModelPicker({
       }
     }
   };
-  useEffect(() => () => offerAbort.current?.abort(), []);
+  useEffect(
+    () => () => {
+      resolveGen.current += 1;
+      offerAbort.current?.abort();
+    },
+    [],
+  );
   // A listing still in flight at close or tab change must not pick (and download) its lone quant.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `open` and `viewed` are the triggers.
   useEffect(() => {
+    resolveGen.current += 1;
     offerAbort.current?.abort();
     offerAbort.current = null;
     setOffer((now) => (now && now.quants === null ? null : now));
@@ -2903,10 +2951,100 @@ export function ComposerModelPicker({
   // On Device only: Discover's own offer already lists a partial quant.
   const partialsOf = (row: Row) =>
     row.tab === DEVICE_TAB && !row.partial && viewed !== RECOMMENDED_TAB
-      ? (devicePartials.get(row.key) ?? NO_QUANTS)
+      ? (devicePartials.get(row.inventoryKey ?? row.key) ?? NO_QUANTS)
       : NO_QUANTS;
   const variantCount = (row: Row) =>
-    (deviceQuants.get(row.key)?.length ?? 0) + partialsOf(row).length;
+    (deviceQuants.get(row.inventoryKey ?? row.key)?.length ?? 0) +
+    partialsOf(row).length;
+
+  // The disk read cannot see newer uploads: an open quant list asks the Hub once, as the header picker did.
+  const updatesReadAt = useRef(new Map<string, object>());
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the open rows are the trigger; variantCount reads deviceQuants.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const queue = shownRows.filter(
+      (row) =>
+        row.kind === "gguf" &&
+        !row.favoriteQuant &&
+        variantCount(row) > 1 &&
+        expandQuantizations !== foldedQuants.has(row.key) &&
+        updatesReadAt.current.get(row.key) !== quantsEpoch,
+    );
+    if (queue.length === 0) {
+      return;
+    }
+    let live = true;
+    const epoch = quantsEpoch;
+    for (const row of queue) {
+      updatesReadAt.current.set(row.key, epoch);
+    }
+    void readBounded(
+      queue,
+      QUANT_READ_WORKERS,
+      async (row) => {
+        const target = quantTarget(row);
+        if (!target) {
+          return null;
+        }
+        try {
+          const { quants } = await rowQuants({
+            ...target,
+            remote: true,
+            everyQuant: true,
+          });
+          return [row.key, quants] as const;
+        } catch {
+          return null;
+        }
+      },
+      (found) => {
+        if (!found || quantsEpochRef.current !== epoch) {
+          return;
+        }
+        const [key, listed] = found;
+        const updated = new Set(
+          listed
+            .filter((v) => v.update_available)
+            .map((v) => v.quant.toLowerCase()),
+        );
+        if (updated.size === 0) {
+          return;
+        }
+        setDeviceQuants((prev) => {
+          const onDisk = prev.get(key);
+          if (!onDisk) {
+            return prev;
+          }
+          const next = new Map(prev);
+          next.set(
+            key,
+            onDisk.map((v) =>
+              updated.has(v.quant.toLowerCase())
+                ? { ...v, update_available: true }
+                : v,
+            ),
+          );
+          return next;
+        });
+      },
+      () => live,
+    );
+    return () => {
+      live = false;
+      for (const row of queue) {
+        updatesReadAt.current.delete(row.key);
+      }
+    };
+  }, [
+    open,
+    shownRows,
+    deviceQuants,
+    foldedQuants,
+    expandQuantizations,
+    quantsEpoch,
+  ]);
 
   const pick = async (row: Row) => {
     if (!source) {
@@ -2923,11 +3061,13 @@ export function ComposerModelPicker({
       row.kind === "gguf" &&
       useChatRuntimeStore.getState().showAllQuantizations;
     // Discover always offers its quants, even with one on disk: that one is ticked, not loaded unasked.
+    // A cached MLX repo offers its precisions, as the header picker did; a plain snapshot loads whole.
     if (
       target &&
-      // A cached MLX snapshot resolves in pickQuantRow, which loads it whole when it has no precisions.
-      row.kind !== "cached" &&
-      (offerAll || (target.remote && (row.kind === "hub" || !row.onDevice)))
+      !row.favoriteQuant &&
+      (row.kind === "cached" ||
+        offerAll ||
+        (target.remote && (row.kind === "hub" || !row.onDevice)))
     ) {
       await toggleOffer(
         row,
@@ -2939,7 +3079,7 @@ export function ComposerModelPicker({
       );
       return;
     }
-    if (variantCount(row) > 1) {
+    if (!row.favoriteQuant && variantCount(row) > 1) {
       setFoldedQuants((prev) => {
         const next = new Set(prev);
         if (!next.delete(row.key)) {
@@ -2951,10 +3091,19 @@ export function ComposerModelPicker({
     }
     if (target) {
       setResolving(row.key);
+      const gen = resolveGen.current;
       try {
-        await pickQuantRow(row, target, seq);
+        await pickQuantRow(
+          row,
+          // A pinned quant no longer on disk downloads again, as from the header picker.
+          row.favoriteQuant && row.kind === "gguf"
+            ? { ...target, remote: true, everyQuant: true }
+            : target,
+          seq,
+          gen,
+        );
       } catch {
-        if (pickSeq.current !== seq) {
+        if (pickSeq.current !== seq || resolveGen.current !== gen) {
           return;
         }
         if (row.kind === "cached") {
@@ -2992,6 +3141,12 @@ export function ComposerModelPicker({
   const toggleFavorite = async (row: Row) => {
     if (row.kind === "external") {
       togglePinnedConnected(row.id);
+      return;
+    }
+    const pinnedKey = row.favoriteQuant ? favoriteKeyOf(row) : null;
+    if (pinnedKey) {
+      const at = pinnedKey.indexOf("::");
+      togglePinned(pinnedKey.slice(0, at), pinnedKey.slice(at + 2));
       return;
     }
     if (isFavorite(row)) {
@@ -3340,12 +3495,20 @@ export function ComposerModelPicker({
         defaultVariant,
         mlx,
         hasVision,
-      } = await rowQuants(target);
-      const quant = chooseQuant(list, [
-        row.loadedQuant,
-        row.id === chosen?.id ? activeVariant : null,
-        defaultVariant,
-      ]);
+      } = await rowQuants(
+        // As a pick: a pinned quant is resolved even once it is gone from disk.
+        row.favoriteQuant && row.kind === "gguf"
+          ? { ...target, remote: true, everyQuant: true }
+          : target,
+      );
+      const favorite = row.favoriteQuant?.toLowerCase();
+      const quant =
+        (favorite && list.find((v) => v.quant.toLowerCase() === favorite)) ||
+        chooseQuant(list, [
+          row.loadedQuant,
+          row.id === chosen?.id ? activeVariant : null,
+          defaultVariant,
+        ]);
       if (quant && (mlx || row.kind !== "cached")) {
         return ggufMeta(
           row,
@@ -3457,7 +3620,10 @@ export function ComposerModelPicker({
   const deleteQuantFor = (row: Row, variant: GgufVariantDetail) => {
     const inMemory =
       Boolean(row.loaded) &&
-      variant.quant.toLowerCase() === row.loadedQuant?.toLowerCase();
+      variant.quant.toLowerCase() ===
+        (
+          row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null)
+        )?.toLowerCase();
     if (row.lora?.source === "exported" && row.lora.exportType === "gguf") {
       return {
         title: "Delete exported GGUF variant?",
@@ -3479,6 +3645,7 @@ export function ComposerModelPicker({
             exportType: "gguf",
             ggufVariant: variant.quant,
           });
+          await repinExportedGgufAfterDelete(row.id);
         },
         onDeleted: () =>
           source?.onModelsChange({ id: row.id, ggufVariant: variant.quant }),
@@ -3640,13 +3807,19 @@ export function ComposerModelPicker({
       successMessage: `Deleted ${repo.repo_id}`,
       disabled: row.loaded || source?.deleteDisabled,
       onConfirm: async () => {
+        const token = useHfTokenStore.getState().token || undefined;
         await deleteCachedModel(
           repo.repo_id,
           undefined,
-          undefined,
+          token,
           repo.cache_path || undefined,
         );
-        unpinRepo(repo.repo_id);
+        // As the header picker: another remembered folder may still hold a pinned quant.
+        if (row.gguf && isChatGgufTask(row.gguf.task)) {
+          await reconcileGgufPinsAfterDelete(repo.repo_id, token);
+        } else {
+          unpinRepo(repo.repo_id);
+        }
       },
       onDeleted: () => {
         void inventory.refreshInventory();
@@ -3655,7 +3828,13 @@ export function ComposerModelPicker({
   };
 
   const renderRow = (row: Row, index: number) => {
-    const isChosen = row.id === chosen?.id;
+    const rowQuant =
+      row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null);
+    const isChosen =
+      row.id === chosen?.id &&
+      (!row.favoriteQuant ||
+        !rowQuant ||
+        rowQuant.toLowerCase() === row.favoriteQuant.toLowerCase());
     const favorite = isFavorite(row);
     const npuOffer = row.kind === "npu" && !row.npu?.downloaded;
     const npuProgress =
@@ -3673,26 +3852,37 @@ export function ComposerModelPicker({
     const offerOpen = offer?.key === row.key;
     const paramLabel =
       row.kind === "hub" ? (hubParams.get(row.id.toLowerCase()) ?? null) : null;
-    const onDisk = deviceQuants.get(row.key) ?? NO_QUANTS;
+    const onDisk = deviceQuants.get(row.inventoryKey ?? row.key) ?? NO_QUANTS;
     const partials = partialsOf(row);
     const manyQuants = onDisk.length + partials.length > 1;
     const wholeQuant = onDisk.length === 1 ? onDisk[0].quant : null;
-    const soleQuant = manyQuants ? null : wholeQuant;
+    const soleQuant = row.favoriteQuant ?? (manyQuants ? null : wholeQuant);
+    const savedVariant =
+      row.kind !== "gguf"
+        ? undefined
+        : row.favoriteQuant
+          ? onDisk.find(
+              (v) => v.quant.toLowerCase() === row.favoriteQuant?.toLowerCase(),
+            )
+          : onDisk.length === 1
+            ? onDisk[0]
+            : undefined;
     // Known without a quant listing, for Reset run settings and the gear's saved state.
-    const savedMeta =
-      row.kind === "gguf" && onDisk.length === 1
-        ? ggufMeta(row, onDisk[0], true, true, row.gguf?.has_vision)
-        : row.kind === "cached" && onDisk.length === 0 && !row.partial
-          ? cachedMeta(row)
-          : row.kind === "local" && row.lora
-            ? loraMeta(row.lora)
-            : null;
+    const savedMeta = savedVariant
+      ? ggufMeta(row, savedVariant, true, true, row.gguf?.has_vision)
+      : row.kind === "cached" && onDisk.length === 0 && !row.partial
+        ? cachedMeta(row)
+        : row.kind === "local" && row.lora
+          ? loraMeta(row.lora)
+          : null;
     const savedTarget = savedMeta
       ? modelConfigTarget(row.id, savedMeta, row.label)
       : undefined;
     // `foldedQuants` holds the rows toggled away from the "Expand quantizations" setting.
     const quantsOpen =
-      manyQuants && expandQuantizations !== foldedQuants.has(row.key);
+      !row.favoriteQuant &&
+      manyQuants &&
+      expandQuantizations !== foldedQuants.has(row.key);
     // Discover GGUFs star by quant; a multi-quant device row stars the repo.
     const canStar = !(
       quiet ||
@@ -4075,7 +4265,7 @@ export function ComposerModelPicker({
       ) : null;
     const quantList = offerOpen ? (
       renderOffer(row)
-    ) : quantsOpen || partials.length > 0 ? (
+    ) : quantsOpen || (partials.length > 0 && !row.favoriteQuant) ? (
       <Fragment key={`quants:${row.key}`}>
         {quantsOpen ? renderDeviceQuants(row, onDisk) : null}
         {quantsOpen || !manyQuants

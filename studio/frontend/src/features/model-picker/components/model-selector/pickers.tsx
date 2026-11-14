@@ -6,6 +6,7 @@ import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
 } from "./reconcile-gguf-pins";
+import { repinExportedGgufAfterDelete } from "./repin-exported-gguf";
 import { loadPickerGgufVariants } from "./gguf-discovery";
 import { firstIndexByKey } from "./option-index";
 
@@ -27,7 +28,6 @@ import {
   deleteFineTunedModel,
   listGgufVariants,
   listRecommendedFolders,
-  listLoras,
   revealFineTunedModel,
 } from "@/features/chat";
 import {
@@ -94,9 +94,10 @@ import {
   type NpuCatalog,
   type NpuModel,
   type NpuPickerSource,
-  NpuRuntimeVersions,
   NpuSetupNotice,
+  npuDisplayName,
   npuDownloadLabel,
+  npuMemoryTag,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -571,7 +572,7 @@ function npuFooterHint(
   return count ? `${count} available` : "";
 }
 
-function ListLabel({
+export function ListLabel({
   children,
   icon,
   action,
@@ -1217,7 +1218,7 @@ function ConnectedGroupHeading({
   );
 }
 
-function ModelRow({
+export function ModelRow({
   label,
   meta,
   selected,
@@ -7688,9 +7689,12 @@ export function HubModelPicker({
     const downloading = model.id in npuCatalog.downloads;
     const progress = npuCatalog.downloads[model.id];
     const reconnecting = model.id in npuCatalog.reconnecting;
+    const name = npuDisplayName(model);
+    const phase = npuCatalog.phases[model.id];
     const details = [
       "NPU",
       npuSizeLabel(model.size_gb),
+      npuMemoryTag(model),
       npuResumeLabel(model),
     ].filter(Boolean);
     const meta = {
@@ -7701,10 +7705,10 @@ export function HubModelPicker({
     const pick = () => onSelect(model.model_path, meta);
     const row = (
       <ModelRow
-        label={model.id}
+        label={name}
         meta={
           downloading
-            ? `NPU · ${npuDownloadLabel(progress, reconnecting)}`
+            ? `NPU · ${npuDownloadLabel(progress, reconnecting, phase)}`
             : details.join(" · ")
         }
         selected={isSelected}
@@ -7722,6 +7726,7 @@ export function HubModelPicker({
         onClick={() => {
           if (downloading) return;
           if (model.downloaded) {
+            npuCatalog.warnMemory(model);
             pick();
             return;
           }
@@ -7739,11 +7744,15 @@ export function HubModelPicker({
         className={onDevice ? downloadedRowButtonClassName : undefined}
       />
     );
-    const configMeta = { ...meta, contextLength: model.max_context_length };
+    const configMeta = {
+      ...meta,
+      contextLength: model.max_context_length,
+      isVision: model.supports_vision,
+    };
     const settings =
       onConfigure && model.downloaded && !downloading ? (
         <ModelLoadSettingsAction
-          ariaLabel={`Inference settings for ${model.id}`}
+          ariaLabel={`Inference settings for ${name}`}
           onConfigure={() => onConfigure(model.model_path, configMeta)}
           savedFor={modelConfigTarget(model.model_path, configMeta)}
         />
@@ -7759,10 +7768,10 @@ export function HubModelPicker({
           {settings}
           {onDevice && (
             <ModelDeleteAction
-              ariaLabel={`Delete ${model.id}`}
-              title={`Delete ${model.id}?`}
+              ariaLabel={`Delete ${name}`}
+              title={`Delete ${name}?`}
               description="This removes the model's NPU files from this device."
-              successMessage={`Deleted ${model.id}`}
+              successMessage={`Deleted ${name}`}
               disabled={isLoaded}
               onConfirm={() => npuCatalog.remove(model)}
             />
@@ -8555,10 +8564,6 @@ export function HubModelPicker({
                       <NpuSetupNotice catalog={npuCatalog} />
                     )}
                     {npuBrowseRows.map((model) => renderNpuRow(model, false))}
-                    <NpuRuntimeVersions
-                      catalog={npuCatalog}
-                      className="px-2.5 pb-1 pt-1.5"
-                    />
                   </>
                 ) : null}
 
@@ -9113,21 +9118,6 @@ function FineTunedRows({
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
-  const replacePinned = usePinnedModelsStore((s) => s.replacePinned);
-  // A GGUF export's id is its first file, so deleting a variant can change or end it.
-  const repinExportedGguf = async (oldId: string) => {
-    const folder = oldId.slice(0, Math.max(oldId.lastIndexOf("/"), oldId.lastIndexOf("\\")));
-    const { loras } = await listLoras();
-    const next = loras.find(
-      (lora) =>
-        lora.source === "exported" &&
-        lora.export_type === "gguf" &&
-        (lora.adapter_path.startsWith(`${folder}/`) ||
-          lora.adapter_path.startsWith(`${folder}\\`)),
-    );
-    if (!next) unpinRepo(oldId);
-    else replacePinned(pinKey(oldId), pinKey(next.adapter_path));
-  };
   return (
     <>
       {adapters.map((adapter) => {
@@ -9340,9 +9330,7 @@ function FineTunedRows({
                           exportType: "gguf",
                           ggufVariant: quant,
                         });
-                        if (pinnedKeys.includes(pinKey(adapter.id))) {
-                          await repinExportedGguf(adapter.id).catch(() => unpinRepo(adapter.id));
-                        }
+                        await repinExportedGgufAfterDelete(adapter.id);
                         onModelsChange?.({
                           id: adapter.id,
                           ggufVariant: quant,

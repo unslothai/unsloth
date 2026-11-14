@@ -2,7 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import ast
+import builtins
 import contextlib
+import dis
 import gc
 import json
 import os
@@ -120,6 +122,10 @@ def saving(monkeypatch, tmp_path):
         def create_repo(self, **kwargs):
             records["repos"].append(kwargs)
 
+        def repo_info(self, **kwargs):
+            # Visibility of an already existing repo; None means it is not known to be public.
+            return SimpleNamespace(private = records.get("existing_repo_private"))
+
         def create_branch(self, **kwargs):
             records["branches"].append(kwargs)
             records["revisions"].add(kwargs["branch"])
@@ -203,6 +209,8 @@ def saving(monkeypatch, tmp_path):
         "_restore_lfm3_audio_release_config",
         "_release_layout_for_merged_save",
         "_push_lfm3_audio_release_config",
+        # Real code: a private push into an existing public repo is refused before any upload.
+        "_refuse_private_push_to_public_repo",
     }
     nodes = []
     for node in tree.body:
@@ -221,8 +229,52 @@ def saving(monkeypatch, tmp_path):
         ],
         type_ignores = [],
     )
-    exec(compile(ast.fix_missing_locations(module), str(source), "exec"), env)
+    code = compile(ast.fix_missing_locations(module), str(source), "exec")
+    exec(code, env)
+    # A save.py helper these functions start calling would otherwise fail as a bare NameError deep in
+    # some test. Names only reached on branches the tests never take stay unstubbed on purpose.
+    for name in _loaded_globals(code):
+        if name not in env and not hasattr(builtins, name):
+            env[name] = _NotExtracted(name)
     return env, records, artifacts
+
+
+class _NotExtracted:
+    def __init__(self, name):
+        self._name = name
+
+    def _fail(self, *args, **kwargs):
+        raise AssertionError(
+            f"save.py reached {self._name!r}, which the saving fixture neither extracts nor stubs; "
+            "add it to the fixture's `names` (real code) or to `env` (a stub)."
+        )
+
+    __call__ = _fail
+    __enter__ = _fail
+
+    def __getattr__(self, attribute):
+        self._fail()
+
+
+def _loaded_globals(code):
+    """Every global name the code object, or any function nested in it, reads."""
+    names = {
+        i.argval for i in dis.get_instructions(code) if i.opname in ("LOAD_GLOBAL", "LOAD_NAME")
+    }
+    for const in code.co_consts:
+        if hasattr(const, "co_code"):
+            names |= _loaded_globals(const)
+    return names
+
+
+def test_a_private_merged_push_into_an_existing_public_repo_uploads_nothing(saving):
+    env, records, _ = saving
+    records["existing_repo_private"] = False
+    with pytest.raises(RuntimeError, match = "already exists and is public"):
+        env["unsloth_generic_push_to_hub_merged"](
+            PeftModel(), "owner/model", token = "explicit-fixture", private = True, revision = "rc"
+        )
+    assert records["uploads"] == []
 
 
 @pytest.mark.parametrize(

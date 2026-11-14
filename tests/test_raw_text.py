@@ -673,6 +673,7 @@ def test_validate_dataset_accepts_objects_without_column_names():
     assert stats["max_length"] == longest, stats
 
     stats = preprocessor.validate_dataset({"text": texts})
+    assert stats["total_samples"] == 2, stats
     assert stats["max_length"] == longest, stats
 
     try:
@@ -745,6 +746,23 @@ def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
     assert any("very short" in w for w in stats["warnings"]), stats
 
     print("test_validate_dataset_reports_zero_min_length_when_nothing_has_content passed")
+    return True
+
+
+def test_validate_dataset_counts_iterable_dataset_without_len():
+    """datasets.IterableDataset has iter() but no __len__, so total_samples cannot use len()."""
+
+    class IterableDataset:
+        column_names = ["text"]
+
+        def iter(self, batch_size):
+            yield {"text": ["first sample with enough characters", ""]}
+
+    stats = TextPreprocessor().validate_dataset(IterableDataset())
+    assert stats["total_samples"] == 2, stats
+    assert stats["empty_samples"] == 1, stats
+
+    print("test_validate_dataset_counts_iterable_dataset_without_len passed")
     return True
 
 
@@ -850,6 +868,7 @@ if __name__ == "__main__":
     success = test_validate_dataset_accepts_objects_without_column_names() and success
     success = test_validate_dataset_streams_instead_of_materialising_columns() and success
     success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
+    success = test_validate_dataset_counts_iterable_dataset_without_len() and success
     test_tokenized_chunks_reserve_space_for_the_final_eos()
     test_text_chunks_reserve_space_for_the_final_eos()
     test_chunk_size_one_keeps_the_final_eos_overflow()

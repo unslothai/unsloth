@@ -308,10 +308,13 @@ def test_canvas_rule(h3i):
 
 
 def test_reference_short_edge_bounds(h3i):
-    assert h3i.bound_short_edge(1500, 1200, 1024, 2048) == (1500, 1200)
-    assert h3i.bound_short_edge(600, 400, 1024, 2048) == (1536, 1024)
-    assert h3i.bound_short_edge(5000, 3000, 1024, 2048) == (3424, 2048)
-    assert h3i.bound_short_edge(2000, 1500, 1024, 1024) == (1376, 1024)
+    # in range: not left as is, snapped to the 32 grid (Python's round, half to even)
+    assert h3i.size_short_edge(1500, 1200, 1024, 2048) == (1504, 1216)
+    assert h3i.size_short_edge(1536, 1024, 1024, 2048) == (1536, 1024)
+    assert h3i.size_short_edge(600, 400, 1024, 2048) == (1536, 1024)
+    assert h3i.size_short_edge(5000, 3000, 1024, 2048) == (3424, 2048)
+    assert h3i.size_short_edge(2000, 1500, 1024, 1024) == (1376, 1024)
+    assert h3i.size_short_edge(1024, 1050, 1024, 1024) == (1024, 1056)
 
 
 def test_packed_layout_text_references_target(h3i):
@@ -456,7 +459,7 @@ def test_step_and_guidance_contract(h3i, pipe):
     with pytest.raises(ValueError, match = "guidance"):
         pipe(prompt = "a cat", guidance_scale = 3.5, height = 64, width = 64)
     with pytest.raises(ValueError, match = "prompt"):
-        pipe(prompt = "", height = 64, width = 64)
+        pipe(prompt = None, height = 64, width = 64)
 
 
 def test_step_callback_sees_bchw_latents_and_interrupt_stops(h3i, pipe):
