@@ -3667,7 +3667,7 @@ def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
     monkeypatch.setattr(
         api_monitor,
         "mark_first_token",
-        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+        lambda mid, **kwargs: (stamped.append(mid), real_mark(mid, **kwargs))[1],
     )
 
     async def run():
@@ -3695,7 +3695,7 @@ def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
     monkeypatch.setattr(
         api_monitor,
         "mark_first_token",
-        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+        lambda mid, **kwargs: (stamped.append(mid), real_mark(mid, **kwargs))[1],
     )
 
     async def run():

@@ -7537,9 +7537,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             _pin_loaded_backend(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-            monkeypatch.setattr(
-                inf_mod, "_openai_passthrough_stream_keepalive_interval", lambda: 1e-9
-            )
+            monkeypatch.setattr(inf_mod._ProgressKeepalive, "due", lambda self: True)
 
             response = await openai_completions(Request(), current_subject = "test")
             body = b"".join([chunk async for chunk in response.body_iterator])
@@ -9998,15 +9996,9 @@ class TestApiMonitorSafetensorsUsage:
                 *_args,
                 **_kwargs,
             ):
-                if getattr(func, "__name__", "") == "resolve_local_gguf":
-                    return None
-                if func in (
-                    inf_mod.get_inference_backend,
-                    inf_mod._loaded_satisfies,
-                    inf_mod._trained_run_dir,
-                ):
-                    return func(*_args, **_kwargs)
-                raise asyncio.CancelledError()
+                if getattr(func, "__name__", "") == "_drain_to_text":
+                    raise asyncio.CancelledError()
+                return func(*_args, **_kwargs)
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)

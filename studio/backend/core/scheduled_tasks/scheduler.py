@@ -515,8 +515,11 @@ async def generate_answer(
     from fastapi.responses import StreamingResponse
 
     from models.inference import ChatCompletionRequest
+    from core.inference.api_monitor import override_claim_scope
+    from core.inference.token_limit import refund_if_unused
     from routes.inference import (
         _chat_completion_from_connection_stream,
+        _enforce_token_limit,
         _relay_split_thinking,
         allow_model_switch_for_request,
         load_alongside_for_request,
@@ -614,25 +617,32 @@ async def generate_answer(
             async def produce() -> Any:
                 # Settled in this task: slot routing lives in its context, which the caller never sees.
                 reply = None
+                failed = True
+                claim = {"spent": None, "generated": False}
                 try:
-                    reply = await produce_openai_chat_completions(
-                        payload,
-                        request,
-                        task["ownerSubject"],
-                        cancel_on_disconnect = False,
-                    )
-                    if provider is not None and isinstance(reply, StreamingResponse):
-                        reply.body_iterator = _relay_split_thinking(
-                            reply.body_iterator,
-                            payload.stop,
-                            parse_thinking = payload.enable_thinking is not False,
+                    with override_claim_scope(claim):
+                        await _enforce_token_limit(request)
+                        reply = await produce_openai_chat_completions(
+                            payload,
+                            request,
+                            task["ownerSubject"],
+                            cancel_on_disconnect = False,
                         )
-                        reply = await _chat_completion_from_connection_stream(reply, payload.model)
-                    elif provider is None:
+                        if provider is not None and isinstance(reply, StreamingResponse):
+                            reply.body_iterator = _relay_split_thinking(
+                                reply.body_iterator,
+                                payload.stop,
+                                parse_thinking = payload.enable_thinking is not False,
+                            )
+                            reply = await _chat_completion_from_connection_stream(
+                                reply, payload.model
+                            )
+                    if provider is None:
                         serving.update(_serving_checkpoint())
                     # Checked before the request ends, while nobody else can have loaded a model yet.
                     if allow_switch and int(getattr(reply, "status_code", 200)) < 400:
                         serving["loaded"] = _model_is_loaded(payload.model)
+                    failed = int(getattr(reply, "status_code", 200)) >= 400
                     return reply
                 finally:
                     end_in_process_request(
@@ -640,6 +650,8 @@ async def generate_answer(
                         answered = reply is not None
                         and int(getattr(reply, "status_code", 200)) < 400,
                     )
+                    # No HTTP middleware sees this in-process request: refund a failure that generated nothing.
+                    await refund_if_unused(claim, failed = failed)
 
             producer = asyncio.ensure_future(produce())
             done, _ = await asyncio.wait({producer}, timeout = max(0.0, deadline - loop.time()))

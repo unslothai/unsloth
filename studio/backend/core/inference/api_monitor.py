@@ -15,6 +15,8 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -30,6 +32,35 @@ from storage.api_usage_db import (
 
 logger = logging.getLogger(__name__)
 TerminalCallback = Callable[[ApiUsageReceipt], None]
+
+
+# Shared per request: monitor rows started under it mark it once any output is generated, so a
+# spent one-time override is refunded exactly when nothing was.
+_override_claim: ContextVar[Optional[dict]] = ContextVar("token_override_claim", default = None)
+
+
+@contextmanager
+def override_claim_scope(claim: dict):
+    token = _override_claim.set(claim)
+    try:
+        yield claim
+    finally:
+        _override_claim.reset(token)
+
+
+def override_claim() -> Optional[dict]:
+    return _override_claim.get()
+
+
+def _note_generated(entry) -> None:
+    if entry.override_claim is not None:
+        entry.override_claim["generated"] = True
+
+
+def _note_unsuccessful(entry) -> None:
+    # A 200 stream cancelled or failed mid-flight: the refund still needs nothing generated.
+    if entry.override_claim is not None:
+        entry.override_claim["failed"] = True
 
 
 _MAX_ENTRIES = 50
@@ -187,10 +218,17 @@ class ApiMonitorEntry:
     account_id: str = field(default_factory = current_account_id)
     # True for sk-unsloth callers only: the panel auto-opens on these, not Unsloth's chat.
     via_api_key: bool = False
+    override_claim: Optional[dict] = None
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
     finished_monotonic: Optional[float] = None
     reply: str = ""
+    # reply is a display buffer capped at _MAX_REPLY_CHARS; usage estimates need the full length.
+    reply_chars: int = 0
+    # reply_chars when output usage was last reported; only text after it is unaccounted.
+    reported_reply_chars: int = 0
+    # Retention can trim prompt to a preview; the fallback estimate needs the original length.
+    prompt_chars: int = 0
     finished_at: Optional[float] = None
     context_length: Optional[int] = None
     prompt_tokens: Optional[int] = None
@@ -401,6 +439,7 @@ class ApiMonitor:
             # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
             model = str(model) if model else "default",
             prompt = prompt or "",
+            prompt_chars = len(prompt or ""),
             status = "running",
             started_at = now,
             updated_at = now,
@@ -408,6 +447,7 @@ class ApiMonitor:
             via_api_key = via_api_key,
             started_monotonic = time.monotonic(),
             context_length = context_length,
+            override_claim = _override_claim.get(),
         )
         with self._lock:
             self._entries.appendleft(entry)
@@ -552,6 +592,7 @@ class ApiMonitor:
         *,
         stamp_first_token: bool = True,
         separate_from_openai_tool: bool = False,
+        counted: bool = False,
     ) -> None:
         if not entry_id or not text:
             return
@@ -563,6 +604,9 @@ class ApiMonitor:
                 if entry.reply and not entry.reply.endswith("\n"):
                     text = "\n" + text
                 entry.openai_stream_last_segment_was_tool = False
+            if not counted:
+                entry.reply_chars += len(text)
+            _note_generated(entry)
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
                 entry.running_phase = "token_generation"
@@ -599,6 +643,11 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
                 return
+            # Generated output, counted in full before the preview's call and size caps apply.
+            for fragment in (name_fragment, arguments_fragment):
+                text = _stream_tool_fragment(fragment, serialize_json = True)
+                entry.reply_chars += len(text or "")
+            _note_generated(entry)
             same_choice = [
                 state
                 for state in entry.openai_stream_tool_calls
@@ -727,9 +776,10 @@ class ApiMonitor:
         entry_id: Optional[str],
         *,
         decoded: bool = True,
+        output_chars: int = 0,
     ) -> None:
         """``decoded=False`` is for output the model did not generate: starts TTFT, not the token-
-        rate clock."""
+        rate clock. ``output_chars`` counts generated text the reply buffer never shows (reasoning)."""
         if not entry_id:
             return
         now = time.monotonic()
@@ -737,11 +787,29 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            entry.reply_chars += output_chars
+            if decoded or output_chars:
+                _note_generated(entry)
             if entry.first_token_monotonic is None:
                 entry.first_token_monotonic = now
             if decoded and entry.first_decode_monotonic is None:
                 entry.first_decode_monotonic = now
             entry.running_phase = "token_generation" if decoded else None
+
+    def reply_chars(self, entry_id: Optional[str]) -> int:
+        with self._lock:
+            entry = self._find_locked(entry_id) if entry_id else None
+            return entry.reply_chars if entry is not None else 0
+
+    def count_output(self, entry_id: Optional[str], chars: int) -> None:
+        """Generated text the reply buffer never shows (non-streaming reasoning), for estimates."""
+        if not entry_id or chars <= 0:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is not None:
+                entry.reply_chars += chars
+                _note_generated(entry)
 
     def set_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id:
@@ -751,6 +819,9 @@ class ApiMonitor:
             if entry is None:
                 return
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
+            entry.reply_chars = len(text)
+            if text:
+                _note_generated(entry)
             _advance_updated_at(entry)
 
     def set_perf(
@@ -816,7 +887,10 @@ class ApiMonitor:
         completion_tokens: Optional[int] = None,
         total_tokens: Optional[int] = None,
         context_length: Optional[int] = None,
+        reported_chars: Optional[int] = None,
     ) -> None:
+        """``reported_chars``: output the counts cover when it is less than what streamed (a
+        tool loop's earlier passes, reported after a later pass was interrupted)."""
         if not entry_id:
             return
         # Coerce first: snapshot() does math on these arbitrary payload values.
@@ -832,6 +906,14 @@ class ApiMonitor:
                 entry.prompt_tokens = prompt_tokens
             if completion_tokens is not None:
                 entry.completion_tokens = completion_tokens
+                entry.reported_reply_chars = (
+                    entry.reply_chars
+                    if reported_chars is None
+                    else min(reported_chars, entry.reply_chars)
+                )
+            # Input-only usage (Anthropic's message_start) is not output: the refund must survive it.
+            if completion_tokens:
+                _note_generated(entry)
             if total_tokens is not None:
                 entry.total_tokens = total_tokens
                 entry.total_tokens_authoritative = True
@@ -864,6 +946,8 @@ class ApiMonitor:
             entry.openai_stream_last_tool_indexes.clear()
             entry.openai_stream_last_segment_was_tool = False
             self._settle_stop_reason_locked(entry, status == "completed")
+            if status != "completed":
+                _note_unsuccessful(entry)
             now = time.time()
             entry.status = status
             _advance_updated_at(entry, now)
@@ -913,6 +997,7 @@ class ApiMonitor:
         entry.openai_stream_last_tool_indexes.clear()
         entry.openai_stream_last_segment_was_tool = False
         self._settle_stop_reason_locked(entry, False)
+        _note_unsuccessful(entry)
         now = time.time()
         entry.status = "error"
         entry.error = _trim(error, 1000)
@@ -928,17 +1013,31 @@ class ApiMonitor:
     ) -> Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]]:
         callback_owner, callback = self._terminal_callback_locked()
         subject = canonical_api_subject(entry.subject)
-        if (
-            callback is None
-            or entry.kind != "request"
-            or entry.via_api_key is not True
-            or not subject
-            or entry.finished_at is None
-        ):
+        if callback is None or entry.kind != "request" or not subject or entry.finished_at is None:
             return None
         self._terminal_callbacks_inflight[callback_owner] = (
             self._terminal_callbacks_inflight.get(callback_owner, 0) + 1
         )
+        prompt_tokens, completion_tokens, total_tokens = (
+            entry.prompt_tokens or 0,
+            entry.completion_tokens or 0,
+            entry.total_tokens or 0,
+        )
+        # A completed request's reported usage stands (its full reply may be set after it); a
+        # stopped one adds what streamed after its last report (a tool pass reports mid-request).
+        unreported = (
+            entry.reply_chars
+            # A reported zero is real (max_tokens 0 scoring); only missing usage is estimated.
+            if entry.completion_tokens is None
+            else 0
+            if entry.status == "completed"
+            else entry.reply_chars - entry.reported_reply_chars
+        )
+        if unreported > 0:
+            # Anthropic streams report input at message_start, so keep a reported prompt.
+            prompt_tokens = prompt_tokens or -(-entry.prompt_chars // 4)
+            completion_tokens += -(-unreported // 4)
+            total_tokens = prompt_tokens + completion_tokens
         return (
             callback_owner,
             callback,
@@ -948,9 +1047,9 @@ class ApiMonitor:
                 endpoint = str(entry.endpoint)[:MAX_ENDPOINT_CHARS],
                 model = canonical_api_model(entry.model),
                 status = str(entry.status)[:MAX_STATUS_CHARS],
-                prompt_tokens = entry.prompt_tokens or 0,
-                completion_tokens = entry.completion_tokens or 0,
-                total_tokens = entry.total_tokens or 0,
+                prompt_tokens = prompt_tokens,
+                completion_tokens = completion_tokens,
+                total_tokens = total_tokens,
                 created_at = int(entry.finished_at * 1000),
                 kind = entry.kind,
                 via_api_key = entry.via_api_key,

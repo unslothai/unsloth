@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator, Iterator
 
 from starlette.requests import Request
 
+from core.inference.api_monitor import override_claim
 from core.inference.llama_keepwarm import InferenceActivityReservation
 from core.training.account_jobs import sweepable_job_accounts
 from utils.account_context import current_account_id, run_as
@@ -631,8 +632,19 @@ class ChatGenerationSupervisor:
         cancel_event: threading.Event | None = None,
         activity: InferenceActivityReservation | None = None,
     ) -> None:
-        with track_first_token_wait() as first_token_wait:
-            await self._produce_run(run_id, cancel_event, activity, first_token_wait)
+        from core.inference.api_monitor import override_claim_scope
+        from core.inference.token_limit import refund_if_unused
+
+        # The 202 that queued this run preceded inference, so this run's outcome decides the refund.
+        claim = {"spent": None, "generated": False}
+        with track_first_token_wait() as first_token_wait, override_claim_scope(claim):
+            try:
+                await self._produce_run(run_id, cancel_event, activity, first_token_wait)
+            finally:
+                if claim.get("owned") and not claim.get("completed") and not claim.get("generated"):
+                    # Taken atomically, so a racing cancel and this worker never both refund it.
+                    claim["spent"] = await asyncio.to_thread(db.take_token_override, run_id)
+                    await refund_if_unused(claim, failed = True)
 
     async def _produce_run(
         self,
@@ -691,6 +703,11 @@ class ChatGenerationSupervisor:
             worker_token = await asyncio.to_thread(db.get_worker_token, run_id)
             if worker_token is None:
                 return
+            state = await asyncio.to_thread(db.get_run_state, run_id)
+            if (claim := override_claim()) is not None and state is not None:
+                # This worker settles the override of a run it found active (a lifecycle cancel can
+                # end it before mark_running); a finished or already-cancelled run is not refunded.
+                claim["owned"] = state["status"] not in db.TERMINAL_STATUSES
             if cancel_event.is_set():
                 shutting_down = run_id in self._shutdown_runs
                 await asyncio.to_thread(
@@ -736,6 +753,7 @@ class ChatGenerationSupervisor:
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
                 via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
+                request_payload.pop(db.TOKEN_LIMIT_OVERRIDE_FIELD, None)
                 _attach_embedded_images(request_payload, self._detached_images.pop(run_id, {}))
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 # Prep runs before the first-token budget; one later touch cannot cover prep longer than the lease
@@ -846,6 +864,8 @@ class ChatGenerationSupervisor:
                 error = "Generation stream ended before completion"
             else:
                 status = "completed"
+                if (claim := override_claim()) is not None:
+                    claim["completed"] = True
             await asyncio.to_thread(
                 db.finish_run,
                 run_id,

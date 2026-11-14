@@ -2739,7 +2739,7 @@ def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
     monkeypatch.setattr(
         api_monitor,
         "mark_first_token",
-        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+        lambda mid, **kwargs: (stamped.append(mid), real_mark(mid, **kwargs))[1],
     )
 
     async def run():

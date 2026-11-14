@@ -8,6 +8,7 @@ import {
 import { useT } from "@/i18n";
 import { AccountPasswordDialog } from "../components/change-password-dialog";
 import { SettingsRow } from "../components/settings-row";
+import { TokenLimitSection } from "../components/token-limit-section";
 
 export function ProfileTab() {
   const t = useT();
@@ -37,6 +38,7 @@ export function ProfileTab() {
         <AccountPasswordDialog />
       </SettingsRow>
       <ProfileStatsPanel />
+      <TokenLimitSection />
     </div>
   );
 }

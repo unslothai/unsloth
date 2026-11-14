@@ -3702,6 +3702,22 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
+async def _enforce_token_limit(request: Any) -> None:
+    state = getattr(request, "state", None)
+    if state is not None and getattr(state, "token_limit_admitted", False):
+        return
+    from core.inference import token_limit
+
+    spent = await asyncio.to_thread(token_limit.enforce)
+    if spent and (claim := override_claim()) is not None:
+        claim["spent"] = spent
+        claim["account"] = current_account()
+    if state is not None:
+        state.token_limit_admitted = True
+        if spent:
+            state.token_limit_override = spent
+
+
 from state.tool_approvals import (
     resolve_tool_decision,
     tool_decision_grants_host_access,
@@ -3709,7 +3725,10 @@ from state.tool_approvals import (
 )
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
-from core.inference.api_monitor import api_monitor
+from core.inference.api_monitor import (
+    api_monitor,
+    override_claim,
+)
 from core.inference.image_orientation import exif_upright
 from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
@@ -7187,6 +7206,7 @@ def _monitor_usage(
     *,
     timings: Optional[dict] = None,
     stop_reason: Optional[str] = None,
+    reported_chars: Optional[int] = None,
 ):
     # Only a suppressed row relays: a call with its own row must not clobber the wrapper's.
     if not monitor_id and isinstance(timings, dict) and timings:
@@ -7201,14 +7221,33 @@ def _monitor_usage(
                     sink.get("context_length"),
                     timings = timings,
                 )
-    # isinstance, not truthiness: a non-dict usage would raise into the stream.
-    if isinstance(usage, dict) and usage:
+    # isinstance, not truthiness: a non-dict usage would raise into the stream. All zeros is an
+    # adapter's placeholder (no stats yet), not a report: leave the fallback estimate to it.
+    if isinstance(usage, dict) and any(
+        usage.get(key)
+        for key in (
+            "prompt_tokens",
+            "input_tokens",
+            "completion_tokens",
+            "output_tokens",
+            "total_tokens",
+        )
+    ):
         api_monitor.set_usage(
             monitor_id,
             prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens"),
-            completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens"),
+            # A reported 0 (max_tokens 0 scoring) is real output usage, not a missing count.
+            completion_tokens = next(
+                (
+                    usage[key]
+                    for key in ("completion_tokens", "output_tokens")
+                    if usage.get(key) is not None
+                ),
+                None,
+            ),
             total_tokens = usage.get("total_tokens"),
             context_length = context_length,
+            reported_chars = reported_chars,
         )
     tok_per_sec = prompt_tok_per_sec = prompt_ms = decode_ms = None
     if isinstance(timings, dict):
@@ -7454,7 +7493,11 @@ async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_ti
         timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
 
 
-def _monitor_call_text(name: Any, arguments: Any = None) -> str:
+def _monitor_call_text(
+    name: Any,
+    arguments: Any = None,
+    cap: Optional[int] = 500,
+) -> str:
     call_name = str(name or "tool")
     if arguments is None or arguments == "":
         return f"Tool call: {call_name}"
@@ -7462,12 +7505,21 @@ def _monitor_call_text(name: Any, arguments: Any = None) -> str:
         args_text = json.dumps(arguments, default = str)
     else:
         args_text = arguments
-    if len(args_text) > 500:
-        args_text = args_text[:497] + "..."
+    if cap is not None and len(args_text) > cap:
+        args_text = args_text[: cap - 3] + "..."
     return f"Tool call: {call_name}({args_text})"
 
 
-def _monitor_tool_calls_text(tool_calls: Any) -> str:
+def _monitor_tool_calls_text(tool_calls: Any, monitor_id: Optional[str] = None) -> str:
+    """Capped preview; with ``monitor_id`` the trimmed remainder still counts as output."""
+    preview = _monitor_tool_calls_text_capped(tool_calls)
+    if monitor_id and preview:
+        full = _monitor_tool_calls_text_capped(tool_calls, cap = None)
+        api_monitor.count_output(monitor_id, len(full) - len(preview))
+    return preview
+
+
+def _monitor_tool_calls_text_capped(tool_calls: Any, cap: Optional[int] = 500) -> str:
     if not isinstance(tool_calls, list):
         return ""
     parts: list[str] = []
@@ -7481,7 +7533,7 @@ def _monitor_tool_calls_text(tool_calls: Any) -> str:
         args = fn.get("arguments")
         if args is None:
             args = tool_call.get("arguments")
-        parts.append(_monitor_call_text(name, args))
+        parts.append(_monitor_call_text(name, args, cap))
     return "\n".join(parts)
 
 
@@ -7555,7 +7607,10 @@ def _flush_monitor_stream_tool_calls(
             name = name[:497] + "..."
         parts.append(_monitor_call_text(name or "<unknown>", arguments))
     prefix = "\n" if separate else ""
-    api_monitor.append_reply(monitor_id, prefix + "\n".join(parts), stamp_first_token = False)
+    # Their arguments were counted as they streamed; this is only the preview.
+    api_monitor.append_reply(
+        monitor_id, prefix + "\n".join(parts), stamp_first_token = False, counted = True
+    )
 
 
 def _monitor_openai_chunk(
@@ -7599,6 +7654,12 @@ def _monitor_openai_chunk(
             choice_index = idx
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
+        if not streaming and isinstance(message, dict):
+            # A whole response's thinking never reaches the reply preview: count it for estimates.
+            reasoning = message.get("reasoning_content")
+            api_monitor.count_output(
+                monitor_id, len(reasoning) if isinstance(reasoning, str) else 0
+            )
         raw_content = delta.get("content") if isinstance(delta, dict) else None
         if isinstance(delta, dict) and (
             delta.get("reasoning_content")
@@ -7612,7 +7673,19 @@ def _monitor_openai_chunk(
                 )
             )
         ):
-            api_monitor.mark_first_token(monitor_id)
+            reasoning = delta.get("reasoning_content")
+            api_monitor.mark_first_token(
+                monitor_id,
+                output_chars = len(reasoning)
+                if isinstance(reasoning, str)
+                else sum(
+                    len(_delta_text(part.get("thinking")) or "")
+                    for part in raw_content
+                    if isinstance(part, dict) and part.get("type") == "thinking"
+                )
+                if isinstance(raw_content, list)
+                else 0,
+            )
 
         streamed_tool_delta = False
         if streaming and isinstance(delta, dict):
@@ -7646,7 +7719,7 @@ def _monitor_openai_chunk(
                 _flush_monitor_stream_tool_calls(monitor_id, choice_index)
             continue
         if not streaming and isinstance(delta, dict):
-            tool_text = _monitor_tool_calls_text(delta.get("tool_calls"))
+            tool_text = _monitor_tool_calls_text(delta.get("tool_calls"), monitor_id)
             if tool_text:
                 api_monitor.append_reply(monitor_id, tool_text)
                 continue
@@ -7656,8 +7729,13 @@ def _monitor_openai_chunk(
             text = message.get("content")
             if isinstance(text, str):
                 reply_parts.append((idx, text))
+                # Calls beside visible text are generated output too.
+                api_monitor.count_output(
+                    monitor_id,
+                    len(_monitor_tool_calls_text_capped(message.get("tool_calls"), cap = None)),
+                )
             else:
-                tool_text = _monitor_tool_calls_text(message.get("tool_calls"))
+                tool_text = _monitor_tool_calls_text(message.get("tool_calls"), monitor_id)
                 if tool_text:
                     reply_parts.append((idx, tool_text))
         if streaming and choice.get("finish_reason"):
@@ -7824,7 +7902,10 @@ def _monitor_anthropic_payload(
         delta = data.get("delta") or {}
         text = delta.get("text") if isinstance(delta, dict) else None
         if isinstance(delta, dict) and delta.get("type") == "thinking_delta":
-            api_monitor.mark_first_token(monitor_id)
+            thinking = delta.get("thinking")
+            api_monitor.mark_first_token(
+                monitor_id, output_chars = len(thinking) if isinstance(thinking, str) else 0
+            )
         if isinstance(text, str) and text:
             api_monitor.append_reply(monitor_id, text)
         elif isinstance(delta, dict) and delta.get("type") == "input_json_delta":
@@ -7878,10 +7959,12 @@ def _monitor_anthropic_sse_line(
     return _monitor_anthropic_payload(monitor_id, data, context_length)
 
 
-def _monitor_anthropic_content_blocks(content: Any) -> str:
+def _monitor_anthropic_content_blocks(content: Any) -> tuple[str, int]:
+    """Capped preview text, plus the generated characters it leaves out (trimmed input, thinking)."""
     if not isinstance(content, list):
-        return ""
+        return "", 0
     parts: list[str] = []
+    trimmed = 0
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -7889,7 +7972,11 @@ def _monitor_anthropic_content_blocks(content: Any) -> str:
             parts.append(block["text"])
         elif block.get("type") in ("tool_use", "server_tool_use"):
             parts.append(_monitor_call_text(block.get("name"), block.get("input")))
-    return "".join(parts)
+            full = _monitor_call_text(block.get("name"), block.get("input"), cap = None)
+            trimmed += len(full) - len(parts[-1])
+        elif block.get("type") == "thinking" and isinstance(block.get("thinking"), str):
+            trimmed += len(block["thinking"])
+    return "".join(parts), trimmed
 
 
 def _monitor_anthropic_json_response(
@@ -7911,9 +7998,10 @@ def _monitor_anthropic_json_response(
     if not isinstance(data, dict):
         api_monitor.finish(monitor_id, status)
         return
-    text = _monitor_anthropic_content_blocks(data.get("content"))
+    text, trimmed = _monitor_anthropic_content_blocks(data.get("content"))
     if text:
         api_monitor.set_reply(monitor_id, text)
+    api_monitor.count_output(monitor_id, trimmed)
     if data.get("stop_reason"):
         api_monitor.set_perf(monitor_id, stop_reason = str(data["stop_reason"]))
     _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
@@ -8137,6 +8225,8 @@ async def _monitored_media_request(
     request: Request, *, model: Optional[str], prompt: str, subject: Optional[str]
 ):
     """Give the image/audio routes the API monitor row the text routes already open."""
+    # Their receipts debit the allowance, so they are admitted like the text routes.
+    await _enforce_token_limit(request)
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -22443,6 +22533,7 @@ async def generate_stream(
             headers = {"Retry-After": "1"},
         )
 
+    await _enforce_token_limit(fastapi_request)
     backend = await asyncio.to_thread(get_inference_backend)
 
     if not backend.active_model_name:
@@ -22485,6 +22576,11 @@ async def generate_stream(
     async def stream():
         gen = None
         completed = False
+        stats_holder: dict = {}
+        # The backend yields the cumulative reply, so the last chunk is the whole text so far.
+        streamed = ""
+        monitor_id = None
+        failure = None
         # Watch for disconnect: the generator only awaits to_thread(next), so it would not notice.
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(fastapi_request, cancel_event)
@@ -22493,6 +22589,15 @@ async def generate_stream(
         _tracker = _TrackedCancel(cancel_event, model = backend.active_model_name)
         _tracker.__enter__()
         try:
+            via_api_key = _request_used_api_key(fastapi_request)
+            monitor_id = api_monitor.start(
+                endpoint = "/api/inference/generate/stream",
+                method = "POST",
+                model = backend.active_model_name,
+                prompt = "",
+                subject = current_subject,
+                via_api_key = via_api_key,
+            )
             gen = backend.generate_chat_response(
                 messages = request.messages,
                 system_prompt = request.system_prompt,
@@ -22505,6 +22610,7 @@ async def generate_stream(
                 repetition_penalty = request.repetition_penalty,
                 presence_penalty = request.presence_penalty,
                 cancel_event = cancel_event,
+                stats_holder = stats_holder,
             )
             gen_step = ThreadStepper(gen).next
             _DONE = object()
@@ -22525,9 +22631,11 @@ async def generate_stream(
                 if isinstance(chunk, GenStreamError):
                     # In-band backend sentinel under a sent 200: flag failed so the middleware won't claim.
                     mark_response_failed(_gs_scope)
-                    yield f"data: {json.dumps({'error': _friendly_gen_stream_error(chunk)})}\n\n"
+                    failure = _friendly_gen_stream_error(chunk)
+                    yield f"data: {json.dumps({'error': failure})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
+                streamed = chunk
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             if completed:
                 yield "data: [DONE]\n\n"
@@ -22542,7 +22650,8 @@ async def generate_stream(
             logger.error(f"Error during generation: {e}", exc_info = True)
             # Already sent 200: flag failure out-of-band so the middleware won't claim the model.
             mark_response_failed(_gs_scope)
-            yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+            failure = _friendly_error(e)
+            yield f"data: {json.dumps({'error': failure})}\n\n"
             yield "data: [DONE]\n\n"
         finally:
             # Nested so a teardown failure still unregisters; a phantom entry 409s swaps.
@@ -22557,7 +22666,33 @@ async def generate_stream(
                     except (RuntimeError, ValueError):
                         pass
             finally:
-                _tracker.__exit__(None, None, None)
+                try:
+                    stats = stats_holder.get("stats") or {}
+                    usage = stats.get("usage")
+                    if not usage and streamed:
+                        # Stopped before gen_done: settle a text-length estimate, or nothing is charged.
+                        prompt = -(
+                            -len(
+                                (request.system_prompt or "")
+                                + _monitor_prompt_from_messages(request.messages)
+                            )
+                            // 4
+                        )
+                        completion = -(-len(streamed) // 4)
+                        usage = {
+                            "prompt_tokens": prompt,
+                            "completion_tokens": completion,
+                            "total_tokens": prompt + completion,
+                        }
+                    _monitor_usage(monitor_id, usage, timings = stats.get("timings"))
+                    if failure is not None:
+                        api_monitor.fail(monitor_id, failure)
+                    elif completed:
+                        api_monitor.finish(monitor_id)
+                    else:
+                        api_monitor.finish(monitor_id, "cancelled")
+                finally:
+                    _tracker.__exit__(None, None, None)
 
     return _sse_streaming_response(stream())
 
@@ -30050,6 +30185,19 @@ async def _proxy_to_external_provider(
                 account_id,
                 refresh_access = _refresh_codex_access,
             )
+            # Like the generic provider path: the receipt is what debits a temporary or API-key call.
+            # Started in the body (still under the request's scopes) so an unstarted one leaks no row.
+            codex_monitor_id = None
+            codex_stopped = False
+            if not getattr(getattr(request, "state", None), "skip_api_monitor", False):
+                codex_monitor_id = api_monitor.start(
+                    endpoint = getattr(getattr(request, "url", None), "path", "/v1/chat/completions"),
+                    via_api_key = _request_used_api_key(request),
+                    method = getattr(request, "method", "POST"),
+                    model = model,
+                    prompt = _monitor_prompt_from_messages(payload.messages),
+                    subject = current_subject,
+                )
             try:
                 # Closing upstream from the watcher makes cancel immediate even while no SSE line arrives.
                 generator = (
@@ -30076,8 +30224,10 @@ async def _proxy_to_external_provider(
                 )
                 async for line in generator:
                     if cancel_event.is_set() or await request.is_disconnected():
+                        codex_stopped = True
                         await generator.aclose()
                         break
+                    _monitor_openai_sse_line(codex_monitor_id, line)
                     if not _ui_events and is_ui_control_sse_line(line):
                         if _drop_keepalive.due():
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
@@ -30094,11 +30244,16 @@ async def _proxy_to_external_provider(
                 # The loop can end without opening the turn a withheld call promised; flush the owed terminal chunk.
                 _owed = _tool_call_stripper.owed_terminal_chunk()
                 if _owed is not None:
+                    _monitor_openai_sse_line(codex_monitor_id, _owed)
                     yield f"{_owed}\n\n"
+                # The client can return silently on cancel: that is a stop, not a completion.
+                if not codex_stopped and not cancel_event.is_set():
+                    _monitor_openai_sse_line(codex_monitor_id, "data: [DONE]")
                 yield "data: [DONE]\n\n"
             except asyncio.CancelledError:
                 raise
             except CodexReauthorizationError as exc:
+                api_monitor.fail(codex_monitor_id, str(exc))
                 from core.inference.openai_codex_auth import (
                     mark_reauthorization_required,
                     provider_oauth_write_guard,
@@ -30116,6 +30271,7 @@ async def _proxy_to_external_provider(
                 )
                 yield "data: [DONE]\n\n"
             except CodexQuotaError as exc:
+                api_monitor.fail(codex_monitor_id, str(exc))
                 yield (
                     "data: "
                     + json.dumps(
@@ -30132,6 +30288,7 @@ async def _proxy_to_external_provider(
                 yield "data: [DONE]\n\n"
 
             except CodexTransportError as exc:
+                api_monitor.fail(codex_monitor_id, str(exc))
                 logger.warning(
                     "openai_codex.stream_failed",
                     error_type = type(exc).__name__,
@@ -30146,6 +30303,7 @@ async def _proxy_to_external_provider(
                 yield "data: [DONE]\n\n"
 
             except Exception as exc:
+                api_monitor.fail(codex_monitor_id, _friendly_error(exc))
                 logger.warning(
                     "openai_codex.stream_failed",
                     error_type = type(exc).__name__,
@@ -30161,6 +30319,8 @@ async def _proxy_to_external_provider(
                 )
                 yield "data: [DONE]\n\n"
             finally:
+                # Idempotent: a [DONE] or failure above already settled it.
+                api_monitor.finish(codex_monitor_id, "cancelled")
                 await client.close()
                 await _stop_local_disconnect_cancel_watcher(disconnect_task)
 
@@ -32194,6 +32354,7 @@ async def openai_chat_completions(
             status_code = 403,
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
         )
+    await _enforce_token_limit(request)
     response = await produce_openai_chat_completions(
         payload,
         request,
@@ -33822,6 +33983,7 @@ async def produce_openai_chat_completions(
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
+                    _passes_completion = 0
                     approval_flush_pending = False
 
                     def _release_held_mention():
@@ -33839,7 +34001,9 @@ async def produce_openai_chat_completions(
                             return chunks
                         reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                         if reasoning_delta:
-                            api_monitor.mark_first_token(monitor_id)
+                            api_monitor.mark_first_token(
+                                monitor_id, output_chars = len(reasoning_delta)
+                            )
                             chunks.append(
                                 _gguf_chat_delta_line(
                                     ChoiceDelta(reasoning_content = reasoning_delta)
@@ -33855,7 +34019,9 @@ async def produce_openai_chat_completions(
                         chunks = []
                         if final_reasoning:
                             # Held-back markers can make this the FIRST output of all.
-                            api_monitor.mark_first_token(monitor_id)
+                            api_monitor.mark_first_token(
+                                monitor_id, output_chars = len(final_reasoning)
+                            )
                             chunks.append(
                                 _gguf_chat_delta_line(
                                     ChoiceDelta(reasoning_content = final_reasoning)
@@ -33920,6 +34086,13 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_TOOL_HEARTBEAT_SSE
                             continue
 
+                        if event["type"] == "tool_args":
+                            # Generated arguments (not tool stdout): count them for a stopped request.
+                            _args_text = event.get("text")
+                            api_monitor.mark_first_token(
+                                monitor_id,
+                                output_chars = len(_args_text) if isinstance(_args_text, str) else 0,
+                            )
                         if event["type"] in (
                             "tool_output",
                             "tool_args",
@@ -33988,6 +34161,18 @@ async def produce_openai_chat_completions(
                             continue
 
                         if event["type"] == "context_usage":
+                            # A run stopped at the next approval wait still settles this pass's usage.
+                            _passes_completion += int(event.get("completion_tokens") or 0)
+                            _pass_prompt = int(event.get("prompt_tokens") or 0)
+                            _monitor_usage(
+                                monitor_id,
+                                {
+                                    "prompt_tokens": _pass_prompt,
+                                    "completion_tokens": _passes_completion,
+                                    "total_tokens": _pass_prompt + _passes_completion,
+                                },
+                                _monitor_context_length(),
+                            )
                             # Must not reach the content branch below: its empty text resets prev_text.
                             if _ui_events:
                                 yield f"data: {json.dumps(event)}\n\n"
@@ -34031,7 +34216,9 @@ async def produce_openai_chat_completions(
                             continue
                         reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                         if reasoning_delta:
-                            api_monitor.mark_first_token(monitor_id)
+                            api_monitor.mark_first_token(
+                                monitor_id, output_chars = len(reasoning_delta)
+                            )
                             yield _gguf_chat_delta_line(
                                 ChoiceDelta(reasoning_content = reasoning_delta)
                             )
@@ -34262,6 +34449,9 @@ async def produce_openai_chat_completions(
                 context_truncation = None
                 gen = gguf_generate_with_tools()
                 raw_text = None
+                passes_completion = 0
+                # The last pass's usage while no text followed it, so the final reply is already covered.
+                settled = None
                 try:
                     for event in gen:
                         if cancel_event.is_set():
@@ -34270,6 +34460,16 @@ async def produce_openai_chat_completions(
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
                             timings = event.get("timings")
+                        elif event.get("type") == "context_usage":
+                            # As in the streaming branch: a run stopped at a tool wait keeps this pass's usage.
+                            passes_completion += int(event.get("completion_tokens") or 0)
+                            pass_prompt = int(event.get("prompt_tokens") or 0)
+                            settled = {
+                                "prompt_tokens": pass_prompt,
+                                "completion_tokens": passes_completion,
+                                "total_tokens": pass_prompt + passes_completion,
+                            }
+                            _monitor_usage(monitor_id, settled, _monitor_context_length())
                         elif event.get("type") == "context_truncated":
                             context_truncation = _accumulate_context_truncation(
                                 context_truncation, event
@@ -34281,6 +34481,7 @@ async def produce_openai_chat_completions(
                             # preamble emitted before a tool call (its own earlier
                             # turn) isn't carried -- only the final turn is.
                             raw_text = event.get("text", "")
+                            settled = None
                     if raw_text is not None:
                         # Stripped once: stripping every cumulative event is quadratic in the turn.
                         full_text = _strip_tool_xml_for_display(
@@ -34288,7 +34489,7 @@ async def produce_openai_chat_completions(
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                             enabled_tool_names = _gguf_display_tool_names,
                         )
-                    return full_text, usage, finish, timings, context_truncation
+                    return full_text, usage, finish, timings, context_truncation, settled
                 finally:
                     # Close on early break/cancel so the llama-server socket is released.
                     try:
@@ -34362,6 +34563,7 @@ async def produce_openai_chat_completions(
                         completion_finish,
                         completion_timings,
                         completion_context_truncation,
+                        settled_usage,
                     ) = await asyncio.shield(drain_task)
                 finally:
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -34397,6 +34599,10 @@ async def produce_openai_chat_completions(
                     ),
                 )
                 api_monitor.set_reply(monitor_id, visible_text)
+                api_monitor.count_output(monitor_id, len(reasoning_text))
+                if settled_usage is not None and not completion_usage:
+                    # Stopped after a reported pass: re-settled so that report covers the reply set above.
+                    _monitor_usage(monitor_id, settled_usage, _monitor_context_length())
                 _monitor_usage(
                     monitor_id,
                     {
@@ -34637,7 +34843,9 @@ async def produce_openai_chat_completions(
                             continue
                         reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                         if reasoning_delta:
-                            api_monitor.mark_first_token(monitor_id)
+                            api_monitor.mark_first_token(
+                                monitor_id, output_chars = len(reasoning_delta)
+                            )
                             yield _gguf_chat_delta_line(
                                 ChoiceDelta(reasoning_content = reasoning_delta)
                             )
@@ -34648,7 +34856,7 @@ async def produce_openai_chat_completions(
                     final_reasoning, final_visible = reasoning_extractor.finish()
                     if final_reasoning:
                         # Held-back markers can make this the FIRST output of all.
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(final_reasoning))
                         yield _gguf_chat_delta_line(ChoiceDelta(reasoning_content = final_reasoning))
                     if final_visible:
                         api_monitor.append_reply(monitor_id, final_visible)
@@ -35098,6 +35306,11 @@ async def produce_openai_chat_completions(
                         f"Choice {_idx + 1}:\n{text}" for _idx, text in enumerate(_monitor_replies)
                     )
                 api_monitor.set_reply(monitor_id, monitor_reply)
+                # set_reply replaces the count; thinking is split out of the replies above.
+                api_monitor.count_output(
+                    monitor_id,
+                    sum(len(choice.message.reasoning_content or "") for choice in _choices),
+                )
                 _monitor_usage(
                     monitor_id,
                     {
@@ -35706,6 +35919,9 @@ async def produce_openai_chat_completions(
         async def sf_tool_stream():
             gen = None
             _sf_next_task = None
+            _sf_streamed_calls: set = set()
+            _sf_seen_stats = None
+            _sf_reported_chars = 0
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -35740,7 +35956,7 @@ async def produce_openai_chat_completions(
                         return out
                     reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                     if reasoning_delta:
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(reasoning_delta))
                         out.append(
                             _chat_reasoning_chunk(
                                 completion_id, created, model_name, reasoning_delta
@@ -35759,7 +35975,7 @@ async def produce_openai_chat_completions(
                     out = []
                     if fr:
                         # Held-back markers can make this the FIRST output of all.
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(fr))
                         out.append(_chat_reasoning_chunk(completion_id, created, model_name, fr))
                     if fv:
                         api_monitor.append_reply(monitor_id, fv)
@@ -35799,6 +36015,10 @@ async def produce_openai_chat_completions(
                     approval_flush_pending = False
                     # Done; drop the reference so the finally-block drain no-ops.
                     _sf_next_task = None
+                    if _sf_stats_holder.get("stats") is not _sf_seen_stats:
+                        # A pass ended: its stats cover the output streamed so far.
+                        _sf_seen_stats = _sf_stats_holder.get("stats")
+                        _sf_reported_chars = api_monitor.reply_chars(monitor_id)
                     if event is _sf_tool_sentinel:
                         break
                     if isinstance(event, GenStreamError):
@@ -35819,6 +36039,26 @@ async def produce_openai_chat_completions(
                         yield _OPENAI_TOOL_HEARTBEAT_SSE
                         continue
 
+                    if event["type"] == "tool_args":
+                        # Generated arguments (not tool stdout): count them for a stopped request.
+                        _args_text = event.get("text")
+                        _sf_streamed_calls.add(event.get("tool_call_id"))
+                        api_monitor.mark_first_token(
+                            monitor_id,
+                            output_chars = len(_args_text) if isinstance(_args_text, str) else 0,
+                        )
+                    elif (
+                        event["type"] == "tool_start"
+                        and event.get("tool_call_id") not in _sf_streamed_calls
+                        and isinstance(event.get("arguments_text"), str)
+                    ):
+                        # A finalized call (python, terminal) arrives whole here, never as tool_args.
+                        api_monitor.mark_first_token(
+                            monitor_id, decoded = False, output_chars = len(event["arguments_text"])
+                        )
+                        if _sf_seen_stats is not None:
+                            # Executed after its pass ended, so that pass's reported usage covers it.
+                            _sf_reported_chars = api_monitor.reply_chars(monitor_id)
                     if event["type"] in ("tool_output", "tool_args", "tool_approved"):
                         # Live stdout/stderr, tool-call arguments as the model writes them, or an approval.
                         if _ui_events:
@@ -35891,7 +36131,7 @@ async def produce_openai_chat_completions(
                     # Split reasoning vs visible; only visible reaches the monitor.
                     reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                     if reasoning_delta:
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(reasoning_delta))
                         yield _chat_reasoning_chunk(
                             completion_id, created, model_name, reasoning_delta
                         )
@@ -35923,6 +36163,8 @@ async def produce_openai_chat_completions(
                         monitor_id,
                         _stats.get("usage"),
                         timings = _stats.get("timings"),
+                        # Interrupted mid-pass: the stats cover only the earlier passes.
+                        reported_chars = _sf_reported_chars if cancel_event.is_set() else None,
                     )
                 if cancel_event.is_set():
                     mark_current_response_failed()
@@ -35979,9 +36221,11 @@ async def produce_openai_chat_completions(
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
             _sf_context_truncation = None
+            # The pass stats in place when the kept turn's text arrived; replaced once that pass reports.
+            _sf_text_stats = None
 
             def _drain_to_text():
-                nonlocal _sf_context_truncation
+                nonlocal _sf_context_truncation, _sf_text_stats
                 full_text = ""
                 # Only the resumed turn skips the generation prompt; track the mode of the kept turn.
                 continued = _sf_continue
@@ -36003,6 +36247,7 @@ async def produce_openai_chat_completions(
                     _event_type = event.get("type")
                     if _event_type == "content":
                         raw_text = event.get("text", "")
+                        _sf_text_stats = _sf_stats_holder.get("stats")
                         prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                     elif _event_type == "tool_start" or (
                         _event_type == "status" and not event.get("text")
@@ -36028,6 +36273,7 @@ async def produce_openai_chat_completions(
                 reasoning_prefilled = _sf_drain_prefilled,
             )
             api_monitor.set_reply(monitor_id, _visible_text)
+            api_monitor.count_output(monitor_id, len(_reasoning_text))
             _stats = _sf_stats_holder.get("stats")
             # Outside the stats block: a run with unknown token count reports no stats.
             _sf_json_finish = "stop" if cancel_event.is_set() else _stats_finish_reason(_stats)
@@ -36037,6 +36283,8 @@ async def produce_openai_chat_completions(
                     monitor_id,
                     _stats.get("usage"),
                     timings = _stats.get("timings"),
+                    # A stop mid-pass: the earlier passes' counts do not cover the kept turn's text.
+                    reported_chars = None if _stats is not _sf_text_stats else 0,
                 )
             if cancel_event.is_set():
                 from core.inference.llama_keepwarm import mark_current_response_failed
@@ -36543,7 +36791,7 @@ async def produce_openai_chat_completions(
                     # Split reasoning first so tool markup inside a reasoning block is never healed.
                     reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                     if reasoning_delta:
-                        api_monitor.mark_first_token(monitor_id)
+                        api_monitor.mark_first_token(monitor_id, output_chars = len(reasoning_delta))
                         yield _chat_reasoning_chunk(
                             completion_id, created, model_name, reasoning_delta
                         )
@@ -36569,7 +36817,7 @@ async def produce_openai_chat_completions(
                 final_reasoning, final_visible = reasoning_extractor.finish()
                 if final_reasoning:
                     # Held-back markers can make this the FIRST output of all.
-                    api_monitor.mark_first_token(monitor_id)
+                    api_monitor.mark_first_token(monitor_id, output_chars = len(final_reasoning))
                     yield _chat_reasoning_chunk(completion_id, created, model_name, final_reasoning)
                 if final_visible:
                     if healer is None:
@@ -37009,6 +37257,10 @@ async def produce_openai_chat_completions(
             else:
                 _monitor_reply = _reply_text(_msg, _finish)
             api_monitor.set_reply(monitor_id, _monitor_reply)
+            api_monitor.count_output(
+                monitor_id,
+                sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies),
+            )
             if len(_choices) <= 1:
                 # Suppressed for n > 1: choices can end differently.
                 api_monitor.set_perf(monitor_id, stop_reason = _finish)
@@ -39121,6 +39373,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     """
     from utils.hardware import DeviceType, get_device
 
+    await _enforce_token_limit(request)
     try:
         _pre = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -39961,6 +40214,7 @@ def _embeddings_input_present(body: dict) -> bool:
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Unsloth's configured embedding model."""
+    await _enforce_token_limit(request)
     if model_slots.slots:
         try:
             await _route_to_extra_slot(_raw_body_model(await request.json()))
@@ -41053,7 +41307,13 @@ async def _responses_non_streaming(
             max_output_tokens = payload.max_output_tokens,
             instructions = payload.instructions,
         )
-        api_monitor.set_reply(monitor_id, text or _monitor_tool_calls_text(tool_calls))
+        preview = text or _monitor_tool_calls_text(tool_calls)
+        api_monitor.set_reply(monitor_id, preview)
+        # set_reply replaces the count: add the thinking and tool calls the preview leaves out.
+        full_calls = _monitor_tool_calls_text_capped(tool_calls, cap = None)
+        api_monitor.count_output(
+            monitor_id, len(reasoning_text) + len(text) + len(full_calls) - len(preview)
+        )
         _monitor_usage(
             monitor_id,
             usage_data,
@@ -41415,6 +41675,17 @@ class _ResponsesStreamTranslator:
                 tc = self._healed_tc(value)
                 if tc is None:
                     continue
+                fn = tc.get("function") if isinstance(tc, dict) else None
+                if isinstance(fn, dict):
+                    # Native deltas count as they stream; a healed call is counted here instead.
+                    api_monitor.mark_first_token(
+                        self.monitor_id,
+                        output_chars = sum(
+                            len(v)
+                            for v in (fn.get("name"), fn.get("arguments"))
+                            if isinstance(v, str)
+                        ),
+                    )
                 out.extend(self._close_message_item())
                 out.extend(self._tool_call_delta_events(tc))
         return out
@@ -41581,7 +41852,7 @@ class _ResponsesStreamTranslator:
         if reasoning_delta:
             # Not on visible text: the client already has this, so waiting would
             # time from the end of the thinking block instead.
-            api_monitor.mark_first_token(monitor_id)
+            api_monitor.mark_first_token(monitor_id, output_chars = len(reasoning_delta))
             yield from self._reasoning_text_events(reasoning_delta)
         # Visible text only, never reasoning. Healer events keep their order so text after a
         # healed call never jumps ahead of its function_call item.
@@ -41605,8 +41876,18 @@ class _ResponsesStreamTranslator:
             yield from self._visible_text_events(visible_delta)
 
         if delta.get("tool_calls"):
-            # A tool call is output the client already received; stamp it too.
-            api_monitor.mark_first_token(monitor_id)
+            # A tool call is output the client already received; stamp it and count its fragments,
+            # since the preview reaches the monitor only in finish(), which cancellation skips.
+            api_monitor.mark_first_token(
+                monitor_id,
+                output_chars = sum(
+                    len(value)
+                    for tc in delta["tool_calls"]
+                    if isinstance(tc, dict) and isinstance(fn := tc.get("function"), dict)
+                    for value in (fn.get("name"), fn.get("arguments"))
+                    if isinstance(value, str)
+                ),
+            )
         for tc in delta.get("tool_calls") or []:
             if (
                 self.payload.parallel_tool_calls is False
@@ -41626,7 +41907,7 @@ class _ResponsesStreamTranslator:
         final_reasoning, final_visible = self.extractor.finish()
         if final_reasoning:
             # Held-back markers can make this the FIRST output of all.
-            api_monitor.mark_first_token(monitor_id)
+            api_monitor.mark_first_token(monitor_id, output_chars = len(final_reasoning))
             yield from self._reasoning_text_events(final_reasoning)
         # Heal held residue (an unclosed tool block) before the trailing text, keeping healer order.
         healer = self.healer
@@ -41756,7 +42037,9 @@ class _ResponsesStreamTranslator:
                         "input": custom_input,
                     },
                 }
-                api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], custom_input))
+                api_monitor.append_reply(
+                    monitor_id, _monitor_call_text(st["name"], custom_input), counted = True
+                )
                 yield self.sse("response.output_item.done", item_done)
                 continue
 
@@ -41810,7 +42093,9 @@ class _ResponsesStreamTranslator:
                     "arguments": st["arguments"],
                 },
             }
-            api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], st["arguments"]))
+            api_monitor.append_reply(
+                monitor_id, _monitor_call_text(st["name"], st["arguments"]), counted = True
+            )
             yield self.sse("response.output_item.done", item_done)
 
         total_tokens = self.input_tokens + self.output_tokens
@@ -42545,6 +42830,7 @@ async def openai_responses(
     """
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
+    await _enforce_token_limit(request)
     for history_param in ("previous_response_id", "conversation"):
         if getattr(payload, history_param, None) is not None:
             raise HTTPException(
@@ -45185,6 +45471,10 @@ async def _anthropic_in_process_messages(
                 _monitor_perf_sink.reset(sink_token)
             # A stopped run returns what it had; the llama-server path never answers one.
             if cancel_event.is_set():
+                try:
+                    _monitor_openai_chunk(monitor_id, json.loads(result.body), context_length)
+                except (AttributeError, TypeError, ValueError):
+                    pass
                 raise asyncio.CancelledError()
             response = _anthropic_message_from_openai_completion(
                 json.loads(result.body),
@@ -45224,6 +45514,7 @@ async def anthropic_messages(
     _mark_claude_code_thinking(payload, request)
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
+    await _enforce_token_limit(request)
     if connection is not None:
         return await _anthropic_messages_via_connection(
             payload, request, current_subject, *connection

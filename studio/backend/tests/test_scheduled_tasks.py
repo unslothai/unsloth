@@ -1062,6 +1062,114 @@ def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     assert request.state.keyless_api_admitted is False
 
 
+def _seed_usage(total = 100):
+    from storage.api_usage_db import ApiUsageReceipt, record_api_usage
+    assert record_api_usage(
+        ApiUsageReceipt(
+            id = "earlier",
+            subject = "owner",
+            endpoint = "/v1/chat/completions",
+            model = "m",
+            status = "completed",
+            prompt_tokens = total - 10,
+            completion_tokens = 10,
+            total_tokens = total,
+            created_at = db.now_ms(),
+            via_api_key = False,
+        )
+    )
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_scheduled_replies_respect_the_cap_and_one_override(monkeypatch, external):
+    from core.inference import token_limit
+    from storage import providers_db
+
+    config = {"id": "conn-1", "is_enabled": 1, "display_name": "OpenAI", "provider_type": "openai"}
+    monkeypatch.setattr(providers_db, "get_provider", lambda provider_id: config)
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+    task = make_task(model = "external::conn-1::gpt-5-mini" if external else None)
+    _seed_usage()
+    token_limit.update_settings({"enabled": True, "limit": 100})
+    assert token_limit.status()["used"] == 100
+    producer = FakeProducer(completion("Done."))
+    for granted in (False, True, False):
+        if granted:
+            token_limit.grant_override()
+            assert generate(monkeypatch, producer, task).content == "Done."
+        else:
+            producer.payload = None
+            with pytest.raises(RunFailed, match = "token limit"):
+                generate(monkeypatch, producer, task)
+            assert producer.payload is None
+
+
+def test_a_scheduled_run_refused_before_inference_keeps_its_override(monkeypatch):
+    from fastapi import HTTPException
+
+    from core.inference import token_limit
+
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+    task = make_task()
+    _seed_usage()
+    token_limit.update_settings({"enabled": True, "limit": 100})
+    token_limit.grant_override()
+    refused = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded"))
+    with pytest.raises(RunFailed):
+        generate(monkeypatch, refused, task)
+    # Nothing was generated, so the override still admits the next run.
+    assert generate(monkeypatch, FakeProducer(completion("Done.")), task).content == "Done."
+
+
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_scheduled_usage_is_recorded_before_a_chat_is_saved(monkeypatch, external, empty):
+    import json
+
+    from core.inference import token_limit
+    from core.inference.api_monitor import ApiMonitor
+    from storage import providers_db
+    from storage.api_usage_db import record_api_usage
+
+    config = {"id": "conn-1", "is_enabled": 1, "display_name": "OpenAI", "provider_type": "openai"}
+    monkeypatch.setattr(providers_db, "get_provider", lambda provider_id: config)
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(record_api_usage)
+    task = make_task(model = "external::conn-1::gpt-5-mini" if external else None)
+
+    async def produce(payload, request, subject, *, cancel_on_disconnect):
+        entry = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = payload.model,
+            prompt = "",
+            subject = subject,
+            via_api_key = False,
+        )
+        monitor.set_usage(entry, prompt_tokens = 90, completion_tokens = 10, total_tokens = 100)
+        monitor.finish(entry)
+        data = json.loads(completion("" if empty else "Done.", reasoning = "Thinking.").body)
+        data["usage"] = {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}
+        return JSONResponse(data)
+
+    if empty:
+        with pytest.raises(RunFailed) as failure:
+            generate(monkeypatch, produce, task)
+        assert failure.value.code == "empty"
+    else:
+        answer = generate(monkeypatch, produce, task)
+    token_limit.update_settings({"enabled": True, "limit": 100})
+    assert token_limit.status()["used"] == 100
+    assert studio_db.list_chat_threads() == []
+    if not empty:
+        now = db.now_ms()
+        scheduler_module.save_chat(task, {"id": "run-1"}, answer, now, now + 1)
+        assert token_limit.status()["used"] == 100
+    with pytest.raises(RunFailed, match = "token limit"):
+        generate(monkeypatch, FakeProducer(completion("Unexpected.")), task)
+
+
 @pytest.fixture
 def projects_home(tmp_path, monkeypatch):
     # Project folders otherwise land in the real ~/Documents/Unsloth Studio.
