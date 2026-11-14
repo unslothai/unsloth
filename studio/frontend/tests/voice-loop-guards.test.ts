@@ -142,3 +142,9 @@ test("speech begun just before the reply ended keeps its opening frames", () => 
   // Every pushed frame gets a notSilent entry, or utteranceSpan reads a later frame's flag.
   assert.match(loop, /chunkVoiced\.push\(true\);\s*chunkNotSilent\.push\(true\);/);
 });
+
+test("a temporary chat never asks for its voice decisions to be logged", () => {
+  const client = readSrc("features/chat/voice/voice-models-client.ts");
+  assert.match(client, /const temporary = useChatRuntimeStore\.getState\(\)\.incognito \|\| \(threadId !== null && isThreadIncognito\(threadId\)\);/);
+  assert.match(client, /voice\.voiceLogEnabled && !temporary &&/);
+});
