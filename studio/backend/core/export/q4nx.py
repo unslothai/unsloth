@@ -130,6 +130,75 @@ def staged_output(out_dir: Path):
         shutil.rmtree(staging, ignore_errors = True)
 
 
+# (layers, hidden, experts) of FastFlowLM's AIE2P catalog (src/xclbins/*-NPU2 config.json):
+# the architecture alone is not enough, the converter applies the 35B-A3B config to any qwen35moe.
+_NPU_SHAPES = {
+    "llama": {
+        (16, 2048, 0): "Llama 3.2 1B",
+        (28, 3072, 0): "Llama 3.2 3B",
+        (32, 2560, 0): "Nanbeige4.1 3B",
+        (32, 4096, 0): "Llama 3.1 8B",
+    },
+    "qwen2": {(36, 2048, 0): "Qwen2.5 3B"},
+    "qwen2vl": {(36, 2048, 0): "Qwen2.5-VL 3B"},
+    "qwen3": {
+        (28, 1024, 0): "Qwen3 0.6B",
+        (28, 2048, 0): "Qwen3 1.7B",
+        (36, 2560, 0): "Qwen3 4B",
+        (36, 4096, 0): "Qwen3 8B",
+    },
+    "qwen3vl": {(36, 2560, 0): "Qwen3-VL 4B"},
+    "qwen35": {
+        (24, 1024, 0): "Qwen3.5 0.8B",
+        (24, 2048, 0): "Qwen3.5 2B",
+        (32, 2560, 0): "Qwen3.5 4B",
+        (32, 4096, 0): "Qwen3.5 9B",
+    },
+    "qwen35moe": {(40, 2048, 256): "Qwen3.5 / 3.6 35B-A3B"},
+    "gemma3": {(26, 1152, 0): "Gemma 3 1B", (34, 2560, 0): "Gemma 3 4B"},
+    "gemma4": {
+        (35, 1536, 0): "Gemma 4 E2B",
+        (42, 2560, 0): "Gemma 4 E4B",
+        (48, 3840, 0): "Gemma 4 12B",
+    },
+    "lfm2": {(16, 2048, 0): "LFM2 1.2B", (30, 2048, 0): "LFM2 2.6B"},
+    "phi3": {(32, 3072, 0): "Phi-4 mini"},
+    "gpt-oss": {(24, 2880, 32): "gpt-oss 20B"},
+}
+_GEOMETRY_KEYS = frozenset(
+    {"block_count", "embedding_length", "expert_count", "nextn_predict_layers"}
+)
+
+
+def require_npu_geometry(gguf_path: str) -> None:
+    """Refuse a GGUF of a size FastFlowLM cannot run on the NPU, before installing the converter."""
+    from utils.models.gguf_metadata import _parse_gguf_arch_uints, read_gguf_general_metadata
+
+    general = read_gguf_general_metadata(gguf_path) or {}
+    arch = (general.get("general.architecture") or "").lower()
+    shapes = _NPU_SHAPES.get(arch)
+    # Omni is matched by name in the converter and has no published catalog config.
+    names = (general.get(k, "").lower() for k in ("general.basename", "general.name"))
+    if shapes is None or (arch == "qwen35" and any("omni" in n for n in names)):
+        return
+    dims = _parse_gguf_arch_uints(gguf_path, _GEOMETRY_KEYS) or {}
+    if "block_count" not in dims or "embedding_length" not in dims:
+        return
+    # The MTP block is not a decoder layer FLM runs (the converter subtracts it too).
+    layers = dims["block_count"] - dims.get("nextn_predict_layers", 0)
+    hidden = dims["embedding_length"]
+    experts = dims.get("expert_count", 0)
+    if (layers, hidden, experts) in shapes:
+        return
+    nearest = sorted(shapes, key = lambda s: (abs(s[1] - hidden), abs(s[0] - layers)))
+    shape = f"{layers} layers, hidden size {hidden}" + (f", {experts} experts" if experts else "")
+    raise RuntimeError(
+        f"This {arch} model ({shape}) cannot be exported for the AMD NPU: FastFlowLM's Q4NX "
+        f"converter and NPU kernels cover only these {arch} sizes, nearest first: "
+        f"{', '.join(shapes[s] for s in nearest)}."
+    )
+
+
 def convert_gguf_to_q4nx(
     gguf_path: str,
     out_dir: Path,
@@ -138,6 +207,7 @@ def convert_gguf_to_q4nx(
     from utils.paths.storage_roots import studio_root
 
     require_converter_deps()
+    require_npu_geometry(gguf_path)
     installer = _installer()
     architecture = _gguf_architecture(gguf_path)
     name = installer.converter_for_architecture(architecture)
