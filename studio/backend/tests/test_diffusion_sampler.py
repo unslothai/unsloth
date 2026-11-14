@@ -199,6 +199,7 @@ def test_parameters_text_names_the_sampler():
 
 
 def test_route_refuses_a_sampler_the_engine_cannot_run():
+    """Route forwarding follows the engine signature and refuses choices an engine cannot accept."""
     from routes.inference import _sampler_kwargs
 
     def native_generate(*, prompt):
@@ -214,7 +215,7 @@ def test_route_refuses_a_sampler_the_engine_cannot_run():
 
     assert _sampler_kwargs(native_generate, None, None) == {}
     assert _sampler_kwargs(native_generate, "default", "automatic") == {}
-    with pytest.raises(ValueError, match = "diffusers engine only"):
+    with pytest.raises(ValueError, match = "not supported on the loaded engine"):
         _sampler_kwargs(native_generate, "dpmpp_2m", None)
     assert _sampler_kwargs(diffusers_generate, "euler", "karras") == {
         "sampler": "euler",
