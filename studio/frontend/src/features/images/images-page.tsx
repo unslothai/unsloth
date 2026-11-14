@@ -2045,7 +2045,6 @@ export function ImagesPage({
   );
   const componentsReconciled = useRef(false);
   const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
-  // The mount probe has asked whether a generation started elsewhere is running.
   const [generateProbed, setGenerateProbed] = useState(false);
   const reconcileInitialComponents = useCallback(
     (loaded: DiffusionStatus) => {
@@ -2127,15 +2126,14 @@ export function ImagesPage({
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
-  // The user picked an image while a run was in flight: the stage shows it instead of the live preview, and
-  // finished runs do not move the selection. Cleared by the strip's live tile, a new Generate, or `pickReleased`.
+  // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
   const [pickedDuringRun, setPickedDuringRun] = useState(false);
   const pickedDuringRunRef = useRef(false);
   useEffect(() => {
     pickedDuringRunRef.current = pickedDuringRun;
   }, [pickedDuringRun]);
   const pickImage = useCallback((id: string) => {
-    // Written now, not after the render: a gallery refresh in flight reads it to keep this image loaded.
+    // Set now, not after the render: an in-flight gallery refresh reads it.
     galleryCache.selectedId = id;
     setSelectedId(id);
     setPickedDuringRun(true);
@@ -2846,7 +2844,6 @@ export function ImagesPage({
     [ensureThumb],
   );
 
-  /** Refetches every loaded strip page, so an image picked past the first page stays loaded and selected. */
   const refreshLoadedGallery = useCallback(() => {
     // Bumped FIRST so in-flight reads are discarded.
     stripEpoch.current += 1;

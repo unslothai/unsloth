@@ -12,7 +12,7 @@ const IDLE_POLL_MS = 5000;
 
 export function useImageQueue(active: boolean, onFinished: (jobs: ImageQueueJob[]) => void) {
   const [jobs, setJobs] = useState<ImageQueueJob[]>([]);
-  // Until the first poll answers, an empty list means unknown, not idle. A failed poll counts: it is all we get.
+  // Until the first poll answers (even a failed one), an empty list means unknown, not idle.
   const [polled, setPolled] = useState(false);
   const jobsRef = useRef<ImageQueueJob[] | null>(null);
   const finishedRef = useRef(onFinished);

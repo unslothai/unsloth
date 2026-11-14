@@ -3,10 +3,8 @@
 
 import type { GalleryImage, GalleryPage } from "../api.ts";
 
-/** Pages the gallery from the top until it holds `count` records and the selected record. New records land at the
- *  front and push the selection past the old count, so it is looked for one page further, and no further: a
- *  selection deleted elsewhere must not page through the whole gallery. `selectedId` is read again after every
- *  fetch, and the last read follows the last fetch, so a pick made while a page is in flight is kept too. */
+/** Pages from the top to `count` records, and up to one page further while the selection is missing (new records
+ *  push it down; a deleted one must not page it all). `selectedId` is re-read per fetch, keeping mid-request picks. */
 export async function collectGalleryWindow(
   fetchPage: (offset: number, limit: number) => Promise<GalleryPage>,
   count: number,

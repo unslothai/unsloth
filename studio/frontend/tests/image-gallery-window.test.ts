@@ -7,7 +7,6 @@ import test from "node:test";
 import type { GalleryImage } from "../src/features/images/api.ts";
 import { collectGalleryWindow } from "../src/features/images/lib/gallery-window.ts";
 
-/** A server gallery, newest first, paged like GET /images/gallery; `calls` counts requests. */
 function fakeGallery(ids: string[]) {
   const records = ids.map((id) => ({ id }) as GalleryImage);
   const server = {
@@ -28,13 +27,12 @@ const range = (n: number, prefix = "old") => Array.from({ length: n }, (_, i) =>
 
 test("a finished run that inserts at the front does not push the selected image out of the refreshed window", async () => {
   const gallery = fakeGallery(range(300));
-  // 100 loaded, image 100 selected; the finished job adds one record at the front.
   gallery.insertNewest("new1");
   const refreshed = await collectGalleryWindow(gallery.fetchPage, 100, 50, () => "old100");
   assert.ok(refreshed.images.some((image) => image.id === "old100"));
   assert.equal(refreshed.images[0].id, "new1");
   assert.equal(refreshed.hasMore, true);
-  // The window stays contiguous from the top, so the next loadMore offset lands right after it.
+  // Contiguous from the top, so the next loadMore offset follows it.
   assert.deepEqual(
     refreshed.images.map((image) => image.id),
     gallery.records.slice(0, refreshed.images.length).map((image) => image.id),
@@ -73,7 +71,6 @@ test("a pick made while the refresh is fetching is kept, even one pushed past th
     let selected: string | null = "old5";
     const fetchPage = async (offset: number, limit: number) => {
       const page = await gallery.fetchPage(offset, limit);
-      // The user picks the last loaded image (now record 101) while this request is in flight.
       if (gallery.calls === pickDuringCall) selected = "old100";
       return page;
     };

@@ -84,10 +84,8 @@ test("while a render runs the page offers Queue beside Stop, and Generate queues
 test("an image picked during a run keeps the stage until the page knows nothing runs or waits", () => {
   const idle = { statusKnown: true, generating: false, queueBusy: false };
   assert.equal(pickReleased(idle), true);
-  // A fresh mount (opened from the Library) has not heard the run status or the queue yet: not idle.
   assert.equal(pickReleased({ ...idle, statusKnown: false }), false);
   assert.equal(pickReleased({ ...idle, generating: true }), false);
-  // Between two queued jobs: nothing is generating, but the queue still runs or waits.
   assert.equal(pickReleased({ ...idle, queueBusy: queueBusy([job("next", "running")]) }), false);
   assert.equal(pickReleased({ ...idle, queueBusy: queueBusy([job("done", "done"), job("next", "queued")]) }), false);
   assert.equal(pickReleased({ ...idle, queueBusy: queueBusy([job("done", "done")]) }), true);
