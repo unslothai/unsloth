@@ -245,6 +245,75 @@ def test_only_a_refusal_before_inference_refunds_the_override(status, refunded):
             token_limit.enforce(api = False)
 
 
+def _durable_run(request_payload):
+    from storage import chat_generation_runs_db as runs
+
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "user",
+            "threadId": "t1",
+            "role": "user",
+            "createdAt": now,
+            "content": [{"type": "text", "text": "hi"}],
+        }
+    )
+    runs.create_run(
+        run_id = "run",
+        owner_subject = "owner",
+        thread_id = "t1",
+        user_message_id = "user",
+        assistant_message_id = "assistant",
+        request_payload = request_payload,
+    )
+    token = runs.get_worker_token("run")
+    runs.mark_running("run", token)
+    return runs, token
+
+
+def test_a_durable_run_refused_before_inference_refunds_its_override():
+    now = _now_ms()
+    _thread("seed", now)
+    _reply("a0", "seed", now + 1, prompt = 90, completion = 10)
+    _enable(limit = 100)
+    token_limit.grant_override("combined")
+    spent = token_limit.enforce(api = False)
+    runs, token = _durable_run(
+        {"model": "local", "messages": [], "token_limit_override": list(spent)}
+    )
+    runs.finish_run("run", worker_token = token, status = "failed", error = "No model loaded")
+    # Nothing was generated, so the override is available again.
+    assert token_limit.enforce(api = False) is not None
+
+
+def test_native_tool_call_deltas_count_in_an_interrupted_run():
+    runs, token = _durable_run({"model": "local", "messages": []})
+    runs.append_events(
+        "run",
+        token,
+        [
+            (
+                "chunk",
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {"index": 0, "function": {"name": "", "arguments": "x" * 400}}
+                                ]
+                            }
+                        }
+                    ]
+                },
+            )
+        ],
+    )
+    runs.finish_run("run", worker_token = token, status = "cancelled")
+    _enable(limit = 10_000)
+    assert _pools()["combined"]["used"] == 100
+
+
 def test_a_reconciled_run_settles_its_output():
     from storage import chat_generation_runs_db as runs
 

@@ -312,6 +312,8 @@ def _loads(value: str | None, fallback: Any) -> Any:
 TIMEZONE_HEADERS_FIELD = "timezone_headers"
 # Server-derived API monitor and usage-receipt attribution; not a credential or part of retry identity.
 API_MONITOR_ORIGIN_FIELD = "api_monitor_via_api_key"
+# The one-time token override this run's admission spent, refunded if it never generates.
+TOKEN_LIMIT_OVERRIDE_FIELD = "token_limit_override"
 
 
 def canonical_request(
@@ -335,7 +337,12 @@ def canonical_request(
             "requestPayload": {
                 key: value
                 for key, value in request_payload.items()
-                if key not in (TIMEZONE_HEADERS_FIELD, API_MONITOR_ORIGIN_FIELD)
+                if key
+                not in (
+                    TIMEZONE_HEADERS_FIELD,
+                    API_MONITOR_ORIGIN_FIELD,
+                    TOKEN_LIMIT_OVERRIDE_FIELD,
+                )
             },
         },
         sort_keys = True,
@@ -985,14 +992,16 @@ def finish_run(
             (status, finish_reason, error, completed, completed, run_id),
         )
         _sync_assistant_status_locked(conn, run_id, status, quote_cut)
+        refund = None
         if status != "completed":
             from storage.token_usage_ledger import settle_interrupted_run
-            settle_interrupted_run(conn, run_id)
+            refund = settle_interrupted_run(conn, run_id)
         updated = conn.execute(
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
         ).fetchone()
         _commit(conn, notify = True)
+        _refund_override(refund)
         return _run_from_row(updated)
     except Exception:
         conn.rollback()
@@ -1069,6 +1078,13 @@ def wait_for_events(
     return read(run_id, after)
 
 
+def _refund_override(refund) -> None:
+    # After commit: restore_override writes app settings on its own connection.
+    if refund:
+        from core.inference.token_limit import restore_override
+        restore_override(*refund)
+
+
 def reconcile_runs(
     *, error: str = "Unsloth restarted during generation", stale_after_ms: int | None = None
 ) -> list[str]:
@@ -1099,6 +1115,7 @@ def reconcile_runs(
                 + " ORDER BY created_at, id",
                 (),
             ).fetchall()
+        refunds = []
         for row in rows:
             run_id = row["id"]
             # A recorded Stop is settled as cancelled, not reported as a backend failure.
@@ -1119,9 +1136,11 @@ def reconcile_runs(
             _sync_assistant_status_locked(conn, run_id, status)
             from storage.token_usage_ledger import settle_interrupted_run
 
-            settle_interrupted_run(conn, run_id)
+            refunds.append(settle_interrupted_run(conn, run_id))
             settled.append(str(run_id))
         _commit(conn, notify = bool(settled))
+        for refund in refunds:
+            _refund_override(refund)
         return settled
     except Exception:
         conn.rollback()

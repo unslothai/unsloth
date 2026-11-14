@@ -736,6 +736,7 @@ class ChatGenerationSupervisor:
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
                 via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
+                request_payload.pop(db.TOKEN_LIMIT_OVERRIDE_FIELD, None)
                 _attach_embedded_images(request_payload, self._detached_images.pop(run_id, {}))
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 # Prep runs before the first-token budget; one later touch cannot cover prep longer than the lease

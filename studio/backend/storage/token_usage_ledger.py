@@ -250,7 +250,7 @@ def _text_chars(content) -> int:
     return 0
 
 
-def settle_interrupted_run(conn: sqlite3.Connection, run_id: str) -> None:
+def settle_interrupted_run(conn: sqlite3.Connection, run_id: str):
     """A run stopped before its next usage frame (e.g. unattended) still debits an estimate of the
     output it persisted after the last one; reported usage, if it ever arrives, replaces it."""
     output = 0
@@ -284,8 +284,26 @@ def settle_interrupted_run(conn: sqlite3.Connection, run_id: str) -> None:
                 output += _text_chars(delta.get("content")) + _text_chars(
                     delta.get("reasoning_content")
                 )
+                for call in delta.get("tool_calls") or ():
+                    function = call.get("function") if isinstance(call, dict) else None
+                    if isinstance(function, dict):
+                        output += _text_chars(function.get("name")) + _text_chars(
+                            function.get("arguments")
+                        )
     if not output:
-        return
+        if reported:
+            return None
+        row = conn.execute(
+            "SELECT json_extract(request_json, '$.token_limit_override') FROM chat_generation_runs"
+            " WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        try:
+            spent = json.loads(row[0]) if row and row[0] else None
+        except (TypeError, ValueError):
+            spent = None
+        # Nothing was generated, so the run's admission must not cost the one-time override.
+        return tuple(spent) if isinstance(spent, list) and len(spent) == 2 else None
     tail = -(-output // 4)
     if reported:
         # The last frame's counts stand; add only what streamed after it.

@@ -40985,8 +40985,18 @@ class _ResponsesStreamTranslator:
             yield from self._visible_text_events(visible_delta)
 
         if delta.get("tool_calls"):
-            # A tool call is output the client already received; stamp it too.
-            api_monitor.mark_first_token(monitor_id)
+            # A tool call is output the client already received; stamp it and count its fragments,
+            # since the preview reaches the monitor only in finish(), which cancellation skips.
+            api_monitor.mark_first_token(
+                monitor_id,
+                output_chars = sum(
+                    len(value)
+                    for tc in delta["tool_calls"]
+                    if isinstance(tc, dict) and isinstance(fn := tc.get("function"), dict)
+                    for value in (fn.get("name"), fn.get("arguments"))
+                    if isinstance(value, str)
+                ),
+            )
         for tc in delta.get("tool_calls") or []:
             if (
                 self.payload.parallel_tool_calls is False
@@ -41136,7 +41146,9 @@ class _ResponsesStreamTranslator:
                         "input": custom_input,
                     },
                 }
-                api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], custom_input))
+                api_monitor.append_reply(
+                    monitor_id, _monitor_call_text(st["name"], custom_input), counted = True
+                )
                 yield self.sse("response.output_item.done", item_done)
                 continue
 
@@ -41190,7 +41202,9 @@ class _ResponsesStreamTranslator:
                     "arguments": st["arguments"],
                 },
             }
-            api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], st["arguments"]))
+            api_monitor.append_reply(
+                monitor_id, _monitor_call_text(st["name"], st["arguments"]), counted = True
+            )
             yield self.sse("response.output_item.done", item_done)
 
         total_tokens = self.input_tokens + self.output_tokens

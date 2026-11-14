@@ -411,3 +411,52 @@ def test_streamed_tool_argument_frames_count_toward_a_stopped_estimate(monkeypat
     [entry] = monitor.snapshot()
     # The 400 generated argument characters count; the tool's own output does not.
     assert monitor._find_locked(entry["id"]).reply_chars == 400
+
+
+def test_responses_tool_arguments_count_as_they_stream_and_once():
+    from types import SimpleNamespace
+
+    from models.inference import ChatCompletionRequest, ResponsesRequest
+
+    monitor = ApiMonitor()
+    entry = _api_key_entry(monitor)
+    monitor_before = inference_route.api_monitor
+    inference_route.api_monitor = monitor
+    try:
+        translator = inference_route._ResponsesStreamTranslator(
+            payload = ResponsesRequest(model = "m", input = "hi"),
+            chat_req = ChatCompletionRequest(model = "m", messages = [{"role": "user", "content": "hi"}]),
+            request = SimpleNamespace(state = SimpleNamespace()),
+            monitor_id = entry,
+            resp_id = "resp",
+            created_at = 0,
+            model = "m",
+            context_length = None,
+            parse_think_markers = False,
+            healer = None,
+        )
+        chunk = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "type": "function",
+                                "function": {"name": "edit", "arguments": "a" * 4000},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        list(translator.feed(chunk))
+        streamed = monitor._find_locked(entry).reply_chars
+        list(translator.finish())
+        finished = monitor._find_locked(entry).reply_chars
+    finally:
+        inference_route.api_monitor = monitor_before
+    assert streamed == 4004
+    assert finished == streamed
