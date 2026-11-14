@@ -202,8 +202,8 @@ fn compositing_disabled_by(value: &OsStr) -> bool {
 }
 
 /// Whether this launch's web process paints on the CPU, read from the environment it inherits.
-/// Skia's CPU path re-blurs every CSS shadow on each repaint, so the frontend swaps large
-/// blurred shadows for images. True when unsure: an image shadow looks the same on the GPU path.
+/// Skia's CPU path re-blurs every CSS shadow on each repaint, so the frontend flattens large
+/// blurred shadows to a 1px edge. True when unsure: a flat edge costs a GPU path only its softness.
 fn paints_on_cpu(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),

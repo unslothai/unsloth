@@ -33,10 +33,6 @@ import { startStartupCredentialBootstrap } from "./features/credentials/bootstra
 import { loadChatPage, prefetchChatPage } from "./features/chat/load-chat-page";
 import { loadGpuRendering } from "./features/settings/api/gpu-rendering";
 import {
-  getAppliedInterfaceZoom,
-  subscribeAppliedInterfaceZoom,
-} from "./features/settings/lib/interface-scale-runtime";
-import {
   applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
 } from "./features/settings/stores/interface-scale-store";
@@ -97,16 +93,16 @@ if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
 
-// WebKitGTK's CPU painter re-blurs CSS shadows on every repaint; large ones become images.
-// Loaded on use: only the Linux desktop app needs it.
+// WebKitGTK's CPU painter re-blurs CSS shadows on every repaint; index.css flattens the large ones.
+// Only on the shell's explicit yes: an older shell without the answer keeps the shadows.
 if (isTauri && document.documentElement.classList.contains("render-linux")) {
-  void import("./lib/cpu-paint-shadows").then(({ armCpuPaintShadows }) =>
-    armCpuPaintShadows({
-      interfaceZoom: getAppliedInterfaceZoom,
-      subscribeInterfaceZoom: subscribeAppliedInterfaceZoom,
-      cpuPainting: () =>
-        loadGpuRendering().then((status) => status.cpuPainting),
-    }),
+  loadGpuRendering().then(
+    (status) => {
+      if (status.cpuPainting) {
+        document.documentElement.classList.add("webkit-cpu-paint");
+      }
+    },
+    () => undefined,
   );
 }
 
