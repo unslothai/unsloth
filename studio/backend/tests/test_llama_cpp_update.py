@@ -1494,3 +1494,32 @@ def test_update_changelog_ignores_a_pair_from_a_different_install(monkeypatch, t
 
     assert result["installed_tag"] == "b10698"
     assert result["latest_tag"] == "b10800-mix-newer"
+
+
+def test_the_installer_logs_the_cpu_fallback_notice_the_update_reads():
+    from utils.prebuilt.update_flow import CPU_FALLBACK_NOTICE
+    source = (_BACKEND.parent / "install_llama_prebuilt.py").read_text(encoding = "utf-8")
+    assert source.count(CPU_FALLBACK_NOTICE) >= 2
+
+
+@pytest.mark.parametrize("notice", [True, False])
+def test_an_update_that_leaves_llama_on_the_cpu_says_so(monkeypatch, tmp_path, notice):
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453"
+    )
+    lines = [
+        "[llama-prebuilt] CUDA runtime wheel install failed (exit 1); llama.cpp will run on the CPU\n"
+    ]
+    _patch_installer_popen(
+        monkeypatch,
+        lines = lines if notice else [],
+        on_start = lambda cmd: _write_install(install_dir, "b9596", release_tag = "b9596-mix-e6f2453"),
+    )
+    job = _run_start_update_to_completion()
+    assert job["state"] == "success", job
+    assert "Updated llama.cpp to b9596-mix-e6f2453." in job["message"]
+    assert ("Repair installation" in job["message"]) is notice
