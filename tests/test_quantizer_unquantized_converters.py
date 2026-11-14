@@ -7,6 +7,8 @@ transformers 5.21+ rewrites every model converter ending in `.weight` to collect
 names. Qwen4Exp concatenates its n-gram table from `ngram_embedding.shard_*.weight`, which an NVFP4 / MXFP4
 compressed-tensors checkpoint stores unquantized, so the table was left randomly initialized."""
 
+import inspect
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -58,6 +60,13 @@ def _sources(converters):
     return [list(c._original_source_patterns) for c in converters if isinstance(c, WeightConverter)]
 
 
+def _call_update(method, quantizer, converters):
+    # transformers 5.21+ passes the model; 5.18 - 5.20 call update_weight_conversions(weight_conversions).
+    if "model" in inspect.signature(method).parameters:
+        return method(quantizer, converters, _Model())
+    return method(quantizer, converters)
+
+
 def _loads_plain_shards(converters):
     return any(SHARDS[0] in sources for sources in _sources(converters))
 
@@ -77,14 +86,14 @@ def stock_method():
 def test_the_unquantized_table_converter_survives_a_packed_checkpoint(preset, fmt, stock_method):
     quantizer = _quantizer(preset, fmt)
     HfQuantizer.update_weight_conversions = stock_method
-    stock = stock_method(quantizer, [_table_converter()], _Model())
+    stock = _call_update(stock_method, quantizer, [_table_converter()])
     if _loads_plain_shards(
         stock
     ):  # pragma: no cover - this transformers already collects the plain shards
         pytest.skip("this transformers keeps loading the unquantized shards")
 
     fix_transformers_quantizer_unquantized_converters()
-    fixed = HfQuantizer.update_weight_conversions(quantizer, [_table_converter()], _Model())
+    fixed = _call_update(HfQuantizer.update_weight_conversions, quantizer, [_table_converter()])
     sources = _sources(fixed)
     assert _loads_plain_shards(fixed), sources
     # The rewritten copy stays, so a checkpoint that does quantize the shards still loads.
@@ -96,9 +105,9 @@ def test_no_duplicate_when_the_serialized_names_keep_the_bare_name(stock_method)
     # An FP8-style scheme serializes `weight` itself: the rewritten converter already loads plain shards.
     quantizer = _quantizer("MXFP8A16", "mxfp8-quantized")
     HfQuantizer.update_weight_conversions = stock_method
-    stock = stock_method(quantizer, [_table_converter()], _Model())
+    stock = _call_update(stock_method, quantizer, [_table_converter()])
     fix_transformers_quantizer_unquantized_converters()
-    fixed = HfQuantizer.update_weight_conversions(quantizer, [_table_converter()], _Model())
+    fixed = _call_update(HfQuantizer.update_weight_conversions, quantizer, [_table_converter()])
     assert len(fixed) == len(stock)
 
 
@@ -111,24 +120,97 @@ def test_the_fix_is_idempotent(stock_method):
     assert first.__wrapped__ is stock_method
 
 
-def test_the_dequantize_op_passes_unquantized_sources_through():
-    # transformers 5.23 hands the plain shards to the dequantize op, whose packed branch dropped them.
+def _dequantize_op():
     try:
         from transformers.integrations.compressed_tensors import CompressedTensorsDequantize
     except Exception:  # pragma: no cover
         pytest.skip("no CompressedTensorsDequantize in this transformers")
     fix_transformers_quantizer_unquantized_converters()
+    return CompressedTensorsDequantize(_quantizer("NVFP4A16", "nvfp4-pack-quantized"))
+
+
+@pytest.mark.parametrize("model_dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_the_dequantize_op_passes_unquantized_sources_through(model_dtype):
+    # transformers 5.23 hands the plain shards to the dequantize op, whose packed branch dropped them; they land in
+    # the parameter's dtype, as the rest of the load casts them.
     shards = [torch.randn(4, 4, dtype = torch.bfloat16) for _ in range(2)]
-    op = CompressedTensorsDequantize(_quantizer("NVFP4A16", "nvfp4-pack-quantized"))
-    out = op.convert(
+    out = _dequantize_op().convert(
         {SHARDS[0]: list(shards)},
         source_patterns = SHARDS,
         target_patterns = TARGET,
         full_layer_name = TARGET[0],
-        model = _Model(),
+        model = _Model().to(model_dtype),
     )
     assert list(out) == [SHARDS[0]]
-    assert all(torch.equal(a, b) for a, b in zip(out[SHARDS[0]], shards))
+    assert all(a.dtype == model_dtype for a in out[SHARDS[0]])
+    assert all(torch.equal(a, b.to(model_dtype)) for a, b in zip(out[SHARDS[0]], shards))
+
+
+def test_one_pattern_mixing_unquantized_and_packed_shards_is_refused():
+    shard = torch.randn(4, 4, dtype = torch.bfloat16)
+    packed = {
+        "ngram_embedding.shard_*.weight_packed": [torch.zeros(4, 2, dtype = torch.uint8)],
+        "ngram_embedding.shard_*.weight_scale": [torch.ones(4, 1)],
+    }
+    with pytest.raises(ValueError, match = "unquantized and others packed"):
+        _dequantize_op().convert(
+            {SHARDS[0]: [shard], **packed},
+            source_patterns = SHARDS,
+            target_patterns = TARGET,
+            full_layer_name = TARGET[0],
+            model = _Model(),
+        )
+
+
+def test_an_unanchored_matcher_gets_an_anchored_converter_back(stock_method):
+    # transformers <= 5.20 searches source patterns unanchored: a restored `.weight` would also take a quantized
+    # tensor's `.weight_global_scale`. The restored copy is anchored instead.
+    import re
+
+    class _SearchConverter(WeightConverter):
+        def rename_source_key(self, source_key):
+            for pattern in self._original_source_patterns:
+                if re.search(re.escape(pattern.rstrip("$")).replace(r"\*", ".*"), source_key):
+                    return source_key, pattern
+            return source_key, None
+
+    quantizer = _quantizer("NVFP4A16", "nvfp4-pack-quantized")
+    HfQuantizer.update_weight_conversions = stock_method
+    stock = _call_update(
+        stock_method, quantizer, [_SearchConverter(SHARDS, TARGET, [Concatenate(dim = 0)])]
+    )
+    if _loads_plain_shards(stock):  # pragma: no cover
+        pytest.skip("this transformers keeps loading the unquantized shards")
+    fix_transformers_quantizer_unquantized_converters()
+    fixed = _call_update(
+        HfQuantizer.update_weight_conversions,
+        quantizer,
+        [_SearchConverter(SHARDS, TARGET, [Concatenate(dim = 0)])],
+    )
+    restored = fixed[-1]
+    assert type(restored) is WeightConverter
+    assert list(restored._original_source_patterns) == [SHARDS[0] + "$"]
+    assert restored.rename_source_key("ngram_embedding.shard_0.weight")[1] is not None
+    for suffix in ("_global_scale", "_zero_point", "_scale", "_packed"):
+        assert restored.rename_source_key("ngram_embedding.shard_0.weight" + suffix)[1] is None
+
+
+def test_the_cpu_route_installs_the_fix():
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import unsloth\n"
+        "from transformers.quantizers.base import HfQuantizer\n"
+        "print('INSTALLED', getattr(HfQuantizer.update_weight_conversions, '_unsloth_keeps_unquantized', False))\n"
+    )
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", UNSLOTH_IS_PRESENT = "1")
+    env.pop("UNSLOTH_DISABLE_CPU_FALLBACK", None)
+    out = subprocess.run(
+        [sys.executable, "-c", code], env = env, capture_output = True, text = True, timeout = 600
+    )
+    assert "INSTALLED True" in out.stdout, (out.stdout[-2000:], out.stderr[-2000:])
 
 
 def test_the_fix_keeps_the_stock_arity(stock_method):
@@ -190,5 +272,12 @@ def test_a_compressed_tensors_override_gets_the_replaced_converter_back_last(
     out = CompressedTensorsHfQuantizer.update_weight_conversions(
         _quantizer("NVFP4A16", "nvfp4-pack-quantized"), [original]
     )
-    assert (out[-1] is original) is restored
     assert len(out) == 1 + restored
+    if restored:
+        # The original, or on transformers <= 5.20 (unanchored matching) a copy anchored at the bare name.
+        back = out[-1]
+        assert [p.rstrip("$") for p in back._original_source_patterns] == list(
+            original._original_source_patterns
+        )
+        assert list(back._original_target_patterns) == list(original._original_target_patterns)
+        assert back is original or all(p.endswith("$") for p in back._original_source_patterns)

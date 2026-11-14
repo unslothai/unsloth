@@ -3586,6 +3586,16 @@ def fix_transformers_fp8_unscaled_checkpoint_linears():
     quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
 
 
+_QUANTIZED_COMPANION_SUFFIXES = (
+    "_packed",
+    "_scale",
+    "_shape",
+    "_global_scale",
+    "_zero_point",
+    "_scale_inv",
+)
+
+
 def fix_transformers_quantizer_unquantized_converters():
     """Keep a model converter over a tensor the pre-quantized checkpoint stores unquantized.
 
@@ -3617,6 +3627,32 @@ def fix_transformers_quantizer_unquantized_converters():
         )
         return [pattern.rstrip("$") for pattern in patterns if isinstance(pattern, str)]
 
+    def captures_companions(converter):
+        # transformers <= 5.20 searches source patterns unanchored: `.weight` would also take a quantized
+        # tensor's `.weight_global_scale` / `.weight_zero_point` / ... and corrupt the restored pipeline.
+        rename = getattr(converter, "rename_source_key", None)
+        if rename is None:
+            return False
+        for source in sources_of(converter):
+            for suffix in _QUANTIZED_COMPANION_SUFFIXES:
+                try:
+                    if rename((source + suffix).replace("*", "0"))[1] is not None:
+                        return True
+                except Exception:
+                    return True
+        return False
+
+    def restorable(converter):
+        if not captures_companions(converter):
+            return converter
+        return WeightConverter(
+            source_patterns = [source + "$" for source in sources_of(converter)],
+            target_patterns = list(
+                getattr(converter, "_original_target_patterns", None) or converter.target_patterns
+            ),
+            operations = list(converter.operations),
+        )
+
     for cls in classes:
         method = cls.__dict__.get("update_weight_conversions")
         if method is None or getattr(method, "_unsloth_keeps_unquantized", False):
@@ -3637,7 +3673,7 @@ def fix_transformers_quantizer_unquantized_converters():
                         for source in sources_of(converter)
                     }
                     restored = [
-                        converter
+                        restorable(converter)
                         for converter in weight_conversions
                         if isinstance(converter, WeightConverter)
                         and id(converter) not in kept
@@ -3675,15 +3711,28 @@ def _pass_unquantized_through_compressed_tensors_dequantize():
             or "weight_scale" in input_dict
         ):
             return convert(self, input_dict, *args, **kwargs)
-        plain = {}
+        plain, mixed = {}, []
         for key in input_dict:
             if not isinstance(key, str) or not key.endswith(".weight"):
                 continue
             stem = key[: -len("weight")]
-            if f"{stem}weight_packed" not in input_dict and f"{stem}weight_scale" not in input_dict:
+            if f"{stem}weight_packed" in input_dict:
+                # One pattern collected both 16-bit and packed shards: the packed branch would drop the 16-bit ones.
+                mixed.append(key)
+            elif f"{stem}weight_scale" not in input_dict:
                 plain[key] = input_dict[key]
+        if mixed:
+            raise ValueError(
+                "Unsloth: this compressed-tensors checkpoint stores some tensors of one converter pattern "
+                f"unquantized and others packed ({', '.join(sorted(mixed))}), which cannot be loaded together. "
+                "Quantize all of them or none."
+            )
         if not plain:
             return convert(self, input_dict, *args, **kwargs)
+        dtype = _converter_target_dtype(args, kwargs)
+        if dtype is not None:
+            # As the rest of the load: a bf16 checkpoint tensor lands in the parameter's dtype.
+            plain = {key: _cast_floating(value, dtype) for key, value in plain.items()}
         rest = {key: value for key, value in input_dict.items() if key not in plain}
         out = dict(convert(self, rest, *args, **kwargs) or {}) if rest else {}
         out.update(plain)
@@ -3691,6 +3740,30 @@ def _pass_unquantized_through_compressed_tensors_dequantize():
 
     convert_keeping_unquantized._unsloth_passes_unquantized = True
     op_cls.convert = convert_keeping_unquantized
+
+
+def _converter_target_dtype(args, kwargs):
+    """dtype of the parameter a conversion op fills (`full_layer_name` on `model`), else None."""
+    model = kwargs.get("model")
+    name = kwargs.get("full_layer_name")
+    if name is None and len(args) > 2:
+        name = args[2]
+    if model is None or not isinstance(name, str):
+        return None
+    try:
+        return model.get_parameter(name).dtype
+    except Exception:
+        return None
+
+
+def _cast_floating(value, dtype):
+    import torch
+
+    if isinstance(value, (list, tuple)):
+        return type(value)(_cast_floating(v, dtype) for v in value)
+    if isinstance(value, torch.Tensor) and value.is_floating_point() and dtype.is_floating_point:
+        return value.to(dtype)
+    return value
 
 
 def _cast_fp8_dequantize_to_model_dtype(op_cls):
