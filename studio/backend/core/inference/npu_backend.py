@@ -18,6 +18,7 @@ from typing import Any, Iterator, Optional
 
 import structlog
 
+from core.inference import npu_memory
 from core.inference.flm_files import (
     FlmDownloadError,
     FlmModelFiles,
@@ -112,6 +113,8 @@ class NpuModel:
     resume_percent: Optional[int] = None
     hf_repo: Optional[str] = None
     hf_revision: Optional[str] = None
+    memory_needed_gb: Optional[float] = None
+    fits_memory: Optional[bool] = None
 
     @property
     def vision(self) -> bool:
@@ -144,6 +147,8 @@ class NpuModel:
             "resume_percent": self.resume_percent,
             "hf_repo": self.hf_repo,
             "hf_revision": self.hf_revision,
+            "memory_needed_gb": self.memory_needed_gb,
+            "fits_memory": self.fits_memory,
         }
 
 
@@ -497,6 +502,7 @@ class LemonadeNpuBackend:
             "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
             "versions": self._versions(binary, validated),
+            "memory_window_gb": npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb()),
         }
 
     def _server_for(self, binary: Path) -> LemonadeServer:
@@ -678,6 +684,7 @@ class LemonadeNpuBackend:
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         models: list[NpuModel] = []
         flm_binary = self._flm_binary()
+        window_gb = npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb())
         for row in response.json().get("data") or []:
             if not isinstance(row, dict) or row.get("recipe") != "flm":
                 continue
@@ -685,6 +692,7 @@ class LemonadeNpuBackend:
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
                 continue
             size = row.get("size")
+            size_gb = float(size) if isinstance(size, (int, float)) else None
             checkpoint = str(row.get("checkpoint") or "")
             downloaded = bool(row.get("downloaded"))
             files = None if downloaded else self._model_files(checkpoint, flm_binary)
@@ -693,7 +701,7 @@ class LemonadeNpuBackend:
                 NpuModel(
                     id = str(row.get("id")),
                     checkpoint = checkpoint,
-                    size_gb = float(size) if isinstance(size, (int, float)) else None,
+                    size_gb = size_gb,
                     downloaded = downloaded,
                     labels = labels,
                     max_context_length = _max_context_length(
@@ -702,6 +710,8 @@ class LemonadeNpuBackend:
                     resume_percent = files.resume_percent() if files else None,
                     hf_repo = hf_repo,
                     hf_revision = hf_revision,
+                    memory_needed_gb = npu_memory.npu_memory_needed_gb(size_gb),
+                    fits_memory = npu_memory.fits_npu_memory(size_gb, window_gb),
                 )
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))

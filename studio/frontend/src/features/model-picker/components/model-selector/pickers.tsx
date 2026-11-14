@@ -96,6 +96,7 @@ import {
   type NpuPickerSource,
   NpuSetupNotice,
   npuDownloadLabel,
+  npuMemoryTag,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
@@ -7690,6 +7691,7 @@ export function HubModelPicker({
     const details = [
       "NPU",
       npuSizeLabel(model.size_gb),
+      npuMemoryTag(model),
       npuResumeLabel(model),
     ].filter(Boolean);
     const meta = {
@@ -7721,6 +7723,7 @@ export function HubModelPicker({
         onClick={() => {
           if (downloading) return;
           if (model.downloaded) {
+            npuCatalog.warnMemory(model);
             pick();
             return;
           }

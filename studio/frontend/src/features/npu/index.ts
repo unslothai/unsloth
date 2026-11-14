@@ -10,6 +10,8 @@ export {
   npuContextLabel,
   npuDownloadLabel,
   npuReadmeNote,
+  npuMemoryTag,
+  npuMemoryWarning,
   npuResumeLabel,
   npuRowsFor,
   npuSizeLabel,
