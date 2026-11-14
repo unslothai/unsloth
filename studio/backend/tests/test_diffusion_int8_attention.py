@@ -41,6 +41,17 @@ needs_kernel = pytest.mark.skipif(
 )
 
 
+def _card_dtype():
+    """What Studio's pipelines run in on this card: sm75 has no bf16 (Inductor and the fused SDPA kernels refuse
+    it), so fp16 there."""
+    return torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
+
+
+def _card_sdpa() -> str:
+    """The native backend the H3 blocks keep: cuDNN attention needs sm80, sm75 takes the default SDPA pick."""
+    return "_native_cudnn" if torch.cuda.get_device_capability() >= (8, 0) else "native"
+
+
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
@@ -250,35 +261,52 @@ def _nvrtc_ok() -> bool:
         return False
 
 
+def _nvrtc_archs() -> set:
+    """The real architectures this NVRTC can target (NVRTC 12.6 has no sm_120)."""
+    import ctypes
+
+    lib = K.nvrtc()
+    count = ctypes.c_int()
+    if lib.nvrtcGetNumSupportedArchs(ctypes.byref(count)) != 0:
+        return set()
+    archs = (ctypes.c_int * count.value)()
+    if lib.nvrtcGetSupportedArchs(archs) != 0:
+        return set()
+    return set(archs)
+
+
 @pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
-def test_kernel_compiles_for_every_config():
-    for capability, table in I.KERNEL_CONFIGS.items():
-        for head_dim, config in table.items():
-            ptx = K.compile_ptx(
-                K.KERNEL_SOURCE,
-                f"sm_{capability[0]}{capability[1]}",
-                I.kernel_defines(head_dim, config),
-            ).decode(errors = "replace")
-            products = config["nq"] * (
-                (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
-            )
-            if capability < (8, 0):
-                assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
-                assert "m16n8k32" not in ptx and "cp.async" not in ptx
-            else:
-                assert ptx.count("mma.sync.aligned.m16n8k32") == products
-                assert "m8n8k16" not in ptx
-            assert "cvt.rn.f32.s32" not in ptx
-            quant = K.compile_ptx(
-                K.QUANT_SOURCE,
-                f"sm_{capability[0]}{capability[1]}",
-                {
-                    "HD": head_dim,
-                    "BN": config["bn"],
-                    "RGX": min(I.ROT_GROUP, head_dim).bit_length() - 5,
-                },
-            ).decode(errors = "replace")
-            assert all(f".entry {name}(" in quant for name in K.QUANT_KERNELS)
+@pytest.mark.parametrize("capability", sorted(I.KERNEL_CONFIGS), ids = lambda c: f"sm{c[0]}{c[1]}")
+def test_kernel_compiles_for_every_config(capability):
+    arch = 10 * capability[0] + capability[1]
+    if arch not in _nvrtc_archs():
+        pytest.skip(f"NVRTC {K.nvrtc_version()} cannot target sm_{arch}")
+    for head_dim, config in I.KERNEL_CONFIGS[capability].items():
+        ptx = K.compile_ptx(
+            K.KERNEL_SOURCE,
+            f"sm_{arch}",
+            I.kernel_defines(head_dim, config),
+        ).decode(errors = "replace")
+        products = config["nq"] * (
+            (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
+        )
+        if capability < (8, 0):
+            assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
+            assert "m16n8k32" not in ptx and "cp.async" not in ptx
+        else:
+            assert ptx.count("mma.sync.aligned.m16n8k32") == products
+            assert "m8n8k16" not in ptx
+        assert "cvt.rn.f32.s32" not in ptx
+        quant = K.compile_ptx(
+            K.QUANT_SOURCE,
+            f"sm_{arch}",
+            {
+                "HD": head_dim,
+                "BN": config["bn"],
+                "RGX": min(I.ROT_GROUP, head_dim).bit_length() - 5,
+            },
+        ).decode(errors = "replace")
+        assert all(f".entry {name}(" in quant for name in K.QUANT_KERNELS)
 
 
 def test_op_off_cuda_is_native_attention():
@@ -657,9 +685,14 @@ def _active_backend():
 
 
 def test_strided_processor_routes_flagged_calls_to_the_op(monkeypatch, _active_backend):
+    from diffusers.models.attention_dispatch import AttentionBackendName, _AttentionBackendRegistry
+
     h3, A = _h3()
     model = _tiny_h3(h3)
     model.set_attention_backend("_native_math")
+    # a processor with no backend dispatches to the registry's active one, which diffusers 0.43 no longer sets in
+    # set_attention_backend
+    _AttentionBackendRegistry.set_active_backend(AttentionBackendName("_native_math"))
     stock = copy.deepcopy(model)
     assert A.install_strided_attention(model) == 3
     calls = []
@@ -1168,17 +1201,20 @@ def test_the_output_does_not_drift_with_the_key_count(flush_tail):
 def test_the_sm75_instructions_give_the_same_bits(head_dim, dtype):
     """sm75 computes each 16x8x32 product as four 8x8x16 ones on the same operand registers, copies tiles with plain
     loads and reads the Q operands from global memory: the same integers, so the same output bits as every other
-    card (the sm75 code runs on later cards too, which is how this is checked off a T4)."""
+    card (the sm75 code runs on later cards too, which is how this is checked off a T4). A T4 cannot run the sm80
+    instructions: there the sm75 variants are compared with the shipped config only."""
     q, k, v = I.probe_inputs("cuda", dtype, 2500, 3, head_dim, seed = 5)
     config = {k_: v_ for k_, v_ in _cuda_config(head_dim).items() if k_ != "max_registers"}
     ref = I.int8_attention(q, k, v)
-    for variant in (
+    capability = torch.cuda.get_device_capability()
+    variants = [
         {"sm75": 1, "stages": 1, "qreg": 2},
         {"sm75": 1, "stages": 1, "qreg": 2, "flush_tail": 1},
-        {"sm75": 0, "stages": 1, "qreg": 2},
-    ):
+    ]
+    if capability >= (8, 0):
+        variants.append({"sm75": 0, "stages": 1, "qreg": 2})
+    for variant in variants:
         candidate = {**config, "wpc": 4, "nq": 1, **variant}
-        capability = torch.cuda.get_device_capability()
         ptx = K.compile_ptx(
             K.KERNEL_SOURCE,
             f"sm_{capability[0]}{capability[1]}",
@@ -1314,34 +1350,40 @@ def test_cuda_graph_replay_matches_eager():
 
 @needs_kernel
 def test_torch_compile_keeps_the_op_opaque():
-    I.verdict("cuda", torch.bfloat16, 4, 64, timed = False)
+    dtype = _card_dtype()
+    I.verdict("cuda", dtype, 4, 64, timed = False)
     I.int8_attention_op()
 
     def block(q, k, v):
         return torch.ops.unsloth_studio.int8_attention_nhd(q * 1.0, k, v).flatten(2, 3) + 1.0
 
-    q, k, v = I.probe_inputs("cuda", torch.bfloat16, 900, 4, 64)
+    q, k, v = I.probe_inputs("cuda", dtype, 900, 4, 64)
+    before = I.STATS["int8"]
     torch._dynamo.reset()
     assert torch._dynamo.explain(block)(q, k, v).graph_break_count == 0
     compiled = torch.compile(block, fullgraph = True)
     with torch.no_grad():
         assert torch.equal(compiled(q, k, v), block(q, k, v))
+    assert I.STATS["int8"] >= before + 2
     torch._dynamo.reset()
 
 
 @needs_kernel
 def test_h3_strided_processor_runs_the_kernel_on_cuda(_active_backend):
     h3, A = _h3()
-    model = _tiny_h3(h3, head_dim = 64).to("cuda", torch.bfloat16)
-    model.set_attention_backend("_native_cudnn")
+    dtype = _card_dtype()
+    model = _tiny_h3(h3, head_dim = 64).to("cuda", dtype)
+    model.set_attention_backend(_card_sdpa())
     stock = copy.deepcopy(model)
     assert A.install_strided_attention(model) == 3
     kw = {
         k: (v.to("cuda") if torch.is_tensor(v) else v) for k, v in _h3_inputs(n_video = 256).items()
     }
     for name in ("hidden_states", "audio_hidden_states", "encoder_hidden_states"):
-        kw[name] = kw[name].to(torch.bfloat16)
-    assert I.install_int8_attention(model, device = "cuda", dtype = torch.bfloat16, force = True) == 3
+        kw[name] = kw[name].to(dtype)
+    # the load hook with a target that names no dtype: it checks the card's own (fp16 on sm75)
+    target = types.SimpleNamespace(device = "cuda", torch_device = "cuda", dtype = None)
+    assert I.install_requested(types.SimpleNamespace(transformer = model), I.BACKEND, target) == 3
     before = I.STATS["int8"]
     with torch.no_grad():
         want, got = stock(**kw), model(**kw)
@@ -1357,22 +1399,20 @@ def test_h3_strided_processor_runs_the_kernel_on_cuda(_active_backend):
 def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     h3, A = _h3()
     H = _h3_image()
-    model = _tiny_h3(h3, head_dim = 64).to("cuda", torch.bfloat16)
-    model.set_attention_backend("_native_cudnn")
+    dtype = _card_dtype()
+    model = _tiny_h3(h3, head_dim = 64).to("cuda", dtype)
+    model.set_attention_backend(_card_sdpa())
     assert A.install_strided_attention(model) == 3
     mods = I.int8_processors(model)
     blocks = [m for m in mods if any(m is b.attn for b in model.transformer_blocks)]
     saved = {m: m.processor._attention_backend for m in mods}
     assert len(blocks) == 2
     assert (
-        I.install_int8_attention(
-            model, device = "cuda", dtype = torch.bfloat16, modules = blocks, force = True
-        )
-        == 2
+        I.install_int8_attention(model, device = "cuda", dtype = dtype, modules = blocks, force = True) == 2
     )
     I.remove_int8_attention(model)
     before = I.STATS["int8"]
-    found = H.race_checkpoint_attention(model, saved, torch.bfloat16, kernel = True)
+    found = H.race_checkpoint_attention(model, saved, dtype, kernel = True)
     calls = 2 * (2 + H._RACE_ROUNDS)
     assert I.STATS["int8"] == before + calls
     assert sorted(found["kernel"]) == [1024, 4096]
@@ -1381,12 +1421,12 @@ def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     assert all(len(v) == 3 and min(v) > 0 for v in found["paired"].values())
     proc = blocks[0].processor
     assert not proc._unsloth_int8 and proc._attention_backend == saved[blocks[0]]
-    plain = H.race_checkpoint_attention(model, saved, torch.bfloat16)
+    plain = H.race_checkpoint_attention(model, saved, dtype)
     assert "kernel" not in plain and len(plain["ms"]) == 2 and I.STATS["int8"] == before + calls
     import logging
 
     routed, race = H._race_int8_kernel(
-        model, blocks, saved, "cuda", torch.bfloat16, None, False, logging.getLogger(__name__)
+        model, blocks, saved, "cuda", dtype, None, False, logging.getLogger(__name__)
     )
     assert race is not None and "keep" in race
     record = getattr(model, H.ATTENTION_RACE_ATTR)
