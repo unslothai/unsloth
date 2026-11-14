@@ -999,6 +999,11 @@ async def _test_by_chat(client, model_id: str, base_url: str) -> ProviderTestRes
                         failure, kind = _NO_CREDIT, "billing"
                     elif status == "429":
                         failure, kind = _RATE_LIMITED, "rate_limit"
+                    # The client turns transport failures into these frames instead of raising.
+                    elif status == "504":
+                        failure, kind = _TIMED_OUT, "timeout"
+                    elif failure.startswith("Failed to connect to "):
+                        failure, kind = _unreachable_detail(base_url), "unreachable"
 
     try:
         try:
@@ -1126,6 +1131,12 @@ async def test_provider(
         try:
             if answers_decisions_only(payload.provider_type, payload.api_type):
                 await client.list_decision_models()
+            elif provider_probes_with_chat(payload.provider_type, base_url):
+                # No model list to read, so a listing would fail even when the chat works.
+                saved = (providers_db.get_provider(payload.provider_id) or {}).get("models") or []
+                model = payload.model_id if payload.model_id in saved else next(iter(saved), "")
+                if not (await _test_by_chat(client, model, base_url)).success:
+                    raise RuntimeError("chat check failed")
             elif payload.provider_type == "openrouter":
                 await client.verify_models_endpoint_lightweight()
             else:

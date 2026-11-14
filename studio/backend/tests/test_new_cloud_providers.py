@@ -286,3 +286,26 @@ def test_vertex_is_the_native_gemini_api_on_another_host(sent):
     assert str(sent[-1].url) == (
         f"{VERTEX_EXPRESS_BASE_URL}/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
     )
+
+
+@pytest.mark.parametrize(
+    "error,kind",
+    [(httpx.ConnectError("refused"), "unreachable"), (httpx.ReadTimeout("slow"), "timeout")],
+)
+def test_a_chat_check_names_a_transport_failure(sent, error, kind):
+    def fail(request):
+        raise error
+
+    sent.handler = fail
+    result = _run(
+        providers_route.test_provider(
+            ProviderTestRequest(
+                provider_type = "azure",
+                base_url = "https://res.openai.azure.com/openai/v1",
+                model_id = "dep",
+            ),
+            "tester",
+            False,
+        )
+    )
+    assert not result.success and result.error_kind == kind
