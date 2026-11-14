@@ -30313,7 +30313,12 @@ async def _proxy_to_external_provider(
                     + "\n\n"
                 )
             if not sent_done:
-                if not stream_failed:
+                if stream_failed:
+                    pass
+                elif cancel_event.is_set():
+                    # A stop, not a completion: an empty one refunds the override.
+                    api_monitor.finish(monitor_id, "cancelled")
+                else:
                     _monitor_openai_sse_line(monitor_id, "data: [DONE]")
                 yield "data: [DONE]\n\n"
         except asyncio.CancelledError:
@@ -35442,6 +35447,12 @@ async def produce_openai_chat_completions(
                 monitor_id = monitor_id,
             )
 
+        def _sf_settle_reported_passes():
+            # A later pass's failure must not lose the passes that already reported.
+            _stats = _sf_stats_holder.get("stats")
+            if _stats:
+                _monitor_usage(monitor_id, _stats.get("usage"))
+
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
             _sf_context_truncation = None
@@ -35545,25 +35556,30 @@ async def produce_openai_chat_completions(
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state(cancel_event)
+            _sf_settle_reported_passes()
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except GenStreamErrorRaised as exc:
             backend.reset_generation_state(cancel_event)
             _msg = _friendly_gen_stream_error(exc)
+            _sf_settle_reported_passes()
             api_monitor.fail(monitor_id, _msg)
             raise HTTPException(status_code = 500, detail = _msg)
         except HTTPException as exc:
             backend.reset_generation_state(cancel_event)
+            _sf_settle_reported_passes()
             api_monitor.fail(monitor_id, str(exc.detail))
             raise
         except context_refusal.ContextBudgetExceeded as e:
             backend.reset_generation_state(cancel_event)
+            _sf_settle_reported_passes()
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise _context_budget_http_error(e)
         except Exception:
             backend.reset_generation_state(cancel_event)
             # CWE-209: generic detail; full trace in log.
             logger.exception("safetensors tool completion error")
+            _sf_settle_reported_passes()
             api_monitor.fail(monitor_id, "An internal error occurred.")
             raise HTTPException(
                 status_code = 500,

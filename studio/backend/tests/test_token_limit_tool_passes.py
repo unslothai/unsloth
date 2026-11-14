@@ -342,6 +342,8 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     # A stop mid-pass in the JSON drain keeps the kept turn outside the earlier passes' report.
     assert "reported_chars = None if _stats is not _sf_text_stats else 0," in source
     assert '_sf_text_stats = _sf_stats_holder.get("stats")' in source
+    # A later pass's failure settles the passes that already reported, on every exit.
+    assert source.count("_sf_settle_reported_passes()") == 6  # the def and its five calls
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
@@ -679,3 +681,63 @@ def test_a_stopped_whole_tool_run_charges_its_reported_preamble_once(monkeypatch
     )
     assert receipt.status == "cancelled"
     assert (receipt.prompt_tokens, receipt.completion_tokens) == (900, 100)
+
+
+def test_a_provider_stream_stopped_before_any_output_settles_as_cancelled(monkeypatch):
+    import httpx
+
+    from core.inference import external_provider as ep
+    from core.inference import npu_backend as nb
+    from models.inference import ChatCompletionRequest
+
+    managed = nb.ManagedUpstream(
+        provider_type = "lemonade",
+        base_url = "http://127.0.0.1:9/v1",
+        api_key = "k",
+        model = "m-FLM",
+        public_model = "lemonade:m-FLM",
+        supports_vision = False,
+        supports_tools = False,
+        supports_reasoning = False,
+        context_length = 8192,
+    )
+
+    def handle(_request):
+        # The user stops the run (by cancel ID) before the first token; no [DONE] arrives.
+        for bucket in list(inference_route._CANCEL_REGISTRY.values()):
+            for cancel in list(bucket):
+                cancel.set()
+        return httpx.Response(200, headers = {"content-type": "text/event-stream"}, content = b"")
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as client:
+            monkeypatch.setattr(ep, "_http_client", client)
+            monkeypatch.setattr(ep, "_loopback_http_client", client)
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference_route, "api_monitor", monitor)
+            payload = ChatCompletionRequest(
+                messages = [{"role": "user", "content": "hi"}],
+                stream = True,
+                cancel_id = "token-limit-provider-stop",
+            )
+
+            async def disconnected():
+                return False
+
+            request = SimpleNamespace(
+                headers = {},
+                state = SimpleNamespace(skip_api_monitor = False),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = disconnected,
+            )
+            response = await inference_route._proxy_to_external_provider(
+                payload, request, managed = managed
+            )
+            body = [part async for part in response.body_iterator]
+            return body, monitor
+
+    body, monitor = asyncio.run(run())
+    assert any(b"[DONE]" in (part if isinstance(part, bytes) else part.encode()) for part in body)
+    # Cancelled, not completed: an empty stop gives the override back.
+    assert monitor.snapshot()[0]["status"] == "cancelled"
