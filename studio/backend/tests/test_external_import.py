@@ -1010,7 +1010,9 @@ _PAGINATED_SID = "01a1d5af-1734-7651-b549-42d9e5803184"
 
 def _paginated_rollout(home, old = False):
     """``old``: what the reader before completed items saw, so the import stores an untagged mark."""
-    records = [json.loads(line) for line in _PAGINATED_ROLLOUT.read_text().splitlines()]
+    records = [
+        json.loads(line) for line in _PAGINATED_ROLLOUT.read_text(encoding = "utf-8").splitlines()
+    ]
     if old:
         records = [r for r in records if r["payload"].get("type") != "item_completed"]
         records[0]["payload"].pop("history_mode")

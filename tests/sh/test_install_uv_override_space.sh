@@ -180,6 +180,38 @@ else
     rm -rf "$WORK4"
 fi
 
+# A checkout's override file pins that checkout's transformers. Applied to a released wheel
+# with other pins, every MLX resolve conflicts and drops to the pip fallback.
+SELECT=$(awk '
+    /^_OVERRIDES_FILE=""$/ { grab = 1 }
+    grab { print }
+    grab && /^fi$/ { exit }
+' "$INSTALL_SH")
+if ! printf '%s' "$SELECT" | grep -q 'export UV_OVERRIDE'; then
+    bad "could not extract the checkout override selection from install.sh"
+else
+    WORK5=$(mktemp -d)
+    mkdir -p "$WORK5/studio/backend/requirements/single-env"
+    printf 'transformers==9.9.9\n' > "$WORK5/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
+    check_select() {  # label, local flag, overlay, os, arch, expect (set|unset)
+        # $0 is install.sh's own path in the block, so run it as a checkout's install.sh.
+        _res=$( env -u UV_OVERRIDE STUDIO_LOCAL_INSTALL="$2" UNSLOTH_CI_SOURCE_OVERLAY="$3" \
+                    OS="$4" _ARCH="$5" SELECT="$SELECT" \
+                    bash -c '_UV_OVERRIDE_TMPDIR=""; eval "$SELECT"; printf "%s" "${UV_OVERRIDE:-}"' \
+                    "$WORK5/install.sh" )
+        case "$6:$_res" in
+            set:*overrides-darwin-arm64.txt|unset:) ok "checkout override: $1" ;;
+            *) bad "checkout override: $1 (UV_OVERRIDE=$_res)" ;;
+        esac
+    }
+    check_select "released-wheel install ignores the checkout pins" false "" macos arm64 unset
+    check_select "--local install uses the checkout pins" true "" macos arm64 set
+    check_select "CI overlay install uses the checkout pins" false "$WORK5" macos arm64 set
+    check_select "Intel macOS never sets it" true "" macos x86_64 unset
+    check_select "Linux never sets it" true "" linux arm64 unset
+    rm -rf "$WORK5"
+fi
+
 _bootstrap_line=$(grep -n '^_bootstrap_packaged_mlx_override$' "$INSTALL_SH" | head -n1 | cut -d: -f1)
 _with_deps_line=$(grep -n '^_build_unsloth_torch_overrides()' "$INSTALL_SH" | head -n1 | cut -d: -f1)
 { [ -n "$_bootstrap_line" ] && [ -n "$_with_deps_line" ] \

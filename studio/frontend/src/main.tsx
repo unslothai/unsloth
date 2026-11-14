@@ -31,6 +31,7 @@ import {
 } from "./features/auth/session";
 import { startStartupCredentialBootstrap } from "./features/credentials/bootstrap";
 import { loadChatPage, prefetchChatPage } from "./features/chat/load-chat-page";
+import { loadGpuRendering } from "./features/settings/api/gpu-rendering";
 import {
   applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
@@ -90,6 +91,19 @@ if (isTauri) {
 const uaLower = navigator.userAgent.toLowerCase();
 if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
+}
+
+// WebKitGTK's CPU painter re-blurs CSS shadows on every repaint; index.css flattens the large ones.
+// Only on the shell's explicit yes: an older shell without the answer keeps the shadows.
+if (isTauri && document.documentElement.classList.contains("render-linux")) {
+  loadGpuRendering().then(
+    (status) => {
+      if (status.cpuPainting) {
+        document.documentElement.classList.add("webkit-cpu-paint");
+      }
+    },
+    () => undefined,
+  );
 }
 
 if (uaLower.includes("windows")) {

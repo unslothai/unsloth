@@ -20,6 +20,8 @@ import {
   resolveInitialConfig,
   resolveResidentInitialConfig,
   SidebarModelConfig,
+  ModelInfo,
+  hubRepoIdFor,
   useActiveModelConfig,
   useModelConfigHandoffStore,
   pinnedReasoningEffort,
@@ -4880,6 +4882,11 @@ export function ChatPage({
         projectBrowserBaseline !== null &&
         browserOpenSequence > projectBrowserBaseline));
 
+  const modelInfoRepoId =
+    view.mode !== "compare" && activeModelConfig && !modelLoading
+      ? hubRepoIdFor(inferenceCheckpoint)
+      : null;
+
   return (
     <ChatActiveContext.Provider value={active}>
     {/* Before adoption sets handoffOwnsPicker, the pending request is what holds the picker open. */}
@@ -5240,6 +5247,9 @@ export function ChatPage({
               onReload={handleReloadActiveModel}
             />
           ) : null
+        }
+        modelInfo={
+          modelInfoRepoId ? <ModelInfo repoId={modelInfoRepoId} /> : null
         }
         isExternalModel={isExternalModel}
         providerCapabilities={activeProviderCapabilities}
