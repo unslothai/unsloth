@@ -126,6 +126,12 @@ export class StudioDictationAdapter implements DictationAdapter {
   }
 
   private createSession(): StudioDictationSession {
+    // First, whatever the mic target: the loop owns its turns. A null chatId is an unlinked
+    // composer (annotations, Compare), which keeps plain dictation.
+    if (this.chatId !== null && getVoiceMode() === "active") {
+      const session = startVoiceListen();
+      if (session) return session;
+    }
     const clipTarget = audioClipTarget;
     if (clipTarget && micRecordsForModel(this.chatId)) {
       if (!PcmRecorder.isSupported()) {
@@ -147,10 +153,6 @@ export class StudioDictationAdapter implements DictationAdapter {
       return session;
     }
     const { dictationEngine } = useVoiceSettingsStore.getState();
-    if (getVoiceMode() === "active") {
-      const session = startVoiceListen();
-      if (session) return session;
-    }
     if (usesRecordedAudio(dictationEngine)) {
       if (dictationEngine === "custom" && !customSttConfigured()) {
         throw new Error(

@@ -657,6 +657,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // Cleared while STT or the judge ran: the speech went with that turn.
           voiceTrace("stt.drop", { transcript, why: "cleared" });
           finish("stopped");
+          // The clear's own re-arm found this session still live and skipped.
+          setTimeout(() => requestVoiceResume(), 0);
           return;
         }
         if (
@@ -687,7 +689,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           reveal = mine;
           try {
             for (let i = stepChars; i < total && !mine.rush; i += stepChars) {
-              if (ended) return;
+              if (ended || epoch !== heldEpoch) break;
               const partial = transcript.slice(0, i);
               emitSpeech(partial, false);
               await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
@@ -696,6 +698,13 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             if (reveal === mine) reveal = null;
           }
           if (ended) return;
+          if (epoch !== heldEpoch) {
+            // A Stop or reset during the reveal let this turn go.
+            voiceTrace("stt.drop", { transcript, why: "cleared" });
+            finish("stopped");
+            setTimeout(() => requestVoiceResume(), 0);
+            return;
+          }
           // onSpeech(isFinal) commits the full transcript into the composer text;
           // onSpeechEnd (via finish) ends the session. Then, deferred so those
           // state updates land first, submit the turn. requestVoiceSubmit is a

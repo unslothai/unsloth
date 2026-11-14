@@ -20,6 +20,7 @@ export function stripForSpeech(text: string): string {
     .replace(/\$(?!\d)/g, " ") //                                    math $, not "$5"
     .replace(/(?<!\d)\/|\/(?!\d)/g, " ") //                          "and/or", "/s"; not 1/2
     .replace(SPEECH_STRIP_RE, "")
+    .replace(/−(?=\d)/g, "-") //                                 a numeric minus is not a dash
     .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ")
     .replace(/[^\S\n]*…[^\S\n]*/g, " ")
     .replace(/\.{2,}/g, " ")
