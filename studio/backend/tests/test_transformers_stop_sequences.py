@@ -490,3 +490,31 @@ def test_unrequested_special_tokens_stay_hidden_without_stopping():
 
     assert not stopped.matched.is_set()
     assert "".join(stopped) == "alpha beta"
+
+
+def _unlisted_special_tokenizer():
+    # Like Qwen3 <|endoftext|> or Llama 3 <|eom_id|>: added as special, absent from all_special_tokens.
+    from tokenizers import AddedToken
+
+    tokenizer = _registered_stop_tokenizer()
+    tokenizer.add_tokens([AddedToken("[EOT]", special = True)])
+    assert "[EOT]" not in tokenizer.all_special_tokens
+    return tokenizer
+
+
+def test_hidden_added_special_token_outside_all_special_tokens_stops():
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    tokenizer = _unlisted_special_tokenizer()
+    streamer = inf.IncrementalTextIteratorStreamer(
+        tokenizer, skip_prompt = False, skip_special_tokens = True
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["[EOT]"])
+    eot = tokenizer.convert_tokens_to_ids("[EOT]")
+
+    for token in (1, eot, 3):
+        stopped.put(torch.tensor([token]))
+    stopped.end()
+
+    assert stopped.matched.is_set()
+    assert "".join(stopped).rstrip() == "alpha"

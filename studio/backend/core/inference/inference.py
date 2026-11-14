@@ -582,23 +582,30 @@ class _StopSequenceStreamer:
         self.next_tokens_are_prompt = bool(getattr(streamer, "skip_prompt", False))
         self.is_harmony = isinstance(streamer, HarmonyTextStreamer)
         self.cleans_up = _decoder_cleans_up(streamer)
-        self.special_stop_ids = set()
-        if (
-            self.sequences
-            and not self.is_harmony
-            and getattr(streamer, "decode_kwargs", {}).get("skip_special_tokens", False)
-        ):
-            special_tokens = dict(
-                zip(
-                    getattr(streamer.tokenizer, "all_special_tokens", ()),
-                    getattr(streamer.tokenizer, "all_special_ids", ()),
-                )
-            )
-            self.special_stop_ids = {
-                special_tokens[sequence]
-                for sequence in self.sequences
-                if sequence in special_tokens
-            }
+        self.special_stop_ids = self._hidden_stop_ids() if self.sequences else frozenset()
+
+    def _hidden_stop_ids(self):
+        # The decoder can hide added special tokens beyond all_special_tokens, so ask it per stop.
+        tokenizer = self.streamer.tokenizer
+        for owner in (tokenizer, getattr(tokenizer, "_tokenizer", None)):
+            convert = getattr(owner, "convert_tokens_to_ids", None)
+            if callable(convert):
+                break
+        else:
+            return frozenset()
+        ids = set()
+        for sequence in self.sequences:
+            try:
+                token_id = convert(sequence)
+                if (
+                    isinstance(token_id, int)
+                    and owner.decode([token_id], skip_special_tokens = False) == sequence
+                    and self._decode([token_id]) == ""
+                ):
+                    ids.add(token_id)
+            except Exception:  # noqa: BLE001 -- third-party tokenizer adapters vary
+                continue
+        return frozenset(ids)
 
     def __next__(self):
         return next(self.streamer)
@@ -620,12 +627,13 @@ class _StopSequenceStreamer:
             self.next_tokens_are_prompt = False
             return
         new_tokens = value.tolist()
-        stop_index = next(
-            (index for index, token in enumerate(new_tokens) if token in self.special_stop_ids),
-            None,
-        )
+        stop_index = None
+        if self.special_stop_ids:
+            stop_index = next(
+                (i for i, token in enumerate(new_tokens) if token in self.special_stop_ids), None
+            )
         token_matched = stop_index is not None
-        self.token_ids.extend(new_tokens[:stop_index] if token_matched else new_tokens)
+        self.token_ids.extend(new_tokens[:stop_index])
         self._decode_new_tokens()
         # Earlier text was already scanned; only a stop overlapping new text can match.
         start = self.scan_from
