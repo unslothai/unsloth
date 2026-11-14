@@ -166,19 +166,82 @@ def test_unrelated_local_failure_is_not_rewritten(monkeypatch):
         _local_load()
 
 
-def test_server_refusal_points_at_the_flag(monkeypatch, capsys):
+def _http_error(status, reason, detail):
+    import email.message
+    import io
+    import json
+    import urllib.error
+
+    body = io.BytesIO(json.dumps({"detail": detail}).encode())
+    return urllib.error.HTTPError(
+        "http://x/api/inference/load", status, reason, email.message.Message(), body
+    )
+
+
+def _refusing_server(monkeypatch, error):
+    def refuse(
+        self,
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if method == "POST" and path.endswith("/load"):
+            raise error
+        return object()
+
+    monkeypatch.setattr(inference.HttpChatBackend, "_request", refuse)
+    monkeypatch.setattr(
+        inference.HttpChatBackend, "_resident_gguf_variant", lambda self, model: None
+    )
+    return inference.HttpChatBackend("http://127.0.0.1:1", "token")
+
+
+_SERVER_DETAIL = "Failed to load model: ... Please pass the argument `trust_remote_code=True` ..."
+
+
+@pytest.mark.parametrize("status,reason", [(500, "Internal Server Error"), (400, "Bad Request")])
+def test_fast_server_refusal_points_at_the_flag(monkeypatch, capsys, status, reason):
+    backend = _refusing_server(monkeypatch, _http_error(status, reason, _SERVER_DETAIL))
+
+    with pytest.raises(typer.Exit):
+        backend.ensure_loaded("m", hf_token = None, max_seq_length = 2048, load_in_4bit = True)
+
+    assert "--trust-remote-code" in capsys.readouterr().err
+
+
+def test_deferred_server_refusal_points_at_the_flag(monkeypatch, capsys):
     _capture_server_payload(monkeypatch)
 
-    def refuse(url, response):
-        raise RuntimeError("Model 'm' requires trust_remote_code to be enabled.")
+    def deferred(url, response):
+        inference.raise_for_deferred_error(
+            url, {"_deferred_error": {"status_code": 500, "detail": _SERVER_DETAIL}}
+        )
 
-    monkeypatch.setattr(inference, "read_json_checking_deferred_error", refuse)
+    monkeypatch.setattr(inference, "read_json_checking_deferred_error", deferred)
     backend = inference.HttpChatBackend("http://127.0.0.1:1", "token")
 
     with pytest.raises(typer.Exit):
         backend.ensure_loaded("m", hf_token = None, max_seq_length = 2048, load_in_4bit = True)
 
     assert "--trust-remote-code" in capsys.readouterr().err
+
+
+def test_other_server_failures_show_the_servers_cause(monkeypatch, capsys):
+    backend = _refusing_server(
+        monkeypatch,
+        _http_error(500, "Internal Server Error", "Failed to load model: out of memory"),
+    )
+
+    with pytest.raises(typer.Exit):
+        backend.ensure_loaded(
+            "m", hf_token = None, max_seq_length = 2048, load_in_4bit = True, trust_remote_code = True
+        )
+
+    assert (
+        "Model load failed: HTTP Error 500: Failed to load model: out of memory"
+        in capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize("kind", ["remote_code_blocked", "malware_blocked"])
