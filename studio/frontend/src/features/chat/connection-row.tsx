@@ -123,7 +123,7 @@ export function ConnectionRow({
     <div
       data-connection-id={provider.id}
       data-connection-enabled={enabled}
-      className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-border/60 border-b px-3 py-2.5 transition-colors last:border-b-0 hover:bg-muted/35 max-sm:grid-cols-1"
+      className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2.5 max-sm:grid-cols-1"
     >
       {readOnly ? (
         <div

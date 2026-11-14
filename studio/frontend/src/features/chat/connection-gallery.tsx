@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
+import { SettingsSection } from "@/features/settings/components/settings-section";
 import { ApiProviderLogo } from "./api-provider-logo";
 import type { ProviderRegistryEntry } from "./api/providers-api";
 import {
@@ -138,36 +139,28 @@ export function ConnectionGallery({
     [registry, query],
   );
   return (
-    <section
-      aria-label="Add a connection"
-      className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]"
-    >
-      <div className="flex items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-sm font-medium text-foreground">
-            Add a connection
-          </span>
-          <span className="text-xs leading-snug text-muted-foreground">
-            Pick a provider, then paste a key or point at your own server.
-          </span>
-        </div>
+    <SettingsSection
+      title="Add a connection"
+      description="Pick a provider, then paste a key or point at your own server."
+      action={
         <Input
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search providers"
           aria-label="Search providers"
-          className="h-8 w-44 shrink-0 bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0 max-sm:w-32"
+          className="h-8 w-44 bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0 max-sm:w-32"
         />
-      </div>
+      }
+    >
       {groups.length === 0 ? (
-        <p className="px-3 py-4 text-xs text-muted-foreground">
+        <p className="py-3 text-xs text-muted-foreground">
           {loading
             ? "Loading providers"
             : "No provider matches. Custom works with any OpenAI-compatible endpoint."}
         </p>
       ) : (
-        <div className="flex flex-col gap-2 p-2">
+        <div className="-mx-1.5 flex flex-col gap-2 pt-1">
           {groups.map((group) => {
             // A search shows its matches wherever they live.
             const collapsed =
@@ -250,6 +243,6 @@ export function ConnectionGallery({
           })}
         </div>
       )}
-    </section>
+    </SettingsSection>
   );
 }

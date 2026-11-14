@@ -155,6 +155,7 @@ import {
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 import { parseAutoCompactTokens } from "./utils/auto-compaction";
 import { SettingsRow } from "@/features/settings/components/settings-row";
+import { SettingsSection } from "@/features/settings/components/settings-section";
 import {
   learnModelDisplayNames,
   providerModelDisplayName,
@@ -2921,13 +2922,12 @@ export function ChatProvidersSettings({
         </SettingsRow>
       </div>
 
-      <section className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
-        <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
-          <div className="flex w-full items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5">
-            <span className="shrink-0 text-xs tabular-nums text-muted-foreground/90">
-              {listedProviders.length} connections · {totalModels} models
-            </span>
-            {providers.length > 0 ? (
+      <div className="max-w-[calc(760px*var(--ui-space-scale,1))]">
+        <SettingsSection
+          title="Your connections"
+          description={`${listedProviders.length} connections · ${totalModels} models`}
+          action={
+            providers.length > 0 ? (
               <Button
                 type="button"
                 variant="ghost"
@@ -2948,10 +2948,11 @@ export function ChatProvidersSettings({
                     ? "Check all"
                     : `Checked ${formatCheckedAgo(oldestCheckAt, now)}`}
               </Button>
-            ) : null}
-          </div>
+            ) : undefined
+          }
+        >
           {listedProviders.length === 0 ? (
-            <div className="px-3 py-4">
+            <div className="py-3">
               <div className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-sm font-medium text-foreground">
                   No connections yet
@@ -3024,8 +3025,10 @@ export function ChatProvidersSettings({
               );
             })
           )}
-        </div>
+        </SettingsSection>
+      </div>
 
+      <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
         <ConnectionGallery
           registry={menuRegistry}
           connectedTypes={connectedTypes}
@@ -3033,7 +3036,7 @@ export function ChatProvidersSettings({
           onPick={(type) => openAddProvider(type)}
         />
 
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span>
             Model names, context sizes and capabilities come from models.dev
             {catalogFetchedAt
@@ -3056,7 +3059,7 @@ export function ChatProvidersSettings({
             Refresh model data
           </Button>
         </div>
-      </section>
+      </div>
       <AlertDialog
         open={pendingDeleteProvider !== null}
         onOpenChange={(open) => {
