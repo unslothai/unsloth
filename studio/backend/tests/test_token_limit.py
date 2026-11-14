@@ -265,6 +265,8 @@ async def _ignore(message):
         (200, False, "cancelled", False, True),
         (200, True, "cancelled", False, False),
         (200, False, "completed", False, False),
+        # Input-only usage (Anthropic's message_start) before a cancel generated nothing.
+        (200, "prompt", "cancelled", False, True),
     ],
 )
 def test_the_override_is_refunded_exactly_when_nothing_was_generated(
@@ -288,7 +290,9 @@ def test_the_override_is_refunded_exactly_when_nothing_was_generated(
             entry = monitor.start(
                 endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = ""
             )
-            if output:
+            if output == "prompt":
+                monitor.set_usage(entry, prompt_tokens = 50)
+            elif output:
                 monitor.append_reply(entry, "partial answer")
             monitor.finish(entry, finish)
         if in_band_failure:
@@ -356,6 +360,13 @@ _PASS = {"type": "context_usage", "prompt_tokens": 900, "completion_tokens": 100
             ],
             "cancelled",
             100 + 200,
+        ),
+        # A backend that reports no stats (diffusion LMs) completes with only its text.
+        (
+            [{"role": "user", "content": "x" * 400}],
+            [{"choices": [{"delta": {"content": "a" * 400}}]}],
+            "completed",
+            100 + 100,
         ),
         (
             [],

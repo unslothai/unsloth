@@ -998,10 +998,9 @@ def finish_run(
             (status, finish_reason, error, completed, completed, run_id),
         )
         _sync_assistant_status_locked(conn, run_id, status, quote_cut)
-        refund = None
-        if status != "completed":
-            from storage.token_usage_ledger import settle_interrupted_run
-            refund = settle_interrupted_run(conn, run_id)
+        from storage.token_usage_ledger import settle_interrupted_run
+
+        refund = settle_interrupted_run(conn, run_id, completed = status == "completed")
         updated = conn.execute(
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),

@@ -911,7 +911,8 @@ class ApiMonitor:
             if completion_tokens is not None:
                 entry.completion_tokens = completion_tokens
                 entry.reported_reply_chars = entry.reply_chars
-            if prompt_tokens or completion_tokens or total_tokens:
+            # Input-only usage (Anthropic's message_start) is not output: the refund must survive it.
+            if completion_tokens:
                 _note_generated(entry)
             if total_tokens is not None:
                 entry.total_tokens = total_tokens

@@ -226,9 +226,15 @@ def _text_chars(content) -> int:
     return 0
 
 
-def settle_interrupted_run(conn: sqlite3.Connection, run_id: str):
-    """A run stopped before its next usage frame (e.g. unattended) still debits an estimate of the
-    output it persisted after the last one; reported usage, if it ever arrives, replaces it."""
+def settle_interrupted_run(
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    completed: bool = False,
+):
+    """A run stopped before its next usage frame (e.g. unattended), or one that completed without
+    any (a backend reporting no stats), still debits an estimate of the output it persisted after
+    the last one; reported usage, if it ever arrives, replaces it."""
     output = 0
     reported = False
     streamed_calls: set = set()
@@ -272,6 +278,9 @@ def settle_interrupted_run(conn: sqlite3.Connection, run_id: str):
                         output += _text_chars(function.get("name")) + _text_chars(
                             function.get("arguments")
                         )
+    if completed and (reported or not output):
+        # A finished run's own report stands, and a success never refunds the override.
+        return None
     if not output:
         if reported:
             return None
