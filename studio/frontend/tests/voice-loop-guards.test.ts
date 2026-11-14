@@ -191,3 +191,9 @@ test("a coalesced start still settling after a newer utterance does not fire", (
 test("a filler decision that lands after the run started leaves the quiet fallback on", () => {
   assert.match(engine, /if \(!fromModel \|\| auiRef\.current\.thread\(\)\.getState\(\)\.isRunning\) return;\s*fillerAnsweredRef\.current = true;/);
 });
+
+test("Escape on the orb hides it without reaching the composer's cancel", () => {
+  const orb = readSrc("components/assistant-ui/voice-orb.tsx");
+  assert.match(orb, /e\.stopPropagation\(\);\s*setVoiceOrbCollapsed\(true\);/);
+  assert.match(orb, /window\.addEventListener\("keydown", onKeyDown, true\);/);
+});
