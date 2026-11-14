@@ -1091,6 +1091,13 @@ def has_core_model_loading():
     return hasattr(core, "WeightConverter") and hasattr(core, "WeightRenaming")
 
 
+def _is_fp8_quant_config(qc):
+    if qc is None:
+        return False
+    method = qc.get("quant_method") if isinstance(qc, dict) else getattr(qc, "quant_method", None)
+    return str(getattr(method, "value", method)).lower() == "fp8"
+
+
 def _released_layout(names):
     return bool(names) and ("embed.weight" in names or any(n.startswith("layers.") for n in names))
 
@@ -1211,10 +1218,17 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
                 pretrained_model_name_or_path = convert_released_checkpoint(
                     pretrained_model_name_or_path, **hub
                 )
+                # The converted weights are dequantized: drop the release's FP8 config wherever a caller carried
+                # it over (a config object read from the original repo, or a quantization_config kwarg); a
+                # bitsandbytes config asked for by the caller stays.
+                if _is_fp8_quant_config(kwargs.get("quantization_config")):
+                    kwargs.pop("quantization_config")
                 config = kwargs.get("config")
                 if config is not None and not isinstance(config, (str, os.PathLike)):
                     for c in (config, getattr(config, "text_config", None)):
-                        if c is not None and getattr(c, "quantization_config", None) is not None:
+                        if c is not None and _is_fp8_quant_config(
+                            getattr(c, "quantization_config", None)
+                        ):
                             try:
                                 del c.quantization_config
                             except AttributeError:

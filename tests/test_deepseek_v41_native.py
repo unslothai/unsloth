@@ -637,3 +637,23 @@ def test_each_layer_reads_only_its_own_source_compressed_kv(monkeypatch):
     # layers 2, 3 share source 2's latents; layers 4, 5 share source 4's
     assert torch.equal(calls[2][:, seqlen:], calls[3][:, seqlen:])
     assert torch.equal(calls[4][:, seqlen:], calls[5][:, seqlen:])
+
+
+@pytest.mark.parametrize("needs_conversion", ["0", "1"])
+def test_release_fp8_config_is_dropped_only_where_it_cannot_load(monkeypatch, needs_conversion):
+    """Where transformers loads the release through convert.py (dequantized), the release's FP8 quantization_config
+    must vanish from the config, else Unsloth's loader sees a pre-quantized model and skips a 4-bit request; a
+    bitsandbytes config is kept."""
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", needs_conversion)
+    fp8 = {
+        "quant_method": "fp8",
+        "fmt": "e4m3",
+        "scale_fmt": "ue8m0",
+        "weight_block_size": [32, 32],
+    }
+    config = DeepseekV41Config(
+        text_config = _tiny_config().text_config.to_dict(), quantization_config = fp8
+    )
+    assert (getattr(config, "quantization_config", None) is None) == (needs_conversion == "1")
+    bnb = {"quant_method": "bitsandbytes", "load_in_4bit": True}
+    assert DeepseekV41Config(quantization_config = bnb).quantization_config == bnb

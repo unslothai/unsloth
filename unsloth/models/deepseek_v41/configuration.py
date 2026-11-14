@@ -222,6 +222,7 @@ class DeepseekV41TextConfig(PretrainedConfig):
             raise ValueError(
                 f"compress_ratios has {len(self.compress_ratios)} entries for {num_hidden_layers} layers."
             )
+        _drop_unloadable_fp8_config(kwargs)
         super().__init__(
             pad_token_id = pad_token_id,
             bos_token_id = bos_token_id,
@@ -229,6 +230,22 @@ class DeepseekV41TextConfig(PretrainedConfig):
             tie_word_embeddings = tie_word_embeddings,
             **kwargs,
         )
+
+
+def _drop_unloadable_fp8_config(kwargs):
+    """The release's FP8 quantization_config (ue8m0 32x32 blocks, fp4 experts) on a transformers whose FP8 quantizer
+    cannot read it: those versions load the release through convert.py, dequantized, so the config must not ask
+    for FP8 (or make Unsloth's loader treat the model as pre-quantized and skip a requested 4-bit load)."""
+    qc = kwargs.get("quantization_config")
+    if qc is None:
+        return
+    method = qc.get("quant_method") if isinstance(qc, dict) else getattr(qc, "quant_method", None)
+    if str(getattr(method, "value", method)).lower() != "fp8":
+        return
+    from .convert import released_needs_conversion
+
+    if released_needs_conversion():
+        kwargs.pop("quantization_config")
 
 
 class DeepseekV41Config(PretrainedConfig):
@@ -256,6 +273,7 @@ class DeepseekV41Config(PretrainedConfig):
         self.text_config = text_config
         self.vision_config = vision_config
         self.image_token_id = image_token_id
+        _drop_unloadable_fp8_config(kwargs)
         super().__init__(tie_word_embeddings = tie_word_embeddings, **kwargs)
 
     def get_text_config(self, *args, **kwargs):
