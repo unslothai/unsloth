@@ -13,6 +13,7 @@ import {
   claimHeldTurnForEdit,
   clearHeldTurn,
   dropVoiceUtteranceAudio,
+  forgetVoiceBox,
   endHeldEdit,
   getHeldTurnText,
   isComposerHeldForEdit,
@@ -1319,6 +1320,7 @@ export const VoiceEngine: FC = () => {
       voiceCoalesceTimerRef.current = null;
     }
     clearHeldTurn();
+    forgetVoiceBox();
     clearPendingVoiceNotes();
     earlyInterjectRef.current?.reset();
     clearFiller();
@@ -1383,6 +1385,7 @@ export const VoiceEngine: FC = () => {
     }
     streamBegunRef.current = false;
     clearHeldTurn();
+    forgetVoiceBox();
     clearPendingVoiceNotes();
     earlyInterjectRef.current?.reset();
     clearFiller();
