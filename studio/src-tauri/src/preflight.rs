@@ -274,10 +274,19 @@ pub async fn desktop_preflight_result() -> DesktopPreflightResult {
 pub async fn desktop_preflight_result_with_state(
     state: &crate::process::BackendState,
 ) -> Result<(DesktopPreflightResult, Option<(u64, bool)>), String> {
+    let state_owns_backend = matches!(crate::process::owned_backend_snapshot(state), Ok(Some(_)));
     let (managed, backend, owned) = tokio::join!(
         probe_managed_install(),
         probe_existing_backends(&[]),
-        crate::desktop_backend_owner::probe_verified_owned_backend()
+        async {
+            if state_owns_backend {
+                crate::desktop_backend_owner::verified_owned_backend_metadata()
+            } else {
+                crate::desktop_backend_owner::probe_verified_owned_backend()
+                    .await
+                    .map(crate::desktop_backend_owner::VerifiedOwnedBackendMetadata::Decided)
+            }
+        }
     );
 
     if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
@@ -353,6 +362,10 @@ pub async fn desktop_preflight_result_with_state(
         }
     }
 
+    let owned = match owned {
+        Ok(metadata) => metadata.finish().await,
+        Err(error) => Err(error),
+    };
     let owned = match owned {
         Ok(owned) => owned,
         Err(error) => {
@@ -979,6 +992,52 @@ exit 1
             ManagedProbe::Stale { .. }
         ));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
+
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cache_hit_is_rechecked_when_the_tree_changes_during_help() {
+        use std::fs;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("cache-hit-tree-change");
+        remove_managed_capability_cache();
+        let fake = fake_cli(
+            "cap-cache-hit-tree-change",
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
+if [ "$1" = "-h" ]; then
+  if [ -f "$0.changeonh" ]; then rm -f "$0.changeonh"; touch -m -t 200101010000 "$0"; fi
+  exit 0
+fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  if [ -f "$0.modecap" ]; then exit 42; fi
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+        let calls = bin.with_extension("calls");
+
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+        fs::write(bin.with_extension("modecap"), "broken").unwrap();
+        fs::write(bin.with_extension("changeonh"), "1").unwrap();
+        fs::write(&calls, "").unwrap();
+
+        let probe = probe_managed_bin(bin.clone()).await;
+        let seen = fs::read_to_string(&calls).unwrap();
+        assert!(
+            matches!(probe, ManagedProbe::Stale { .. }),
+            "a cache hit for the old tree was accepted: {probe:?}, calls {seen:?}"
+        );
+        assert!(seen.contains("studio desktop-capabilities --json"), "calls {seen:?}");
 
         remove_managed_capability_cache();
     }

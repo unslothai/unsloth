@@ -157,8 +157,7 @@ def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
             raise PermissionError("mp4 locked")
         return real_unlink(self, *a, **k)
 
-    # Patch Path.unlink, not os.unlink (3.10 caches an _accessor); scoped context keeps
-    # the autouse studio_root redirect.
+    # Patch Path.unlink, not os.unlink (3.10 caches _accessor); scope keeps studio_root.
     with pytest.MonkeyPatch.context() as m:
         m.setattr(Path, "unlink", _fail_on_mp4)
         assert gallery.delete(record["id"]) is False
@@ -321,6 +320,7 @@ def _real_mp4_bytes(
     frames: int = 8,
     size: int | tuple[int, int] = 32,
     rate: int = 8,
+    codec: str = "mpeg4",
 ) -> bytes:
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
@@ -328,7 +328,7 @@ def _real_mp4_bytes(
 
     buf = io.BytesIO()
     with av.open(buf, "w", format = "mp4") as out:
-        stream = out.add_stream("mpeg4", rate = rate)
+        stream = out.add_stream(codec, rate = rate)
         width, height = size if isinstance(size, tuple) else (size, size)
         stream.width = width
         stream.height = height
@@ -416,8 +416,7 @@ def test_webm_export_keeps_the_audio_track():
     with av.open(io.BytesIO(webm)) as container:
         for frame in container.decode(audio = 0):
             samples += frame.samples
-    # Allow one 20 ms Opus frame of loss; compare to the decoded source since PyAV
-    # versions differ on AAC encoder padding.
+    # Allow one 20 ms Opus frame; PyAV AAC padding varies, so compare the decoded source.
     assert samples >= source_seconds * 48000 - 960, (samples, source_seconds)
 
 
@@ -477,6 +476,16 @@ def test_transcode_gif_and_webm_produce_real_containers():
     assert gif is not None and gif.startswith(b"GIF8")
     webm = gallery.transcode(record["id"], "webm")
     assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
+
+
+def test_webm_export_keeps_every_frame_of_an_h264_clip():
+    av = pytest.importorskip("av")
+    import io
+
+    record = gallery.save(_real_mp4_bytes(frames = 25, codec = "libx264"), _meta())
+    webm = gallery.transcode(record["id"], "webm")
+    with av.open(io.BytesIO(webm)) as container:
+        assert sum(1 for _ in container.decode(video = 0)) == 25
 
 
 def test_thumbnail_produces_a_webp_from_the_video():
@@ -585,9 +594,8 @@ def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch
 
 
 def test_gif_export_bounds_frames_and_edge(monkeypatch):
-    """Every kept frame is held as a paletted image before the encoder runs, so an unbounded walk
-    is a memory bomb: the generate request allows 2048x2048 for 1024 frames, and at the 12 fps
-    target the step is 1, which is over 4 GB of frames plus the GIF buffer. Cap both axes."""
+    """Every kept frame is held as a paletted image before encoding, so an unbounded walk is a
+    memory bomb: 2048x2048 x 1024 frames at a 12 fps target is over 4 GB; cap both axes."""
     import io as _io
 
     from core.inference import video_gallery as vg

@@ -105,3 +105,65 @@ def test_missing_vae_and_broken_probe_are_no_ops():
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
     vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float32))
     assert vae.seen_dtype == torch.float32
+
+
+def _encoder(conv_dtype, other_dtypes = ()):
+    weight = types.SimpleNamespace(dtype = conv_dtype)
+
+    class _Encoder:
+        conv_in = types.SimpleNamespace(weight = weight)
+
+        def parameters(self):
+            yield weight
+            for dtype in other_dtypes:
+                yield types.SimpleNamespace(dtype = dtype)
+
+    return _Encoder()
+
+
+def test_encode_follows_conv_in_when_the_vae_probe_fails():
+    # #16375: under offload the VAE parameter walk can fail; the layer that eats the image still says fp32.
+    import torch
+
+    class _BrokenVae(_RecordingVae):
+        def parameters(self):
+            raise RuntimeError("meta device")
+
+    vae = _BrokenVae(dtype = torch.float32)
+    vae.encoder = _encoder(torch.float32)
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float32
+
+
+def test_encode_follows_conv_in_over_an_earlier_mismatched_vae_weight():
+    import torch
+
+    vae = _RecordingVae(dtype = torch.float16)  # first VAE weight is half, the encoder runs fp32
+    vae.encoder = _encoder(torch.float32)
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float32
+
+
+def test_a_half_conv_in_keeps_half_input_beside_fp32_norm_weights():
+    import torch
+
+    vae = _RecordingVae(dtype = torch.float16)
+    vae.encoder = _encoder(torch.float16, other_dtypes = (torch.float32,))
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float16
+
+
+def test_an_unreadable_dtype_leaves_the_input_alone():
+    import torch
+
+    class _OpaqueVae(_RecordingVae):
+        def parameters(self):
+            raise RuntimeError("meta device")
+
+    vae = _OpaqueVae(dtype = torch.float16)
+    DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
+    vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float16))
+    assert vae.seen_dtype == torch.float16

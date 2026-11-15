@@ -35,8 +35,7 @@ _install_grouped_mm_cpu_fallback = _load_installer()
 
 
 class _RecordingLibrary:
-    """Stands in for torch.library.Library: captures the registration instead of
-    binding it to a CUDA dispatch key no CI runner has."""
+    """Stands in for torch.library.Library: records registrations, never binds a CUDA key."""
 
     def __init__(self, namespace, kind):
         self.namespace = namespace
@@ -83,8 +82,7 @@ def fallback():
 
 
 class TestRegistration:
-    """Where the override lands. Getting the namespace or dispatch key wrong is a
-    silent no-op: training still crashes on the null HIP kernel."""
+    """A wrong namespace or dispatch key is a silent no-op, and training then crashes."""
 
     def test_overrides_aten_grouped_mm_on_the_cuda_key(self, fallback):
         assert fallback.lib.namespace == "aten"
@@ -97,8 +95,7 @@ class TestRegistration:
         assert len(fallback.lib.registrations) == 1
 
     def test_returns_the_library_so_the_caller_can_keep_it_alive(self, fallback):
-        """A dropped Library is garbage collected and the override silently
-        unregisters mid-run; worker.py parks it in a module global."""
+        """A dropped Library is garbage collected and silently unregisters mid-run."""
         assert isinstance(fallback.lib, _RecordingLibrary)
         assert "_WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(" in _WORKER_SOURCE
 
@@ -108,8 +105,7 @@ class TestRegistration:
 
 
 class TestUngroupedNumerics:
-    """offs=None: plain matmul, one path per rank combination. The 3-D case is
-    the regression #7292 fixed -- an unconditional mm() broke MoE experts."""
+    """offs=None takes plain matmul; an unconditional mm() broke 3-D MoE experts."""
 
     def test_2d_by_2d_matches_mm(self, fallback):
         a = torch.randn(6, 4)
@@ -132,8 +128,7 @@ class TestUngroupedNumerics:
         torch.testing.assert_close(fallback.fn(a, b), torch.matmul(a, b))
 
     def test_non_contiguous_inputs_are_handled(self, fallback):
-        """Transposed views reach _grouped_mm constantly; every path calls
-        .contiguous() and this catches it if one stops."""
+        """Transposed views reach _grouped_mm often; every path must call .contiguous()."""
         a = torch.randn(4, 6).t()
         b = torch.randn(5, 4).t()
         torch.testing.assert_close(fallback.fn(a, b), torch.mm(a, b))
@@ -156,8 +151,7 @@ class TestGroupedNumerics:
         torch.testing.assert_close(fallback.fn(a, b, offs), a @ b)
 
     def test_empty_group_produces_no_rows(self, fallback):
-        """An expert that routed zero tokens (offs[i] == offs[i-1]) must
-        contribute nothing, not a stray row."""
+        """An expert with zero routed tokens (offs[i] == offs[i-1]) must contribute no rows."""
         a = torch.randn(5, 4)
         b = torch.randn(3, 4, 5)
         offs = torch.tensor([2, 2, 5])
@@ -167,8 +161,7 @@ class TestGroupedNumerics:
         torch.testing.assert_close(got, expected)
 
     def test_rows_past_the_last_offset_are_not_dropped(self, fallback):
-        """Trailing tokens beyond offs[-1] go through the last expert; dropping
-        them would silently shrink the output instead of raising."""
+        """Tokens past offs[-1] go to the last expert; dropping them silently shrinks output."""
         a = torch.randn(7, 4)
         b = torch.randn(3, 4, 5)
         offs = torch.tensor([2, 5])
@@ -218,8 +211,7 @@ class TestBiasAndDtype:
         torch.testing.assert_close(got, torch.mm(a, b).to(torch.float64))
 
     def test_promotion_from_bias_is_cast_back_to_the_input_dtype(self, fallback):
-        """Without the restore, a promoted result changes the autograd dtype
-        downstream of every MoE layer."""
+        """Without the cast-back, promoted results change dtype downstream of every MoE layer."""
         a = torch.randn(6, 4, dtype = torch.float32)
         b = torch.randn(4, 5, dtype = torch.float32)
         bias = torch.randn(5, dtype = torch.float64)
@@ -243,8 +235,7 @@ class TestBiasAndDtype:
 
 
 def _exec_source_snippet(anchor: str, last_line: str, **variables):
-    """Run a slice of worker.py verbatim, so the gate under test is the shipped
-    one and not a copy that can drift."""
+    """Runs a slice of worker.py verbatim, so the tested gate is the shipped one, not a copy."""
     start = _WORKER_SOURCE.find(anchor)
     assert start != -1, f"gate snippet not found in worker.py: {anchor!r}"
     start = _WORKER_SOURCE.rfind("\n", 0, start) + 1  # keep the indent for dedent()
@@ -257,8 +248,7 @@ def _exec_source_snippet(anchor: str, last_line: str, **variables):
 
 
 class TestLinuxHipVersionGate:
-    """PR #7292's Linux gate. Too low a floor keeps the slow Python fallback on
-    fixed ROCm 7.13+; too high reintroduces the segfault on 7.12."""
+    """Gate at ROCm 7.13: lower keeps the slow fallback, higher revives the 7.12 segfault."""
 
     _ANCHOR = '_m = re.match(r"(\\d+)\\.(\\d+)", _hip_str)'
     _LAST = '_hip_lt_713 = "rocmsdk" not in _ver'
@@ -321,9 +311,7 @@ class TestLinuxRdna4NameMatch:
         ), "worker.py must lowercase the device name before matching the RDNA4 pattern"
 
     def test_name_match_is_only_a_fallback_when_arch_is_unknown(self):
-        """gcnArchName is authoritative when present. Letting the name regex fire
-        alongside a known arch would misclassify any card whose marketing name
-        happens to look RDNA4."""
+        """gcnArchName is authoritative, so the RDNA4 name regex may only fire when the arch is unknown."""
         assert re.search(
             r"not _lin_arch and re\.search\(r\"[^\"]+\",\s*_lin_name\)", _WORKER_SOURCE
         ), "the RDNA4 name regex must be guarded by `not _lin_arch`"
@@ -346,8 +334,7 @@ class TestLinuxRdna4NameMatch:
 
 
 class TestLinuxGateStructure:
-    """The block is a few hundred lines into run_training_process and can only be
-    checked structurally; these pin the parts a refactor would quietly drop."""
+    """The Linux gate is hundreds of lines into run_training_process; check it structurally."""
 
     def _linux_block(self):
         start = _WORKER_SOURCE.find("1f-linux")
@@ -366,8 +353,7 @@ class TestLinuxGateStructure:
         assert "if _rdna4 and _hip_lt_713:" in block
 
     def test_scans_every_visible_device(self):
-        """device_map="balanced" can place layers on a later card, so checking
-        device 0 alone misses the RDNA4 GPU."""
+        """device_map="balanced" can put layers on any card, so device 0 alone misses RDNA4."""
         block = self._linux_block()
         assert "for _i in range(_torch_lin.cuda.device_count()):" in block
 

@@ -608,8 +608,7 @@ def test_sonnet_5_bills_the_launch_rate_until_the_cutover():
 
 
 def test_fast_mode_multiplier_is_2x_for_the_supported_opus_models():
-    """Fast mode is Opus 5 / Opus 4.8 only, at $10/$50 against a $5/$25 base.
-    Ref: https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing"""
+    """Fast mode is Opus 5 and Opus 4.8 only, at $10/$50 against the $5/$25 base."""
     assert ANTHROPIC_FAST_MODE_MULT == 2.0
     for model in ("claude-opus-5", "claude-opus-4-8"):
         usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000, "speed": "fast"}

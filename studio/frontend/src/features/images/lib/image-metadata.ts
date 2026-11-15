@@ -6,6 +6,7 @@ import {
   detailerRecordOf,
   type DetailerRecord,
 } from "./detailer.ts";
+import { xyGridCellSize } from "../image-size.ts";
 import { parseHiresInfotext } from "./hires-choice.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "./sampler-choice.ts";
 import type { SdControlsCapability } from "./sd-controls.ts";
@@ -1009,6 +1010,7 @@ export const APPLIED_RECIPE_KEYS = [
   "hires_guidance",
   "hires_base_width",
   "hires_base_height",
+  "xy_grid",
 ] as const;
 
 /** Known but not applied: loading a model or a ControlNet image stays the user's call. */
@@ -1020,6 +1022,7 @@ export const INFO_RECIPE_KEYS = [
   "text_encoder_quant",
   "memory_mode",
   "offload_policy",
+  "denoiser_offload",
   "speed_mode",
   "attention_backend",
   "transformer_cache",
@@ -1029,6 +1032,8 @@ export const INFO_RECIPE_KEYS = [
   "controlnet_guidance",
   "batch_index",
   "created_at",
+  "generation_seconds",
+  "generation_count",
   "engine",
   "generator",
   "schema_version",
@@ -1259,8 +1264,9 @@ export function recipeSettings(
   r: ImportedRecipe,
   d: RecipeDefaults,
 ): RestorableRecipe {
-  const width = int(r.width);
-  const height = int(r.height);
+  const cell = xyGridCellSize(r as Parameters<typeof xyGridCellSize>[0]);
+  const width = cell?.width ?? int(r.width);
+  const height = cell?.height ?? int(r.height);
   return {
     prompt: str(r.prompt) ?? "",
     negative_prompt: str(r.negative_prompt) ?? null,

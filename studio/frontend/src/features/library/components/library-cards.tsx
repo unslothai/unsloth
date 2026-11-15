@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { FolderClosedIcon } from "@/lib/folder-icons";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
@@ -139,7 +140,7 @@ function CardFrame({
   const selected = select?.selection.has(selectKey) ?? false;
   const selecting = (select?.selection.size ?? 0) > 0;
   return (
-    <div className="group/library-card relative">
+    <div className="group/library-card has-[:focus-visible]:[--card-time-opacity:1] relative">
       <button
         type="button"
         aria-label={label}
@@ -210,6 +211,7 @@ function PlayButton({ item }: { item: LibraryItem }) {
 
 export function ItemCard({ item }: { item: LibraryItem }) {
   const locale = useLocale();
+  useTimeFormat();
   const actions = useLibraryActions();
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
   const square = useLibrarySettingsStore((s) => s.imageLayout === "square");
@@ -240,7 +242,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
             <span
               className={cn(
                 GLASS_SURFACE,
-                "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
+                "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-[var(--card-time-opacity,0)] transition-opacity group-hover/library-card:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               {formatCardTime(item.updatedAt, locale)}
@@ -304,7 +306,8 @@ function FolderCard({
           className="flex aspect-square items-center justify-center"
           style={{ minHeight: CARD_MIN_HEIGHT }}
         >
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className={CARD_ICON_CLASS} />
+          {/* 4.4's folder draws smaller: 30px matches 4.1's at 28px. */}
+          <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.5} className="size-7.5" />
         </div>
       </CardFrame>
       <button
@@ -365,22 +368,18 @@ export function CardGrid({
 }) {
   const container = useRef<HTMLDivElement>(null);
   const columns = useCardColumns(container);
-  const grid = (
+  return (
     <div
       ref={container}
       className={cn("grid gap-x-5", CARD_ROW_GAP)}
       style={{
         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-        gridAutoRows: minRowHeight
-          ? `max(${minRowHeight}, calc((100cqw - ${columns - 1} * var(--spacing) * 5) / ${columns}))`
-          : undefined,
+        gridAutoRows: minRowHeight ? `minmax(${minRowHeight}, auto)` : undefined,
       }}
     >
       {children}
     </div>
   );
-  // cqw resolves against an ancestor container, never the grid itself.
-  return minRowHeight ? <div className="@container">{grid}</div> : grid;
 }
 
 export function FolderGrid({

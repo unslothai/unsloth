@@ -13,11 +13,14 @@ GATE_RECORD_VERSION = 1
 
 GATE_RECORD_PATH = Path(__file__).with_name("nvfp4_gate_record.json")
 
+# The gated build's variant flag, recorded for reference; no loader decision reads it.
+REFINED_FIELD = "refined"
+
 RECORD_KEY_FIELDS = ("family", "base_repo", "policy_id", "policy_version", "checkpoint_sha256")
 RECORD_FIELDS = RECORD_KEY_FIELDS + (
     "repo_id",
     "filename",
-    "gptq",
+    REFINED_FIELD,
     "all_pass",
     "num_pairs",
     "num_passed",
@@ -31,7 +34,6 @@ RECORD_FIELDS = RECORD_KEY_FIELDS + (
     "versions",
     "gate_script_sha256",
     "run_date",
-    "results_path",
 )
 
 _CACHE: dict[tuple, tuple] = {}

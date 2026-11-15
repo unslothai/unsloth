@@ -133,10 +133,9 @@ test("same-line nested items set the continuation content column", () => {
 });
 
 test("a fence's backticks do not stand in for an inline span", () => {
-  // findInlineCodeRegions returns early when no backtick sits outside a block
-  // region, because the mask it would build turns every backtick inside one
-  // into a space and can only yield no spans. The early return has to agree
-  // with the scan it replaces in both directions, so pin both.
+  // findInlineCodeRegions returns early when no backtick lies outside a block region, since its
+  // mask would turn every backtick inside one into a space and yield no spans; the early return
+  // must agree with the scan it replaces in both directions.
   const fence = "```python\ndef step(lr):\n    return lr\n```";
 
   assert.equal(

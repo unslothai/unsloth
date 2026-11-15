@@ -233,7 +233,7 @@ async def test_create_route_schedules_producer_on_request_loop(monkeypatch):
     monkeypatch.setattr(run_routes.db, "create_run", create_run)
     response = await run_routes.create_chat_generation_run(_create_payload(), request, "alice")
     assert response["created"] is True
-    assert started == [("run-1", {"thread_id": "thread-1", "model": "local"})]
+    assert started == [("run-1", {"thread_id": "thread-1", "model": "local", "images": {}})]
 
 
 @pytest.mark.asyncio
@@ -367,6 +367,43 @@ async def test_producer_dates_the_prompt_in_the_browser_timezone(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_follow_up_reaches_the_model_with_an_image_the_run_never_stored(monkeypatch):
+    studio_db.upsert_chat_thread(
+        {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
+    )
+    url = "data:image/png;base64,iVBORw0KGgo="
+    image_turn = [
+        {"type": "text", "text": "what?"},
+        {"type": "image_url", "image_url": {"url": url}},
+    ]
+    payload = _create_payload("and the colour?")
+    payload.requestPayload["messages"] = [
+        {"role": "user", "content": image_turn},
+        {"role": "assistant", "content": "A square."},
+        *payload.requestPayload["messages"],
+    ]
+    observed = []
+
+    async def body():
+        yield "data: [DONE]\n\n"
+
+    async def fake(payload, _request, _subject, *, cancel_on_disconnect):
+        observed.append(payload.messages[0].content[1].image_url.url)
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await run_routes.create_chat_generation_run(payload, _route_request(supervisor), "alice")
+    await supervisor._tasks["run-1"]
+    assert observed == [url]
+    assert url not in json.dumps(runs_db.get_run("run-1")["requestPayload"])
+    assert supervisor._detached_images == {}
+
+
+@pytest.mark.asyncio
 async def test_a_create_retried_across_a_dst_change_returns_the_committed_run():
     studio_db.upsert_chat_thread(
         {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
@@ -391,9 +428,8 @@ async def test_a_create_retried_across_a_dst_change_returns_the_committed_run():
 
 @pytest.mark.asyncio
 async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, monkeypatch):
-    """A 250K prefill outruns the 1200s lease before its first token, and the
-    write is what renews it, so dropping content-less progress chunks would reap a
-    healthy prefill. Sampled mid-run: afterwards every chunk has landed."""
+    """A 250K prefill outruns the 1200s lease before its first token and only progress writes renew
+    it, so dropping content-less chunks would reap a healthy prefill."""
     released = asyncio.Event()
     sampled: dict = {}
 
@@ -1032,11 +1068,8 @@ async def test_uncancelled_partial_eof_is_interrupted(durable_run, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_caught_up_reconnect_to_a_settled_run_does_not_block(durable_run, monkeypatch):
-    """Nothing left to replay must return at once, not after the 15s event wait.
-
-    Otherwise a finished answer reads as still generating for the whole timeout and one of
-    the event-wait workers is held for it.
-    """
+    """Nothing left to replay must return at once, not after the 15s event wait; otherwise a
+    finished answer reads as still generating and holds an event-wait worker for the timeout."""
 
     async def body():
         yield 'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n'
@@ -1149,12 +1182,9 @@ def test_startup_reconcile_marks_stored_assistant_interrupted(durable_run):
 
 @pytest.mark.asyncio
 async def test_shutdown_returns_even_when_a_producer_will_not_unwind(durable_run, monkeypatch):
-    """A generator whose teardown blocks must not take uvicorn's shutdown with it.
-
-    The grace period is bounded, but the gather after task.cancel() has to be too:
-    an engine draining a subprocess inside aclose never completes its cancellation,
-    and stop() would then wait on it forever.
-    """
+    """A generator whose teardown blocks must not block uvicorn's shutdown; the gather after
+    task.cancel() must be bounded too, since an engine draining a subprocess in aclose never
+    finishes cancelling and stop() would wait forever."""
     import core.inference.chat_generation_runs as chat_generation_runs
 
     monkeypatch.setattr(chat_generation_runs, "_SHUTDOWN_GRACE_SECONDS", 0.2)
@@ -1226,8 +1256,7 @@ async def test_permitted_prefill_renews_lease_but_decode_silence_does_not(durabl
     observations = []
 
     async def body():
-        # The sync GGUF reader runs in a copied thread context, while the supervisor
-        # polls the shared wait object from the producer's original context.
+        # Sync reader runs in a copied context; the supervisor polls the shared wait object.
         await asyncio.to_thread(start_first_token_wait, float("inf"))
         before = touch.await_count
         await asyncio.sleep(0.08)

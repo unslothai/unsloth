@@ -165,9 +165,7 @@ def can_keep_chat_during_training(
     optimizer: str,
     gpu_ids: Optional[List[int]],
 ) -> Tuple[bool, Dict[str, Any]]:
-    """Decide if a resident chat model can coexist with training given free VRAM. Reuses training's own
-    estimator/selector so the decision matches later placement. Default-deny: anything we can't size
-    returns False (unload)."""
+    """Default-deny: a chat model that cannot be sized beside training returns False (unload)."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -525,9 +523,8 @@ def _stt_sidecar_holds_no_vram(sidecar) -> bool:
 
 
 def free_stt_model_for_training(reason: str) -> List[str]:
-    """Unload the dictation model(s) before training. Never raises. The Transformers and GGUF sidecars
-    are freed under independent exception boundaries so a failure unloading one backend never skips
-    freeing the other (both can hold accelerator memory at once after an engine switch)."""
+    """Unloads the dictation model(s) before training; never raises; the Transformers and GGUF
+    sidecars free under separate exception boundaries so one failure cannot skip the other"""
     freed: List[str] = []
     try:
         from core.inference.stt_sidecar import get_stt_sidecar

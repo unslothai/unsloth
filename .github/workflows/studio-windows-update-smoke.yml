@@ -65,9 +65,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # cancel-in-progress is PR-only: on main a running run is never killed and a newer push replaces
+  # only the pending one, so a merge burst runs the executing commit plus the tip.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -91,12 +90,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # This workflow triggers on uninstall.ps1; neither test really uninstalls.
-      #
-      # These three unit-test steps run in the background: they read only the
-      # checkout, and together take about 20 s that now overlaps the node/python
-      # setup and the ~90 s uv cache restore. The wait step right before Install
-      # Unsloth collects them, so a failure still stops the job before the install.
+      # The workflow triggers on uninstall.ps1 but neither test uninstalls; the three unit-test
+      # steps run in the background since they only read the checkout, and the wait step before
+      # Install Unsloth collects them, so a failure still stops the job before install.
       - name: uninstall.ps1 unit tests (argument guard, dual-install icon preserve)
         id: ps-uninstall-units
         background: true
@@ -127,7 +123,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
           # No pip cache: the installers use uv, and setup-python's post-step would fail.

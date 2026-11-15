@@ -45,8 +45,7 @@ def _param_bytes(params, dtype = None):
 
 
 def _device_bytes(device = None):
-    """Total memory of the GPU the model trains on; 0 for a CPU (or other non-CUDA) mesh, which plans
-    the per-block sharded layout as a CPU-only host does."""
+    """Total memory of the GPU; 0 for CPU or non-CUDA meshes, which plan the sharded layout."""
     if device is not None and torch.device(device).type != "cuda":
         return 0
     try:
@@ -149,9 +148,8 @@ def plan_fsdp2_layout(
     except ValueError:
         free_fraction = default_free_fraction
     model_bytes = layout.frozen_bytes + layout.trainable_bytes
-    # "Fits" = the whole model (what DDP keeps on every GPU) uses at most `fraction` of one device,
-    # leaving the rest for activations, gradients and optimizer state.
-    # CPU offload asks for memory, not speed: keep the plain sharded layout.
+    # Fits = the whole model uses at most a fraction of one device; CPU offload keeps the sharded
+    # layout.
     forced = os.environ.get("UNSLOTH_FSDP2_LAYOUT", "auto").strip().lower()
     if fits is None and forced in ("fit", "sharded"):
         fits = forced == "fit"
@@ -190,9 +188,7 @@ def plan_fsdp2_layout(
     layout.prefetch = (
         layout.fits and os.environ.get("UNSLOTH_FSDP2_PREFETCH", "1").strip().lower() not in _FALSE
     )
-    # With the frozen weights replicated, what is left to shard (LoRA adapters) is small: one root
-    # unit = one all-gather + one reduce-scatter per step instead of a hook pair and two collectives
-    # per block, and the per-block saving it gives up is a few MB.
+    # Small LoRA set as one root unit: one all-gather and reduce-scatter per step, not per block.
     units = os.environ.get("UNSLOTH_FSDP2_TRAINABLE_UNITS", "auto").strip().lower()
     small = layout.trainable_bytes <= min(1 << 30, 0.01 * layout.device_bytes)
     layout.root_only = (

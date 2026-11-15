@@ -30,15 +30,8 @@ def _finite(value):
 
 
 def cell_text(value):
-    """The text to train on for a single Alpaca-style dataset cell.
-
-    A blank cell is a missing value to every loader we use, so it arrives as
-    None, and a column holding numbers arrives typed, so a cell typed as 1
-    arrives as 1.0. Untreated, the first trains the word None and the second
-    raises on .strip(). NaN counts as blank too: Arrow normalises a blank
-    numeric cell to null, but a dataset built straight from pandas need not have
-    passed through Arrow. A dict or list cell trains as JSON, not its Python repr.
-    """
+    """Blank cells (None or NaN) become empty text, since None would train the word None; numeric
+    cells arrive as floats, which fail on .strip(); dict/list cells train as JSON."""
     if value is None:
         return ""
     if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():
@@ -163,20 +156,36 @@ def csv_as_text_kwargs(files):
     import pyarrow as pa
     from datasets import Features, Value
 
+    def _string_columns(frame):
+        return {
+            field.name
+            for field in pa.Table.from_pandas(frame).schema
+            if pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
+        }
+
+    def _cell_text(value):
+        return None if value == "" else value
+
     with pd.read_csv(files[0], chunksize = _CSV_CHUNK_ROWS) as chunks:
         first = next(chunks)
     headers = [first.columns] + [pd.read_csv(path, nrows = 0).columns for path in files[1:]]
-    # A string schema needs the same columns in every file; else keep the loader's defaults.
-    if any(set(columns) != set(headers[0]) for columns in headers):
-        return {}
-    strings = {
-        field.name
-        for field in pa.Table.from_pandas(first).schema
-        if pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
-    }
-    tags = {name: _CSV_TEXT if name in strings else _CSV_TYPED for name in first.columns}
+    if all(set(columns) == set(headers[0]) for columns in headers):
+        strings = _string_columns(first)
+        tags = {name: _CSV_TEXT if name in strings else _CSV_TYPED for name in first.columns}
+        return {
+            "features": Features({name: Value("string", id = tag) for name, tag in tags.items()}),
+            "keep_default_na": False,
+            "na_values": [""],
+        }
+    # Features needs every column in every file, so read text columns through converters;
+    # columns numeric in every file stay typed, as the default loader reads them.
+    text = set()
+    for path in files:
+        text |= _string_columns(
+            pd.read_csv(path, nrows = _CSV_CHUNK_ROWS, keep_default_na = False, na_values = [""])
+        )
     return {
-        "features": Features({name: Value("string", id = tag) for name, tag in tags.items()}),
+        "converters": {name: _cell_text for name in text},
         "keep_default_na": False,
         "na_values": [""],
     }

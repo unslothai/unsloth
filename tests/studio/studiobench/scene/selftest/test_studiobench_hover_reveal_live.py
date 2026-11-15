@@ -99,8 +99,7 @@ def _ctx(page, log = None) -> ActionContext:
 
 
 def test_the_control_really_is_unreachable_until_it_is_hovered(page):
-    """WITHOUT THIS THE REST PROVES NOTHING. If the fixture's button were hit-testable at rest,
-    every assertion below would pass with or without the fix."""
+    """If the button were hit-testable at rest, every assertion passes either way."""
     box = page.eval_on_selector(SELECTOR, "(el) => el.getBoundingClientRect().toJSON()")
     assert round(box["width"]) == 20 and round(box["height"]) == 20, "the fixture lost its geometry"
     style = page.eval_on_selector(
@@ -125,8 +124,7 @@ def test_hovering_reveals_the_control_and_returns_a_point_on_it(page):
 
 
 def test_the_action_clicks_the_control_instead_of_substituting_a_navigation(page):
-    """The action clicks the control rather than substituting page.goto, which thread_reopen would
-    refuse."""
+    """The action clicks the control rather than page.goto, which thread_reopen would refuse."""
     got = A._click_or_navigate(_ctx(page), SELECTOR, FALLBACK_URL)
     assert got.path == "click", got.reason
     assert got.navigated is False
@@ -134,8 +132,7 @@ def test_the_action_clicks_the_control_instead_of_substituting_a_navigation(page
 
 
 def test_the_hover_is_reported_so_the_gesture_is_not_silent(page):
-    """A harness that quietly does something extra to make a control work is how the last defect
-    got in. The reveal is logged."""
+    """Quiet extra steps that make a control work hid the last defect; the reveal is logged."""
     said: list[str] = []
     A._click_or_navigate(_ctx(page, said.append), SELECTOR, FALLBACK_URL)
     assert any("hover-revealed" in m for m in said), said
@@ -159,9 +156,8 @@ def test_an_ordinary_control_is_not_hovered_first(page):
 
 
 def test_a_genuinely_unreachable_control_is_still_reported_unreachable(page):
-    """The fix must not become a way of clicking things a user cannot click. A control covered by
-    a real overlay stays unreachable after hovering, and the navigation fallback is taken with the
-    reason saying so."""
+    """The fix must not click what a user cannot: a control under a real overlay stays unreachable
+    after hovering, and the navigation fallback is taken with the reason saying so."""
     page.evaluate(
         "() => { const d = document.createElement('div');"
         " d.style.cssText = 'position:fixed;inset:0;z-index:9;background:#000';"

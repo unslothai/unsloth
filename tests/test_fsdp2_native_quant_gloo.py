@@ -275,10 +275,9 @@ def test_native_fsdp2_shards_4bit_and_keeps_quant_state():
 
 
 def test_without_native_quant_context_the_gathered_weight_is_not_4bit():
-    # Control: the same fully_shard calls with no 4-bit handling. bitsandbytes' own Linear4bit forward
-    # recovers (it re-reads the module's copy of the QuantState), but the all-gathered weight the block
-    # sees is a plain Parameter without quant_state: what Unsloth's fused LoRA kernels and the zoo MoE
-    # 4-bit paths read (they take it for a dense weight, or crash).
+    # Control with no 4-bit handling: bnb's Linear4bit forward recovers by re-reading the module's
+    # own QuantState copy, but the all-gathered weight is a plain Parameter without quant_state,
+    # which Unsloth's fused LoRA kernels and zoo MoE 4-bit paths read as dense or crash on.
     pytest.importorskip("bitsandbytes")
     # torch < 2.12 cannot shard the uint8 weight at all ("only Tensors of floating point dtype can
     # require gradients"); later torch shards it but gathers a plain Parameter.

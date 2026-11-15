@@ -397,9 +397,7 @@ async def get_active_dataset_downloads_response(repo_id: str = "") -> ActiveDown
 
 
 async def get_dataset_transport_status_response(repo_id: str) -> dict:
-    """Last transport used, whether partial blobs exist, and whether they
-    support byte-level resume. XET partials show via ``has_partial`` but are not
-    byte-level resumable (see ``models.get_model_transport_status``)."""
+    """Transport status: XET partials show as has_partial but are not byte-level resumable."""
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return {"has_partial": False, "last_transport": None, "resumable": False}

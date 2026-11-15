@@ -11,6 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
 
+from _playwright_robust import follow_os_reduced_motion
+
 from playwright_image_model_footprint import (
     BASE_URL,
     REPO_ID,
@@ -71,6 +73,7 @@ def main() -> None:
         context = browser.new_context(
             viewport = {"width": 1440, "height": 1000}, reduced_motion = "reduce"
         )
+        follow_os_reduced_motion(context)
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token','rendered-ui-test');localStorage.setItem('unsloth_download_transport','http')"
         )

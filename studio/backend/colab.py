@@ -19,8 +19,7 @@ logger = get_logger(__name__)
 
 
 def get_colab_url(port: int = 8888) -> str:
-    """Get the Colab proxy URL for a port. Retries 3x validating a real HTTPS Colab URL; falls back to
-    localhost on failure."""
+    """Colab proxy URL; retries 3x for a real HTTPS URL, else falls back to localhost."""
     import time as _time
 
     fallback = f"http://localhost:{port}"
@@ -65,9 +64,7 @@ def _is_colab_proxy_url(url: str, port: int) -> bool:
 
 
 def _is_colab_runtime() -> bool:
-    """True on a hosted Colab notebook kernel. Reuses the backend's main Colab detector (``/content`` + Colab env
-    / ``google.colab``) instead of a single env var, which is not always present on hosted runtimes.
-    """
+    """True on hosted Colab kernels; reuses main's Colab detector since no single env var is always set."""
     try:
         from main import _IS_COLAB
         return bool(_IS_COLAB)
@@ -119,9 +116,7 @@ def _clear_colab_login_credentials() -> None:
 
 
 def _colab_credentials_still_valid(username: str, password: str) -> bool:
-    """True when *password* still matches the stored admin hash. Guards against redisplaying a cached
-    first-run password after the user has changed the admin password through the app, which would
-    print credentials that no longer authenticate to the current Cloudflare tunnel."""
+    """True when password still matches the admin hash, so a changed password is never redisplayed."""
     try:
         from auth.storage import get_user_and_secret
         from auth.hashing import verify_password
@@ -200,11 +195,11 @@ def _colab_login_html(username: str, password: str) -> str:
             Unsloth Studio Login (Colab)
         </h2>
         <p style="color: #333333; margin: 0 0 12px 0; font-size: 14px; font-weight: bold;">
-            Log in as <code>{username}</code> with this password. This cell is visible only in
+            Log in as <code style="color: #000000 !important; background: #f3f3f3 !important;">{username}</code> with this password. This cell is visible only in
             your notebook session.
         </p>
         <p style="color: #333333; margin: 0; font-size: 14px; font-family: monospace; font-weight: bold;">
-            Password: <code>{password}</code>
+            Password: <code style="color: #000000 !important; background: #fff176 !important; border: 2px solid #000000; padding: 2px 6px; border-radius: 4px;">{password}</code>
         </p>
     </div>
     """
@@ -297,9 +292,7 @@ def show_link(
     has_cloudflare_link: bool = False,
     cloudflare_requested: bool = False,
 ):
-    """Display a styled ready card for the UI. Colab proxy URLs are informational only (no new-tab
-    open; they 404 outside the cell); non-proxy URLs keep a clickable open button. *_url* is an
-    optional pre-fetched proxy URL to avoid a second eval_js round-trip."""
+    """Ready card for the UI; Colab proxy URLs are informational only, since they 404 outside the cell."""
     from IPython.display import display, HTML
 
     url = _url if _url is not None else get_colab_url(port)
@@ -339,9 +332,8 @@ def _bootstrap_password_pending() -> bool:
 
 
 def start_cloudflare_tunnel(port: int) -> "str | None":
-    """Open a shareable Cloudflare quick tunnel to localhost:*port*, or None. run_server suppresses the
-    tunnel on Colab, so we start it directly. Refused while the bootstrap password is pending; any
-    failure collapses to None (Colab proxy still works)."""
+    """Opens a Cloudflare quick tunnel to localhost:port (run_server suppresses it on Colab, so it
+    is started directly); refused while bootstrap password pending; failures give None."""
     if _bootstrap_password_pending():
         logger.warning(
             "Cloudflare link not started: the admin account still has its temporary "
@@ -400,9 +392,7 @@ def _shareable_link_html(
     password: "str | None" = None,
     username: "str | None" = None,
 ) -> str:
-    """Branded card for the shareable Cloudflare link, styled like the show_link banner. *password*
-    renders under the link so the credential sits in the card with the button it unlocks. The
-    username is always the default admin, so it reads inline."""
+    """Password sits under the link; the username is always the default admin, so it reads inline."""
     login_block = ""
     if password:
         login_block = f"""
@@ -410,10 +400,10 @@ def _shareable_link_html(
             Password
         </p>
         <p style="margin: 6px 0 0 0;"><code style="display: inline-block; font-size: 24px;
-            font-weight: 800; text-decoration: underline; background: #f3f3f3;
+            font-weight: 800; color: #000000 !important; background: #fff176 !important; border: 2px solid #000000;
             padding: 4px 10px; border-radius: 6px;">{password}</code></p>
         <p style="color: #666666; margin: 6px 0 0 0; font-size: 12px;">
-            Log in as <code>{username}</code> with this password. Shown only in your
+            Log in as <code style="color: #000000 !important; background: #f3f3f3 !important;">{username}</code> with this password. Shown only in your
             notebook session, and never included in the shared link.
         </p>"""
     return f"""
@@ -448,9 +438,8 @@ _COLAB_IFRAME_HEIGHT = 900
 
 
 def _embed_kernel_port_iframe(port: int) -> bool:
-    """Embed Unsloth via Colab's native kernel-port iframe helper. Only trusted on a real Colab
-    runtime: colabtools can import ``google.colab`` and queue browser-side JS without appending an
-    iframe, so callers outside Colab must use the HTML iframe path instead."""
+    """Only trusted on real Colab: elsewhere google.colab can import and queue JS with no iframe, so
+    callers outside Colab must use the HTML iframe path."""
     if not _is_colab_runtime():
         return False
     try:

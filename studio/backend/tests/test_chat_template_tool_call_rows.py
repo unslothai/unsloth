@@ -243,6 +243,64 @@ def _format_sharegpt(rows, template):
     )
 
 
+@pytest.mark.parametrize("content", ["", None])
+def test_mixed_sharegpt_native_tool_calls_render(content):
+    messages = _tool_call_row('{"city": "Paris"}')
+    messages[0] = {"from": "human", "value": "Weather in Paris?"}
+    messages[-1] = {"from": "gpt", "value": "It is 21C in Paris."}
+    messages[1]["content"] = content
+
+    result = _format_sharegpt([{"conversations": messages}], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert '{"name": "get_weather", "parameters": {"city": "Paris"}}' in text
+    assert "Weather in Paris?" in text
+    assert "It is 21C in Paris." in text
+    assert "<|start_header_id|>ipython<|end_header_id|>\n\n21C" in text
+
+
+_UNGUARDED_CONTENT_TEMPLATE = """
+{%- for message in messages %}
+{{- '<|im_start|>' + message.role + '\\n' + message.content.split('</think>')[-1] }}
+{%- if render_calls %}
+{%- for tool_call in message.tool_calls or [] %}
+{{- '<tool_call>' + tool_call.function.name + ' ' + tool_call.function.arguments | string + '</tool_call>' }}
+{%- endfor %}
+{%- endif %}
+{{- '<|im_end|>\\n' }}
+{%- endfor %}
+"""
+
+
+@pytest.mark.parametrize("sharegpt", [False, True])
+@pytest.mark.parametrize("render_calls", [True, False])
+def test_null_call_content_falls_back_to_empty_only_when_the_call_renders(sharegpt, render_calls):
+    messages = _tool_call_row('{"city": "Paris"}')
+    messages[1]["content"] = None
+    # The call name elsewhere in the row must not count as the call rendering.
+    messages[0]["content"] = "Use get_weather for Paris."
+    if sharegpt:
+        messages[0] = {"from": "human", "value": "Use get_weather for Paris."}
+        messages[-1] = {"from": "gpt", "value": "It is 21C in Paris."}
+    template = _UNGUARDED_CONTENT_TEMPLATE.replace("render_calls", str(render_calls).lower())
+    rows = [{"conversations": _plain_row()} for _ in range(3)] + [{"conversations": messages}]
+
+    result = format_and_template_dataset(
+        Dataset.from_list(rows),
+        model_name = "stub-model",
+        tokenizer = _JinjaTokenizer(template),
+        num_proc = 1,
+    )
+
+    texts = [row["text"] for row in result["dataset"]]
+    if render_calls:
+        assert len(texts) == 4
+        assert "<tool_call>get_weather " in texts[-1]
+    else:
+        assert len(texts) == 3
+
+
 def test_sharegpt_function_call_and_observation_train_as_tool_turns():
     call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
 
@@ -264,6 +322,35 @@ class _JinjaProcessor(_JinjaTokenizer):
     @property
     def tokenizer(self):
         return self
+
+
+@pytest.mark.parametrize("processor", [False, True])
+def test_mixed_sharegpt_native_calls_keep_null_content_for_templates(processor):
+    messages = _tool_call_row('{"city": "Paris"}')
+    messages[0] = {"from": "human", "value": "Weather in Paris?"}
+    messages[-1] = {"from": "gpt", "value": "It is 21C in Paris."}
+    messages[1]["content"] = None
+    tokenizer = (
+        _JinjaProcessor(_GEMMA4_TEMPLATE.read_text(encoding = "utf-8"))
+        if processor
+        else _JinjaTokenizer(_DEEPSEEK_TEMPLATE)
+    )
+    result = format_and_template_dataset(
+        Dataset.from_list([{"conversations": messages}]),
+        model_name = "stub-model",
+        tokenizer = tokenizer,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    expected = (
+        'call:get_weather{city:<|"|>Paris<|"|>}'
+        if processor
+        else '<call>get_weather\n{"city": "Paris"}</call>'
+    )
+    assert expected in text
+    assert "21C" in text
 
 
 def test_sharegpt_tool_turns_train_natively_on_a_processor_loaded_gemma4():

@@ -137,7 +137,7 @@ def test_a_mixed_host_offers_the_tier_only_when_every_card_qualifies(monkeypatch
 def test_the_post_warm_worker_resolves_it_behind_the_torch_guard():
     warm = _src("_post_warm_background_work")
     assert "_refresh_quantised_streaming_capability()" in warm
-    guard = warm.index('if "torch" in sys.modules:')
+    guard = warm.index('if _ml_warmup_enabled("media") and "torch" in sys.modules:')
     assert guard < warm.index("_refresh_quantised_streaming_capability()")
 
 

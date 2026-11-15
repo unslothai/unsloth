@@ -67,6 +67,7 @@ export function audioModelContextFor(
     audio_reference_text?: string | null;
     audio_convert?: AudioConvertCaps | null;
     audio_music?: unknown;
+    audio_clone?: unknown;
   } | null,
   page: {
     musicGeneration: boolean;
@@ -75,6 +76,7 @@ export function audioModelContextFor(
   },
 ): AudioModelContext {
   const referenceText = status?.audio_reference_text;
+  const clone = status?.audio_clone;
   return {
     audioType: status?.audio_type ?? null,
     audioFamily: status?.audio_family ?? null,
@@ -97,6 +99,7 @@ export function audioModelContextFor(
       : null,
     audioMusic: parseMusicCapabilities(status?.audio_music) !== null,
     convert: convertCapsOf(status?.audio_convert),
+    cloneDescription: isPlainObject(clone) && clone.description === true,
   };
 }
 

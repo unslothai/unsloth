@@ -1,0 +1,29 @@
+{
+  "files": {
+    "LICENSE.diffusers": "f9e2070c247517b1ddf65f7b11b393484a18da91a958fd18a97bd0f241c3125c",
+    "diffusers_minimax_h3_image/__init__.py": "4e11808f514c975a1be8417561c5915bee093eb7749b726cf9d9ded1259b5087",
+    "diffusers_minimax_h3_image/autoencoder_kl_minimax_h3_image.py": "657aa796864d65ddfb3d25cb7102f132b31290e927ec362cba899d4f4bdf5d37",
+    "diffusers_minimax_h3_image/transformer_minimax_h3_image.py": "9f50ea2714c7dbec63f02c29729579cce6c4c362f5f5d2260325607469630560"
+  },
+  "guard_files": {
+    "diffusers_minimax_h3_image/__init__.py": "Unsloth guard (not upstream): raises ImportError so the directory is never importable as a top-level package"
+  },
+  "license": "Apache-2.0",
+  "package": "diffusers_minimax_h3_image",
+  "patches": {
+    "diffusers_minimax_h3_image/autoencoder_kl_minimax_h3_image.py": {
+      "reason": "relative imports rewritten onto the installed diffusers; `from __future__ import annotations` added so the PEP 604 annotations are not evaluated on Python 3.9",
+      "upstream_path": "src/diffusers/models/autoencoders/autoencoder_kl_minimax_h3_image.py",
+      "upstream_sha256": "82da645ee07b0c0443aacd64f160c14c3fe928d61d64023e0102ecbe99557ce1"
+    },
+    "diffusers_minimax_h3_image/transformer_minimax_h3_image.py": {
+      "reason": "relative imports rewritten onto the installed diffusers; PackedColwiseParallel optional (diffusers < 0.43); `from __future__ import annotations` added so the PEP 604 annotations are not evaluated on Python 3.9",
+      "upstream_path": "src/diffusers/models/transformers/transformer_minimax_h3_image.py",
+      "upstream_sha256": "0928960f80447c5e4db43d61a361ccc4c785021207325aabe65416f8f6f94e62"
+    }
+  },
+  "pr_head_commit": "529403c21a36d03551f09bfd4d432cb64ab6d450",
+  "source": "https://github.com/huggingface/diffusers/pull/15230 (merged)",
+  "upstream_branch": "huggingface:main",
+  "upstream_commit": "875373ac7f5856071e345a3e394c74efccc6b9e6"
+}

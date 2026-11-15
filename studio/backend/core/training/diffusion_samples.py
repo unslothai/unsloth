@@ -50,10 +50,7 @@ def validate_sample_settings(
     return every, prompts
 
 
-# How each diffusers pipeline combines the conditional (c) and empty-prompt (u) predictions, and above which scale it
-# runs the second pass at all: "uncond" u + g(c - u) (SDXL, FLUX.1 true CFG, FLUX.2 Klein; on when g > 1), "cond"
-# c + g(c - u) (Z-Image pipeline_z_image.py:547, Krea 2 pipeline_krea2.py:666; on when g > 0), "qwen" the "uncond"
-# combination rescaled to the conditional prediction's per-token norm (pipeline_qwenimage.py:668-672; on when g > 1).
+# uncond (SDXL, FLUX.1, FLUX.2 Klein) on g>1; cond (Z-Image, Krea 2) on g>0; qwen is rescaled, g>1.
 _CFG_MODES = {"z-image": "cond", "krea-2": "cond", "qwen-image": "qwen"}
 
 
@@ -257,8 +254,7 @@ def flow_sigmas(
 
 
 def to_pil(images):
-    """Raises on a non-finite decode, which the trainers turn into a "sampling disabled" warning instead of
-    saving a black image that reads as a broken LoRA."""
+    """Raises on non-finite decode; trainers then warn instead of saving a black image."""
     import torch
     from PIL import Image
 

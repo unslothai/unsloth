@@ -44,6 +44,7 @@ export function createLiveGgufVariantStatesSelector(repoId: string): (state: {
         activeDownloadState(job.state) ||
         completedDownloadState(job.state) ||
         (terminalPartialState(job.state) &&
+          !job.retained &&
           Math.max(job.downloadedBytes, job.completedBytes) > 0);
       if (!live) continue;
       entries.push([

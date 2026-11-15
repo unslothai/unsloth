@@ -6,9 +6,16 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
+
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
 
 import core.inference.diffusion_prequant as pq
 import core.inference.prequant_safetensors as ps
@@ -164,8 +171,7 @@ def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
 
 
 def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypatch):
-    """The preference itself, and the promise that nothing is dropped behind it: an existing
-    .pt-only repo still resolves both of the names it resolves today."""
+    """Safetensors is preferred, and a .pt-only repo still resolves both names."""
     fam = _family(prequant_repos = (("fp8", "unsloth/Model-FP8"),))
     src = pq.resolve_prequant_source(fam, "fp8")
     assert src.candidate_filenames == (
@@ -177,8 +183,7 @@ def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypa
 
 
 def test_local_scheme_probe_reads_the_header_only(monkeypatch, tmp_path):
-    """The probe must not parse a multi-GB file to learn one string. For safetensors it reads the
-    header, and it must NOT reach the pickle reader on the way."""
+    """The scheme probe reads only the safetensors header, never the pickle reader."""
     path = tmp_path / "local-FP8.safetensors"
     path.write_bytes(b"not really safetensors")
 
@@ -391,6 +396,7 @@ def test_the_windows_rocm_torchao_stub_is_not_safetensors_support(monkeypatch):
     assert restricted_prequant_load_supported("fp8", "Model-FP8.pt") is False
 
 
+@needs_torchao
 def test_a_scheme_this_torchao_cannot_flatten_is_reported_before_the_build(monkeypatch):
     """Importing helpers proves nothing; torchao 0.17 int8 cannot flatten, so report it before building."""
     import torchao.quantization as tq
@@ -427,6 +433,7 @@ def test_a_scheme_this_torchao_cannot_flatten_is_reported_before_the_build(monke
     assert ps.scheme_is_flattenable("cfg") is False
 
 
+@needs_torchao
 def test_the_real_installed_torchao_answers_the_int8_question(monkeypatch):
     """Not a mock: the probe against the torchao actually installed, whichever way it answers."""
     from core.inference.diffusion_transformer_quant import _make_quant_config
@@ -442,6 +449,7 @@ def test_the_real_installed_torchao_answers_the_int8_question(monkeypatch):
         assert answer is not False, f"torchao {torchao.__version__} should flatten int8"
 
 
+@needs_torchao
 def test_a_root_level_plain_tensor_round_trips_instead_of_failing_the_build(tmp_path):
     """Root-level plain tensors are split before flatten and restored after, so z-image builds survive."""
     torch = pytest.importorskip("torch")
@@ -633,6 +641,40 @@ def test_plain_encoder_needs_no_torchao(plain_checkpoint):
     assert loaded["state_dict"]["encoder.weight"].dtype == torch.float8_e4m3fn
     assert torch.equal(loaded["state_dict"]["encoder.weight"].float(), torch.ones(2, 3))
     assert loaded["metadata"]["scheme"] == "fp8"
+
+
+def _mapped(path):
+    """Whether this process still maps ``path`` (Linux only; None elsewhere)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    real = os.path.realpath(path)
+    with open("/proc/self/maps", encoding = "utf-8") as fh:
+        return any(line.rstrip().endswith(real) for line in fh)
+
+
+def test_a_buffer_repointed_at_its_pinned_copy_releases_the_file_mapping(plain_checkpoint):
+    """Streaming re-points each host weight at its pinned copy with ``.data =``. A view keeps its base through that,
+    so a buffer loaded straight from the file kept the whole safetensors mapping alive for the model's life (8.7 GiB
+    for Qwen-Image-2.1's int8 encoder; on Windows the open mapping also blocks deleting the file)."""
+    import gc
+
+    import torch
+
+    path = plain_checkpoint(
+        tensors = {"encoder.weight": torch.arange(4096 * 64, dtype = torch.float32).reshape(4096, 64)}
+    )
+    module = torch.nn.Module()
+    module.register_buffer(
+        "weight", ps.load_plain_prequant_safetensors(path)["state_dict"]["encoder.weight"]
+    )
+    expected = module.weight.clone()
+    assert _mapped(path) in (True, None)
+    # the pinned copy, as _GroupPinner / the pin arena re-point it
+    module.weight.data = module.weight.clone()
+    gc.collect()
+    assert _mapped(path) in (False, None)
+    os.remove(path)
+    assert torch.equal(module.weight, expected)
 
 
 @pytest.mark.parametrize(

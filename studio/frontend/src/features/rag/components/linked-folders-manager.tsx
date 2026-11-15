@@ -25,7 +25,8 @@ import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
 import { RefreshGlyph } from "@/lib/refresh-icon";
-import { FolderAddIcon, FolderSyncIcon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderSyncIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import type {

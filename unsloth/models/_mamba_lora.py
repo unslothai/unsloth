@@ -111,10 +111,7 @@ def _merged_weight(
     allow_multiple = False,
     names = None,
 ):
-    """``W + delta`` when that is exactly what the LoRA module computes, else None.
-
-    ``names`` replaces the active adapters (one row of a PEFT mixed-adapter batch).
-    """
+    """W + delta when exactly what the LoRA module computes, else None; names replaces active adapters."""
     try:
         from peft.tuners.lora import Linear as LoraLinear
     except Exception:

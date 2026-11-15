@@ -218,6 +218,7 @@ function dropUnusableValues(tokens: readonly string[]): string[] {
       (RATIO_VALUE_FLAGS.has(flag) &&
         ratioValueProblem(flag, value, false) !== null) ||
       (INTEGER_VALUE_FLAGS.has(flag) &&
+        !isGpuLayersKeyword(flag, value) &&
         (!INTEGER.test(value.trim()) ||
           (minimum !== undefined && Number(value.trim()) < minimum)));
     if (!unusable) {
@@ -587,20 +588,24 @@ const VALUE_REQUIRED_FLAGS = new Set([
 
 const GPU_LAYERS_FLAGS = new Set(["--gpu-layers", "--n-gpu-layers", "-ngl"]);
 
-/** Mirrors parse_gpu_layers_override only for: is the resolved count non-negative. */
-function lastIntegerFlagValue(
-  tokens: readonly string[],
-  flags: ReadonlySet<string>,
-): number | null {
+function isGpuLayersKeyword(flag: string, value: string | undefined): boolean {
+  return GPU_LAYERS_FLAGS.has(flag) && (value === "auto" || value === "all");
+}
+
+function lastGpuLayersValue(tokens: readonly string[]): number | null {
   let found: number | null = null;
   for (const [index, token] of tokens.entries()) {
     const flag = extraArgFlagName(token);
-    if (flag === null || !flags.has(flag)) {
+    if (flag === null || !GPU_LAYERS_FLAGS.has(flag)) {
       continue;
     }
     const attached = valueIsAttached(token, flag);
     const raw = attached ? token.split("=")[1] : tokens[index + 1];
-    if (raw !== undefined && INTEGER.test(raw.trim())) {
+    if (raw === "auto") {
+      found = -1;
+    } else if (raw === "all") {
+      found = 2147483647;
+    } else if (raw !== undefined && INTEGER.test(raw.trim())) {
       found = Number(raw.trim());
     }
   }
@@ -738,7 +743,7 @@ export function diagnoseExtraArgs(
   const out: ExtraArgsDiagnostic[] = [];
   const { tokens, unterminatedQuote, quotedIndices } = parseExtraArgs(input);
   // Mirrors _should_strip_tensor_split: an extras -ngl is promoted first.
-  const nglOverride = lastIntegerFlagValue(tokens, GPU_LAYERS_FLAGS);
+  const nglOverride = lastGpuLayersValue(tokens);
   const resolvedGpuLayers = nglOverride ?? context.gpuLayers ?? -1;
   const reserializesSplit = manualGpuMemory && resolvedGpuLayers >= 0;
   // A token in value position is a value whatever it starts with; llama.cpp takes the next argv blindly.
@@ -883,7 +888,7 @@ export function diagnoseExtraArgs(
           : `${flag} needs a value after it.`;
       } else if (RATIO_VALUE_FLAGS.has(flag)) {
         message = ratioValueProblem(flag, value, reserializesSplit);
-      } else if (!numeric) {
+      } else if (!numeric || isGpuLayersKeyword(flag, value)) {
         message = null;
       } else if (!INTEGER.test(value.trim())) {
         message = `${flag} takes a number, and "${value}" is not one.`;

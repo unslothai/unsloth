@@ -173,7 +173,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -1504,21 +1504,45 @@ jobs:
                       continue
                   for cls_name in class_names:
                       cls = getattr(pkg_mod, cls_name, None)
+                      optional_dep = None
                       if cls is None:
                           # Class is defined inside the package but not
                           # re-exported on the package init. Walk
                           # submodules to find it.
                           import pkgutil as _pku
+                          import re as _re
                           for sub in _pku.walk_packages(
                               pkg_mod.__path__, prefix=qual + "."
                           ):
                               try:
                                   sub_mod = importlib.import_module(sub.name)
+                              except ModuleNotFoundError as e:
+                                  # A submodule that needs an optional extra
+                                  # (TRL 1.18's async_grpo/openenv_harness.py
+                                  # imports `openenv`) is skipped like a
+                                  # package whose init needs one, but only
+                                  # when it is the file declaring the class.
+                                  missing_dep = (e.name or "").split(".")[0]
+                                  spec = importlib.util.find_spec(sub.name)
+                                  src = ""
+                                  if spec is not None and spec.origin:
+                                      src = pathlib.Path(spec.origin).read_text(encoding="utf-8")
+                                  if missing_dep and missing_dep != "trl" and _re.search(
+                                      rf"^class\s+{cls_name}\b", src, _re.M,
+                                  ):
+                                      optional_dep = (sub.name, missing_dep)
+                                  continue
                               except Exception:
                                   continue
                               cls = getattr(sub_mod, cls_name, None)
                               if cls is not None:
                                   break
+                      if cls is None and optional_dep is not None:
+                          print(
+                              f"  IMPORT-SKIP {optional_dep[0]}.{cls_name}: "
+                              f"needs the optional `{optional_dep[1]}`"
+                          )
+                          continue
                       if cls is None:
                           missing.append((pkg_name, cls_name))
                           continue
@@ -1986,12 +2010,9 @@ jobs:
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
-    # Same as `consolidated`. The zoo suite (`pytest -n 4` plus the serial files)
-    # now takes up to about 23 min on a busy runner, so a 25 min cap cancelled
-    # cells that had already passed, while the pip cache was being saved. The cap
-    # still turns a hung test into a bounded failure; PYTEST_TIMEOUT in the step
-    # below is the mechanism that actually names the culprit.
-    timeout-minutes: 35
+    # A passing cell takes ~35 min (35 min cap cancelled it at 99%); PYTEST_TIMEOUT
+    # below names a hung test, this cap only bounds it.
+    timeout-minutes: 50
     # Same contract as `consolidated`: no job-level or per-step
     # `continue-on-error`, so a failing test fails the cell.
     env:
@@ -2007,7 +2028,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -2158,7 +2179,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 

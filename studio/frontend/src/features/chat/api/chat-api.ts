@@ -447,14 +447,30 @@ export async function countChatInputTokens(payload: {
   auto_heal_tool_calls?: boolean;
   studio_tool_history?: boolean;
   run_tools_locally?: boolean;
+  breakdown?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<ChatCountTokensResponse> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: serializedPayload,
   });
-  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
+  return parseJsonOrThrow<ChatCountTokensResponse>(response);
+}
+
+export interface ChatCountTokensResponse {
+  input_tokens: number;
+  model?: string;
+  breakdown?: {
+    system: number;
+    tools: number;
+    messages: number;
+    tool_names: string[];
+  };
+  context_length?: number | null;
+  compaction_budget?: number | null;
+  // Null on MLX.
+  prompt?: string | null;
 }
 
 export async function validateModel(
@@ -607,6 +623,8 @@ export async function getGgufDownloadProgress(
   variant: string,
   expectedBytes: number,
   hfToken?: string | null,
+  /** The standalone Engram table the load fetches, so the bar counts it. */
+  engramPrecision?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -617,6 +635,9 @@ export async function getGgufDownloadProgress(
     variant,
     expected_bytes: String(expectedBytes),
   });
+  if (engramPrecision) {
+    params.set("engram_precision", engramPrecision);
+  }
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
     { headers: hubTokenHeader(hfToken) },
@@ -1349,16 +1370,22 @@ export async function listChatMessages(
   return data.messages;
 }
 
-/** Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers. */
+/**
+ * Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers.
+ * view "search" trims messages to what the search index reads; older backends ignore it.
+ */
 export async function batchListChatMessages(
   threadIds: string[],
+  options: { view?: "search" } = {},
 ): Promise<Map<string, MessageRecord[]>> {
   const out = new Map<string, MessageRecord[]>();
   if (threadIds.length === 0) return out;
   const response = await authFetch("/api/chat/messages:batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ threadIds }),
+    body: JSON.stringify(
+      options.view ? { threadIds, view: options.view } : { threadIds },
+    ),
   });
   if (response.status === 404 || response.status === 405) {
     const per = await Promise.all(
@@ -1534,7 +1561,11 @@ export async function buildBackendChatExport(): Promise<{
   messages: MessageRecord[];
 }> {
   const response = await authFetch("/api/chat/export");
-  return parseJsonOrThrow(response);
+  const data = await parseJsonOrThrow<Awaited<
+    ReturnType<typeof buildBackendChatExport>
+  > | null>(response);
+  if (!data) throw new Error("The chat export did not download completely.");
+  return data;
 }
 
 // Server-side legacy-Dexie import ledger, so a studio.db wipe keeps the import recoverable.

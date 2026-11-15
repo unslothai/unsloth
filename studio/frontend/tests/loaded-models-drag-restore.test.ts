@@ -70,9 +70,8 @@ test("clamping is idempotent, so the observer cannot feed itself", () => {
 // ── The wiring the geometry depends on ──────────────────────────────────
 
 test("the stored position is clamped before the first measurement", () => {
-  // Without this the card paints once at the stored coordinates. On a smaller
-  // screen that single frame is off screen, and if the observer ever fails to
-  // attach it stays there.
+  // Without the clamp the card paints once at stored coordinates, a frame that is off screen on a
+  // smaller display and stays there if the observer never attaches.
   assert.match(
     SOURCE,
     /readStored\(storageKey\)[\s\S]{0,600}?width: 0,\s*height: 0,/,

@@ -13,6 +13,8 @@ import shutil
 import time
 from typing import Any, Optional
 
+from .diffusion_conditioning import MAX_REQUEST_SIDE
+
 logger = logging.getLogger(__name__)
 
 GENERATE_IMAGE_TOOL_NAME = "generate_image"
@@ -38,15 +40,14 @@ _DESCRIPTION = (
     "never loads or unloads a model."
 )
 
-# A chat with no tool timeout ("no limit") still gets a ceiling, so a stuck render can't hold
-# the turn forever.
+# Even a no-limit chat gets a ceiling, so a stuck render cannot hold the turn forever.
 _MAX_WAIT_S = 900.0
 _STOP_WAIT_S = 30.0
 _POLL_S = 0.25
 _PROMPT_ECHO_CHARS = 300
 _MIN_SIDE = 256
 # DiffusionGenerateRequest's own ceiling.
-_TRANSPORT_MAX_SIDE = 2752
+_TRANSPORT_MAX_SIDE = MAX_REQUEST_SIDE
 
 
 def _size_limits(status: dict) -> tuple[int, int, int, int]:
@@ -126,8 +127,7 @@ def _snap_size(arguments: dict, status: dict) -> tuple[int, int]:
 def _build_request(arguments: dict, prompt: str, status: dict):
     from models.inference import DiffusionGenerateRequest
 
-    # Only what the model supplied: an omitted steps/guidance must stay unset so the core
-    # resolves the loaded model's own defaults.
+    # Omitted steps and guidance stay unset so the core uses the loaded model's own defaults.
     fields: dict[str, Any] = {"prompt": prompt}
     if arguments.get("width") is not None or arguments.get("height") is not None:
         fields["width"], fields["height"] = _snap_size(arguments, status)

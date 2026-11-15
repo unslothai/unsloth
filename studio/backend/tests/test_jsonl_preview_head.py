@@ -158,3 +158,15 @@ def test_a_file_that_is_not_json_lines_keeps_the_loader(tmp_path, loader_calls, 
     dataset, _ = local._stream_file_preview_slice(path, 10)
     assert loader_calls == ["json"]
     assert dataset["text"] == ["a", "b"]
+
+
+def test_a_minified_json_array_is_handed_to_the_loader_unread(tmp_path, monkeypatch):
+    path = tmp_path / "rows.json"
+    path.write_text(" \n" + json.dumps([{"a": i} for i in range(1000)]), encoding = "utf-8")
+    parsed = []
+    real_loads = json.loads
+    monkeypatch.setattr(
+        local.json, "loads", lambda s, *a, **k: parsed.append(len(s)) or real_loads(s, *a, **k)
+    )
+    assert local._jsonl_head(path, 10) is None
+    assert parsed == []

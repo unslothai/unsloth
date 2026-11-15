@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,7 @@ import core.inference.chat_swap_kv as cs
 import core.inference.gpu_arbiter as arb
 import routes.inference as inference_routes
 from core.inference import llama_keepwarm as kw
+from models.inference import UnloadRequest
 from utils import openai_auto_switch_settings as settings
 from utils.account_context import current_account_id
 
@@ -28,6 +30,7 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
+from test_active_generations import _route_gate, _stub_unload_backends  # noqa: E402
 from test_diffusion_routes import client  # noqa: E402,F401
 
 
@@ -103,6 +106,7 @@ def env(monkeypatch, tmp_path):
         monkeypatch.setitem(arb._EVICTORS, owner, lambda: None)
     monkeypatch.setitem(arb._EVICTORS, arb.CHAT, _evict_chat)
     monkeypatch.setattr(kw, "_kv_resume", None)
+    monkeypatch.setattr(kw, "_loaded_by", None, raising = False)
     monkeypatch.setattr(cs, "_pending", None)
     monkeypatch.setattr(cs, "_committed", None)
     monkeypatch.setattr(cs, "_saving", {})
@@ -916,3 +920,157 @@ def test_a_token_unload_names_the_engine_the_preflight_settled_on(client, env, m
     resp = client.post(f"{_LOADS['image'][0]}/unload", json = {"expected_load_id": "t1"})
     assert resp.status_code == 200, resp.text
     assert seen == ["new"]
+
+
+def _unload(monkeypatch, llama):
+    _route_gate()
+    _stub_unload_backends(
+        monkeypatch,
+        llama = llama,
+        backend = SimpleNamespace(
+            get_loading_model = lambda: None,
+            active_model_name = None,
+            models = {},
+            unload_model = lambda path: None,
+        ),
+    )
+    request = UnloadRequest(model_path = llama.model_identifier)
+    asyncio.run(inference_routes.unload_model(request, "tester"))
+    assert not llama.is_loaded
+
+
+def test_switching_away_and_back_restores_the_first_models_slots(env, monkeypatch, tmp_path):
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+    a_gguf = env._gguf_path
+    b_gguf = tmp_path / "other.gguf"
+    b_gguf.write_bytes(b"gguf")
+
+    _unload(monkeypatch, env)
+    env.reload(b_gguf)
+    kw.note_model_loaded(env)
+    assert env.restores == []
+
+    _unload(monkeypatch, env)
+    env.reload(a_gguf)
+    kw.note_model_loaded(env)
+
+    assert [restored["gguf"] for restored in env.restores] == [a_gguf]
+
+
+def test_an_idle_save_of_another_model_does_not_cost_the_loading_models_slots(
+    env, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+    a_gguf = env._gguf_path
+    b_gguf = tmp_path / "other.gguf"
+    b_gguf.write_bytes(b"gguf")
+
+    _unload(monkeypatch, env)
+    env.reload(b_gguf)
+    kw.note_model_loaded(env)
+    other = dict(env.save_slots_for_resume(lambda: False), gguf = b_gguf)
+    kw._kv_resume = other
+    env.reload(a_gguf)
+    kw.note_model_loaded(env)
+
+    assert [restored["gguf"] for restored in env.restores] == [a_gguf]
+
+
+@pytest.mark.parametrize(
+    "guard, value",
+    [("_chat_busy", lambda counted = False: True), ("_chat_account", lambda: "someone-else")],
+)
+def test_a_manual_unload_leaves_a_busy_or_foreign_chat_unsaved(env, monkeypatch, guard, value):
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+    monkeypatch.setattr(cs, guard, value)
+
+    _unload(monkeypatch, env)
+
+    assert env.saves == []
+
+
+def test_a_manual_unload_saves_nothing_with_keep_context_off(env, monkeypatch):
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
+
+    _unload(monkeypatch, env)
+
+    assert env.saves == []
+
+
+def test_turning_keep_context_off_deletes_saved_unloads(env, monkeypatch):
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+
+    _unload(monkeypatch, env)
+    assert env.files and not _no_files(env)
+
+    kw.purge_kv_resume()
+
+    assert _no_files(env)
+
+
+def test_a_save_that_lands_as_the_unload_times_out_is_deleted(env, monkeypatch):
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+    real_wait_for = asyncio.wait_for
+
+    async def _times_out_after_delivery(aw, timeout):
+        if timeout != cs.SWAP_KV_SAVE_BUDGET_S:
+            return await real_wait_for(aw, timeout)
+        await aw
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", _times_out_after_delivery)
+
+    _unload(monkeypatch, env)
+
+    assert len(env.saves) == 1
+    assert kw._unload_kv == []
+    assert _no_files(env)
+
+
+@pytest.fixture
+def three_byte_cap(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp
+    monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 3)
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+
+
+def test_an_idle_or_swap_save_evicts_older_unload_saves_past_the_cap(env, three_byte_cap):
+    first = env.save_slots_for_resume(lambda: False)
+    kw.stash_unload_kv(first)
+    second = env.save_slots_for_resume(lambda: False)
+
+    kw._set_kv_resume({"origin": "idle", **second})
+
+    assert kw._unload_kv == []
+    assert not env.files[0].exists()
+    assert env.files[1].exists()
+
+
+def test_an_unload_save_replaces_an_idle_save_past_the_cap(env, three_byte_cap):
+    idle = env.save_slots_for_resume(lambda: False)
+    kw._set_kv_resume({"origin": "idle", **idle})
+    unloaded = env.save_slots_for_resume(lambda: False)
+
+    kw.stash_unload_kv(unloaded)
+
+    assert kw._kv_resume is None
+    assert kw._unload_kv == [unloaded]
+    assert not env.files[0].exists()
+    assert env.files[1].exists()
+
+
+@pytest.mark.parametrize("loader, saved", [(None, 1), ("someone-else", 0)])
+def test_a_cpu_only_primary_is_saved_for_the_account_that_loaded_it(
+    env, monkeypatch, loader, saved
+):
+    monkeypatch.setattr(kw, "_unload_kv", [], raising = False)
+    monkeypatch.setattr(cs, "_chat_account", lambda: None)
+    env.holds_no_vram = True
+    kw.note_model_loaded(env)
+    if loader is not None:
+        monkeypatch.setattr(kw, "_loaded_by", (env._gguf_path, loader))
+
+    _unload(monkeypatch, env)
+
+    assert len(env.saves) == saved

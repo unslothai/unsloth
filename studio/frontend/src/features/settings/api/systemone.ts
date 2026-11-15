@@ -7,6 +7,7 @@ import {
   readFastApiError,
 } from "@/lib/format-fastapi-error";
 import type { DecisionResponse } from "../lib/decision-request";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 export type SystemOneDevice = "cpu" | "gpu";
 export type SystemOneBackend = "auto" | "llama.cpp" | "mlx" | "pytorch";
@@ -50,6 +51,7 @@ export type SystemOneSettings = {
   fallbackReason: string | null;
   inputModalities: string[];
   layout: string | null;
+  hasGgufForm: boolean;
 };
 
 export type SystemOneConnection = {
@@ -134,6 +136,8 @@ type ApiSystemOneSettings = {
   // biome-ignore lint/style/useNamingConvention: API schema
   input_modalities?: string[];
   layout?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  has_gguf_form?: boolean;
 };
 
 type ApiSystemOneDownloadPlan = {
@@ -211,6 +215,7 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     fallbackReason: settings.fallback_reason ?? null,
     inputModalities: settings.input_modalities ?? ["text"],
     layout: settings.layout ?? null,
+    hasGgufForm: settings.has_gguf_form ?? false,
   };
 }
 
@@ -241,6 +246,14 @@ export async function updateSystemOneSettings(
       "Failed to save Decision API settings",
     ),
   );
+}
+
+export async function tryFineTuneInDecisionApi(runName: string): Promise<void> {
+  const { model } = await updateSystemOneSettings({
+    enabled: true,
+    model: `laya-ft:${runName}`,
+  });
+  useSettingsDialogStore.getState().openDecisionTry(model);
 }
 
 export async function validateSystemOneSettings(

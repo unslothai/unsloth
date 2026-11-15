@@ -766,8 +766,7 @@ def test_an_unheld_lock_hides_the_extension_free_copy(real_install, monkeypatch,
         mamba_ssm_required = False,
         mamba_ssm_fatal = False,
     )
-    # transformers' gates (find_spec) and imports now see no mamba_ssm: the torch path, not
-    # selective_scan_fn.
+    # With mamba_ssm hidden, transformers takes the torch path, not selective_scan_fn.
     assert sys.modules["mamba_ssm"] is None
     assert importlib.util.find_spec("mamba_ssm") is None
     with pytest.raises(ImportError):

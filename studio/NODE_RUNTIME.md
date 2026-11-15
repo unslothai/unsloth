@@ -42,8 +42,9 @@ For a manual update or a new major:
    and the selected release's notes, including security fixes.
 2. Fetch its `SHASUMS256.txt` and signature from `https://nodejs.org/dist/v<version>/`.
    Verify the signature with the [Node release keys](https://github.com/nodejs/release-keys).
-3. Update `default_version` and all six archive digests together: Linux and macOS
-   x64/ARM64 `.tar.gz` files and Windows x64/ARM64 `.zip` files. Download the
+3. Update `default_version` and all ten archive digests together: Linux and macOS
+   x64/ARM64 `.tar.xz` and `.tar.gz` files (`.tar.gz` serves Pythons without
+   `lzma`) and Windows x64/ARM64 `.zip` files. Download the
    archives and verify their digests before committing the pins.
 4. Run the Node installer/runtime tests, both platforms' Node selection tests,
    and setup rerun tests. Check an upgrade from the previous pin, a second run

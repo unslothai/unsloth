@@ -115,7 +115,7 @@ case "$AGENT" in
       || install_fail "npm install -g --ignore-scripts @earendil-works/pi-coding-agent failed"
     ;;
   dsh)
-    npm_retry "@deepseek-ai/dsh" || install_fail "npm install -g @deepseek-ai/dsh failed"
+    npm_retry "@deepseek-ai/dsh@latest" || install_fail "npm install -g @deepseek-ai/dsh@latest failed"
     ;;
   vibe)
     PATH="$HOME/.local/bin:$PATH" curl_bash "https://mistral.ai/vibe/install.sh" \

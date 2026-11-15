@@ -23,7 +23,9 @@ export type { NativeFileDrop, NativeFileDropOptions } from "./use-native-file-dr
 export {
   NativeAttachmentTargetContext,
   NativeAttachmentDragContext,
+  NativeAttachmentOwnerScopeContext,
   useNativeAttachmentTargetKey,
+  useNativeAttachmentOwnerScope,
 } from "./attachment-target";
 export { useNativeIntentStore } from "./store";
 export type { NativeIntent } from "./types";

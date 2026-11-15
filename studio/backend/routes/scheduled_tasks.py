@@ -12,8 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
-from core.scheduled_tasks.schedule import InvalidSchedule, Schedule
-from core.scheduled_tasks.scheduler import next_run_for
+from core.scheduled_tasks.schedule import InvalidSchedule, Schedule, next_run_after, parse_schedule
 from storage import scheduled_tasks_db as db
 
 router = APIRouter()
@@ -58,6 +57,7 @@ class ScheduledTaskCreate(BaseModel):
     allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[ProjectId] = None
+    webSearch: bool = False
 
 
 class ScheduledTaskUpdate(BaseModel):
@@ -75,6 +75,7 @@ class ScheduledTaskUpdate(BaseModel):
     allowModelLoad: Optional[bool] = None
     archiveSuccessful: Optional[bool] = None
     projectId: Optional[ProjectId] = None
+    webSearch: Optional[bool] = None
 
 
 class RunNowRequest(BaseModel):
@@ -119,6 +120,7 @@ class ScheduledTask(BaseModel):
     allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[str] = None
+    webSearch: bool = False
     status: Literal["active", "paused", "completed"]
     nextRunAt: Optional[int] = None
     createdAt: int
@@ -156,7 +158,8 @@ def _existing_project(project_id: Optional[str]) -> Optional[str]:
 
 def _next_run(task: dict, now: int) -> Optional[int]:
     try:
-        following = next_run_for(task, now)
+        # Creation, a timing change, or resume starts a fresh hourly interval from now.
+        following = next_run_after(parse_schedule(task["schedule"]), task["timezone"], now)
     except InvalidSchedule as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     if following is None and task["enabled"]:
@@ -208,6 +211,7 @@ def create_scheduled_task(
         "allowModelLoad": payload.allowModelLoad,
         "archiveSuccessful": payload.archiveSuccessful,
         "projectId": _existing_project(payload.projectId),
+        "webSearch": payload.webSearch,
         "createdAt": now,
         "updatedAt": now,
     }

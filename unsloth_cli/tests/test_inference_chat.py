@@ -1445,6 +1445,50 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
     assert out == ["He", "Hello"]
 
 
+def test_inference_reports_an_incomplete_studio_stream(monkeypatch):
+    from unsloth_cli.commands import inference as infermod
+
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    response = _FakeSSEResponse(
+        [b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n']
+    )
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+    monkeypatch.setattr(infermod, "connect_studio_server", lambda *a, **k: backend)
+
+    result = CliRunner().invoke(_inference_app(), ["fake-model", "hello", "--verbose"])
+
+    assert result.exit_code == 1
+    assert "partial" in result.stdout
+    assert "Stream ended before the reply completed" in result.stderr
+
+
+def test_chat_drops_a_turn_with_an_incomplete_studio_stream(monkeypatch):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    requests = []
+
+    def fake_request(method, path, payload):
+        requests.append(payload["messages"])
+        if len(requests) == 1:
+            return _FakeSSEResponse([b'data: {"choices":[{"delta":{"content":"partial"}}]}\n'])
+        return _FakeSSEResponse(
+            [b'data: {"choices":[{"delta":{"content":"complete"}}]}\n', b"data: [DONE]\n"]
+        )
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: backend)
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "first\nsecond\n/exit\n")
+
+    assert result.exit_code == 0
+    assert "Stream ended before the reply completed" in result.stderr
+    assert requests == [
+        [{"role": "user", "content": "first"}],
+        [{"role": "user", "content": "second"}],
+    ]
+
+
 def _http_stream_body(monkeypatch, max_new_tokens):
     backend = HttpChatBackend("http://localhost:8888", "token")
     bodies = []
@@ -1515,23 +1559,22 @@ def test_cli_leaves_unset_sampling_to_the_server(monkeypatch, command):
     ]
 
 
-def _http_finish(monkeypatch, finish_reason):
+@pytest.mark.parametrize("finish_reason", ["length", "stop"])
+@pytest.mark.parametrize("send_done", [True, False])
+def test_http_backend_reports_whether_a_reply_ran_out_of_budget(
+    monkeypatch, finish_reason, send_done
+):
     backend = HttpChatBackend("http://localhost:8888", "token")
     chunk = json.dumps({"choices": [{"delta": {"content": "hi"}, "finish_reason": finish_reason}]})
-    monkeypatch.setattr(
-        backend,
-        "_request",
-        lambda *a, **k: _FakeSSEResponse([f"data: {chunk}\n".encode(), b"data: [DONE]\n"]),
-    )
+    lines = [f"data: {chunk}\n".encode()]
+    if send_done:
+        lines.append(b"data: [DONE]\n")
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: _FakeSSEResponse(lines))
+
     out = list(backend.stream([{"role": "user", "content": "hi"}], **_STREAM_KWARGS))
-    return backend.reply_hit_token_limit, out
 
-
-def test_http_backend_reports_whether_a_reply_ran_out_of_budget(monkeypatch):
-    hit, out = _http_finish(monkeypatch, "length")
-    assert hit is True
     assert out == ["hi"]
-    assert _http_finish(monkeypatch, "stop")[0] is False
+    assert backend.reply_hit_token_limit is (finish_reason == "length")
 
 
 def _http_reasoning_reply(monkeypatch):

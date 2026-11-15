@@ -8,7 +8,8 @@ import { isTauri } from "@/lib/api-base";
 import { MAX_FOLDER_FILES, openFolderPicker } from "@/lib/dropped-folders";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { FolderAddIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useRef } from "react";
 import {
@@ -52,10 +53,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     canRetry,
   } = useRagDocuments({ type: "project", projectId }, lister);
 
-  // Invalidate the sources probe before each mutation so a chat sent mid-upload
-  // cannot cache "no sources" for the probe's TTL, and announce after it, which
-  // is the half other instances and other tabs listen for. Announcing before
-  // would refetch and resurrect the row this panel has already dropped.
+  // Invalidate the sources probe before each mutation so a mid-upload chat cannot cache no sources
+  // for its TTL; announce after, since other tabs listen and a refetch before would resurrect a
+  // dropped row.
   const uploadNow = useCallback(
     (items: RagUploadItem[]) => {
       if (items.length === 0) return;

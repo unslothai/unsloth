@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   DEFAULT_CUSTOMIZATION,
   type SidebarNavItemPref,
+  migrateAppearanceMenuDefault,
   migrateShippedSidebarNavDefault,
   sanitizeCustomization,
 } from "../src/features/settings/stores/appearance-custom-store.ts";
@@ -176,4 +177,15 @@ test("a synced profile picks the layout change up too", async () => {
     await personalizationVersion(),
   );
   assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
+});
+
+test("Appearance joins the account menu once, then a hidden one stays hidden", async () => {
+  const hidden = sanitizeCustomization({ sidebarMenu: [{ id: "appearance", visible: false }] });
+  const visible = (c: typeof hidden) => c.sidebarMenu.find((item) => item.id === "appearance")?.visible;
+  assert.equal(visible(DEFAULT_CUSTOMIZATION), true);
+  assert.equal(visible(migrateAppearanceMenuDefault(hidden, 8, 9)), true);
+  assert.equal(visible(migrateAppearanceMenuDefault(hidden, 9, 9)), false);
+  const version = await personalizationVersion();
+  assert.equal(visible(migrateAppearanceMenuDefault(hidden, version - 1, version)), true);
+  assert.equal(visible(migrateAppearanceMenuDefault(hidden, version, version)), false);
 });

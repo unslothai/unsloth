@@ -41,14 +41,9 @@ def hf_env_offline() -> bool:
 
 
 def package_installs_offline() -> bool:
-    """True when an on-demand package install (a kernel wheel, a source build) must not reach the
-    network: the HF offline switches above, or UV_OFFLINE, the operator's no-network switch for
-    installs. Under UV_OFFLINE uv refuses the index, and install_wheel's pip fallback would then
-    reach it anyway, so such an install is skipped outright.
-
-    An HF offline that Studio set itself only because the Hub was unreachable (export's offline
-    window marks it, wheel_utils.hf_offline_auto_set) says nothing about GitHub / PyPI, so then
-    only UV_OFFLINE counts: an operator-set HF offline still blocks every install."""
+    """True when installs must stay off the network: an operator-set HF offline, or UV_OFFLINE
+    (install_wheel's pip fallback would reach the index anyway). A Studio auto-set HF offline
+    says nothing about GitHub or PyPI, so only UV_OFFLINE counts."""
     from utils.wheel_utils import hf_offline_auto_set, uv_offline
 
     if hf_offline_auto_set():
@@ -268,9 +263,9 @@ _hf_reachability_pin: "ContextVar[Optional[list]]" = ContextVar("hf_reachability
 
 
 @contextmanager
-def pinned_hf_reachability():
-    """Hold one reachability verdict for this block, however long it runs. Every verdict this module reaches fills it (probed, already memoised, or opted out of) and the rest read it. Nothing is pinned until something asks, so a block that never touches the Hub pays nothing."""
-    token = _hf_reachability_pin.set([])
+def pinned_hf_reachability(verdict: Optional[bool] = None):
+    """Hold one Hub reachability verdict for this block, pinned lazily on first ask; pass `verdict` if already probed."""
+    token = _hf_reachability_pin.set([] if verdict is None else [verdict])
     try:
         yield
     finally:

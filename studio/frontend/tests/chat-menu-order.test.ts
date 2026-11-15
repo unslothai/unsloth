@@ -7,12 +7,13 @@ import test from "node:test";
 import { installLocalStorageFake, readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { store } = installLocalStorageFake();
+const { store, fireWindowEvent } = installLocalStorageFake();
 const {
   PLUS_MENU_ORDER,
   PLUS_MENU_PINS_STORAGE_KEY,
   keepSavedSlot,
   normalizePlusMenuOrder,
+  plusMenuAtDefaults,
   splitPlusMenuItems,
   usePlusMenuPrefsStore,
 } = await import("../src/features/chat/stores/plus-menu-prefs-store.ts");
@@ -121,4 +122,22 @@ test("moving another row keeps Deep research where it was in More, not at the to
   // A saved slot past the end of the list lands at its end; an order without it puts it first.
   assert.deepEqual(keepSavedSlot(["mcp"], ["mcp", "skills", "deepResearch"], "deepResearch"), ["mcp", "deepResearch"]);
   assert.deepEqual(keepSavedSlot(["mcp"], ["mcp"], "deepResearch"), ["deepResearch", "mcp"]);
+});
+
+test("a menu change in another tab applies here, so this tab never sends a stale copy", () => {
+  store.set(
+    PLUS_MENU_PINS_STORAGE_KEY,
+    JSON.stringify({ state: { pins: { mcp: true }, pinnedPromptIds: ["p9"] }, version: 1 }),
+  );
+  fireWindowEvent("storage", { key: PLUS_MENU_PINS_STORAGE_KEY });
+  const menu = usePlusMenuPrefsStore.getState();
+  assert.equal(menu.pins.mcp, true);
+  assert.deepEqual(menu.pinnedPromptIds, ["p9"]);
+});
+
+test("Reset to default greys out only while the menu is at its defaults", () => {
+  const initial = usePlusMenuPrefsStore.getInitialState();
+  assert.equal(plusMenuAtDefaults(initial.pins, initial.order), true);
+  assert.equal(plusMenuAtDefaults({ ...initial.pins, mcp: !initial.pins.mcp }, initial.order), false);
+  assert.equal(plusMenuAtDefaults(initial.pins, [...initial.order].reverse()), false);
 });

@@ -628,12 +628,13 @@ def _mistral_format_conversions():
         pass
     if original_update is not None:
 
-        def update_weight_conversions(self, weight_conversions):
+        def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+            # transformers 5.21+ also passes the model.
             if getattr(self.quantization_config, "dequantize", False):
                 weight_conversions = [
                     c for c in weight_conversions if not _is_expert_scale_merge(c)
                 ]
-            return original_update(self, weight_conversions)
+            return original_update(self, weight_conversions, *args, **kwargs)
 
         fp8_quantizer.update_weight_conversions = update_weight_conversions
     _active_conversions += 1

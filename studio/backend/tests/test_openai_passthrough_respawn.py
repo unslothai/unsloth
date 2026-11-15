@@ -74,8 +74,7 @@ class _Request:
 
 
 class _Lease:
-    """Records that the slot came back. Repeat calls are fine: the real lease is
-    idempotent, and the stream's nested handlers both release."""
+    """Repeat release is safe: the real lease is idempotent and nested handlers both release."""
 
     def __init__(self):
         self.released = False
@@ -210,8 +209,7 @@ def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
 
 
 def test_non_streaming_respawns_at_most_once(monkeypatch):
-    """A relaunch that reports success but is not serving must end in a 502, not a
-    loop that respawns the model on every attempt."""
+    """A relaunch reporting success but not serving must end in a 502 after one respawn."""
     client = _FakeNonStreamingClient()
     monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     backend = _Backend(stays_dead = True)
@@ -552,3 +550,33 @@ def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch,
     assert backend.fed_while_loading, "the stream went silent for the whole reload"
     assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
     assert "hi" in blob and "[DONE]" in blob
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85"])
+def test_streaming_keeps_a_delta_holding_a_unicode_line_separator(monkeypatch, separator):
+    content = f"first{separator}second"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        delta = json.dumps({"choices": [{"delta": {"content": content}}]}, ensure_ascii = False)
+        return httpx.Response(
+            200,
+            content = f"data: {delta}\n\ndata: [DONE]\n\n".encode(),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx, "AsyncClient", lambda *_a, **_k: real_client(transport = transport)
+    )
+    backend = _Backend()
+    backend.base_url = _FRESH
+
+    blob = asyncio.run(_run_stream(backend))
+
+    events = [e[5:].strip() for e in blob.split("\n\n") if e.startswith("data:")]
+    chunks = [json.loads(e) for e in events if e != "[DONE]"]
+    text = "".join(
+        c["choices"][0]["delta"].get("content") or "" for c in chunks if c.get("choices")
+    )
+    assert text == content

@@ -9,3 +9,4 @@ export const RECORDING_MAX_SECONDS = 30 * 60;
 export const TTS_MAX_TOKENS = 8192;
 // Max tokens caps output only and the prompt shares the context, so TTS_MAX_TOKENS itself is unreachable.
 export const TTS_PROMPT_CONTEXT_RESERVE = 2048;
+export const AUDIO_DEVICE_KEY = "unsloth_audio_device";

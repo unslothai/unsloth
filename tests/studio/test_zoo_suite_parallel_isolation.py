@@ -188,9 +188,8 @@ def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
 
 
 def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() -> None:
-    """The group is passed unquoted, so an empty list is not an empty run: with nothing
-    in ``mlx_group`` the command collects the whole rootdir instead, green and far
-    slower. The glob only has to stop matching once, upstream renaming the family say."""
+    """The mlx group is passed unquoted, so an empty glob makes the command collect the whole
+    rootdir, green and far slower; the step must stop when the glob matches nothing."""
     text = WORKFLOW.read_text(encoding = "utf-8")
     assert 'if [ -z "$mlx_group" ]' in text, (
         "nothing checks that the mlx group glob matched anything, so an empty glob "
@@ -326,9 +325,8 @@ def test_the_shared_preamble_is_not_also_inlined() -> None:
 
 
 def test_a_skipped_isolated_file_is_named_in_the_log() -> None:
-    """Exit 5 is tolerated, so the file that produced it has to be identifiable: an
-    expected module-level skip and a file that stopped collecting for a new reason both
-    exit 5 and both stay green."""
+    """Exit 5 is tolerated, so each isolated file must be named in the log: an expected module-level
+    skip and a file that stopped collecting both exit 5 and stay green."""
     text = WORKFLOW.read_text(encoding = "utf-8")
     for path, _ in ISOLATED:
         assert f'_keep "$?" {path}' in text, (

@@ -501,11 +501,9 @@ def test_a_complete_macos_payload_is_healthy(tmp_path):
     ["libllama-common", "libllama", "libggml", "libggml-base", "libggml-cpu", "libmtmd"],
 )
 def test_each_essential_macos_dylib_is_required_on_its_own(tmp_path, stem):
-    """Codex 3958908349, P1. The groups used to be three broad alternatives, so
-    libggml*.dylib stayed satisfied by libggml-base, libggml-blas, libggml-cpu, libggml-metal
-    and libggml-rpc after the one the loader needs was quarantined, and the tree reported
-    healthy while llama-server died in dyld. The dot in each pattern is what keeps it off its
-    siblings."""
+    """Each essential macOS dylib is required on its own: a broad libggml glob stayed satisfied by
+    sibling libraries after the loader's one was quarantined, so llama-server died in dyld while
+    the tree reported healthy; the dot keeps each pattern off its siblings."""
     root = _macos_tree(tmp_path)
     runtime_dir = root / "build" / "bin"
     for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == stem]:
@@ -565,9 +563,8 @@ def test_losing_the_macos_install_name_link_is_caught(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
 def test_a_bare_versionless_macos_dylib_still_satisfies_its_group(tmp_path):
-    """The other direction, so the rule above cannot become a reinstall loop: a bundle that
-    ships libfoo.dylib with no chain at all is a name the loader can resolve and must stay
-    healthy."""
+    """A bare versionless libfoo.dylib with no symlink chain is a name the loader can resolve, so it
+    must stay healthy or it would become a reinstall loop."""
     root = _macos_tree(tmp_path)
     runtime_dir = root / "build" / "bin"
     for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == "libggml"]:

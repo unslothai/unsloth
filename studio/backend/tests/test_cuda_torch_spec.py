@@ -46,8 +46,7 @@ def test_cuda_spec_bounds(monkeypatch, index, allowed, rejected):
 
 
 def test_cuda_spec_matches_rocm72_upper_bound(monkeypatch):
-    """CUDA and rocm7.2 target the same torch 2.11.x family, so their upper
-    bounds must stay in lockstep (bump both together at 2.12.x)."""
+    """CUDA and rocm7.2 share torch 2.11.x, so their upper bounds must bump together at 2.12.x."""
     mod = _load_module(monkeypatch)
     rocm72 = mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]
 

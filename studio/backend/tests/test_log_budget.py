@@ -31,8 +31,7 @@ class TestClassificationClosure:
     """Guard B. The registry and the middleware's own sets must describe the same world."""
 
     def test_every_classified_path_is_in_a_scenario(self):
-        """Every classified poll path must appear in a budget scenario, or the budget never sees its
-        volume."""
+        """Each classified poll path needs a scenario, or the budget never sees its volume."""
         classified = set()
         for attr in (
             "_QUIET_POLL_PATHS",
@@ -55,8 +54,7 @@ class TestClassificationClosure:
         )
 
     def test_every_polled_path_has_exactly_one_class(self):
-        """Unlisted paths default to the normal class, so every fast-polled path must be classed
-        deliberately."""
+        """Unlisted paths default to NORMAL; each fast-polled path needs an explicit class."""
         offenders = {
             path
             for path, (period, _provenance) in session.ALL_POLLS.items()
@@ -138,8 +136,7 @@ class TestVolumeEnvelope:
         ],
     )
     def test_each_path_matches_its_class_formula(self, label, polls, duration, monkeypatch):
-        """Asserts exact counts, not a ceiling, so a broken suppression rule cannot pass by getting
-        quieter."""
+        """Exact counts, not a ceiling: a broken suppression rule cannot pass by going quiet."""
         result = replay.replay(hmod, monkeypatch, polls, duration)
         counts = Counter(result.capture.paths())
 
@@ -162,8 +159,7 @@ class TestVolumeEnvelope:
         )
 
     def test_the_liveness_burst_collapses_to_one_bucket(self, monkeypatch):
-        """The five liveness paths must cost one line together; assert the bucket total, not which
-        path won."""
+        """Five liveness paths share one line; assert the bucket total, not the winner."""
         liveness = {
             path: value
             for path, value in session.IDLE_POLLS.items()

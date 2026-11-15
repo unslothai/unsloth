@@ -346,8 +346,7 @@ def test_native_companion_none_is_noop():
 
 
 def test_reload_dedup_accepts_native_subdir_fallback(tmp_path, monkeypatch):
-    """A native load whose root drafter was out of bounds launches the MTP/
-    copy, so root-first detection never matches it. Dedup must still hold."""
+    """Out-of-bounds root drafter: native load launches MTP/ copy, so dedup must still hold."""
     quant_dir = tmp_path / "Q4_0"
     quant_dir.mkdir()
     weight = quant_dir / "model.gguf"
@@ -389,8 +388,7 @@ def test_reload_dedup_still_reloads_when_drafter_disappears(tmp_path, monkeypatc
 
 
 def test_reload_dedup_reloads_for_ordinary_load_when_root_drafter_appears(tmp_path, monkeypatch):
-    """The native fallback exception must not swallow a newly added root
-    drafter on an ordinary local load, which can reach it."""
+    """Native fallback must not swallow a newly added root drafter on an ordinary local load."""
     quant_dir = tmp_path / "Q4_0"
     quant_dir.mkdir()
     weight = quant_dir / "model.gguf"
@@ -417,8 +415,7 @@ def test_reload_dedup_reloads_for_ordinary_load_when_root_drafter_appears(tmp_pa
 
 
 def test_reload_dedup_native_load_with_no_admissible_drafter(tmp_path, monkeypatch):
-    """Root drafter out of the grant and no MTP/ copy: the load stores no
-    drafter, so dedup must compare against None rather than the root file."""
+    """Root drafter outside the grant and no MTP/ copy: dedup must compare against None."""
     quant_dir = tmp_path / "Q4_0"
     quant_dir.mkdir()
     weight = quant_dir / "model.gguf"
@@ -469,8 +466,7 @@ def test_native_mtp_drafter_accepts_regular_shard_set(tmp_path):
 
 
 def test_status_provenance_survives_deleted_model_directory(tmp_path, monkeypatch):
-    """Provenance is a load-time fact: a directory removed underneath a running
-    server must not turn a local model into a remote one."""
+    """Provenance is fixed at load time, so a deleted model directory still counts as local."""
     monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0))
     backend = LlamaCppBackend()
     backend._is_local_model = True
@@ -482,8 +478,7 @@ def test_status_provenance_survives_deleted_model_directory(tmp_path, monkeypatc
 
 
 def test_native_load_skips_rejected_mtp_candidate_for_next_one(tmp_path):
-    """MTP/ can hold several copies: a preferred one out of the grant must not disable
-    MTP. Both are Q8_0 here, since precision now outranks size."""
+    """MTP/ may hold several copies; a rejected one must fall through to the next."""
     quant_dir = tmp_path / "Q4_0"
     quant_dir.mkdir()
     weight = quant_dir / "model.gguf"

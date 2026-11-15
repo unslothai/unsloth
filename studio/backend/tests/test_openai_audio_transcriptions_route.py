@@ -199,9 +199,7 @@ def test_verbose_json_works_when_the_caller_supplies_a_language(monkeypatch):
 
 
 def test_verbose_json_never_emits_a_null_duration(monkeypatch):
-    """A clip that decodes to no samples has no duration; OpenAI requires a number.
-
-    Unlike the language this is not a guess: such a clip really is zero seconds."""
+    """A clip with no samples has zero seconds, not an unknown duration; OpenAI requires a number."""
 
     async def _empty(raw):
         return {"text": "", "language": "en", "duration": None, "model": "small"}
@@ -304,9 +302,7 @@ def test_client_abort_records_a_cancelled_row(monkeypatch):
     ],
 )
 def test_a_dict_detail_never_strands_the_row(monkeypatch, detail):
-    """Only openai_error_body's shape nests the message. For any other dict the handler
-    called .get() on a non-dict and raised AttributeError out of the context manager,
-    which skipped finish() and left the row at "running" forever."""
+    """Dict details outside openai_error_body must not raise past finish() and strand the row."""
 
     async def _boom(raw):
         raise HTTPException(status_code = 400, detail = detail)
@@ -383,8 +379,7 @@ def test_the_monitor_label_never_carries_a_local_path(monkeypatch):
 
 
 def test_skip_api_monitor_suppresses_the_row(monkeypatch):
-    """Internal workflows set the flag; the media routes must honour it like the
-    text routes do, or an internal step shows up as user API traffic."""
+    """Media routes must honour the flag too, or internal steps show up as user API traffic."""
     cli, calls = _make_client(monkeypatch)
 
     @cli.app.middleware("http")
@@ -706,8 +701,7 @@ def test_external_client_sends_openai_compatible_multipart(monkeypatch):
 
 
 def test_verbose_json_is_forwarded_to_the_provider_verbatim(monkeypatch):
-    """The proxied arm returns the provider's own verbose_json, segments and all, so
-    the format has to reach it and the body must come back untouched."""
+    """Proxied arm returns provider verbose_json untouched, so the format must be forwarded."""
     cli, sidecar_calls = _make_client(monkeypatch)
     provider_body = (
         b'{"task":"transcribe","language":"en","duration":1.5,'
@@ -858,9 +852,7 @@ def test_the_provider_client_sends_granularities_as_a_repeated_field(monkeypatch
     ],
 )
 def test_a_sidecar_failure_does_not_leak_the_requested_path(monkeypatch, requested, expected):
-    """The relabel only lands on success, so a sidecar failure kept the raw client string
-    on the terminal row. Windows and UNC forms are covered because os.path.basename alone
-    would not split either one on a Linux host."""
+    """A failed sidecar kept the raw path on the row; Windows and UNC forms need more than basename."""
 
     async def _boom(raw):
         raise HTTPException(status_code = 409, detail = "Model is busy.")
@@ -876,8 +868,7 @@ def test_a_sidecar_failure_does_not_leak_the_requested_path(monkeypatch, request
 
 
 def test_the_proxied_row_never_carries_a_local_path(monkeypatch):
-    """The proxied arm never relabels at all, so whatever it opens with is what the row
-    keeps for its whole life, success included."""
+    """The proxied arm never relabels; the row keeps its opening value, success included."""
     cli, _sidecar_calls = _make_client(monkeypatch)
     _client_args, transcription_calls, _creds = _install_external(monkeypatch)
     api_monitor.clear()

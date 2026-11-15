@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Train page's API examples create jobs the fine-tuning route accepts, with the form's settings.
-
-The bodies are the ones the frontend generator sends (``tests/training-api-snippets.test.ts`` keeps the
-fixture in step with it)."""
 
 import json
 from pathlib import Path
@@ -21,13 +17,18 @@ BODIES = json.loads(
     )
 )
 FILE_ID = "file-0123456789abcdef0123456789abcdef"
-UPLOADED = Path(f"/uploads/{FILE_ID}.jsonl")
 OPENAI_FIELDS = {"model", "hyperparameters", "seed", "suffix"}
 
 
 @pytest.fixture(autouse = True)
-def uploaded_file(monkeypatch):
-    monkeypatch.setattr(openai_fine_tuning, "_find_file", lambda file_id: UPLOADED)
+def uploaded_file(monkeypatch, tmp_path):
+    uploaded = tmp_path / f"{FILE_ID}.jsonl"
+    uploaded.write_text(
+        '{"messages": [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello"}]}\n',
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(openai_fine_tuning, "_find_file", lambda file_id: uploaded)
+    return uploaded
 
 
 def _request(body: dict) -> TrainingStartRequest:
@@ -38,16 +39,16 @@ def _request(body: dict) -> TrainingStartRequest:
 
 
 @pytest.mark.parametrize("name", sorted(BODIES))
-def test_generated_body_is_accepted_with_its_settings(name):
+def test_generated_body_is_accepted_with_its_settings(name, uploaded_file):
     body = BODIES[name]
     request = _request(body)
     assert request.model_name == body["model"]
-    assert request.local_datasets == [str(UPLOADED)]
+    assert request.local_datasets == [str(uploaded_file)]
     assert request.num_epochs == body["hyperparameters"]["n_epochs"]
     assert request.batch_size == body["hyperparameters"]["batch_size"]
     assert request.random_seed == body["seed"]
     assert request.project_name == body.get("suffix")
-    # The route normalises the string ("2e-4" -> "0.0002"); the rate itself must not change.
+
     assert float(request.learning_rate) == float(body["learning_rate"])
     extras = {
         key: value

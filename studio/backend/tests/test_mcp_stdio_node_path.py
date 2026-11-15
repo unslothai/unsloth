@@ -21,8 +21,7 @@ def _reset_managed_node_memo():
 
 @pytest.fixture
 def managed_node(tmp_path, monkeypatch):
-    """A managed install that clears the version floor (the probe is stubbed: these
-    tests cover PATH assembly, not `node -v`)."""
+    """A managed install passes the floor with the probe stubbed; tests cover PATH only."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     bin_dir = tmp_path / "studio" / "node" / ("" if os.name == "nt" else "bin")
     bin_dir.mkdir(parents = True, exist_ok = True)
@@ -652,8 +651,7 @@ def test_npx_server_keeps_a_path_with_npx_but_no_npm(managed_node_install, monke
 
 
 def test_npx_only_path_is_still_held_to_the_npm_floor(managed_node_install, monkeypatch, tmp_path):
-    """``npx -v`` reports the bundled npm's version, so an npx-only PATH is floor-checked
-    through npx rather than waved through."""
+    """npx -v reports bundled npm's version, so an npx-only PATH is floor-checked via npx."""
     curated = tmp_path / "curated"
     curated.mkdir()
     _make_executable(curated, "node")

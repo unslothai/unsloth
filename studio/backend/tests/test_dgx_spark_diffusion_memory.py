@@ -216,9 +216,8 @@ def test_an_unreadable_limit_leaves_the_device_total(monkeypatch):
 
 
 def test_the_two_cgroup_readings_are_not_the_same_number(monkeypatch):
-    """The remainder and the limit come from the same walk but answer different
-    questions, so a container that is already holding something must report them
-    differently."""
+    """Remainder and limit come from one cgroup walk but answer different questions; a busy
+    container reports them apart."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(

@@ -24,7 +24,7 @@ class Checkpoint:
     # "laya" (rl_agent_config.json + encoder), "clef" (Qwen3.5 backbone + joint schema head), or
     # "gguf" (a GGUF_COMPANIONS entry llama.cpp serves, with no PyTorch form).
     layout: str = "laya"
-    # "pytorch", "llama.cpp" for the GGUF a Clef entry is served from (see laya_runtime._native_target), or
+    # "pytorch", "llama.cpp" for the GGUF a Clef or Laya entry is served from (see laya_runtime._native_target), or
     # "mlx" for the form unsloth-zoo's MLX engine serves on Apple Silicon (see laya_runtime._mlx_target).
     backend: str = "pytorch"
     # The served GGUF files of a local export, so a re-export is a different checkpoint to a resident server.
@@ -39,9 +39,16 @@ class Checkpoint:
         return Path(self.source).expanduser().is_dir()
 
 
-def _gguf(name: str, label: str, repo: str, description: str, download_bytes: int) -> Checkpoint:
+def _gguf(
+    name: str,
+    label: str,
+    repo: str,
+    description: str,
+    download_bytes: int,
+    audio: bool = False,
+) -> Checkpoint:
     return Checkpoint(
-        name, repo, None, description, download_bytes, "gguf", "llama.cpp", label = label
+        name, repo, None, description, download_bytes, "gguf", "llama.cpp", label = label, audio = audio
     )
 
 
@@ -155,6 +162,46 @@ CHECKPOINTS = {
             "Supersonic Julia-1 (Q8_0 GGUF, llama.cpp only): the smallest, text only, runs on CPU.",
             168_166_496,
         ),
+        _gguf(
+            "d1-omni-600m",
+            "d1 Omni 600M",
+            "LiquidAI/d1-omni-600M-GGUF",
+            "LiquidAI d1 Omni 600M (Q8_0 GGUF): reads images, and hears audio on MLX.",
+            407_207_584 + 262_791_232,
+            audio = True,
+        ),
+        _gguf(
+            "d1-2b",
+            "d1 2B",
+            "LiquidAI/d1-2B-GGUF",
+            "LiquidAI d1 2B on LFM3-VL (Q8_0 GGUF): reads images.",
+            1_846_240_576 + 203_031_584,
+        ),
+        _gguf(
+            "d1-omni-2b",
+            "d1 Omni 2B",
+            "LiquidAI/d1-Omni-2B-GGUF",
+            "LiquidAI d1 Omni 2B on LFM3-Omni (Q8_0 GGUF): reads images, and hears audio on MLX.",
+            1_846_241_184 + 326_104_096,
+            audio = True,
+        ),
+        _gguf(
+            "d1-3b",
+            "d1 3B",
+            "LiquidAI/d1-3B-GGUF",
+            "LiquidAI d1 3B on LFM2.5-VL (Q8_0 GGUF): reads images.",
+            2_874_781_280 + 583_109_728,
+        ),
+        Checkpoint(
+            "decider-2b",
+            "nativ-community/decider-2b",
+            None,
+            "Decider 2B on Qwen3.5 (MLX only): text only, needs Apple Silicon.",
+            3_783_689_675,
+            "gguf",
+            "mlx",
+            label = "Decider 2B",
+        ),
     )
 }
 
@@ -264,6 +311,50 @@ GGUF_COMPANIONS = {
                 None,
                 ("1ea6a7e87156eeeda88cb7a36a61265b37ba7b993897b7289b99aea5b5e47069",),
             ),
+            (
+                "d1-omni-600m",
+                "LiquidAI/d1-omni-600M-GGUF",
+                "8eb2d2a1c5404bba8a34a88bd8e159c242197d51",
+                "d1-omni-600M-Q8_0.gguf",
+                "mmproj-d1-omni-600M-Q8_0.gguf",
+                (
+                    "cd94463f4cac9c700ec6750df8df005bb6846de410e159d1f5e985e1171693d3",
+                    "df887978550cdbb45f0f57d7b436a0f844689f9f561395a144ced500606c3a89",
+                ),
+            ),
+            (
+                "d1-2b",
+                "LiquidAI/d1-2B-GGUF",
+                "e968f6575f0d4fad928312d7af15cad90fd365c0",
+                "d1-2B-Q8_0.gguf",
+                "mmproj-d1-2B-Q8_0.gguf",
+                (
+                    "073313d92b53b0ac8193db6e906cb3c78a98183d244b15b7b8f5426115c6738c",
+                    "62cc6d74fd1e5b1d6b48518566bf4c0cfd2468079a0c096ea323b74eed01e0d1",
+                ),
+            ),
+            (
+                "d1-omni-2b",
+                "LiquidAI/d1-Omni-2B-GGUF",
+                "c53ae0b1f92b17065e9158d34019c9ca1ea5bcf8",
+                "d1-Omni-2B-Q8_0.gguf",
+                "mmproj-d1-Omni-2B-Q8_0.gguf",
+                (
+                    "aedf1a7c341b4281979423dbc39e9c3d3ad1da8834156c8e75af5399ca3b0861",
+                    "31778160ac0ec70f9b59f296aa1c8e70cbd1eb7e3a3ff873d695aaa4c7b8d674",
+                ),
+            ),
+            (
+                "d1-3b",
+                "LiquidAI/d1-3B-GGUF",
+                "bb1e436ea78eb96a3f1acb6da865f70c2fbeb563",
+                "d1-3B-Q8_0.gguf",
+                "mmproj-d1-3B-Q8_0.gguf",
+                (
+                    "2f0942d5a5f64cf69c3356d2be439b71644b1f0eb3a580912a5a0179eeaba77d",
+                    "2505920ce464b7c54acd8b7b74a931c0c671f06d0c8833760b2fbceeb253e92a",
+                ),
+            ),
         )
     },
 }
@@ -299,6 +390,15 @@ def _qwen_base(repo: str, revision: str, shards: int, size: int, *extra: str) ->
 
 
 _ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
+_D1_WEIGHTS = ("model.safetensors", "model.safetensors.index.json")
+_D1_PROCESSOR_FILES = (
+    "config.json",
+    *_D1_WEIGHTS,
+    "chat_template.jinja",
+    "processor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+)
 
 MLX_COMPANIONS = {
     "julia-1": MlxCompanion(
@@ -387,6 +487,49 @@ MLX_COMPANIONS = {
         ),
         28_599_913_943,
     ),
+    "d1-omni-600m": MlxCompanion(
+        "d1",
+        "LiquidAI/d1-omni-600M-MLX-8bit",
+        "d927e69f5e5db82ad25ae1172f7fd18f0013b6df",
+        ("config.json", *_D1_WEIGHTS, "tokenizer.json", "tokenizer_config.json"),
+        731_348_970,
+    ),
+    "d1-2b": MlxCompanion(
+        "d1",
+        "LiquidAI/d1-2B-MLX-8bit",
+        "4977063d330b998e7849c39964749c8159a8adf7",
+        (*_D1_PROCESSOR_FILES, "calibration.json"),
+        2_234_060_291,
+    ),
+    "d1-omni-2b": MlxCompanion(
+        "d1",
+        "LiquidAI/d1-Omni-2B-MLX-8bit",
+        "f0ad5bf18bfc47671aa8dc24036b980a6851c948",
+        (*_D1_PROCESSOR_FILES, "calibration.json"),
+        2_731_606_810,
+    ),
+    "d1-3b": MlxCompanion(
+        "d1",
+        "LiquidAI/d1-3B-MLX-8bit",
+        "9409cbf3bd5067e1a9b17437b1970f6a0c299ccd",
+        _D1_PROCESSOR_FILES,
+        3_736_722_967,
+    ),
+    "decider-2b": MlxCompanion(
+        "mlx_vlm",
+        "nativ-community/decider-2b",
+        "acbae4ecce4dbcc0aea8c5a501c9f54008458a70",
+        (
+            "config.json",
+            "decider_config.json",
+            "generation_config.json",
+            "chat_template.jinja",
+            "model.safetensors",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        ),
+        3_783_689_675,
+    ),
 }
 
 # Names TypeSafe's and OpenJev's SDKs send by default, so an unmodified client reaches the configured model.
@@ -428,7 +571,7 @@ def _owner_outputs() -> Path:
 
 
 def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
-    from utils.models.model_config import clef_folder_kind
+    from utils.models.model_config import clef_folder_kind, is_d1_folder
 
     from .laya_runtime import is_cached
 
@@ -443,12 +586,15 @@ def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
         # A NUL byte or a symlink loop in a caller's name.
         return None
     if clef_folder_kind(folder) is not None:
+        d1 = is_d1_folder(folder)
         checkpoint = Checkpoint(
             CLEF_FINE_TUNE_PREFIX + folder_name,
             str(folder),
             None,
-            "Clef fine-tuned in Unsloth.",
+            "d1 fine-tuned in Unsloth." if d1 else "Clef fine-tuned in Unsloth.",
             layout = "clef",
+            # Only the MLX engine reads a d1; the PyTorch Clef loader would add an untrained head.
+            backend = "mlx" if d1 else "pytorch",
         )
     else:
         checkpoint = Checkpoint(
@@ -528,9 +674,13 @@ def default_checkpoint() -> Checkpoint | Connection:
     if (checkpoint := fine_tune(configured)) is not None:
         return checkpoint
     subfolder = os.environ.get("UNSLOTH_SYSTEMONE_SUBFOLDER", "").strip() or None
-    from utils.models.model_config import CLEF_MARKERS
+    from utils.models.model_config import CLEF_MARKERS, is_d1_folder
 
     folder = Path(configured).expanduser()
+    if subfolder is None and is_d1_folder(folder):
+        return Checkpoint(
+            LOCAL_NAME, configured, None, "Local d1 checkpoint.", layout = "clef", backend = "mlx"
+        )
     if subfolder is None and all((folder / name).is_file() for name in CLEF_MARKERS):
         return Checkpoint(LOCAL_NAME, configured, None, "Local Clef checkpoint.", layout = "clef")
     return Checkpoint(LOCAL_NAME, configured, subfolder, "Local Laya checkpoint.")

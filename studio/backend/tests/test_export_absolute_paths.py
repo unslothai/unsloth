@@ -175,6 +175,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     ):
         setattr(utils_models, name, lambda *args, **kwargs: None)
     utils_models.is_vision_model = lambda *args, **kwargs: False
+    utils_models.audio_vlm_multimodal_lm_checked = lambda *args, **kwargs: (False, True)
     utils_models.is_embedding_model = lambda *args, **kwargs: False
     utils_models.ModelConfig = object
     monkeypatch.setitem(sys.modules, "utils.models", utils_models)
@@ -300,6 +301,7 @@ def _install_export_backend_stubs(monkeypatch):
     utils_models = sys.modules["utils.models"]
     utils_models.get_base_model_from_lora = lambda *args, **kwargs: None
     utils_models.is_vision_model = lambda *args, **kwargs: False
+    utils_models.audio_vlm_multimodal_lm_checked = lambda *args, **kwargs: (False, True)
 
     utils_model_config = sys.modules["utils.models.model_config"]
     utils_model_config.detect_audio_type = lambda *args, **kwargs: None

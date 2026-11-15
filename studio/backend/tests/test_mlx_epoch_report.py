@@ -58,6 +58,7 @@ def _run_step_callback(
             "resume_from_checkpoint": None,
             "slice_start": None,
             "slice_end": None,
+            "dataset_streaming": False,
             "mlx_split_names_rows": False,
             "mlx_max_train_rows": max_train_rows,
             "mlx_max_train_rows_seed": 3407,
@@ -90,18 +91,18 @@ def test_mlx_step_callback_counts_a_bounded_run_over_the_whole_dataset():
     assert progress[0]["epoch"] == 0.5
 
 
-def test_mlx_training_never_streams():
-    keyword_values = [
-        n.value for n in ast.walk(_TREE) if isinstance(n, ast.keyword) and n.arg == "streaming"
-    ]
-    subscript_values = [
-        n.value
+def test_mlx_training_streams_only_a_streamed_hf_dataset():
+    """A sized dataset must keep the eager path, or zoo cannot end an epoch on an optimizer step."""
+    assigned = [
+        ast.unparse(n.value)
         for n in ast.walk(_TREE)
         if isinstance(n, ast.Assign)
-        and any(
-            isinstance(t, ast.Subscript) and ast.unparse(t.slice) == "'streaming'"
-            for t in n.targets
-        )
+        and any(isinstance(t, ast.Name) and t.id == "dataset_streaming" for t in n.targets)
     ]
-    for value in keyword_values + subscript_values:
-        assert isinstance(value, ast.Constant) and value.value is False, ast.unparse(value)
+    assert assigned == ["bool(hf_dataset and config.get('dataset_streaming'))"]
+    keyword_values = [
+        ast.unparse(n.value)
+        for n in ast.walk(_TREE)
+        if isinstance(n, ast.keyword) and n.arg == "streaming"
+    ]
+    assert keyword_values == ["dataset_streaming"]

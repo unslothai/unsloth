@@ -181,7 +181,11 @@ def _has_remaining_main_gguf(target_repo) -> bool:
     )
 
 
-def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, list[str]]:
+def _remove_empty_variant_dirs(
+    target_repos: list,
+    variant: str,
+    protected_revisions: frozenset[str] = frozenset(),
+) -> tuple[int, list[str]]:
     """remove empty variant folders and return their count plus non-concurrent failures."""
     # qualified keys own only their exact folder because token-only folders can be another build.
     qualified = (
@@ -205,6 +209,8 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
         except OSError:
             continue
         for snap in snap_dirs:
+            if snap.name in protected_revisions:
+                continue
             try:
                 subs = list(snap.iterdir())
             except OSError:
@@ -374,7 +380,7 @@ def _umbrella_variant_scope(target_repo, variant: str) -> tuple[frozenset[str], 
     )
     own: set[str] = set()
     protected: set[str] = set()
-    for candidate in model.variants:
+    for candidate in model.cache_variants:
         files = {f.path for f in candidate.files}
         if candidate.primary and gguf_variant_key(candidate.primary).lower() == variant.lower():
             own |= files if not sibling_active else {candidate.primary}
@@ -429,15 +435,19 @@ def _delete_gguf_variant_from_repos(
 
         companion_matches: list[tuple[Path, Optional[Path], str]] = []
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
+            from core.inference.engram_tables import engram_table_precision
             companion_matches = _repo_file_matches(
                 target_repo,
-                # no main GGUF remains, so its companions cannot be launched.
-                lambda name: _is_gguf_filename(name)
-                and (
-                    _is_mmproj_filename(name)
-                    or _is_reclaimable_drafter_path(name)
-                    or _is_imatrix_filename(name)
-                ),
+                # no main GGUF remains, so its companions and Engram tables cannot be launched.
+                lambda name: (
+                    _is_gguf_filename(name)
+                    and (
+                        _is_mmproj_filename(name)
+                        or _is_reclaimable_drafter_path(name)
+                        or _is_imatrix_filename(name)
+                    )
+                )
+                or engram_table_precision(name) is not None,
             )
             for snap, _blob, name in companion_matches:
                 try:
@@ -508,11 +518,18 @@ def _delete_gguf_variant_from_repos(
     if cleanup_variant is None:
         incomplete_result = gguf_variants.VariantIncompleteDeleteResult(deleted = 0, unresolved = False)
     else:
+        # A --ple download's partial standalone table: its hash is in the job's manifest only.
+        from core.inference.engram_tables import engram_table_precision
+        table_hashes = {
+            expected.sha256
+            for expected in (manifest.expected_files if manifest is not None else ())
+            if expected.sha256 and engram_table_precision(expected.path) and not sibling_active
+        }
         incomplete_result = gguf_variants.delete_variant_incomplete_blobs_result(
             repo_id,
             cleanup_variant,
             hf_token,
-            extra_hashes = frozenset(completed_hashes),
+            extra_hashes = frozenset(completed_hashes | table_hashes),
             companions = not sibling_active,
             root = root,
         )
@@ -577,8 +594,13 @@ def reclaim_replaced_gguf_variant(
     hf_token: Optional[str] = None,
     *,
     hub_cache: Optional[str | Path] = None,
+    protected_revisions: frozenset[str] = frozenset(),
 ) -> dict:
-    """Prune stale main-GGUF files for a variant after a replacement verified. Intentionally narrower than user-driven delete: it removes only same-variant main files whose local blob hash is not in *keep_main_hashes*, then unlinks their blobs only if no remaining snapshot references them. Shared companions and sibling variants are left intact."""
+    """Prune stale main-GGUF files for a variant after a replacement verified. Intentionally narrower than user-driven delete: it removes only same-variant main files whose local blob hash is not in *keep_main_hashes*, then unlinks their blobs only if no remaining snapshot references them. Shared companions and sibling variants are left intact.
+
+    A publication-protocol caller holds its lock throughout this call and passes
+    the published and in-flight commits as ``protected_revisions``.
+    """
     if not keep_main_hashes:
         logger.info(
             "Skipping stale GGUF reclaim for %s [%s]: current main hashes unresolved",
@@ -675,6 +697,14 @@ def reclaim_replaced_gguf_variant(
             if _main_key(match[0], main_keys) == variant_key
         ]
         for snap, blob, name in matches:
+            if repo_dir is None:
+                continue
+            try:
+                commit = snap.relative_to(repo_dir / "snapshots").parts[0]
+            except (ValueError, IndexError):
+                continue
+            if commit in protected_revisions:
+                continue
             # prune confirmed stale blobs only; non-symlink snapshot files lack identifiable hashes.
             blob_hash = (
                 _blob_hash_from_path(blob)
@@ -718,8 +748,12 @@ def reclaim_replaced_gguf_variant(
     removed_dirs = 0
     dir_failures: list[str] = []
     if target_repos:
-        removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
-        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+        removed_dirs, dir_failures = _remove_empty_variant_dirs(
+            target_repos, variant, protected_revisions
+        )
+        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(
+            target_repos, protected_revisions
+        )
         removed_dirs += removed_snap_dirs
         dir_failures.extend(snap_dir_failures)
         failures.extend(dir_failures)

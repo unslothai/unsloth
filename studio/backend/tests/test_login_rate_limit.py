@@ -201,9 +201,8 @@ class TestBucketKeyAndBlocking:
         assert len(auth_routes._LOGIN_BUCKETS) <= 10
 
     def test_ip_bucket_cap_bounds_without_disabling_throttling(self, env_no_proxy, monkeypatch):
-        """The per-IP dict is bounded, but saturating it must NOT disable
-        throttling: a new IP that keeps failing after the cap is hit is still
-        blocked (now via the shared overflow counter)."""
+        """A full per-IP dict must not stop throttling: new IPs are still blocked via the overflow
+        counter."""
         from routes import auth as auth_routes
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
@@ -218,8 +217,7 @@ class TestBucketKeyAndBlocking:
         assert auth_routes._login_blocked(victim) > 0
 
     def test_saturating_spray_cannot_reset_a_hot_ip_bucket(self, env_no_proxy, monkeypatch):
-        """Eviction must not pop a blocked IP's bucket under a spray of fresh IPs, or the attacker
-        resets it."""
+        """A fresh-IP spray must not evict a blocked IP's bucket, or the attacker resets it."""
         from routes import auth as auth_routes
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
@@ -239,9 +237,7 @@ class TestBucketKeyAndBlocking:
     def test_overflow_is_sharded_so_a_hot_ip_does_not_block_unrelated_ips(
         self, env_no_proxy, monkeypatch
     ):
-        """A saturating spray must not globally deny login: a hot overflow shard
-        throttles only the IPs that hash to it, not every new unbucketed client.
-        """
+        """A spray must not deny login globally: a hot overflow shard throttles only IPs hashing to it."""
         from routes import auth as auth_routes
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
@@ -266,9 +262,7 @@ class TestBucketKeyAndBlocking:
         assert auth_routes._login_blocked((victim_ip, "admin")) == 0
 
     def test_overflow_throttle_survives_capacity_freeing(self, env_no_proxy, monkeypatch):
-        """A source throttled via overflow must stay throttled even if a bucket
-        frees up before the window expires; otherwise a fresh bucket resets it.
-        """
+        """Overflow throttling persists when a bucket frees early; a fresh bucket must not reset it."""
         from routes import auth as auth_routes
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
@@ -308,9 +302,7 @@ class TestBucketKeyAndBlocking:
         assert all(len(shard) <= 8 for shard in auth_routes._LOGIN_IP_OVERFLOW)
 
     def test_overflow_eviction_does_not_inherit_count_onto_new_ip(self, env_no_proxy, monkeypatch):
-        """Evicting a hot entry to make room must not hand its failure count to the
-        new source; one attempt from an unrelated IP must not 429 it.
-        """
+        """Eviction must not hand a hot entry's failure count to a new IP; one attempt must not 429 it."""
         from routes import auth as auth_routes
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
@@ -333,9 +325,7 @@ class TestBucketKeyAndBlocking:
         assert auth_routes._login_blocked(new_ip) == 0
 
     def test_overflow_count_migrates_into_new_bucket(self, env_no_proxy, monkeypatch):
-        """Straddling the overflow -> bucket transition must not double the per-IP
-        limit: the overflow count carries into the freshly created bucket.
-        """
+        """Crossing overflow into a bucket must not double the limit: the overflow count carries over."""
         from routes import auth as auth_routes
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
@@ -356,8 +346,7 @@ class TestBucketKeyAndBlocking:
     def test_overflow_migration_is_bounded_not_one_entry_per_failure(
         self, env_no_proxy, monkeypatch
     ):
-        """Overflow migration allocates at most the per-IP threshold of entries, not one per
-        recorded failure."""
+        """Migration allocates at most the per-IP threshold of entries, not one per failure."""
         from routes import auth as auth_routes
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
@@ -380,9 +369,7 @@ class TestBucketKeyAndBlocking:
         assert auth_routes._login_blocked(attacker) > 0
 
     def test_successful_login_clears_overflow_throttle(self, env_no_proxy, monkeypatch):
-        """A successful login resets the IP's throttle, including overflow, so a
-        single later typo is not immediately blocked.
-        """
+        """A successful login resets the throttle, overflow included, so one later typo is not blocked."""
         from routes import auth as auth_routes
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)

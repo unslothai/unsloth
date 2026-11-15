@@ -19,7 +19,7 @@ import {
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
-import { FolderSearchIcon } from "@hugeicons/core-free-icons";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Ref } from "react";
 import type { TrainModelDeviceItem } from "./train-model-picker-view-model";

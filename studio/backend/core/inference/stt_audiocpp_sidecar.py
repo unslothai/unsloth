@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import subprocess
 import tempfile
 import threading
@@ -75,6 +76,12 @@ logger = get_logger(__name__)
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
 _DETAILS_PATH = "/v1/audio/transcriptions/details"
 
+
+def _transcribe_timeout(duration: Optional[float]) -> float:
+    """600 s, or twice the audio's length for anything past 5 minutes."""
+    return max(_TRANSCRIBE_TIMEOUT_SECONDS, 2.0 * (duration or 0))
+
+
 # Fixed chunking keeps the runtime off its Silero VAD, which Studio does not ship.
 QWEN3_ALIGNER = CompanionModel(
     f"{AUDIO_CPP_REPO}/Qwen3-ForcedAligner-0.6B-GGUF",
@@ -88,6 +95,42 @@ _TIMESTAMP_OPTIONS = {
     "audio_chunk_mode": "fixed",
     "qwen3_asr.preserve_punctuation": "true",
 }
+
+# MOSS fails outright at max_tokens (default 5120, ~14 min of speech); audio.cpp refuses prompt + max_tokens
+# past the 131,072 context (prompt = 12.5 audio tokens/s + a time marker every 5 s).
+_MOSS_FAMILY = "moss_transcribe_diarize"
+_MOSS_DEFAULT_MAX_TOKENS = 5120
+_MOSS_TOKENS_PER_SECOND = 12
+_MOSS_CONTEXT_TOKENS = 131_072
+_MOSS_PROMPT_TOKENS_PER_SECOND = 13.5
+_MOSS_PROMPT_OVERHEAD_TOKENS = 512
+
+
+def _moss_max_tokens(duration: Optional[float]) -> Optional[int]:
+    if not duration or duration <= 0:
+        return None
+    budget = max(_MOSS_DEFAULT_MAX_TOKENS, math.ceil(duration * _MOSS_TOKENS_PER_SECOND))
+    room = (
+        _MOSS_CONTEXT_TOKENS
+        - math.ceil(duration * _MOSS_PROMPT_TOKENS_PER_SECOND)
+        - _MOSS_PROMPT_OVERHEAD_TOKENS
+    )
+    budget = min(budget, room)
+    # None: the runtime default, or no room, where its own "exceeds context" error says why.
+    if budget <= 0 or budget == _MOSS_DEFAULT_MAX_TOKENS:
+        return None
+    return budget
+
+
+def _request_options(entry: AudioCppModel, aligned: bool, duration: Optional[float]) -> dict:
+    options = dict(_TIMESTAMP_OPTIONS) if aligned else {}
+    keys = entry.request_keys
+    if entry.family == _MOSS_FAMILY and (keys is None or "max_tokens" in keys):
+        max_tokens = _moss_max_tokens(duration)
+        if max_tokens is not None:
+            options["max_tokens"] = max_tokens
+    return options
+
 
 # model_specs/nemotron_asr.json "languages"; the prompt dictionary also keys en/es/fr/pt/no.
 _NEMOTRON_ASR_LOCALES = (
@@ -738,8 +781,7 @@ class AudioCppSttSidecar:
         if current is None:
             return False
         try:
-            # Row ids on both sides: a legacy key and its folder id name the same model,
-            # and hub ids match case-insensitively.
+            # Legacy keys and folder ids name one model; hub ids match case-insensitively.
             return current.casefold() == acm_row_id(expected).casefold()
         except Exception:  # noqa: BLE001 - an unresolvable name is not this model
             return False
@@ -879,7 +921,7 @@ class AudioCppSttSidecar:
         on_phase: Optional[Callable[[str], None]] = None,
     ) -> None:
         """A server already holding the aligner keeps it for untimestamped requests (no restart)."""
-        from core.inference.audio_device import audio_device_forces_cpu
+        from core.inference.audio_device import stt_device_forces_cpu
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -894,7 +936,7 @@ class AudioCppSttSidecar:
             force_cpu = (
                 self._forced_cpu
                 if device is None and self._server_alive()
-                else audio_device_forces_cpu(device)
+                else stt_device_forces_cpu(device)
             )
             if (
                 self._server_alive()
@@ -1039,7 +1081,8 @@ class AudioCppSttSidecar:
                     path,
                     sent,
                     cancel_event,
-                    dict(_TIMESTAMP_OPTIONS) if aligned else {},
+                    _request_options(entry, aligned, duration),
+                    timeout = _transcribe_timeout(duration),
                 )
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1078,6 +1121,8 @@ class AudioCppSttSidecar:
         lang: Optional[str],
         cancel_event: Optional[threading.Event],
         options: dict,
+        *,
+        timeout: float = _TRANSCRIBE_TIMEOUT_SECONDS,
     ) -> dict:
         server = self._server
         if server is None:
@@ -1092,7 +1137,7 @@ class AudioCppSttSidecar:
             return server.post_json(
                 _DETAILS_PATH,
                 request,
-                timeout = _TRANSCRIBE_TIMEOUT_SECONDS,
+                timeout = timeout,
                 cancel_event = cancel_event,
             )[1]
 

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 import type { ExternalReasoningCapabilities } from "../src/features/chat/provider-capabilities.ts";
@@ -16,9 +17,15 @@ const {
   useModelReasoningEffortStore,
   pinnedReasoningEffort,
 } = await import("../src/features/model-picker/components/model-selector/model-reasoning-effort.ts");
+const {
+  persistReasoningEnabled,
+  pinnedReasoningEnabled,
+  resolveReasoningEnabledOnLoad,
+} = await import("../src/features/model-picker/components/model-selector/reasoning-enabled-pin.ts");
 const { resolveExternalReasoningEffort } = await import("../src/features/chat/provider-capabilities.ts");
 
 const KEY = "unsloth_model_reasoning_effort";
+const ENABLED_KEY = "unsloth_model_reasoning_enabled";
 const MODEL = "external::review::reasoning-model";
 const THREAD = "review-thread";
 const CAPS: ExternalReasoningCapabilities = {
@@ -298,6 +305,163 @@ test("eject restores effort before a snapshotless chat captures its defaults", a
   assert.equal(runtime.threadScopedOverride("reasoningEffort"), "low");
   store.getState().clearCheckpoint();
   assert.equal(store.getState().reasoningEffort, "low");
+});
+
+test("thinking pins survive eject and outrank the family default on reload", () => {
+  storageData.clear();
+  persistReasoningEnabled("qwen-32b", false);
+  persistReasoningEnabled("qwen-9b", true);
+  assert.equal(storageData.get(`${ENABLED_KEY}::qwen-32b`), "false");
+  assert.equal(
+    resolveReasoningEnabledOnLoad({
+      reasoningAlwaysOn: false,
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      pinned: pinnedReasoningEnabled("qwen-32b"),
+      reloadingSameModel: false,
+      previousEnabled: true,
+      reasoningDefault: true,
+    }),
+    false,
+  );
+  assert.equal(
+    resolveReasoningEnabledOnLoad({
+      reasoningAlwaysOn: false,
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      pinned: pinnedReasoningEnabled("qwen-9b"),
+      reloadingSameModel: false,
+      previousEnabled: false,
+      reasoningDefault: false,
+    }),
+    true,
+  );
+  assert.equal(
+    resolveReasoningEnabledOnLoad({
+      reasoningAlwaysOn: true,
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      pinned: false,
+      reloadingSameModel: false,
+      previousEnabled: false,
+      reasoningDefault: true,
+    }),
+    true,
+  );
+  assert.equal(
+    resolveReasoningEnabledOnLoad({
+      reasoningAlwaysOn: false,
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      pinned: false,
+      reloadingSameModel: false,
+      previousEnabled: false,
+      reasoningDefault: true,
+    }),
+    true,
+  );
+  assert.equal(
+    resolveReasoningEnabledOnLoad({
+      reasoningAlwaysOn: false,
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      pinned: null,
+      reloadingSameModel: true,
+      previousEnabled: false,
+      reasoningDefault: true,
+    }),
+    false,
+  );
+  assert.equal(
+    resolveReasoningEnabledOnLoad({
+      reasoningAlwaysOn: false,
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      pinned: null,
+      reloadingSameModel: false,
+      previousEnabled: false,
+      reasoningDefault: true,
+    }),
+    true,
+  );
+});
+
+test("a same-model reload keeps the live value over a stale pin", () => {
+  for (const previousEnabled of [true, false]) {
+    assert.equal(
+      resolveReasoningEnabledOnLoad({
+        reasoningAlwaysOn: false,
+        supportsReasoning: true,
+        supportsReasoningOff: true,
+        pinned: !previousEnabled,
+        reloadingSameModel: true,
+        previousEnabled,
+        reasoningDefault: true,
+      }),
+      previousEnabled,
+    );
+  }
+});
+
+test("adopting a resident model at page start does not read the thinking pin", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/lib/apply-inference-status-to-store.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /const pinnedThinking = options\.adoptingExistingServerModel\s*\?\s*null\s*:\s*pinnedReasoningEnabled\(checkpointId\);/,
+  );
+});
+
+test("a load reads the thinking pin under the load path as well as the catalog id", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /pinned:\s*pinnedReasoningEnabled\(loadPath\)\s*\?\?\s*pinnedReasoningEnabled\(modelId\),/,
+  );
+});
+
+test("a reload of the resident load path counts as a same-model reload for thinking", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /reloadingSameModel:\s*reloadingSameModel \|\|\s*\(previousCheckpoint === loadPath &&/,
+  );
+});
+
+test("turning thinking off pins the loaded checkpoint; persist false does not", async () => {
+  const runtime = await boot("thinking-pin");
+  const store = runtime.useChatRuntimeStore;
+  store.getState().setReasoningEnabled(false);
+  assert.equal(pinnedReasoningEnabled(MODEL), false);
+  assert.equal(storageData.get(`${ENABLED_KEY}::${MODEL}`), "false");
+  store.getState().setReasoningEnabled(true, { persist: false });
+  assert.equal(pinnedReasoningEnabled(MODEL), false);
+  store.getState().setReasoningEnabled(true);
+  assert.equal(pinnedReasoningEnabled(MODEL), true);
+  store.getState().setReasoningEnabled(false);
+  store.getState().clearCheckpoint();
+  assert.equal(store.getState().reasoningEnabled, true);
+  assert.equal(pinnedReasoningEnabled(MODEL), false);
+  assert.equal(
+    resolveReasoningEnabledOnLoad({
+      reasoningAlwaysOn: false,
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      pinned: pinnedReasoningEnabled(MODEL),
+      reloadingSameModel: false,
+      previousEnabled: store.getState().reasoningEnabled,
+      reasoningDefault: true,
+    }),
+    false,
+  );
 });
 
 test("eject restores the active thread's effort without persisting the pin", async (t) => {

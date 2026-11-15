@@ -340,9 +340,8 @@ def _legacy_unsplit_pixel_values_by_grid(batch):
 
 
 def test_a_multi_image_grid_batch_keeps_its_images_with_their_samples():
-    """0.22.x-0.23.x splits pixel_values by grid row, so with two images on one sample the list
-    is indexed by image while prompt_ids is indexed by sample. shuffle_sequence_dict then takes
-    its length from prompt_ids and drops the tail of the list."""
+    """TRL 0.22.x-0.23.x splits pixel_values per grid row, so with two images on one sample
+    shuffle_sequence_dict, sized by prompt_ids, drops the tail of the image list."""
     import torch
 
     trl_utils = pytest.importorskip("trl.trainer.utils")
@@ -416,9 +415,8 @@ def test_a_grid_batch_trl_1_1_0_already_split_by_sample_is_left_alone():
 
 
 def test_a_legacy_grid_row_with_no_image_still_gets_its_neighbours_images_apart():
-    """num_images = [0, 2] over two samples makes the image count and the sample count agree
-    while the axes still differ, so a bare length comparison would leave the list alone and the
-    shuffle would hand both of the second sample's images to the first."""
+    """num_images [0, 2] over two samples matches the lengths but not the axes, so a bare length
+    check would skip regrouping and hand both images to the first sample."""
     import torch
 
     from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
@@ -486,9 +484,8 @@ def test_an_image_column_with_no_images_in_it_is_a_text_batch():
 
 
 def test_an_untruncated_token_type_ids_as_wide_as_prompt_plus_completion_is_dropped():
-    """max_prompt_length runs truncate_with_protected_tokens after the processor, which keeps the
-    image tokens but MOVES them. A processor copy whose width happens to equal prompt+completion
-    is still the untruncated one, so its marks sit at the wrong offsets."""
+    """truncate_with_protected_tokens runs after the processor and moves image tokens, so a
+    processor copy as wide as prompt plus completion is untruncated and its marks are wrong."""
     import torch
 
     processor_output, inputs, completion_ids = _grid_batch()

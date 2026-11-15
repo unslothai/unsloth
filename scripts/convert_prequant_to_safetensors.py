@@ -279,7 +279,11 @@ def convert(
     facts: list = []
     restore = _record_v1_facts(facts)
     try:
-        ckpt = dp._load_prequant_checkpoint(src, map_location = "cpu", mmap = True)
+        if str(src).lower().endswith(".safetensors"):
+            ckpt = dp._load_prequant_checkpoint(src, map_location = "cpu", mmap = True)
+        else:
+            # Bypasses Studio's nvfp4 pickle refusal: the only way a local nvfp4 .pt becomes .safetensors.
+            ckpt = dp._torch_load_prequant(src, map_location = "cpu", mmap = True)
     finally:
         restore()
     fmt = ckpt.get("format")

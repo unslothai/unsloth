@@ -261,19 +261,22 @@ def test_a_fits_one_card_uses_one_card_and_no_cfg_parallel(monkeypatch):
     d = decide(monkeypatch, host, _sizes(dit = 3900, te = 1600))
     assert d.plan is d.one_card and d.plan.offload_policy == dm.OFFLOAD_NONE
     assert d.plan.secondary_ordinal is None and d.plan.layer_split is None
-    assert d.cfg_parallel is not None and "automatic" in d.cfg_parallel
+    # Automatic now offers CFG-parallel on an idle card of the same model: declined here only because the fake
+    # pipeline has no denoiser module (UNSLOTH_DIFFUSION_CFG_PARALLEL_AUTO=0 restores the automatic decline)
+    assert d.cfg_parallel is not None and "no DiT denoiser" in d.cfg_parallel
     p = _placement(d)
     assert p["chosen"] == "one_card"
     assert p["summary"].startswith("placement: one card: everything resident on cuda:0")
     kinds = {r["kind"]: r["reason"] for r in p["rejected"]}
     assert kinds["companion_split"].startswith("not needed")
-    assert "automatic" in kinds["cfg_parallel"]
+    # Automatic now borrows an idle card of the same model for CFG-parallel (every guided model that fits ran
+    # 1.46-1.79x faster on 2x T4); the fake pipeline declines only because it has no denoiser module
+    assert "no DiT denoiser" in kinds["cfg_parallel"]
     assert set(host.mem_get_info_calls) <= {0}
 
 
 def test_a_explicit_selection_of_a_model_that_fits_still_offers_cfg_parallel(monkeypatch):
-    # The user picked both cards: the one-card plan stays, CFG-parallel is the user's lever (declined here only
-    # because the fake pipeline has no denoiser module).
+    # Explicit picks keep one-card; CFG-parallel is only skipped as the fake has no denoiser.
     host = Host([Card(0, T4, 300), Card(1, T4, 300)])
     d = decide(monkeypatch, host, _sizes(dit = 3900, te = 1600), gpu_ids = [0, 1])
     assert d.plan is d.one_card and not d.selection.automatic
@@ -288,7 +291,9 @@ def test_b_companion_split_puts_the_text_encoder_on_the_second_card(monkeypatch)
     assert d.plan.offload_policy == dm.OFFLOAD_NONE and d.plan.secondary_ordinal == 1
     assert "text_encoder" in d.plan.secondary_components
     assert d.plan.layer_split is None
-    assert d.cfg_parallel is not None and "automatic" in d.cfg_parallel
+    # Automatic now borrows an idle card of the same model for CFG-parallel (every guided model that fits ran
+    # 1.46-1.79x faster on 2x T4); the fake pipeline declines only because it has no denoiser module
+    assert d.cfg_parallel is not None and "no DiT denoiser" in d.cfg_parallel
     p = _placement(d)
     assert p["chosen"] == "companion_split"
     assert "text_encoder" in p["summary"] and "on cuda:1" in p["summary"]
@@ -424,10 +429,9 @@ def test_video_wan5b_on_two_t4s(monkeypatch):
     assert d.plan.offload_policy == dm.OFFLOAD_NONE
 
 
-# A U-Net family (SDXL): the loaded-size reader tags ``unet`` 'other', so the post-load refinement finds no denoiser
-# to keep on the primary and leaves the one-card plan. Kept that way on purpose: with the U-Net counted as the
-# denoiser, the pre-compile layer split preview of an SDXL load predicts a split that the whole-compiled U-Net then
-# refuses, and the compile is set up for a resident denoiser under model offload (Kaggle 2x T4 run).
+# Kept on purpose: SDXL's U-Net is tagged 'other', so refinement keeps the one-card plan; counting
+# it as denoiser makes the pre-compile split preview predict a split the whole-compiled U-Net
+# refuses, and the compile is set up for a resident denoiser under model offload (Kaggle 2x T4).
 def test_unet_family_keeps_todays_refinement(monkeypatch):
     card = dict(total_mib = 12288, used_mib = 300, cap = (8, 6), name = "RTX 3060")
     host = Host([Card(0, **card), Card(1, **card)])
@@ -501,8 +505,7 @@ def test_the_apu_pool_keeps_the_uncapped_reserve(monkeypatch):
     assert dm._safe_device_budget_mib(memory) == 31 * GIB - int(96 * GIB * 0.10)
 
 
-# Review follow-ups: the decision must not overwrite the component map, and forced splits of a model one card holds
-# must report their resident fallback as one card.
+# Decision must not overwrite the component map; a fitting forced split reports one card.
 def test_decision_keeps_the_companion_component_map(monkeypatch):
     host = Host([Card(0, T4, 300), Card(1, T4, 300)])
     d = decide(monkeypatch, host, _sizes(dit = 7400, te = 7600))
@@ -579,18 +582,22 @@ def test_layer_split_decline_reports_the_encode_activation_it_charged():
     assert "5555 MiB of activations" in reason
 
 
-# Kaggle 2x T4 Z-Image-Turbo fp16: the split was priced with the flat estimate and declined by ~1 GB.
+# Z-Image-Turbo fp16 on two cards: a split priced with the flat estimate declines when each card is held to 85% of
+# its safe budget; with the primary at the one-card budget it fits, every card within its limit.
 _ZIMAGE_T4 = dict(dit = 11739, te = 7672, vae = 211)
 _ZIMAGE_FLAT = 6963
 
 
-def test_zimage_on_two_t4s_flat_estimate_declines_the_layer_split(monkeypatch):
+def test_zimage_on_two_t4s_flat_estimate_fits_the_layer_split_at_the_one_card_budget(monkeypatch):
     host = Host([Card(0, T4, 300), Card(1, T4, 300)])
-    d = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT)
-    assert d.plan.layer_split is None and d.plan.offload_policy != dm.OFFLOAD_NONE
-    layer = [r["reason"] for r in _placement(d)["rejected"] if r["kind"] == "layer_split"]
-    assert layer and "11931 MiB of denoiser and VAE weights" in layer[0]
-    assert "6963 MiB of activations" in layer[0] and "short by about" in layer[0]
+    d = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT, place = False)
+    split = d.plan.layer_split
+    assert split is not None and split.cards == (0, 1)
+    budget = int(d.one_card.estimates["safe_device_budget_mib"])
+    for ordinal, required in split.card_required_mib:
+        assert required <= dict(split.card_limit_mib)[ordinal] <= budget
+    # the primary still carries the flat activation figure beside its weights
+    assert dict(split.card_required_mib)[0] >= dict(split.card_weights_mib)[0] + _ZIMAGE_FLAT
 
 
 def test_zimage_on_two_t4s_layer_split_fits_with_the_measured_activations(monkeypatch):
@@ -629,4 +636,62 @@ def test_a_split_priced_with_the_measured_row_is_a_calibrated_placement(monkeypa
     assert "calibrated_split_headroom_mib" in split.one_card.estimates
     assert not plan_is_calibrated(split.one_card)
     flat = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT)
-    assert flat.plan.layer_split is None and not plan_is_calibrated(flat.plan)
+    # a split priced with the flat figure is not a calibrated placement
+    assert not plan_is_calibrated(flat.plan)
+
+
+# Wan2.2-TI2V-5B fp16 with a forced split on two cards: holding the split's primary to 85% of its safe budget left
+# no room for a block beside the stems, the VAE, the overhead and the clip's headroom, though a one-card resident
+# plan is priced at the full budget.
+_WAN5B_T4 = dict(dit = 9582, te = 10836, vae = 1631)
+_WAN5B_BLOCKS = {"transformer": lsp.DenoiserLayout(192, (313,) * 30)}
+_WAN5B_HEADROOM = 7839  # estimate_video_runtime_mib at the family default 1280x704, 121 frames
+_WAN5B_USED = (554, 732)  # nvidia-smi used on each card once torch holds its context
+
+
+def _wan5b_forced_split(monkeypatch):
+    monkeypatch.setenv(lsp.LAYER_SPLIT_ENV, "force")
+    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    return decide(
+        monkeypatch,
+        host,
+        _sizes(**_WAN5B_T4),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        gpu_ids = [0, 1],
+        place = False,
+    )
+
+
+def test_wan5b_forced_split_on_two_t4s_prices_the_primary_with_the_one_card_budget(monkeypatch):
+    d = _wan5b_forced_split(monkeypatch)
+    assert d.one_card.offload_policy != dm.OFFLOAD_NONE
+    split = d.plan.layer_split
+    assert split is not None and split.cards == (0, 1), d.status["layer_split"]
+    budget = int(d.one_card.estimates["safe_device_budget_mib"])
+    limits = dict(split.card_limit_mib)
+    required = dict(split.card_required_mib)
+    # the primary is held to the budget a one-card resident plan gets there, never more
+    assert limits[0] == budget and required[0] <= budget
+    # the secondary keeps 85% of its safe budget
+    assert limits[1] == mg.secondary_resident_limit_mib(1, "auto") and required[1] <= limits[1]
+    # expected cut: 3 blocks beside the stems and the VAE, 27 on cuda:1
+    assert [(r.start, r.stop, r.card) for r in split.ranges] == [(0, 3, 0), (3, 30, 1)]
+    weights = dict(split.card_weights_mib)
+    assert required[0] >= weights[0] + _WAN5B_HEADROOM
+
+
+def test_layer_split_primary_never_exceeds_the_one_card_budget(monkeypatch):
+    # a primary already carrying a model too large for its budget is still refused: nothing above the budget is lent
+    monkeypatch.setenv(lsp.LAYER_SPLIT_ENV, "force")
+    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    d = decide(
+        monkeypatch,
+        host,
+        _sizes(dit = 9582, te = 10836, vae = 6000),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        gpu_ids = [0, 1],
+        place = False,
+    )
+    assert d.plan.layer_split is None

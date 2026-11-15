@@ -99,8 +99,7 @@ def test_binary_scan_reads_a_shared_ggml_beside_the_binary(tmp_path):
     ],
 )
 def test_inert_off_linux_below_sm80_and_unknown_card(monkeypatch, tmp_path, platform, cc):
-    """Windows, macOS, a T4 (sm75) and a card whose capability the build did not report (AMD, Vulkan, CPU):
-    no install, no env, no status."""
+    """Windows, macOS, T4 (sm75) and unreported-capability cards get no install, env or status."""
     monkeypatch.setattr(cd, "ensure_library", _no_install)
     plan = cd.plan_cudnn_attention(
         _binary(tmp_path, cudnn = True), cc, platform = platform, root = tmp_path

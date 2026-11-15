@@ -12,7 +12,7 @@ import {
   putModelOverride,
 } from "@/features/model-picker/api/model-overrides";
 import { forgetPerModelConfigsForOverrideKeys } from "@/features/model-picker/model-config/saved-run-settings";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
@@ -256,7 +256,7 @@ export function SavedModelSettingsPanel(): ReactElement {
                   {forgetting.has(modelId) ? (
                     <Spinner label="Forgetting" />
                   ) : (
-                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+                    <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} />
                   )}
                 </Button>
               </li>

@@ -12,9 +12,8 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# These tests construct InferenceBackend, pulling the full stack. CI may lack
-# unsloth/unsloth_zoo (ImportError) or have a broken CUDA/bitsandbytes setup
-# (RuntimeError); skip at module level so collection is not aborted (exit 2).
+# Full-stack tests: CI may lack unsloth/unsloth_zoo (ImportError) or have broken CUDA/bitsandbytes
+# (RuntimeError), so skip at module level rather than abort collection (exit 2).
 try:
     from core.inference import inference as inf_mod  # noqa: E402
     from core.inference.inference import InferenceBackend  # noqa: E402
@@ -146,8 +145,7 @@ def test_turn_end_eos_refresh_resolves_marker_id_on_original_not_remapped(monkey
 
 
 class _FakeProcessor:
-    """A ProcessorMixin-like container: carries the chat_template itself and
-    wraps the real text tokenizer as ``.tokenizer`` (the vision layout)."""
+    """Vision processor stand-in: holds chat_template and wraps the tokenizer as .tokenizer."""
 
     def __init__(self, chat_template, tokenizer):
         self.chat_template = chat_template
@@ -155,9 +153,8 @@ class _FakeProcessor:
 
 
 def test_resolve_chat_eos_reads_vision_processor_template():
-    # Vision model: the chat_template lives on the processor while the inner tokenizer
-    # ships none. _resolve_chat_eos must read the marker from the processor but resolve
-    # its id on the inner tokenizer, and repair generation_config.
+    # Vision model: chat_template is on the processor, not the inner tokenizer; _resolve_chat_eos
+    # reads it there, resolves the id on the inner tokenizer, and repairs generation_config.
     from types import SimpleNamespace
 
     inner_tok = _FakeTokenizer(1, chat_template = "", token_ids = {"<end_of_turn>": 107})

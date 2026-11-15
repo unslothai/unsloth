@@ -195,8 +195,7 @@ async def begin_request(owner: str) -> None:
 
 
 def end_request(owner: str, *, counted: bool = True) -> None:
-    """Count a generation request out. ``counted`` False drops it without stamping
-    activity, for a request rejected before it ever reached the backend."""
+    """counted=False drops a request rejected before the backend, without stamping activity."""
     _TRACKERS[owner].note_end(counted = counted)
 
 

@@ -19,9 +19,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Refresh01Icon,
-  Delete02Icon,
   Download01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -143,7 +143,7 @@ export function CardDeleteButton({
           className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-rose-500/10 hover:text-rose-600 focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-rose-500/15 dark:hover:text-rose-400"
         >
           <HugeiconsIcon
-            icon={Delete02Icon}
+            icon={TrashIcon}
             strokeWidth={1.75}
             className="size-4"
           />

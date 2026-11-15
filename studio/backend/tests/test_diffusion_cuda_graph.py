@@ -798,6 +798,164 @@ def test_graph_eligible_refuses_under_the_kill_switch(stub_torch, monkeypatch):
     assert reason == f"disabled by {cg.CUDA_GRAPH_DISABLE_ENV}"
 
 
+class _Scale:
+    def __init__(self, n):
+        self.n = n
+
+    def numel(self):
+        return self.n
+
+
+# Named like torchao's classes: the check matches by class name.
+Float8Tensor = type("Float8Tensor", (), {})
+Int8Tensor = type("Int8Tensor", (), {})
+LinearActivationQuantizedTensor = type("LinearActivationQuantizedTensor", (), {})
+AffineQuantizedTensor = type("AffineQuantizedTensor", (), {})
+Float8AQTTensorImpl = type("Float8AQTTensorImpl", (), {})
+
+
+def _fp8_weight(*, rows = 3072, dynamic = True):
+    w = Float8Tensor()
+    w.scale = _Scale(rows)
+    w.act_quant_kwargs = types.SimpleNamespace(hp_value_lb = 1e-12) if dynamic else None
+    return w
+
+
+def _legacy_fp8_weight(rows = 3072):
+    impl = Float8AQTTensorImpl()
+    impl.scale = _Scale(rows)
+    inner = AffineQuantizedTensor()
+    inner.tensor_impl = impl
+    w = LinearActivationQuantizedTensor()
+    w.original_weight_tensor = inner
+    return w
+
+
+class _QuantDiT(_FakeDiT):
+    def __init__(self, *weights):
+        super().__init__()
+        self.weights = list(weights)
+
+    def parameters(self):
+        return iter(self.weights)
+
+
+def _hazard_torch(
+    stub_torch,
+    monkeypatch,
+    *,
+    version = "2.10.0+cu130",
+    cap = (8, 9),
+    hip = None,
+):
+    stub_torch.__version__ = version
+    stub_torch.version = types.SimpleNamespace(hip = hip, cuda = "13.0")
+    stub_torch.cuda.get_device_capability = lambda device = None: cap
+    monkeypatch.setattr(cg.sys, "platform", "linux")
+
+
+def test_graph_eligible_refuses_row_wise_fp8_on_sm89_under_torch_without_the_streamk_fix(
+    stub_torch, monkeypatch
+):
+    _hazard_torch(stub_torch, monkeypatch)
+    ok, reason = _eligible(
+        monkeypatch, pipe = types.SimpleNamespace(transformer = _QuantDiT(_fp8_weight()))
+    )
+    assert ok is False
+    assert "sm_89" in reason and "torch 2.10" in reason and "pytorch/pytorch#177573" in reason
+    legacy = types.SimpleNamespace(transformer = _QuantDiT(_legacy_fp8_weight()))
+    assert _eligible(monkeypatch, pipe = legacy)[0] is False
+
+
+@pytest.mark.parametrize(
+    "torch_kw, weights",
+    [
+        ({"version": "2.12.0+cu130"}, [_fp8_weight()]),
+        ({"version": "2.13.1"}, [_fp8_weight()]),
+        ({"cap": (9, 0)}, [_fp8_weight()]),
+        ({"cap": (12, 0)}, [_fp8_weight()]),
+        ({"cap": (8, 6)}, [_fp8_weight()]),
+        ({"hip": "7.1"}, [_fp8_weight()]),
+        ({}, [_fp8_weight(rows = 1)]),  # per-tensor scale: cuBLASLt, no stream-K
+        ({}, [_fp8_weight(dynamic = False)]),  # weight-only fp8: dequantised, no _scaled_mm
+        ({}, [Int8Tensor()]),
+        ({}, []),
+    ],
+)
+def test_graph_eligible_keeps_graphs_outside_the_streamk_fp8_hazard(
+    stub_torch, monkeypatch, torch_kw, weights
+):
+    _hazard_torch(stub_torch, monkeypatch, **torch_kw)
+    ok, reason = _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = _QuantDiT(*weights)))
+    assert (ok, reason) == (True, "eligible")
+
+
+def test_fp8_streamk_check_skips_windows_and_unreadable_torch(stub_torch, monkeypatch):
+    _hazard_torch(stub_torch, monkeypatch)
+    dit = _QuantDiT(_fp8_weight())
+    assert cg.fp8_rowwise_capture_refusal([dit]) is not None
+    monkeypatch.setattr(cg.sys, "platform", "win32")
+    assert cg.fp8_rowwise_capture_refusal([dit]) is None
+    monkeypatch.setattr(cg.sys, "platform", "linux")
+
+    def boom(device = None):
+        raise RuntimeError("no device")
+
+    stub_torch.cuda.get_device_capability = boom
+    assert cg.fp8_rowwise_capture_refusal([dit]) is None
+    stub_torch.cuda.get_device_capability = lambda device = None: (8, 9)
+    stub_torch.__version__ = "weird"
+    assert cg.fp8_rowwise_capture_refusal([dit]) is None
+
+
+def test_fp8_streamk_check_reads_the_onload_card(stub_torch, monkeypatch):
+    _hazard_torch(stub_torch, monkeypatch)
+    seen = []
+    stub_torch.cuda.get_device_capability = lambda device = None: seen.append(device) or (8, 9)
+    target = types.SimpleNamespace(
+        device = "cuda", backend = "cuda", dtype = "bfloat16", torch_device = "cuda:1"
+    )
+    pipe = types.SimpleNamespace(transformer = _QuantDiT(_fp8_weight()))
+    assert _eligible(monkeypatch, target = target, pipe = pipe)[0] is False
+    assert seen == ["cuda:1"]
+
+
+def test_fp8_streamk_check_reads_each_split_card(stub_torch, monkeypatch):
+    """An sm_89 split card under an sm_90 primary is refused too."""
+    _hazard_torch(stub_torch, monkeypatch)
+    caps = {"cuda:0": (9, 0), "cuda:1": (8, 9), "cuda:2": (8, 6)}
+    stub_torch.cuda.get_device_capability = lambda device = None: caps[str(device)]
+    target = types.SimpleNamespace(
+        device = "cuda", backend = "cuda", dtype = "bfloat16", torch_device = "cuda:0"
+    )
+
+    def on(card, w):
+        w.device = _Dev(f"cuda:{card}")
+        return w
+
+    ada = types.SimpleNamespace(transformer = _QuantDiT(on(0, _fp8_weight()), on(1, _fp8_weight())))
+    ok, reason = _eligible(monkeypatch, target = target, pipe = ada)
+    assert ok is False and "sm_89" in reason
+    ampere = types.SimpleNamespace(
+        transformer = _QuantDiT(on(0, _fp8_weight()), on(2, _fp8_weight()))
+    )
+    assert _eligible(monkeypatch, target = target, pipe = ampere) == (True, "eligible")
+    plain = Int8Tensor()
+    plain.device = _Dev("cuda:1")
+    mixed = types.SimpleNamespace(transformer = _QuantDiT(on(0, _fp8_weight()), plain))
+    assert _eligible(monkeypatch, target = target, pipe = mixed) == (True, "eligible")
+
+
+class _Dev:
+    type = "cuda"
+
+    def __init__(self, name):
+        self.name = name
+
+    def __str__(self):
+        return self.name
+
+
 def test_graph_eligible_needs_torch_cuda(stub_torch, monkeypatch):
     stub_torch.cuda.is_available = lambda: False
     assert _eligible(monkeypatch)[1] == "torch.cuda unavailable"

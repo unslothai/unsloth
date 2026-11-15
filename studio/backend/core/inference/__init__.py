@@ -22,6 +22,13 @@ from typing import TYPE_CHECKING
 # Same ROCm AOTriton opt-in as main.py, for entries that skip main.py; read at first SDPA dispatch, setdefault keeps explicit 0; else gfx1151 runs MATH
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
+# Same flash-attn switch as main.py, for entries that skip it.
+try:
+    from utils.rocm_flash_attn import default_triton_amd_env as _default_triton_amd_env
+    _default_triton_amd_env()
+except Exception:  # noqa: BLE001
+    pass
+
 __all__ = [
     "InferenceBackend",
     "InferenceOrchestrator",

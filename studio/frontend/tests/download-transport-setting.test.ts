@@ -139,7 +139,7 @@ test("the health reason shows only when Auto falls back to HTTPS", () => {
   // as a stray status line under the toggle.
   assert.match(
     ROW,
-    /const statusReason =\s*mode === "auto" && settings\?\.autoResolvesTo === "http"/,
+    /const statusReason =\s*!speedLimited &&\s*mode === "auto" && settings\?\.autoResolvesTo === "http"/,
   );
 });
 

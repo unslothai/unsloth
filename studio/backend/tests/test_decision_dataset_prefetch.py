@@ -1,8 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
+import subprocess
 import sys
+import textwrap
+import time
 from contextvars import ContextVar
+from pathlib import Path
 from queue import Queue
 from threading import Event, current_thread
 from types import ModuleType, SimpleNamespace
@@ -120,7 +125,7 @@ def fake_decision_runtime(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "fixture-token")
     monkeypatch.setattr(import_guards, "ensure_real_packages", lambda *_a: None)
     monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda *_a: "local-checkpoint")
-    model = SimpleNamespace()
+    model = SimpleNamespace(rows_problem = lambda *_a: None)
     unsloth = ModuleType("unsloth")
     unsloth.DecisionTrainer = object
     unsloth.FastDecisionModel = model
@@ -194,7 +199,7 @@ def test_raw_rows_overlap_checkpoint_and_model_load_but_preparation_waits(
 
     def build(rows, tok, loaded_model, validate):
         assert model_ready.is_set()
-        assert rows is train_rows and tok is tokenizer and loaded_model is model
+        assert rows == train_rows and tok is tokenizer and loaded_model is model
         assert seen.count("rows") == 1
         raise ReachedBuild
 
@@ -209,7 +214,139 @@ def test_raw_rows_overlap_checkpoint_and_model_load_but_preparation_waits(
         assert messages.index("dataset download must not replace model status") > messages.index(
             "Loading dataset..."
         )
-    assert messages[-1] == "Preparing decisions..."
+    assert messages[-1] == "Preparing decision rows..."
+
+
+def _decision_config(**overrides):
+    return {
+        "model_name": "example/decision",
+        "decision_layout": "clef",
+        "training_type": "Full Finetuning",
+        "random_seed": 7,
+        "gradient_checkpointing": "none",
+        **overrides,
+    }
+
+
+def test_unusable_local_rows_fail_before_the_model_is_touched(fake_decision_runtime, tmp_path):
+    model_api, worker = fake_decision_runtime
+    touched = []
+    dataset = tmp_path / "decisions.jsonl"
+    dataset.write_text('{"state": "only a state"}\n', encoding = "utf-8")
+    model_api.rows_problem = lambda rows, clef, validate: "row 1 needs state, questions and gold"
+    worker._load_embedding_hf_dataset = None
+    worker._download_decision_checkpoint = lambda *_a: touched.append("download")
+    model_api.from_pretrained = lambda *_a, **_kw: touched.append("load")
+
+    config = _decision_config(local_datasets = [str(dataset)], eval_steps = 0)
+    with pytest.raises(ValueError, match = "No usable decisions in the dataset .row 1 needs state"):
+        decision._run(Queue(), Queue(), config, "unused-output")
+    assert touched == []
+
+
+def test_unusable_hub_rows_end_a_model_download_in_progress(fake_decision_runtime, monkeypatch):
+    model_api, worker = fake_decision_runtime
+    downloading, release = Event(), Event()
+    loaded = []
+
+    def load_rows(*_a):
+        assert downloading.wait(3)
+        return [{"state": "only a state"}], None
+
+    def download(*_a):
+        downloading.set()
+        release.wait(3)
+
+    monkeypatch.setattr(decision, "_load_rows", load_rows)
+    model_api.rows_problem = lambda rows, clef, validate: "row 1 has no gold"
+    worker._download_decision_checkpoint = download
+    model_api.from_pretrained = lambda *_a, **_kw: loaded.append(release.is_set())
+    try:
+        with pytest.raises(ValueError, match = "row 1 has no gold"):
+            decision._run(Queue(), Queue(), _decision_config(), "unused-output")
+        assert not release.is_set() and loaded == []
+        assert decision._abandoned_downloads[-1].is_alive()
+    finally:
+        release.set()
+        while decision._abandoned_downloads:
+            decision._abandoned_downloads.pop().join(3)
+
+
+def test_an_abandoned_download_does_not_hold_the_worker_open(tmp_path):
+    script = textwrap.dedent(
+        """
+        import multiprocessing, threading, time
+        from concurrent.futures import ThreadPoolExecutor
+        from core.training import decision_trainer, worker
+
+        def download():
+            with ThreadPoolExecutor(2) as pool:
+                list(pool.map(time.sleep, [30] * 4))
+
+        thread = threading.Thread(target = download, daemon = True)
+        thread.start()
+        decision_trainer._abandoned_downloads.append(thread)
+        events = multiprocessing.get_context("spawn").Queue()
+        events.put({"type": "error", "error": "bad rows"})
+        # The in-process MLX adapter: a plain queue, or any call off the main thread, must return.
+        import queue
+        worker._end_abandoned_decision_download(queue.Queue())
+        caller = threading.Thread(target = worker._end_abandoned_decision_download, args = (events,))
+        caller.start()
+        caller.join()
+        print("host survived", flush = True)
+        worker._end_abandoned_decision_download(events)
+        """
+    )
+    backend = Path(__file__).resolve().parents[1]
+    started = time.monotonic()
+    # A file, not a pipe: the queue's resource tracker would hold a pipe open past the child.
+    log = tmp_path / "child.log"
+    with log.open("w") as out:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script], cwd = backend, stdout = out, stderr = subprocess.STDOUT
+        )
+        try:
+            returncode = proc.wait(timeout = 25)
+        finally:
+            proc.kill()
+    assert returncode == 0, log.read_text()[-2000:]
+    assert "host survived" in log.read_text()
+    assert time.monotonic() - started < 25
+
+
+def test_a_bad_jsonl_line_names_its_file_and_line(tmp_path):
+    good = json.dumps({"state": "fine"})
+    dataset = tmp_path / "decisions.jsonl"
+    dataset.write_text(f"{good}\n\n{good}\n{{broken\n", encoding = "utf-8")
+    with pytest.raises(ValueError, match = r"Invalid JSON at decisions\.jsonl:4: "):
+        decision._read_local_rows([str(dataset)], None, _no_stop)
+
+
+def test_an_empty_jsonl_shard_beside_real_rows_is_skipped(tmp_path):
+    (tmp_path / "a.jsonl").write_text(json.dumps({"state": "fine"}) + "\n", encoding = "utf-8")
+    (tmp_path / "b.jsonl").write_text("", encoding = "utf-8")
+    (tmp_path / "c.jsonl").write_text("\n", encoding = "utf-8")
+    rows = decision._read_local_rows([str(tmp_path)], None, _no_stop)
+    assert rows == [{"state": "fine"}]
+
+
+def test_a_bad_line_in_an_upload_names_the_file_as_it_was_uploaded(tmp_path):
+    dataset = tmp_path / f"{'a1' * 16}_decisions.jsonl"
+    dataset.write_text('{"state": "fine"}\n{broken\n', encoding = "utf-8")
+    with pytest.raises(ValueError, match = r"Invalid JSON at decisions\.jsonl:2: "):
+        decision._read_local_rows([str(dataset)], None, _no_stop)
+
+
+def test_a_bad_first_line_and_a_pretty_printed_file_report_the_real_line(tmp_path):
+    first = tmp_path / "first.jsonl"
+    first.write_text('{broken\n{"state": "fine"}\n', encoding = "utf-8")
+    pretty = tmp_path / "pretty.json"
+    pretty.write_text('[\n  {"state": "fine"},\n  {"state": }\n]\n', encoding = "utf-8")
+    with pytest.raises(ValueError, match = r"first\.jsonl:1: "):
+        decision._read_local_rows([str(first)], None, _no_stop)
+    with pytest.raises(ValueError, match = r"pretty\.json:3: "):
+        decision._read_local_rows([str(pretty)], None, _no_stop)
 
 
 def test_prefetch_keeps_strict_cached_splits_bounds_revision_and_token(monkeypatch):
@@ -289,3 +426,57 @@ def test_prefetch_strict_missing_snapshot_never_falls_back_to_hub(monkeypatch):
     with decision._DecisionRows(config, lambda: False, lambda _m: None, lambda _m: None) as pending:
         with pytest.raises(FileNotFoundError, match = "exact cached dataset split 'train'"):
             pending.result(_no_stop)
+
+
+def _frontend_regex(name):
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2] / "frontend/src/features/studio/preparation-progress.ts"
+    ).read_text(encoding = "utf-8")
+    pattern, flags = re.search(rf"const {name} =\s*/(.+)/(\w*);", source).groups()
+    return re.compile(pattern.replace("(?<", "(?P<"), re.I if "i" in flags else 0)
+
+
+def test_preparing_rows_reports_counted_dataset_progress(monkeypatch):
+    clock = iter(range(0, 10_000, 2))
+    monkeypatch.setattr(decision.time, "monotonic", lambda: next(clock))
+    messages, stops = [], []
+    rows = decision._ProgressRows(
+        [{"state": i} for i in range(5)],
+        "Preparing decision rows",
+        messages.append,
+        lambda: stops.append(1),
+    )
+
+    assert (
+        list(rows) == [{"state": i} for i in range(5)]
+        and len(rows) == 5
+        and rows[2] == {"state": 2}
+    )
+    assert len(stops) == 5
+    assert messages[0] == "Preparing decision rows 0% (0/5)"
+    assert messages[-1] == "Preparing decision rows 100% (5/5)"
+    counted, dataset = (
+        _frontend_regex("COUNTED_PREPARATION_RE"),
+        _frontend_regex("DATASET_PREPARATION_RE"),
+    )
+    for message in messages + ["Preparing evaluation rows 50% (1,000/2,000)"]:
+        groups = counted.match(message).groupdict()
+        assert dataset.search(groups["label"])
+        assert int(groups["current"].replace(",", "")) <= int(groups["total"].replace(",", ""))
+    assert dataset.search("Preparing decision rows...")
+    assert (
+        list(decision._ProgressRows([], "Preparing decision rows", messages.append, _no_stop)) == []
+    )
+
+
+def test_stop_while_preparing_rows_ends_the_read():
+    def stop():
+        raise decision._Stopped("Training cancelled")
+
+    with pytest.raises(decision._Stopped):
+        list(
+            decision._ProgressRows([{"state": 1}], "Preparing decision rows", lambda _m: None, stop)
+        )

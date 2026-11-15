@@ -163,7 +163,17 @@ def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list
         # Only when the root is itself a checkpoint, or the folders are the only runnable copies.
         if "config.json" in names:
             ignore.extend(f"{folder}/*" for folder in precision_variant_subfolders(names))
+    ignore.extend(diffusers_pickle_files(names))
     return ignore
+
+
+def diffusers_pickle_files(filenames: Iterable[str]) -> list[str]:
+    """For a diffusers pipeline repo (``model_index.json`` / ``modular_model_index.json`` at its root): the pickles a
+    safetensors copy makes redundant, as exact names (a component folder's .pt / .pth / .ckpt / .pkl, a root one beside
+    its same-stem .safetensors, a .bin beside the component's safetensors weights). A pickle that is the only copy
+    stays. Empty for every other repo (LLM, audio, datasets keep their own rules above)."""
+    from core.inference.diffusers_safetensors import pipeline_pickle_files
+    return pipeline_pickle_files(filenames)
 
 
 def sibling_matches_ignore(filename: str, ignore_patterns: Iterable[str]) -> bool:

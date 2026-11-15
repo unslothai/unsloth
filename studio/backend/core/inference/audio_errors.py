@@ -86,8 +86,7 @@ def sanitize_runtime_detail(text: str) -> str:
 
 
 def sanitize_runtime_tail(text: str, limit: int = 280) -> str:
-    """The last ``limit`` characters of a runtime log, redacted before the cut so a path or token
-    straddling it is never shown half-redacted."""
+    """Last limit chars of a runtime log, redacted before the cut so none is half-redacted."""
     cleaned = _redacted_line(text)
     if len(cleaned) > limit:
         cleaned = "..." + cleaned[-(limit - 3) :].split(" ", 1)[-1]

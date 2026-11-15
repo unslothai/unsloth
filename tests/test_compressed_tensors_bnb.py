@@ -13,6 +13,7 @@
 
 """Packed INT4/INT8 checkpoints load into bnb 4-bit; GPU tests match a bf16 decompress bit for bit."""
 
+import inspect
 import json
 import os
 import shutil
@@ -50,6 +51,14 @@ except Exception:
 from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
 
 HAS_CONVERTERS = _transformers_supports_weight_converters()
+
+
+def _update_conversions(quantizer, conversions, model):
+    # transformers 5.21+ passes the model to the hook.
+    from transformers.quantizers.base import HfQuantizer
+    if "model" in inspect.signature(HfQuantizer.update_weight_conversions).parameters:
+        return quantizer.update_weight_conversions(conversions, model)
+    return quantizer.update_weight_conversions(conversions)
 
 
 def _w4a16(**overrides):
@@ -477,10 +486,8 @@ def test_arm_declines_a_plan_the_installed_compressed_tensors_cannot_parse(monke
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
 def test_the_planner_pass_does_not_consume_the_plan():
-    """The device-map planner preprocesses a meta model built from the very config object the
-    load uses. The plan used to be taken off the config by the first pass, so on a multi-GPU
-    load the real quantizer found none, added no converters, and every packed expert was
-    reported missing and quantized from its random initialisation."""
+    """The device-map planner's pass must not consume the plan on the shared config; otherwise
+    multi-GPU loads add no converters and quantize packed experts from random init."""
     from transformers import LlamaConfig, LlamaForCausalLM
     from transformers.quantizers import AutoHfQuantizer
     from transformers.utils.quantization_config import BitsAndBytesConfig
@@ -514,7 +521,7 @@ def test_the_planner_pass_does_not_consume_the_plan():
     assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is plan
     second, model = preprocess()  # the real load
     assert second._unsloth_ct_config is not None
-    conversions = second.update_weight_conversions([])
+    conversions = _update_conversions(second, [], model)
     assert any(
         getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns
         for c in conversions
@@ -542,8 +549,8 @@ def test_armed_conversions_still_run_a_composed_subclass_hook(monkeypatch):
     marker = object()
 
     class MarkerBnb4BitHfQuantizer(Bnb4BitHfQuantizer):
-        def update_weight_conversions(self, weight_conversions):
-            return super().update_weight_conversions(weight_conversions) + [marker]
+        def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+            return super().update_weight_conversions(weight_conversions, *args, **kwargs) + [marker]
 
     monkeypatch.setitem(
         quantizers_auto.AUTO_QUANTIZER_MAPPING, "bitsandbytes_4bit", MarkerBnb4BitHfQuantizer
@@ -574,7 +581,7 @@ def test_armed_conversions_still_run_a_composed_subclass_hook(monkeypatch):
         model, dtype = torch.bfloat16, device_map = None, checkpoint_files = []
     )
     assert quantizer._unsloth_ct_config is not None
-    conversions = quantizer.update_weight_conversions([])
+    conversions = _update_conversions(quantizer, [], model)
     assert marker in conversions
     assert any(
         getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns
@@ -879,10 +886,8 @@ def test_classification_load_under_fast_inference_still_requantizes():
 
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_wrapped_many_to_many_op_still_passes_the_converter_type_check():
-    """transformers' WeightConverter allows a many-to-many mapping only when `operations`
-    holds an instance of its internal Ernie ops. The adapter that feeds such an op its
-    original source contract must remain an instance of the op's class, or building the
-    replacement converter raises before any weight loads."""
+    """transformers WeightConverter allows many-to-many only when operations holds an Ernie op
+    instance, so the adapter feeding it must stay that class or building the converter raises."""
     from transformers.core_model_loading import ErnieFuseAndSplitTextVisionExperts, WeightConverter
     from unsloth.models.compressed_tensors_bnb import _WithOriginalSources, _with_original_sources
 
@@ -911,9 +916,8 @@ def test_a_pickled_shard_is_refused_rather_than_read_in_the_model_dtype():
 
 
 def test_load_only_converters_are_dropped_before_save():
-    """transformers reverses every converter on model._weight_conversions in save_pretrained;
-    the decompression converters must not be there, or a bitsandbytes model is saved under
-    the packed names."""
+    """transformers reverses every converter in model._weight_conversions on save_pretrained, so
+    decompression converters must be dropped or the model saves under the packed names."""
     from unsloth.models.compressed_tensors_bnb import (
         _DecompressPackedWeights,
         drop_load_only_conversions,

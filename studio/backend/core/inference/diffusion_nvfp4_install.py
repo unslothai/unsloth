@@ -9,25 +9,70 @@ import ast
 import contextlib
 import importlib
 import os
+import re
 import shutil
 import subprocess
 import weakref
 import sys
 import tempfile
 import threading
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 from .rocm_bf16 import is_rocm_torch
 
 # auto (default) / 1 installs flashinfer when an NVFP4 load needs it; 0 never installs.
 FLASHINFER_INSTALL_ENV = "UNSLOTH_NVFP4_FLASHINFER_INSTALL"
 
-# The version the dispatch allowlist and the op fakes were read against. Exact, never a floor.
-FLASHINFER_VERSION = "0.6.6"
 FLASHINFER_PACKAGE = "flashinfer-python"
 FLASHINFER_JIT_CACHE_PACKAGE = "flashinfer-jit-cache"
 FLASHINFER_CUBIN_PACKAGE = "flashinfer-cubin"
 FLASHINFER_JIT_CACHE_INDEX = "https://flashinfer.ai/whl/{tag}"
-FLASHINFER_JIT_CACHE_CUDA = ((12, 8), (12, 9), (13, 0))
+
+
+@dataclass(frozen = True)
+class FlashinferRelease:
+    """One installable flashinfer: exact version, the CUDA tags with a prebuilt jit-cache, and its packaging."""
+
+    version: str
+    jit_cache_cuda: tuple[tuple[int, int], ...]
+    # 0.7+: ``flashinfer-jit-cache`` is a shim; the kernels ship per arch as ``flashinfer-jit-cache-<arch>``.
+    split_providers: bool
+    # Dependencies it needs at least at these versions; one already installed below is pinned, so skip the release.
+    dependency_floors: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    # Hold a fresh nvidia-cutlass-dsl to the hub FA4 range; only a release that accepts it can.
+    holds_cutlass_dsl: bool = False
+    size_hint: str = ""
+
+
+# Newest first; an install takes the first that fits this host (see ``select_release``). Exact, never floors. The
+# dispatch allowlist and the op fakes were read against each one. No flashinfer-cubin: it carries the trtllm-gen
+# cubins, and NVFP4 here runs only the cutlass GEMM and the fp4 quantiser, both in the jit-cache.
+FLASHINFER_RELEASES = (
+    FlashinferRelease(
+        "0.7.3",
+        ((12, 9), (13, 0), (13, 4)),
+        split_providers = True,
+        dependency_floors = (
+            ("nvidia-cutlass-dsl", (4, 8)),
+            ("apache-tvm-ffi", (0, 1, 11)),
+            ("nvidia-cudnn-frontend", (1, 32)),
+        ),
+        size_hint = "about 350 MB",
+    ),
+    # No cu128 jit-cache for 0.7.x, and the only one that keeps nvidia-cutlass-dsl in the hub FA4 range.
+    FlashinferRelease(
+        "0.6.6",
+        ((12, 8), (12, 9), (13, 0)),
+        split_providers = False,
+        holds_cutlass_dsl = True,
+        size_hint = "about 1.5 GB",
+    ),
+)
+FLASHINFER_VERSION = FLASHINFER_RELEASES[0].version
+FLASHINFER_VERSIONS = tuple(release.version for release in FLASHINFER_RELEASES)
+FLASHINFER_JIT_CACHE_CUDA = FLASHINFER_RELEASES[0].jit_cache_cuda
+# Compute capability -> the split jit-cache provider that holds its NVFP4 kernels (fp4_quantization_*, fp4_gemm_*).
+FLASHINFER_JIT_CACHE_ARCH = {(10, 0): "sm100a", (10, 3): "sm103a", (12, 0): "sm120f"}
 
 # Short-timeout HEAD: a host with no route refuses in seconds, not minutes of pip retries.
 _PYPI_PROBE_URL = "https://pypi.org/simple/flashinfer-python/"
@@ -213,7 +258,7 @@ def _await_inflight_install(wait: bool = True) -> bool:
     if "flashinfer" in sys.modules:
         return True
     installed = _dist_version(FLASHINFER_PACKAGE)
-    if installed is None or installed.split("+", 1)[0] != FLASHINFER_VERSION:
+    if installed is None or installed.split("+", 1)[0] not in FLASHINFER_VERSIONS:
         return True
     with _env_install_lock() if wait else _env_install_lock(0) as held:
         return held
@@ -291,21 +336,103 @@ def _parse_cuda(version: Optional[str]) -> Optional[tuple[int, int]]:
         return None
 
 
-def jit_cache_tag(cuda_version: Optional[str]) -> Optional[str]:
+def jit_cache_tag(
+    cuda_version: Optional[str], available: tuple[tuple[int, int], ...] = FLASHINFER_JIT_CACHE_CUDA
+) -> Optional[str]:
     """The ``cuXYZ`` jit-cache index: same major, newest minor <= running (minor compat only), or None."""
     running = _parse_cuda(cuda_version)
     if running is None:
         return None
-    usable = [c for c in FLASHINFER_JIT_CACHE_CUDA if c[0] == running[0] and c[1] <= running[1]]
+    usable = [c for c in available if c[0] == running[0] and c[1] <= running[1]]
     if not usable:
         return None
     major, minor = max(usable)
     return f"cu{major}{minor}"
 
 
-def _jit_cache_version(tag: Optional[str]) -> Optional[str]:
+def _jit_cache_version(tag: Optional[str], version: str = FLASHINFER_VERSION) -> Optional[str]:
     """The exact ``flashinfer-jit-cache`` version for a ``cuXYZ`` tag, local segment included."""
-    return None if tag is None else f"{FLASHINFER_VERSION}+{tag}"
+    return None if tag is None else f"{version}+{tag}"
+
+
+def jit_cache_provider(release: FlashinferRelease, capability: Any) -> Optional[str]:
+    """The ``flashinfer-jit-cache-<arch>`` distribution a split release needs on ``capability``, else None."""
+    if not release.split_providers:
+        return None
+    try:
+        arch = FLASHINFER_JIT_CACHE_ARCH.get(tuple(int(c) for c in capability))
+    except Exception:  # noqa: BLE001
+        return None
+    return f"{FLASHINFER_JIT_CACHE_PACKAGE}-{arch}" if arch else None
+
+
+def _nvfp4_capabilities(device: Any) -> list[tuple[int, int]]:
+    """``device``'s capability first, then every other visible card's that runs flashinfer NVFP4: a split release
+    installs each one's provider up front, since a later load on another arch finds flashinfer already importable."""
+    from .diffusion_nvfp4_ops import NVFP4_FLASHINFER_CAPS, _device_capability
+
+    caps: list[tuple[int, int]] = []
+    first = _device_capability(device)
+    if first is not None:
+        caps.append(tuple(first))
+    try:
+        import torch
+        count = int(torch.cuda.device_count())
+    except Exception:  # noqa: BLE001 - no count means only ``device``
+        count = 0
+    for index in range(count):
+        cap = _device_capability(index)
+        if cap is not None and tuple(cap) in NVFP4_FLASHINFER_CAPS and tuple(cap) not in caps:
+            caps.append(tuple(cap))
+    return caps
+
+
+def _version_tuple(version: Optional[str]) -> tuple[int, ...]:
+    """Leading release numbers: ``4.6.2a0`` -> ``(4, 6, 2)``, ``0.1.15.post2`` -> ``(0, 1, 15)``."""
+    out = []
+    for part in str(version or "").split("+", 1)[0].split("."):
+        match = re.match(r"\d+", part)
+        if match is None:
+            break
+        out.append(int(match.group(0)))
+        if match.end() != len(part):
+            break
+    return tuple(out)
+
+
+def _held_below_floor(release: FlashinferRelease, dists: dict[str, str]) -> Optional[str]:
+    """The first installed dependency below ``release``'s floor (the constraints file pins it), else None."""
+    for name, floor in release.dependency_floors:
+        have = dists.get(name)
+        if have is not None and _version_tuple(have) < floor:
+            return f"{name}>={'.'.join(map(str, floor))} (installed {have})"
+    return None
+
+
+def select_release(
+    cuda_version: Optional[str], capability: Any, dists: dict[str, str]
+) -> tuple[Optional[FlashinferRelease], Optional[str], str]:
+    """``(release, jit-cache tag, note)``: the newest release with a prebuilt jit-cache for this CUDA and capability
+    whose dependency floors fit ``dists``; else the newest that fits at all, with no tag (JIT); else ``(None, None,
+    why)``. Installed packages are never moved, so a held dependency rules a release out rather than being raised."""
+    fitting: list[FlashinferRelease] = []
+    held: list[str] = []
+    for release in FLASHINFER_RELEASES:
+        below = _held_below_floor(release, dists)
+        if below is not None:
+            held.append(f"flashinfer {release.version} needs {below}")
+            continue
+        fitting.append(release)
+    for release in fitting:
+        tag = jit_cache_tag(cuda_version, release.jit_cache_cuda)
+        if tag is None:
+            continue
+        if release.split_providers and jit_cache_provider(release, capability) is None:
+            continue
+        return release, tag, "; ".join(held)
+    if fitting:
+        return fitting[0], None, "; ".join(held)
+    return None, None, "; ".join(held)
 
 
 def _same_version(a: Optional[str], b: Optional[str]) -> bool:
@@ -733,22 +860,45 @@ def _run(
     return getattr(result, "returncode", 1) == 0, output.strip()[-2000:]
 
 
-def _verify_child(run: Callable[..., Any]) -> tuple[bool, str]:
-    """``import flashinfer`` in a fresh interpreter, which is where the next process will do it."""
-    code = (
-        "import flashinfer, sys; "
-        "sys.stdout.write(str(getattr(flashinfer, '__version__', 'unknown')))"
-    )
-    ok, output = _run(run, [sys.executable, "-c", code], _VERIFY_TIMEOUT_S)
+_VERIFY_CODE = (
+    "import flashinfer, sys\n"
+    "names = ''\n"
+    "try:\n"
+    "    from flashinfer.jit import env as _env\n"
+    "    names = ','.join(sorted(str(p.distribution) for p in getattr(_env, 'FLASHINFER_AOT_PROVIDERS', ())))\n"
+    "except Exception:\n"
+    "    pass\n"
+    "sys.stdout.write('providers=' + names + '\\n' + str(getattr(flashinfer, '__version__', 'unknown')))\n"
+)
+
+
+def _verify_child(
+    run: Callable[..., Any],
+    version: str = FLASHINFER_VERSION,
+    providers: tuple[str, ...] = (),
+) -> tuple[bool, str]:
+    """``import flashinfer`` in a fresh interpreter, which is where the next process will do it. A split release
+    must also list each of ``providers``: flashinfer ignores a mismatched one, and its kernels would then JIT."""
+    ok, output = _run(run, [sys.executable, "-c", _VERIFY_CODE], _VERIFY_TIMEOUT_S)
     if not ok:
         return False, f"import flashinfer failed after the install: {_quoted(output, 300)}"
-    version = output.strip().splitlines()[-1] if output.strip() else ""
-    if version != FLASHINFER_VERSION:
+    lines = output.strip().splitlines() if output.strip() else []
+    got = lines[-1].strip() if lines else ""
+    if got != version:
         return (
             False,
-            f"flashinfer imported as {version or 'unknown'}, expected {FLASHINFER_VERSION}",
+            f"flashinfer imported as {got or 'unknown'}, expected {version}",
         )
-    return True, version
+    listed = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("providers=")), "")
+    loaded = {_canonical(n) for n in listed.split(",") if n}
+    missing = [p for p in providers if _canonical(p) not in loaded]
+    if missing:
+        return (
+            False,
+            f"flashinfer {version} imported but did not load the {', '.join(missing)} prebuilt kernels"
+            f" (providers: {listed or 'none'})",
+        )
+    return True, got
 
 
 def _drift(before: dict[str, str], after: dict[str, str]) -> dict[str, tuple[str, Optional[str]]]:
@@ -818,6 +968,7 @@ def _rollback(
     own_index: bool = False,
     reported: Optional[set[str]] = None,
     unreported_step: bool = False,
+    providers: tuple[str, ...] = (),
 ) -> str:
     """Remove what this install reported adding and restore what it moved; returns a one-line summary."""
     after = installed_distributions()
@@ -825,7 +976,9 @@ def _rollback(
     ours = set(reported or ()) & new
     if not ours or unreported_step:
         # A step that died without its summary may have half-installed what no report names.
-        ours |= _requirement_closure({FLASHINFER_PACKAGE, FLASHINFER_JIT_CACHE_PACKAGE}, new)
+        roots = {FLASHINFER_PACKAGE, FLASHINFER_JIT_CACHE_PACKAGE}
+        roots |= {_canonical(p) for p in providers}
+        ours |= _requirement_closure(roots, new)
     added = sorted(ours)
     if new - ours and logger is not None:
         logger.info(
@@ -873,35 +1026,54 @@ def _install(
     if not torch_before or not torch_before.get("cuda_version"):
         # Transient on a loaded box (the probe has a timeout), so not memoised.
         return False, "flashinfer not installed: the resident torch could not be probed", False
-    tag = jit_cache_tag(torch_before.get("cuda_version"))
+    from .diffusion_nvfp4_ops import _device_capability
+
+    capability = _device_capability(device)
+    release, tag, held = select_release(
+        torch_before.get("cuda_version"), capability, installed_distributions()
+    )
+    if release is None:
+        return (
+            False,
+            f"flashinfer not installed: {held}; Unsloth does not move installed packages",
+            True,
+        )
+    version = release.version
+    # Every visible NVFP4 arch's provider: once flashinfer imports, a load on another card never installs again.
+    providers: tuple[str, ...] = ()
+    if tag is not None:
+        found = (jit_cache_provider(release, cap) for cap in _nvfp4_capabilities(device))
+        providers = tuple(dict.fromkeys(p for p in found if p))
     if tag is None and not _nvcc_available():
         return (
             False,
             f"flashinfer not installed: no prebuilt {FLASHINFER_JIT_CACHE_PACKAGE} "
-            f"{FLASHINFER_VERSION} for CUDA {torch_before.get('cuda_version')} and no nvcc to "
+            f"{', '.join(FLASHINFER_VERSIONS)} for CUDA {torch_before.get('cuda_version')} and no nvcc to "
             "JIT-compile its kernels",
             True,
         )
-    # A stray jit-cache or cubin of another version breaks `import flashinfer`; not ours to replace.
-    for extra in (FLASHINFER_JIT_CACHE_PACKAGE, FLASHINFER_CUBIN_PACKAGE):
+    # A stray jit-cache, provider or cubin of another version shadows ours; not ours to replace.
+    extras = [FLASHINFER_JIT_CACHE_PACKAGE, FLASHINFER_CUBIN_PACKAGE, *providers]
+    for extra in extras:
         present = _dist_version(extra)
-        if present is not None and present.split("+", 1)[0] != FLASHINFER_VERSION:
+        if present is not None and present.split("+", 1)[0] != version:
             return (
                 False,
                 f"flashinfer not installed: {extra} {present} is already installed and "
-                f"flashinfer-python {FLASHINFER_VERSION} would refuse to import beside it",
+                f"flashinfer-python {version} would refuse to import beside it",
                 True,
             )
     # flashinfer checks only the public version, so a jit-cache for another CUDA would be kept; not ours to replace.
-    cache = _dist_version(FLASHINFER_JIT_CACHE_PACKAGE)
-    if cache is not None and not _same_version(cache, _jit_cache_version(tag)):
-        return (
-            False,
-            f"flashinfer not installed: {FLASHINFER_JIT_CACHE_PACKAGE} {cache} is already installed and "
-            f"does not match CUDA {torch_before.get('cuda_version')}"
-            + (f" (expected {_jit_cache_version(tag)})" if tag else ""),
-            True,
-        )
+    for extra in [FLASHINFER_JIT_CACHE_PACKAGE, *providers]:
+        cache = _dist_version(extra)
+        if cache is not None and not _same_version(cache, _jit_cache_version(tag, version)):
+            return (
+                False,
+                f"flashinfer not installed: {extra} {cache} is already installed and "
+                f"does not match CUDA {torch_before.get('cuda_version')}"
+                + (f" (expected {_jit_cache_version(tag, version)})" if tag else ""),
+                True,
+            )
     uv = _uv_executable()
     config = _installer_config(uv, run)
     if config["refusal"]:
@@ -911,7 +1083,8 @@ def _install(
     probes = [] if config["mirror"] else [_PYPI_PROBE_URL]
     if tag is not None:
         probes.append(
-            FLASHINFER_JIT_CACHE_INDEX.format(tag = tag) + f"/{FLASHINFER_JIT_CACHE_PACKAGE}/"
+            FLASHINFER_JIT_CACHE_INDEX.format(tag = tag)
+            + f"/{providers[0] if providers else FLASHINFER_JIT_CACHE_PACKAGE}/"
         )
     if config["unprobed"]:
         probes = []
@@ -921,34 +1094,33 @@ def _install(
 
     before = installed_distributions()
     constraints = _write_constraints(before)
-    if "nvidia-cutlass-dsl" not in before:
+    if release.holds_cutlass_dsl and "nvidia-cutlass-dsl" not in before:
         try:
             with open(constraints, "a", encoding = "utf-8") as fh:
                 fh.write(_CUTLASS_DSL_CONSTRAINT + "\n")
         except OSError:
             pass
-    size_hint = " (about 1.5 GB of prebuilt kernels)" if tag else ""
+    size_hint = f" ({release.size_hint} of prebuilt kernels)" if tag and release.size_hint else ""
+    kernels = ", ".join(providers) or FLASHINFER_JIT_CACHE_PACKAGE
     _emit(
         logger,
         status_cb,
-        f"installing {FLASHINFER_PACKAGE} {FLASHINFER_VERSION}"
-        f"{f' with {FLASHINFER_JIT_CACHE_PACKAGE} for {tag}' if tag else ''} for NVFP4{size_hint}",
+        f"installing {FLASHINFER_PACKAGE} {version}"
+        f"{f' with {kernels} for {tag}' if tag else ''} for NVFP4{size_hint}",
     )
     reported: set[str] = set()
     try:
         steps = []
         # jit-cache FIRST: an interrupted install must not leave an importable flashinfer that reads as installed.
         if tag is not None:
+            # The full local version: `==0.7.3` would accept a cache built for another CUDA. A split release's shim
+            # requires every arch's provider, so --no-deps installs the shim and the visible NVFP4 archs' only.
+            specs = [f"{p}=={_jit_cache_version(tag, version)}" for p in providers]
+            specs.append(f"{FLASHINFER_JIT_CACHE_PACKAGE}=={_jit_cache_version(tag, version)}")
             steps.append(
                 (
                     _installer_prefix(uv, FLASHINFER_JIT_CACHE_INDEX.format(tag = tag))
-                    + [
-                        "--only-binary",
-                        ":all:",
-                        "--no-deps",
-                        # The full local version: `==0.6.6` would accept a cache built for another CUDA.
-                        f"{FLASHINFER_JIT_CACHE_PACKAGE}=={_jit_cache_version(tag)}",
-                    ],
+                    + ["--only-binary", ":all:", "--no-deps", *specs],
                     _pinned_index_env(None if uv else config.get("pip_settings", {})),
                 )
             )
@@ -961,7 +1133,7 @@ def _install(
                     ":all:",
                     "-c",
                     constraints,
-                    f"{FLASHINFER_PACKAGE}=={FLASHINFER_VERSION}",
+                    f"{FLASHINFER_PACKAGE}=={version}",
                 ],
                 None,
             )
@@ -1001,13 +1173,20 @@ def _install(
                 else f"{torch_after.get('torch_version')} CUDA {torch_after.get('cuda_version')}",
             )
         else:
-            ok, detail = _verify_child(run)
+            ok, detail = _verify_child(run, version, providers)
             if not ok:
                 failure = detail
 
     if failure is not None:
         rolled = _rollback(
-            run, uv, before, logger, config["own_index"], reported, unreported_step = unreported_step
+            run,
+            uv,
+            before,
+            logger,
+            config["own_index"],
+            reported,
+            unreported_step = unreported_step,
+            providers = providers,
         )
         return False, f"flashinfer install rolled back ({rolled}): {failure}", True
 

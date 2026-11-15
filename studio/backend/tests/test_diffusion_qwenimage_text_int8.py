@@ -19,12 +19,14 @@ _UNSCOPED = {
     "test_streamed_scope_resets_on_error",
     "test_streamed_scope_does_not_leak_into_other_threads",
     "test_load_wraps_lookup_build_and_write_in_the_placement_scope",
+    "test_hosted_seed_load_runs_in_the_placement_scope",
 }
 
 
 @pytest.fixture(autouse = True)
 def _default_switch(monkeypatch, request):
     monkeypatch.delenv(tq.INT8_TEXT_STREAM_ENV, raising = False)
+    monkeypatch.delenv(tq.INT8_MODULATION_ENV, raising = False)
     if request.node.name in _UNSCOPED:
         yield
         return
@@ -86,6 +88,19 @@ def test_load_wraps_lookup_build_and_write_in_the_placement_scope():
     ):
         i = src.index(call, src.index("with int8_text_stream_scope(not keeps_resident):"))
         assert "with int8_text_stream_scope(not keeps_resident):" in src[max(0, i - 400) : i], call
+
+
+def test_hosted_seed_load_runs_in_the_placement_scope():
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend)
+    i = src.index("seeded = denoiser_prequant_pipe_kwargs(")
+    window = src[max(0, i - 600) : i]
+    assert "_seed_scope = int8_text_stream_scope(" in window
+    assert "not plan_keeps_transformer_resident(plan)" in window
+    assert "with _seed_scope:" in window
 
 
 def test_runtime_exclusions_drop_the_text_stream():
@@ -272,6 +287,8 @@ def test_local_prequant_cache_key_follows_the_switch(monkeypatch):
     with tq.int8_text_stream_scope(False):
         resident, resident_tokens = key()
     monkeypatch.setenv(tq.INT8_TEXT_STREAM_ENV, "0")
+    # The streamed weight-only modulations key separately (test_diffusion_qwenimage_mod_int8.py).
+    monkeypatch.setenv(tq.INT8_MODULATION_ENV, "0")
     off, off_tokens = key()
     assert on != off
     assert "add_q_proj" in off_tokens and "add_q_proj" not in on_tokens

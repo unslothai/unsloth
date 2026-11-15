@@ -2,6 +2,7 @@
 """A worker that survives kill must keep its handle, so is_worker_alive() still guards the swap."""
 
 import threading
+import queue
 
 import pytest
 
@@ -19,6 +20,12 @@ class _FakeProc:
 
     def is_alive(self):
         return self._alive
+
+    @property
+    def exitcode(self):
+        if self._alive:
+            return None
+        return 0 if self._dies_on == "join" else -15
 
     def join(self, timeout = None):
         if self._dies_on == "join":
@@ -47,7 +54,7 @@ def _bare_inference():
             pass
 
     o._cmd_queue = _Q()
-    o._resp_queue = _Q()
+    o._resp_queue = queue.Queue()
     o._cancel_event = None
     o._drain_event = None
     o._active_cancel_lock = threading.Lock()

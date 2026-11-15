@@ -66,9 +66,8 @@ class TestWheelPlatformTag:
         assert wheel_utils.wheel_platform_tag() is None
 
     def test_probe_stays_linux_only_by_default(self, monkeypatch):
-        """flash-attn / causal-conv1d / mamba-ssm publish no win_amd64 assets, so the
-        existing callers must keep getting None on Windows even though the platform tag
-        now resolves. Guarded here because the probe shells out otherwise."""
+        """flash-attn, causal-conv1d and mamba-ssm ship no win_amd64 assets, so existing callers
+        must keep getting None on Windows even though the platform tag now resolves."""
         monkeypatch.setattr(wheel_utils, "wheel_platform_tag", lambda: "win_amd64")
         assert wheel_utils.probe_torch_wheel_env() is None
         assert wheel_utils.probe_torch_wheel_env(timeout = 5) is None
@@ -124,9 +123,8 @@ class TestXformersWheelUrl:
         )
 
     def test_url_is_interpreter_independent(self):
-        """0.0.31..0.0.34 ship a single cp39-abi3 wheel, so the interpreter must not leak
-        into the URL. (0.0.30 and earlier did ship one wheel per cpXY, which is exactly why
-        torch 2.7.0 is not in the matrix.)"""
+        """xformers 0.0.31..0.0.34 ship one cp39-abi3 wheel, so no interpreter may leak into the
+        URL; 0.0.30 and earlier had per-cpXY wheels (why torch 2.7.0 is not in the matrix)."""
         urls = {
             wheel_utils.xformers_wheel_url(_env(python_tag = tag))
             for tag in ("cp39", "cp310", "cp311", "cp312", "cp313", "cp314")
@@ -181,8 +179,7 @@ class TestXformersWheelUrl:
 
 
 def test_flash_attn_resolution_is_untouched():
-    """direct_wheel_url / flash_attn_wheel_url share the env dict; the two new keys must
-    not change a single flash-attn URL."""
+    """Both resolvers share the env dict; the two new keys must not change any flash-attn URL."""
     env = _env(platform_tag = "linux_x86_64", python_tag = "cp312", cuda_major = "12")
     assert wheel_utils.flash_attn_wheel_url(env) == (
         "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1"
@@ -207,9 +204,8 @@ def test_every_matrix_version_has_a_known_filename_tag():
 
 @pytest.mark.parametrize("platform_tag", ["win_amd64", "linux_x86_64"])
 def test_every_url_the_matrix_can_produce_is_live(platform_tag):
-    """The matrix is a hand-maintained list of URLs; the only way to know a row is real is
-    to ask. A 404 fails (that row is wrong); a network outage skips, matching
-    tests/version_compat/_fetch.py."""
+    """The matrix is hand-maintained, so only a live request proves a row is real: a 404 fails that
+    row, a network outage skips, matching tests/version_compat/_fetch.py."""
     import urllib.error
     import urllib.request
 

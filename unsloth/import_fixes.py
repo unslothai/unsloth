@@ -420,7 +420,6 @@ def fix_xformers_performance_issue():
 # flash-attn 4 makes flash_attn a namespace package without flash_attn_interface, which breaks
 # `import xformers.ops`; import xformers once with flash_attn hidden from find_spec.
 _FLASH_ATTN_INTERFACE_NAME = "flash_attn_interface"
-_FLASH_ATTN_INTERFACE_MODULE = "flash_attn." + _FLASH_ATTN_INTERFACE_NAME
 _FA4_NAMESPACE_WARNED = [False]
 
 
@@ -2145,25 +2144,67 @@ def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
         or query.shape[0] != 1
     ):
         return None
-    from .utils.packing import get_packed_info_from_kwargs
+    return _packed_row_boundaries(kwargs, query.device, query.shape[1])
 
-    info = get_packed_info_from_kwargs(kwargs, query.device)
+
+def _packed_row_boundaries_eager(kwargs, device, total):
+    """Host-side packed-row boundaries, outside any compiled graph: max_seqlen as a guarded
+    constant recompiled once per distinct length."""
+    from .utils.packing import cover_padded_cu_seqlens, get_packed_info_from_kwargs
+
+    info = get_packed_info_from_kwargs(kwargs, device)
     if info is None:
         return None
-    _, cu_seqlens, max_seqlen = info
-    # One host read per batch, not per layer: rows that do not cover the query keep the original path.
-    if not torch.compiler.is_compiling():
-        checked = _PACKED_ROWS_CHECKED
-        if checked[0] is not cu_seqlens or checked[1] != query.shape[1]:
-            checked[:] = [cu_seqlens, query.shape[1], int(cu_seqlens[-1]) == query.shape[1]]
-        if not checked[2]:
-            return None
+    cu_seqlens = info[1]
+    # One host read per batch, not per layer: lengths past the row cannot be honoured.
+    checked = _PACKED_ROWS_CHECKED
+    if checked[0] is not cu_seqlens or checked[1] != total:
+        checked[:] = [cu_seqlens, total, int(cu_seqlens[-1]) <= total]
+    if not checked[2]:
+        return None
+    # A pad_to_multiple_of tail gets its own segment so no document attends to it.
+    cu_seqlens, max_seqlen = cover_padded_cu_seqlens(info, total)
     return {
         "cu_seq_lens_q": cu_seqlens,
         "cu_seq_lens_k": cu_seqlens,
         "max_length_q": max_seqlen,
         "max_length_k": max_seqlen,
     }
+
+
+# _packed_row_boundaries_eager under torch.compiler.disable, built when the patch is installed.
+_PACKED_ROW_BOUNDARIES_DISABLED = None
+
+
+def _packed_row_boundaries(kwargs, device, total):
+    import torch
+
+    disabled = _PACKED_ROW_BOUNDARIES_DISABLED
+    if disabled is not None and torch.compiler.is_compiling():
+        from .utils.packing import _PACKED_INFO_CACHE, _cache_hit
+
+        entry = _PACKED_INFO_CACHE.get(device)
+        if (
+            entry is not None
+            and entry["seq_lengths"] is kwargs.get("packed_seq_lengths")
+            and _cache_hit(entry)
+            and "row_shape" in entry
+        ):
+            covered, max_seqlen = entry["row_shape"].shape
+            if covered > total:
+                return None
+            cu_seqlens = entry["result"][1]
+            if covered < total:
+                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_full((1,), total)])
+                max_seqlen = max(max_seqlen, total - covered)
+            return {
+                "cu_seq_lens_q": cu_seqlens,
+                "cu_seq_lens_k": cu_seqlens,
+                "max_length_q": max_seqlen,
+                "max_length_k": max_seqlen,
+            }
+        return disabled(kwargs, device, total)
+    return _packed_row_boundaries_eager(kwargs, device, total)
 
 
 def fix_transformers_flash_attention_mrope_packed_rows():
@@ -2176,6 +2217,10 @@ def fix_transformers_flash_attention_mrope_packed_rows():
     current = getattr(fa_integration, "_flash_attention_forward", None)
     if current is None or getattr(current, _PACKED_ROWS_PATCH_FLAG, False):
         return
+    global _PACKED_ROW_BOUNDARIES_DISABLED
+    if _PACKED_ROW_BOUNDARIES_DISABLED is None:
+        import torch
+        _PACKED_ROW_BOUNDARIES_DISABLED = torch.compiler.disable(_packed_row_boundaries_eager)
 
     @functools.wraps(current)
     def _flash_attention_forward(
@@ -3539,6 +3584,180 @@ def fix_transformers_fp8_unscaled_checkpoint_linears():
 
     _process_model_before_weight_loading._unsloth_unscaled_linears = True
     quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
+
+
+_QUANTIZED_COMPANION_SUFFIXES = (
+    "_packed",
+    "_scale",
+    "_shape",
+    "_global_scale",
+    "_zero_point",
+    "_scale_inv",
+)
+
+
+def fix_transformers_quantizer_unquantized_converters():
+    """Keep a model converter over a tensor the pre-quantized checkpoint stores unquantized.
+
+    For packed formats the quantizer's rewritten copy only matches ``weight_packed`` / ``weight_scale``, so 16-bit
+    tensors were left randomly initialized. Converters match first-wins, so the original is appended after."""
+    try:
+        from transformers.quantizers.base import HfQuantizer
+        from transformers.core_model_loading import WeightConverter
+    except Exception:
+        return
+    classes = [HfQuantizer]
+    try:
+        from transformers.quantizers.quantizer_compressed_tensors import (
+            CompressedTensorsHfQuantizer,
+        )
+        classes.append(CompressedTensorsHfQuantizer)
+    except Exception:
+        pass
+
+    def sources_of(converter):
+        patterns = getattr(converter, "_original_source_patterns", None) or getattr(
+            converter, "source_patterns", ()
+        )
+        return [pattern.rstrip("$") for pattern in patterns if isinstance(pattern, str)]
+
+    def captures_companions(converter):
+        # transformers <= 5.20 searches source patterns unanchored: `.weight` would also take a quantized
+        # tensor's `.weight_global_scale` / `.weight_zero_point` / ... and corrupt the restored pipeline.
+        rename = getattr(converter, "rename_source_key", None)
+        if rename is None:
+            return False
+        for source in sources_of(converter):
+            for suffix in _QUANTIZED_COMPANION_SUFFIXES:
+                try:
+                    if rename((source + suffix).replace("*", "0"))[1] is not None:
+                        return True
+                except Exception:
+                    return True
+        return False
+
+    def restorable(converter):
+        if not captures_companions(converter):
+            return converter
+        return WeightConverter(
+            source_patterns = [source + "$" for source in sources_of(converter)],
+            target_patterns = list(
+                getattr(converter, "_original_target_patterns", None) or converter.target_patterns
+            ),
+            operations = list(converter.operations),
+        )
+
+    for cls in classes:
+        method = cls.__dict__.get("update_weight_conversions")
+        if method is None or getattr(method, "_unsloth_keeps_unquantized", False):
+            continue
+
+        def make(method):
+            @functools.wraps(method)
+            def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+                # transformers 5.21+ passes the model; earlier builds did not.
+                updated = method(self, weight_conversions, *args, **kwargs)
+                try:
+                    updated = list(updated)
+                    kept = {id(converter) for converter in updated}
+                    loaded = {
+                        source
+                        for converter in updated
+                        if isinstance(converter, WeightConverter)
+                        for source in sources_of(converter)
+                    }
+                    restored = [
+                        restorable(converter)
+                        for converter in weight_conversions
+                        if isinstance(converter, WeightConverter)
+                        and id(converter) not in kept
+                        and not any(source in loaded for source in sources_of(converter))
+                    ]
+                except Exception:
+                    return updated
+                return updated + restored if restored else updated
+
+            update_weight_conversions._unsloth_keeps_unquantized = True
+            return update_weight_conversions
+
+        cls.update_weight_conversions = make(method)
+    _pass_unquantized_through_compressed_tensors_dequantize()
+
+
+def _pass_unquantized_through_compressed_tensors_dequantize():
+    # transformers 5.23 also feeds the plain `.weight` sources to the dequantize op, whose packed branch keeps only
+    # `*weight_packed` keys: the shards vanish and the Concatenate after it fails. Plain sources without a packed or
+    # scale companion pass through untouched, as its FP8 branch already does for weights that ship no scale.
+    try:
+        from transformers.integrations import compressed_tensors as ct_integration
+    except Exception:
+        return
+    op_cls = getattr(ct_integration, "CompressedTensorsDequantize", None)
+    convert = getattr(op_cls, "convert", None)
+    if convert is None or getattr(convert, "_unsloth_passes_unquantized", False):
+        return
+
+    @functools.wraps(convert)
+    def convert_keeping_unquantized(self, input_dict, *args, **kwargs):
+        if (
+            not isinstance(input_dict, dict)
+            or "weight" in input_dict
+            or "weight_scale" in input_dict
+        ):
+            return convert(self, input_dict, *args, **kwargs)
+        plain, mixed = {}, []
+        for key in input_dict:
+            if not isinstance(key, str) or not key.endswith(".weight"):
+                continue
+            stem = key[: -len("weight")]
+            if f"{stem}weight_packed" in input_dict:
+                # One pattern collected both 16-bit and packed shards: the packed branch would drop the 16-bit ones.
+                mixed.append(key)
+            elif f"{stem}weight_scale" not in input_dict:
+                plain[key] = input_dict[key]
+        if mixed:
+            raise ValueError(
+                "Unsloth: this compressed-tensors checkpoint stores some tensors of one converter pattern "
+                f"unquantized and others packed ({', '.join(sorted(mixed))}), which cannot be loaded together. "
+                "Quantize all of them or none."
+            )
+        if not plain:
+            return convert(self, input_dict, *args, **kwargs)
+        dtype = _converter_target_dtype(args, kwargs)
+        if dtype is not None:
+            # As the rest of the load: a bf16 checkpoint tensor lands in the parameter's dtype.
+            plain = {key: _cast_floating(value, dtype) for key, value in plain.items()}
+        rest = {key: value for key, value in input_dict.items() if key not in plain}
+        out = dict(convert(self, rest, *args, **kwargs) or {}) if rest else {}
+        out.update(plain)
+        return out
+
+    convert_keeping_unquantized._unsloth_passes_unquantized = True
+    op_cls.convert = convert_keeping_unquantized
+
+
+def _converter_target_dtype(args, kwargs):
+    """dtype of the parameter a conversion op fills (`full_layer_name` on `model`), else None."""
+    model = kwargs.get("model")
+    name = kwargs.get("full_layer_name")
+    if name is None and len(args) > 2:
+        name = args[2]
+    if model is None or not isinstance(name, str):
+        return None
+    try:
+        return model.get_parameter(name).dtype
+    except Exception:
+        return None
+
+
+def _cast_floating(value, dtype):
+    import torch
+
+    if isinstance(value, (list, tuple)):
+        return type(value)(_cast_floating(v, dtype) for v in value)
+    if isinstance(value, torch.Tensor) and value.is_floating_point() and dtype.is_floating_point:
+        return value.to(dtype)
+    return value
 
 
 def _cast_fp8_dequantize_to_model_dtype(op_cls):
@@ -5931,6 +6150,31 @@ def _probe_torchvision_binary(
         ) from error
 
 
+def _torch_in_torchvision_declared_range(torch_version_raw):
+    """True when the installed torchvision's metadata declares a torch range (not only an exact == pin)
+    that contains the installed torch. Exact pins stay with the table / formula below."""
+    try:
+        from packaging.requirements import Requirement
+        requires = importlib_distribution("torchvision").requires or []
+        torch_v = TrueVersion(str(torch_version_raw))
+    except Exception:
+        return False
+    for line in requires:
+        try:
+            requirement = Requirement(line)
+        except Exception:
+            continue
+        if requirement.name.lower() != "torch":
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+            continue
+        specifiers = list(requirement.specifier)
+        if not specifiers or all(s.operator in ("==", "===") for s in specifiers):
+            return False
+        return requirement.specifier.contains(torch_v, prereleases = True)
+    return False
+
+
 def torchvision_compatibility_check():
     # Allow skipping via environment variable for custom environments
     if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
@@ -5962,6 +6206,11 @@ def torchvision_compatibility_check():
         (2, 5): (0, 20),
         (2, 4): (0, 19),
     }
+
+    # torchvision 0.29.1+ declares a torch range, not an exact pin, which the minor formula below would refuse.
+    if _torch_in_torchvision_declared_range(torch_version_raw):
+        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, tv_v.release[:3])
+        return
 
     torch_release = torch_v.release
     if len(torch_release) < 2:
@@ -7124,11 +7373,21 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def _set_torch_config(config_module, name, value):
+    # torch >= 2.12 keeps config assignments per thread; checkpoint recomputes compile on autograd's device thread.
+    try:
+        from unsloth_zoo.torch_config import set_torch_config
+    except Exception:
+        setattr(config_module, name, value)
+        return
+    set_torch_config(config_module, name, value)
+
+
 def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass):
     # Warm FX / AOTAutograd caches would return barrier-free kernels: a no-op pass's uuid keys them.
     if custom_graph_pass is None:
         # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
-        inductor_config.fx_graph_cache = False
+        _set_torch_config(inductor_config, "fx_graph_cache", False)
         return
     marker = "unsloth-inductor-readback-barrier-v1"
 
@@ -7143,14 +7402,16 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
 
     existing = getattr(inductor_config, "post_grad_custom_post_pass", None)
     if existing is None:
-        inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+        _set_torch_config(inductor_config, "post_grad_custom_post_pass", ReadbackBarrierCacheKey())
         return
     # A pre-set pass keys the cache by its uuid alone; raw callables / uuid-less passes bypass it.
     if isinstance(existing, (list, tuple)):
         if any(getattr(p, "_unsloth_readback_barrier", False) for p in existing):
             return
-        inductor_config.post_grad_custom_post_pass = type(existing)(
-            [*existing, ReadbackBarrierCacheKey()]
+        _set_torch_config(
+            inductor_config,
+            "post_grad_custom_post_pass",
+            type(existing)([*existing, ReadbackBarrierCacheKey()]),
         )
         return
     if getattr(existing, "_unsloth_readback_barrier", False):
@@ -7179,7 +7440,9 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
             inner_uuid = self.inner.uuid()
             return None if inner_uuid is None else (marker, inner_uuid)
 
-    inductor_config.post_grad_custom_post_pass = ReadbackBarrierKeyedPass(existing)
+    _set_torch_config(
+        inductor_config, "post_grad_custom_post_pass", ReadbackBarrierKeyedPass(existing)
+    )
 
 
 def fix_inductor_reduction_readback_race():
@@ -7265,6 +7528,10 @@ def fix_dynamo_config_thread_visibility():
         from contextvars import ContextVar
     except Exception:
         return
+    try:
+        from torch.utils._config_module import _UNSET_SENTINEL as _unset
+    except Exception:
+        _unset = None
 
     try:
         probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
@@ -7357,6 +7624,9 @@ def fix_dynamo_config_thread_visibility():
                 entry = self.__dict__["_config"].get(name, None)
                 if entry is not None and entry.alias is None:
                     entry.default = value
+                    # A process-wide value (set_torch_config, TORCHINDUCTOR_* env) shadows default: replace it too.
+                    if _unset is not None and entry.env_value_default is not _unset:
+                        entry.env_value_default = value
             except Exception:
                 pass
 
@@ -7830,6 +8100,228 @@ def fix_cudnn_sdpa_backward_grad_layout():
     logger.info(
         f"Unsloth: torch {torch.__version__} reuses cuDNN SDPA backward plans across gradient "
         "layouts; SDPA gradients are given the output's layout"
+    )
+
+
+_SDPA_CUDNN_KNOWN_BAD_FLAG = "_unsloth_avoids_cudnn_sdpa_known_bad_shapes"
+_SDPA_CUDNN_KNOWN_BAD_WARNED = set()
+# Backend flags are process-wide: refcount wrapped calls in flight so overlapping calls never see cuDNN back on early.
+_SDPA_CUDNN_HELD = [0]
+_SDPA_CUDNN_LOCK = threading.Lock()
+_SDPA_CUDNN_DECODE = "decode"
+_SDPA_CUDNN_DQ_NAN = "dq_nan"
+
+
+def _torch_release(torch_version):
+    try:
+        return TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return None
+
+
+def _cudnn_sdpa_decode_corrupts(torch_version, cudnn_version, capability):
+    """pytorch#193893: cuDNN 9.19 - 9.25.0 (not 9.24.1) one-row decode on SM 10.x / 11.x is wrong.
+    torch 2.14 refuses it (pytorch#194963); <= 2.13 cu128+ wheels ship 9.19 / 9.20."""
+    release = _torch_release(torch_version)
+    if release is None or release >= TrueVersion("2.14") or cudnn_version is None:
+        return False
+    cudnn_version = int(cudnn_version)
+    if cudnn_version < 91900 or cudnn_version > 92500 or 92400 < cudnn_version < 92500:
+        return False
+    return int(capability[0]) in (10, 11)
+
+
+def _cudnn_sdpa_dq_nan(torch_version, cudnn_version, capability):
+    """pytorch#196678: cuDNN < 9.26 on SM90 gives NaN dQ for non-causal s_kv % 128 == 64.
+    torch 2.15 refuses it (pytorch#196861)."""
+    release = _torch_release(torch_version)
+    if release is None or release >= TrueVersion("2.15") or cudnn_version is None:
+        return False
+    return int(cudnn_version) < 92600 and tuple(int(x) for x in capability[:2]) == (9, 0)
+
+
+def _sdpa_cudnn_known_bad_devices():
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return frozenset(), frozenset()
+        cudnn_version = torch.backends.cudnn.version()
+        capabilities = [
+            torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count())
+        ]
+    except Exception:
+        return frozenset(), frozenset()
+    decode = frozenset(
+        i
+        for i, cap in enumerate(capabilities)
+        if _cudnn_sdpa_decode_corrupts(torch.__version__, cudnn_version, cap)
+    )
+    dq_nan = frozenset(
+        i
+        for i, cap in enumerate(capabilities)
+        if _cudnn_sdpa_dq_nan(torch.__version__, cudnn_version, cap)
+    )
+    return decode, dq_nan
+
+
+def _sdpa_cudnn_dq_nan_length(key):
+    # Compiling: _sdpa_cudnn_off tests the value, so a dynamic length adds no guard.
+    import torch
+    return torch.compiler.is_compiling() or key.shape[-2] % 128 == 64
+
+
+def _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal):
+    """The known cuDNN bug this call would hit, mirroring torch's later guards; None if none."""
+    import torch
+
+    if not getattr(query, "is_cuda", False) or getattr(query, "is_nested", False):
+        return None
+    index = query.device.index
+    if index not in decode_devices and index not in dq_devices:
+        return None
+    dtype = query.dtype
+    # Autocast casts fp32 SDPA inputs to half before dispatch.
+    if dtype == torch.float32 and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+    if dtype not in (torch.float16, torch.bfloat16) or query.dim() < 2:
+        return None
+    if index in decode_devices and query.shape[-2] == 1:
+        return _SDPA_CUDNN_DECODE
+    if (
+        index in dq_devices
+        and not is_causal
+        and query.requires_grad
+        and torch.is_grad_enabled()
+        and getattr(key, "dim", lambda: 0)() >= 2
+        and _sdpa_cudnn_dq_nan_length(key)
+    ):
+        return _SDPA_CUDNN_DQ_NAN
+    return None
+
+
+class _SdpaCudnnPolicy(types.ModuleType):
+    """Dynamo folds SDPA backend flags without a guard, but guards a module attribute by value:
+    reading the policy here makes a compiled graph recompile when the policy flips its backend."""
+
+    @property
+    def cudnn_off(self):
+        import torch
+        cuda = torch.backends.cuda
+        # A held switch counts as on, so another thread's matching call also takes it.
+        return (cuda.cudnn_sdp_enabled() or _SDPA_CUDNN_HELD[0] > 0) and (
+            cuda.flash_sdp_enabled() or cuda.mem_efficient_sdp_enabled() or cuda.math_sdp_enabled()
+        )
+
+
+_SDPA_CUDNN_POLICY = _SdpaCudnnPolicy("unsloth_sdpa_cudnn_policy")
+
+
+def _sdpa_cudnn_off(key_length = None):
+    """Turn cuDNN SDPA off unless it is the only backend; a symbolic key_length counts as a hit.
+    The count rises before the flag drops, so an unlocked policy read never sees cuDNN off."""
+    import torch
+
+    if not (key_length is None or isinstance(key_length, torch.SymInt) or key_length % 128 == 64):
+        return False
+    with _SDPA_CUDNN_LOCK:
+        if _SDPA_CUDNN_HELD[0] == 0 and not _SDPA_CUDNN_POLICY.cudnn_off:
+            return False
+        _SDPA_CUDNN_HELD[0] += 1
+        if _SDPA_CUDNN_HELD[0] == 1:
+            torch._C._set_sdp_use_cudnn(False)
+    return True
+
+
+def _sdpa_cudnn_restore(switch):
+    import torch
+    if not switch:
+        return
+    with _SDPA_CUDNN_LOCK:
+        if _SDPA_CUDNN_HELD[0] == 1:
+            torch._C._set_sdp_use_cudnn(True)
+        _SDPA_CUDNN_HELD[0] -= 1
+
+
+_SDPA_CUDNN_ORIGINALS = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
+_SDPA_CUDNN_MESSAGES = {
+    _SDPA_CUDNN_DECODE: "single-token decode on this Blackwell GPU (cuDNN 9.19 - 9.25.0 "
+    "returns wrong attention there, pytorch#193893)",
+    _SDPA_CUDNN_DQ_NAN: "training with a key length of 64 mod 128 on this H100 / H200 (cuDNN "
+    "< 9.26 returns NaN query gradients there, pytorch#196678)",
+}
+
+
+def _sdpa_without_cudnn(token, bug, key_length, query, key, value, *args, **kwargs):
+    """allow_in_graph: one eager-graph node whose finally runs even if SDPA raises; AOTAutograd
+    traces through it, so the traced SDPA avoids cuDNN."""
+    import torch
+
+    switch = _sdpa_cudnn_off(key_length)
+    try:
+        if switch and not torch.compiler.is_compiling() and bug not in _SDPA_CUDNN_KNOWN_BAD_WARNED:
+            _SDPA_CUDNN_KNOWN_BAD_WARNED.add(bug)
+            logger.warning(
+                f"Unsloth: running SDPA without cuDNN attention for {_SDPA_CUDNN_MESSAGES[bug]}. "
+                "Upgrade to torch 2.15 / cuDNN 9.26, or set UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1."
+            )
+        return _SDPA_CUDNN_ORIGINALS[token](query, key, value, *args, **kwargs)
+    finally:
+        _sdpa_cudnn_restore(switch)
+
+
+def fix_cudnn_sdpa_known_bad_shapes():
+    """Keep SDPA off cuDNN for the calls torch 2.14 / 2.15 later refuse (pytorch#193893, #196678),
+    only when a visible device is affected and another backend is enabled.
+    UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1 opts out."""
+    if os.environ.get("UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA", "0") == "1":
+        return
+    decode_devices, dq_devices = _sdpa_cudnn_known_bad_devices()
+    if not decode_devices and not dq_devices:
+        return
+    try:
+        import torch
+        import torch._dynamo
+        import torch.nn.functional as F
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA known-bad-shape fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, False):
+        return
+
+    # Switch, SDPA and restore stay one graph call: a trailing restore node would be skipped on a raise.
+    torch._dynamo.allow_in_graph(_sdpa_without_cudnn)
+    original = F.scaled_dot_product_attention
+    token = f"sdpa_{len(_SDPA_CUDNN_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
+    _SDPA_CUDNN_ORIGINALS[token] = original
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        *args,
+        **kwargs,
+    ):
+        bug = _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal)
+        # Compiled, this policy read is a guard.
+        if bug is not None and _SDPA_CUDNN_POLICY.cudnn_off:
+            key_length = key.shape[-2] if bug == _SDPA_CUDNN_DQ_NAN else None
+            return _sdpa_without_cudnn(
+                token, bug, key_length, query, key, value, attn_mask, dropout_p, is_causal,
+                *args, **kwargs,
+            )  # fmt: skip
+        return original(query, key, value, attn_mask, dropout_p, is_causal, *args, **kwargs)
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        "Unsloth: cuDNN SDPA known-bad shapes avoided "
+        f"(decode devices {sorted(decode_devices)}, NaN dQ devices {sorted(dq_devices)})"
     )
 
 
@@ -9308,6 +9800,8 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
     "UnlimitedOcrTextModel": "qwen2_moe",
+    # Same shape: transformers (main, November 2026) aliases the dots3-note text model's class.
+    "Dots3NoteTextModel": "qwen2_moe",
 }
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
@@ -11689,10 +12183,9 @@ def disable_torchao_if_torch_too_old():
     return True
 
 
-# vLLM inspects architectures in a separate process that imports torchao itself, never sees a
-# parent monkey-patch, and fails the same way. sitecustomize is the one hook reaching a process
-# we do not launch: site imports it at startup off the inherited PYTHONPATH. A .pth would need
-# a real site directory, which a library has no business writing into.
+# vLLM's separate process imports torchao itself, never sees a parent monkey-patch and fails the
+# same way; sitecustomize is the one hook reaching a process we do not launch (site imports it off
+# the inherited PYTHONPATH); a .pth needs a real site directory a library should not write into.
 
 _SUBPROCESS_FIX_DIRNAME = "unsloth_subprocess_import_fix"
 
@@ -12182,6 +12675,8 @@ _TORCHAO_INTMM_MODULES = (
 _TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named the old home
 _TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
 _TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
+# "0": copy a transposed int8 weight row-major before cuBLASLt, as torchao does (see _make_safe_int_mm)
+_TORCHAO_INT_MM_TRANSPOSED_ENV = "UNSLOTH_TORCHAO_INT_MM_TRANSPOSED"
 
 # The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
 _TORCHAO_SAFE_INT_MM_MARKERS = (
@@ -12208,12 +12703,24 @@ def _is_fake_tensor(x):
         return False
 
 
+def _is_rocm_torch(torch) -> bool:
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__.
+    return bool(
+        getattr(getattr(torch, "version", None), "hip", None)
+        or "rocm" in str(getattr(torch, "__version__", "") or "").lower()
+    )
+
+
 def _make_safe_int_mm(mod, original):
     """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
     import torch
 
     out_dtype = mod.out_dtype
     dynamo_is_compiling = mod.dynamo_is_compiling
+    # ROCm (hipBLASLt) keeps torchao's row-major copy; the TN layout below is only checked on cuBLASLt.
+    keep_transposed = os.environ.get(
+        _TORCHAO_INT_MM_TRANSPOSED_ENV, "1"
+    ).strip() != "0" and not _is_rocm_torch(torch)
 
     @functools.wraps(original)
     def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
@@ -12238,8 +12745,10 @@ def _make_safe_int_mm(mod, original):
                 input.device.type
             )
 
-        if not mat2.is_contiguous():  # silently gives incorrect result without this
-            mat2 = mat2.contiguous()
+        # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads
+        # past the end of ``input`` when M is not a 64-multiple (illegal address), and copies the weight every call.
+        if not mat2.is_contiguous() and not (keep_transposed and mat2.t().is_contiguous()):
+            mat2 = mat2.contiguous()  # silently gives incorrect result without this
         if (not input.is_contiguous()) and (
             input.shape[0] % 8 != 0
         ):  # gives cryptic error without this
@@ -12925,6 +13434,44 @@ def fix_transformers_longcat_lsa_config():
     if UNSLOTH_ENABLE_LOGGING:
         logger.info(
             "Unsloth: LongcatCausalLM configs without a model_type load on transformers' longcat_flash."
+        )
+
+
+def fix_transformers_deepseek_v41_native():
+    """On AutoConfig's unknown-architecture error for deepseek_v41, register the native implementation and retry."""
+    try:
+        import importlib.util
+        from transformers import AutoConfig
+    except Exception:
+        return
+    try:
+        if importlib.util.find_spec("transformers.models.deepseek_v41") is not None:
+            return
+    except Exception:
+        pass
+    current = AutoConfig.__dict__.get("from_pretrained")
+    original = getattr(current, "__func__", None)
+    if original is None or getattr(original, "_unsloth_deepseek_v41", False):
+        return
+
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        try:
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+        except (ValueError, KeyError) as error:
+            if "deepseek_v41" not in str(error):
+                raise
+            from .models.deepseek_v41 import register_deepseek_v41
+
+            if register_deepseek_v41() is None:
+                raise
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+
+    from_pretrained._unsloth_deepseek_v41 = True
+    from_pretrained.__wrapped__ = original
+    AutoConfig.from_pretrained = classmethod(from_pretrained)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: deepseek_v41 configs load on Unsloth's native DeepSeek-V4.1 implementation."
         )
 
 

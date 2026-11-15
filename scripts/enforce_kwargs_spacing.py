@@ -69,9 +69,7 @@ def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
         raise
 
 
-# The entry points below use a stage-local analysis, never a persistent file or
-# string cache. The _reference_* paths at the end of the file cover malformed
-# input, unusual line separators, and syntax the sparse lexer does not know.
+# Entry points use stage-local analysis, no persistent cache; _reference_* handles edge cases.
 
 
 def _without_gc(fn):
@@ -96,14 +94,12 @@ def _without_gc(fn):
 
 
 _ODD_LINES = re.compile(r"[\r\v\f\x1c-\x1e\x85\u2028\u2029]")
-# Anything that could open a 3.14 template string (t"", tr"", rt""), anywhere in the
-# text, strings and comments included: the sparse lexer below knows no t-strings.
+# Any 3.14 t-string prefix (t, tr, rt) anywhere in text: the lexer below knows none of them.
 _TSTRING_PREFIX = re.compile(r"(?<![\w])(?:[tT][rR]?|[rR][tT])['\"]")
 
 
 def _ordinary(text):
-    # splitlines() and Python's physical-line numbering disagree on these.
-    # Retain even the reference's erroneous indexing for that input.
+    # splitlines() and Python line numbers disagree; keep the reference's erroneous indexing.
     if _ODD_LINES.search(text):
         return False
     return sys.version_info < (3, 14) or not _TSTRING_PREFIX.search(text)
@@ -145,8 +141,7 @@ def _def_edits(lines, nodes):
             continue
         count, has_default = _def_spec(node)
         force = count >= _DEF_MIN_PARAMS_FOR_MULTILINE and has_default
-        # Read only the header; the generator is stopped at its closing paren.
-        # Including the first body line supports a one-line suite.
+        # Read only the header; include the first body line so one-line suites work.
         lo = node.lineno - 1
         source = "".join(lines[lo : node.body[0].lineno])
         depth = 0
@@ -156,14 +151,12 @@ def _def_edits(lines, nodes):
             if not seen_def:
                 seen_def = tok.type == tokenize.NAME and tok.string == "def"
                 if seen_def and tok.start[0] != 1:
-                    # An explicit continuation between async and def gives
-                    # different keyword rows; the reference misses that def.
+                    # Continuation between async and def; the reference misses that def.
                     break
                 continue
             if not depth:
                 if tok.type == tokenize.OP and tok.string == "[":
-                    # PEP 695: the reference searches the first '(', even if it
-                    # belongs to a type parameter bound. Keep its AST guard.
+                    # PEP 695: reference may find a bound's '('; keep its AST guard.
                     return None
                 if tok.type != tokenize.OP or tok.string != "(":
                     continue
@@ -216,12 +209,10 @@ def _assert_edits(lines, nodes):
         if node.col_offset != len(first) - len(first.lstrip()) or (
             lo > 1 and lines[lo - 2].rstrip("\r\n").endswith("\\")
         ):
-            # Another statement shares the first row, or the row continues the line
-            # above: the rows alone would parse as something else (`obj\` + `[1,]`
-            # is a subscript in the file but a list here). The whole-file check decides.
+            # Shared first row or a line continued from above can parse differently; whole-file
+            # check decides.
             return None
-        # Shared physical rows require the reference's sequential whole-file
-        # checks. They are uncommon (semicolon suites spanning multiple lines).
+        # Shared physical rows defer to the reference's whole-file checks, as they are rare.
         if occupied.intersection(range(lo, hi + 1)):
             return None
         occupied.update(range(lo, hi + 1))
@@ -235,8 +226,7 @@ def _assert_edits(lines, nodes):
                 and t.start[0] != t.end[0]
                 for t in tokens
             ):
-                # Dedenting an isolated statement can alter a multiline string
-                # value. Leave this unusual case to the whole-file guard.
+                # Dedenting can alter a multiline string; leave it to the whole-file guard.
                 return None
             significant = [t for t in tokens if t.type not in _STRING_TRIVIA]
             positions = [
@@ -302,12 +292,9 @@ def _reference_pre(text, definitions, assertions):
     return text, changed
 
 
-# A sparse lexer for VALID Python. The AST parser has already validated the
-# input. We only need comments, string literals, and standalone '=' operators.
-# F-strings use the running interpreter's tokenizer, up to their matching END;
-# this deliberately preserves the Python 3.10/3.11 versus 3.12+ distinction.
-# Unrolled (`a*(?:b a*)*`, not `(?:a|b)*`): the alternation kept one backtracking
-# frame per character, about 120 bytes each, so a 10 MB literal took 1.2 GB.
+# Unrolled, not (?:a|b)*: the alternation cost a backtrack frame per char, so 10 MB took 1.2 GB;
+# f-strings use the running interpreter tokenizer up to their matching END, keeping the 3.10/3.11 vs
+# 3.12+ distinction.
 _QUOTE = (
     r'''(?:"""[^"\\]*(?:(?:\\[\s\S]|"(?!""))[^"\\]*)*"""'''
     r"""|\'\'\'[^\'\\]*(?:(?:\\[\s\S]|\'(?!\'\'))[^\'\\]*)*\'\'\'"""
@@ -456,8 +443,7 @@ def _pass_nodes(tree):
         node = todo.pop()
         for attr in ("body", "orelse", "finalbody"):
             suite = getattr(node, attr, None)
-            # Deliberately preserve the reference's single-statement-suite
-            # recursion bug and its omission of match-case bodies.
+            # Keeps the reference's one-statement-suite recursion bug and its match-case gap.
             if not isinstance(suite, list) or len(suite) <= 1:
                 continue
             redundant.extend(s for s in suite if isinstance(s, ast.Pass))
@@ -488,10 +474,8 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
         previous_end, previous_row = end, lastrow
     if len(current) > 1:
         runs.append(current)
-    # A u prefix anywhere in a concatenation decides the `kind` of the constants an
-    # f-fold produces, and the rest of that concatenation can sit outside the run
-    # (`(f"" u""` + newline + `"a")`), so no check on the run alone can see it.
-    # `u` combines with no other prefix, so a piece's first character tells.
+    # A u prefix anywhere in the concatenation sets the folded constants' kind, even outside the
+    # run.
     has_u = any(text[start] in "uU" for _kind, start, _end in strings)
     edits = []
     for run in runs:
@@ -513,13 +497,8 @@ def _merge_edits(text, lines, starts, strings, insertions, nodes):
                     continue
         original = lines[row - 1][c0:c1]
         try:
-            # Include parentheses to handle implicit concatenation and use AST
-            # dumps only for these small expressions. With u prefixes ruled out
-            # above, the pieces outside the run concatenate to the same values
-            # either way, so local equality is a sufficient proof; local
-            # inequality is NOT proof of file-level inequality (two changes in a
-            # larger concatenation may cancel). Defer that case to the
-            # reference's all-or-nothing global guard.
+            # Local AST equality proves the merge safe, given u prefixes are ruled out above; local
+            # inequality is not proof and defers to the reference global guard.
             before = ast.parse("(" + original + ")", mode = "eval")
             after = ast.parse("(" + merged + ")", mode = "eval")
             if ast.dump(before) != ast.dump(after):
@@ -545,8 +524,7 @@ def _post(
         return _reference_post(text, spacing, blanks, merging, passes)
     tree = _tree(text)
     if tree is None:
-        # enforce_spacing historically tokenizes even invalid syntax and can
-        # raise TokenError/IndentationError; the other passes return unchanged.
+        # enforce_spacing can raise on bad syntax; other passes return the text unchanged.
         return _reference_post(text, spacing, blanks, merging, passes)
     lines = text.splitlines(True)
     if not lines:
@@ -556,8 +534,7 @@ def _post(
     try:
         equals, strings = _lex(text) if spacing or merging else ((), ())
     except (tokenize.TokenError, SyntaxError):
-        # The f-string scan runs the real tokenizer from mid-file; should it ever
-        # disagree with the parser, the reference path decides, as for bad syntax.
+        # If the f-string scan disagrees with the parser, the reference path decides.
         return _reference_post(text, spacing, blanks, merging, passes)
     original_lines = lines[:]
     insertions = _space(lines, starts, equals) if spacing else {}
@@ -566,8 +543,7 @@ def _post(
     if edits is None:
         return _reference_post(text, spacing, blanks, merging, passes)
     redundant = _pass_nodes(tree) if passes and "pass" in text else []
-    # Convert insertions/replacements to UTF-8 byte coordinates ONLY for pass
-    # nodes. Preserve the reference's byte-column-as-character-column behavior.
+    # Only pass nodes use UTF-8 byte coordinates; the reference's column quirk is kept.
     shifts = defaultdict(list)
     for node in redundant:
         row = node.lineno - 1
@@ -657,8 +633,7 @@ def remove_redundant_passes(text: str) -> tuple[str, bool]:
     return _post(text, spacing = False, blanks = False, merging = False)
 
 
-# A closing quote, blanks, then an opening one: every same-line implicit concatenation
-# matches, and so does `" ".join`. The lexer below settles which it is.
+# Quote-blank-quote matches implicit concatenation and " ".join; the lexer decides.
 _ADJACENT_QUOTES = re.compile(r"""['"][ \t]+(?:[rRuUbBfF]{1,2})?['"]""")
 _PASS_ROW = re.compile(r"^([ \t]*)pass[ \t]*(?:#.*)?$", re.MULTILINE)
 
@@ -760,8 +735,7 @@ def process_file(
     return changed
 
 
-# Shared literal policy and exact compatibility paths. These are deliberately
-# retained so exceptional source keeps the reference behavior, including bugs.
+# Reference compatibility paths kept deliberately, including bugs, for exceptional source.
 
 
 def _reference_enforce_spacing(text: str) -> tuple[str, bool]:

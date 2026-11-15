@@ -985,8 +985,7 @@ def test_uv_base_prefix_junction_grants_concrete_runtime(monkeypatch, tmp_path):
     assert str(base.resolve()) in roots
     assert str(alias) not in roots
     assert str(tmp_path) not in roots
-    # The exception belongs only to Python's own base prefix. Arbitrary grants
-    # and workdirs must still reject the same redirect.
+    # Only Python's own base prefix is exempt; grants and workdirs must still reject redirects.
     with pytest.raises(mxc_policy.MxcPolicyError, match = "reparse point"):
         mxc_policy._runtime_read_roots(str(prefix / "python.exe"), [str(alias)])
     with pytest.raises(mxc_policy.MxcPolicyError, match = "reparse point"):

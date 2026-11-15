@@ -266,6 +266,109 @@ def test_native_fsdp2_units_and_grads(arch, repo, loader, lora, tmp_path):
         assert r["dummy_viable"], r
 
 
+def _gemma4_kv_shared(shared):
+    """Tiny Gemma 4 text model (random init, no weights); the last `shared` layers reuse the kv of the last
+    non-shared layer of their type, which the decoder hands across layers (shared_kv_states)."""
+    import transformers
+
+    config = transformers.Gemma4TextConfig(
+        vocab_size = 256,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+        global_head_dim = 16,
+        num_kv_shared_layers = shared,
+        layer_types = ["sliding_attention", "full_attention"] * 2,
+        sliding_window = 8,
+        hidden_size_per_layer_input = 16,
+        vocab_size_per_layer_input = 256,
+        tie_word_embeddings = False,
+    )
+    config._attn_implementation = "eager"
+    torch.manual_seed(0)
+    return transformers.Gemma4ForCausalLM(config).float().train()
+
+
+def _kv_shared_worker(rank, world, port, shared, reshard, out):
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        RANK = str(rank),
+        WORLD_SIZE = str(world),
+        LOCAL_RANK = str(rank),
+        UNSLOTH_FSDP2 = "1",
+    )
+    import torch.distributed as dist
+
+    dist.init_process_group("gloo", rank = rank, world_size = world)
+    try:
+        native = _load_native()
+        ref, model = _gemma4_kv_shared(shared), _gemma4_kv_shared(shared)
+        attn = [layer.self_attn for layer in model.model.layers]
+        batch = _batch(model)
+        ref_loss = ref(**batch).loss
+        ref_loss.backward()
+        ref_grads = {n: p.grad.clone() for n, p in ref.named_parameters() if p.grad is not None}
+        native.shard_model(
+            model, native.FSDP2Config(param_dtype = torch.float32, reshard_after_forward = reshard)
+        )
+        assert native.is_native_fsdp2(model)
+        loss = model(**batch).loss
+        loss.backward()
+        from torch.distributed.tensor import DTensor
+
+        worst, missing = 0.0, []
+        for n, p in model.named_parameters():
+            if p.grad is None:
+                if n in ref_grads:
+                    missing.append(n)
+                continue
+            g = p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad
+            r = ref_grads[n]
+            worst = max(worst, (g - r).abs().max().item() / (r.abs().max().item() + 1e-8))
+        result = {
+            "loss": loss.item(),
+            "ref_loss": ref_loss.item(),
+            "worst_rel_grad": worst,
+            "missing": missing,
+            "n_grads": len(ref_grads),
+            "kv_shared": sum(bool(getattr(a, "is_kv_shared_layer", False)) for a in attn),
+            "kv_stored": sum(bool(getattr(a, "store_full_length_kv", False)) for a in attn),
+            "units": len(native.find_shard_units(model)),
+        }
+        if rank == 0:
+            import json
+            with open(out, "w", encoding = "utf-8") as f:
+                json.dump(result, f)
+    finally:
+        dist.destroy_process_group()
+
+
+def test_gemma4_kv_shared_layers_match_one_process(tmp_path):
+    """Gemma 4 with num_kv_shared_layers > 0 under native FSDP2 (reshard_after_forward = True): the shared
+    layers read kv that an earlier, already resharded unit computed; loss and every gradient match the
+    unsharded model."""
+    import json
+
+    import torch.multiprocessing as mp
+    import transformers
+
+    if not hasattr(transformers, "Gemma4TextConfig"):
+        pytest.skip(f"transformers {transformers.__version__} has no Gemma 4")
+    out = str(tmp_path / "result.json")
+    mp.spawn(_kv_shared_worker, args = (2, _free_port(), 2, True, out), nprocs = 2, join = True)
+    with open(out, encoding = "utf-8") as f:
+        r = json.load(f)
+    assert r["kv_shared"] == 2 and r["kv_stored"] >= 1, r  # the case under test
+    assert r["units"] >= 4, r
+    assert not r["missing"] and r["n_grads"] > 0, r
+    assert abs(r["loss"] - r["ref_loss"]) <= 1e-5 * max(1.0, abs(r["ref_loss"])), r
+    assert r["worst_rel_grad"] < 1e-4, r
+
+
 def test_native_selection_env(monkeypatch):
     native = _load_native()
     monkeypatch.setenv("WORLD_SIZE", "2")

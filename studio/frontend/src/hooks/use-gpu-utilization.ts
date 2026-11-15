@@ -60,12 +60,24 @@ export function useGpuUtilization(
             }
         }
 
-        void poll();
-        timerRef.current = setInterval(() => void poll(), intervalMs);
+        let lastPollAt = 0;
+        const pollNow = () => {
+            lastPollAt = Date.now();
+            void poll();
+        };
+        pollNow();
+        timerRef.current = setInterval(() => {
+            if (!document.hidden) pollNow();
+        }, intervalMs);
+        const onVisibilityChange = () => {
+            if (!document.hidden && Date.now() - lastPollAt >= intervalMs) pollNow();
+        };
+        document.addEventListener("visibilitychange", onVisibilityChange);
 
         return () => {
             cancelled = true;
             if (timerRef.current) clearInterval(timerRef.current);
+            document.removeEventListener("visibilitychange", onVisibilityChange);
         };
     }, [enabled, intervalMs]);
 

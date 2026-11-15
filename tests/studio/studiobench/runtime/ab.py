@@ -153,8 +153,7 @@ def unmeasured_planned_cells(
     planned: Sequence[str],
     session_id: Optional[str] = None,
 ) -> list[str]:
-    """An incomplete plan must void the table: a failed cell also drops its healthy partner from the
-    pair."""
+    """An incomplete plan voids the table; a failed cell also drops its healthy partner."""
     from ..scoring.from_payload import latest_attempt_rows
 
     # Apply the same two filters as readings_by_arm, so gate-failed cells also void the plan.

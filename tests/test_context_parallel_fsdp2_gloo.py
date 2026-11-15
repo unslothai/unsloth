@@ -170,7 +170,7 @@ def _worker(rank, port, out_dir):
 
         trl.SFTTrainer = Trainer
         cp.patch_sft_trainer(install_cp_methods = True)
-        trainer = object.__new__(Trainer)
+        trainer = cp._bind_cp_methods(object.__new__(Trainer))
         trainer._context_parallel_manager = manager
 
         ids, labels = _batches()

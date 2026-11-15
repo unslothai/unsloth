@@ -6,6 +6,30 @@ import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import type * as Session from "../src/features/auth/session.ts";
 
+test("refresh preserves a backfilled session marker when access token is missing", (t) => {
+  const previousWindow = globalThis.window;
+  const previousStorage = globalThis.localStorage;
+  const values = new Map([["unsloth_auth_refresh_token", "old-refresh"]]);
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+  } as unknown as Storage;
+  globalThis.localStorage = storage;
+  globalThis.window = { localStorage: storage, addEventListener() {}, dispatchEvent() {} } as unknown as Window & typeof globalThis;
+  t.after(() => { globalThis.window = previousWindow; globalThis.localStorage = previousStorage; });
+  const session = loadWithStubs<typeof Session>(new URL("../src/features/auth/session.ts", import.meta.url), {
+    "@/lib/api-base": { isTauri: false },
+    "@/lib/account-transition": { installAccountTransitionListener: () => {} },
+    "./login-client": { getLoginMode: () => "single" },
+    "./session-events": { AUTH_SESSION_STORED_EVENT: "stored" },
+  });
+  const mark = session.ensureAuthSessionMark();
+  assert.ok(mark);
+  session.storeAuthTokens("new-access", "new-refresh", true);
+  assert.equal(session.getAuthSessionMark(), mark);
+  assert.equal(session.getRefreshToken(), "new-refresh");
+});
+
 for (const [desktop, loginMode, change, expected] of [
   [true, "single", true, "/chat"],
   [true, "single", false, "/chat"],

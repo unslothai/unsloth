@@ -59,12 +59,12 @@ def _cross_entropy_forward(
     loss_ptr,
     logsumexp_ptr,
     labels_ptr,
-    VOCAB_SIZE: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    DO_SOFTCAPPING: tl.constexpr,
-    SOFTCAP: tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE: tl.constexpr,
+    VOCAB_SIZE: tl.constexpr,  # vocab size
+    BLOCK_SIZE: tl.constexpr,  # vocab block size
+    DO_SOFTCAPPING: tl.constexpr,  # logit softcapping on
+    SOFTCAP: tl.constexpr,  # softcap value
+    DO_LOGIT_SCALING: tl.constexpr,  # logit scaling on
+    LOGIT_SCALE: tl.constexpr,  # logit scale value
 ):
     """
     Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
@@ -186,19 +186,19 @@ def _chunked_forward_config(device, vocab_size):
 
 def _chunked_cross_entropy_forward(
     logits_ptr,
-    logits_row_stride: tl.constexpr,
+    logits_row_stride: tl.constexpr,  # logits row stride (vocab)
     loss_ptr,
     logsumexp_ptr,
     logsumexp_others_ptr,
     labels_ptr,
-    VOCAB_SIZE: tl.constexpr,
-    N_CHUNKS: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    DO_SOFTCAPPING: tl.constexpr,
-    SOFTCAP: tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE: tl.constexpr,
-    EVICT: tl.constexpr,
+    VOCAB_SIZE: tl.constexpr,  # vocab size
+    N_CHUNKS: tl.constexpr,  # vocab chunks per row
+    BLOCK_SIZE: tl.constexpr,  # vocab block size
+    DO_SOFTCAPPING: tl.constexpr,  # logit softcapping on
+    SOFTCAP: tl.constexpr,  # softcap value
+    DO_LOGIT_SCALING: tl.constexpr,  # logit scaling on
+    LOGIT_SCALE: tl.constexpr,  # logit scale value
+    EVICT: tl.constexpr,  # logits load eviction policy
 ):
     """
     256K vocab divided in 4 chunks
@@ -298,19 +298,19 @@ _chunked_cross_entropy_forward = triton.heuristics(
 
 def _cross_entropy_backward(
     logits_ptr,
-    logits_row_stride: tl.constexpr,
+    logits_row_stride: tl.constexpr,  # logits row stride (vocab)
     dlogits_ptr,
     dloss_ptr,
-    dloss_row_stride: tl.constexpr,
+    dloss_row_stride: tl.constexpr,  # dloss row stride
     logsumexp_ptr,
     loss_ptr,
     labels_ptr,
-    VOCAB_SIZE: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    DO_SOFTCAPPING: tl.constexpr,
-    SOFTCAP: tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE: tl.constexpr,
+    VOCAB_SIZE: tl.constexpr,  # vocab size
+    BLOCK_SIZE: tl.constexpr,  # vocab block size
+    DO_SOFTCAPPING: tl.constexpr,  # logit softcapping on
+    SOFTCAP: tl.constexpr,  # softcap value
+    DO_LOGIT_SCALING: tl.constexpr,  # logit scaling on
+    LOGIT_SCALE: tl.constexpr,  # logit scale value
 ):
     """
     CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
@@ -405,8 +405,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         logits = logits.contiguous()
         labels = labels.to(device).contiguous()
 
-        div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
-        n_chunks: int = div + (mod != 0)
+        # Ceil division, not divmod: Dynamo cannot trace divmod on a symbolic size (dynamic=True).
+        n_chunks: int = (vocab_size + MAX_FUSED_SIZE - 1) // MAX_FUSED_SIZE
         losses = torch.empty(n_rows, dtype = torch.float32, device = device)
 
         DO_SOFTCAPPING: bool = bool(logit_softcapping != 0)
@@ -440,8 +440,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         else:
             # For large vocabs > 65336 like Gemma 256K
             BLOCK_SIZE, num_warps = _chunked_forward_config(device, vocab_size)
-            div, mod = divmod(vocab_size, BLOCK_SIZE)
-            n_chunks = div + (mod != 0)
+            n_chunks = (vocab_size + BLOCK_SIZE - 1) // BLOCK_SIZE
             logsumexp = torch.empty(
                 (
                     n_rows,
@@ -499,10 +498,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         dlogits = torch.empty_like(logits)
 
         BLOCK_SIZE: int = 4096
-        div: int
-        mod: int
-        div, mod = divmod(vocab_size, BLOCK_SIZE)
-        n_blocks: int = div + (mod != 0)
+        n_blocks: int = (vocab_size + BLOCK_SIZE - 1) // BLOCK_SIZE
 
         with torch_gpu_device(dlosses.device):
             _cross_entropy_backward[

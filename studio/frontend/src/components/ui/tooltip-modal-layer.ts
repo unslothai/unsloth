@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Whether a tooltip trigger sits below the active modal. Radix writes inline pointer-events on
- * layers; the nearest ancestor with one owns the trigger. The trigger's own style is skipped.
+ * Whether a trigger sits below the active modal, judged by the nearest ancestor's pointer-events.
  */
 export function isBlockedByActiveModal(element: HTMLElement): boolean {
   for (let node = element.parentElement; node; node = node.parentElement) {

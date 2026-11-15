@@ -36,8 +36,7 @@ def is_hub_safetensors_single_file(filename: Optional[str]) -> bool:
 
 
 def single_file_load_allowed(repo_trusted: bool, kind: str, filename: Optional[str]) -> bool:
-    """Non-GGUF trust decision: a trusted repo keeps every kind; an untrusted one gains only a
-    ``single_file`` load of a ``.safetensors`` name."""
+    """Untrusted repos may only single_file-load .safetensors; trusted repos keep every kind."""
     if repo_trusted:
         return True
     return kind == "single_file" and is_hub_safetensors_single_file(filename)

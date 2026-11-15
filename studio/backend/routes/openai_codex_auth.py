@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 from auth.authentication import authenticated_via_api_key, get_current_credential
 from core.inference import openai_codex_auth as codex_auth
 from core.inference import openai_codex_client as codex_client
-from core.inference.providers import get_provider_info
 from routes.provider_credentials import current_credential_write, require_ui_session
 from storage import providers_db
 
@@ -157,19 +156,15 @@ async def list_subscription_models(
     _credential: tuple = Depends(get_current_credential),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Models this plan can reach, falling back to the curated seed."""
+    """Models this plan can reach; the list last read for this account when upstream cannot be asked."""
     require_ui_session(via_api_key)
     _provider(provider_id)
-    curated = [
-        {"id": model, "display_name": model, "context_length": None}
-        for model in get_provider_info("openai_codex")["default_models"]
-    ]
     status = codex_auth.auth_status(provider_id)
     if status == "reauthorization_required":
         # Another worker may have marked this bundle; do not present a dead connection as healthy.
-        return {"models": curated, "source": "reauthorization_required"}
+        return {"models": [], "source": "reauthorization_required"}
     if status != "connected":
-        return {"models": curated, "source": "curated"}
+        return {"models": [], "source": "curated"}
     try:
         token, account_id = await codex_auth.resolve_access(provider_id)
         models = await codex_client.list_subscription_models(
@@ -182,18 +177,24 @@ async def list_subscription_models(
             provider_id = provider_id,
             error_type = type(exc).__name__,
         )
-        return {"models": curated, "source": "reauthorization_required"}
+        return {"models": [], "source": "reauthorization_required"}
     except Exception as exc:
         logger.warning(
             "openai_codex.model_list_failed",
             provider_id = provider_id,
             error_type = type(exc).__name__,
         )
-        return {"models": curated, "source": "curated"}
+        bundle = codex_auth.load_oauth_bundle(provider_id)
+        models = (
+            codex_client.restore_subscription_catalog(provider_id, bundle)
+            if bundle
+            and codex_client.subscription_catalog_matches_account(provider_id, bundle["account_id"])
+            else []
+        )
     # Only listed slugs are offered, but all plan slugs are reported so unreachable ones are told apart.
     offered = [model for model in models if model.get("listed")]
     if not offered:
-        return {"models": curated, "source": "curated"}
+        return {"models": [], "source": "curated"}
     return {
         "models": offered,
         # Full entries: hidden slugs stay selectable and the client needs their capabilities.

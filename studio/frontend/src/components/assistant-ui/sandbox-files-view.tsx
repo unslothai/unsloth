@@ -4,8 +4,8 @@
 import {
   Download01Icon,
   FileEmpty02Icon,
-  FolderOpenIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderOpenIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
@@ -134,8 +134,7 @@ export function SandboxFiles({
 }) {
   if (!sessionId || files.length === 0) return null;
   return (
-    // No divider: the row sits outside the collapsible content, so on a collapsed card a rule
-    // would separate the header from nothing.
+    // No divider: the row is outside the collapsible, so collapsed cards keep no stray rule.
     <div className={cn("mt-2", className)}>
       <SandboxFolderLabel
         sessionId={sessionId}

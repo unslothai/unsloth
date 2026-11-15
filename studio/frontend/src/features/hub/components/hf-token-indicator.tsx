@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { AiSecurity03Icon } from "@hugeicons/core-free-icons";
+import { AiSecurity03Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { hfApiToken, useHfTokenStore } from "../stores/hf-token-store";
 

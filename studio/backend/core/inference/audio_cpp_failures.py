@@ -74,7 +74,7 @@ _MESSAGES = {
     "device to CPU.",
     "capacity_cpu": "This input does not fit in memory. Try a shorter input.",
     # Unsloth Studio's own refusal before launch.
-    "placement": "No single GPU has enough free memory for {name}. Free GPU memory, choose a "
+    "placement": "No single GPU has enough free memory for {name}.{need} Free GPU memory, choose a "
     "smaller variant, or set the audio device to CPU.",
 }
 
@@ -134,10 +134,114 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-def estimate_resident_gb(size_bytes: int) -> float:
+# GiB; resident = weights * per_weight + fixed. The generic lines are per-backend fallbacks for
+# unmeasured families; a lower CUDA line would run a held-out measured family out of memory.
+_GENERIC_PROFILE = (2.5, 1.5)
+_VULKAN_GENERIC_PROFILE = (1.85, 4.5)
+# Peak keeps growing with the input, so no line fit to peaks holds: the CUDA fallback everywhere.
+_UNBOUNDED_FAMILIES = frozenset({"vibevoice"})
+# family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 CUDA peak plus at least
+# 0.9 GiB, at default options and each family's generation cap; a raised token cap can exceed it.
+_MEASURED_PROFILES = {
+    "ace_step": (0.98, 6.46, 9.4),
+    "breeze_tts": (0.55, 5.18, 6.9),
+    # Covers convert sources up to 30 s; a 60 s source peaks at 12.7 GiB.
+    "chatterbox": (0.05, 5.98, 3.5),
+    "cosyvoice3": (0.6, 2.82, 6.6),
+    "heartmula": (2.5, 1.48, 7.2),
+    # Measured at the default 2048-token chunk cap; a higher max_tokens grows the cache.
+    "higgs_audio_tts": (1.0, 2.4, 8.0),
+    # Also covers the 2.74 GiB #16514 measured for Q8_0 (whole device).
+    "kokoro_tts": (0.0, 3.65, 0.9),
+    "midashenglm_gen": (1.0, 1.69, 3.2),
+    "minimax_music3": (0.7, 8.49, 12.7),
+    "moss_tts_v15": (0.95, 0.74, 19.2),
+    "omnivoice": (0.05, 5.29, 1.6),
+    # Steeper than the tightest fit so 0.6B Q8_0 (7.2 GB) stays loadable on an 8 GB card.
+    "qwen3_tts": (1.5, 4.44, 4.3),
+    "stable_audio": (1.5, 1.17, 5.5),
+    # Kept from #16514 (whole-device peaks above these runs); also covers Vulkan, so no entry there.
+    "voxcpm2": (2.2, 4.7, 8.9),
+    "voxtral_tts": (1.0, 2.0, 7.5),
+    "yue2": (1.03, 4.88, 7.1),
+}
+# The same inputs on audio.cpp's Vulkan build (AMD hosts); a family absent here uses its CUDA line.
+_VULKAN_PROFILES = {
+    "ace_step": (1.15, 5.55, 9.4),
+    "breeze_tts": (0.0, 12.1, 6.9),
+    "chatterbox": (0.25, 5.25, 3.5),
+    "cosyvoice3": (0.6, 4.38, 6.6),
+    "heartmula": (2.5, 2.7, 7.2),
+    "higgs_audio_tts": (0.95, 2.94, 8.0),
+    "kokoro_tts": (0.1, 3.89, 0.9),
+    "midashenglm_gen": (1.0, 2.25, 3.2),
+    "minimax_music3": (0.7, 9.41, 12.7),
+    "moss_tts_v15": (1.0, 2.63, 19.2),
+    "omnivoice": (0.05, 7.67, 1.6),
+    "qwen3_tts": (1.1, 8.87, 4.3),
+    "stable_audio": (1.8, 0.65, 5.5),
+    "voxtral_tts": (1.7, -0.64, 7.5),
+    "yue2": (1.2, 4.45, 7.1),
+}
+# Families measured far higher on pre-Ampere NVIDIA cards (YuE2 on a T4): the generic formula there.
+_NOT_BEFORE_AMPERE = frozenset({"yue2"})
+
+
+def _runtime_backend() -> Optional[str]:
+    """The installed audio.cpp's backend ("cuda", "vulkan", ...), or None when none is installed."""
+    from core.inference.audio_cpp_server import find_audio_cpp_server_binary, select_backend
+
+    binary = find_audio_cpp_server_binary()
+    return select_backend(binary, False) if binary else None
+
+
+def _may_have_pre_ampere_nvidia_card() -> bool:
+    """Uncached (gpu_query caches); unreadable NVIDIA capabilities count as pre-Ampere."""
+    from utils.hardware import nvidia
+
+    capabilities = nvidia.get_compute_capabilities()
+    if not capabilities:
+        return nvidia.has_nvidia_driver()
+    return any(capability < (8, 0) for capability in capabilities.values())
+
+
+def gpu_estimate_applies(audio_type: Optional[str]) -> bool:
+    """Whether the placement check sizes an Auto load of ``audio_type`` with its estimate."""
+    import utils.hardware as hardware
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
+    from core.inference.audio_device import audio_load_runs_on_cpu
+
+    return (
+        audio_type in AUDIO_CPP_AUDIO_TYPES
+        and hardware.get_device() in (hardware.DeviceType.CUDA, hardware.DeviceType.XPU)
+        and not audio_load_runs_on_cpu(audio_type, "auto")
+    )
+
+
+def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
     """Resident GPU memory for an audio.cpp package: weights plus graph and cache buffers.
-    Measured TTS peaks run about 3x the q8 weights (Qwen3-TTS 0.6B: 1.9 GB file, 5.9 GB peak)."""
-    return round(size_bytes / (1024**3) * 2.5 + 1.5, 2)
+    A measured family uses its own profile; a package past the sizes measured for it gets the
+    larger of that profile and the generic one."""
+    weights_gb = size_bytes / (1024**3)
+    backend = _runtime_backend()
+
+    def pick(cuda, vulkan):
+        # Not installed yet, or a build measured on neither (HIP, CPU): both, and the larger wins.
+        return {"cuda": [cuda], "vulkan": [vulkan]}.get(backend, [cuda, vulkan])
+
+    generics = (
+        [_GENERIC_PROFILE]
+        if family in _UNBOUNDED_FAMILIES
+        else pick(_GENERIC_PROFILE, _VULKAN_GENERIC_PROFILE)
+    )
+    generic = max(weights_gb * per_weight + fixed for per_weight, fixed in generics)
+    profile = _MEASURED_PROFILES.get(family or "")
+    if profile is None or (family in _NOT_BEFORE_AMPERE and _may_have_pre_ampere_nvidia_card()):
+        return round(generic, 2)
+    profiles = pick(profile, _VULKAN_PROFILES[family]) if family in _VULKAN_PROFILES else [profile]
+    measured = max(weights_gb * per_weight + fixed for per_weight, fixed, _largest in profiles)
+    measured_up_to_gb = min(largest for _per_weight, _fixed, largest in profiles)
+    return round(measured if weights_gb <= measured_up_to_gb else max(measured, generic), 2)
 
 
 def smaller_variants(
@@ -146,7 +250,8 @@ def smaller_variants(
     free_gb: Optional[float] = None,
     limit: int = 3,
 ) -> list[dict]:
-    """Variants smaller than the loaded one, largest first; only those that fit ``free_gb``."""
+    """Variants with a lower estimate than the loaded one, largest first; only those that fit
+    ``free_gb``. Byte size alone is not enough: ACE-Step base is a few bytes under turbo."""
     if model is None:
         return []
     from core.inference.audio_cpp_models import quant_label, resolve
@@ -158,11 +263,15 @@ def smaller_variants(
         except Exception:  # noqa: BLE001 - an unknown companion counts as nothing
             found = None
         extra += found.size_bytes if found is not None else 0
+    family = getattr(model, "family", None)
+    current = estimate_resident_gb(model.size_bytes + extra, family)
     rows = []
     for variant in sorted(model.variants, key = lambda v: v.size_bytes, reverse = True):
-        estimate = estimate_resident_gb(variant.size_bytes + extra)
-        if not 0 < variant.size_bytes < model.size_bytes or (
-            free_gb is not None and estimate > free_gb
+        estimate = estimate_resident_gb(variant.size_bytes + extra, family)
+        if (
+            not 0 < variant.size_bytes < model.size_bytes
+            or estimate >= current
+            or (free_gb is not None and estimate > free_gb)
         ):
             continue
         label = variant.label or quant_label(variant.main_file)
@@ -200,6 +309,7 @@ def classify_audio_cpp_failure(
     model = None,
     runtime_status: Optional[int] = None,
     free_gb: Optional[float] = None,
+    required_gb: Optional[float] = None,
 ) -> Optional[AudioCppFailure]:
     """The known failure in ``text`` (a runtime log tail or error), or None."""
     raw = str(text or "")
@@ -218,7 +328,18 @@ def classify_audio_cpp_failure(
         on_cpu = code == "out_of_memory" and backend == "cpu"
         key = "placement" if placement else "capacity" if capacity else code
         key = f"{key}_cpu" if on_cpu and key in ("out_of_memory", "capacity") else key
-        message = _MESSAGES[key].format(name = getattr(model, "display_name", None) or "This model")
+        need = ""
+        if placement and required_gb is not None:
+            digits = 2 if free_gb is not None and f"{required_gb:.1f}" == f"{free_gb:.1f}" else 1
+            need = f" It needs about {required_gb:.{digits}f} GB of GPU memory while running"
+            need += (
+                f", and the most free on one GPU is {free_gb:.{digits}f} GB."
+                if free_gb is not None
+                else "."
+            )
+        message = _MESSAGES[key].format(
+            name = getattr(model, "display_name", None) or "This model", need = need
+        )
         # "device": the run was already on the CPU, so "set the audio device to CPU" can't help.
         extras: dict = {"device": "cpu"} if on_cpu else {}
         if code == "out_of_memory" and not capacity:

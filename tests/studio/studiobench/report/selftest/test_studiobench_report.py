@@ -238,8 +238,7 @@ def _gated_cell_rows(
 
 
 def test_a_cell_that_lost_its_thread_is_scored_incomplete_rather_than_green():
-    """A cell that lost its thread must score INCOMPLETE, not green; there is no second arm to
-    compare it to."""
+    """A cell that lost its thread scores INCOMPLETE, not green; no second arm to compare."""
     from studiobench.report.build import _completion_by_rung
 
     got = _completion_by_rung(_gated_cell_rows("thread_complete", False))
@@ -299,8 +298,7 @@ def test_a_retry_that_passed_is_not_marked_incomplete_by_the_dead_attempt():
 
 
 def test_the_floor_table_drops_a_gate_failed_cell():
-    """The other scorer that admits a cell on `completed` alone. It builds the floor a result is
-    then judged against, and scores the result too."""
+    """The floor table also admits on `completed` alone, so it must drop gate-failed cells."""
     from studiobench.sweep.floor_table import cell_metrics
 
     rows = _gated_cell_rows("thread_complete", False) + [
@@ -345,9 +343,8 @@ def test_a_measured_stream_follow_failure_is_still_fatal():
 
 
 def test_a_bounded_ratio_is_marked_rather_than_printed_as_a_measurement():
-    """An arm under its instrument floor contributes the floor, so the ratio understates the true
-    magnitude. Printed bare it invites `4900% worse` being quoted as a measurement; the marker
-    goes in the ratio cell rather than a footnote for the same reason the void path gives."""
+    """An arm under its floor reports the floor, understating the ratio; mark the ratio cell, not a
+    footnote, so 4900% worse is not quoted as a measurement."""
 
     identity = RunIdentity("studiobench/1", "c", "r", "w", "s1")
     smooth = Measure.read(0.0, "%", floor = 0.1)
@@ -382,8 +379,7 @@ def test_an_ordinary_ratio_is_still_printed_bare():
 
 
 def test_a_missing_viewport_is_not_waived_as_an_absent_instrument():
-    """A missing thread viewport is a defect in the arm, so it must not be waived as an absent
-    instrument."""
+    """A missing thread viewport is a defect in the arm, not an absent instrument to waive."""
     from studiobench.report.build import _completion_by_rung
 
     rows = _gated_cell_rows("thread_complete", False)

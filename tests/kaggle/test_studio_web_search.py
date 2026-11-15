@@ -33,9 +33,8 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
 
 
 def test_only_the_web_search_tool_is_offered():
-    """With `enabled_tools` omitted the loop may reach for python instead, and
-    a run that executed python would satisfy a looser log check while saying
-    nothing about search."""
+    """With enabled_tools omitted the loop may reach for python, and a run that executed python
+    would satisfy a looser log check while saying nothing about search."""
     body = _body()
     assert "enable_tools = True" in body
     assert 'enabled_tools = ["web_search"]' in body
@@ -50,9 +49,8 @@ def test_the_evidence_is_the_execution_line_and_not_a_selection_one():
 
 
 def test_it_counts_only_what_this_request_wrote():
-    """The payload drives several tool assertions against one server. A grep
-    over the whole log would let an earlier assertion's tool call stand in for
-    this one, which is a green tick for a search that never happened."""
+    """Several assertions share one server, so count only the log slice this request wrote; a
+    whole-log grep would let an earlier tool call pass for this search."""
     body = _body()
     assert "before = self.server_log.read_text" in body
     # Whitespace-insensitive: the formatter rewrites the slice spacing.
@@ -61,9 +59,8 @@ def test_it_counts_only_what_this_request_wrote():
 
 
 def test_an_empty_result_set_is_reported_and_not_failed():
-    """Deliberately narrow. ddgs runs with no API key, so a provider throttling
-    a Kaggle egress IP is a fact about the day; failing on it would be a red
-    nobody can act on. The execution is the claim; the results are context."""
+    """ddgs needs no API key, so provider throttling of a Kaggle egress IP is not actionable; the
+    test asserts execution, and results are only context."""
     func = _func("assert_web_search")
     for node in ast.walk(func):
         if not isinstance(node, ast.If):

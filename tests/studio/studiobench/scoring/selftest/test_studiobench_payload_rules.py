@@ -11,8 +11,7 @@ from tests.studio.studiobench.scoring import payload_rules
 
 
 def _ladder_payload() -> list[dict]:
-    """Fixture of the withdrawn headline run: 100K completes on both arms; the 1M treatment cell
-    does not."""
+    """Withdrawn headline run: 100K completes on both arms; the 1M treatment cell does not."""
     rows: list[dict] = []
     for cell_id, n_windows, completed in (
         ("r100K.base.rep0", 17, True),

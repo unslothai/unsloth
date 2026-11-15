@@ -677,9 +677,8 @@ def test_update_size_missing_inputs_fail_open(monkeypatch):
 
 @pytest.mark.parametrize("fetch", ["_fetch_latest_release_tag", "_fetch_latest_release_assets"])
 def test_release_fetch_cannot_outlive_its_deadline(monkeypatch, fetch):
-    """urllib applies its timeout per address, so /api/inference/status inherits that
-    multiplication without a wall-clock deadline; one stalled connect stands in for the
-    walk. Both entry points, since they share the fetch."""
+    """urllib applies its timeout per address, so /api/inference/status inherits the multiplication
+    without a wall-clock deadline; both fetch entry points need one."""
 
     def _stalls(req, timeout = 5.0):
         time.sleep(30)

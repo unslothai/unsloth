@@ -86,9 +86,8 @@ def safetensors_prequant_supported() -> bool:
     return True
 
 
-# The torchao weight subclass a scheme's safetensors file is rebuilt into, for schemes torchao added to its
-# safetensors allowlist after the 0.16 floor (0.16 lists neither; 0.17 lists both). fp8 / int8 are in every
-# release at the floor, so they are not listed here.
+# Torchao subclasses for schemes added to its safetensors allowlist after the 0.16 floor (0.16 lists
+# neither, 0.17 lists both); fp8 and int8 are in every release at the floor.
 _SCHEME_SUBCLASS = {"nvfp4": "NVFP4Tensor", "mxfp8": "MXTensor"}
 
 
@@ -129,15 +128,28 @@ def plain_safetensors_supported() -> bool:
     return True
 
 
+def _unviewed(tensor: Any) -> Any:
+    """``tensor`` as a base-less alias of the same storage (no copy). safetensors hands back views of one whole-file
+    mapping; a view keeps that base alive through ``.data =`` (which is how a streamed buffer is re-pointed at its
+    pinned copy), so one buffer would keep the full file mapped for the life of the model."""
+    if getattr(tensor, "_base", None) is None or type(tensor).__name__ != "Tensor":
+        return tensor
+    import torch
+
+    out = torch.empty(0, dtype = tensor.dtype, device = tensor.device)
+    return out.set_(
+        tensor.untyped_storage(), tensor.storage_offset(), tensor.size(), tensor.stride()
+    )
+
+
 def load_plain_prequant_safetensors(
     path: str,
     *,
     device: str = "cpu",
     skip_names: Iterable[str] = (),
 ) -> dict:
-    """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors.
-
-    ``skip_names`` are validated but never read."""
+    """Reads plain-tensor prequant file without torchao; refuses subclass metadata and unlisted
+    tensors; skip_names are validated but never read."""
     from safetensors import safe_open
 
     with safe_open(path, framework = "pt", device = device) as handle:
@@ -169,9 +181,11 @@ def load_plain_prequant_safetensors(
             if json.loads(raw.get(name) or "null") != {"_type": "Tensor"}:
                 raise ValueError(f"{path} requires a tensor-subclass reader for {name!r}")
         skip = frozenset(skip_names)
-        state_dict = {name: handle.get_tensor(name) for name in names if name not in skip}
+        state_dict = {
+            name: _unviewed(handle.get_tensor(name)) for name in names if name not in skip
+        }
         state_dict.update(
-            (key[len(UNSLOTH_ROOT_PREFIX) :], handle.get_tensor(key)) for key in roots
+            (key[len(UNSLOTH_ROOT_PREFIX) :], _unviewed(handle.get_tensor(key))) for key in roots
         )
     return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
 

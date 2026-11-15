@@ -664,8 +664,7 @@ def test_dac_weights_use_immutable_revision_and_active_cache(monkeypatch, tmp_pa
 
     result = source.ensure_dac_speech_weights()
 
-    # The download is installed into the pinned destination, so the next load hits the
-    # fast path instead of re-downloading and re-hashing the artifact.
+    # Installed at the pinned path, so later loads skip re-downloading and re-hashing.
     assert result.is_relative_to(hub_cache)
     assert result.read_bytes() == payload
     assert calls == [
@@ -769,9 +768,7 @@ def test_bytecode_purge_tolerates_a_concurrent_purge(tmp_path):
 
 
 def test_bytecode_purge_fails_closed_when_a_pyc_survives(monkeypatch, tmp_path):
-    """The purge is the only defence against a planted .pyc shadowing a verified .py: the
-    manifest skips __pycache__ and the origin audit reads __file__, which still names the
-    .py. So a .pyc we could not delete must fail the load, not be waved through."""
+    """The purge is the only guard against a planted .pyc: a .pyc that survives must fail the load."""
     package_root = tmp_path / "sparktts"
     package_root.mkdir(parents = True)
     (package_root / "stale.pyc").write_bytes(b"")
@@ -841,8 +838,7 @@ def test_unwritable_hub_cache_still_uses_verified_legacy_dac_weights(monkeypatch
 
 
 def test_replacing_a_checkout_clears_read_only_files(tmp_path):
-    """Git marks .git/objects read-only and Windows refuses to delete a read-only file, so
-    replacing a pinned checkout died with WinError 5 there."""
+    """Git's read-only .git/objects defeat Windows deletes (WinError 5); clear the flag first."""
     tree = tmp_path / "checkout" / ".git" / "objects" / "ab"
     tree.mkdir(parents = True)
     blob = tree / "cdef"
@@ -855,8 +851,7 @@ def test_replacing_a_checkout_clears_read_only_files(tmp_path):
 
 
 def test_read_only_handler_reraises_when_the_path_is_already_writable(tmp_path):
-    """A locked file (WinError 32 on Windows) is not a read-only problem, so it must surface
-    rather than be retried into a loop."""
+    """A locked file (WinError 32) is not read-only, so re-raise rather than retry in a loop."""
     victim = tmp_path / "locked"
     victim.write_bytes(b"x")
 

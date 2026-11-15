@@ -29,13 +29,12 @@ import { ShineBorder } from "@/components/ui/shine-border";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toastError } from "@/shared/toast";
+import { Album02Icon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Album02Icon,
   BookOpen01Icon,
   CodeIcon,
   CookBookIcon,
   Database02Icon,
-  Delete02Icon,
   DocumentAttachmentIcon,
   FunctionIcon,
   GithubIcon,
@@ -547,7 +546,7 @@ export function DataRecipesPage(): ReactElement {
                     }}
                     aria-label={`Delete ${recipe.name}`}
                   >
-                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                    <HugeiconsIcon icon={TrashIcon} className="size-4" />
                   </Button>
                 </div>
               ))}

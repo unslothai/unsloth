@@ -154,10 +154,9 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     );
   }, []);
 
-  // A window that shrank, or a panel that grew when expanded, would otherwise strand it off screen
-  // with nothing able to bring it back. Deliberately not keyed on `position`: it used to be, so
-  // every frame of a drag tore the observer down and built a new one, and observing re-measures,
-  // which forced a synchronous layout each time. reclamp returns the same object when unchanged.
+  // A shrunk window or a grown panel would strand it off screen; deliberately not keyed on
+  // position, since keying on it tore down and rebuilt the observer every drag frame; reclamp
+  // returns the same object when unchanged.
   useEffect(() => {
     if (!panelEl) return;
     const measure = () => {

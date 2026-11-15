@@ -3,11 +3,11 @@
 
 import { Button } from "@/components/ui/button";
 import { Panel, useReactFlow } from "@xyflow/react";
-import { Focus, Lock, LockOpen } from "lucide-react";
+import { Lock } from "lucide-react";
 import { type ReactElement, useCallback } from "react";
 import { buildFitViewOptions } from "../../utils/graph/fit-view";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "../recipe-floating-icon-button-class";
-import { MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { CenterFocusIcon, MinusSignIcon, PlusSignIcon, SquareUnlock02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ContractArrowsIcon, ExpandArrowsIcon } from "@/lib/expand-icons";
 
@@ -73,7 +73,7 @@ export function ViewportControls({
         onClick={handleFitView}
         aria-label="Center view"
       >
-        <Focus className="size-4" />
+        <HugeiconsIcon icon={CenterFocusIcon} className="size-4" />
       </Button>
       <Button
         type="button"
@@ -99,7 +99,7 @@ export function ViewportControls({
         aria-label={interactive ? "Lock interaction" : "Unlock interaction"}
       >
         {interactive ? (
-          <LockOpen className="size-4" />
+          <HugeiconsIcon icon={SquareUnlock02Icon} className="size-4" />
         ) : (
           <Lock className="size-4" />
         )}

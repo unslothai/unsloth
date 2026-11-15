@@ -60,8 +60,7 @@ def test_the_protected_file_counts_toward_the_cap(tmp_path, population):
 
 
 def test_the_protected_file_survives_even_when_it_sorts_oldest(tmp_path):
-    """Two loads in the same second, or a clock that stepped back, and the file the caller
-    is writing to is no longer the newest. It still may not be deleted."""
+    """The active log is never deleted, even if a clock step makes it sort oldest."""
     _seed(tmp_path, 30)
     active = tmp_path / "llama-active.log"
     active.write_text("live", encoding = "utf-8")

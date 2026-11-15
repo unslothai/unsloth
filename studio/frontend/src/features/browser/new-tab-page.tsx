@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { ChevronDownStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Cancel01Icon,
   Clock01Icon,
   StarIcon,
-  Delete02Icon,
   Download01Icon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
@@ -296,9 +297,11 @@ export function NewTabPage({ tabId }: { tabId: string }) {
     shownPage * RECENTS_PER_PAGE,
     (shownPage + 1) * RECENTS_PER_PAGE,
   );
+  const clock = useTimeFormat();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clock is the trigger.
   const timeFormat = useMemo(
-    () => new Intl.DateTimeFormat(locale, { timeStyle: "short" }),
-    [locale],
+    () => new Intl.DateTimeFormat(locale, withTimeFormat({ timeStyle: "short" }, locale)),
+    [locale, clock],
   );
   const dateFormat = useMemo(
     () => new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }),
@@ -352,7 +355,7 @@ export function NewTabPage({ tabId }: { tabId: string }) {
               tabId={tabId}
               extra={
                 <MenuRow
-                  icon={Delete02Icon}
+                  icon={TrashIcon}
                   onSelect={() => removeFromHistory(item.url)}
                 >
                   {t("browser.pages.removeFromHistory")}

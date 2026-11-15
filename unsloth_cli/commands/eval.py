@@ -13,7 +13,7 @@ import time
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import typer
 
@@ -342,7 +342,17 @@ def resolve_tasks(
     entries = [e.strip() for e in tasks.split(",") if e.strip()]
     if not entries:
         raise ValueError("No tasks provided. Pass --tasks with at least one task.")
-    plain = {e for e in entries if Path(e).suffix.lower() not in _DATASET_SUFFIXES | _YAML_SUFFIXES}
+    reserved = {
+        e for e in entries if Path(e).suffix.lower() not in _DATASET_SUFFIXES | _YAML_SUFFIXES
+    }
+    yaml_tasks: Dict[str, Tuple[str, bool]] = {}
+    for entry in entries:
+        path = Path(entry)
+        if path.suffix.lower() in _YAML_SUFFIXES:
+            if not path.exists():
+                raise FileNotFoundError(f"Custom task file not found: {entry}")
+            yaml_tasks[entry] = _yaml_task_name(path)
+            reserved.add(yaml_tasks[entry][0])
     names: List[str] = []
     include_paths: List[str] = []
 
@@ -357,9 +367,7 @@ def resolve_tasks(
         path = Path(entry)
         suffix = path.suffix.lower()
         if suffix in _YAML_SUFFIXES:
-            if not path.exists():
-                raise FileNotFoundError(f"Custom task file not found: {entry}")
-            name, needs_dir = _yaml_task_name(path)
+            name, needs_dir = yaml_tasks[entry]
             if needs_dir:
                 add(name, path.resolve().parent)
             else:
@@ -373,7 +381,7 @@ def resolve_tasks(
                 raise FileNotFoundError(f"Dataset file not found: {entry}")
             # An include-path task overrides a registered one of the same name, so avoid names requested alongside (gsm8k,./gsm8k.jsonl).
             name, counter = path.stem, 2
-            while name in names or name in plain:
+            while name in names or name in reserved:
                 name, counter = f"{path.stem}_{counter}", counter + 1
             if name != path.stem:
                 typer.echo(f"Note: running dataset '{path.name}' as task '{name}'.")

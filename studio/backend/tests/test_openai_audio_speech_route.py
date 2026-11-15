@@ -94,13 +94,66 @@ def test_gallery_persist_failure_still_serves_audio(monkeypatch):
     assert resp.content == _WAV
 
 
-def test_voice_and_speed_accepted_and_ignored(monkeypatch):
+def test_voice_and_speed_accepted(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     resp = cli.post(
         "/v1/audio/speech",
         json = {"input": "hi", "voice": "alloy", "speed": 1.25, "model": "tts-1"},
     )
     assert resp.status_code == 200
+
+
+def test_speed_reaches_the_model_without_a_saved_voice(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "voice": "af_heart", "speed": 0.5})
+    assert resp.status_code == 200
+    assert calls[0]["payload"].audio_options == {"speed": 0.5}
+
+    cli.post(
+        "/v1/audio/speech",
+        json = {"input": "hi", "speed": 0.5, "audio_options": {"speed": 1.5, "steps": 4}},
+    )
+    assert calls[1]["payload"].audio_options == {"speed": 1.5, "steps": 4}
+
+    cli.post("/v1/audio/speech", json = {"input": "hi"})
+    assert calls[2]["payload"].audio_options is None
+
+
+def test_worker_sends_audio_options_only_to_a_backend_that_takes_them():
+    import inspect
+    import queue
+
+    from core.inference.native_audio import NativeAudioBackend
+    from core.inference.worker import _handle_generate_audio
+
+    seen = []
+
+    class _Native:
+        def generate_audio_response(self, **kwargs):
+            seen.append(kwargs)
+            return _WAV, 24000
+
+        generate_audio_response.__signature__ = inspect.signature(
+            NativeAudioBackend.generate_audio_response
+        )
+
+    class _Options:
+        def generate_audio_response(
+            self,
+            text,
+            audio_options = None,
+            **kwargs,
+        ):
+            seen.append({"audio_options": audio_options})
+            return _WAV, 24000
+
+    for backend in (_Native(), _Options()):
+        out = queue.Queue()
+        cmd = {"request_id": "r", "text": "hi", "audio_options": {"speed": 0.5}}
+        _handle_generate_audio(backend, cmd, out, threading.Event())
+        assert out.get_nowait()["type"] == "audio_done"
+    assert "audio_options" not in seen[0]
+    assert seen[1] == {"audio_options": {"speed": 0.5}}
 
 
 def test_unknown_response_format_is_400(monkeypatch):
@@ -175,9 +228,7 @@ def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
 
 
 def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
-    """The cap now lives in _tts_max_new_tokens, which both TTS routes share, rather than
-    being computed at the speech route. Exercised directly since the route tests fake the
-    shared core that applies it."""
+    """The TTS token cap lives in _tts_max_new_tokens; route tests fake the core, so test it directly."""
     from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
     from models.inference import ChatCompletionRequest
 
@@ -229,6 +280,8 @@ def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
     monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
     monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
     monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
+    # The resident model is a speech model, so an unnamed request is answered by it.
+    monkeypatch.setattr(routes_module, "_serves_audio_workflow", lambda _w: True)
     payload = SimpleNamespace(audio_instructions = None, audio_language = None)
     request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
     model = "org/B-GGUF" if named else routes_module._RELOAD_ONLY_MODEL
@@ -310,8 +363,7 @@ def test_the_gallery_is_bounded_by_bytes_not_only_by_count(monkeypatch, tmp_path
 
 
 def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(monkeypatch, tmp_path):
-    """The newest clip is the one the caller just generated. Pruning it because it alone
-    exceeds the quota would read as a silent failure."""
+    """Never prune the newest clip just generated, even if alone it exceeds the quota."""
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", "64")
     meta = {

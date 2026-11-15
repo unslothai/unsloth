@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
   Upload01Icon,
@@ -266,7 +266,7 @@ function ArgumentsEditor({
                 disabled={disabled}
                 aria-label={`Remove argument ${index + 1}`}
               >
-                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -360,7 +360,7 @@ function HeadersEditor({
                 disabled={disabled}
                 aria-label={copy.remove}
               >
-                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -1280,7 +1280,7 @@ export function ChatMcpServersDialog({
                         aria-label="Delete server"
                         disabled={importing || busyIds.has(server.id)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                       </Button>
                     </div>
                   </li>

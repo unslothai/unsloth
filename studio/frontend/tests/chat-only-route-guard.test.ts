@@ -24,22 +24,36 @@ const declarations = [
   lift(/function isChatOnlyAllowed\([\s\S]*?\n\}/, "isChatOnlyAllowed"),
 ]
   .join("\n")
-  .replaceAll("(pathname: string): boolean", "(pathname)");
+  .replaceAll("(pathname: string): boolean", "(pathname)")
+  .replaceAll("(pathname: string, trainAvailable: boolean): boolean", "(pathname, trainAvailable)");
 
 const guard = /if \(\s*isChatOnly\(\) &&([\s\S]*?)\)\s*\{\s*throw redirect/.exec(src);
 assert.ok(guard, "could not find the chat-only redirect in beforeLoad");
 const condition = `isChatOnly() &&${guard[1]}`
   .replaceAll("isChatOnly()", "chatOnly")
+  .replaceAll("isTrainUnavailable()", "trainUnavailable")
   .replaceAll("location.pathname", "pathname");
 assert.ok(!condition.includes("location."), "the guard reads a location this test cannot set");
 assert.ok(!condition.includes("isChatOnly()"), "the guard reads a verdict this test cannot set");
+assert.ok(!/\w+\(\)/.test(condition.replaceAll("Boolean(", "")), "the guard reads a store this test cannot set");
 
-const redirectsToChat = new Function(
+const redirectsToChatWith = new Function(
   "pathname",
   "chatOnly",
   "unmeasured",
+  "trainUnavailable",
+  "detectionDeferred",
   `${declarations}\nreturn Boolean(${condition});`,
-) as (pathname: string, chatOnly: boolean, unmeasured: boolean) => boolean;
+) as (
+  pathname: string,
+  chatOnly: boolean,
+  unmeasured: boolean,
+  trainUnavailable: boolean,
+  detectionDeferred?: boolean,
+) => boolean;
+// A chat-only host that cannot train either, which is every chat-only reason but a CPU training host.
+const redirectsToChat = (pathname: string, chatOnly: boolean, unmeasured: boolean) =>
+  redirectsToChatWith(pathname, chatOnly, unmeasured, chatOnly);
 
 const measuredChatOnly = (pathname: string) => redirectsToChat(pathname, true, false);
 
@@ -63,6 +77,16 @@ test("a measured chat-only host is still redirected off /studio", () => {
   assert.equal(measuredChatOnly("/studio/runs"), true);
 });
 
+// "no_gpu" with PyTorch: Train runs on the CPU backend while chat stays GGUF-only.
+test("a measured CPU training host reaches /studio and nothing else that chat-only blocks", () => {
+  for (const path of ["/studio", "/studio/runs"]) {
+    assert.equal(redirectsToChatWith(path, true, false, false), false, path);
+  }
+  for (const path of ["/settings", "/studioish"]) {
+    assert.equal(redirectsToChatWith(path, true, false, false), true, path);
+  }
+});
+
 test("an unmeasured verdict still lets both pages wait it out", () => {
   for (const path of ["/studio", "/studio/runs", "/video"]) {
     assert.equal(
@@ -70,6 +94,12 @@ test("an unmeasured verdict still lets both pages wait it out", () => {
       false,
       `${path} is redirected on the pre-measurement guess, which is one-way`,
     );
+  }
+});
+
+test("a deferred verdict is provisional, so no page is redirected on it", () => {
+  for (const path of ["/settings", "/api", "/studio"]) {
+    assert.equal(redirectsToChatWith(path, true, true, true, true), false, path);
   }
 });
 

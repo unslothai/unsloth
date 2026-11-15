@@ -314,6 +314,8 @@ def run(page):
     reset(holdExport = True)
     export_row = page.locator('[data-settings-label="Export chat history"]')
     export_row.get_by_role("button", name = "Export", exact = True).click()
+    # Export opens a format menu; JSON is the full backup this check holds in flight.
+    page.get_by_role("menuitem", name = "JSON", exact = True).click()
     page.wait_for_function("typeof window.__dataFixture.releaseExport === 'function'")
     search_to(page, "Chat sandbox files")
     expect_search_hit(page, "Chat sandbox files")
@@ -637,6 +639,7 @@ def run_library_locales(page):
                 data: api.translate('settings.data.title'),
                 back: api.translate('settings.data.backToData'),
                 archived: api.translate('settings.data.archivedChats'),
+                deleteChatDescription: api.messages[locale].shell.dialog.deleteChat.description,
             };
             }""",
             locale,
@@ -702,8 +705,9 @@ def run_library_locales(page):
                 ).to_be_visible()
                 expect(page.get_by_role("button", name = "Sample 1", exact = True)).to_have_count(0)
                 page.get_by_role("button", name = text["deleteResults"], exact = True).click()
+                # One result names the chat, as the single-chat delete does (#16390).
                 expect(page.get_by_role("alertdialog")).to_contain_text(
-                    text["deleteArchivedWarning"].replace("{count}", "1")
+                    text["deleteChatDescription"].replace("{name}", "Sample 0")
                 )
             else:
                 row = page.locator("[data-archived-id]")
@@ -934,10 +938,8 @@ def main():
             browser = getattr(p, engine).launch(**options)
             page = browser.new_page(viewport = {"width": 1280, "height": 1000})
             page.add_init_script(FIXTURE)
-            # The first load runs Vite's dependency optimizer and transforms the whole module graph
-            # from a cold cache, and on Windows CI two of these drivers do that at once. Module
-            # scripts run before DOMContentLoaded, so the default 30s has timed out there on a page
-            # that then loads fine; allow the same 120s the mount wait below already does.
+            # The first load runs Vite's optimizer on a cold cache, two drivers at once on Windows
+            # CI, so allow 120s; the default 30s timed out there.
             page.goto(url, wait_until = "domcontentloaded", timeout = 120_000)
             page.wait_for_function("!!window.__settingsSmoke", timeout = 120000)
             output.parent.mkdir(parents = True, exist_ok = True)

@@ -401,6 +401,7 @@
         "892917d9aa24aa4f": 1,
         "92a140c809bc8e2d": 1,
         "9bb1c84927f77d68": 1,
+        "9d300bb02e7eb910": 1,
         "c6037d9fa3542707": 1,
         "d00223a6653c004c": 1,
         "e26ec359dad3b91b": 1,
@@ -462,6 +463,15 @@
       "digests": {
         "6b2e6cca1e96c74d": 1,
         "cb2a2dc3fbf44c1e": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_sd_cpp_probe_error_mode.py",
+      "rule": "AV009",
+      "severity": "error",
+      "reason": "A real Windows loader failure needs a real PE that cannot find its DLL: python.exe copied away from pythonXY.dll stands in for an sd.cpp build without HIP. The console stub links nothing, so it would start. Runs only on Windows, in tmp_path.",
+      "digests": {
+        "4c82702c082e3a40": 1
       }
     },
     {

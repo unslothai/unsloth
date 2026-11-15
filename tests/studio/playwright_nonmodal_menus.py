@@ -74,9 +74,8 @@ def until(
     arg = None,
     timeout: int = 5000,
 ) -> None:
-    """Wait until `condition` holds, without failing here: a broken build spends the timeout and
-    then fails on the SAME check below with the same message. Replaces flat sleeps, which asserted
-    the runner's speed along with the behaviour."""
+    """Wait until `condition` holds without failing here, since a broken build then fails the same
+    check below; replaces flat sleeps that also asserted runner speed."""
     try:
         page.wait_for_function(condition, arg = arg, timeout = timeout)
     except PlaywrightTimeout:
@@ -359,9 +358,8 @@ def check_keyboard(page, checks: Checks) -> None:
     page.get_by_label("Row options 2", exact = True).focus()
     frames(page)
     page.keyboard.press("Enter")
-    # Kept as a flat wait on purpose: a keyboard-opened menu drops an ArrowDown pressed right
-    # after it opens, even with its first item focused and its open animation finished (measured;
-    # no DOM state marks when it starts taking arrows), so there is no event to wait on here.
+    # Flat wait on purpose: a keyboard-opened menu drops an ArrowDown pressed right after opening,
+    # even when focused and animated; no DOM state marks readiness.
     page.wait_for_timeout(300)
     checks.record("Enter opens the menu", menus_open(page) >= 1)
     page.keyboard.press("ArrowDown")
@@ -435,8 +433,7 @@ def check_lifetime(page, checks: Checks) -> None:
         " l.scrollTop = 8 * 40 - l.clientHeight + 20; }"
     )
     frames(page)
-    # Press the sliver the scroller leaves visible. Not click_forced: that scrolls the
-    # trigger into view first, which is the one thing this case must not do.
+    # Press the visible sliver; not click_forced, which scrolls the trigger into view.
     trigger = page.get_by_label("Row options 8", exact = True).bounding_box()
     clip = page.locator("#list").bounding_box()
     top = max(trigger["y"], clip["y"])

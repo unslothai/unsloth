@@ -2,11 +2,10 @@ import ast
 from pathlib import Path
 
 
-_HELPERS = ("_packed_base", "_is_packed_state", "_base_quant_state")
+_HELPERS = ("_packed_base", "_is_packed_state", "_base_quant_state", "_fp8_lora_state")
 
 
 def _load_function(name):
-    # Extract without importing unsloth, which needs a GPU.
     source = Path(__file__).parents[2] / "unsloth" / "kernels" / "utils.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     funcs = [
@@ -42,7 +41,6 @@ def _make_disabled_block_fp8_proj(block_size):
 
 
 def test_bias_variant_propagates_fp8_block_size_on_disabled_path():
-    # fp8 kernels read weight_scale.block_size, so the real block size must survive this path.
     get_lora_parameters_bias = _load_function("get_lora_parameters_bias")
 
     proj, weight_scale = _make_disabled_block_fp8_proj([64, 128])
@@ -67,7 +65,6 @@ def _make_decompressed_merged_proj():
 
 
 def test_bias_variant_keeps_none_quant_state_for_decompressed_layer():
-    # No quant state here; fast_linear_forward needs W_quant None to fall back to matmul.
     get_lora_parameters_bias = _load_function("get_lora_parameters_bias")
 
     W, W_quant = get_lora_parameters_bias(_make_decompressed_merged_proj())[:2]

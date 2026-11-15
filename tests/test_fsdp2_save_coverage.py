@@ -118,9 +118,8 @@ def test_push_to_hub_gathers(fake_fsdp2):
     ],
 )
 def test_whole_model_exports_run_on_rank0_under_fsdp2(monkeypatch, method, call, adapter_only):
-    """GGUF, torchao, OpenVINO and GGML exports used to be refused (or, for OpenVINO and GGML, ran
-    on every rank over its own shards). Under FSDP2 they now gather and run on rank 0 alone:
-    a non-writer rank gets rank 0's answer without running the export."""
+    """Under FSDP2 GGUF, torchao, OpenVINO and GGML exports gather and run on rank 0 alone; a
+    non-writer rank gets rank 0's answer without running the export."""
     from peft import LoraConfig, get_peft_model
 
     seen = []
@@ -172,6 +171,37 @@ def test_qat_torchao_export_converts_where_one_gpu_would(monkeypatch):
     unsloth_save.unsloth_save_pretrained_torchao(model, "out")
     unsloth_save.unsloth_save_pretrained_torchao(model, "out", torchao_config = object())
     assert seen == [{"offload_to_cpu": "gpu"}, dict(offload_to_cpu = True, offload_4bit = True)]
+
+
+def test_host_staged_qat_convert_counts_the_converted_copy(monkeypatch):
+    gib = 1024**3
+    gathers = []
+
+    @contextlib.contextmanager
+    def gathered(model, **kwargs):
+        gathers.append(kwargs)
+        yield True
+
+    monkeypatch.delenv("UNSLOTH_FSDP2_EXPORT_SKIP_RAM_CHECK", raising = False)
+    monkeypatch.setattr(fsdp2_save, "_dist", lambda: None)
+    monkeypatch.setattr(fsdp2_save, "mesh_writer_rank", lambda model: 0)
+    monkeypatch.setattr(fsdp2_save, "_gathered_host_bytes", lambda *a, **k: 10 * gib)
+    monkeypatch.setattr(fsdp2_save, "_host_available_bytes", lambda: 13 * gib)
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gathered", gathered)
+    model = torch.nn.Linear(4, 4)
+    options = fsdp2_save.gather_on_accelerator_if_it_fits(model)
+    assert options["offload_to_cpu"] is True
+    with pytest.raises(RuntimeError, match = "converted copy"):
+        fsdp2_save.fsdp2_export_on_writer(
+            model, lambda: "exported", "save_pretrained_torchao", **options
+        )
+    assert gathers == []
+    assert (
+        fsdp2_save.fsdp2_export_on_writer(
+            model, lambda: "exported", "save_pretrained_gguf", offload_to_cpu = True
+        )
+        == "exported"
+    )
 
 
 def test_rank0_export_passes_through_without_fsdp2(monkeypatch):

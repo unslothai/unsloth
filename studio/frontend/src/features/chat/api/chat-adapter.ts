@@ -24,6 +24,7 @@ import {
   committedServerTuningState,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
+import { isNpuModelId } from "@/features/npu";
 import { withSandboxAttachmentPaths } from "../sandbox-attachments";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
@@ -39,18 +40,19 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-cache-snapshot";
 import {
   isServedByLlamaCpp,
   resumesThought,
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/per-model-config";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
@@ -79,6 +81,8 @@ function userTexts(
 }
 import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
 import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
+import { computerUseAsk } from "@/features/computer-use/summary";
+import { computerUseToolsForTurn } from "@/features/computer-use/tools";
 import { shownBrowserChat } from "@/features/browser/panel-availability";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
@@ -135,6 +139,7 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { withRunThreadScopedSettings } from "../utils/thread-scoped-settings";
 import { contextUsageMarkers, threadBranchRecords } from "../utils/saved-context-usage";
 import { contextUsageReasoningKey } from "../utils/context-usage-reasoning";
 import {
@@ -143,6 +148,7 @@ import {
 } from "../utils/auto-compaction";
 import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
 import { resolveModelCatalogEntry } from "../model-catalog";
+import { prepareComparePaneRun } from "../compare-run-ownership";
 import {
   lengthIncompleteReason,
   lengthStopCause,
@@ -166,9 +172,16 @@ import {
   type QueuedModelCapabilities,
 } from "../utils/queued-model-capabilities";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
+import {
+  addPass,
+  type PriorPassTiming,
+  withPriorServerTimings,
+  withPriorTiming,
+} from "../utils/continued-timing";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
+  externalModelTakesVideo,
   isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -179,6 +192,7 @@ import {
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
+  isGeminiApiProviderType,
 } from "../external-providers";
 
 import {
@@ -293,6 +307,8 @@ import {
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   codeToolsOn,
+  withChatOwnedSettings,
+  withLoadedModelOverrides,
   localMediaToolsForTurn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -354,8 +370,11 @@ import {
 } from "../utils/image-input-support";
 import {
   appendCompactionMarker,
+  COMPACTION_NOTICE_LABEL,
+  COMPACTION_NOTICE_TEXT,
   type CompactionMarker,
   compactionAnchorToolCallId,
+  compactionNoticeKind,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -372,7 +391,11 @@ import {
   createTrailingPlaceholderWatch,
   stripTrailingTemplatePlaceholder,
 } from "../utils/trailing-template-placeholder";
-import { createStreamPublishGate } from "../utils/stream-pacing";
+import {
+  TRAILING_PUBLISH,
+  createStreamPublishGate,
+  withTrailingPublish,
+} from "../utils/stream-pacing";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
@@ -467,6 +490,7 @@ import {
 } from "@/lib/evicted-toast";
 import {
   type OffloadCounts,
+  expertSpillNote,
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
@@ -1707,6 +1731,19 @@ function serializeAssistantReplayMessages(
   return messages;
 }
 
+/** Strict templates (Qwen3.5) reject a second system turn; the backend joins system parts with "\n\n", so merging is byte-identical there. */
+function prependSystemPrompt<T extends { role: string; content: unknown }>(
+  messages: T[],
+  text: string,
+): void {
+  const first = messages[0];
+  if (first?.role === "system" && typeof first.content === "string") {
+    messages[0] = { ...first, content: `${text}\n\n${first.content}` };
+    return;
+  }
+  messages.unshift({ role: "system", content: text } as T);
+}
+
 function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -2068,12 +2105,11 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-/** The MCP image bound applied to the run's own tool results, BEFORE they are
- *  serialized. Bounding the OpenAI history afterwards meant every result's image
- *  array was stringified into an envelope on the main thread and then parsed again
- *  to be cut or dropped -- on every send, for pictures the request would not carry.
- *  A result that keeps no picture becomes its plain text, which is what the
- *  serializer emits for a stripped envelope. */
+/**
+ * MCP image bound applied to the run's tool results before serialization; bounding afterwards
+ * stringified and re-parsed every image array on each send, for pictures the request would not
+ * carry; a result with no picture becomes plain text.
+ */
 function boundMcpImageResults(
   messages: RunMessages,
   { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
@@ -2201,10 +2237,7 @@ export async function buildLocalTokenCountHistory(
     systemPrompt: safeSystemPrompt,
   });
   if (combinedSystemPrompt) {
-    outboundMessages.unshift({
-      role: "system",
-      content: combinedSystemPrompt,
-    });
+    prependSystemPrompt(outboundMessages, combinedSystemPrompt);
   }
 
   return {
@@ -2291,6 +2324,7 @@ export async function buildLocalTokenCountExtras(
       }),
       isMlx: state.loadedIsMlx === true,
       isManagedEngine: state.loadedEngine !== "auto",
+      isNpu: isNpuModelId(state.params.checkpoint),
       autoCompactEnabled: state.autoCompactEnabled,
     }),
   };
@@ -2308,6 +2342,8 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
+  // Same id the completion sends (resolveSandboxSessionId).
+  const sessionId = sandboxSessionIdFor(threadId, ragProjectId);
 
   // re-fetch for every counted user turn so skills created since page load match request pricing.
   await settleSkillsForText(userTexts(messages).join("\n"));
@@ -2317,6 +2353,7 @@ export async function buildLocalTokenCountExtras(
     userTexts(messages),
   );
   const browserTools = browserAgentToolsForTurn();
+  const computerTools = computerUseToolsForTurn();
   const localMediaTools = localMediaToolsForTurn(state);
   if (
     !toolsEnabled &&
@@ -2325,6 +2362,7 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled &&
     browserTools.length === 0 &&
+    computerTools.length === 0 &&
     localMediaTools.length === 0 &&
     skillTools.length === 0
   ) {
@@ -2355,9 +2393,11 @@ export async function buildLocalTokenCountExtras(
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
       ...browserTools,
+      ...computerTools,
       ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
+    ...(sessionId ? { session_id: sessionId } : {}),
     // Top level, not in rag_scope: archived threads add search_conversation regardless of RAG.
     ...threadField,
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
@@ -2693,6 +2733,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedCtxCheckpoints",
   "cacheRam",
   "loadedCacheRam",
+  "engramPrecision",
+  "loadedEngramPrecision",
   "tensorParallel",
   "loadedTensorParallel",
   "loadedDisableVision",
@@ -2728,6 +2770,11 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxInt8PrefillRequested",
   "mlxAnePrefill",
   "loadedMlxAnePrefillRequested",
+  "mlxFastVerify",
+  "loadedMlxFastVerifyRequested",
+  "npuPowerMode",
+  "npuPrefillChunkLen",
+  "npuImgPreResize",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadedMlxPleOffloadRequested",
@@ -2737,6 +2784,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxPleOffloadReason",
   "mlxExpertOffloadReason",
   "loadedMlxOffloadDiskBytes",
+  "loadedNpuContextFit",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
@@ -2879,6 +2927,7 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-audio",
   "audio-to-audio",
   "automatic-speech-recognition",
+  "speech-recognition-unsupported",
 ]);
 
 // ollama is excluded: local_model_resolver.py skips its scanner. hermes is read-only, so included.
@@ -2898,7 +2947,7 @@ function isAutoLoadableLocalRow(
 ): boolean {
   return (
     (AUTO_LOAD_LOCAL_SOURCES.has(row.source) ||
-      (admitHfCache && row.source === "hf_cache")) &&
+      (row.source === "hf_cache" && (admitHfCache || isOtherCacheSnapshot(row)))) &&
     // Absent capabilities means unclassified, not "not chat": requiring true fell through to downloading the default.
     row.capabilities?.can_chat !== false &&
     row.partial !== true &&
@@ -2920,8 +2969,8 @@ function isGgufLocalRow(row: LocalModelInfo): boolean {
 /** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides every other local format there. */
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
-  // chatOnly is a BROWSER guess until the backend reports it; fail open, since validation refuses an ineligible pick.
-  if (!platform.fetched || !platform.isChatOnly()) return true;
+  // chatOnly is a guess until the backend measures it (deferred detection included); fail open, since validation refuses an ineligible pick.
+  if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
     return true;
   }
@@ -2936,7 +2985,7 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
 /** The picker hides cached non-GGUF rows outright on a chat-only install; same wait-for-the-server rule as above. */
 function cachedModelsRunOnThisPlatform(): boolean {
   const platform = usePlatformStore.getState();
-  return !platform.fetched || !platform.isChatOnly();
+  return platform.capabilitiesUnknown() || !platform.isChatOnly();
 }
 
 /** One loadable thing on this device; `listVariants` is lazy, so only the repos the cascade reaches are scanned. */
@@ -3356,6 +3405,46 @@ async function adoptInFlightServerLoad(
     : "server-idle";
 }
 
+// Busy-host detection outlasts readHealth's one 5 s wait; past this bound autoload stays fail-open.
+const AUTO_LOAD_VERDICT_WAIT_MS = 60_000;
+const AUTO_LOAD_VERDICT_POLL_MS = 500;
+
+async function awaitMeasuredVerdict(signal?: AbortSignal): Promise<void> {
+  const deadline = Date.now() + AUTO_LOAD_VERDICT_WAIT_MS;
+  // readHealth has no timeout or signal: a stalled read must not outlive the deadline or a stopped send.
+  const bounded = (read: () => Promise<unknown>) =>
+    new Promise<"ok" | "failed" | "timeout">((resolve, reject) => {
+      const timer = setTimeout(() => settle("timeout"), Math.max(0, deadline - Date.now()));
+      const onAbort = () => {
+        cleanup();
+        reject(signal?.reason);
+      };
+      function cleanup() {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+      function settle(outcome: "ok" | "failed" | "timeout") {
+        cleanup();
+        resolve(outcome);
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      read().then(
+        () => settle("ok"),
+        () => settle("failed"),
+      );
+    });
+  signal?.throwIfAborted();
+  if ((await bounded(() => fetchDeviceType({ detectHardware: true }))) !== "ok") return;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    const platform = usePlatformStore.getState();
+    if (!platform.capabilitiesUnknown() || platform.detectionDeferred) return;
+    await new Promise((resolve) => setTimeout(resolve, AUTO_LOAD_VERDICT_POLL_MS));
+    signal?.throwIfAborted();
+    if ((await bounded(() => fetchDeviceType({ force: true }))) !== "ok") return;
+  }
+}
+
 async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
@@ -3425,6 +3514,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       cpuFallbackReason,
       mmprojFallbackReason,
       offloadWarning(offloadCounts ?? {}),
+      expertSpillNote(offloadCounts ?? {}),
     );
     const options = {
       description: notice.description,
@@ -3703,6 +3793,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       mlx_kv_quant: config.mlxKvQuant ?? null,
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       mlx_ane_prefill: config.mlxAnePrefill ?? false,
+      mlx_fast_verify: config.mlxFastVerify ?? false,
       mlx_ple_offload: config.mlxPleOffload ?? null,
       mlx_expert_offload: config.mlxExpertOffload ?? null,
       speculative_type: effectiveSpeculativeType,
@@ -3988,6 +4079,20 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const cachedInventoryFailed =
       ggufSettled.status === "rejected" || modelsSettled.status === "rejected";
     if (inventoryIncomplete) hadNonTrustFailure = true;
+
+    // A deferred verdict admits non-GGUF caches a chat-only host refuses; GGUF-only caches skip the probe.
+    if (
+      usePlatformStore.getState().detectionDeferred &&
+      (allModelRepos.some(isChattableCachedRepo) ||
+        localRows.some(
+          (row) =>
+            !isGgufLocalRow(row) &&
+            isAutoLoadableLocalRow(row, cachedInventoryFailed),
+        ))
+    ) {
+      await awaitMeasuredVerdict(options?.abortSignal);
+      options?.abortSignal?.throwIfAborted();
+    }
 
     // Include on-disk models the picker indexes, not just the managed cache.
     const sources = orderAutoLoadSources(
@@ -4447,6 +4552,13 @@ export function createOpenAIStreamAdapter(
           "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
         );
       }
+      await prepareComparePaneRun(
+        options.pairId,
+        options.modelType,
+        abortSignal,
+        () => waitForModelReady(abortSignal),
+      );
+      abortSignal.throwIfAborted();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable across chat switches during model load.
       const resolvedThreadId =
@@ -4838,6 +4950,8 @@ export function createOpenAIStreamAdapter(
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
       const browserTools = browserAgentToolsForTurn();
+      const computerTools = computerUseToolsForTurn();
+      const stepwiseTools = browserTools.length > 0 || computerTools.length > 0;
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane and thread
       // (unstable_threadId only, matching the reader's remoteId).
@@ -4875,6 +4989,9 @@ export function createOpenAIStreamAdapter(
           store.clearPendingImageEditReference();
         }
       };
+      // The waits below let the user open another chat, whose settings then fill the store.
+      const runtimeAtSend = runtime;
+      const chatOwnedAtSend = withChatOwnedSettings(runtime);
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
         try {
@@ -4915,6 +5032,12 @@ export function createOpenAIStreamAdapter(
       }
 
       const liveRuntime = useChatRuntimeStore.getState();
+      // A pending read means the store holds defaults, not this chat's settings.
+      const runChatSettingsLive =
+        !liveRuntime.threadScopedSettingsPending &&
+        (liveRuntime.activeThreadId === runtimeAtSend.activeThreadId ||
+          (resolvedThreadId !== undefined &&
+            liveRuntime.activeThreadId === resolvedThreadId));
       runtime = queuedRunSettings
         ? queuedRunSettings.params.checkpoint
           ? { ...liveRuntime, ...queuedRunSettings }
@@ -4976,7 +5099,16 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime?.modelCapabilities ?? null,
               ),
             }
-        : liveRuntime;
+        : runChatSettingsLive
+          ? liveRuntime
+          : // The same model keeps the chat's effective values; a new one re-derives what its load sets.
+            liveRuntime.params.checkpoint === runtimeAtSend.params.checkpoint &&
+              (liveRuntime.activeGgufVariant ?? null) === (runtimeAtSend.activeGgufVariant ?? null)
+            ? withRunThreadScopedSettings(liveRuntime, runtimeAtSend)
+            : withLoadedModelOverrides(
+                withRunThreadScopedSettings(liveRuntime, chatOwnedAtSend),
+                liveRuntime,
+              );
       runtime = withChatFullAccess(runtime, liveRuntime.chatFullAccessGrants, resolvedThreadId);
       const { params } = runtime;
       const sandboxSessionId = await resolveSandboxSessionId(
@@ -5081,7 +5213,7 @@ export function createOpenAIStreamAdapter(
       });
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
-        externalProvider?.providerType === "gemini" &&
+        isGeminiApiProviderType(externalProvider?.providerType) &&
         imageGenerationEnabledForThisTurn;
       const webSearchEnabledForThisTurn = Boolean(
         externalProvider &&
@@ -5175,7 +5307,7 @@ export function createOpenAIStreamAdapter(
           const serialized = toOpenAIMessages(
             message,
             replayReasoning,
-            externalProvider?.providerType === "gemini",
+            isGeminiApiProviderType(externalProvider?.providerType),
           );
           return isExternalRequest
             ? withProviderCompaction(message, serialized, {
@@ -5233,7 +5365,7 @@ export function createOpenAIStreamAdapter(
         : "";
       const hasGeminiReplayContinuation = Boolean(
         continuation &&
-          externalProvider?.providerType === "gemini" &&
+          isGeminiApiProviderType(externalProvider?.providerType) &&
           (continuation.geminiReplayTurns?.length ||
             continuation.thoughtParts?.length ||
             continuation.answerParts?.length ||
@@ -5262,7 +5394,7 @@ export function createOpenAIStreamAdapter(
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         const geminiReplayTurns =
-          externalProvider?.providerType === "gemini"
+          isGeminiApiProviderType(externalProvider?.providerType)
             ? continuation.geminiReplayTurns
             : undefined;
         if (geminiReplayTurns?.length) {
@@ -5313,10 +5445,7 @@ export function createOpenAIStreamAdapter(
         { agentsMd: true },
       );
       if (combinedSystemPrompt) {
-        outboundMessages.unshift({
-          role: "system",
-          content: combinedSystemPrompt,
-        });
+        prependSystemPrompt(outboundMessages, combinedSystemPrompt);
       }
       let disabledToolGuard: string | null = null;
       const disabledToolGuardProviderType = externalProvider?.providerType;
@@ -5462,6 +5591,7 @@ export function createOpenAIStreamAdapter(
         audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
         audioCount: latestUserAudioClips(survivingMessages).length,
         video: Boolean(videoBase64),
+        externalTakesVideo: externalModelTakesVideo(params.checkpoint),
       });
       if (attachedMediaReason) {
         blockAttachmentRun(attachedMediaReason);
@@ -5529,10 +5659,13 @@ export function createOpenAIStreamAdapter(
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const isManagedEngineForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
+      const isNpuForCompaction = isNpuModelId(params.checkpoint);
+      const isCloudForCompaction = isExternalModelId(params.checkpoint);
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&
-        (isGgufForCompaction || isMlxForCompaction);
+        (isGgufForCompaction || isMlxForCompaction || isNpuForCompaction ||
+          isCloudForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -5712,6 +5845,9 @@ export function createOpenAIStreamAdapter(
       // A seed that ends inside the thought: the next reasoning delta extends it.
       const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
       let cumulativeText = continuationPartial;
+      const passText = () => cumulativeText.slice(continuationPartial.length);
+      const priorTiming = continuation?.priorTiming;
+      let passSoFar: (() => PriorPassTiming) | null = null;
       const geminiContinuationReplay = (
         final: boolean,
       ): GeminiContinuationReplay | undefined =>
@@ -5810,6 +5946,7 @@ export function createOpenAIStreamAdapter(
       // Provisional reason per yield since aborts skip terminal yields; a reported window outranks it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
+        resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
@@ -6358,6 +6495,8 @@ export function createOpenAIStreamAdapter(
         if (usageThreadKey !== null) {
           store.setThreadContextUsage(usageThreadKey, usage);
         }
+        // The realtime meter shows this exact count from here until the next pass starts.
+        store.settleLiveGeneration(usageKey);
         if (
           store.activeThreadId === (usageThreadKey ?? activeThreadIdAtRunStart) &&
           store.params.checkpoint === params.checkpoint
@@ -6367,6 +6506,24 @@ export function createOpenAIStreamAdapter(
       };
       // llama.cpp output count, including reasoning.
       let windowCount: number | null = null;
+      let liveServerTimings: ServerTimings | undefined;
+      passSoFar = () => {
+        const now = Date.now();
+        return {
+          totalStreamTime: now - streamStartTime,
+          totalChunks,
+          toolCallCount: toolCallParts.length,
+          ...(windowCount !== null
+            ? { tokenCount: windowCount }
+            : cumulativeText.length > continuationPartial.length
+              ? { tokenCount: Math.max(1, Math.round((cumulativeText.length - continuationPartial.length) / 4)) }
+              : {}),
+          ...(firstTokenTime !== undefined ? { firstTokenTime } : {}),
+          startedAt: streamStartTime,
+          durationMs: now - streamStartTime,
+          ...(liveServerTimings ? { serverTimings: { ...liveServerTimings } as unknown as Record<string, number> } : {}),
+        };
+      };
 
       // Colab-style proxies can swallow fetch aborts, so also POST /inference/cancel explicitly.
       const onAbortCancel = () => {
@@ -6457,9 +6614,12 @@ export function createOpenAIStreamAdapter(
             externalProvider?.name ??
             (isExternalRequest ? "External provider" : "Local model"),
           providerType: externalProvider?.providerType ?? "local",
-          startedAt: streamStartTime,
+          startedAt: priorTiming?.startedAt ?? streamStartTime,
           finishedAt,
-          durationMs: finishedAt - streamStartTime,
+          durationMs:
+            (priorTiming ? (priorTiming.durationMs ?? priorTiming.totalStreamTime) : 0) +
+            finishedAt -
+            streamStartTime,
           ...(sandboxSessionId ? { sessionId: sandboxSessionId } : {}),
           cancelId,
           toolCalls: Array.from(
@@ -6622,6 +6782,7 @@ export function createOpenAIStreamAdapter(
                 : {}),
               stream: true,
               stream_options: { include_usage: true },
+              video_base64: findLatestUserVideoBase64(currentTurnMessages),
               // Never forwarded upstream; the trailing assistant turn is what requests continuation.
               ...(continuation ? { continue_final_message: true } : {}),
               // Reasoning-class models (OpenAI gpt-5.x / o3) reject temperature and top_p; forward only when supported.
@@ -6663,7 +6824,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
-                browserTools.length > 0 ||
+                stepwiseTools ||
                 localMediaTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
@@ -6678,6 +6839,7 @@ export function createOpenAIStreamAdapter(
                       ...skillTools,
                       ...studioLocalCodeTools,
                       ...browserTools,
+                      ...computerTools,
                       ...localMediaTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
@@ -6704,8 +6866,8 @@ export function createOpenAIStreamAdapter(
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
-                    // Browser use is the exception: a step announced and not taken ends the task.
-                    nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false,
+                    // Browser and computer use are the exception: a step announced and not taken ends the task.
+                    nudge_tool_calls: stepwiseTools ? runtime.nudgeToolCalls : false,
                     deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
@@ -6783,6 +6945,8 @@ export function createOpenAIStreamAdapter(
                   externalProvider.providerType,
                   externalModelId,
                 )?.contextLength,
+                autoCompactTokens: externalProvider.autoCompactTokens,
+                compactNow,
               }),
               // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
@@ -6841,6 +7005,7 @@ export function createOpenAIStreamAdapter(
               isGguf: isGgufForCompaction,
               isMlx: isMlxForCompaction,
               isManagedEngine: isManagedEngineForCompaction,
+              isNpu: isNpuForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
               compactNow,
             }),
@@ -6896,7 +7061,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
-                browserTools.length > 0 ||
+                stepwiseTools ||
                 localMediaTools.length > 0 ||
                 deepResearchArmed)
               ? {
@@ -6912,6 +7077,7 @@ export function createOpenAIStreamAdapter(
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
                     ...browserTools,
+                    ...computerTools,
                     ...localMediaTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
@@ -7101,7 +7267,7 @@ export function createOpenAIStreamAdapter(
               }
             };
             // The window lets a length-stop tell user Max Tokens from the backend's stand-in for Max.
-            const stream =
+            const sourceStream =
               generationDecision === "durable"
                 ? durableStream()
                 : streamChatCompletions(
@@ -7111,8 +7277,25 @@ export function createOpenAIStreamAdapter(
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
+            const stream = withTrailingPublish(sourceStream, canPublish);
 
             for await (const chunk of stream) {
+              if (chunk === TRAILING_PUBLISH) {
+                if (canPublish(streamedChars)) {
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
+                continue;
+              }
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
@@ -7140,6 +7323,7 @@ export function createOpenAIStreamAdapter(
               }
 
               if (chunk.context_truncated) {
+                runtime.setLiveCompacting(liveThreadKey(serverCancel), false);
                 contextTruncation = mergeContextTruncation(
                   contextTruncation,
                   chunk.context_truncated,
@@ -7165,18 +7349,33 @@ export function createOpenAIStreamAdapter(
                   rollingContextNoticeThreads.add(resolvedThreadId);
                   // Once per thread per page load; the durable record is the notice on the turn that compacted.
                   const archived = contextTruncation?.archived_messages ?? 0;
-                  toast.info("This conversation was compacted", {
-                    description: archived
-                      ? "It got long, so older turns were removed from the model's " +
-                        "context. They are saved and searchable, and relevant parts are " +
-                        "brought back automatically."
-                      : contextTruncation?.summarized
-                        ? "The full conversation is still visible and saved. " +
-                          "The provider summarized older turns so the chat can continue."
-                        : "The full conversation is still visible and saved. " +
-                          "Unsloth removed complete older turns from this request so the chat can continue.",
-                    duration: 8000,
-                  });
+                  const noticeKind = compactionNoticeKind(chunk.context_truncated);
+                  if (noticeKind === "compacted" || noticeKind === "summarized-by-provider") {
+                    toast.info("This conversation was compacted", {
+                      description: archived
+                        ? "It got long, so older turns were removed from the model's " +
+                          "context. They are saved and searchable, and relevant parts are " +
+                          "brought back automatically."
+                        : contextTruncation?.summarized
+                          ? "The full conversation is still visible and saved. " +
+                            "The provider summarized older turns so the chat can continue."
+                          : "The full conversation is still visible and saved. " +
+                            "Unsloth removed complete older turns from this request so the chat can continue.",
+                      duration: 8000,
+                    });
+                  } else {
+                    // A cloud chat: say whether history was summarized or had to be dropped.
+                    const dropped = noticeKind !== "summarized";
+                    (dropped ? toast.warning : toast.info)(
+                      COMPACTION_NOTICE_LABEL[noticeKind],
+                      {
+                        description:
+                          `${COMPACTION_NOTICE_TEXT[noticeKind]} ` +
+                          "The full conversation is still visible and saved.",
+                        duration: 8000,
+                      },
+                    );
+                  }
                 }
                 continue;
               }
@@ -7230,6 +7429,8 @@ export function createOpenAIStreamAdapter(
                   runtime.setLivePrefill(liveThreadKey(serverCancel), update.prefill);
                 } else if (update?.phase === "decode") {
                   runtime.setLiveDecode(liveThreadKey(serverCancel), update.decode);
+                } else if (update?.phase === "compacting") {
+                  runtime.setLiveCompacting(liveThreadKey(serverCancel), true);
                 }
                 continue;
               }
@@ -7373,6 +7574,7 @@ export function createOpenAIStreamAdapter(
                 if (toolEvent.type === "context_window_exceeded") {
                   contextWindowExceeded = true;
                   // assistant-ui saves the last STREAMED yield, so publish why the turn ended now.
+                  canPublish.published();
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -7442,6 +7644,7 @@ export function createOpenAIStreamAdapter(
                       ),
                     } as PositionedToolCallPart;
                     // A stop before the next chunk saves only what was yielded.
+                    canPublish.published();
                     yield {
                       content: liveAssistantContent(),
                       metadata: {
@@ -7602,9 +7805,12 @@ export function createOpenAIStreamAdapter(
                         confirmationThreadKey === "__default" ? "" : confirmationThreadKey,
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
                         cancelId,
+                        computerUseAsk(toolEvent.computer_use),
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
+                  // The round boundary: the last pass's prompt and decode figures must not stand in for the next one's.
+                  runtime.clearLiveGenerationForThread(liveThreadKey(serverCancel));
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const id = resolveToolPartId(backendToolCallId);
@@ -7776,6 +7982,7 @@ export function createOpenAIStreamAdapter(
                     };
                   }
                 }
+                canPublish.published();
                 yield {
                   content: liveAssistantContent(),
                   metadata: {
@@ -7795,6 +8002,7 @@ export function createOpenAIStreamAdapter(
                 | undefined;
               // Timings can arrive without usage.
               windowCount = windowEvidenceCount(chunkTimings) ?? windowCount;
+              if (chunkTimings && chunkTimings.diffusion !== true) liveServerTimings = chunkTimings;
               // OpenAI usage may arrive in an empty trailing chunk or on the terminal Codex chunk.
               if (chunk.usage) {
                 serverMetadata = {
@@ -7992,7 +8200,7 @@ export function createOpenAIStreamAdapter(
                 reasoningFromDetails;
               if (
                 !capturedGeminiThoughtPart &&
-                externalProvider?.providerType === "gemini" &&
+                isGeminiApiProviderType(externalProvider?.providerType) &&
                 (reasoning || geminiThoughtSignature)
               ) {
                 appendGeminiThoughtReplayPart(
@@ -8374,6 +8582,7 @@ export function createOpenAIStreamAdapter(
                 const forcePublish =
                   addedToolCall || replayStateChanged || stampedProvenance;
                 if (forcePublish || canPublish(streamedChars)) {
+                  canPublish.published();
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -8395,6 +8604,7 @@ export function createOpenAIStreamAdapter(
               if (replayStateChanged && !delta && !reasoning) {
                 const replayContent = liveAssistantContent();
                 if (replayContent.length > 0) {
+                  canPublish.published();
                   yield {
                     content: replayContent,
                     metadata: {
@@ -8485,6 +8695,7 @@ export function createOpenAIStreamAdapter(
               }
 
               if (assistantContent.length > 0) {
+                canPublish.published();
                 yield {
                   content: assistantContent,
                   metadata: {
@@ -8571,8 +8782,12 @@ export function createOpenAIStreamAdapter(
 
         const meta = serverMetadata;
         const finalTokenCount =
-          meta?.usage?.completion_tokens ?? estimateTokenCount(cumulativeText);
-        const finalTokPerSec = meta?.timings?.predicted_per_second;
+          meta?.usage?.completion_tokens ?? estimateTokenCount(passText());
+        const finalServerTimings = withPriorServerTimings(
+          meta?.timings,
+          priorTiming?.serverTimings,
+        );
+        const finalTokPerSec = finalServerTimings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
         // Prefer llama-server timings; fall back to provider usage envelope.
@@ -8713,18 +8928,23 @@ export function createOpenAIStreamAdapter(
           )
         ) {
           toast.info("This chat was not compacted", {
-            description:
-              "Compaction needs the conversation archive and the default checkpoint policy.",
+            description: isCloudForCompaction
+              ? "There was nothing before your latest message to summarize."
+              : "Compaction needs the conversation archive and the default checkpoint policy.",
           });
         }
-        const finalTiming = buildTiming(
-          streamStartTime,
-          totalChunks,
-          // What the user waited, as a resumed run records it. Server prompt eval has its own row.
-          firstTokenTime ?? serverPromptEvalTime,
-          finishedAt - streamStartTime,
-          finalTokenCount,
-          toolCallParts.length,
+        const finalTiming = withPriorTiming(
+          buildTiming(
+            streamStartTime,
+            totalChunks,
+            // What the user waited, as a resumed run records it. Server prompt eval has its own row.
+            firstTokenTime ?? serverPromptEvalTime,
+            finishedAt - streamStartTime,
+            finalTokenCount,
+            toolCallParts.length,
+            finalTokPerSec,
+          ),
+          priorTiming,
           finalTokPerSec,
         );
 
@@ -8768,7 +8988,7 @@ export function createOpenAIStreamAdapter(
                 : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
-              serverTimings: meta?.timings ?? undefined,
+              serverTimings: finalServerTimings ?? undefined,
               stopReason: lastFinishReason ?? undefined,
               contextUsage: meta?.usage
                 ? {
@@ -8919,13 +9139,16 @@ export function createOpenAIStreamAdapter(
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
-          const partialTiming = buildTiming(
-            streamStartTime,
-            totalChunks,
-            firstTokenTime,
-            Date.now() - streamStartTime,
-            estimateTokenCount(partialText),
-            toolCallParts.length,
+          const partialTiming = withPriorTiming(
+            buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(continuation ? passText() : partialText),
+              toolCallParts.length,
+            ),
+            priorTiming,
           );
           yield {
             content: partialContent,
@@ -8959,6 +9182,7 @@ export function createOpenAIStreamAdapter(
                   ),
                 },
                 timing: partialTiming,
+                resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
                 ...generationCustom(),
               },
             },

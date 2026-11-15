@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import {
+  sttContextBody,
+  useVoiceSettingsStore,
+} from "@/features/settings/stores/voice-settings-store";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { AudioApiError } from "./api";
 import type { AudioSourceRef } from "./audio-run-request";
@@ -31,9 +35,11 @@ export async function transcribeSourceWithProgress(
     model: string;
     engine: string;
     device: string;
+    contextLength?: number;
     language: string;
     timestamps: boolean;
     speakers: boolean;
+    speakerAccent?: string;
     providerId?: string;
     signal: AbortSignal;
   },
@@ -47,9 +53,16 @@ export async function transcribeSourceWithProgress(
       model: options.model,
       engine: options.engine || null,
       device: options.device || null,
+      ...(!options.providerId &&
+        sttContextBody(
+          options.model,
+          options.engine,
+          options.contextLength ?? useVoiceSettingsStore.getState().sttContextLength,
+        )),
       language: options.language || null,
       timestamps: options.timestamps,
       speakers: options.speakers,
+      ...(options.speakerAccent && { speaker_accent: options.speakerAccent }),
       title: title.slice(0, 255),
       ...(options.providerId && { provider_id: options.providerId }),
     }),

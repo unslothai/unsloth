@@ -194,8 +194,7 @@ class TestFlashAttentionValueForm:
         assert LlamaCppBackend._flash_attn_takes_value(help_text) is True
 
     def test_the_flag_and_its_value_are_gated_separately(self):
-        """Two independent answers, so a build that has the flag but not the
-        enum keeps flash attention, and one that has neither drops both."""
+        """Flag and enum are gated separately: flag-only keeps flash attention, neither drops both."""
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert '_caps.get("supports_flash_attn", True)' in src
         assert 'cmd.append("--flash-attn")' in src

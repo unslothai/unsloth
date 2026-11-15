@@ -62,9 +62,8 @@ _CUSTOM_PROMPT_TEMPLATE_ERROR = (
 
 
 def _map_with_pickle_fallback(dataset, function, map_kwargs):
-    """dataset.map, retried in one process when the worker processes cannot receive the function: a
-    remote-code tokenizer class is pickled by value and can drag in unpicklable module state (an HTTP
-    client's SSLContext), which fails the whole multi-process map."""
+    """Retries dataset.map in one process when workers cannot pickle the function: a remote-code
+    tokenizer pickled by value can drag in unpicklable state, e.g. an SSLContext."""
     try:
         return dataset.map(function, **map_kwargs)
     except Exception as exc:
@@ -213,9 +212,8 @@ def _row_tools(tools):
 
 
 def _sharegpt_tool_turns(conversation, content = "", probe = False,):
-    """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
-    markers ``probe`` put in place of each call's arguments and each result; the conversation
-    itself when it has neither role."""
+    """Maps ShareGPT function_call/observation turns to OpenAI tool turns; with probe, arguments and
+    results become markers. Returns the conversation as is without either role."""
     if not any(
         isinstance(message, dict) and message.get("role") in ("observation", "function_call")
         for message in conversation
@@ -363,6 +361,54 @@ def _thinking_as_reasoning_content(tokenizer, conversation):
     ]
 
 
+def _render_with_empty_call_content(tokenizer, messages, tools_kwargs):
+    # For templates reading content unguarded; kept only if unique per-call probes render, as names may appear elsewhere.
+    from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+
+    def is_null_call(message):
+        return isinstance(message, dict) and message.get("tool_calls") and message.get("content") is None
+
+    def filled(markers = None):
+        turns = []
+        for message in messages:
+            if not is_null_call(message):
+                turns.append(message)
+                continue
+            calls = message["tool_calls"]
+            if markers is not None:
+                calls = []
+                for call in message["tool_calls"]:
+                    markers.append(f"unslothname{len(markers)}end")
+                    markers.append(f"unslothcall{len(markers)}end")
+                    function = {**call["function"], "name": markers[-2]}
+                    function["arguments"] = json.dumps({"probe": markers[-1]})
+                    calls.append({**call, "function": function})
+            turns.append({**message, "content": "", "tool_calls": calls})
+        return turns
+
+    null_calls = [message for message in messages if is_null_call(message)]
+    if not null_calls or not all(
+        isinstance(message["tool_calls"], list)
+        and all(isinstance(call, dict) and isinstance(call.get("function"), dict) for call in message["tool_calls"])
+        for message in null_calls
+    ):
+        return None
+    markers = []
+    probe = filled(markers)
+    for normalize in (_normalize_tool_call_arguments, lambda turns: turns):
+        try:
+            shown = tokenizer.apply_chat_template(
+                normalize(probe), tokenize = False, add_generation_prompt = False, **tools_kwargs
+            )
+            if all(marker in shown for marker in markers):
+                return tokenizer.apply_chat_template(
+                    normalize(filled()), tokenize = False, add_generation_prompt = False, **tools_kwargs
+                )
+        except Exception:
+            continue
+    return None
+
+
 def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
@@ -383,6 +429,9 @@ def _render_messages(tokenizer, conversation, tools = None, fallback_without_too
             # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
             if first_error is None:
                 first_error = error
+    text = _render_with_empty_call_content(tokenizer, _drop_none_values(conversation), tools_kwargs)
+    if text is not None:
+        return text
     if tools and fallback_without_tools:
         return _render_messages(tokenizer, conversation)
     raise first_error
@@ -675,22 +724,20 @@ def apply_chat_template_to_dataset(
 
         def _format_alpaca(examples):
             texts = []
+            instructions = examples["instruction"]
+            n = len(instructions)
+            inputs = examples["input"] if "input" in examples else [""] * n
             systems = examples.get("system")
             if systems is None:
-                systems = [None] * len(examples["instruction"])
-            for i in range(len(examples["instruction"])):
-                fields = {
-                    "instruction": examples["instruction"][i],
-                    "input": examples.get("input", [""] * len(examples["instruction"]))[i],
-                    "output": examples["output"][i]
-                }
-                fields = {key: cell_text(value) for key, value in fields.items()}
-                system = systems[i]
+                systems = [None] * n
+            for instruction, input_, output, system in zip(
+                instructions, inputs, examples["output"], systems
+            ):
                 if not (isinstance(system, str) and system.strip()):
                     system = preamble
 
                 text = system + "\n\n" + alpaca_body.format(
-                    fields["instruction"], fields["input"], fields["output"]
+                    cell_text(instruction), cell_text(input_), cell_text(output)
                 )
                 if not text.endswith(eos_token):
                     text += eos_token
@@ -707,12 +754,8 @@ def apply_chat_template_to_dataset(
             is_iterable = is_streaming_dataset(dataset)
 
             if not is_iterable:
-                from utils.hardware import dataset_map_num_proc
-                if num_proc is None or type(num_proc) is not int:
-                    num_proc = dataset_map_num_proc()
-                else:
-                    num_proc = dataset_map_num_proc(num_proc)
-                dataset_map_kwargs['num_proc'] = num_proc
+                from utils.hardware import light_map_num_proc
+                dataset_map_kwargs['num_proc'] = light_map_num_proc(dataset, num_proc)
                 dataset_map_kwargs['desc'] = "Applying template to Alpaca format"
 
             formatted_dataset = _map_with_pickle_fallback(dataset, _format_alpaca, dataset_map_kwargs)

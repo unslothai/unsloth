@@ -153,8 +153,7 @@ class SamplingHeapProfiler:
         return profile
 
     def peek(self) -> HeapProfile:
-        """Reads the profile without stopping; the profiler keeps accumulating, so this is non-
-        destructive."""
+        """Reads without stopping: the profiler keeps accumulating, so it is non-destructive."""
         if not self._running:
             raise RuntimeError("SamplingHeapProfiler.peek without start")
         return self._parse(self.cdp.send("HeapProfiler.getSamplingProfile"))
@@ -206,8 +205,7 @@ def survival_ratio(
     }
 
 
-# Level 3: samples include GC-collected objects so per-render churn is visible.
-# The survivors arm is a separate Layer 3 ablation run.
+# Level 3 keeps GC-collected samples so per-render churn shows; survivors is a separate run.
 
 import time  # noqa: E402
 

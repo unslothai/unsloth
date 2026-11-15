@@ -43,15 +43,9 @@ def _node_tree(root: Path, host) -> None:
 def test_a_live_marker_rewrite_falls_back_to_the_group_when_the_owner_is_refused(
     tmp_path, monkeypatch, writer_name
 ):
-    """Both marker rewriters must ask for owner AND group, then for the group alone.
-
-    Neither half is sufficient. A shared install's marker is owned by whoever installed it,
-    and chown(2) refuses the WHOLE call when an unprivileged caller names another owner, so
-    asking only for the owner loses the group too and the next reader in that group cannot
-    read the marker. Asking only for the group is wrong the other way: under root, the one
-    caller that CAN restore the owner, it leaves the marker owned by root, and an 0600
-    marker stops being readable by the user who owns the install.
-    """
+    """Rewriters ask for owner and group, then group alone: an unprivileged owner change fails the
+    whole chown(2) call and drops the group, while group-only under root leaves a 0600 marker
+    unreadable to its owner."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840"}\n', encoding = "utf-8")
     original = marker.stat()
@@ -78,11 +72,8 @@ def test_a_live_marker_rewrite_falls_back_to_the_group_when_the_owner_is_refused
 
 @requires_chown
 def test_the_group_survives_a_rewrite_the_owner_cannot_be_granted(tmp_path, monkeypatch):
-    """The end state, not just the argument: a refused owner must not cost the group.
-
-    os.chown is emulated with the kernel's own rule -- an unprivileged caller may not change
-    the owner, and chown is all-or-nothing -- so this fails for any writer that names one.
-    """
+    """A refused owner must not cost the group: os.chown is emulated with the kernel rule that an
+    unprivileged caller cannot change the owner, and chown is all-or-nothing."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840"}\n', encoding = "utf-8")
     shared_gid = marker.stat().st_gid
@@ -100,10 +91,8 @@ def test_the_group_survives_a_rewrite_the_owner_cannot_be_granted(tmp_path, monk
 
 @requires_chown
 def test_a_marker_rewrite_keeps_the_keys_the_about_tab_renders(tmp_path, monkeypatch):
-    """release_tag and tag reach the user through /api/system/hardware and the About tab.
-
-    A rewrite that drops them changes what Studio displays, so pin that they survive.
-    """
+    """release_tag and tag reach the user via /api/system/hardware and the About tab, so a marker
+    rewrite must keep both keys."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840", "tag": "b10840"}\n', encoding = "utf-8")
     monkeypatch.setattr(LLAMA.os, "chown", lambda path, uid, gid: None)

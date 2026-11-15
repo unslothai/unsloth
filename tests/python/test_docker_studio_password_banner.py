@@ -121,9 +121,8 @@ def test_the_generated_password_is_printed_once_studio_writes_it(tmp_path: Path)
 
 @behavioural
 def test_a_stale_file_from_an_interrupted_launch_is_not_printed(tmp_path: Path):
-    """The CLI writes the bootstrap file before committing the admin row. A launch
-    interrupted between the two leaves a file whose password the next launch
-    replaces, so the file is read only once the row exists."""
+    """The CLI writes the bootstrap file before committing the admin row, so an interrupted launch
+    leaves a stale file; the wrapper reads it only once the row exists."""
     auth = tmp_path / "auth"
     auth.mkdir()
     (auth / ".bootstrap_password").write_bytes(b"stale one\n")
@@ -176,6 +175,24 @@ def test_the_ready_probes_bypass_a_container_wide_proxy(tmp_path: Path):
     calls = log.read_text().splitlines()
     assert any(c.endswith("--noproxy * http://127.0.0.1:8000/api/health") for c in calls), calls
     assert any(c.endswith("--noproxy * http://127.0.0.1:8888/login") for c in calls), calls
+
+
+@behavioural
+def test_a_tls_studio_is_probed_and_shown_over_https(tmp_path: Path):
+    # The stub answers only the -k HTTPS probe, as an env-TLS Studio would.
+    res = _run(
+        tmp_path,
+        env = {
+            "UNSLOTH_STUDIO_PASSWORD_STATE": "stored",
+            "UNSLOTH_STUDIO_SSL_CERTFILE": "/certs/full.pem",
+            "UNSLOTH_STUDIO_SSL_KEYFILE": "/certs/key.pem",
+        },
+        curl = '[[ "$1" == -skf && "${@: -1}" == https://127.0.0.1:8000/api/health ]] && exit 0\n'
+        '[[ "${@: -1}" == *:8888/* ]] && exit 0\nexit 52\n',
+    )
+    assert res.returncode == 0, res.stderr
+    assert "Unsloth container ready" in res.stdout, res.stdout
+    assert "Unsloth     https://localhost:8000" in res.stdout, res.stdout
 
 
 @behavioural
@@ -303,9 +320,8 @@ def _run_wrapper(
 def test_stored_means_an_admin_row_whose_password_was_changed(
     tmp_path: Path, db: str, stored: bool
 ):
-    """A bare auth.db from an interrupted first launch, or a seeded row nobody
-    changed, still accepts an initial password; only must_change_password=0 is
-    "stored"."""
+    """A bare auth.db from an interrupted first launch, or a seeded admin row nobody changed, still
+    accepts an initial password; only must_change_password=0 counts as stored."""
     if db == "empty":
         _auth_db(tmp_path, must_change = None)
     elif db == "seeded":
@@ -487,9 +503,8 @@ def test_the_image_wires_the_scripts_in():
 
 
 def test_the_summary_is_coloured_unless_no_color_is_set(tmp_path: Path):
-    """The block is the one thing worth reading in a long startup log; plain text
-    left it indistinguishable from the supervisord and Jupyter lines around it.
-    NO_COLOR (no-color.org) is the documented way off, for log collectors."""
+    """The summary block is coloured so it stands out in a long startup log beside supervisord and
+    Jupyter lines; NO_COLOR is the documented way to turn colour off."""
     env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "generated"}
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()

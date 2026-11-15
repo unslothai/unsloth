@@ -84,7 +84,7 @@ test("a load that finished while the page was closed records its paths before th
   const probe = mount.slice(0, mount.indexOf("if (!inFlight) clearPendingImageLoad();"));
   assert.match(
     probe,
-    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const loaded = await getDiffusionStatus\(\);\s*setStatusIfNewest\(ticket, loaded\);\s*const resumed = finishedLoadTarget<LastLoad>\(null, loaded\);\s*if \(resumed\) \{\s*lastLoad\.current = resumed;\s*rememberFinishedLoad\(resumed, loaded, true\);/,
+    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const loaded = ownDiffusionStatus\(await getDiffusionStatus\(\)\);\s*setStatusIfNewest\(ticket, loaded\);\s*const resumed = finishedLoadTarget<LastLoad>\(null, loaded\);\s*if \(resumed\) \{\s*lastLoad\.current = resumed;\s*rememberFinishedLoad\(resumed, loaded, true\);/,
   );
   const recorder = source.slice(source.indexOf("const rememberFinishedLoad = useCallback"));
   const body = recorder.slice(0, recorder.indexOf("}, []);"));
@@ -106,7 +106,7 @@ test("the mount probe publishes the finished build's status before the reconcile
   const probe = mount.slice(0, mount.indexOf('setInitialLoadProbe(inFlight ? "loading" : "idle");'));
   assert.match(
     probe,
-    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const ticket = \+\+statusTicket\.current;\s*const loaded = await getDiffusionStatus\(\);\s*setStatusIfNewest\(ticket, loaded\);/,
+    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const ticket = \+\+statusTicket\.current;\s*const loaded = ownDiffusionStatus\(await getDiffusionStatus\(\)\);\s*setStatusIfNewest\(ticket, loaded\);/,
   );
 
   const newFiles = { vaeFile: "/models/new-vae.safetensors" };

@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   installLocalStorageFake,
   readSrc,
+  readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -77,11 +78,11 @@ test("the app applies it before the first render", () => {
   assert.match(readSrc("main.tsx"), /watchSpellCheck\(window\);/);
 });
 
-test("an account switch keeps the choice, like the display language", async () => {
+test("an account switch leaves the choice to the next account's own saved copy", async () => {
   const { ACCOUNT_CHROME_KEYS } = await import(
     "../src/lib/account-transition.ts"
   );
-  assert.ok(ACCOUNT_CHROME_KEYS.has(SPELLCHECK_STORAGE_KEY));
+  assert.equal(ACCOUNT_CHROME_KEYS.has(SPELLCHECK_STORAGE_KEY), false);
 });
 
 test("Reset all preferences turns spell check back on", () => {
@@ -89,4 +90,14 @@ test("Reset all preferences turns spell check back on", () => {
     /const PREFS_KEYS: string\[\] = \[([\s\S]*?)\n\];/,
   )?.[1];
   assert.match(prefsKeys ?? "", /^\s*SPELLCHECK_STORAGE_KEY,$/m);
+});
+
+test("Linux Desktop turns WebKitGTK's checker on, or the attribute does nothing", () => {
+  // Off by default with no dictionary loaded; the languages call is what loads one.
+  const linuxSetup = readText("../../src-tauri/src/main.rs").match(
+    /fn setup_linux_media_permissions[\s\S]*?\r?\n\}\r?\n/,
+  )?.[0];
+  assert.match(linuxSetup ?? "", /\.set_spell_checking_enabled\(true\)/);
+  assert.match(linuxSetup ?? "", /\.set_spell_checking_languages\(/);
+  assert.match(linuxSetup ?? "", /appimage_webkit::bundled_runtime\(/);
 });

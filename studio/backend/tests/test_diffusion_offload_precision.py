@@ -329,6 +329,27 @@ def test_offloaded_stored_fp8_renders_under_no_grad(policy, no_grad):
     assert vid._render_under_no_grad(state) is no_grad
 
 
+@pytest.mark.parametrize(
+    "policy, info, no_grad",
+    [
+        (OFFLOAD_STREAMING, {"fp8_backend": "torchao", "fp8": 229}, True),
+        (OFFLOAD_GROUP, {"backend": "torchao", "int8": 8}, True),
+        (OFFLOAD_NONE, {"fp8_backend": "torchao", "fp8": 229}, False),
+        (OFFLOAD_STREAMING, {"fp8_backend": None, "fp8": 0}, False),
+    ],
+)
+def test_streamed_single_file_torchao_renders_under_no_grad(policy, info, no_grad):
+    """A single file's torchao layers carry no transformer_quant; a bf16 text encoder must not drop no_grad."""
+    transformer = types.SimpleNamespace(_unsloth_comfy_quant = info)
+    state = types.SimpleNamespace(
+        offload_policy = policy,
+        transformer_quant = None,
+        text_encoder_quant = None,
+        pipe = types.SimpleNamespace(transformer = transformer),
+    )
+    assert dmod._torchao_render_needs_no_grad(state) is no_grad
+
+
 def test_render_uses_the_widened_switch():
     import inspect
 

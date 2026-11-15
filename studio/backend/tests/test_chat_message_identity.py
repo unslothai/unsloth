@@ -135,8 +135,7 @@ def test_sync_keeps_every_message_and_its_links(db):
 
 
 def _regenerate_sequence(regenerations = 3):
-    """A regenerate writes one assistant sibling per attempt with no new user turn; no e2e test
-    drives it."""
+    """Regenerate adds sibling assistant rows with no new user turn; no e2e test drives it."""
     yield _msg("u-doc", "user", None, "summarise the attached spec", 1000, _doc())
     for attempt in range(regenerations + 1):
         yield _msg(f"a-{attempt}", "assistant", "u-doc", f"attempt {attempt}", 1100 + attempt)

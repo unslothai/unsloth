@@ -129,8 +129,7 @@ def test_web_search_each_call_carries_its_own_query_as_result(monkeypatch):
 
 
 def test_web_search_last_call_overwritten_with_citations(monkeypatch):
-    """Last call gets the aggregated citations; earlier calls keep their
-    per-call `Searching:` text."""
+    """Last call gets the aggregated citations; earlier calls keep their own Searching: text."""
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -360,8 +359,7 @@ def test_shell_call_incomplete_does_not_double_emit(monkeypatch):
 
 
 def test_open_page_action_reaches_the_card_as_a_url(monkeypatch):
-    """`open_page` carries a url and no query; reading only `action.query`
-    rendered these as an empty `Searching ""`."""
+    """open_page carries a url and no query, so reading only action.query left the card empty."""
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -453,8 +451,7 @@ def test_an_older_queries_list_still_resolves_to_a_query(monkeypatch):
 
 
 def test_a_partial_done_event_keeps_what_added_recorded(monkeypatch):
-    """A done event that omits the action must not revert the card to a blank
-    "Web Search"."""
+    """A done event missing the action must not revert the card to a blank Web Search title."""
     sse_events = [
         {
             "type": "response.output_item.added",

@@ -153,8 +153,8 @@ const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
   "image-text-to-video",
 ]);
 
-// Video page repos whose Hub card names no pipeline task. Not Cosmos3-Nano: its guardrail package is not installed.
-const VIDEO_PAGE_REPOS: ReadonlySet<string> = new Set(["nvidia/cosmos3-edge"]);
+// Video page repos whose Hub card names no pipeline task.
+const VIDEO_PAGE_REPOS: ReadonlySet<string> = new Set(["nvidia/cosmos3-nano", "nvidia/cosmos3-edge"]);
 
 /** Which Unsloth page runs this pipeline task, if any. */
 export function studioPageForTask(
@@ -210,7 +210,7 @@ function detectUnsupportedFormatKey(
     if (alias && excludedFormats.has(alias)) return alias;
   }
   if (modelId) {
-    // Mirrors the backend's _looks_like_mlx_repo heuristic.
+    // Mirrors the backend's looks_like_mlx_repo heuristic.
     if (excludedFormats.has("mlx") && modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
     const name = repoLeaf(modelId);
     for (const { key, pattern } of FORMAT_NAME_PATTERNS) {

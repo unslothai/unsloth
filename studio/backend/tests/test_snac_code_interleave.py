@@ -114,9 +114,6 @@ def _run(method, rows, *, stop_after, dtype, events, monkeypatch):
         def __init__(self):
             self.checks = 0
 
-        def _resolve_audio_columns(self, dataset, custom_format_mapping):
-            return {"audio_col": "audio", "text_col": "text", "speaker_col": "speaker"}
-
         @property
         def should_stop(self):
             self.checks += 1
@@ -165,6 +162,11 @@ def _run(method, rows, *, stop_after, dtype, events, monkeypatch):
         "Dataset": Dataset,
         "gc": types.SimpleNamespace(collect = lambda: None),
         "clear_gpu_cache": lambda: None,
+        "resolve_audio_columns": lambda dataset, mapping: {
+            "audio_col": "audio",
+            "text_col": "text",
+            "speaker_col": "speaker",
+        },
     }
     exec(method, namespace)
     owner = Owner()

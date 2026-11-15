@@ -40,3 +40,19 @@ test("mermaid is only imported dynamically", () => {
 test("the training barrel does not re-export the YAML helpers", () => {
   assert.doesNotMatch(readSrc("features/training/index.ts"), /from\s+["']\.\/lib\/yaml-config["']/);
 });
+
+test("the chat model runtime is only imported dynamically outside the chat feature", () => {
+  assert.deepEqual(staticValueImporters("@/features/chat/hooks/use-chat-model-runtime"), []);
+});
+
+const HTML_RENDERER_IMPORT =
+  /^\s*(import|export)\s+(?!type\b)[^;]*?\bfrom\s+["'][^"']*\/conversation-html(\.ts)?["']/m;
+
+test("menus take the export format names without the HTML renderer (marked)", () => {
+  const importers = sources(SRC)
+    .filter((path) => HTML_RENDERER_IMPORT.test(readFileSync(path, "utf8")))
+    .map((path) => path.slice(SRC.length).replaceAll("\\", "/"));
+  assert.deepEqual(importers, [
+    "features/chat/prompt-storage/prompt-storage-dialog.tsx",
+  ]);
+});

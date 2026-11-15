@@ -679,6 +679,7 @@ test("a newer recipe loads what this build knows and names what it does not", ()
   assert.equal(newerRecipeSchema(recipe), true);
   // Every key today's recipe writes is known, so a current image reports nothing.
   assert.deepEqual(unknownRecipeKeys(JSON.parse(RECIPE)), []);
+  assert.deepEqual(unknownRecipeKeys({ prompt: "p", generation_seconds: 1.25, generation_count: 2 }), []);
   assert.equal(
     new Set([...APPLIED_RECIPE_KEYS, ...INFO_RECIPE_KEYS, ...PENDING_RECIPE_KEYS]).size,
     APPLIED_RECIPE_KEYS.length + INFO_RECIPE_KEYS.length + PENDING_RECIPE_KEYS.length,

@@ -132,9 +132,7 @@ def test_one_origin_spelled_two_ways_is_still_one_origin(attach, attach_b):
 
 
 def test_the_predicate_and_the_refusal_read_the_same_origin():
-    """The two halves of this guard are in different files and only agree by construction. If
-    `origin_scoped` gated on the URL as typed while `arm_origins` canonicalised, a pair that got
-    past the refusal could still be gated onto a document that does not exist."""
+    """origin_scoped (typed URL) and arm_origins (canonicalised) must agree or a pair gates onto nothing."""
 
     from studiobench.__main__ import arm_origins
     from studiobench.runtime.ab import origin_scoped

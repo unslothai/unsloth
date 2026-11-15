@@ -103,9 +103,16 @@ function sidebar(deleteResult: () => Promise<string[]>) {
       "../stores/chat-runtime-store": {
         useChatRuntimeStore: { getState: () => ({ setActiveThreadId: () => {} }) },
       },
+      "../stores/bookmarked-turns-store": {
+        useBookmarkedTurnsStore: { getState: () => ({ forgetThreads: () => {} }) },
+      },
       "../utils/chat-history-storage": { deleteStoredChatThreads: deleteResult },
       "../utils/branch-head": { clearBranchHead: (id: string) => cleared.push(id) },
-      "../utils/composer-draft": { clearComposerDraft: () => {} },
+      "../utils/composer-draft": {
+        clearComposerDraft: () => {},
+        closeComposerDraft: () => {},
+        reopenComposerDraft: () => {},
+      },
       "../utils/offer-kept-sandbox-files": { offerToDeleteKeptSandboxes: () => {} },
       "../utils/stop-chat-thread": { stopChatThread: () => {} },
       "../utils/chat-thread-tombstones": {

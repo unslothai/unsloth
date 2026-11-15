@@ -355,8 +355,8 @@ _WAN_SIBLINGS = {
 _WAN_SIBLINGS["unsloth/Wan2.2-T2V-A14B-FP8"] = _WAN_SIBLINGS[_WAN_T2V]
 _WAN_SIBLINGS |= {
     "unsloth/Wan2.2-T2V-A14B-NVFP4": [
-        _sib("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
-        _sib("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
+        _sib("Wan2.2-T2V-A14B-NVFP4.safetensors", 8_000_000_000),
+        _sib("Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors", 8_100_000_000),
     ],
 }
 
@@ -416,7 +416,7 @@ def test_the_image_hub_entry_never_asks_about_an_nvfp4_repo(monkeypatch):
         "huggingface_hub.HfApi", lambda *a, **k: types.SimpleNamespace(model_info = asked.append)
     )
     source = types.SimpleNamespace(
-        kind = "repo", location = "unsloth/Z-Image-Turbo-NVFP4", filename = "x-NVFP4.pt"
+        kind = "repo", location = "unsloth/Z-Image-Turbo-NVFP4", filename = "x-NVFP4.safetensors"
     )
     assert DiffusionBackend._prequant_source_hub_entry(source, None, scheme = "nvfp4") is None
     assert DiffusionBackend._prequant_source_hub_entry(source, None) is None
@@ -469,7 +469,10 @@ def test_enabled_the_video_plan_stages_the_hosted_nvfp4_denoisers(monkeypatch):
     _enable(monkeypatch)
     plan, staged, api = _wan_plan(monkeypatch)
     assert "unsloth/Wan2.2-T2V-A14B-NVFP4" in api.asked
-    assert {"Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"} <= staged
+    assert {
+        "Wan2.2-T2V-A14B-NVFP4.safetensors",
+        "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
+    } <= staged
     assert "transformer/diffusion_pytorch_model.safetensors" not in staged
 
 

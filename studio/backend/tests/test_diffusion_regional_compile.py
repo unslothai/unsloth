@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lumina-2 / HiDream-I1 declare no ``_repeated_blocks``; Studio supplies them so the denoiser compiles regionally."""
+"""Lumina-2 / HiDream-I1 / Cosmos (Anima) declare no ``_repeated_blocks``; Studio supplies them so the denoiser compiles regionally."""
 
 import sys
 import types
@@ -53,6 +53,35 @@ def _tiny_hidream():
     ).eval()
 
 
+def _tiny_cosmos():
+    """Anima's transformer config (concat padding mask, no extra positional embedding), shrunk."""
+    return diffusers.CosmosTransformer3DModel(
+        in_channels = 4,
+        out_channels = 4,
+        num_attention_heads = 2,
+        attention_head_dim = 16,
+        num_layers = 2,
+        text_embed_dim = 8,
+        adaln_lora_dim = 8,
+        max_size = (4, 16, 16),
+        patch_size = (1, 2, 2),
+        rope_scale = (1.0, 4.0, 4.0),
+        concat_padding_mask = True,
+        extra_pos_embed_type = None,
+    ).eval()
+
+
+def _cosmos_inputs():
+    g = torch.Generator().manual_seed(0)
+    return dict(
+        hidden_states = torch.randn(1, 4, 1, 8, 8, generator = g),
+        timestep = torch.tensor([0.5]),
+        encoder_hidden_states = torch.randn(1, 6, 8, generator = g),
+        padding_mask = torch.zeros(1, 1, 8, 8),
+        return_dict = False,
+    )
+
+
 def _hidream_inputs(batch = 2):
     g = torch.Generator().manual_seed(0)
     return dict(
@@ -65,7 +94,7 @@ def _hidream_inputs(batch = 2):
     )
 
 
-@pytest.mark.parametrize("build", [_tiny_lumina, _tiny_hidream])
+@pytest.mark.parametrize("build", [_tiny_lumina, _tiny_hidream, _tiny_cosmos])
 def test_released_class_still_declares_no_repeated_blocks(build):
     model = build()
     declared = list(type(model)._repeated_blocks or [])
@@ -81,6 +110,7 @@ def test_released_class_still_declares_no_repeated_blocks(build):
     [
         (_tiny_lumina, ["Lumina2TransformerBlock"]),
         (_tiny_hidream, ["HiDreamImageTransformerBlock", "HiDreamImageSingleTransformerBlock"]),
+        (_tiny_cosmos, ["CosmosTransformerBlock"]),
     ],
 )
 def test_supplied_blocks_make_compile_repeated_blocks_run(build, blocks):
@@ -120,6 +150,20 @@ def test_discovery_matches_the_verified_names():
     assert rc.discover_repeated_blocks(_tiny_hidream()) == rc.verified_repeated_blocks(
         "HiDreamImageTransformer2DModel"
     )
+    assert rc.discover_repeated_blocks(_tiny_cosmos()) == rc.verified_repeated_blocks(
+        "CosmosTransformer3DModel"
+    )
+
+
+def test_the_compiled_cosmos_blocks_match_eager():
+    model = _tiny_cosmos()
+    with torch.no_grad():
+        eager = model(**_cosmos_inputs())[0]
+    rc.ensure_repeated_blocks(model)
+    model.compile_repeated_blocks(fullgraph = True, dynamic = True)
+    with torch.no_grad():
+        compiled = model(**_cosmos_inputs())[0]
+    assert torch.allclose(compiled, eager, atol = 1e-5, rtol = 1e-4)
 
 
 @pytest.mark.parametrize("dtype, tol", [(torch.float32, 1e-6), (torch.bfloat16, 1e-2)])
@@ -229,3 +273,18 @@ def test_studio_compile_path_engages_on_lumina(monkeypatch):
         m for m in pipe.transformer.modules() if type(m).__name__ == "Lumina2TransformerBlock"
     ]
     assert blocks and all(getattr(m, "_compiled_call_impl", None) is not None for m in blocks)
+
+
+def test_anima_keeps_its_bf16_auto_default_once_it_compiles():
+    """Anima's own reason replaces the lifted "cannot be regionally compiled" one, not the small-DiT one."""
+    from core.inference.diffusion import _auto_keeps_bf16_reason
+    from core.inference.diffusion_families import (
+        ANIMA_BF16_WHEN_RESIDENT,
+        SMALL_DIT_BF16_WHEN_RESIDENT,
+        detect_family,
+    )
+
+    anima = detect_family("", override = "anima")
+    reason = _auto_keeps_bf16_reason(anima, "pipeline", anima.base_repo)
+    assert reason and ANIMA_BF16_WHEN_RESIDENT in reason
+    assert SMALL_DIT_BF16_WHEN_RESIDENT not in reason

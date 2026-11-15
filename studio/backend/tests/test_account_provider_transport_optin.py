@@ -234,8 +234,7 @@ async def _make_client_as(account):
 
 
 def test_reactivation_lifts_the_tombstone(switch):
-    """A delete that failed leaves the account disabled and reactivatable; a tombstone left
-    behind would mean a fresh client per request forever after."""
+    """A failed delete must leave no tombstone, so the account stays reactivatable."""
     client_as(ALICE)
     external_provider.retire_account_clients(ALICE.account_id)
     assert client_as(ALICE) is not client_as(ALICE)

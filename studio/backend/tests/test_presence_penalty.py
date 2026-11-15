@@ -244,9 +244,7 @@ def test_worker_forwards_all_sampling_params_to_backend():
 
 
 def test_orchestrator_cmd_carries_the_tool_protocol_flag():
-    """Unrestricted mode runs with an EMPTY tool list, so the worker cannot infer that the
-    tool protocol is live from ``tools`` alone. Without the flag it stripped the wrappers it
-    was about to parse and the markerless guard then read genuine calls as prose."""
+    """Unrestricted mode has an empty tool list, so the worker needs the flag to parse tool calls."""
     from core.inference.orchestrator import InferenceOrchestrator
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
@@ -288,9 +286,7 @@ def test_the_worker_gates_the_tool_protocol_flag_on_the_backend_signature():
 
 
 def test_the_mlx_backend_declares_the_tool_protocol_flag():
-    """The worker forwards this flag only to backends that declare it, so MLX not declaring
-    it meant the flag was silently dropped and the native token decoder stayed off in
-    unrestricted mode, stripping the wrappers the guard then rejected as prose."""
+    """MLX must declare the flag, since the worker forwards it only to backends that declare it."""
     import inspect
 
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -323,9 +319,8 @@ def test_the_mlx_think_prefill_predicate_matches_the_decoder_it_describes():
 
 
 def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():
-    """mlx-vlm strips native reasoning controls from ``response.text``, so a no-tools request
-    whose delimiters are special ids needs the decoder too or the reasoning is rendered as
-    ordinary answer text."""
+    """mlx-vlm strips reasoning controls from response.text, so a no-tools request with special-id
+    delimiters needs the decoder or reasoning shows as answer text."""
     import inspect
 
     from core.inference.mlx_inference import MLXInferenceBackend

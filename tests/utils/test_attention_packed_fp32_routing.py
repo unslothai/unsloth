@@ -3,6 +3,8 @@
 
 """Packed fp32 keeps one xformers launch (#14158); the fp32 downcast follows Q's device."""
 
+import contextlib
+
 import pytest
 import torch
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
@@ -51,6 +53,8 @@ def native_packed_host(monkeypatch):
     monkeypatch.setattr(ad, "_SDPA_PACKED_SEGMENTS", True)
     monkeypatch.setattr(ad, "_DEVICE_BACKENDS", None)
     monkeypatch.setattr(ad, "_ring_attention_active", lambda: False)
+    # The tensors only look like CUDA, so there is no CUDA device to switch to.
+    monkeypatch.setattr(ad, "_on_tensor_device", lambda X: contextlib.nullcontext())
     calls = {"xformers": 0, "sdpa": 0}
 
     def fake_xformers(

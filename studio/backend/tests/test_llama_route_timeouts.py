@@ -29,8 +29,7 @@ def test_non_streaming_generation_timeout_has_read_deadline():
 
 
 def test_an_infinite_env_value_does_not_remove_the_deadline(monkeypatch):
-    """Non-finite env values such as inf or 1e309 fall back to the default, so the deadline still
-    applies."""
+    """Non-finite env values (inf, 1e309) fall back to default, so the deadline still applies."""
     for raw in ("inf", "Infinity", "1e309", "-inf"):
         monkeypatch.setenv(inf_mod._OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, raw)
         monkeypatch.setenv(inf_mod._OPENAI_COMPAT_STREAM_KEEPALIVE_ENV, raw)
@@ -264,8 +263,7 @@ def test_closing_the_pump_under_cancellation_re_raises_it(monkeypatch):
 
 
 def test_a_callable_bound_latches_no_socket_ceiling():
-    """A callable bound can rise later, so no socket ceiling is latched; the wall-clock deadline
-    enforces."""
+    """A callable bound can rise later, so no socket ceiling latches; the deadline enforces."""
 
     async def _run():
         response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))

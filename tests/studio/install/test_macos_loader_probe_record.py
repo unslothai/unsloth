@@ -454,11 +454,8 @@ def test_the_reuse_fast_paths_do_not_record_a_pass(tmp_path: Path, monkeypatch):
 
 @POSIX_ONLY
 def test_a_broken_root_wrapper_is_not_blessed_into_the_record(tmp_path: Path, monkeypatch):
-    """The root entrypoint can be its own file, and it is started AFTER the dyld probe.
-
-    Recording between the two would hash the broken wrapper into the digest record, and
-    the next run would read that record as current and never start the wrapper again.
-    """
+    """The root entrypoint is started after the dyld probe; recording between the two would hash a
+    broken wrapper into the digest record, so later runs never start it."""
     host = macos_host()
     install_dir = build_install(tmp_path, host, load_probe_passed = False)
     marker = marker_of(install_dir)

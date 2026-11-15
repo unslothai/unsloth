@@ -1161,9 +1161,8 @@ def test_tauri_start_install_rejects_backend_conflicts_before_spawn():
     ids = ["mutex", "process", "final-path"],
 )
 def test_the_extracted_helpers_can_call_everything_they_call(helpers):
-    """Every installer function these harnesses reach must be in the harness: the scripts run under
-    -ErrorActionPreference Stop, so a missing one fails the test for an unrelated reason. Runs on
-    every platform, unlike the scripts themselves."""
+    """Every installer function the harnesses reach must be in the harness, since a missing one
+    fails under -ErrorActionPreference Stop; this runs on every platform."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     extracted = helpers(source)
     installer_functions = set(re.findall(r"^    function ([\w-]+) \{", source, flags = re.M))

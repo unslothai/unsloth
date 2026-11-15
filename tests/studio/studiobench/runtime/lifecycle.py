@@ -92,8 +92,7 @@ class StudioAuth:
         return self.access_token
 
     def rotate(self) -> str:
-        """Refresh is skipped for a token already inside the margin, or clock skew would re-login
-        per request."""
+        """Skip refresh inside the margin, or clock skew would re-login per request."""
         fresh = login(self.base_url, self.username, self.password)
         self.access_token = fresh.access_token
         self.refresh_token = fresh.refresh_token or self.refresh_token
@@ -117,8 +116,7 @@ def auth_request_json(
     body: Optional[dict] = None,
     timeout: float = 30.0,
 ) -> Any:
-    """Retries a 401 once after a fresh login; the login stays outside the try, so its 401 is not
-    retried."""
+    """A 401 is retried once after fresh login; that login is outside the try, so not retried."""
     bearer = auth.token()
     try:
         return request_json(url, method = method, body = body, token = bearer, timeout = timeout)

@@ -3,11 +3,14 @@
 
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createWakeDedupe } from "@/lib/wake-dedupe";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type ModelRuntime,
   subscribeModelLifecycle,
 } from "@/lib/model-lifecycle-events";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
+import { useNpuDisplayNames } from "@/features/npu/use-npu-display-name";
 import { ejectLoadedModel, readLoadedModels } from "./loaded-models-api";
 import {
   type LoadedModelEntry,
@@ -63,7 +66,20 @@ export function useLoadedModels(
   const [pending, setPending] = useState<Map<LoadedModelSource, string | null>>(
     () => new Map(),
   );
-  const entries = enabled ? withPendingLoads(polled, pending) : NO_ENTRIES;
+  const npuName = useNpuDisplayNames(false);
+  // Labels only: eject and reload still route on the Lemonade id in `name`.
+  const named = useMemo(() => {
+    let changed = false;
+    const out = polled.map((entry) => {
+      const label =
+        entry.source === "chat" && !entry.label ? npuName(entry.name) : null;
+      if (!label) return entry;
+      changed = true;
+      return { ...entry, label };
+    });
+    return changed ? out : polled;
+  }, [polled, npuName]);
+  const entries = enabled ? withPendingLoads(named, pending) : NO_ENTRIES;
   const [ejecting, setEjecting] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
@@ -174,8 +190,9 @@ export function useLoadedModels(
       if (document.hidden) return;
       refresh();
     }, POLL_INTERVAL_MS);
+    const isFreshWake = createWakeDedupe();
     const onWake = () => {
-      if (!document.hidden) refresh();
+      if (!document.hidden && isFreshWake()) refresh();
     };
     window.addEventListener("focus", onWake);
     document.addEventListener("visibilitychange", onWake);
@@ -253,7 +270,7 @@ export function useLoadedModels(
 
   return {
     entries,
-    polledEntries: polled,
+    polledEntries: named,
     ejecting,
     heldByOther: enabled && heldByOther,
     eject,

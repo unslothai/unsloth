@@ -51,6 +51,31 @@ def test_an_extra_arg_reaches_the_child(tmp_path):
     assert cmd[cmd.index("--top-k") + 1] == "20"
 
 
+@pytest.mark.parametrize("value", ["auto", "all"])
+def test_gpu_layer_keywords_reach_the_auto_launcher_verbatim(tmp_path, value):
+    args = ["-ngl", value]
+    cmd = _cmd(tmp_path, extra_args = args)
+
+    assert cmd[-len(args) :] == args
+
+
+@pytest.mark.parametrize("value, layers", [("auto", -1), ("all", 2147483647)])
+def test_promoted_gpu_layer_keywords_keep_manual_fit_intent(tmp_path, value, layers):
+    from core.inference.llama_server_args import parse_gpu_layers_override
+    cmd = _cmd(
+        tmp_path,
+        gpu_memory_mode = "manual",
+        gpu_layers = parse_gpu_layers_override(["-ngl", value]),
+    )
+
+    if layers < 0:
+        assert "--gpu-layers" not in cmd and "-ngl" not in cmd
+        assert cmd[cmd.index("--fit") + 1] == "on"
+    else:
+        assert cmd[cmd.index("--gpu-layers") + 1] == str(layers)
+        assert cmd[cmd.index("--fit") + 1] == "off"
+
+
 def test_extra_args_come_after_unsloths_own(tmp_path):
     cmd = _cmd(tmp_path, extra_args = ["--top-k", "20"])
     managed = [i for i, token in enumerate(cmd) if token in {"--model", "-m", "--port"}]

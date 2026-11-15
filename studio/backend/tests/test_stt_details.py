@@ -185,8 +185,7 @@ def test_cjk_text_keeps_its_punctuation_through_alignment(split):
 
 
 def test_spans_come_back_in_time_order_whatever_order_the_runtime_used():
-    """A diarized answer grouped per speaker left segments out of order, and the player's binary
-    search and paragraph merge both assume time order."""
+    """Per-speaker grouping broke time order; the player's binary search and merge assume it."""
     payload = {
         "text": "a b c",
         "sample_rate": 16000,

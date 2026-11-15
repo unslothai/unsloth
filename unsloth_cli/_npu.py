@@ -63,10 +63,8 @@ def _read_json(response) -> dict:
 def prepare_npu_model(
     request: Callable[..., object], model_path: str, echo: Callable[[str], None]
 ) -> None:
-    """Enable the NPU runtime and download `model_path` on the Studio behind `request`.
-
-    `request(method, path, payload, timeout)` returns an open HTTP response for that Studio.
-    """
+    """Enable the NPU runtime and download model_path on the Studio behind request(method, path,
+    payload, timeout), which returns an open HTTP response."""
     import http.client
     try:
         _prepare_npu_model(request, model_path, echo)

@@ -32,6 +32,7 @@ SETTINGS = {
     "codeToolsEnabled": False,
     "deepResearchEnabled": False,
     "permissionMode": "auto",
+    "fullAccess": True,
     "ragEnabled": True,
     "ragSource": {"type": "kb", "kbId": "notes"},
     "ragMode": "dense",
@@ -70,6 +71,7 @@ def test_thread_settings_round_trip():
     "field, value",
     [
         ("permissionMode", "full"),
+        ("fullAccess", "full"),
         ("ragTopK", 51),
         ("ragAutoInjectMinScore", 1.5),
         ("ragMode", "vector"),
@@ -144,7 +146,10 @@ def test_fork_inherits_the_snapshot(tmp_path, monkeypatch):
     )
 
     assert forked is not None
-    assert studio_db.get_chat_thread("thread-2")["settings"] == SETTINGS
+    # Full access was granted to the source chat only.
+    expected = {k: v for k, v in SETTINGS.items() if k != "fullAccess"}
+    assert studio_db.get_chat_thread("thread-2")["settings"] == expected
+    assert studio_db.get_chat_thread("thread-1")["settings"] == SETTINGS
 
 
 def test_settings_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
@@ -602,8 +607,7 @@ def test_sampling_params_take_the_slider_range_and_no_more(field, inside, outsid
 
 
 def test_the_disabled_top_k_value_round_trips():
-    """ChatCompletionRequest allows -1 and default.yaml falls back to it, so a chat
-    running with top-k off has to be able to store that."""
+    """top-k -1 (disabled) must be storable, since ChatCompletionRequest allows it."""
     assert ChatThreadSettings.model_validate({"topK": -1}).topK == -1
 
 
@@ -658,8 +662,7 @@ def test_a_thread_seed_takes_the_same_range_as_the_installation_copy(seed):
 
 
 def test_a_cleared_seed_stays_in_the_stored_snapshot():
-    """null is the clear, not an absence: dropping the key would let the installation pin
-    come back for the one chat the user deliberately unpinned."""
+    """null means cleared, not absent; dropping the key would revive the installation pin."""
     assert readable_thread_settings({"seed": None}) == {"seed": None}
     assert ChatThreadSettings.model_validate({"seed": None}).seed is None
 
@@ -678,8 +681,7 @@ def _thread_row(settings):
     ],
 )
 def test_the_response_says_absent_for_a_key_the_snapshot_never_held(stored, expected):
-    """The default dump spells every unset field as null, and the client drops those, so
-    a pre-seed snapshot would read as a chat that had cleared the pin."""
+    """Unset fields dump as null, so a pre-seed snapshot must read as absent, not as cleared."""
     app = FastAPI()
 
     @app.get("/thread", response_model = ChatThread)

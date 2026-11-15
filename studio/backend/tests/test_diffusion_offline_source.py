@@ -241,3 +241,17 @@ def test_a_downloaded_krea_tokenizer_really_loads_offline(monkeypatch, tmp_path,
     _live_cache(monkeypatch, tmp_path)
     tokenizer = diffusion_krea2.load_krea2_tokenizer(REPO, local_files_only = True)
     assert tokenizer("hello world")["input_ids"] == [1, 2]
+
+
+def test_the_anima_tokenizers_really_load_offline(monkeypatch, tmp_path, online):
+    pytest.importorskip("transformers")
+    from transformers import AutoTokenizer
+
+    from core.inference import diffusion_anima
+
+    snapshot = _fake_cache(tmp_path, subfolders = ("tokenizer", "t5_tokenizer"))
+    common = {"local_files_only": True, "cache_dir": str(tmp_path)}
+    for subfolder in ("tokenizer", "t5_tokenizer"):
+        _write_real_tokenizer(snapshot / subfolder)
+        tokenizer = diffusion_anima._load_tokenizer(AutoTokenizer, REPO, subfolder, common)
+        assert tokenizer("hello world")["input_ids"] == [1, 2]

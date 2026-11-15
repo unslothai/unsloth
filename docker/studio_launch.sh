@@ -156,7 +156,9 @@ else
 fi
 unset UNSLOTH_STUDIO_PASSWORD
 export UNSLOTH_STUDIO_PASSWORD_STATE  # read by unsloth-studio-password
-echo "Unsloth Studio  -> http://localhost:${UNSLOTH_STUDIO_PORT}   (${STUDIO_NOTE})"
+_studio_scheme=http
+[[ -n "${UNSLOTH_STUDIO_SSL_CERTFILE:-}" && -n "${UNSLOTH_STUDIO_SSL_KEYFILE:-}" ]] && _studio_scheme=https
+echo "Unsloth Studio  -> ${_studio_scheme}://localhost:${UNSLOTH_STUDIO_PORT}   (${STUDIO_NOTE})"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
 if [[ "${UNSLOTH_JUPYTER_CLOUDFLARE}" == "1" ]]; then
     echo "JupyterLab tunnel-> enabled; public trycloudflare URL appears below once it is up"

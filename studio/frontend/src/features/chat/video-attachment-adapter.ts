@@ -14,6 +14,7 @@ import type {
   PendingAttachment,
 } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { externalModelTakesVideo } from "./external-providers";
 import { externalModelLabel } from "./lib/external-model-label";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
@@ -36,7 +37,11 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
     const activeModel = state.models.find((m) => m.id === checkpoint);
     const modelLoaded = !!checkpoint && !state.modelLoading;
     let unavailableReason: string | null = null;
-    if (modelLoaded && !activeModel?.hasVideoInput) {
+    if (
+      modelLoaded &&
+      !activeModel?.hasVideoInput &&
+      !externalModelTakesVideo(checkpoint)
+    ) {
       const label =
         activeModel?.name ||
         externalModelLabel(checkpoint) ||

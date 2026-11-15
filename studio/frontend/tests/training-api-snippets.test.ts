@@ -358,18 +358,24 @@ test("the placeholder example and the cancel example render for every language",
   }
 });
 
-test("the Train header leads its page links with the API button, and the API tab has a Training kind", () => {
+test("the Train header leads its page links with the API button, which alone opens the Training example", () => {
   const page = readSrc("features/studio/studio-page.tsx");
   assert.match(page, /<div className="ml-auto flex items-center gap-2">\s*<TrainingApiButton \/>\s*<MediaPageLink\b[^]*?to="\/library"/);
   const button = readSrc("features/studio/training-api-button.tsx");
   assert.match(button, /className=\{HEADER_ICON_BUTTON\}/);
-  assert.match(button, /buildTrainingStartPayload\(config, null\)/);
+  // As Start sends it: the CPU training verdict drops a drafter the hidden section cannot untick.
+  assert.match(
+    button,
+    /buildTrainingStartPayload\(\s*config,\s*null,\s*null,\s*usePlatformStore\.getState\(\)\.isCpuTrainingHost\(\),\s*\)/,
+  );
   assert.match(button, /\.openTrainingApi\(/);
   const tabs = readSrc("features/settings/components/api-example-tabs.tsx");
   assert.match(tabs, /"api-keys-training-api": "training"/);
   assert.match(tabs, /<TrainingApiExamples[^>]*showHeading=\{false\}/);
+  assert.match(tabs, /current === "training"\s*\?/);
+  assert.match(tabs, /useApiExampleKinds\(kind\)/);
   const monitor = readSrc("features/api-monitor/api-monitor-page.tsx");
-  assert.match(monitor, /kind === "training" \? \(\s*<TrainingApiExamples/);
+  assert.doesNotMatch(monitor, /TrainingApiExamples/);
 });
 
 // studio/backend/tests/test_training_api_snippet_contract.py sends these bodies through the fine-tuning

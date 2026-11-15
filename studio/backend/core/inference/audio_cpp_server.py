@@ -496,7 +496,8 @@ class AudioCppServer:
         problem = model_runtime_problem(model, binary)
         if problem:
             raise AudioCppUnavailableError(problem)
-        backend = select_backend(binary, force_cpu)
+        # A CPU-only package aborts the server on a GPU backend, whoever starts it.
+        backend = select_backend(binary, force_cpu or getattr(model, "cpu_only", False))
         model_id = f"studio-{uuid.uuid4().hex[:12]}"
         entry: dict[str, Any] = {
             "id": model_id,

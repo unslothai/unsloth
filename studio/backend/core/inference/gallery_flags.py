@@ -180,9 +180,8 @@ def _entry(items: dict[str, Any], item_id: str) -> dict[str, Any]:
 
 
 def read(directory: Path) -> dict[str, dict[str, Any]]:
-    """Every id's flags for one gallery, read once so a listing pass can sort without
-    re-opening the store per file. Fail-safe: an untrusted store reads as no flags, because a
-    lost pin beats a gallery that will not list. Use ``read_trusted`` before destructive work."""
+    """Untrusted stores read as no flags: a lost pin beats an unlisted gallery; deletes need
+    read_trusted."""
     with _lock:
         items = _load(directory)[0].get("items", {})
     return {k: v for k, v in items.items() if isinstance(v, dict)}
@@ -351,9 +350,8 @@ def forget_locked(directory: Path, item_ids) -> None:
 
 
 def _between(high: Optional[float], low: Optional[float], *, top: float) -> Optional[float]:
-    """A key between ``high`` and ``low`` (descending), or None if both are None.
-
-    ``top`` is used at the head of the group, so new media created later still sorts first."""
+    """Key between high and low (descending), or None if both are None; top is used at the group
+    head so newer media sorts first."""
     if high is not None and low is not None:
         mid = (high + low) / 2
         # Out of float precision: tie with the upper neighbour.

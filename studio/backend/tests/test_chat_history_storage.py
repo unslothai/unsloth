@@ -432,6 +432,79 @@ def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):
     assert [message["id"] for message in messages] == ["msg-2"]
 
 
+def _turn(message_id: str, parent_id: str | None, created_at: int) -> dict:
+    return _stored_message(
+        id = message_id,
+        threadId = "thread-1",
+        parentId = parent_id,
+        role = "assistant" if message_id.startswith("a") else "user",
+        createdAt = created_at,
+    )
+
+
+def test_a_stale_window_delete_keeps_turns_it_never_saw(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    seen = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", seen)
+    studio_db.sync_chat_messages("thread-1", seen + [_turn("u3", "a2", 5), _turn("a3", "u3", 6)])
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        seen[:2],
+        prune_missing = True,
+        deleted_message_ids = ["u2", "a2"],
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1", "a3": "u3"}
+
+
+@pytest.mark.parametrize(
+    "other_window, seen_count, deleted",
+    [
+        ([_turn("a2b", "u2", 5)], 4, ["u2", "a2"]),
+        ([], 3, ["u2"]),
+    ],
+)
+def test_a_stale_window_delete_drops_replies_it_never_saw(
+    tmp_path, monkeypatch, other_window, seen_count, deleted
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", turns + other_window)
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        [m for m in turns[:seen_count] if m["id"] not in deleted],
+        prune_missing = True,
+        deleted_message_ids = deleted,
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1"}
+
+
+def test_a_prune_does_not_walk_the_chain_of_rows_it_deletes(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    ids = [f"u{i}" if i % 2 == 0 else f"a{i}" for i in range(40)]
+    turns = [_turn(m, ids[i - 1] if i else None, i) for i, m in enumerate(ids)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    walked = []
+    real = studio_db._surviving_parent_id
+    monkeypatch.setattr(
+        studio_db,
+        "_surviving_parent_id",
+        lambda conn, thread_id, message_id, pruned: walked.append(message_id)
+        or real(conn, thread_id, message_id, pruned),
+    )
+
+    assert studio_db.sync_chat_messages("thread-1", [], prune_missing = True) == []
+    assert walked == []
+
+
 def test_upsert_chat_message_rejects_cross_thread_id_conflict(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("thread-1"))
@@ -563,9 +636,8 @@ def test_settings_compare_and_set_fences_an_expected_absent_nested_path(tmp_path
 
 
 def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(tmp_path, monkeypatch):
-    """An empty patch is not a settings change. Without the same short-circuit the
-    unconditional merge has, it would rewrite updated_at on every key, which reads
-    as a fresh edit to anything watching those timestamps."""
+    """An empty patch is not a settings change: without a short-circuit, the merge would rewrite
+    updated_at on every key, reading as a fresh edit."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {"inferenceParams": {"temperature": 0.6}, "autoTitle": True}
@@ -591,9 +663,8 @@ def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(tmp
 
 
 def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(tmp_path, monkeypatch):
-    """Normalizing a differently cased model key writes a whole new exact-key row.
-    The subset compare only checks the spelling that was read, so the exact key
-    needs its own absence fence or a newer tab's row is overwritten wholesale."""
+    """Normalizing a cased model key writes a new exact-key row, and the subset compare only sees
+    the read spelling, so it needs an absence fence or a newer row is overwritten."""
     _reset_studio_db(tmp_path, monkeypatch)
     lower = "unsloth/qwen3.8-27b-gguf"
     exact = "unsloth/Qwen3.8-27B-GGUF"
@@ -613,9 +684,8 @@ def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(tmp_pa
 
 
 def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
-    """Per-model memory patches one model at a time, so the merge has to keep the
-    others. Without this, tuning a second model would wipe the first one's settings
-    and the switch back would land on whatever the last edit happened to be."""
+    """Per-model memory patches one model at a time, so the merge must keep the others; otherwise
+    tuning a second model would wipe the first one's remembered settings."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {"inferenceParamsByModel": {"qwen": {"temperature": 0.2, "topP": 0.8}}}
@@ -630,9 +700,8 @@ def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypat
 
 
 def test_picking_a_preset_can_forget_one_model_s_params(tmp_path, monkeypatch):
-    """A preset pick drops the loaded model's preset-owned keys (#14068); a merge alone cannot
-    remove a key. The forget runs first, so an edit in the same debounced patch starts fresh, and
-    a key it does not name (a Fast mode another tab just set) survives."""
+    """A preset pick drops the loaded model's preset-owned keys (issue 14068) because a merge cannot
+    remove a key; the forget runs first, so a key it does not name survives."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {
@@ -1226,6 +1295,23 @@ def test_deleting_a_mid_chain_ancestor_relinks_to_the_surviving_grandparent(tmp_
     assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
 
 
+def test_a_stale_window_delete_relinks_a_research_prompt_it_never_saw(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 2)
+
+    synced = studio_db.sync_chat_messages(
+        "src",
+        _without(messages, "a1", "prompt", "report"),
+        prune_missing = True,
+        deleted_message_ids = ["a1"],
+    )
+
+    assert {m["id"]: m["parentId"] for m in synced} == {
+        "a0": None,
+        "prompt": "a0",
+        "report": "prompt",
+    }
+
+
 def test_a_relink_to_a_surviving_message_that_is_not_the_ancestor_is_ignored(tmp_path, monkeypatch):
     # The bulk sync drops the claim instead of rejecting the batch; reseat uses the stored chain.
     _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 3)
@@ -1636,8 +1722,7 @@ def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):
 
 
 def test_the_boundary_skips_a_trailing_message_that_paints_no_row(tmp_path, monkeypatch):
-    """An imported chat can end on a system message, which the thread renders as nothing.
-    Anchoring there would hang the divider off a row that never mounts."""
+    """A trailing system message paints no row, so the divider must not anchor on it."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread({**_thread("src"), "title": "Imported"})
     studio_db.sync_chat_messages(

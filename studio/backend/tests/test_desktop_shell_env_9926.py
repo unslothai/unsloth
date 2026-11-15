@@ -198,10 +198,8 @@ def _shim(tmp_path, rc_body: str):
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "no POSIX shell on Windows")
 def test_a_background_job_in_the_rc_neither_stalls_nor_loses_the_environment(tmp_path):
-    """An rc that starts an agent must not cost the whole timeout.
-
-    The child inherits stdout, so a pipe capture waits for it, not for the shell.
-    """
+    """A background job in the rc must not cost the whole timeout; the child inherits stdout, so a
+    pipe capture waits for it, not for the shell."""
     shell = _shim(tmp_path, "sleep 45 &\nexport ROCM_PATH=/opt/rocm\n")
     started = time.monotonic()
     env = dse.read_login_shell_env(shell = shell, timeout = 15.0)

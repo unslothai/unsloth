@@ -77,8 +77,7 @@ class TestTheTensorParallelFallback:
         assert ceiling == _TP_UNMEASURED_CTX
 
     def test_a_measured_cap_still_binds_an_explicit_request(self):
-        """``--fit`` is a no-op in tensor mode, so a measured cap is all that stands between
-        the request and a startup OOM."""
+        """--fit is a no-op in tensor mode, so only a measured cap prevents startup OOM."""
         tight = [(0, 6 * 1024), (1, 6 * 1024)]
         capped, _ceiling, *_ = _measurable()._plan_tensor_parallel(
             tight, 8 * GB, NATIVE, max_target_ctx = NATIVE, explicit_ctx = True

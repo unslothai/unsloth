@@ -68,3 +68,15 @@ test("a junk auto verdict is not trusted", () => {
   assert.equal(caps.auto_resolves_to, "xet");
   assert.equal(caps.auto_reason, null);
 });
+
+test("the speed-limit flag survives normalization and defaults off", () => {
+  const base = {
+    http: { available: true, reason: null },
+    xet: { available: true, reason: null },
+  };
+  assert.equal(
+    normalizeDownloadTransportCapabilities({ ...base, speed_limited: true }).speed_limited,
+    true,
+  );
+  assert.equal(normalizeDownloadTransportCapabilities(base).speed_limited, false);
+});

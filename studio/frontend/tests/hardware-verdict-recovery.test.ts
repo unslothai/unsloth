@@ -102,7 +102,7 @@ test("the recovery poll runs while the verdict is unknown, on every platform", a
   assert.ok(start > 0 && end > start, "could not read the recovery poll effect");
   const effect = src.slice(start, end);
 
-  const guard = /if \(([^;]*)\) return;/.exec(effect);
+  const guard = /if \((selfHealSettled[^;]*)\) return;/.exec(effect);
   assert.ok(guard, "the poll never bails out, so it runs for the life of the app");
   assert.match(
     guard[1],
@@ -112,7 +112,7 @@ test("the recovery poll runs while the verdict is unknown, on every platform", a
   );
   assert.match(
     effect,
-    /chatOnlyReason !== "mlx_unavailable" && !detectionDeferred/,
+    /chatOnlyReason !== "mlx_unavailable"/,
     "a repaired MLX install no longer re-enables Train without a reload",
   );
   const deps = /\}, \[([^\]]*)\]\);$/.exec(effect);

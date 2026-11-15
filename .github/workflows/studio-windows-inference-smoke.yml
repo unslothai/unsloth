@@ -101,16 +101,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # Fast GPU-free gate: parse install.ps1 + setup.ps1 and run the PowerShell
-      # unit tests (CUDA-toolkit + torch-flavor helpers) before the heavy GGUF smoke.
-      #
-      # Background, together with the uninstall test below: about 60 s of pure
-      # PowerShell that reads only the checkout, so it overlaps the node/python setup
-      # and the ~90 s uv cache restore instead of running ahead of them. Both are
-      # collected by the wait step right before Install Unsloth, so a failure still
-      # stops the job before the install, as it did when they ran first; they are not
-      # overlapped with the install itself, because test_mirror_fallback.ps1 asserts
-      # deadlines and transfer speeds that a CPU-bound install next to it could skew.
+      # GPU-free gate: parses install.ps1 and setup.ps1 and runs their PowerShell unit tests in the
+      # background, collected before Install Unsloth; not overlapped with the install, since
+      # test_mirror_fallback.ps1 asserts timings a CPU-bound install could skew.
       - name: PowerShell installer unit tests
         id: ps-installer-units
         background: true
@@ -159,7 +152,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -1286,7 +1279,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -1594,7 +1587,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         if: ${{ contains(matrix.phases, ' pester ') || contains(matrix.phases, ' no-vs-gpu ') }}
         with:
           python-version: '3.12'

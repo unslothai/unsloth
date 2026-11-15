@@ -304,9 +304,7 @@ def test_windows_load_progress_follows_bytes_read_alone(tmp_path, monkeypatch):
 
 
 def test_linux_rss_term_leaves_out_the_pinned_weight_buffer():
-    """With --load-mode none, CUDA pins the host buffer for the weights kept in RAM before a byte is
-    read (3090: VmRSS 6.39 GB, 5.99 GB of it RssShmem, 0.16 GB read), which put the bar at 23% and held
-    it there until the reads passed it. Only the file-backed share is what a mapped load pages in."""
+    """With --load-mode none, CUDA's pinned weights count in VmRSS; only RssFile is paged in."""
     status = "VmRSS:\t6390000 kB\nRssAnon:\t250000 kB\nRssFile:\t150000 kB\nRssShmem:\t5990000 kB\n"
     with patch("builtins.open", side_effect = lambda *a, **kw: io.StringIO(status)):
         assert LlamaCppBackend._read_rss_bytes(4242) == 150000 * 1024
@@ -351,9 +349,7 @@ def test_each_os_reads_its_own_load_counter(monkeypatch):
 
 
 def test_load_progress_follows_a_real_process_on_this_os(tmp_path):
-    """No mocks: a child reads a weight file into memory, and load_progress must see all of it.
-    Linux rchar and Windows read_bytes count the read; on macOS a page-cached file reads nothing from
-    disk, so the physical footprint of the held bytes carries it. Before, macOS and Windows got None."""
+    """No mocks: a child reads a weight file; rchar, read_bytes, or macOS footprint must count it."""
     if not (os.path.isdir("/proc") or sys.platform in ("darwin", "win32")):
         pytest.skip("no load counter on this platform")
     size = 64 * 1024 * 1024

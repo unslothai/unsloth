@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Barrel import (lint rule); the model-picker cycle is fine since the call is at runtime.
+import { loadedPlacementFrom } from "./partial-offload";
+// eslint-disable-next-line no-restricted-imports -- The model-picker index would put the pickers in the startup bundle.
 import {
   adoptCachedRepoConfig,
   loadedContextFields,
+  normalizeMlxKvQuant,
+  normalizeNpuPowerMode,
   resolveResidentInitialConfig,
   savedContextPin,
-} from "@/features/model-picker";
-import { loadedPlacementFrom } from "./partial-offload";
-// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
+} from "@/features/model-picker/model-config/per-model-config";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { pinnedReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
+import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
@@ -122,7 +126,9 @@ function ensureActiveModelInStoreList(
   }
   const summary: ChatModelRow = {
     id: checkpointId,
-    name: modelDisplayName(status.active_model ?? checkpointId),
+    name:
+      npuDisplayNameNow(checkpointId) ??
+      modelDisplayName(status.active_model ?? checkpointId),
     isVision: status.is_vision ?? false,
     isLora: false,
     isGguf: status.is_gguf ?? false,
@@ -226,10 +232,15 @@ export function applyActiveModelStatusToStore(
   const preserveThinkingOnLoad = resolvePreserveThinkingOnLoad(status);
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
+  // Page-start adoption keeps the restored chat / installation value; the pin seeds loads only.
+  const pinnedThinking = options.adoptingExistingServerModel
+    ? null
+    : pinnedReasoningEnabled(checkpointId);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
   const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
   const incomingMlxAnePrefill = status.mlx_ane_prefill_requested === true;
+  const incomingMlxFastVerify = status.mlx_fast_verify_requested === true;
   const incomingMlxOffload = mlxOffloadStateFrom(status);
   const prevState = useChatRuntimeStore.getState();
   // A pin is one model's; clamp the chat's own level once the model is actually resident.
@@ -291,6 +302,17 @@ export function applyActiveModelStatusToStore(
     incoming: status.requested_load_mode,
     isGguf: status.is_gguf ?? true,
     previous: { value: prevState.loadMode, loaded: prevState.loadedLoadMode },
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+  });
+  // The echo is the table the load runs with; null is the quant's own.
+  const engramPrecisionSeed = resolveBatchSizeSeed<string>({
+    incoming: status.engram_precision,
+    isGguf: (status.is_gguf ?? true) && status.is_diffusion !== true,
+    previous: {
+      value: prevState.engramPrecision,
+      loaded: prevState.loadedEngramPrecision,
+    },
     seedLoadParams,
     modelChanged: slotsModelChanged,
   });
@@ -443,11 +465,13 @@ export function applyActiveModelStatusToStore(
       preserveThinking: preserveThinkingOnLoad,
     }),
     supportsTools,
-    ...resolveToolsEnabledOnLoad(supportsTools),
+    ...resolveToolsEnabledOnLoad(supportsTools, checkpointId),
     reasoningEnabled: supportsReasoning
       ? reasoningStyle === "reasoning_effort"
         ? true
-        : useChatRuntimeStore.getState().reasoningEnabled
+        : hydratingExistingModel && pinnedThinking !== null
+          ? pinnedThinking
+          : useChatRuntimeStore.getState().reasoningEnabled
       : true,
     ...loadedContextFields(status),
     ...(status.is_gguf
@@ -543,6 +567,7 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
             loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
             loadedMlxAnePrefillRequested: incomingMlxAnePrefill,
+            loadedMlxFastVerifyRequested: incomingMlxFastVerify,
             ...incomingMlxOffload,
             ...((hydratingExistingModel ||
               (prevState.mlxPleOffload ?? null) ===
@@ -569,6 +594,11 @@ export function applyActiveModelStatusToStore(
                 prevState.loadedMlxAnePrefillRequested) && {
               mlxAnePrefill: incomingMlxAnePrefill,
             }),
+            ...((hydratingExistingModel ||
+              prevState.mlxFastVerify ===
+                prevState.loadedMlxFastVerifyRequested) && {
+              mlxFastVerify: incomingMlxFastVerify,
+            }),
           }
         : {
             loadedMlxKvQuantRequested: null,
@@ -577,8 +607,17 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantNote: null,
             loadedMlxInt8PrefillRequested: false,
             loadedMlxAnePrefillRequested: false,
+            loadedMlxFastVerifyRequested: false,
             ...incomingMlxOffload,
           })),
+    ...(seedLoadParams && {
+      npuPowerMode:
+        status.is_npu === true ? normalizeNpuPowerMode(status.npu_power_mode) : null,
+      npuPrefillChunkLen:
+        status.is_npu === true ? (status.npu_prefill_chunk_len ?? null) : null,
+      npuImgPreResize:
+        status.is_npu === true ? (status.npu_img_pre_resize ?? null) : null,
+    }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {
@@ -641,6 +680,12 @@ export function applyActiveModelStatusToStore(
       loadedLoadMode: loadModeSeed.loaded ?? null,
     }),
     ...("value" in loadModeSeed && { loadMode: loadModeSeed.value ?? null }),
+    ...("loaded" in engramPrecisionSeed && {
+      loadedEngramPrecision: engramPrecisionSeed.loaded ?? null,
+    }),
+    ...("value" in engramPrecisionSeed && {
+      engramPrecision: engramPrecisionSeed.value ?? null,
+    }),
     ...("loaded" in specDraftCacheSeed && {
       loadedSpecDraftCacheDtype: specDraftCacheSeed.loaded ?? null,
     }),
@@ -692,7 +737,8 @@ export function applyActiveModelStatusToStore(
   if (
     supportsReasoning &&
     hydratingExistingModel &&
-    storedReasoningEnabled === null
+    storedReasoningEnabled === null &&
+    pinnedThinking === null
   ) {
     // Anchored size regex; mirrors use-chat-model-runtime.ts and the inline regex in llama_cpp.py.
     let reasoningDefault = true;

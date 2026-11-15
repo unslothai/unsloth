@@ -34,6 +34,7 @@ function loadSystem(body: unknown) {
           cleanup = effect();
         },
       },
+      "@/config/env": { refreshDeviceTypeAfterSystemInfo: () => {} },
       "@/features/auth": {
         authFetch: async (url: string, init?: RequestInit) => {
           requests.push({ url, init });

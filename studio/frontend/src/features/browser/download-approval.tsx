@@ -11,22 +11,26 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useT } from "@/i18n";
 import { useId, useState } from "react";
-import { answerDownload, useApprovalStore } from "./download-approval-queue";
+import { type RememberDownload, answerDownload, useApprovalStore } from "./download-approval-queue";
+
+type Choice = "once" | "site" | "all";
+const REMEMBER: Record<Choice, RememberDownload> = { once: false, site: true, all: "all" };
 
 export function DownloadApprovalDialog() {
   const t = useT();
   const request = useApprovalStore((state) => state.queue[0]);
-  const [remember, setRemember] = useState(false);
-  const checkboxId = useId();
+  const [choice, setChoice] = useState<Choice>("once");
+  const id = useId();
 
   // Escape or an outside click cancels this once only, so a stray click with the box ticked doesn't block the site for good.
   const answer = (allow: boolean, kept = true) => {
     if (!request || useApprovalStore.getState().queue[0] !== request) return;
-    setRemember(false);
-    answerDownload(request, allow, kept && remember);
+    setChoice("once");
+    answerDownload(request, allow, kept ? REMEMBER[choice] : false);
   };
 
   return (
@@ -43,12 +47,25 @@ export function DownloadApprovalDialog() {
             </p>
           ) : null}
         </AlertDialogHeader>
-        {/* Files that run code ask every time, so there's nothing to remember. */}
-        {request?.origin && !request.dangerous ? (
-          <label htmlFor={checkboxId} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
-            <Checkbox id={checkboxId} checked={remember} onCheckedChange={(checked) => setRemember(checked === true)} />
-            {t("browser.downloadPrompt.remember")}
-          </label>
+        {request ? (
+          <RadioGroup
+            value={choice}
+            onValueChange={(value) => setChoice(value as Choice)}
+            aria-label={t("browser.downloadPrompt.remember")}
+            className="gap-2"
+          >
+            {(["once", "site", "all"] as const)
+              // Without a web origin (data:, an opaque blob) there's no site to remember.
+              .filter((option) => option !== "site" || request.origin)
+              .map((option) => (
+                <div key={option} className="flex items-center gap-2">
+                  <RadioGroupItem id={`${id}-${option}`} value={option} />
+                  <Label htmlFor={`${id}-${option}`} className="cursor-pointer text-sm font-normal text-foreground">
+                    {t(`browser.downloadPrompt.${option}`, { host: request.label })}
+                  </Label>
+                </div>
+              ))}
+          </RadioGroup>
         ) : null}
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => answer(false)}>{t("browser.downloadPrompt.cancel")}</AlertDialogCancel>

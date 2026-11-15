@@ -416,13 +416,10 @@ def gpu_memory_fraction(
     reserve_share: float = 0.0,
     measure = None,
 ) -> float:
-    """Budget every selected physical GPU after the previous resident is stopped.
-
-    Reserve the larger of ``reserve_mib`` and ``reserve_share`` of each card for allocations the
-    engine does not budget. ``measure`` returns (total, free) MiB per selected GPU; nvidia-smi
-    answers by default. An unreadable
-    device is an actionable failure, never permission to fall back to a larger engine default.
-    """
+    """Budget every selected GPU after the previous resident stops; reserve the larger of
+    reserve_mib and reserve_share per card for unbudgeted allocations; measure gives (total,
+    free) MiB (default nvidia-smi); an unreadable device is an actionable failure, never a
+    fallback to a larger engine default."""
     from utils.vram_budget_settings import get_vram_budget_fraction
     try:
         rows = (measure or _nvidia_memory_rows)(gpu_ids)

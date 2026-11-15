@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -257,3 +258,34 @@ def test_host_prep_probe_timeout_is_not_a_verdict(runtime, monkeypatch):
 
     monkeypatch.setattr(mxc_runtime.subprocess, "run", run)
     assert mxc_runtime.probe_host_prep_steps(package_root = runtime) is None
+
+
+@pytest.mark.parametrize("build", [17763, 20348, 22631])
+def test_older_windows_never_launches_wxc(runtime, monkeypatch, tmp_path, build):
+    # Server 2019 showed wxc-exec loader dialogs on every Settings > Sandbox visit (#16169).
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        mxc_runtime.sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build = build),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        mxc_runtime.subprocess, "run", lambda *_a, **_k: pytest.fail("wxc-exec was launched")
+    )
+    assert mxc_runtime.selected_runtime(package_root = runtime).path.name == "wxc-exec.exe"
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "26100"):
+        mxc_runtime.acquire_runtime(package_root = runtime)
+    assert mxc_runtime.probe_host_prep_steps(package_root = runtime) is None
+    assert mxc_runtime.recover_dacl_state() is False
+
+
+def test_windows_11_24h2_still_launches_wxc(runtime, monkeypatch):
+    monkeypatch.setattr(
+        mxc_runtime.sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build = 26100),
+        raising = False,
+    )
+    with mxc_runtime.acquire_runtime(package_root = runtime) as lease:
+        assert lease.info.path == (runtime / "wxc-exec.exe").resolve()

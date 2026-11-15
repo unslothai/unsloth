@@ -40,9 +40,7 @@ def _reserve_one_slot():
 
 
 def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
-    """Yield chunks, then wedge in the finally: without the release at [DONE] the slot stays
-    held for as long as the teardown is stuck, which is what starved the next request in CI.
-    """
+    """Release the slot at [DONE], not after teardown, or a stuck teardown starves the next CI request."""
     wedged = asyncio.Event()
 
     async def _stream():

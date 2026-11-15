@@ -17,6 +17,7 @@ FAMILIES: dict[str, tuple[str, str]] = {
     "server": ("logs/server", "server-*.log"),
     "llama-server": ("logs/llama-server", "llama-*.log"),
     "diffusion-server": ("logs/diffusion-server", "diffusion-*.log"),
+    "lemonade": ("logs/lemonade", "lemonade-*.log"),
     "desktop-backend": ("logs", "backend-*.log"),
     "desktop-install": ("logs", "install-*.log"),
     "desktop-update": ("logs", "update-*.log"),
@@ -114,12 +115,13 @@ def _family_files(family: str) -> list[Path]:
         except OSError:
             continue
         try:
-            entries = list(directory.glob(pattern))
+            # Names, not a Path per file; fnmatch.filter folds case exactly as glob does (Windows only).
+            names = fnmatch.filter(os.listdir(directory), pattern)
         except OSError:
             continue
         # Nothing prunes logs/llama-server and one file is written per load ATTEMPT (11,794 on this host), so a filename presort, which tracks time order, leaves a handful to stat. Every family's filename embeds its creation time (server-YYYYmmdd-HHMMSS, llama-<epoch>, diffusion-<epoch>, desktop ms epoch), and realpath + stat on every file cost ~356ms at a 1 Hz poll.
-        entries.sort(key = lambda entry: entry.name, reverse = True)
-        entries = entries[: MAX_SOURCES_PER_FAMILY * 3]
+        names.sort(reverse = True)
+        entries = [directory / name for name in names[: MAX_SOURCES_PER_FAMILY * 3]]
         for entry in entries:
             try:
                 real = Path(os.path.realpath(entry))

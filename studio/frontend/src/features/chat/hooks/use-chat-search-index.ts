@@ -27,6 +27,10 @@ import {
   rememberChatSearchHasRows,
 } from "../utils/chat-search-history-hint";
 import {
+  collapseWhitespace,
+  stripBase64Runs,
+} from "../utils/chat-search-text.ts";
+import {
   formatMcpToolName,
   mcpServerFromProvenance,
   mcpToolFromProvenance,
@@ -48,6 +52,7 @@ export interface ChatSearchItem {
 
 // Messages are indexed for the newest threads only; older chats match by title.
 const THREAD_LIMIT = 200;
+const THREADS_PER_BATCH = 20;
 const SEARCH_REBUILD_DEBOUNCE_MS = 300;
 // Past the dialog's 180ms exit, so releasing rows never lands mid-animation.
 const ROW_RELEASE_DELAY_MS = 300;
@@ -59,9 +64,9 @@ function searchableText(value: unknown, depth = 0, toolName?: string): string {
     let text = splitMcpImages(value).text;
     const cut = text.indexOf("\n__IMAGES__:");
     if (cut !== -1) text = text.slice(0, cut);
-    return text
-      .replace(/data:[^;,\s]+;base64,[A-Za-z0-9+/=]+/g, " ")
-      .replace(/[A-Za-z0-9+/]{120,}={0,2}/g, " ");
+    return stripBase64Runs(
+      text.replace(/data:[^;,\s]+;base64,[A-Za-z0-9+/=]+/g, " "),
+    );
   }
   if (value == null || depth > 4) return "";
   if (Array.isArray(value)) {
@@ -81,6 +86,7 @@ function searchableText(value: unknown, depth = 0, toolName?: string): string {
   return "";
 }
 
+// The backend's search view (routes/chat_history.py _search_view_message) keeps only what this reads.
 function extractText(message: MessageRecord): string {
   const content = message.content;
   const pasted = attachmentsPastedText(message.attachments);
@@ -128,7 +134,7 @@ function extractText(message: MessageRecord): string {
         if (typeof v === "string") parts.push(v);
     }
   }
-  return parts.join(" ").replace(/\s+/g, " ").trim();
+  return collapseWhitespace(parts.join(" ")).trim();
 }
 
 interface ChatSearchIndexBuild {
@@ -191,9 +197,23 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
   }
 
   const loadedThreadIds = active.slice(0, THREAD_LIMIT).map((t) => t.id);
-  let messagesByThread = await batchListChatMessages(loadedThreadIds).catch(
-    () => new Map<string, MessageRecord[]>(),
-  );
+  // One response for every thread can pass V8's string cap and then fails whole.
+  const chunks: string[][] = [];
+  for (let i = 0; i < loadedThreadIds.length; i += THREADS_PER_BATCH) {
+    chunks.push(loadedThreadIds.slice(i, i + THREADS_PER_BATCH));
+  }
+  let messagesByThread = new Map<string, MessageRecord[]>();
+  for (const batch of await Promise.all(
+    chunks.map((ids) =>
+      batchListChatMessages(ids, { view: "search" }).catch(
+        () => new Map<string, MessageRecord[]>(),
+      ),
+    ),
+  )) {
+    for (const [threadId, messages] of batch) {
+      messagesByThread.set(threadId, messages);
+    }
+  }
   let complete = true;
 
   // Legacy-only chats may predate server import; fill only missing ids via the legacy path.

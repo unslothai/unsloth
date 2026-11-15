@@ -29,11 +29,12 @@ HELPERS = {
     "_unsloth_grpo_nanmax",
     "_unsloth_grpo_flush_metrics",
     "_unsloth_grpo_defer_metric",
+    "_unsloth_grpo_refuse_boundary_blind_packing",
 }
 BATCH, PROMPT, COMPLETION = 2, 3, 4
 
 
-def _compute_loss(completion_length):
+def _compute_loss(completion_length, coef_1 = None):
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"), filename = str(SOURCE_PATH))
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in HELPERS]
     namespace = {"torch": torch, "inspect": inspect}
@@ -50,7 +51,7 @@ def _compute_loss(completion_length):
             torch.tensor(0.25),
             None,
             None,
-            ones,
+            ones if coef_1 is None else coef_1,
             ones,
         )
 

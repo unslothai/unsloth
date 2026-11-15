@@ -207,3 +207,19 @@ test("a current visit's deliberate Device choice remains available when empty", 
   assert.equal(resolvePickerTab({ ...input, hasCurrentTabChoice: false }), "hub");
   assert.equal(resolvePickerTab({ ...input, hasDeviceItems: true }), "device");
 });
+
+test("a saved Device preference keeps the Hub search tab when a model lands", () => {
+  const savedDevice = {
+    ...inferredBase,
+    hasExplicitTabPreference: true,
+    isDeviceInventorySettled: true,
+    selectedTab: "device" as const,
+  };
+  const opening = { ...savedDevice, hasDeviceItems: false, lockedInferredTab: null };
+  assert.equal(resolvePickerTab(opening), "hub");
+  // Typing locks the shown tab; a model appearing mid-search must not flip it.
+  assert.equal(
+    resolvePickerTab({ ...savedDevice, hasDeviceItems: true, lockedInferredTab: "hub" }),
+    "hub",
+  );
+});

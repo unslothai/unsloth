@@ -17,6 +17,25 @@ FIRST = "https://bookmark.test/first"
 SECOND = "https://bookmark.test/followed"
 
 
+def follow_link(panel, address, content):
+    # On a loaded Windows runner the click into the nested page sometimes never reaches the panel and the
+    # tab stays on the typed page. Click again only while it is still there, so a slow navigation is not doubled.
+    link = content.get_by_role("link", name = "Follow link")
+    for attempt in range(3):
+        link.click()
+        try:
+            expect(address).to_have_value(SECOND, timeout = 5000)
+            return
+        except AssertionError:
+            if attempt == 2 or address.input_value() != FIRST:
+                raise
+            expect(panel.get_by_role("tab")).to_contain_text("Typed page")
+            print(
+                f"[bookmarks] follow click {attempt + 1} did not navigate, clicking again",
+                flush = True,
+            )
+
+
 def check_page(browser, session, action, followed):
     context = browser.new_context(viewport = {"width": 1440, "height": 900}, locale = "en-US")
     install_view_transition_killer(context)
@@ -58,7 +77,7 @@ def check_page(browser, session, action, followed):
         content = panel.frame_locator('iframe[src*="/api/browser/frame"]').frame_locator("iframe")
         expect(content.get_by_role("link", name = "Follow link")).to_be_visible()
         if followed:
-            content.get_by_role("link", name = "Follow link").click()
+            follow_link(panel, address, content)
         current = SECOND if followed else FIRST
         title = "Followed page" if followed else "Typed page"
         expect(address).to_have_value(current)

@@ -33,9 +33,8 @@ IDLE_ADAPTERS = [
 
 
 def test_system_tab_reports_aggregate_when_pairing_is_ambiguous(win_rocm, monkeypatch):
-    """0.22 + 0.14 GiB across a 45/7.98 GiB pair: neither usage is capacity-forced, so
-    per device stays Unknown, but the total is 0.36 GiB either way round. Before the
-    fix the whole tile read Unknown (#7452)."""
+    """On a 45/7.98 GiB pair, 0.22 and 0.14 GiB are not capacity-forced, so per device stays Unknown
+    but the 0.36 GiB total must still show (#7452)."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IDLE_ADAPTERS))
@@ -50,8 +49,7 @@ def test_system_tab_reports_aggregate_when_pairing_is_ambiguous(win_rocm, monkey
 
 
 def test_gpu_utilization_payload_carries_the_aggregate(win_rocm, monkeypatch):
-    """The floating monitor reads get_gpu_utilization(), so the figure has to reach
-    that payload too, not only the System tab's."""
+    """The floating monitor reads get_gpu_utilization(), so the aggregate must be in it too."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IDLE_ADAPTERS))
@@ -64,9 +62,8 @@ def test_gpu_utilization_payload_carries_the_aggregate(win_rocm, monkeypatch):
 
 
 def test_loaded_card_agrees_with_the_per_device_figures(win_rocm, monkeypatch):
-    """#7072's own case: a model resident on the W7900. 40 GiB exceeds the smaller
-    card, so the ranking is forced and both rows get a value; the aggregate must equal
-    their sum or the tile disagrees with the rows underneath it."""
+    """The #7072 case, a model resident on the W7900: 40 GiB exceeds the smaller card, so both rows
+    get a value and the aggregate must equal their sum."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     loaded = [
         ("luid_0x00000000_0x0000d1e2_phys_0", 40.0 * GB),
@@ -87,8 +84,7 @@ def test_loaded_card_agrees_with_the_per_device_figures(win_rocm, monkeypatch):
 
 
 def test_no_aggregate_when_the_counter_is_unavailable(win_rocm, monkeypatch):
-    """A localized or missing counter set stays Unknown rather than becoming 0: that
-    fabricated zero is the #7072 symptom this pair started from."""
+    """A localized or missing counter set must stay Unknown, not 0 (the #7072 symptom)."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
 
@@ -108,9 +104,8 @@ def test_aggregate_requires_a_counter_per_visible_device():
 
 
 def test_aggregate_rejects_a_usage_larger_than_any_visible_card():
-    """A masked 45 GiB card at 40 GiB beside a visible idle 8 GiB card: the counts can
-    match by accident, but 40 GiB cannot be on an 8 GiB card, so the counter set is
-    not the visible set and the sum would be a hidden GPU's."""
+    """A usage larger than every visible card's capacity means the counter set is not the visible
+    set, so the sum would include a hidden GPU and is refused."""
     agg = hw._rocm_windows_aggregate_used_bytes
     assert agg([40 * GB, 10 * MiB], [8 * GB]) is None
     assert agg([40 * GB, 6 * GB], [45 * GB, 4 * GB]) is None
@@ -130,9 +125,8 @@ def test_aggregate_never_sums_bytes_that_are_not_on_a_visible_card():
 
 
 def test_aggregate_is_stable_across_a_changing_instance_list(win_rocm, monkeypatch):
-    """Counters come and go between polls (a placeholder adapter appears, a card is
-    masked mid-session). Every poll is judged on its own list, so the tile alternates
-    between the real figure and Unknown, never between two figures."""
+    """Counters come and go between polls, so each poll is judged on its own list and the tile shows
+    either the real figure or Unknown, never two figures."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     polls = [
         (IDLE_ADAPTERS, pytest.approx(0.36, abs = 0.01)),
@@ -149,9 +143,8 @@ def test_aggregate_is_stable_across_a_changing_instance_list(win_rocm, monkeypat
 
 
 def test_aggregate_tolerates_a_wddm_spill_over_the_smaller_card(win_rocm, monkeypatch):
-    """WDDM satisfies an overrun from host RAM, so a usage can exceed the card it sits
-    on. That only has to not fabricate a number: a reading above the LARGEST visible
-    capacity is refused, one that still fits the ranking is summed as reported."""
+    """WDDM can spill an overrun into host RAM, so a usage may exceed its own card; a reading above
+    the largest visible capacity is refused, one that still fits the ranking is summed."""
     agg = hw._rocm_windows_aggregate_used_bytes
     assert agg([9 * GB, 0.3 * GB], [45 * GB, 8 * GB]) == pytest.approx(9.3 * GB)
     assert agg([46 * GB, 2 * GB], [45 * GB, 8 * GB]) is None
@@ -197,16 +190,14 @@ def test_aggregate_is_dropped_when_the_probes_enumerate_different_cards(monkeypa
 
 
 def test_aggregate_survives_when_both_probes_name_the_same_cards(monkeypatch):
-    """The reporter's own host, and the case the fix exists for: identical index
-    sets, so the aggregate is a total over exactly the rows on screen."""
+    """Identical index sets make the aggregate a total over exactly the rows on screen."""
     visibility, utilization = _probe_pair([0, 1], [0, 1], 0.36)
     gpu_info = _merged_gpu_info(monkeypatch, visibility, utilization)
     assert gpu_info["vram_used_gb_aggregate"] == 0.36
 
 
 def test_aggregate_is_dropped_when_the_sets_merely_overlap(monkeypatch):
-    """Equal counts are not enough. Two cards each, but index 1 against index 2:
-    the aggregate counts a card that has no row, and a row has no counter."""
+    """Equal counts are not enough: index sets that only overlap must drop the aggregate."""
     visibility, utilization = _probe_pair([0, 1], [0, 2], 46.0)
     gpu_info = _merged_gpu_info(monkeypatch, visibility, utilization)
     assert gpu_info["vram_used_gb_aggregate"] is None

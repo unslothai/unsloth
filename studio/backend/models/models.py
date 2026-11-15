@@ -171,6 +171,15 @@ class ModelListResponse(BaseModel):
     default_models: List[str] = Field(default_factory = list, description = "List of default model IDs")
 
 
+class EngramTableDetail(BaseModel):
+    """Mirrors hub.schemas.inventory.EngramTableDetail."""
+
+    precision: str = Field(..., description = "Precision label from the file name, e.g. 'Q8_0'")
+    filename: str = Field(..., description = "Repo path of the table file")
+    size_bytes: int = Field(0, description = "File size in bytes")
+    downloaded: bool = Field(False, description = "Whether the table is in the local HF cache")
+
+
 class GgufVariantDetail(BaseModel):
     """A single GGUF quantization variant in a HuggingFace repo."""
 
@@ -192,6 +201,10 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    estimated_resident_gb: Optional[float] = Field(
+        None,
+        description = "audio.cpp only: GiB of GPU memory the load check requires for this variant",
+    )
     lookup_table_bytes: int = Field(
         0,
         description = "Bytes of lazily read lookup tables (per-layer embeddings / Engram) "
@@ -220,6 +233,14 @@ class GgufVariantDetail(BaseModel):
         False,
         description = "Row exists only to offer deleting an empty leftover <quant>/ folder; "
         "the listing has no such weights, so it never proves a load would find any.",
+    )
+    # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label above.
+    engram_precision: Optional[str] = Field(
+        None, description = "Precision of the Engram table this quant ships with, if swappable"
+    )
+    engram_ready: List[str] = Field(
+        default_factory = list,
+        description = "Engram table precisions this quant loads with without downloading",
     )
 
 
@@ -265,6 +286,13 @@ class GgufVariantsResponse(BaseModel):
             "'mlx' when the variants are precision folders of an MLX repo rather than GGUF "
             "quants; None for GGUF"
         ),
+    )
+    engram_tables: List[EngramTableDetail] = Field(
+        default_factory = list,
+        description = "Standalone Engram tables a load can use in place of a quant's own",
+    )
+    engram_supported: Optional[bool] = Field(
+        None, description = "Whether this server's llama.cpp loads a standalone Engram table"
     )
 
 

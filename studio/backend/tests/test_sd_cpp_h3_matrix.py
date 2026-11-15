@@ -250,8 +250,7 @@ def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
 def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
     h3_host, platform, hw_label, backend, device, monkeypatch
 ):
-    """A user binary is re-vetted after the download, since a swap mid-fetch would otherwise go
-    unchecked."""
+    """User-supplied binaries are re-vetted after the download, so a mid-fetch swap is caught."""
     from core.inference import sd_cpp_backend
 
     host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
@@ -388,8 +387,7 @@ def test_h3_probes_devices_only_where_the_answer_is_used(
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize("hw_label,backend,device", HARDWARE)
 def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label, backend, device):
-    """The preflight can download and extract the sd-cli prebuilt and takes no cancel_event, so a
-    load cancelled before its worker started must not reach it."""
+    """A preflight download has no cancel_event, so a load cancelled early must not reach it."""
     from core.inference import sd_cpp_backend
 
     host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)

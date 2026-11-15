@@ -1247,10 +1247,11 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                 for plan in self._unsloth_plan_dicts:
                     plan[key] = None
 
-        def update_weight_conversions(self, weight_conversions):
+        def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+            # transformers 5.21+ also passes the model.
             ct_config = self._unsloth_ct_config
             if ct_config is None:
-                return super().update_weight_conversions(weight_conversions)
+                return super().update_weight_conversions(weight_conversions, *args, **kwargs)
             if getattr(self, "_unsloth_keep_packed", False):
                 return (
                     list(weight_conversions)
@@ -1316,7 +1317,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             parent = getattr(super(), "update_weight_conversions", None)
             if parent is None:
                 return updated + list(self.get_weight_conversions())
-            return parent(updated)
+            return parent(updated, *args, **kwargs)
 
     mapping = getattr(quantizers_auto, "AUTO_QUANTIZER_MAPPING", None)
     if mapping is None:

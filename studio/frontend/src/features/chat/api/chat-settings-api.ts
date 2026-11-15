@@ -18,6 +18,8 @@ import type {
 import type { PersistedInferenceParams } from "../types/runtime";
 import {
   ChatSettingsRequestError,
+  asBodyTransportFailure,
+  isAbortOrTimeout,
   isUnderKeepaliveBudget,
 } from "../utils/settings-retry";
 
@@ -123,7 +125,13 @@ function parseErrorText(status: number, body: unknown): string {
 }
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
-  const body = await response.json().catch(() => null);
+  const body = await response.json().catch((error: unknown) => {
+    // A 200 cut off or aborted mid-body has no answer; invalid JSON (SyntaxError) still returns null.
+    if (response.ok && (error instanceof TypeError || isAbortOrTimeout(error))) {
+      throw asBodyTransportFailure(error);
+    }
+    return null;
+  });
   if (!response.ok) {
     // Typed so the settings queue can tell server-down (keep patch) from rejection (drop fields).
     throw new ChatSettingsRequestError(

@@ -23,6 +23,7 @@ from auth.authentication import get_current_subject
 from auth import policy
 from state import active_generations, run_subscribers, unattended_runs
 from utils.account_context import current_account, current_account_id, run_as
+from core.inference.chat_generation_runs import detach_embedded_images
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
@@ -33,6 +34,13 @@ from utils.current_date_prompt_settings import (
 )
 
 router = APIRouter()
+
+
+def _encode_json(value: Any) -> str:
+    """The SSE frame encoding; chat_generation_runs_db stores event payloads with the same options."""
+    return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
+
+
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(
     max_workers = 32,
     thread_name_prefix = "chat-generation-events",
@@ -197,12 +205,15 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    # A media turn persists verbatim, so refuse base64 blobs in fields or in earlier
-    # messages[].content (image follow-ups no longer set top-level image_base64).
+    # This turn's media stays legacy; images of earlier turns are detached before the request persists.
+    latest_user = max(
+        (index for index, message in enumerate(request.messages) if message.role == "user"),
+        default = 0,
+    )
     if (
         any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
         or _messages_have_input_audio(request.messages)
-        or _messages_have_embedded_image(request.messages)
+        or _messages_have_embedded_image(request.messages[latest_user:])
         or _request_has_video(request)
     ):
         raise HTTPException(
@@ -260,6 +271,12 @@ def _require_run(run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     return run
+
+
+def _require_run_exists(run_id: str) -> None:
+    """_require_run's 404 without reading or parsing the stored request."""
+    if db.get_run_state(run_id) is None:
+        raise HTTPException(status_code = 404, detail = "Chat generation run not found")
 
 
 def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -> None:
@@ -342,6 +359,7 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
+    images = detach_embedded_images(sanitized)
     from routes.inference import _request_used_api_key
 
     sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
@@ -374,6 +392,7 @@ async def create_chat_generation_run(
                 run["id"],
                 thread_id = run["threadId"],
                 model = run["requestPayload"].get("model"),
+                images = images,
             )
     if payload.stopWhenUnattended and run["status"] not in db.TERMINAL_STATUSES:
         _watch_unattended(request, run["id"])
@@ -398,7 +417,7 @@ def cancel_chat_generation_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id)
+    _require_run_exists(run_id)
     run = db.request_cancel(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
@@ -418,7 +437,7 @@ async def chat_generation_events(
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id)
+    _require_run_exists(run_id)
     cursor = _event_cursor(after, last_event_id)
     wait_for_events = db.wait_for_events
     if policy.installation_has_managed_accounts():
@@ -433,7 +452,7 @@ async def chat_generation_events(
         nonlocal cursor
         loop = asyncio.get_running_loop()
         # A settled run has nothing to replay; don't hold an event-wait worker for it.
-        opening = await asyncio.to_thread(db.get_run, run_id)
+        opening = await asyncio.to_thread(db.get_run_state, run_id)
         if opening is None:
             return
         if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
@@ -447,28 +466,29 @@ async def chat_generation_events(
                 run_id,
                 cursor,
                 15,
+                True,
             )
-            # Only non-chunk events carry the run, so a chunk-only batch skips parsing request_json.
-            snapshot = await asyncio.to_thread(
-                db.get_run
-                if any(event["type"] != "chunk" for event in events)
-                else db.get_run_state,
-                run_id,
-            )
+            # Only non-chunk events carry the run, spliced in as already encoded text.
+            run_json = None
+            if any(event["type"] != "chunk" for event in events):
+                frame = await asyncio.to_thread(db.get_run_frame, run_id)
+                snapshot, run_json = frame if frame is not None else (None, None)
+            else:
+                snapshot = await asyncio.to_thread(db.get_run_state, run_id)
             if snapshot is None:
                 return
             for event in events:
                 cursor = int(event["seq"])
-                data = {
-                    "seq": cursor,
-                    "type": event["type"],
-                    "payload": event["payload"],
-                    "createdAt": event["createdAt"],
-                }
-                if event["type"] != "chunk":
-                    data["run"] = snapshot
-                encoded = json.dumps(data, ensure_ascii = False, separators = (",", ":"))
-                yield f"id: {cursor}\nevent: {event['type']}\ndata: {encoded}\n\n"
+                event_type = event["type"]
+                # Spliced, not re-encoded: the stored payload is already this encoder's output, so the
+                # bytes match json.dumps of the parsed event dict with the same key order.
+                encoded = (
+                    f'{{"seq":{cursor},"type":{_encode_json(event_type)},'
+                    f'"payload":{event["payloadJson"]},"createdAt":{int(event["createdAt"])}'
+                )
+                if event_type != "chunk":
+                    encoded += f',"run":{run_json}'
+                yield f"id: {cursor}\nevent: {event_type}\ndata: {encoded}}}\n\n"
             if snapshot["status"] in db.TERMINAL_STATUSES and cursor >= int(
                 snapshot["lastEventSeq"]
             ):

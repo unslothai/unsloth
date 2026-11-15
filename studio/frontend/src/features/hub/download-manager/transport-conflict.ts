@@ -4,7 +4,7 @@
 import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { toast } from "@/lib/toast";
 import { disposableTimeoutSignal } from "../lib/abort-signals";
-import { getActiveModelDownloads } from "./api";
+import { getActiveModelDownloads, getDownloadTransportCapabilities } from "./api";
 import {
   DOWNLOAD_KIND,
   mismatchStartAction,
@@ -105,7 +105,15 @@ export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
 function isJobActiveFor(req: DownloadRequest): boolean {
   const job = getState().jobs[jobKeyOf(req.kind, req.repoId, req.variant)];
   if (!job || !ACTIVE_STATES.has(job.state)) return false;
-  return !scopedFileSetDiffers(job, req);
+  return !scopedFileSetDiffers(job, req) && !engramTableDiffers(job, req);
+}
+
+// One quant fetched with another Engram table is a different set of files, so not this start.
+function engramTableDiffers(job: ManagedDownload, req: DownloadRequest): boolean {
+  return (
+    (job.engramPrecision ?? "").toUpperCase() !==
+    (req.engramPrecision ?? "").toUpperCase()
+  );
 }
 
 // A shared scope slot counts as this transfer only if it fetches the same files; a job with
@@ -123,13 +131,18 @@ function scopedFileSetDiffers(
   );
 }
 
+/** The guard below refuses this start as "busy" without a toast: another job owns the repo. */
+export function startRefusedAsBusy(req: DownloadRequest): boolean {
+  return hasActiveOrPendingStart(req) && !isJobActiveFor(req);
+}
+
 async function runWithPendingStartGuard(
   req: DownloadRequest,
   action: () => Promise<DownloadStartOutcome>,
 ): Promise<DownloadStartOutcome> {
   const startKey = pendingStartKey(req);
   if (hasActiveOrPendingStart(req)) {
-    if (!isJobActiveFor(req)) return "busy";
+    if (startRefusedAsBusy(req)) return "busy";
     // Returns "started" without running the action, so this is the only feedback.
     showCallerToast(
       jobKeyOf(req.kind, req.repoId, req.variant),
@@ -187,11 +200,18 @@ export async function requestStart(
         err,
       );
     }
+    // A limit moves the backend onto HTTP unless a file passes the HTTPS ceiling, which only it can see:
+    // preflight assumes HTTP (or a live sibling's transport), and the start still sends the preference.
+    const speedLimited = await getDownloadTransportCapabilities()
+      .then((caps) => caps.speed_limited === true)
+      .catch(() => false);
+    if (speedLimited) mode = TRANSPORT.HTTP;
     let siblingTransport: ResolvedTransport | null = null;
     let siblingProbed = false;
     try {
       siblingTransport = await activeSiblingTransport(req);
       siblingProbed = true;
+      if (speedLimited) mode = siblingTransport ?? TRANSPORT.HTTP;
       if (
         siblingTransport &&
         siblingTransport !== mode &&
@@ -278,7 +298,7 @@ export async function requestStart(
     }
 
     await startJob(req, {
-      useXet: mode === TRANSPORT.XET,
+      useXet: speedLimited ? undefined : mode === TRANSPORT.XET,
       originRoute,
       originSelectionEpoch,
       restartDisclosure,

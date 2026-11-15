@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { SectionBox } from "@/components/section-box";
 import { SegmentedControl } from "@/components/segmented-control";
@@ -56,13 +57,13 @@ import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
-  FolderSearchIcon,
+  Alert02Icon,
   InformationCircleIcon,
   Key01Icon,
   PackageIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -83,7 +84,11 @@ import {
 } from "./components/export-summary-card";
 import { ImageLoraExportCard } from "./components/image-lora-export-card";
 import { MethodPicker } from "./components/method-picker";
-import { Q4nxConvertCard } from "./components/q4nx-convert-card";
+import {
+  Q4NX_CARD_MARK,
+  Q4nxConvertCard,
+  type Q4nxSummary,
+} from "./components/q4nx-convert-card";
 import { QuantPicker } from "./components/quant-picker";
 import { ReapCard } from "./components/reap-card";
 import {
@@ -116,8 +121,13 @@ import {
   reapRequest,
   reapSummaryLabel,
 } from "./lib/reap";
+import { Q4NX_GUIDE_STEPS } from "./lib/q4nx-source";
 import { exportRemoteCodeConsent } from "./lib/remote-code-consent";
-import { saveDirectoryField } from "./lib/save-directory";
+import {
+  type SourceMode,
+  buildRelativeSaveDirectory,
+  saveDirectoryField,
+} from "./lib/save-directory";
 import { exportUnsupportedText } from "./lib/unsupported-text";
 import {
   isExportPanelActive,
@@ -143,46 +153,6 @@ const SOURCE_TAB_OPTIONS = [
 ] as const satisfies readonly { value: SourceTab; label: string }[];
 const FIELD_LABEL =
   "flex items-center gap-1.5 text-xs font-medium text-muted-foreground";
-type SourceMode = "checkpoint" | "model";
-
-function safePathSegment(
-  value: string | null | undefined,
-  fallback = "model",
-  maxLength = 250,
-): string {
-  const safe = (value ?? "")
-    .replace(/[^a-zA-Z0-9._-]/g, "-")
-    .replace(/^[._-]+|[._-]+$/g, "")
-    .slice(0, maxLength)
-    .replace(/[._-]+$/g, "");
-  return safe || fallback;
-}
-
-function buildRelativeSaveDirectory(
-  exportMethod: ExportMethod | null,
-  sourceMode: SourceMode,
-  sourceBaseModelName: string,
-  selectedModelIdx: string | null,
-  checkpoint: string | null,
-): string {
-  if (exportMethod === "gguf") {
-    const rawName =
-      sourceMode === "checkpoint"
-        ? (checkpoint ?? selectedModelIdx ?? sourceBaseModelName)
-        : sourceBaseModelName;
-    return `${safePathSegment(rawName)}-GGUF`;
-  }
-  if (sourceMode === "checkpoint" && selectedModelIdx && checkpoint) {
-    return `${selectedModelIdx}/${checkpoint}`;
-  }
-  // Name from the model id to avoid "model/null".
-  const rawName =
-    sourceMode === "checkpoint"
-      ? (checkpoint ?? selectedModelIdx ?? sourceBaseModelName)
-      : sourceBaseModelName;
-  return `${safePathSegment(rawName)}-${exportMethod === "lora" ? "adapter" : "merged"}`;
-}
-
 function siblingGgufDirectory(sourcePath: string): string | null {
   const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
   if (!trimmed) return null;
@@ -206,6 +176,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 
 export function ExportPage() {
   const t = useT();
+  useTimeFormat();
   const signalReady = useAppShellReadySignal();
   const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
@@ -290,6 +261,8 @@ export function ExportPage() {
     hardware.exportUnsupportedMessage,
     canUpgrade,
   );
+  // Only where the full install brings export: without a GPU it trains on CPU and still cannot export.
+  const offerFullInstall = canUpgrade && hardware.exportUnsupportedReason === "no_torch";
   const availableFormats = useMemo<MergedFormatOption[]>(
     () =>
       MERGED_FORMATS.filter((f) => {
@@ -330,7 +303,16 @@ export function ExportPage() {
   const [destination, setDestination] = useState<"local" | "hub">("local");
   // The converter writes beside the GGUFs, so a Hub-only export has nowhere to put it.
   const [npuStatus] = useNpuStatus();
-  const hasNpu = !!npuStatus?.supported;
+  // An AMD NPU feature: only with a supported NPU and FastFlowLM installed, never on NVIDIA.
+  const hasNpu = !!npuStatus?.supported && !!npuStatus?.ready;
+  const [q4nxSummary, setQ4nxSummary] = useState<Q4nxSummary | null>(null);
+  const [q4nxInUse, setQ4nxInUse] = useState(false);
+  const trackCardInUse = (event: { target: EventTarget }) =>
+    setQ4nxInUse(
+      event.target instanceof Element &&
+        !!event.target.closest(`[data-tour="${Q4NX_CARD_MARK}"]`),
+    );
+  const summarizeQ4nx = hasNpu && q4nxInUse ? q4nxSummary : null;
   const effectiveNpuQ4nx =
     hasNpu && npuQ4nx && q4nxSourceSelected && destination === "local";
   const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
@@ -1175,7 +1157,7 @@ export function ExportPage() {
   }, [showPanel]);
 
   return (
-    <div className="flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] flex-col bg-background">
+    <div data-wallpaper-page-canvas="" className="flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] flex-col bg-background">
       <main className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 
@@ -1197,7 +1179,7 @@ export function ExportPage() {
 
         {checkpointError && (
           <div className="flex items-center gap-3 rounded-2xl border border-border/60 p-8 text-sm text-destructive">
-            <HugeiconsIcon icon={AlertCircleIcon} className="size-4 shrink-0" />
+            <HugeiconsIcon icon={Alert02Icon} className="size-4 shrink-0" />
             {checkpointError}
           </div>
         )}
@@ -1212,7 +1194,11 @@ export function ExportPage() {
         {!loadingCheckpoints && !checkpointError && (
           <div className="@container/export-configure">
             <div className="grid grid-cols-1 gap-8 @4xl/export-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/export-configure:gap-10">
-              <div className="flex min-w-0 flex-col gap-6">
+              <div
+                className="flex min-w-0 flex-col gap-6"
+                onPointerDownCapture={trackCardInUse}
+                onFocusCapture={trackCardInUse}
+              >
                 <SectionBox
                   title="Source"
                   description="A local model, a fine-tuned checkpoint, or a Hugging Face model"
@@ -1259,10 +1245,13 @@ export function ExportPage() {
                                 const timeStr = tsMatch
                                   ? new Date(
                                       Number(tsMatch[1]) * 1000,
-                                    ).toLocaleString(undefined, {
-                                      dateStyle: "medium",
-                                      timeStyle: "short",
-                                    })
+                                    ).toLocaleString(
+                                      undefined,
+                                      withTimeFormat({
+                                        dateStyle: "medium",
+                                        timeStyle: "short",
+                                      }),
+                                    )
                                   : null;
                                 return (
                                   <SelectItem key={m.name} value={m.name}>
@@ -1291,7 +1280,7 @@ export function ExportPage() {
                         >
                           <label className={FIELD_LABEL}>
                             Checkpoint
-                            <Tooltip>
+                            <Tooltip disableHoverableContent={false}>
                               <TooltipTrigger asChild={true}>
                                 <button
                                   type="button"
@@ -1589,13 +1578,13 @@ export function ExportPage() {
                     {exportUnsupported && (
                       <Alert variant="destructive">
                         <HugeiconsIcon
-                          icon={AlertCircleIcon}
+                          icon={Alert02Icon}
                           className="size-4"
                         />
                         <AlertTitle>Export unavailable</AlertTitle>
                         <AlertDescription>
                           {exportUnsupportedMessage}
-                          {fullInstall && (
+                          {offerFullInstall && (
                             <div className="mt-2">
                               <Button
                                 size="xs"
@@ -1931,7 +1920,7 @@ export function ExportPage() {
                           {decisionIneligible ? (
                             <Alert variant="destructive">
                               <HugeiconsIcon
-                                icon={AlertCircleIcon}
+                                icon={Alert02Icon}
                                 className="size-4"
                               />
                               <AlertTitle>
@@ -2258,15 +2247,16 @@ export function ExportPage() {
                   </button>
                 )}
                 <ImageLoraExportCard preselect={preselectImageLora} />
-                {hasNpu && <Q4nxConvertCard />}
+                {hasNpu && <Q4nxConvertCard onSummary={setQ4nxSummary} />}
               </div>
               <div className="@4xl/export-configure:sticky @4xl/export-configure:top-6 @4xl/export-configure:self-start">
                 <ExportSummaryCard
-                  ready={canExport}
-                  rows={summaryRows}
-                  steps={exportGuideSteps}
+                  ready={summarizeQ4nx ? summarizeQ4nx.ready : canExport}
+                  rows={summarizeQ4nx ? summarizeQ4nx.rows : summaryRows}
+                  steps={summarizeQ4nx ? Q4NX_GUIDE_STEPS : exportGuideSteps}
                   cta={
-                    showPanel ? undefined : (
+                    // The Q4NX card converts with its own button.
+                    showPanel || summarizeQ4nx ? undefined : (
                       <Button
                         size="lg"
                         data-tour="export-cta"

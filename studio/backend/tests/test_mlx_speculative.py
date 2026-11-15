@@ -144,6 +144,37 @@ def test_cached_drafters_are_matched_by_shape_and_weights_then_marked_by_name(ca
     assert spec._stem("g/gemma-4-31B-it-qat-q4_0-unquantized-assistant") == "gemma431bit"
 
 
+@pytest.mark.parametrize("decision", [None, False, True])
+def test_a_drafter_build_hears_fast_verify_only_from_a_zoo_that_takes_it(monkeypatch, decision):
+    drafters = pytest.importorskip("unsloth_zoo.mlx.speculative")
+    told = []
+    factory = lambda path, target, **kw: told.append(kw) or SimpleNamespace(max_depth = 8)
+    monkeypatch.setattr(drafters, "companion_drafter", factory)
+    monkeypatch.setattr(drafters, "native_mtp_drafter", factory)
+    sources = (spec.DrafterSource("dflash", "a", False), spec.DrafterSource("mtp", "b", True))
+    for source in sources:
+        resolution = spec.SpecResolution("dflash", (source,))
+        spec.build_draft(None, resolution, fits = lambda _: (True, None), fast_verify = decision)
+    assert told == [{} if decision is None else {"fast_verify": decision}] * 2
+
+
+def test_the_installed_zoo_refuses_a_fast_verify_flip_or_reports_no_support():
+    import inspect
+
+    from core.inference import mlx_inference as mi
+
+    zoo = pytest.importorskip("unsloth_zoo.mlx.inference")
+    if "fast_verify" not in inspect.signature(zoo.inference_scopes).parameters:
+        assert mi._fast_verify_status(True, object())["reason"] == "unsupported_zoo"
+        assert mi.mlx_fast_verify_checkpoint_status("/none") == (False, "unsupported_zoo")
+        return
+    assert mi._fast_verify_zoo() is zoo
+    target = SimpleNamespace()
+    zoo.pin_fast_verify(target, True)
+    with pytest.raises(ValueError):
+        zoo.pin_fast_verify(target, False)
+
+
 def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeypatch):
     drafters = pytest.importorskip("unsloth_zoo.mlx.speculative")
 

@@ -29,8 +29,7 @@ CENSUS = {
 
 
 class _Clock:
-    """A monotonic clock the page's own waits advance, so the real drain loop runs to its real
-    deadline without this test sleeping through it."""
+    """A monotonic clock the page's waits advance, so the drain loop reaches its deadline."""
 
     def __init__(self) -> None:
         self.t = 0.0

@@ -89,3 +89,29 @@ def test_resolve_browse_target_allows_backslash_in_posix_segment(tmp_path):
     resolved = models_route._resolve_browse_target(str(target), [allowed])
 
     assert resolved == target.resolve()
+
+
+def test_resolve_browse_target_accepts_a_path_spelled_through_a_symlinked_root(tmp_path):
+    real = tmp_path / "real"
+    (real / "models").mkdir(parents = True)
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory = True)
+
+    resolved = models_route._resolve_browse_target(str(linked / "models"), [real.resolve()])
+
+    assert resolved == (real / "models").resolve()
+
+
+def test_resolve_browse_target_symlinked_root_spelling_cannot_escape(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (real / "out").symlink_to(outside, target_is_directory = True)
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory = True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        models_route._resolve_browse_target(str(linked / "out"), [real.resolve()])
+
+    assert exc_info.value.status_code == 403

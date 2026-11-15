@@ -227,13 +227,8 @@ def test_an_unreadable_directory_is_reported_and_not_just_skipped(tmp_path: path
     reason = "POSIX permissions only; see the walk control above.",
 )
 def test_a_directory_that_vanished_is_not_reported_as_unread(tmp_path: pathlib.Path) -> None:
-    """A path that is gone is not a hole in the measurement, and must not void a run.
-
-    This is the transient case the whole change exists for. A directory that no longer
-    exists cannot contribute a file to a later listing of itself, so there is nothing for
-    the caller to withhold and nothing to declare void. Only a directory that is still
-    there and still unreadable is a real gap.
-    """
+    """A vanished directory is not a gap in the measurement and must not void a run; only a
+    directory that is still present but unreadable counts as unread."""
     scan = _scan(tmp_path / "never-existed")
     assert scan["files"] == [], scan
     assert scan["unread"] == [], (

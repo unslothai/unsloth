@@ -17,6 +17,8 @@ from .format_conversion import (
     convert_to_vlm_format,
     convert_llava_to_vlm_format,
     convert_sharegpt_with_images_to_vlm_format,
+    convert_video_to_vlm_format,
+    own_message_videos,
 )
 
 from .chat_templates import (
@@ -63,6 +65,8 @@ __all__ = [
     "convert_to_vlm_format",
     "convert_llava_to_vlm_format",
     "convert_sharegpt_with_images_to_vlm_format",
+    "convert_video_to_vlm_format",
+    "own_message_videos",
     # Templates
     "apply_chat_template_to_dataset",
     "get_dataset_info_summary",

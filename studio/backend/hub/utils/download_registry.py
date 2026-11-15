@@ -63,6 +63,8 @@ _HTTP_MAX_FILE_BYTES_FALLBACK = 50 * 1000 * 1000 * 1000
 
 _HTTP_SIZE_CEILING_MARKER = "too large to be downloaded using the regular download method"
 
+_MODELSCOPE_XET_REASON = "ModelScope does not offer Xet, so downloads from it use HTTPS"
+
 
 def http_max_file_bytes() -> int:
     """The largest single file the HTTP transport can fetch."""
@@ -74,8 +76,16 @@ def http_max_file_bytes() -> int:
     return value if value > 0 else _HTTP_MAX_FILE_BYTES_FALLBACK
 
 
+def _modelscope_is_source() -> bool:
+    from utils.hub_settings import MODELSCOPE, active_source
+    return active_source() == MODELSCOPE
+
+
 def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]:
-    """An unknown size (None or 0) is no evidence, so the transport choice is left exactly as it was."""
+    """An unknown size (None or 0) is no evidence, so the transport choice is left exactly as it was.
+    ModelScope's CDN serves any size over HTTPS, and its worker lifts the hub's client-side check."""
+    if _modelscope_is_source():
+        return None
     try:
         largest = int(largest_file_bytes or 0)
     except (TypeError, ValueError):
@@ -91,8 +101,7 @@ def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]
 
 
 def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
-    """Name a repo missing on ModelScope, and replace the hub's misleading >50GB dependency
-    error with the transport limit."""
+    """Name a ModelScope-missing repo; swap the misleading >50GB error for the transport limit."""
     missing = modelscope_missing(text)
     if missing:
         return missing
@@ -132,10 +141,15 @@ def get_download_transport_capabilities(
     largest_file_bytes: Optional[int] = None,
 ) -> DownloadTransportCapabilities:
     """probe checks live Xet health, ram_gate applies memory pressure, largest_file_bytes HTTP size limit."""
-    xet_available = importlib.util.find_spec("hf_xet") is not None
+    # A ModelScope "Xet" job is plain HTTP in practice (the adapter sends no Xet headers), under a marker that then purges its partials.
+    modelscope_xet_reason = _MODELSCOPE_XET_REASON if _modelscope_is_source() else None
+    xet_reason = modelscope_xet_reason
+    if xet_reason is None and importlib.util.find_spec("hf_xet") is None:
+        xet_reason = "Xet transport is unavailable because hf_xet is not installed."
+    xet_available = xet_reason is None
     http_reason = http_size_ceiling_reason(largest_file_bytes)
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
-    auto_reason: Optional[str] = None
+    auto_reason: Optional[str] = modelscope_xet_reason
     auto_forced = False
     if xet_available:
         try:
@@ -177,12 +191,7 @@ def get_download_transport_capabilities(
         auto_reason = "Xet (HTTPS cannot fetch a file this large)"
     return DownloadTransportCapabilities(
         http = DownloadTransportCapability(available = http_reason is None, reason = http_reason),
-        xet = DownloadTransportCapability(
-            available = xet_available,
-            reason = None
-            if xet_available
-            else "Xet transport is unavailable because hf_xet is not installed.",
-        ),
+        xet = DownloadTransportCapability(available = xet_available, reason = xet_reason),
         auto_resolves_to = auto_transport,
         auto_reason = auto_reason,
         partials_resumable = hf_partials_are_resumable(),
@@ -1085,6 +1094,10 @@ TERMINAL_STATES = frozenset({"complete", "cancelled", "error"})
 _ACTIVE_STATES = frozenset({"running", "cancelling"})
 
 
+# A claim argument the caller did not pass, told apart from an explicit None.
+_UNSET = object()
+
+
 @dataclass(frozen = True)
 class DownloadState:
     state: JobState
@@ -1109,6 +1122,9 @@ class DownloadMetadata:
     scoped_files: tuple[str, ...] = ()
     owner: Optional[str] = None
     load_attached: bool = False
+    # GGUF variant jobs: the standalone Engram table fetched in place of the quant's own, so a
+    # retry, a transport fallback and an adopting client fetch the same files.
+    engram_precision: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -1466,7 +1482,10 @@ class DownloadRegistry:
         xet_cache: Optional[str] = None,
         scoped_files: Optional[Sequence[str]] = None,
         owner: Optional[str] = None,
+        engram_precision: object = _UNSET,
     ) -> tuple[bool, str]:
+        """``engram_precision`` left unset is a claim that does not choose a table (a load, a
+        delete); set, it is part of the job's plan and must match a live job to join it."""
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
         requested_hashes = blob_hashes or frozenset()
@@ -1522,6 +1541,13 @@ class DownloadRegistry:
                     and sorted(set(live.scoped_files)) != sorted(set(scoped_files))
                 ):
                     return False, "scope_file_mismatch"
+                # Same for the table: the live job is fetching a different file set.
+                if (
+                    engram_precision is not _UNSET
+                    and live is not None
+                    and (live.engram_precision or "").upper() != (engram_precision or "").upper()
+                ):
+                    return False, "engram_mismatch"
                 return False, current
             if generation is None:
                 self._generation_seq += 1
@@ -1551,6 +1577,9 @@ class DownloadRegistry:
                     scoped_files = tuple(scoped_files or ()),
                     owner = owner,
                     load_attached = previous.load_attached if previous is not None else False,
+                    engram_precision = (
+                        (engram_precision or None) if engram_precision is not _UNSET else None
+                    ),
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport

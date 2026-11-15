@@ -49,6 +49,7 @@ fn apply_scrubbed_appimage_library_path(cmd: &mut Command) {
 pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_some() {
         apply_scrubbed_appimage_library_path(cmd);
+        restore_host_accessibility(cmd);
 
         if let Some(path) = appdir_entries_demoted("PATH") {
             cmd.env("PATH", path);
@@ -97,12 +98,26 @@ fn appdir_entries_demoted(name: &str) -> Option<std::ffi::OsString> {
     std::env::join_paths(host.into_iter().chain(bundled)).ok()
 }
 
+// Set by the AppRun when it, not the operator, turned the bundled atk-bridge off (#15260); host
+// programs get their bridge back, an operator's NO_AT_BRIDGE still reaches them.
+#[cfg(target_os = "linux")]
+const APPIMAGE_AT_BRIDGE_MARKER: &str = "UNSLOTH_APPIMAGE_NO_AT_BRIDGE";
+
+#[cfg(target_os = "linux")]
+fn restore_host_accessibility(cmd: &mut Command) {
+    if std::env::var_os(APPIMAGE_AT_BRIDGE_MARKER).is_some() {
+        cmd.env_remove("NO_AT_BRIDGE");
+    }
+    cmd.env_remove(APPIMAGE_AT_BRIDGE_MARKER);
+}
+
 #[cfg(target_os = "linux")]
 fn scrub_appimage_launcher_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_none() {
         return;
     }
     apply_scrubbed_appimage_library_path(cmd);
+    restore_host_accessibility(cmd);
     if let Some(path) = appdir_entries_demoted("PATH") {
         cmd.env("PATH", path);
     }
@@ -155,6 +170,7 @@ pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Res
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        restore_host_accessibility(cmd.as_std_mut());
         cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
         match scrub_appimage_library_path() {
             Some(library_path) => {
@@ -194,6 +210,56 @@ mod appimage_environment_tests {
     fn env_contains_name(env: &str, name: &str) -> bool {
         let prefix = format!("{name}=");
         env.lines().any(|line| line.starts_with(&prefix))
+    }
+
+    #[test]
+    fn children_get_back_the_atk_bridge_only_the_apprun_turned_off() {
+        let _guard = env_lock();
+        let old = ["APPIMAGE", "APPDIR", "NO_AT_BRIDGE", APPIMAGE_AT_BRIDGE_MARKER]
+            .map(|key| (key, std::env::var_os(key)));
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        let run = |cmd: &mut Command| {
+            String::from_utf8(cmd.output().expect("run child").stdout).unwrap()
+        };
+        let launches: [fn(&dyn Fn(&mut Command) -> String) -> String; 3] = [
+            |run| {
+                let mut cmd = Command::new("/usr/bin/env");
+                scrub_appimage_launcher_env(&mut cmd);
+                run(&mut cmd)
+            },
+            |run| {
+                let mut cmd = Command::new("/usr/bin/env");
+                scrub_appimage_python_env(&mut cmd);
+                run(&mut cmd)
+            },
+            |run| {
+                let mut cmd = tokio::process::Command::new("/usr/bin/env");
+                scrub_appimage_python_env_tokio(&mut cmd);
+                run(cmd.as_std_mut())
+            },
+        ];
+
+        std::env::set_var("NO_AT_BRIDGE", "1");
+        std::env::set_var(APPIMAGE_AT_BRIDGE_MARKER, "1");
+        for launch in launches {
+            let env = launch(&run);
+            assert!(!env_contains_name(&env, "NO_AT_BRIDGE"), "{env}");
+            assert!(!env_contains_name(&env, APPIMAGE_AT_BRIDGE_MARKER), "{env}");
+        }
+
+        std::env::remove_var(APPIMAGE_AT_BRIDGE_MARKER);
+        for launch in launches {
+            let env = launch(&run);
+            assert!(env.lines().any(|line| line == "NO_AT_BRIDGE=1"), "{env}");
+        }
+
+        for (key, value) in old {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 
     #[test]
@@ -3244,6 +3310,10 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
+    let port = crate::desktop_port::resolve_port(
+        port,
+        std::env::var_os(crate::desktop_port::PORT_ENV).as_deref(),
+    )?;
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // Checked on the spawn path: a webview remount can start a backend while the job is disarmed.
@@ -4204,6 +4274,59 @@ fn stop_adopted_backend(
         "Adopted backend did not stop via exact-port HTTP shutdown; refusing PID fallback without verified port-to-PID binding"
             .to_string(),
     )
+}
+
+// An accepted shutdown first lets a training run save, within the backend's 120 s default budget.
+const ATTACHED_SHUTDOWN_WAIT: Duration = Duration::from_secs(130);
+
+pub fn stop_attached_backend(port: u16) -> Result<(), String> {
+    if !crate::desktop_backend_owner::port_is_listening_blocking(port, Duration::from_millis(150)) {
+        return Ok(());
+    }
+    if try_exact_port_http_shutdown(port, "Attached backend")
+        && wait_for_port_disconnect(port, ATTACHED_SHUTDOWN_WAIT)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "The Unsloth server on port {port} did not stop. Stop it from the terminal that started it, then try again."
+    ))
+}
+
+#[cfg(test)]
+mod attached_backend_stop_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn an_attached_port_with_nothing_on_it_is_already_stopped() {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert_eq!(stop_attached_backend(port), Ok(()));
+    }
+
+    #[test]
+    fn a_server_that_refuses_this_install_is_left_running() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = stream.read(&mut [0u8; 4096]);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+
+        assert!(stop_attached_backend(port).is_err());
+        assert!(crate::desktop_backend_owner::port_is_listening_blocking(
+            port,
+            Duration::from_millis(150)
+        ));
+    }
 }
 
 /// Graceful shutdown of owned backend handles.

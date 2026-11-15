@@ -305,8 +305,7 @@ def response_leaks_host_path(
 
 
 def _echoed(value: Any, echo: frozenset) -> bool:
-    """A reference cannot stand in for a path the caller NAMED: the HMAC is process-stable, so
-    referencing caller-chosen input is a confirmation oracle."""
+    """Never echo a caller-named path as a ref: a stable HMAC is a confirmation oracle."""
     text = _as_text(value)
     return bool(text) and text in echo
 
@@ -575,8 +574,7 @@ def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
 
 
 def redact_load_progress(progress: Any, *, via_api_key: bool) -> Any:
-    """A worker-thread failure stores ``str(exc)``, naming the path a ``ref:`` load resolved to,
-    answered on a LATER request whose handle map is empty."""
+    """Worker str(exc) can name the resolved path; redact it when the handle map is empty."""
     if not isinstance(progress, Mapping):
         return progress
     if host_paths_visible(via_api_key) or not progress.get("error"):

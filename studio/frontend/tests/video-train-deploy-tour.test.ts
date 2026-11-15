@@ -26,11 +26,11 @@ test("the tour attaches to the first visible target, not a hidden page's", () =>
   assert.doesNotMatch(src, /document\.querySelector\(sel\)/);
 });
 
-test("Video re-reads its model status when returning from Train to Create", () => {
+test("Video re-reads its model status when returning from Train or Restyle to Create", () => {
   const src = readSrc("features/video/video-page.tsx");
   assert.match(
     src,
-    /if \(pageMode === "train"\) \{\s*leftForTrain\.current = true;\s*return;\s*\}\s*if \(!active \|\| !leftForTrain\.current\) return;\s*leftForTrain\.current = false;\s*void refreshStatus\(\);\s*\}, \[active, pageMode, refreshStatus\]\);/,
+    /if \(pageMode !== "create"\) \{\s*leftCreate\.current = true;\s*return;\s*\}\s*if \(!active \|\| !leftCreate\.current\) return;\s*leftCreate\.current = false;\s*void refreshStatus\(\);\s*\}, \[active, pageMode, refreshStatus\]\);/,
   );
 });
 
@@ -50,7 +50,13 @@ for (const page of ["features/images/images-page.tsx", "features/video/video-pag
       src,
       /\{trainMounted && \(\s*<div className=\{pageMode === "train" \? "contents" : "hidden"\} inert=\{pageMode !== "train" \|\| undefined\}>\s*<DiffusionTrainPanel/,
     );
-    assert.match(src, /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/);
+    // Video has a third mode, Restyle, so its Create view is gated on "create" rather than "not train".
+    assert.match(
+      src,
+      page.includes("video")
+        ? /\/>\s*<\/div>\s*\)\}\s*\{restyleMounted && \(\s*<div className=\{pageMode === "restyle" \? "contents" : "hidden"\} inert=\{pageMode !== "restyle" \|\| undefined\}>\s*<VideoRestylePanel active=\{active\} \/>\s*<\/div>\s*\)\}\s*\{pageMode === "create" && \(/
+        : /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/,
+    );
     assert.doesNotMatch(src, /\{pageMode === "train" \? \(\s*<DiffusionTrainPanel/);
   });
 }

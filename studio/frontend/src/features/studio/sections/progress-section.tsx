@@ -23,10 +23,7 @@ import { usePlatformStore } from "@/config/env";
 import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { useIsAccountOwner } from "@/features/auth";
 import { setTrainingCompareHandoff } from "@/features/chat";
-import {
-  updateSystemOneSettings,
-  useSettingsDialogStore,
-} from "@/features/settings";
+import { tryFineTuneInDecisionApi } from "@/features/settings";
 import {
   getTrainingMethodLabel,
   type TrainingViewData,
@@ -44,13 +41,13 @@ import {
   Alert02Icon,
   ChartAverageIcon,
   DashboardSpeed01Icon,
-  FolderExportIcon,
   Notebook01Icon,
   RamMemoryIcon,
   TaskDone01Icon,
   TemperatureIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
 import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -193,9 +190,7 @@ export function ProgressSection({
     }
     setEnablingDecisionApi(true);
     try {
-      const model = `laya-ft:${exportRunName}`;
-      await updateSystemOneSettings({ enabled: true, model });
-      useSettingsDialogStore.getState().openDecisionTry(model);
+      await tryFineTuneInDecisionApi(exportRunName);
       toast.success(
         t("studio.progress.decisionApiEnabled", { name: exportRunName }),
       );

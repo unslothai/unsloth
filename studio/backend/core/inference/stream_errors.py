@@ -27,6 +27,13 @@ KV_STARVATION_MESSAGE = (
     "Context Length in Model settings."
 )
 
+# llama-server's tool-call parser rejecting a reply (b11000+ PEG, older parser, non-JSON args); the text is dropped.
+_TOOL_PARSE_REJECTIONS = (
+    "the model produced output that does not match the expected",
+    "failed to parse input at pos",
+    "failed to parse tool call arguments as json",
+)
+
 _OVERSIZE_HINT = "Raise the Context Length in Model settings, or shorten the request."
 
 _GENERIC_MESSAGE = "The model stopped generating early."
@@ -108,6 +115,11 @@ def is_context_oversize(message: Optional[str]) -> bool:
         return False
     lowered = message.lower()
     return any(marker in lowered for marker in _OVERSIZE_MARKERS)
+
+
+def is_tool_parse_rejection(chunk: Any) -> bool:
+    message = error_message_from_chunk(chunk)
+    return bool(message) and message.lower().startswith(_TOOL_PARSE_REJECTIONS)
 
 
 def describe_stream_error(message: Optional[str], *, prefix: str = "") -> str:

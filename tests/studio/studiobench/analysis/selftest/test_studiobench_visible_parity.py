@@ -48,18 +48,14 @@ def test_a_difference_inside_the_viewport_still_fails():
 
 
 def test_showing_different_messages_is_itself_a_visible_difference():
-    """Two arms whose viewports held different parts of the conversation did not show the user the
-    same thing, whatever the digests of the overlap say. This is the case a naive intersection
-    would silently skip by comparing only the ordinals both arms happen to have."""
+    """Different messages on screen differ visibly even when overlap digests match."""
     got = P.compare_visible(_cap({14: "a", 15: "b"}), _cap({15: "b", 16: "c"}))
     assert got["verdict"] == P.DIFFER
     assert "DIFFERENT MESSAGES on screen" in got["reason"]
 
 
 def test_a_windowed_arm_and_a_full_arm_are_compared_by_thread_position():
-    """The reason this mode works where the digest does not. The base has the whole thread mounted
-    and the treatment has a window of it, so mounted INDEX 0 is a different message on the two
-    arms. Keyed by thread ordinal, the messages that were actually on screen line up."""
+    """Keyed by thread ordinal, not mounted index, so a windowed and a full arm line up on screen."""
     base = _cap({16: "p", 17: "q", 18: "r"})
     treat = _cap({16: "p", 17: "q", 18: "r"})
     assert P.compare_visible(base, treat)["verdict"] == P.MATCH
@@ -88,8 +84,7 @@ def test_a_missing_capture_is_refused_rather_than_assumed_empty():
 
 
 def test_a_message_seen_mid_action_but_unmounted_by_capture_is_not_counted_as_agreement():
-    """A message seen mid-action but unmounted by capture is not agreement; the verdict is NOT
-    COMPARABLE."""
+    """Mid-action messages unmounted at capture are not agreement; verdict is NOT COMPARABLE."""
     base = _cap({14: "a"}, ever = [3, 14])
     treat = _cap({14: "a"}, ever = [3, 14])
     got = P.compare_visible(base, treat)
@@ -101,9 +96,7 @@ def test_a_message_seen_mid_action_but_unmounted_by_capture_is_not_counted_as_ag
 
 
 def test_the_messages_that_could_be_digested_agreeing_is_not_the_claim_this_mode_makes():
-    """The residue is one ordinal out of six, so five messages were compared and all five agreed.
-    That is a real observation and it is not the printed claim, which is about every message the
-    viewport showed. The reason says which ordinal went uncompared so the reader can decide."""
+    """Five of six messages agreed is a real observation, not the claim about every message shown."""
     seen = {10: "a", 11: "b", 12: "c", 13: "d", 14: "e"}
     got = P.compare_visible(_cap(seen, ever = [3, *seen]), _cap(seen, ever = [3, *seen]))
     assert got["verdict"] == P.NOT_COMPARABLE, got

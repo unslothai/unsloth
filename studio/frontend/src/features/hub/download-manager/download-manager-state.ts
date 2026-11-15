@@ -167,6 +167,9 @@ function sanitizePersistedJob(
     ...(typeof value.downloadDir === "string" || value.downloadDir === null
       ? { downloadDir: value.downloadDir }
       : {}),
+    ...(typeof value.engramPrecision === "string" && value.engramPrecision
+      ? { engramPrecision: value.engramPrecision }
+      : {}),
   };
 }
 
@@ -226,6 +229,7 @@ function toPersistedJob(
       ? { cancelTransport: job.cancelTransport }
       : {}),
     ...(job.downloadDir !== undefined ? { downloadDir: job.downloadDir } : {}),
+    ...(job.engramPrecision ? { engramPrecision: job.engramPrecision } : {}),
   };
 }
 
@@ -608,6 +612,20 @@ export function scheduleRemoval(key: string, delayMs: number): void {
   const timer = window.setTimeout(() => {
     runtimeRegistry.removalTimers.delete(key);
     if (getState().jobs[key]?.startedAt === startedAt) removeJob(key);
+  }, delayMs);
+  runtimeRegistry.removalTimers.set(key, timer);
+}
+
+export function scheduleRetention(key: string, delayMs: number): void {
+  const existing = runtimeRegistry.removalTimers.get(key);
+  if (existing != null) clearRuntimeTimer(existing);
+  const startedAt = getState().jobs[key]?.startedAt;
+  const timer = window.setTimeout(() => {
+    runtimeRegistry.removalTimers.delete(key);
+    const job = getState().jobs[key];
+    if (job?.startedAt === startedAt && job.state === "error") {
+      patchJob(key, { retained: true });
+    }
   }, delayMs);
   runtimeRegistry.removalTimers.set(key, timer);
 }

@@ -189,8 +189,8 @@ const ROWS: Row[] = [
       "and reads normally.",
   },
   {
-    name: "version 14 (genuinely future)",
-    raw: { version: 14, customContextLength: 32768 },
+    name: "version 17 (genuinely future)",
+    raw: { version: 17, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -343,8 +343,13 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
   );
   assert.equal(
     stage({ version: 14, customContextLength: 32768 }).remembered,
-    false,
+    true,
   );
+  assert.equal(
+    stage({ version: 16, customContextLength: 32768 }).remembered,
+    true,
+  );
+  assert.equal(stage({ version: 17, customContextLength: 32768 }).remembered, false);
 });
 
 
@@ -385,6 +390,23 @@ test("Neural Engine prefill defaults off, and only an enabled one stamps v13", (
   assert.equal(stampedVersion({ mlxAnePrefill: false, mlxPleOffload: 0.25 }), 12);
   assert.equal(stampedVersion({ mlxAnePrefill: true, mlxPleOffload: 0.25 }), 13);
   assert.equal(stage({ mlxAnePrefill: true }).config.mlxAnePrefill, true);
+});
+
+test("Fast Verify defaults off, and only an enabled one stamps v14", () => {
+  assert.equal(normalizePerModelConfig({ version: 13 }).mlxFastVerify, false);
+  assert.equal(isDefaultConfig({ ...DEFAULT_PER_MODEL_CONFIG, mlxFastVerify: true }), false);
+  assert.equal(stampedVersion({ mlxFastVerify: false, mlxAnePrefill: true }), 13);
+  assert.equal(stampedVersion({ mlxFastVerify: true }), 14);
+  assert.equal(stage({ mlxFastVerify: true }).config.mlxFastVerify, true);
+});
+
+test("an NPU FastFlowLM setting stamps v16", () => {
+  assert.equal(stampedVersion({ mlxFastVerify: true, npuPowerMode: null }), 14);
+  assert.equal(stampedVersion({ engramPrecision: "Q8_0", npuPowerMode: null }), 15);
+  assert.equal(stampedVersion({ npuPowerMode: "turbo" }), 16);
+  assert.equal(stampedVersion({ npuPrefillChunkLen: 512 }), 16);
+  assert.equal(stampedVersion({ npuImgPreResize: 0 }), 16);
+  assert.equal(stage({ version: 16, npuPowerMode: "balanced" }).config.npuPowerMode, "balanced");
 });
 
 

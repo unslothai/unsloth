@@ -179,6 +179,7 @@ test("the auto-load sweep skips every task chat cannot answer", () => {
     "text-to-audio",
     "audio-to-audio",
     "automatic-speech-recognition",
+    "speech-recognition-unsupported",
   ]) {
     assert.ok(set.includes(`"${task}"`), task);
   }

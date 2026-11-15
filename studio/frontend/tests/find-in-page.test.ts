@@ -1512,7 +1512,7 @@ test("toasts clear the bar while it is open", () => {
   assert.match(rule, TOAST_UNDER_FIND_BAR);
   assert.match(
     readSrc("app/provider.tsx"),
-    /set\("--studio-content-top-inset", usesCustomTitlebar \? "34px" : null\);/,
+    /const customTop = customTitlebarHidden \? "0px" : "34px";[\s\S]*set\("--studio-content-top-inset", usesCustomTitlebar \? customTop : null\);/,
   );
 });
 
@@ -2492,14 +2492,17 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
 test("only threads this search can read are forced to finish mounting", async () => {
   assert.match(
     USE_FIND_IN_PAGE,
-    /completeProgressiveMounts\(\(viewport\) =>\s*\n?\s*indexReaches\(scope, viewport\)/,
+    /completeProgressiveMounts\(\s*\(viewport\) =>\s*\n?\s*indexReaches\(scope, viewport\),\s*fill\.signal,/,
   );
+  // Closing Find lets go of the full mount it asked for, so the window slides again at once.
+  assert.match(USE_FIND_IN_PAGE, /live = false;\s*fill\.abort\(\);/);
   const progressive = await readSrcAsync(
     "components/assistant-ui/progressive-messages.tsx",
   );
+  // Re-read on every pass and filtered, so a thread this search cannot read never holds it open.
   assert.match(
     progressive,
-    /if \(wanted\(\)\.length === 0 && \(observed \|\| Date\.now\(\) >= deadline\)\)/,
+    /!wanted\(\)\.some\(\(entry\) => entry\.withholding\(\)\) &&\s*\(observed \|\| Date\.now\(\) >= deadline\)/,
   );
 });
 

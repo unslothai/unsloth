@@ -325,12 +325,20 @@ def save_lan_access_addresses(app, addresses: Any) -> dict:
 
 
 def _available_lan_addresses() -> list[dict]:
-    """Detected addresses with a public flag; a detection failure offers nothing rather than failing status."""
+    """Detected addresses, then virtual switch ones flagged ``host_only``; a detection failure offers nothing
+    rather than failing status."""
     try:
-        from lan_access import detect_lan_addresses, is_public_address
+        from lan_access import detect_host_only_addresses, detect_lan_addresses, is_public_address
+
+        detected = detect_lan_addresses()
+        host_only = [address for address in detect_host_only_addresses() if address not in detected]
         return [
-            {"address": address, "public": is_public_address(address)}
-            for address in detect_lan_addresses()
+            {
+                "address": address,
+                "public": is_public_address(address),
+                "host_only": address in host_only,
+            }
+            for address in (*detected, *host_only)
         ]
     except Exception:
         return []

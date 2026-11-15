@@ -42,8 +42,7 @@ def _resolve(c, model = "unsloth/bge-small-en-v1.5"):
 
 
 def test_sentence_transformers_backend_points_at_the_model_repo(client, monkeypatch):
-    """No GGUF involved: ST loads the model repo itself, and the cache check is the
-    ordinary snapshot probe."""
+    """No GGUF here: ST loads the repo itself, so the cache check is the plain snapshot probe."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     import utils.utils as utils
 
@@ -75,9 +74,8 @@ def test_uncached_sentence_transformers_plan_reports_snapshot_size(client, monke
 
 
 def test_a_repo_with_no_loadable_checkpoint_is_refused_not_offered(client, monkeypatch):
-    """A feature-extraction repo publishing only GGUF passes the tag gate and
-    reaches the direct ST branch, where it would be offered as a download ST
-    cannot open."""
+    """A feature-extraction repo with only GGUF passes the tag gate, so it must be refused rather
+    than offered for an ST download it cannot open."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
     import utils.utils as utils
@@ -199,8 +197,7 @@ def test_sentence_transformers_local_path_is_already_present(client, monkeypatch
 
 
 def test_uncached_gguf_names_the_one_file_the_loader_would_open(client, monkeypatch):
-    """The companion repo carries every quant; only the variant the embedder opens
-    should be fetched, so the picker gets a file list rather than a whole repo."""
+    """Fetch only the variant the embedder opens from the GGUF companion, not every quant."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
     monkeypatch.setattr(
         settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
@@ -222,8 +219,7 @@ def test_uncached_gguf_names_the_one_file_the_loader_would_open(client, monkeypa
 
 
 def test_relaxed_cache_does_not_hide_the_preferred_online_variant(client, monkeypatch):
-    """A fallback quant/candidate is only the loader's offline last resort; it
-    must not suppress the configured variant's download while Hub listing works."""
+    """Fallback is only the offline last resort, so it must not block the preferred download."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
     seen = []
 
@@ -421,8 +417,7 @@ def _no_gguf_anywhere(monkeypatch):
 
 
 def test_no_gguf_falls_back_to_the_models_own_safetensors(client, monkeypatch):
-    """Safetensors cost about 1 GB more memory but they load, so they beat both
-    refusing the model and pulling a stranger's conversion."""
+    """Safetensors cost 1 GB more memory but load, beating refusal or a stranger's conversion."""
     _no_gguf_anywhere(monkeypatch)
     monkeypatch.setattr(settings, "_safetensors_plan", lambda m, token: (m, ["model.safetensors"]))
     monkeypatch.setattr(settings, "_hf_snapshot_size", lambda repo, token: 4096)
@@ -493,8 +488,7 @@ def test_explicit_llama_policy_does_not_offer_safetensors(client, monkeypatch):
 
 
 def test_no_safetensors_fallback_for_a_model_st_cannot_open(client, monkeypatch):
-    """A model planned on llama-server because ST cannot open it must not fall back to the download ST
-    then fails to load."""
+    """A llama-only model must not fall back to an ST download that ST cannot open."""
     from core.rag import embeddings
 
     _no_gguf_anywhere(monkeypatch)
@@ -618,8 +612,7 @@ def test_a_local_gguf_is_already_the_artifact(client, monkeypatch):
 
 
 def test_candidates_follow_the_loader_order(monkeypatch):
-    """One helper builds them, so the picker cannot fetch from a repo the loader
-    would not have opened."""
+    """One helper builds them, so the picker cannot fetch a repo the loader would not open."""
     assert settings._embedding_gguf_candidates("acme/embedder") == [
         "acme/embedder-GGUF",
         "acme/embedder",
@@ -681,8 +674,7 @@ def test_resolved_mirror_reports_its_exact_downloaded_files_as_cached(client, mo
 
 
 def test_the_resolved_repo_is_what_the_loader_opens(monkeypatch):
-    """A conversion under another owner follows no naming rule, so it is stored and
-    read back rather than re-derived."""
+    """Other owners' conversions follow no naming rule, so they are stored, not re-derived."""
     import storage.studio_db as db
 
     store: dict = {}
@@ -707,8 +699,7 @@ def test_the_resolved_repo_is_what_the_loader_opens(monkeypatch):
 
 
 def test_the_chosen_backend_is_read_back_by_the_loader(monkeypatch):
-    """A safetensors-only model must not be handed to llama-server, which would have
-    nothing to open. The picker records the backend; ``auto`` honours it."""
+    """Safetensors-only models never reach llama-server; `auto` honours the recorded backend."""
     import storage.studio_db as db
 
     store: dict = {}
@@ -817,8 +808,7 @@ def test_a_cached_gguf_only_repo_is_not_reported_as_a_ready_st_model(client, mon
 
 
 def test_a_cached_safetensors_model_is_selectable_offline(client, monkeypatch, tmp_path):
-    """The safetensors fallback proved weights only through the remote listing, so
-    offline a fully downloaded model could not be selected at all."""
+    """Weights were checked only remotely, so a fully cached model was unselectable offline."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "config.json").write_text("{}")
@@ -914,8 +904,7 @@ def test_a_bare_checkpoint_file_is_not_a_local_sentence_transformer(client, monk
 
 
 def test_a_tokenizer_bin_is_not_mistaken_for_a_checkpoint(client, monkeypatch, tmp_path):
-    """.bin is the loose suffix: tokenizer.bin shares it with real weights, so a
-    directory holding only that beside modules.json resolved as cached."""
+    """A bare .bin is too loose a suffix: tokenizer.bin would wrongly count as a checkpoint."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
     import utils.utils as utils
@@ -1055,9 +1044,8 @@ def test_a_gguf_only_model_is_refused_when_llama_server_is_missing(client, monke
 
 
 def test_a_safetensors_model_still_falls_back_when_llama_server_is_missing(client, monkeypatch):
-    """The refusal is scoped to models only llama can serve. One that publishes
-    safetensors has a usable plan on the other backend, and turning that into an
-    error would strand it too."""
+    """The refusal applies only to models llama alone can serve; a model with safetensors has a
+    usable plan on the other backend and must not error."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
     monkeypatch.setattr(settings, "_llama_runtime_available", lambda: False)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
@@ -1106,9 +1094,8 @@ def test_a_validated_backend_outranks_the_gguf_name_heuristic(monkeypatch):
 
 
 def test_a_torn_local_checkpoint_is_not_reported_as_present(client, monkeypatch, tmp_path):
-    """Any one matching filename used to be enough, so half a shard family read as
-    ready and the first index failed when SentenceTransformer opened it. Same
-    completeness test a Hub snapshot gets."""
+    """A local checkpoint must be complete like a Hub snapshot: one matching filename let half a
+    shard family pass."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     torn = tmp_path / "half-copied"
     torn.mkdir()
@@ -1126,8 +1113,7 @@ def test_a_torn_local_checkpoint_is_not_reported_as_present(client, monkeypatch,
 
 
 def test_a_declared_module_the_directory_lacks_is_not_present(client, monkeypatch, tmp_path):
-    """modules.json announces the layout ST will load. A module it names and the
-    directory does not have is a torn copy however complete the rest looks."""
+    """A module named in modules.json but missing on disk means a torn copy."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     partial = tmp_path / "missing-module"
     partial.mkdir()

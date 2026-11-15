@@ -57,6 +57,19 @@ def test_fused_flux_rope_switch_is_on_for_a_tag_only_rocm_wheel(amd_sdk_wheel):
     assert rf._switch_on(rf.FUSED_ROPE_ENV) is True
 
 
+def test_vae_canvas_graph_replicas_see_a_tag_only_rocm_wheel(amd_sdk_wheel):
+    from core.inference import diffusion_vae_canvas as vc
+    assert vc._is_rocm() is True
+
+
+def test_vae_canvas_rocm_check_does_not_fall_back_on_a_cuda_build(monkeypatch):
+    from core.inference import diffusion_vae_canvas as vc
+
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.11.0+cu130", raising = False)
+    assert vc._is_rocm() is False
+
+
 def test_render_thread_stays_off_on_a_tag_only_rocm_wheel(amd_sdk_wheel):
     from core.inference import diffusion_render_thread as rt
     assert rt.enabled() is False
@@ -72,6 +85,7 @@ def test_nvidia_only_paths_decline_on_a_tag_only_rocm_wheel(amd_sdk_wheel, monke
     from core.inference import (
         diffusion_compile_config,
         diffusion_flux2_rope,
+        diffusion_flux3_rope,
         diffusion_nvfp4_install,
         diffusion_render_thread,
         video_nvenc,
@@ -81,6 +95,7 @@ def test_nvidia_only_paths_decline_on_a_tag_only_rocm_wheel(amd_sdk_wheel, monke
     assert video_nvenc.nvenc_gpu() is None
     assert diffusion_compile_config._device_capability() is None
     assert diffusion_flux2_rope.wanted(torch.float16, "cuda") is False
+    assert diffusion_flux3_rope.wanted("cuda") is False
     reason = diffusion_nvfp4_install._host_refusal("cuda")
     assert reason is not None and "ROCm" in reason
     assert diffusion_render_thread.enabled() is False

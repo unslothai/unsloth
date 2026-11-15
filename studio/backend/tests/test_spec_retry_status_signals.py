@@ -80,8 +80,7 @@ def test_reports_the_whole_retry_predicate():
 
 
 def test_an_unreadable_binary_is_unknown_not_false():
-    # False would tell the client the drafter cannot be repaired and suppress the reload
-    # an update was meant to enable; None leaves it with the coarser answer.
+    # Unreadable binary is None, not False: False would suppress the reload an update enables.
     helper = _load_helper()
     assert helper(_Backend("binary_no_mtp", raises = True)) is None
 
@@ -138,8 +137,7 @@ def test_a_backend_without_the_dflash_flag_is_unknown():
     helper = _load_helper("_spec_dflash_retry_pending")
 
     class _Bare:
-        # Attribute access raises rather than returning a default, so the helper's
-        # try/except is what keeps the status route answering at all.
+        # Attribute access raises, so the helper's try/except alone keeps status answering.
         def __getattr__(self, name):
             raise AttributeError(name)
 
@@ -192,8 +190,7 @@ def test_the_paravirtual_pin_follows_the_detector(monkeypatch):
 
 
 def test_a_detector_that_raises_is_unknown_not_false(monkeypatch):
-    # False would tell the client placement is comparable on a host where it is not,
-    # which is the direction that adopts a runtime the user did not ask for.
+    # A raising detector must give None: False would adopt a runtime the user did not ask for.
     helper = _load_helper("_gpu_placement_paravirtual")
     from core.inference import llama_cpp
 

@@ -94,6 +94,16 @@ export async function deleteAccount(accountId: string): Promise<void> {
   await accountsRequest(accountPath(accountId), { method: "DELETE" });
   await refreshAccountPolicy();
 }
+export async function renameAccount(
+  accountId: string,
+  username: string,
+): Promise<void> {
+  await accountsRequest(`${accountPath(accountId)}/username`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: normalizeAccountUsername(username) }),
+  });
+}
 export async function setAccountModelAllowlist(
   accountId: string,
   allowlist: string[] | null,

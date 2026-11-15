@@ -87,8 +87,7 @@ window.ready = true;
 
 
 def settings_client(home: Path):
-    # Import the actual route file without importing routes/__init__.py, whose
-    # application-wide registry eagerly loads unrelated training dependencies.
+    # Import the route file, not routes/__init__.py, which eagerly loads training deps.
     os.environ["UNSLOTH_STUDIO_HOME"] = str(home)
     os.environ["UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE"] = "1"
     sys.path.insert(0, str(BACKEND))
@@ -206,8 +205,7 @@ async def exercise_browser(url: str, client) -> list[str]:
                 await page.route("**/api/chat/settings**", serve)
                 await page.route("**/api/chat/pins**", serve)
                 page.on("pageerror", lambda error: errors.append(str(error)))
-                # Supported older WebKit versions lack these static helpers.
-                # Keep every lifecycle scenario on that API feature floor.
+                # Older WebKit lacks these helpers; lifecycle scenarios stay at that API floor.
                 await page.add_init_script("""
                   Object.defineProperty(AbortSignal, 'any', {value: undefined, configurable: true});
                   Object.defineProperty(AbortSignal, 'timeout', {value: undefined, configurable: true});
@@ -286,8 +284,7 @@ async def exercise_browser(url: str, client) -> list[str]:
                 assert server_pins() == expected
             passed.append("queued pin and unpin survive reload")
 
-            # A component cleanup is not itself a session change (StrictMode
-            # and remounts also run it), so an unconfirmed edit must survive.
+            # Unmount cleanup is not a session change; unconfirmed edits must survive remounts.
             await delay_focus_read(page, state)
             await page.evaluate(
                 "window.pins.usePinnedChatsStore.getState().togglePin('survives-remount'); window.unmountSync()"
@@ -326,8 +323,7 @@ async def exercise_browser(url: str, client) -> list[str]:
             )
             passed.append("focus refresh synchronizes isolated browser clients")
 
-            # Same-origin session changes use storage events instead of the
-            # in-document auth events emitted by clearAuthTokens.
+            # Same-origin changes use storage events, not clearAuthTokens' in-document events.
             sibling = await context.new_page()
             await sibling.goto(url)
             await sibling.wait_for_function("window.ready === true")
@@ -345,8 +341,7 @@ async def exercise_browser(url: str, client) -> list[str]:
             )
             passed.append("cross-tab session changes reset and rehydrate pins")
 
-            # A supported old backend initially preserves local pins. Once it
-            # is upgraded, the open page must resume shared persistence.
+            # Old backend keeps local pins; after an upgrade the page must resume shared sync.
             _, compatible, compatibility = await new_client(
                 legacy = ["local-before-upgrade"], old_backend = True, missing_route_status = 405
             )
@@ -361,9 +356,8 @@ async def exercise_browser(url: str, client) -> list[str]:
             assert "after-server-upgrade" in server_pins()
             passed.append("old-server fallback resumes synchronization after upgrade")
 
-            # Downgrading after reading server pins must preserve that baseline.
-            # Keep explicit local changes across reload, then replay against the
-            # upgraded server's newer list without replacing another client edit.
+            # Downgrade after reading server pins must preserve that baseline; local changes survive
+            # reload and replay onto the newer list without replacing other edits.
             save_server_pins(["downgrade-a", "downgrade-b"])
             _, downgraded, downgrade = await new_client()
             await mount(downgraded)
@@ -392,9 +386,8 @@ async def exercise_browser(url: str, client) -> list[str]:
                 "downgrade preserves server pins and reload replays ordered offline changes after upgrade"
             )
 
-            # Browser pin migration can beat the independent legacy thread
-            # import. Retry the original IDs after import, while tombstones keep
-            # an explicit unpin from being undone by later refreshes or reloads.
+            # Browser pin migration can beat the legacy thread import; retry original IDs after
+            # import, and tombstones keep an explicit unpin from being undone.
             save_server_pins([])
             _, delayed_import, _ = await new_client(legacy = ["legacy-imported-later"])
             await mount(delayed_import)
@@ -430,9 +423,8 @@ async def exercise_browser(url: str, client) -> list[str]:
                 "legacy pins migrate after delayed thread import and explicit unpins do not resurrect"
             )
 
-            # Pre-session-mark auth storage must gain a stable scope before a
-            # durable intent is saved. Hourly token rotation preserves that
-            # scope, including while navigation interrupts a pending request.
+            # Auth storage needs a stable scope before a durable intent is saved; hourly token
+            # rotation keeps it.
             _, old_auth, old_auth_state = await new_client()
             await old_auth.evaluate("localStorage.removeItem('unsloth_auth_session_mark')")
             await mount(old_auth)

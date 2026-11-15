@@ -202,6 +202,100 @@ def test_free_bytes_does_not_count_graph_held_cache(monkeypatch):
     assert U._free_bytes(torch.device("cuda", 0)) == 1100 * 2**20
 
 
+def test_free_bytes_on_a_cpu_host_reads_usable_host_ram(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda device = None: pytest.fail("no CUDA read for a CPU decode")
+    )
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 40 * 1024)
+    assert U._free_bytes(torch.device("cpu")) == 40 * 2**30
+    assert U._free_bytes("cpu") == 40 * 2**30
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: None)
+    assert U._free_bytes(torch.device("cpu")) is None
+
+
+def test_cpu_decode_untiled_only_when_host_ram_fits(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    z = torch.zeros(1, 48, 2, 32, 56)  # Wan2.2 896x512, 5 frames
+    need = U.untiled_decode_bytes(WAN, tuple(z.shape), itemsize = 4)
+    gate_mib = int((need * U._MARGIN + U._MARGIN_BYTES) / 2**20)
+    vae = FakeVAE(dtype = torch.float32)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: gate_mib + 1)
+    assert vae.decode(z) == ("untiled",)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: gate_mib - 1)
+    assert vae.decode(z) == ("tiled",)
+    assert vae.use_tiling is True
+
+
+def test_cpu_allocator_refusal_falls_back_to_tiled(monkeypatch):
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    err = RuntimeError(
+        "[enforce fail at alloc_cpu.cpp:121] DefaultCPUAllocator: not enough memory: you tried to allocate 9663676416 bytes."
+    )
+    vae = FakeVAE(error = err)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.calls == [False, True]
+    assert vae.use_tiling is True
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:127] err == 0. DefaultCPUAllocator: can't allocate memory: you tried to "
+            "allocate 9663676416 bytes. Error code 12 (Cannot allocate memory)"
+        ),
+        RuntimeError("decode failed"),
+    ],
+    ids = ["posix_enomem", "wrapped"],
+)
+def test_posix_cpu_allocator_refusal_falls_back_to_tiled(monkeypatch, err):
+    if str(err) == "decode failed":
+        err.__cause__ = RuntimeError(
+            "DefaultCPUAllocator: can't allocate memory: you tried to allocate 1 bytes."
+        )
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    vae = FakeVAE(error = err)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.calls == [False, True]
+    assert vae.use_tiling is True
+
+
+class _RefusingVAE(FakeVAE):
+    def decode(
+        self,
+        z,
+        return_dict = False,
+    ):
+        self.calls.append(self.use_tiling)
+        if not self.use_tiling:
+            torch.empty(
+                2**60, dtype = torch.uint8
+            )  # past any address space: the real allocator refuses
+        return ("tiled",)
+
+
+def test_real_cpu_allocator_refusal_falls_back_to_tiled(monkeypatch):
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    vae = _RefusingVAE()
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.calls == [False, True]
+
+
+def test_unrelated_runtime_error_still_raises(monkeypatch):
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    vae = FakeVAE(error = RuntimeError("shape mismatch"))
+    U.install_untiled_decode(_pipe(vae), WAN)
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        vae.decode(Z)
+
+
 class CpuOffload:
     def __init__(
         self,

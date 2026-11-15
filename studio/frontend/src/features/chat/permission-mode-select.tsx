@@ -36,9 +36,9 @@ import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ComputerTerminal01Icon,
-  Folder01Icon,
   InternetIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type SandboxCapability,

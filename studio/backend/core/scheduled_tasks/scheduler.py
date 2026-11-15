@@ -82,6 +82,7 @@ class _Swap:
     attended: Optional[float] = None
     # A Transformers or MLX model in the primary has no GGUF identity: it is loaded back by name.
     previous_model: Optional[str] = None
+    previous_launch: Optional[dict] = None
 
 
 @dataclass
@@ -109,7 +110,12 @@ def retire_account_scheduled_tasks(account: AccountContext) -> None:
 
 
 def next_run_for(task: dict, after_ms: int) -> Optional[int]:
-    return next_run_after(parse_schedule(task["schedule"]), task["timezone"], after_ms)
+    return next_run_after(
+        parse_schedule(task["schedule"]),
+        task["timezone"],
+        after_ms,
+        anchor_ms = task.get("nextRunAt"),
+    )
 
 
 def system_prompt(task: dict, now_ms: int) -> str:
@@ -124,6 +130,21 @@ def system_prompt(task: dict, now_ms: int) -> str:
         f"({task['timezone']}). The user is not watching this chat and will read your reply "
         "later, so complete the task directly and do not ask follow-up questions."
     )
+
+
+def _run_instructions(task: dict, now_ms: int) -> str:
+    from core.agents_md import agents_md_text
+    from storage import studio_db
+
+    project = studio_db.get_chat_project(task["projectId"]) if task.get("projectId") else None
+    agents_md = agents_md_text(project).strip()
+    instructions = project["instructions"].strip() if project and not project["archived"] else ""
+    parts = [
+        f"<agents_md>\n{agents_md}\n</agents_md>" if agents_md else "",
+        f"<project_instructions>\n{instructions}\n</project_instructions>" if instructions else "",
+        system_prompt(task, now_ms),
+    ]
+    return "\n\n".join(part for part in parts if part)
 
 
 def _loop_cancelled(current: Optional[asyncio.Task], stopping: bool) -> bool:
@@ -337,7 +358,12 @@ def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[
 
 async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional[_Swap]) -> _Swap:
     """What a load must put back; an unattended run swaps only a restorable GGUF while Studio is idle."""
-    from core.inference.llama_keepwarm import attended_stamp, idle_for, loaded_identity
+    from core.inference.llama_keepwarm import (
+        attended_stamp,
+        idle_for,
+        launch_to_replay,
+        loaded_identity,
+    )
     from routes.inference import (
         _loaded_slot_ident,
         _resident_npu_model,
@@ -364,6 +390,7 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
     keep_carried = carried is not None and carried.model and _model_is_loaded(carried.model)
     previous = carried.previous if keep_carried else loaded_identity()
     previous_model = carried.previous_model if keep_carried else None
+    previous_launch = carried.previous_launch if keep_carried else launch_to_replay()
     if not keep_carried and previous is None and _resident_npu_model() is None:
         previous_model = getattr(
             await asyncio.to_thread(get_inference_backend), "active_model_name", None
@@ -376,6 +403,7 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
         task_id = task["id"],
         attended = attended_stamp(),
         previous_model = previous_model,
+        previous_launch = previous_launch,
     )
 
 
@@ -414,9 +442,8 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         with unattended_activity():
             current = loaded_identity()
             if not _primary_serves(swap.model) and _model_is_loaded(swap.model):
-                # Loaded beside the primary (Keep multiple models loaded with a speech model in it): the primary
-                # was never replaced, so only the task model goes.
-                # Its own task: unloading routes to the slot through a context variable, which must not stick to the loop.
+                # Primary is never replaced; unload runs in its own task so its context variable
+                # cannot stick.
                 await asyncio.ensure_future(
                     _unload_model_impl(UnloadRequest(model_path = swap.model), swap.subject)
                 )
@@ -437,7 +464,7 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
             if swap.previous is None and not swap.previous_model:
                 return
             if swap.previous is not None:
-                stash_for_reload(swap.previous)
+                stash_for_reload(swap.previous, swap.previous_launch)
             # Named for a non-GGUF model, which must not be held to what is loaded now.
             request = _producer_request(
                 app,
@@ -464,6 +491,25 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         )
 
 
+def _tool_fields(web_search: bool) -> dict:
+    """Web search only, never python or terminal: nobody is there to approve a call, so "off" never prompts."""
+    from state.tool_policy import get_tool_policy
+
+    # --disable-tools also covers a connection's hosted search, which the local loop's veto would not reach.
+    if not web_search or get_tool_policy() is False:
+        # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
+        # means every built-in, python and terminal included.
+        return {"tool_choice": "none", "enabled_tools": []}
+    return {
+        "enable_tools": True,
+        "enabled_tools": ["web_search"],
+        "permission_mode": "off",
+        # Studio's search, not a provider's hosted one, as Chat sends it.
+        "run_tools_locally": True,
+        "nudge_tool_calls": False,
+    }
+
+
 def _pins_local_model(model: Optional[str]) -> bool:
     from routes.inference import _connection_model_ref
     return bool(model) and _connection_model_ref(model) is None
@@ -476,7 +522,7 @@ async def generate_answer(
     cancel_event: threading.Event,
     holder: Optional[SwapHolder] = None,
 ) -> Answer:
-    """Ask the chat model to do the task, text only (tools never run unattended)."""
+    """Ask the chat model to do the task; web search is the only tool a run may use."""
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -536,8 +582,7 @@ async def generate_answer(
         producer: Optional[asyncio.Future] = None
         response = None
         try:
-            # The deadline covers the wait for a model load or unload to let go too: one that never
-            # does must not keep the scheduler from every other task.
+            # Also bounds a stuck model load or unload so one wait cannot block other tasks.
             try:
                 await asyncio.wait_for(activity.start(cancel_event), timeout = _RUN_TIMEOUT_SECONDS)
             except TimeoutError:
@@ -550,18 +595,23 @@ async def generate_answer(
             # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
             if not task.get("model") and (kept := _sole_kept_model()):
                 model_fields = {"model": kept}
+            # A project folder on a stalled mount must not keep the scheduler from every other task.
+            try:
+                instructions = await asyncio.wait_for(
+                    asyncio.to_thread(_run_instructions, task, db.now_ms()),
+                    timeout = max(0.0, deadline - loop.time()),
+                )
+            except TimeoutError:
+                raise RunFailed("timeout") from None
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
-                        {"role": "system", "content": system_prompt(task, db.now_ms())},
+                        {"role": "system", "content": instructions},
                         {"role": "user", "content": task["prompt"]},
                     ],
                     "stream": False,
                     "cancel_id": run["id"],
-                    # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
-                    # means every built-in, python and terminal included.
-                    "tool_choice": "none",
-                    "enabled_tools": [],
+                    **_tool_fields(bool(task.get("webSearch"))),
                     **model_fields,
                     **_reasoning_fields(
                         task.get("reasoningEffort"),
@@ -618,8 +668,7 @@ async def generate_answer(
                     raise RunFailed("model_busy") from None
                 if allow_switch and not _model_is_loaded(payload.model):
                     raise RunFailed("model_load_failed", _error_text(exc.detail)) from None
-                # A named kept model answered for itself, so its refusal is not "nothing loaded",
-                # unless it was unloaded before the request reached it.
+                # Named kept model's refusal is not nothing-loaded, unless unloaded first.
                 if provider is None and not task.get("model"):
                     named = "model" in payload.model_fields_set
                     if (not named and not _chat_model_loaded()) or (

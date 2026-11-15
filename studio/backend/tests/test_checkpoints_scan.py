@@ -2,10 +2,14 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import os
 import sqlite3
 import sys
+import time
 import types as _types
 from pathlib import Path
+
+import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -483,3 +487,69 @@ def test_scan_checkpoints_tied_exact_match_follows_sqlite_order(tmp_path, monkey
     models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
 
     assert models[0][2]["base_model"] == want
+
+
+def _write_loss_state(path: Path, loss: str) -> None:
+    path.write_text('{"log_history": [{"loss": ' + loss + ', "step": 10}]}')
+
+
+def _counting_json_load(monkeypatch) -> list:
+    calls = []
+    real_load = checkpoints_module.json.load
+
+    def load(f, *args, **kwargs):
+        calls.append(f.name)
+        return real_load(f, *args, **kwargs)
+
+    monkeypatch.setattr(checkpoints_module.json, "load", load)
+    return calls
+
+
+def _skip_settle_window(monkeypatch) -> None:
+    real_time_ns = time.time_ns
+    monkeypatch.setattr(time, "time_ns", lambda: real_time_ns() + 3600 * 10**9)
+
+
+def test_checkpoint_loss_cache_skips_reparse_of_unchanged_file(tmp_path, monkeypatch):
+    _skip_settle_window(monkeypatch)
+    checkpoint_dir = tmp_path / "checkpoint-10"
+    checkpoint_dir.mkdir()
+    _write_loss_state(checkpoint_dir / "trainer_state.json", "1.25")
+    calls = _counting_json_load(monkeypatch)
+
+    assert checkpoints_module._read_checkpoint_loss(checkpoint_dir) == 1.25
+    assert checkpoints_module._read_checkpoint_loss(checkpoint_dir) == 1.25
+    assert len(calls) == 1
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "st_ctime is the creation time on Windows, so it does not move on a rewrite",
+)
+def test_checkpoint_loss_cache_sees_same_size_rewrite_with_restored_mtime(tmp_path, monkeypatch):
+    _skip_settle_window(monkeypatch)
+    checkpoint_dir = tmp_path / "checkpoint-10"
+    checkpoint_dir.mkdir()
+    state = checkpoint_dir / "trainer_state.json"
+    _write_loss_state(state, "1.25")
+    assert checkpoints_module._read_checkpoint_loss(checkpoint_dir) == 1.25
+
+    before = state.stat()
+    with open(state, "r+") as f:
+        f.write('{"log_history": [{"loss": 2.75, "step": 10}]}')
+    os.utime(state, ns = (before.st_atime_ns, before.st_mtime_ns))
+    assert state.stat().st_size == before.st_size
+
+    assert checkpoints_module._read_checkpoint_loss(checkpoint_dir) == 2.75
+
+
+def test_checkpoint_loss_cache_ignores_recently_written_files(tmp_path, monkeypatch):
+    checkpoint_dir = tmp_path / "checkpoint-10"
+    checkpoint_dir.mkdir()
+    _write_loss_state(checkpoint_dir / "trainer_state.json", "1.25")
+    calls = _counting_json_load(monkeypatch)
+
+    checkpoints_module._read_checkpoint_loss(checkpoint_dir)
+    checkpoints_module._read_checkpoint_loss(checkpoint_dir)
+
+    assert len(calls) == 2

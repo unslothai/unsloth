@@ -530,7 +530,7 @@ test("a remembered budget is capped by a non-GGUF load", () => {
   const composer = readSrc("features/chat/shared-composer.tsx");
   assert.match(
     composer,
-    /maxTokensCap: replayMaxTokensCap\(\s*loadedContextFields\(resp\)\.loadedContextLength \?\?\s*\(!resp\.is_gguf && effectiveMaxSeqLength > 0/,
+    /const paneMaxTokensCap = replayMaxTokensCap\(\s*loadedContextFields\(resp\)\.loadedContextLength \?\?\s*\(!resp\.is_gguf && effectiveMaxSeqLength > 0/,
   );
 
   const status = readSrc("features/chat/lib/apply-inference-status-to-store.ts");

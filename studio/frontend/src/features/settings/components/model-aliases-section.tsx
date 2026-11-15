@@ -4,7 +4,8 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
-import { Delete02Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useState } from "react";
 import {
@@ -138,7 +139,7 @@ export function ModelAliasesSection() {
                 setDraft((rows) => rows.filter((_, i) => i !== index))
               }
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
             </Button>
           </div>
         ))}

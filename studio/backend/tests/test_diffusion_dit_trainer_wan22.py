@@ -438,8 +438,7 @@ def test_saved_lora_has_diffusers_keys_and_loads_through_wanpipeline(tmp_path):
 
 
 def test_collate_copies_only_the_trimmed_rows_and_pads_on_the_device(monkeypatch):
-    """The pad to 512 must happen AFTER the move: padding on the host is a 4 MB pageable copy plus a multi-threaded
-    host fill + cat every step."""
+    """Pad to 512 after the move; padding on the host is a 4 MB pageable copy every step."""
     seen = []
     real_to = torch.Tensor.to
 

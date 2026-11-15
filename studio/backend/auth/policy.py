@@ -32,9 +32,8 @@ def invalidate_account_cache() -> None:
 
 @contextlib.contextmanager
 def account_mutation():
-    """Wrap an account write, invalidation included. Post-commit invalidation alone leaves a window
-    where the row is durable but the cache still answers the pre-write verdict, so the cache is
-    bypassed for the whole write. Counted, so nesting works."""
+    """Bypass the cache for the whole write, since post-commit invalidation alone leaves a stale
+    window; counted, so nested account_mutation calls work."""
     global _mutating, _generation, _cached
     with _lock:
         _mutating += 1

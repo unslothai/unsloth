@@ -21,6 +21,7 @@ export const SETTINGS_TABS = [
   "agents",
   "keyboard-shortcuts",
   "browser",
+  "computer-use",
   "debugging",
   "about",
 ] as const;
@@ -29,6 +30,7 @@ export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export type SettingsScrollTarget =
   | "about-updates"
+  | "agents-mcp"
   | "api-keys-audio-api"
   | "api-keys-media-api"
   | "api-keys-training-api"
@@ -182,6 +184,7 @@ function loadInitialTab(): SettingsTab {
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "chat-composer": "chat",
   "about-updates": "about",
+  "agents-mcp": "agents",
   "api-keys-audio-api": "api-keys",
   "api-keys-media-api": "api-keys",
   "api-keys-training-api": "api-keys",

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -91,8 +92,17 @@ MODELS_DEV_PROVIDER_MAP = {
     "huggingface": "huggingface",
     "alibaba": "qwen",
     "zai": "zai",
+    "opencode": "opencode",
+    "opencode-go": "opencode_go",
     "ollama-cloud": "ollama",
     "lmstudio": "lmstudio",
+    "xai": "xai",
+    "nvidia": "nvidia",
+    "perplexity": "perplexity",
+    "vercel": "vercel",
+    "azure": "azure",
+    "amazon-bedrock": "bedrock",
+    "google-vertex": "vertex",
 }
 
 
@@ -120,6 +130,14 @@ def _trim_models_dev_model(model: dict[str, Any]) -> dict[str, Any]:
     context = limit.get("context") if isinstance(limit, dict) else None
     if isinstance(context, int) and not isinstance(context, bool) and context > 0:
         entry["context"] = context
+    # The model list folds away anything released over a year ago.
+    released = model.get("release_date")
+    if isinstance(released, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", released):
+        entry["released"] = released
+    # The prompt's own cap where it is below the window (gpt-5.5: 922K of 1.05M).
+    prompt = limit.get("input") if isinstance(limit, dict) else None
+    if isinstance(prompt, int) and not isinstance(prompt, bool) and prompt > 0:
+        entry["input_tokens"] = prompt
     return entry
 
 
@@ -134,4 +152,56 @@ def trim_models_dev_catalog(raw: dict[str, Any]) -> dict[str, dict[str, dict[str
         for model_id, model in models.items():
             if isinstance(model_id, str) and model_id.strip() and isinstance(model, dict):
                 bucket[model_id.strip().lower()] = _trim_models_dev_model(model)
+    return catalog
+
+
+MODELS_DEV_MODEL_LIST_SOURCES = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "gemini": "google",
+    "deepseek": "deepseek",
+    "zai": "zai",
+    "kimi": "moonshotai",
+    "mistral": "mistral",
+    "minimax": "minimax",
+    "opencode": "opencode",
+    "opencode_go": "opencode-go",
+    "qwen": "alibaba",
+    "huggingface": "huggingface",
+    "xai": "xai",
+    "nvidia": "nvidia",
+    "cohere": "cohere",
+}
+
+
+def _is_chat_model(model: dict[str, Any]) -> bool:
+    modalities = model.get("modalities")
+    modalities = modalities if isinstance(modalities, dict) else {}
+    inputs, outputs = modalities.get("input"), modalities.get("output")
+    return (
+        model.get("status") != "deprecated"
+        and isinstance(inputs, list)
+        and "text" in inputs
+        and isinstance(outputs, list)
+        and "text" in outputs
+    )
+
+
+def models_dev_chat_models(raw: dict[str, Any]) -> dict[str, list[str]]:
+    catalog: dict[str, list[str]] = {}
+    for provider_type, source in MODELS_DEV_MODEL_LIST_SOURCES.items():
+        provider = raw.get(source)
+        models = provider.get("models") if isinstance(provider, dict) else None
+        if not isinstance(models, dict):
+            continue
+        chat = [
+            (str(model.get("release_date") or ""), model_id.strip())
+            for model_id, model in models.items()
+            if isinstance(model_id, str)
+            and model_id.strip()
+            and isinstance(model, dict)
+            and _is_chat_model(model)
+        ]
+        chat.sort(key = lambda entry: entry[0], reverse = True)
+        catalog[provider_type] = [model_id for _, model_id in chat]
     return catalog
