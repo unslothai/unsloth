@@ -1149,6 +1149,34 @@ def test_gradient_checkpointing_without_the_zoo_replay_fails_closed(monkeypatch)
         model.gradient_checkpointing_enable()
 
 
+def test_gradient_checkpointing_enable_takes_the_trainer_keywords(monkeypatch):
+    """transformers 5.22+ Trainer.train calls gradient_checkpointing_enable(..., every_n_layers=, offload=); the
+    native override must take them on every transformers (honoured where the parent has them)."""
+    import inspect
+
+    from transformers import PreTrainedModel
+
+    monkeypatch.setattr(dsv41, "ensure_checkpoint_replay", lambda: True)
+    model = _tiny_model()
+    layers = list(model.model.layers)
+    assert len(layers) >= 2
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = None, every_n_layers = 1, offload = False
+    )
+    assert all(layer.gradient_checkpointing for layer in layers)
+    model.gradient_checkpointing_disable()
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = {"use_reentrant": False}, every_n_layers = 2
+    )
+    flags = [bool(layer.gradient_checkpointing) for layer in layers]
+    # 5.22 names every_n_layers, 5.23 takes it through **kwargs, 4.x has neither and the keyword is dropped.
+    params = inspect.signature(PreTrainedModel.gradient_checkpointing_enable).parameters
+    if "every_n_layers" in params or any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        assert flags == [i % 2 == 0 for i in range(len(layers))], flags
+    else:
+        assert all(flags), flags
+
+
 @needs_zoo_native
 def test_standard_gradient_checkpointing_gives_exact_gradients_in_a_fresh_process():
     """Building the model and gradient_checkpointing_enable() install the zoo replay."""

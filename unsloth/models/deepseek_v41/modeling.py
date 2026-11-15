@@ -1553,6 +1553,19 @@ _LORA_TARGET_MAP = {
 }
 
 
+def _parent_keywords(fn):
+    """Keyword names fn accepts, or None when it takes **kwargs (forward everything)."""
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return None
+    if any(p.kind is p.VAR_KEYWORD for p in params):
+        return None
+    return {p.name for p in params if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
+
+
 # Not defs, so unsloth_zoo's compiler leaves these eager.
 _sequence_segments_outside_trace = torch.compiler.disable(sequence_segments)
 _forward_segments_outside_trace = torch.compiler.disable(_forward_segments_call)
@@ -1593,18 +1606,28 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     ]
     _keys_to_ignore_on_load_missing = [r"engram_tables\.\d+\.weight_scale_inv$"]
 
-    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs = None):
+    def gradient_checkpointing_enable(
+        self,
+        gradient_checkpointing_kwargs = None,
+        **kwargs,
+    ):
         """The decoder layers share per-forward group state; a checkpointed layer is exact only through unsloth_zoo's
-        replay (a private copy of the state for the recompute). Fail closed without it."""
+        replay (a private copy of the state for the recompute). Fail closed without it.
+
+        Extra keywords (transformers 5.22+ Trainer passes every_n_layers / offload) go to the parent when its
+        signature has them; an older parent without them gets only gradient_checkpointing_kwargs."""
         if not ensure_checkpoint_replay():
             raise RuntimeError(
                 "Unsloth: DeepSeek-V4.1 gradient checkpointing needs unsloth_zoo's decoder-layer replay "
                 "(unsloth_zoo.temporary_patches.deepseek_v41); without it the recomputed layers read overwritten "
                 "group state and the gradients are wrong. Update unsloth_zoo."
             )
-        return super().gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs = gradient_checkpointing_kwargs
-        )
+        parent = super().gradient_checkpointing_enable
+        if kwargs:
+            accepted = _parent_keywords(parent)
+            if accepted is not None:
+                kwargs = {k: v for k, v in kwargs.items() if k in accepted}
+        return parent(gradient_checkpointing_kwargs = gradient_checkpointing_kwargs, **kwargs)
 
     def save_pretrained(self, *args, **kwargs):
         _ENGRAM_FULL_SAVE[0] += 1
