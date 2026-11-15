@@ -1278,6 +1278,10 @@ export const ar = {
       tabHidden: "مخفية",
       lastVisited: "آخر ما تمت زيارته",
     },
+    navGroups: {
+      connections: "الاتصالات",
+      dataAccess: "البيانات والوصول",
+    },
     tabs: {
       sandbox: "الأمان",
       accounts: "الحسابات",

@@ -1281,6 +1281,10 @@ export const ru = {
       tabHidden: "Скрыта",
       lastVisited: "Последняя открытая",
     },
+    navGroups: {
+      connections: "Подключения",
+      dataAccess: "Данные и доступ",
+    },
     tabs: {
       sandbox: "Безопасность",
       accounts: "Учётные записи",

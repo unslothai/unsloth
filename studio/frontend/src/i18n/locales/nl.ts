@@ -1424,6 +1424,10 @@ export const nl = {
       tabHidden: "Verborgen",
       lastVisited: "Laatst bezocht",
     },
+    navGroups: {
+      connections: "Verbindingen",
+      dataAccess: "Gegevens & toegang",
+    },
     tabs: {
       sandbox: "Beveiliging",
       accounts: "Accounts",

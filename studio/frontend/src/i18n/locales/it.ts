@@ -1162,6 +1162,10 @@ export const it = {
       tabHidden: "Nascosta",
       lastVisited: "Ultima visitata",
     },
+    navGroups: {
+      connections: "Connessioni",
+      dataAccess: "Dati e accesso",
+    },
     tabs: {
       sandbox: "Sicurezza",
       accounts: "Account",

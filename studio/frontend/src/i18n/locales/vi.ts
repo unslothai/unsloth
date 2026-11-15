@@ -1409,6 +1409,10 @@ export const vi = {
       tabHidden: "Đã ẩn",
       lastVisited: "Lần truy cập gần nhất",
     },
+    navGroups: {
+      connections: "Kết nối",
+      dataAccess: "Dữ liệu & quyền truy cập",
+    },
     tabs: {
       sandbox: "Bảo mật",
       accounts: "Tài khoản",

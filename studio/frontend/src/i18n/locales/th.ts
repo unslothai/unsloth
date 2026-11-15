@@ -1345,6 +1345,10 @@ export const th = {
       tabHidden: "ซ่อนอยู่",
       lastVisited: "เข้าชมล่าสุด",
     },
+    navGroups: {
+      connections: "การเชื่อมต่อ",
+      dataAccess: "ข้อมูลและการเข้าถึง",
+    },
     tabs: {
       sandbox: "ความปลอดภัย",
       accounts: "บัญชี",

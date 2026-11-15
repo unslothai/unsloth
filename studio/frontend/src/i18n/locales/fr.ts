@@ -1283,6 +1283,10 @@ export const fr = {
       tabHidden: "Masqué",
       lastVisited: "Dernier visité",
     },
+    navGroups: {
+      connections: "Connexions",
+      dataAccess: "Données et accès",
+    },
     tabs: {
       sandbox: "Sécurité",
       accounts: "Comptes",

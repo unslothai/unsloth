@@ -1405,6 +1405,10 @@ export const tr = {
       tabHidden: "Gizli",
       lastVisited: "Son ziyaret",
     },
+    navGroups: {
+      connections: "Bağlantılar",
+      dataAccess: "Veriler ve erişim",
+    },
     tabs: {
       sandbox: "Güvenlik",
       accounts: "Hesaplar",
