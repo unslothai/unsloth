@@ -19,6 +19,20 @@ import unsloth  # noqa: E402, F401
 from unsloth import context_parallel as cp  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def _restore_environ():
+    # ftp.load sets UNSLOTH_FROZEN_TABLE / UNSLOTH_IS_PRESENT / UNSLOTH_ZOO_DISABLE_GPU_INIT in this process; restore
+    # them so later tests (and the subprocesses they spawn) see the session's own environment.
+    keys = ("UNSLOTH_FROZEN_TABLE", "UNSLOTH_IS_PRESENT", "UNSLOTH_ZOO_DISABLE_GPU_INIT")
+    saved = {k: os.environ.get(k) for k in keys}
+    yield
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 @pytest.mark.parametrize("key", ["ple_layer_ids", "engram_layer_ids"])
 def test_cp_refuses_ngram_tables(key):
     from transformers import PretrainedConfig
