@@ -918,17 +918,14 @@ def _ident(t):
     return (t.data_ptr(), t.dtype, tuple(t.shape))
 
 
-def _projections(layers):
-    for layer in layers:
-        for owner in (layer.self_attn, getattr(layer, "mlp", None)):
-            for name in _PROJ_NAMES:
-                proj = getattr(owner, name, None)
-                if proj is not None:
-                    yield proj
-
-
-def _fingerprint(model, layers, rope_len):
-    """Everything a captured step baked in; None when the model cannot be graphed."""
+def _fingerprint(
+    model,
+    layers,
+    rope_len,
+    refresh = False,
+):
+    """Everything a captured step baked in; None when the model cannot be graphed. refresh: bring the
+    LoRA decode casts up to date first (in place where they still fit)."""
     from ..kernels import utils as K
 
     items = []
@@ -958,6 +955,9 @@ def _fingerprint(model, layers, rope_len):
                 W, W_quant, A, B, S, bias = K.get_lora_parameters_bias(proj)
                 absmax = getattr(W_quant, "absmax", None)
                 cast = getattr(A, "_fast_lora", None) if A is not None else None
+                if refresh and cast is not None:
+                    K._fast_lora_weights(A, B, cast[1].dtype)
+                    cast = getattr(A, "_fast_lora", None)
                 items.append(
                     (
                         W.data_ptr(),
@@ -982,7 +982,7 @@ def _fingerprint(model, layers, rope_len):
         return None
     items.extend(adapters)
     # No version / optimizer-step counter: graphs read weights by address, so an in-place update (optimizer
-    # step, adapter edit) replays correctly once refresh_lora_casts() brought the decode casts up to date.
+    # step, adapter edit) replays correctly once the refresh above brought the decode casts up to date.
     items.append(WEIGHTS_EPOCH)
     return tuple(items)
 
@@ -1195,10 +1195,9 @@ def decode_step(
         if reason is not None:
             state.disabled = reason
             return None
-        # Adapters may have moved (optimizer step, in-place edit): the decode casts the graphs read are
-        # updated in place; one that had to be re-made changes the fingerprint below (re-capture).
-        K.refresh_lora_casts(_projections(layers))
-        fingerprint = _fingerprint(model, layers, rope_len)
+        # refresh: adapters may have moved (optimizer step, in-place edit), so the decode casts the graphs
+        # read are updated in place; one that had to be re-made changes the fingerprint (re-capture).
+        fingerprint = _fingerprint(model, layers, rope_len, True)
         if fingerprint is None:
             # Ineligible for this generation only (several / non-CUDA devices, or a DoRA / non-LoRA
             # adapter, e.g. one side of a compare): free the captured steps and re-check next time.

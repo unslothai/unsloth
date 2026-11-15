@@ -97,7 +97,7 @@ def test_decode_casts_are_remade_when_they_no_longer_fit():
     assert A3 is not A2 and torch.equal(A3, A.detach().to(torch.bfloat16))
 
 
-def test_refresh_lora_casts_updates_a_peft_projection_in_place():
+def test_peft_projection_casts_are_refreshed_in_place():
     peft = pytest.importorskip("peft")
 
     class _Block(torch.nn.Module):
@@ -107,15 +107,15 @@ def test_refresh_lora_casts_updates_a_peft_projection_in_place():
 
     torch.manual_seed(0)
     model = peft.get_peft_model(_Block(), peft.LoraConfig(r = 4, target_modules = ["q_proj"]))
-    proj = model.base_model.model.q_proj
-    _, _, A, B, _, _ = U.get_lora_parameters_bias(proj)
+    _, _, A, B, _, _ = U.get_lora_parameters_bias(model.base_model.model.q_proj)
     with torch.inference_mode():
         casts = U._fast_lora_weights(A, B, torch.bfloat16)
-    assert U.refresh_lora_casts([proj]) is True
     with torch.no_grad():
         B.add_(0.5)
-        assert U.refresh_lora_casts([proj]) is True
+        again = U._fast_lora_weights(A, B, torch.bfloat16)
+    assert again[0] is casts[0] and again[1] is casts[1]
     assert torch.equal(casts[1], B.detach().to(torch.bfloat16))
     with torch.no_grad():
         B.data = torch.randn(64, 4)
-        assert U.refresh_lora_casts([proj]) is False  # re-made: the decode graphs re-capture
+        remade = U._fast_lora_weights(A, B, torch.bfloat16)
+    assert remade[1] is not casts[1]  # new address: the decode graphs re-capture

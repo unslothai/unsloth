@@ -1832,21 +1832,6 @@ def _refresh_lora_cast(cache, lora_A, lora_B, dtype):
     return True
 
 
-def refresh_lora_casts(projections):
-    """Brings every existing decode cast of these projections' adapters up to date, in place where it can
-    (the cast addresses a captured decode graph reads). Returns False if a cast had to be re-made."""
-    stable = True
-    for proj in projections:
-        _, _, lora_A, lora_B, _, _ = get_lora_parameters_bias(proj)
-        cache = getattr(lora_A, "_fast_lora", None) if lora_A is not None else None
-        if cache is None:
-            continue
-        A, B = cache[1], cache[2]
-        new_A, new_B = _fast_lora_weights(lora_A, lora_B, A.dtype)
-        stable = stable and new_A is A and new_B is B
-    return stable
-
-
 def fast_linear_forward(
     proj,
     X,
