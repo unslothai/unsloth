@@ -770,8 +770,18 @@ _NCCL2_WARNED = False
 _NCCL2_WARN_MAX_BYTES = 24 * 2**30
 
 
+def _torch_nccl2_is_default():
+    """torch 2.15 builds backend "nccl" as ProcessGroupNCCL2 unless TORCH_DIST_USE_NCCL2=0; 2.14 only
+    with TORCH_DIST_USE_NCCL2=1."""
+    try:
+        major, minor = (int(x) for x in torch.__version__.split(".")[:2])
+    except Exception:
+        return False
+    return (major, minor) >= (2, 15)
+
+
 def _uses_nccl2(dist, device):
-    """torch 2.14's nccl2 backend; TORCH_DIST_USE_NCCL2=1 still reports "nccl", so check the object."""
+    """The nccl2 backend (ProcessGroupNCCL2). get_backend() reports "nccl" for it, so check the object."""
     try:
         group = dist.distributed_c10d._get_default_group()
         impl = type(group._get_backend(device)).__name__
@@ -782,16 +792,22 @@ def _uses_nccl2(dist, device):
         name = str(dist.get_backend()).lower()
     except Exception:
         return False
-    return name == "nccl2" or (
-        name == "nccl" and os.environ.get("TORCH_DIST_USE_NCCL2", "").strip() == "1"
-    )
+    if name == "nccl2":
+        return True
+    if name != "nccl":
+        return False
+    # Mirrors torch's _register_builtin_nccl_backend.
+    if _torch_nccl2_is_default():
+        return os.environ.get("TORCH_DIST_USE_NCCL2") != "0"
+    return os.environ.get("TORCH_DIST_USE_NCCL2", "").strip() == "1"
 
 
 def _warn_nccl2_memory(dist, device):
-    """Under nccl2 every rank seeing GPU 0 makes a CUDA context there (torch 2.14.1, 2 x T4: 102 MiB
-    per rank, plain nccl none), so small GPU 0 runs out first."""
+    """Under torch 2.14's opt-in nccl2 every rank seeing GPU 0 makes a CUDA context there (2 x T4: 102
+    MiB per rank, plain nccl none), so small GPU 0 runs out first. torch 2.15's nccl2 is the default
+    "nccl" and makes none (2 x T4: 207 / 207 MiB, 2.14 nccl2 309 / 207), so it is not warned about."""
     global _NCCL2_WARNED
-    if _NCCL2_WARNED or device.type != "cuda":
+    if _NCCL2_WARNED or device.type != "cuda" or _torch_nccl2_is_default():
         return
     try:
         if dist.get_world_size() < 2 or torch.cuda.device_count() < 2:

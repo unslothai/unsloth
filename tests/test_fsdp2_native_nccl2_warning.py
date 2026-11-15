@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 warns once when the process group runs torch 2.14's nccl2 on small GPUs (CPU only:
-the process group and the CUDA device queries are faked)."""
+"""Native FSDP2 warns once when the process group runs torch 2.14's nccl2 on small GPUs, and not under
+torch 2.15, whose default "nccl" is nccl2 without the GPU 0 contexts (CPU only: the process group,
+the torch version and the CUDA device queries are faked)."""
 
 import os
 import sys
@@ -48,6 +49,7 @@ def gpus(monkeypatch):
         lambda device: types.SimpleNamespace(total_memory = state["total"]),
     )
     monkeypatch.setattr(native, "_NCCL2_WARNED", False)
+    monkeypatch.setattr(torch, "__version__", "2.14.1+cu130")
     return state
 
 
@@ -100,3 +102,39 @@ def test_name_fallback_when_backend_object_is_unavailable(gpus, capsys, monkeypa
     assert native._uses_nccl2(dist, DEV) is True
     dist.get_backend = lambda: "gloo"
     assert native._uses_nccl2(dist, DEV) is False
+
+
+@pytest.mark.parametrize("version", ["2.15.0+cu132", "2.16.0.dev20261101+cu132", "3.0.0"])
+def test_no_warning_where_nccl2_is_the_default(gpus, capsys, monkeypatch, version):
+    # torch 2.15's nccl2 (the default "nccl") builds no context on GPU 0 from the other ranks.
+    monkeypatch.setattr(torch, "__version__", version)
+    native._warn_nccl2_memory(_dist(ProcessGroupNCCL2), DEV)
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "version, env, expected",
+    [
+        ("2.14.1", None, False),
+        ("2.14.1", "1", True),
+        ("2.14.1", "0", False),
+        ("2.15.0", None, True),
+        ("2.15.0", "1", True),
+        ("2.15.0", "0", False),
+    ],
+)
+def test_name_fallback_follows_the_torch_default(monkeypatch, version, env, expected):
+    # torch 2.15 builds "nccl" as ProcessGroupNCCL2 unless TORCH_DIST_USE_NCCL2=0; 2.14 only with =1.
+    def broken(device):
+        raise RuntimeError("no backend for device")
+
+    dist = _dist(ProcessGroupNCCL)
+    dist.distributed_c10d = types.SimpleNamespace(
+        _get_default_group = lambda: types.SimpleNamespace(_get_backend = broken)
+    )
+    monkeypatch.setattr(torch, "__version__", version)
+    if env is None:
+        monkeypatch.delenv("TORCH_DIST_USE_NCCL2", raising = False)
+    else:
+        monkeypatch.setenv("TORCH_DIST_USE_NCCL2", env)
+    assert native._uses_nccl2(dist, DEV) is expected
