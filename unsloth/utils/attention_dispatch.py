@@ -1426,8 +1426,9 @@ def _packed_block_kernel(layer, hidden_states) -> bool:
     )
     if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
         return False
-    # FLASH_VARLEN hosts get torch's bundled flash varlen in the graph (the same FA2 kernel).
-    if select_attention_backend(use_varlen = True) not in (FLASH_VARLEN, SDPA) or head_dim > 256:
+    # Whatever eager would pick (flash-attn, xformers or torch varlen), the graph runs torch's bundled
+    # flash varlen: the same FA2 kernel family, exact over the same documents (probed below).
+    if head_dim > 256:
         return False
     window = getattr(config, "sliding_window", None)
     window = window if isinstance(window, int) and window > 0 else None
