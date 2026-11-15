@@ -35396,6 +35396,7 @@ async def produce_openai_chat_completions(
                         cancel_event.set()
                         backend.reset_generation_state(cancel_event)
                         mark_current_response_failed()
+                        _sf_settle_streamed_passes()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
 

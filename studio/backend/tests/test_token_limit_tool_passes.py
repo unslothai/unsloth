@@ -353,7 +353,7 @@ def test_streaming_and_provider_paths_keep_their_report_watermarks():
     assert '_sf_streamed_calls.add(event.get("tool_call_id"))' in source
     assert 'event.get("tool_call_id") not in _sf_streamed_calls' in source
     assert "Executed after its pass ended, so that pass's reported usage covers it." in source
-    assert source.count("_sf_settle_streamed_passes()") == 5  # the def and its four calls
+    assert source.count("_sf_settle_streamed_passes()") == 6  # the def and its five exits
     # A stopped Studio-tools provider run keeps its summed usage to the passes that reported.
     assert "_monitor_usage(monitor_id, _summed, reported_chars = _covered_chars[0])" in source
     assert "_monitor_usage(monitor_id, totals)" in source
