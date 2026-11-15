@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A gathered generate (native_fsdp2_unsharded) whose decode loop calls the blocks directly, before any forward
-through the root, made a block FSDP2's root; the first training forward then failed (GRPO under the sharded
-layout: "FSDPCommContext has no all_gather_copy_in_stream" on 2xT4, "requires running forward through the root
-module first" here). The training step after it must run and match one process."""
+"""A decode loop calling blocks before any root forward made a block FSDP2's root; training must still run."""
 
 import multiprocessing
 import os

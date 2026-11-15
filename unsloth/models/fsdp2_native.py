@@ -2219,10 +2219,7 @@ def _rebind_swapped_modules(model, units):
 
 
 def _lazy_init_root(root, units):
-    """FSDP2 picks its root as the first unit to run forward. A gathered generate whose decode loop calls the
-    blocks directly would make a block its own root, so the training forward then fails (block streams never
-    created, or "requires running forward through the root module first"). Initialize from the real root
-    first: a no-op once a forward went through it."""
+    """FSDP2 roots at the first unit to run forward; a decode loop calling blocks would make a block root."""
     top = root if isinstance(root, _fsdp_module_class()) else next(iter(units), None)
     state = getattr(top, "_get_fsdp_state", None)
     if not callable(state):

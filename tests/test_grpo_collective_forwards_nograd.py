@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Under FSDP2's sharded layout every forward all-gathers, so GRPO must run the same forwards on every rank. It
-hung on 2xT4 (Gemma3 1B GRPO, UNSLOTH_FSDP2_LAYOUT=sharded, step 2: one rank in a block forward, the other in
-backward): the no-grad padded loop's mini batch is sized from the rank's own sequence length, and sequence
-packing / PrefixGrouper run self-verify forwards only on the rank whose packed length grew. On such a model
-(unsloth_zoo's grpo_forwards_are_collective) packing and PrefixGrouper go off and the ranks agree on the mini
-batch."""
+"""Sharded FSDP2 forwards all-gather, so GRPO ranks must run identical forwards (else 2xT4 hangs)."""
 
 import ast
 import sys

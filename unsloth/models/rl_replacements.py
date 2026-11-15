@@ -1751,9 +1751,7 @@ def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
 
 
 def _unsloth_grpo_refuse_rank_local_forwards(self, model):
-    """True when every forward all-gathers across ranks (FSDP2 sharded layout), so the ranks must run the same
-    forwards. Packed forwards and PrefixGrouper go off there: their self-verify forwards run only on the rank
-    whose packed length grew, which hung 2xT4 GRPO with one rank in a block forward and the other in backward."""
+    """Sharded FSDP2: packing/PrefixGrouper verify forwards are rank-local and would hang the collective."""
     try:
         from unsloth_zoo.rl_replacements import grpo_forwards_are_collective
         unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
