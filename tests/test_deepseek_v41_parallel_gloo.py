@@ -610,3 +610,59 @@ def test_tp_still_refuses_mla_key_value_expansion():
     )  # per-head keys / values from a latent: real MLA
     with pytest.raises(ValueError, match = "multi-head latent attention"):
         tpn.derive_tp_plan(model, 2)
+
+
+def _fake_stage(carry = None, segments = None):
+    """What _PPStageModule._wire / _model_stage_forward read of a stage, for one call outside a pipeline."""
+    h, pre_mix = torch.randn(2, SEQ, 4, 64), torch.randn(2, SEQ, 4)
+    decoder = types.SimpleNamespace(
+        pipeline_stage_forward = lambda start, end, **kw: (h, pre_mix, None)
+    )
+    ctx = types.SimpleNamespace(
+        carry = carry or [((4, 64), None), ((4,), torch.float32)],
+        stage_forward = (decoder, None, segments),
+        is_first = True,
+        is_last = False,
+        start = 0,
+        end = 2,
+    )
+    return types.SimpleNamespace(
+        _pp_ctx = ctx, _pp_dtype = torch.float32, _pp_warned = False, _wire = lambda t: t
+    )
+
+
+def test_pp_boundary_compiles_in_one_graph():
+    """The carried tensors' view check is skipped while compiling (Dynamo cannot trace _is_view): a compiled
+    stage boundary stays one graph, and its outputs are still no views."""
+    stage = _fake_stage()
+
+    def boundary(h, pre_mix):
+        return ppn._PPStageModule._wire(stage, (h * 2, pre_mix.transpose(0, 1).transpose(0, 1)))
+
+    h, pre_mix = torch.randn(2, 3, 4, 64), torch.randn(2, 3, 4)
+    out = torch.compile(boundary, fullgraph = True, backend = "eager")(h, pre_mix)
+    assert [tuple(t.shape) for t in out] == [(2, 3, 256), (2, 3, 4)]
+    assert not any(t._is_view() for t in out)
+    assert torch.equal(out[1], pre_mix)
+
+
+def test_pp_stage_forward_takes_ordinary_position_ids():
+    """position_ids 0, 1, 2, ... (what a collator or generate passes) run; packed rows (positions restarting at
+    0) and left padding are still refused."""
+    ids = torch.zeros(2, SEQ, dtype = torch.long)
+    stage = _fake_stage(segments = dsv41.sequence_segments)
+    run = lambda **kw: ppn._PPStageModule._model_stage_forward(stage, ids, kw)
+    positions = torch.arange(SEQ).expand(2, -1)
+    assert len(run(position_ids = positions)) == 2
+    assert len(run(position_ids = positions[:1], attention_mask = torch.ones(2, SEQ))) == 2
+    packed = torch.cat([torch.arange(SEQ // 2), torch.arange(SEQ // 2)]).expand(2, -1)
+    with pytest.raises(ValueError, match = "packed or left-padded"):
+        run(position_ids = packed)
+    left = torch.ones(2, SEQ, dtype = torch.long)
+    left[0, :3] = 0
+    with pytest.raises(ValueError, match = "packed or left-padded"):
+        run(attention_mask = left)
+    with pytest.raises(
+        ValueError, match = "packed or left-padded"
+    ):  # a model that cannot classify positions
+        ppn._PPStageModule._model_stage_forward(_fake_stage(), ids, {"position_ids": positions})

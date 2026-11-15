@@ -1307,8 +1307,12 @@ class _PPStageModule(nn.Module):
         ctx = self._pp_ctx
         decoder, inner, segments = ctx.stage_forward
         mask = kwargs.get("attention_mask")
-        if kwargs.get("position_ids") is not None or (
-            segments is not None and segments(None, mask, *input_ids.shape[:2]) is not None
+        positions = kwargs.get("position_ids")
+        if (
+            positions is not None
+            if segments is None
+            # ordinary 0, 1, 2, ... positions are the stage's own; packed / left-padded rows are segmented
+            else segments(positions, mask, *input_ids.shape[:2]) is not None
         ):
             raise ValueError(
                 f"Unsloth: pipeline parallelism over {type(inner).__name__} takes one right-padded sequence per row; "
@@ -1359,8 +1363,8 @@ class _PPStageModule(nn.Module):
                 # A stage output must not be a view: split-backward schedules (zero bubble, DualPipeV) detach
                 # their outputs in place, which a view refuses. One copy of the stream at the boundary.
                 t = t.flatten(2).clone()
-            elif t._is_view():
-                t = t.clone()
+            elif torch.compiler.is_compiling() or t._is_view():
+                t = t.clone()  # compiled: always (Dynamo cannot trace _is_view, a bool)
             out.append(t)
         return tuple(out)
 
