@@ -62,7 +62,7 @@ def write_provenance(save_directory, provenance):
         return None
     os.makedirs(save_directory, exist_ok = True)
     path = os.path.join(os.fspath(save_directory), FILE_NAME)
-    with open(path, "w") as f:
+    with open(path, "w", encoding = "utf-8") as f:
         json.dump(provenance, f, indent = 1, sort_keys = True)
     return path
 
@@ -105,7 +105,7 @@ def check_provenance(model, directory):
     path = os.path.join(os.fspath(directory), FILE_NAME)
     if not os.path.isfile(path):
         return []
-    with open(path) as f:
+    with open(path, encoding = "utf-8") as f:
         saved = json.load(f)
     compare = getattr(_zoo(), "compare_frozen_table_provenance", None)
     if compare is None:
