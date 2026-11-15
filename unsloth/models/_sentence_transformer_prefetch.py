@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""SentenceTransformerTrainer tokenizes every batch in its collator on the training thread, so the GPU
-waits for it each step. A background thread fetches (and collates) the next batches while the current
-one trains. Same batches, same order; UNSLOTH_ST_PREFETCH=0 turns it off."""
+"""Collate SentenceTransformerTrainer batches on a background thread; UNSLOTH_ST_PREFETCH=0 disables."""
 
 import os
 import queue
@@ -102,16 +100,13 @@ def prefetched(loader, depth = 2):
 def prefetch_enabled(trainer) -> bool:
     if os.environ.get("UNSLOTH_ST_PREFETCH", "1") == "0":
         return False
-    # Only models loaded by FastSentenceTransformer.
     if not hasattr(getattr(trainer, "model", None), "_unsloth_trust_remote_code"):
         return False
-    # Distributed loaders run collectives while iterating (accelerate's dispatcher broadcasts batches, the
-    # shard syncs RNG): off the training thread they could interleave with gradient all-reduces.
+    # Distributed loaders run collectives while iterating; off-thread they could interleave with all-reduces.
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         if torch.distributed.get_world_size() > 1:
             return False
     args = trainer.args
-    # Worker processes already collate ahead of the training loop.
     return not getattr(args, "dataloader_num_workers", 0)
 
 

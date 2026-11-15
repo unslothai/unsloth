@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A causal decoder embedder on FlashAttention 2 trains on one packed row of real tokens: same
-embeddings and gradients as the padded batch, left or right padded."""
+"""Decoder packing on FA2 matches padded embeddings and gradients."""
 
 import pytest
 

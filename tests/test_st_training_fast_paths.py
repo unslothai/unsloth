@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""FastSentenceTransformer training fast paths: lean LoRA on the fast encoder path, batches collated
-on a background thread, and decoder packing that keeps the padded layout pooling reads."""
+"""FastSentenceTransformer training fast paths: lean LoRA, prefetch, decoder packing."""
 
 import threading
 import types

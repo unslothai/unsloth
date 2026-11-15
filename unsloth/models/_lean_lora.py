@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Plain LoRA (one adapter, no dropout, DoRA or other variant) without PEFT's per-call checks, the fp32
-round trip of x and the scale-1 multiply: decision encoders and FastSentenceTransformer encoders, which
-never get the forward Unsloth's compiler gives PEFT."""
+"""Plain LoRA without PEFT's per-call checks, fp32 round trip and scale-1 multiply."""
 
 import types
 

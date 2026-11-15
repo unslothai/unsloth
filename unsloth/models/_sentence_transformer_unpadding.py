@@ -246,9 +246,7 @@ def enable_sentence_transformer_unpadding(model, auto = False):
     return True
 
 
-# Causal decoder embedders (Qwen3-Embedding): FlashAttention 2 reads packed rows from position_ids, so
-# one (1, N) row of real tokens replaces the padded (B, T) batch. sentence-transformers' own flattening
-# needs transformers 5; this covers 4.x and anything it skips. UNSLOTH_ST_PACKING=0 turns it off.
+# Causal decoder embedders on FA2: pack the padded batch into one position_ids row. UNSLOTH_ST_PACKING=0 disables.
 _PACKED_DECODERS = frozenset({"qwen3", "qwen2", "llama", "mistral"})
 _TOKEN_KEYS = ("input_ids", "attention_mask")
 _HIDDEN = (None, "last_hidden_state", ("last_hidden_state",), ["last_hidden_state"])
@@ -270,7 +268,6 @@ def _packable(transformer, features, kwargs):
         or os.environ.get("UNSLOTH_ST_PACKING", "1") == "0"
     ):
         return False
-    # Text, or chat-templated text ("message"): a plain forward reading last_hidden_state.
     modality = features.get("modality", "text")
     if modality not in ("text", "message"):
         return False
@@ -337,8 +334,7 @@ def _packed_transformer_forward(transformer, features, **kwargs):
 
 
 def enable_sentence_transformer_decoder_packing(model) -> bool:
-    """Training-only packing of padded text batches for causal decoder embedders on FlashAttention 2;
-    checked per call, so a model that is not eligible (or later becomes ineligible) stays padded."""
+    """Eligibility is checked per call; ineligible models stay padded."""
     from sentence_transformers.models import Pooling, Transformer
 
     modules = list(model.children())

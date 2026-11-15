@@ -2673,8 +2673,7 @@ class FastSentenceTransformer(FastModel):
                 and model_type.lower() == "modernbert"
                 and Version(transformers.__version__).major < 5
             ):
-                # transformers 4 ModernBERT picks FlashAttention 2 itself when it can dispatch, and then
-                # skips padding tokens; forcing SDPA made training slower than plain sentence-transformers.
+                # transformers 4 ModernBERT self-selects FA2 and skips padding; forcing SDPA is slower.
                 encoder_attn_impl = None
             supports_sdpa = encoder_attn_impl == "sdpa"
             if encoder_attn_impl is not None:
