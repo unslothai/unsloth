@@ -31,7 +31,7 @@ import {
   useBrowserAgentStore,
 } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks, siteOfUrl } from "./gate";
-import { type SiteRule, ruleFor } from "./permissions";
+import { type SiteRule, ruleFor, scriptRunsWithoutAsking } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
 import { type FileTabKind, MAX_EDIT_BYTES, applyFileEdit, numberedLines } from "./file-tab";
 import { waitForPage } from "./page-wait";
@@ -718,6 +718,8 @@ function permissions(context: Pick<Run, "fullAccess" | "inFile">) {
     actions: "allow",
     downloads: rule.downloads === "block" ? "block" : "allow",
     unlabelled: "allow",
+    // Full access doesn't cover scripts: only Run scripts or the site's own Scripts rule skips that prompt.
+    scripts: rule.scripts,
   });
   return { defaults: allow(saved.defaults), sites: Object.fromEntries(Object.entries(saved.sites).map(([site, rule]) => [site, allow(rule)])) };
 }
@@ -1463,7 +1465,11 @@ async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: 
 const SCRIPT_WAIT_MS = 15_000;
 const SCRIPTS_OFF = "The user doesn't let the agent run scripts on pages.";
 
-/** A script bypasses every rule above, so it is shown verbatim and asked every time, whatever the site permissions. */
+function scriptAllowed(url: string, context: Pick<Run, "fullAccess" | "inFile">): boolean {
+  return scriptRunsWithoutAsking(useBrowserAgentStore.getState().scriptAccess, url, permissions(context));
+}
+
+/** A script bypasses every rule above, so it is shown verbatim and asked unless Run scripts or the site's Scripts rule allows it. */
 async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, before: string): Promise<Result> {
   const { signal } = context;
   const script = action.script ?? "";
@@ -1471,8 +1477,10 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, b
   // The document the user sees as they approve: a reload or a page at the same address is another one.
   const doc = (await pageCall(tab, { op: "status" })).doc;
   if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
-  const refused = await pass({ kind: "ask", ask: "script", host: siteOfUrl(before), name: "", detail: script, prompt: "" }, context);
-  if (refused) return { ok: false, error: refused };
+  if (!scriptAllowed(before, context)) {
+    const refused = await pass({ kind: "ask", ask: "script", host: siteOfUrl(before), name: "", detail: script, prompt: "" }, context);
+    if (refused) return { ok: false, error: refused };
+  }
   if (signal?.aborted) return { ok: false, error: STOPPED };
   // Settings can change while the question is open.
   if (useBrowserAgentStore.getState().scriptAccess === "never") return { ok: false, error: SCRIPTS_OFF };

@@ -34,11 +34,13 @@ export type { Capability, CapabilityKey } from "./lib/model-capabilities";
 export { detectCapabilities as detectHubCapabilities } from "./lib/model-capabilities";
 export { CapabilityGlyph } from "./catalog/shared";
 export {
+  detectBaseModel,
   HUB_CAPABILITY_FILTERS,
   type HubCapabilityFilter,
 } from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
 export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
+export { useSelectedModelMetadata } from "./hooks/use-selected-model-metadata";
 export { isHuggingFaceOffline } from "./lib/network";
 export { HubFailureHint } from "./catalog/catalog-states";
 export {

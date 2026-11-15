@@ -231,6 +231,8 @@ import {
   useLibraryChatHandoffStore,
 } from "@/features/library/chat-handoff-store";
 import { resumesThought } from "@/features/model-picker";
+import { CompactOnReturnChip } from "./compact-on-return-chip";
+import { isNpuModelId } from "@/features/npu";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -483,6 +485,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
+import {
+  NewChatNonceContext,
+  clearTemporaryQueryDraft,
+  temporaryQueryDraft,
+} from "@/features/chat/query-draft";
+import { isQueryDraftId } from "@/features/chat/utils/composer-draft";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -1900,8 +1908,9 @@ const PendingCompactionRule: FC = () => {
   const endsWithReply = useAuiState(
     ({ message }) => message.isLast && message.role === "assistant",
   );
+  const cloud = useChatRuntimeStore((s) => isExternalModelId(s.params.checkpoint));
   if (!pending || !endsWithReply) return null;
-  return <CompactionDivider pending={true} className="mt-6" />;
+  return <CompactionDivider pending={true} cloud={cloud} className="mt-6" />;
 };
 
 // The selector returns the persisted record, which keeps its identity between renders, so a
@@ -4119,9 +4128,14 @@ const Composer: FC<{
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
   const incognito = useChatRuntimeStore((s) => s.incognito);
-  const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
+  // A `?q=` chat keeps its own slot until saved, so the link never overwrites another unsent draft.
+  const newChatNonce = useContext(NewChatNonceContext);
+  const draftQueryId =
+    !threadListItemRemoteId && isQueryDraftId(newChatNonce) ? newChatNonce : null;
+  const shareDraft =
+    useChatPreferencesStore((s) => s.shareComposerDraft) && !draftQueryId;
   // Route and active IDs can lead the runtime switch; drafts belong to the composer on screen.
-  const draftThreadId = threadListItemRemoteId ?? NEW_CHAT_DRAFT_ID;
+  const draftThreadId = threadListItemRemoteId ?? draftQueryId ?? NEW_CHAT_DRAFT_ID;
   const restoredDraftScopeRef = useRef<string | undefined>(undefined);
   const previousDraftIdentityRef = useRef({
     draftThreadId,
@@ -4158,15 +4172,17 @@ const Composer: FC<{
     if (!composer.getState().isEditing) return;
     if (
       restoredDraftScopeRef.current === draftScope &&
-      previous.threadListItemId === threadListItemId
+      previous.threadListItemId === threadListItemId &&
+      // A temporary chat's scope never changes, so a link opened onto its empty composer checks the id.
+      (previous.draftThreadId === draftThreadId || !isQueryDraftId(draftThreadId))
     ) return;
     restoredDraftScopeRef.current = draftScope;
     // First persistence names the same conversation; navigation must still restore its own draft.
     if (
       !incognito &&
       !previous.incognito &&
-      !shareDraft &&
-      previous.draftThreadId === NEW_CHAT_DRAFT_ID &&
+      (isQueryDraftId(previous.draftThreadId) ||
+        (!shareDraft && previous.draftThreadId === NEW_CHAT_DRAFT_ID)) &&
       aui.threadListItem().getState().remoteId === draftThreadId &&
       previous.threadListItemId === threadListItemId &&
       previous.draftThreadId !== draftThreadId
@@ -4177,15 +4193,20 @@ const Composer: FC<{
         justSentRef.current = { ...justSentRef.current, draftKey };
       }
       const text = latestDraft(previousKey);
-      writeComposerDraft(draftKey, text);
-      stageComposerDraft(draftKey, text);
-      writePasteDraft(pasteDraftKey, latestPasteDraft(previousPasteKey));
+      const pastes = latestPasteDraft(previousPasteKey);
+      // With sharing on, only a query chat's follow-up moves into the shared slot (read from memory here).
+      if (!shareDraft || text || pastes.length > 0) {
+        if (shareDraft) publishDraft(text, draftSource);
+        writeComposerDraft(draftKey, text);
+        stageComposerDraft(draftKey, text);
+        writePasteDraft(pasteDraftKey, pastes);
+        pasteKeyShownRef.current = draftKey;
+      }
       writeComposerDraft(previousKey, "");
       writePasteDraft(previousPasteKey, []);
-      pasteKeyShownRef.current = draftKey;
     }
     if (draftScope === INCOGNITO_DRAFT_SCOPE) {
-      composer.setText("");
+      composer.setText(temporaryQueryDraft(draftKey));
       return;
     }
     remoteDraftRef.current = null;
@@ -4211,6 +4232,7 @@ const Composer: FC<{
     draftKey,
     pasteDraftKey,
     shareDraft,
+    draftSource,
     draftThreadId,
     threadListItemId,
     incognito,
@@ -4384,7 +4406,10 @@ const Composer: FC<{
       draftSaveTimerRef.current = null;
     }
     // A temporary chat's send was never the stored draft.
-    if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) return;
+    if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) {
+      clearTemporaryQueryDraft(draftKeyRef.current);
+      return;
+    }
     if (shareDraftRef.current) publishDraft("", draftSource);
     if (draftKeyRef.current) writeComposerDraft(draftKeyRef.current, "");
     writePasteDraft(pasteDraftKeyRef.current, []);
@@ -5763,17 +5788,21 @@ const Composer: FC<{
           return;
         }
         // The compacted turns stay reachable only through search_conversation, so no tools, no reset.
+        // A cloud connection summarizes instead, which needs neither.
         if (
-          !runtime.supportsTools ||
-          !resumesThought({
-            loadedIsGguf: runtime.loadedIsGguf,
-            loadedIsMlx: runtime.loadedIsMlx,
-            activeGgufVariant: runtime.activeGgufVariant,
-            activeNativePathToken: runtime.activeNativePathToken,
-            checkpoint: runtime.params.checkpoint,
-          })
+          !isExternalModelId(runtime.params.checkpoint) &&
+          (!runtime.supportsTools ||
+            !(
+              resumesThought({
+                loadedIsGguf: runtime.loadedIsGguf,
+                loadedIsMlx: runtime.loadedIsMlx,
+                activeGgufVariant: runtime.activeGgufVariant,
+                activeNativePathToken: runtime.activeNativePathToken,
+                checkpoint: runtime.params.checkpoint,
+              }) || isNpuModelId(runtime.params.checkpoint)
+            ))
         ) {
-          toast.info("/compact works with GGUF and MLX models that support tools");
+          toast.info("/compact works with GGUF, MLX and NPU models that support tools");
           return;
         }
         requestThreadCompaction(referenceThreadId);
@@ -7566,6 +7595,7 @@ const ComposerRightControls: FC<{
           !thread.isRunning && !isQueueRunning && !isResearchActive
         }
       >
+        <CompactOnReturnChip />
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
             tooltip={

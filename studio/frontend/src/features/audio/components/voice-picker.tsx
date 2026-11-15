@@ -162,6 +162,7 @@ export function VoicePicker({
                   variant="ghost"
                   size="icon"
                   className="size-[calc(28px*var(--ui-space-scale,1))] shrink-0"
+                  title={playing ? "Pause" : "Play"}
                   aria-label={
                     playing ? `Pause ${voice.name}` : `Play ${voice.name}`
                   }
@@ -214,6 +215,7 @@ export function VoicePicker({
                       variant="ghost"
                       size="icon"
                       className="size-[calc(28px*var(--ui-space-scale,1))] shrink-0"
+                      title="More"
                       aria-label={`More for ${voice.name}`}
                       disabled={disabled}
                     >

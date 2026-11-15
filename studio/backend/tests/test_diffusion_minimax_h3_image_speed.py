@@ -265,6 +265,40 @@ def test_the_streamed_tier_installs_the_int8_gemm_with_the_device(
         assert str(streamed[0]) == "cuda"
 
 
+@pytest.mark.parametrize("env, want", [("1", True), (None, False), ("0", False)])
+def test_forced_int8_attention_installs_over_a_default_sdpa_pick(monkeypatch, env, want):
+    """sm75 / gfx1151 keep default SDPA (no cuDNN / flash pick): the INT8 env switch still installs the strided
+    processors (stock q/k norm + RoPE) and engages the kernel on them; without the switch nothing changes there."""
+    from core.inference import diffusion_attention as D
+    from core.inference import diffusion_int8_attention as I
+
+    if env is None:
+        monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+    else:
+        monkeypatch.setenv(I.INT8_ATTENTION_ENV, env)
+    monkeypatch.setenv(S.STREAMED_GEMM_ENV, "0")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(D, "select_attention_backend", lambda *a, **k: None)
+    monkeypatch.setattr(D, "apply_attention_backend", lambda *a, **k: None)
+    monkeypatch.setattr(A, "h3_attention_backend", lambda backend, **k: backend)
+    engaged = []
+    monkeypatch.setattr(
+        I,
+        "install_int8_attention",
+        lambda t, device = None, dtype = None, force = False, logger = None: engaged.append(force) or 1,
+    )
+    pipe = type("P", (), {})()
+    pipe.transformer = _model()
+    pipe._unsloth_h3_streamers = []
+    plan = type("Plan", (), {"placement": "stream"})()
+    levers = S._install(pipe, plan, "cuda", None)
+    assert ("h3_strided_attn" in levers) == want and ("h3_int8_attention" in levers) == want
+    assert A.strided_attention_count(pipe.transformer) == (4 if want else 0)
+    assert engaged == ([True] if want else [])
+    procs = [getattr(m, "processor", None) for m in pipe.transformer.modules()]
+    assert not any(getattr(p, "_unsloth_qk_rope", False) for p in procs)
+
+
 def test_compile_is_opt_in(monkeypatch):
     monkeypatch.delenv(S.COMPILE_ENV, raising = False)
     assert not S.compile_enabled()

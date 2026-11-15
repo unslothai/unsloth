@@ -114,6 +114,7 @@ from utils.helper_precache_settings import (
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils import video_cpu_settings
 from utils.download_speed_limit import (
+    DownloadSpeedLimitUnavailableError,
     get_download_speed_limit_mbps,
     set_download_speed_limit_mbps,
 )
@@ -245,6 +246,13 @@ from utils.llama_cpp_path_settings import (
     MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
     custom_llama_cpp_path_status,
     set_custom_llama_cpp_path,
+)
+from utils.offline_docs_settings import (
+    MAX_PATH_LENGTH as MAX_OFFLINE_DOCS_PATH_LENGTH,
+    OfflineDocsBusyError,
+    offline_docs_status,
+    refresh_offline_docs,
+    set_offline_docs_settings,
 )
 from utils.media_generation_preset_settings import (
     delete_media_generation_preset,
@@ -1096,6 +1104,22 @@ class LlamaCppPathResponse(BaseModel):
     reload_required: bool = False
 
 
+class OfflineDocsPayload(BaseModel):
+    path: Optional[str] = Field(default = None, max_length = MAX_OFFLINE_DOCS_PATH_LENGTH)
+    auto_update: Optional[bool] = None
+
+
+class OfflineDocsResponse(BaseModel):
+    path: Optional[str] = None
+    auto_update: bool
+    file: Optional[str] = None
+    updated_at: Optional[str] = None
+    release: Optional[str] = None
+    current_release: str
+    error: Optional[str] = None
+    refreshing: bool = False
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     # Optional too, so a row saved outside API keys (Model memory) can't resend a stale value.
     enabled: Optional[bool] = None
@@ -1207,6 +1231,11 @@ class ModelOverridePayload(BaseModel):
     mlx_int8_prefill: bool = False
     mlx_ane_prefill: bool = False
     mlx_fast_verify: bool = False
+    npu_power_mode: Optional[
+        Literal["default", "powersaver", "balanced", "performance", "turbo"]
+    ] = None
+    npu_prefill_chunk_len: Optional[StrictInt] = Field(default = None, ge = 1, le = 1048576)
+    npu_img_pre_resize: Optional[StrictInt] = Field(default = None, ge = 0, le = 4)
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -1591,6 +1620,52 @@ async def purge_caches_endpoint(
             log = logger,
         ) from exc
     return CachePurgeResponse(**result)
+
+
+@_owner_settings_router.get("/offline-docs", response_model = OfflineDocsResponse)
+def get_offline_docs(current_subject: str = Depends(get_current_subject)) -> OfflineDocsResponse:
+    return OfflineDocsResponse(**offline_docs_status())
+
+
+@_owner_settings_router.put("/offline-docs", response_model = OfflineDocsResponse)
+def update_offline_docs(
+    payload: OfflineDocsPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> OfflineDocsResponse:
+    require_ui_session(via_api_key)  # only the UI may pick a folder Unsloth writes into
+    changes = {
+        k: v
+        for k, v in payload.model_dump(exclude_unset = True).items()
+        if k == "path" or v is not None
+    }
+    try:
+        set_offline_docs_settings(**changes)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return OfflineDocsResponse(**offline_docs_status())
+
+
+@_owner_settings_router.post("/offline-docs/refresh", response_model = OfflineDocsResponse)
+def refresh_offline_docs_now(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> OfflineDocsResponse:
+    require_ui_session(via_api_key)
+    try:
+        return OfflineDocsResponse(**refresh_offline_docs())
+    except OfflineDocsBusyError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            offline_docs_status().get("error") or "Could not download the Unsloth docs.",
+            event = "settings.refresh_offline_docs_failed",
+            log = logger,
+        ) from exc
 
 
 @_owner_settings_router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
@@ -2106,7 +2181,10 @@ def update_download_transport(
 def get_download_speed_limit(
     current_subject: str = Depends(get_current_subject),
 ) -> DownloadSpeedLimitResponse:
-    return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+    try:
+        return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+    except DownloadSpeedLimitUnavailableError as exc:
+        raise HTTPException(status_code = 503, detail = str(exc)) from None
 
 
 @_owner_settings_router.put("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
@@ -2891,7 +2969,14 @@ def update_openai_auto_switch_override(
                 and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
-                and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
+                and not {
+                    "mlx_ple_offload",
+                    "mlx_expert_offload",
+                    "npu_power_mode",
+                    "npu_prefill_chunk_len",
+                    "npu_img_pre_resize",
+                }
+                & payload.model_fields_set
                 and not {
                     key: value
                     for key, value in saved_fields.items()
@@ -3100,7 +3185,13 @@ def update_openai_auto_switch_override(
                     field: getattr(payload, field)
                     if field in fields_set or is_removal
                     else (_alias_row or get_model_override(target_id)).get(field)
-                    for field in ("mlx_ple_offload", "mlx_expert_offload")
+                    for field in (
+                        "mlx_ple_offload",
+                        "mlx_expert_offload",
+                        "npu_power_mode",
+                        "npu_prefill_chunk_len",
+                        "npu_img_pre_resize",
+                    )
                 },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
@@ -5316,11 +5407,34 @@ class PlusMenuPrefsPayload(BaseModel):
     pinnedListIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
 
 
+_GlassMaterial = Literal["transparent", "frosted", "blurred", "liquid", "liquid-3d", "macos"]
+_GlassStrength = Annotated[int, Field(ge = 0, le = 100)]
+
+
+class GlassStrengthPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    light: Optional[_GlassStrength] = None
+    dark: Optional[_GlassStrength] = None
+
+
+class MaterialPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    material: Optional[Literal["solid", _GlassMaterial]] = None
+    style: Optional[_GlassMaterial] = None
+    menus: Optional[bool] = None
+    strength: Optional[GlassStrengthPayload] = None
+    lens: Optional[Literal["off", "magnify", "shrink"]] = None
+    scope: Optional[Literal["newChat", "chats", "all"]] = None
+
+
 class ClientPreferencesPayload(BaseModel):
     interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
     browser: Optional[BrowserPrefsPayload] = None
     chat: Optional[ChatPrefsPayload] = None
     plusMenu: Optional[PlusMenuPrefsPayload] = None
+    material: Optional[MaterialPrefsPayload] = None
     timeFormat: Optional[Literal["system", "12h", "24h"]] = None
     spellcheck: Optional[bool] = None
 

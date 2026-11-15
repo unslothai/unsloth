@@ -736,6 +736,56 @@ def test_the_page_asked_for_fits_under_the_read_cap(notes_module, serve_releases
     assert notes_module.get_release_notes("2026.8.11")["error"] is None
 
 
+def test_a_full_page_downloads_within_the_budget_on_a_slow_link(notes_module):
+    """#17661: 30 real entries were ~2 MiB, past the 3 s budget below ~6 Mbit/s, so the notes never loaded."""
+    import urllib.parse
+
+    query = urllib.parse.urlparse(notes_module.RELEASES_API_URL).query
+    per_page = int(urllib.parse.parse_qs(query)["per_page"][0])
+    # v0.1.910-beta: 89 KB body + 14 KB asset list.
+    entry_bytes = 104 * 1024
+    seconds = 1 + per_page * entry_bytes * 8 / 2_000_000
+    assert seconds < notes_module.RELEASES_TIMEOUT_SECONDS
+
+
+def test_a_slow_page_still_loads(notes_module, monkeypatch):
+    """A page arriving over a few seconds is shown, not reported as timed out."""
+    payload = releases_payload(
+        {
+            "tag_name": "v0.1.9-beta",
+            "body": "## Hello\n\nNotes.",
+            "published_at": "2026-08-01T00:00:00Z",
+        }
+    ).encode("utf-8")
+
+    class Slow(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            half = len(payload) // 2
+            self.wfile.write(payload[:half])
+            self.wfile.flush()
+            time.sleep(3.5)
+            self.wfile.write(payload[half:])
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    monkeypatch.delenv(notes_module.DISABLE_ENV_VAR, raising = False)
+    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, f"http://127.0.0.1:{server.server_port}/")
+    notes_module.reset_release_notes_cache()
+    try:
+        result = notes_module.get_release_notes("0.1.9-beta")
+    finally:
+        server.shutdown()
+        server.server_close()
+        notes_module.reset_release_notes_cache()
+    assert result["error"] is None and result["matched"]
+
+
 @pytest.mark.parametrize(
     "heading",
     ["### macOS, Linux, WSL:", "### macOS / Linux / WSL", "### macOS/Linux/WSL"],

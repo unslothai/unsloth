@@ -423,24 +423,26 @@ def _compute_all_hf_cache_scans() -> list:
             if getattr(scan, "warnings", None):
                 scan = _with_repos_dropped_by_scan(scan, cache_root)
             scans.append(scan)
-        except OSError as exc:
-            # Filesystem errors can abort a whole root (e.g. Windows reparse points); recover read-only.
-            logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
+        except Exception as exc:
+            # Any error (reparse point, undecodable ref) aborts the whole root upstream: recover read-only.
+            logger.warning(
+                "Could not scan HF cache %s: %s", short_path_for_log(cache_root), scrub_paths(exc)
+            )
             empty_fields = dict(size_on_disk = 0, repos = frozenset(), warnings = [])
             # huggingface_hub 1.x added this required field; older versions lack it.
             if any(field.name == "incomplete_files" for field in fields(HFCacheInfo)):
                 empty_fields["incomplete_files"] = frozenset()
-            recovered = _with_repos_dropped_by_scan(
-                HFCacheInfo(**empty_fields),
-                cache_root,
-                scan_failed = True,
-            )
+            try:
+                recovered = _with_repos_dropped_by_scan(
+                    HFCacheInfo(**empty_fields),
+                    cache_root,
+                    scan_failed = True,
+                )
+            except Exception as recovery_exc:
+                logger.debug("HF cache recovery failed: %s", scrub_paths(recovery_exc))
+                continue
             if recovered.repos:
                 scans.append(recovered)
-        except Exception as exc:
-            logger.warning(
-                "Could not scan HF cache %s: %s", short_path_for_log(cache_root), scrub_paths(exc)
-            )
     return scans
 
 

@@ -48,6 +48,26 @@ test("user messages keep their text as typed", () => {
   assert.doesNotMatch(body, /<strong>|<em>|<h1>|<p>|<b>/);
 });
 
+test("the system prompt keeps its text as typed", () => {
+  const body = buildConversationHtmlBody([
+    {
+      title: "Chat",
+      messages: [
+        {
+          role: "system",
+          content:
+            "# Rules\nOverride __init__ only.\n1) be brief\n2) cite <sources>",
+        },
+      ],
+    },
+  ]);
+  assert.match(
+    body,
+    /<section class="message system">\n<h3 class="role">System<\/h3>\n<div class="content"># Rules\nOverride __init__ only\.\n1\) be brief\n2\) cite &lt;sources&gt;<\/div>/,
+  );
+  assert.doesNotMatch(body, /<strong>|<ol>|<h1>|<p>/);
+});
+
 test("raw HTML from a model is shown as text, except the thinking wrapper", () => {
   const html = markdownToHtml(
     '<script>alert(1)</script>\n\n<img src=x onerror="alert(1)">\n\n<details>\n<summary>thinking</summary>\n\nhmm\n\n</details>',

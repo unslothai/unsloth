@@ -308,10 +308,13 @@ def test_canvas_rule(h3i):
 
 
 def test_reference_short_edge_bounds(h3i):
-    assert h3i.bound_short_edge(1500, 1200, 1024, 2048) == (1500, 1200)
-    assert h3i.bound_short_edge(600, 400, 1024, 2048) == (1536, 1024)
-    assert h3i.bound_short_edge(5000, 3000, 1024, 2048) == (3424, 2048)
-    assert h3i.bound_short_edge(2000, 1500, 1024, 1024) == (1376, 1024)
+    # in range: not left as is, snapped to the 32 grid (Python's round, half to even)
+    assert h3i.size_short_edge(1500, 1200, 1024, 2048) == (1504, 1216)
+    assert h3i.size_short_edge(1536, 1024, 1024, 2048) == (1536, 1024)
+    assert h3i.size_short_edge(600, 400, 1024, 2048) == (1536, 1024)
+    assert h3i.size_short_edge(5000, 3000, 1024, 2048) == (3424, 2048)
+    assert h3i.size_short_edge(2000, 1500, 1024, 1024) == (1376, 1024)
+    assert h3i.size_short_edge(1024, 1050, 1024, 1024) == (1024, 1056)
 
 
 def test_packed_layout_text_references_target(h3i):
@@ -456,7 +459,7 @@ def test_step_and_guidance_contract(h3i, pipe):
     with pytest.raises(ValueError, match = "guidance"):
         pipe(prompt = "a cat", guidance_scale = 3.5, height = 64, width = 64)
     with pytest.raises(ValueError, match = "prompt"):
-        pipe(prompt = "", height = 64, width = 64)
+        pipe(prompt = None, height = 64, width = 64)
 
 
 def test_step_callback_sees_bchw_latents_and_interrupt_stops(h3i, pipe):
@@ -1513,6 +1516,89 @@ def test_int8_attention_stays_off_where_it_loses_the_race(h3i, release, monkeypa
     raced.clear()
     assert h3i.install_checkpoint_attention(p, "cuda", scheme = "int8") == "sage"
     assert not raced
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+
+
+def test_int8_kernel_takes_the_blocks_only_from_the_backend_it_beats(h3i, release, monkeypatch):
+    """Studio's INT8 kernel is raced against whichever backend the blocks would keep (its block race also decides
+    SageAttention); where it wins every processor keeps its native backend and the kernel is the engaged route."""
+    from core.inference import diffusion_attention as da
+    from core.inference import diffusion_int8_attention as int8
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    mods = h3i._attention_processors(p.transformer)
+    blocks = {id(m) for b in p.transformer.transformer_blocks for m in b.modules()}
+    before = {id(m): m.processor._attention_backend for m in mods}
+    world = {"sage": True, "keep": True, "kernel": 0}
+    seen: list = []
+
+    def fake_apply(
+        pipe,
+        backend,
+        logger = None,
+        target = None,
+    ):
+        if not world["sage"]:
+            return None
+        for m in h3i._attention_processors(pipe.transformer):
+            m.processor._attention_backend = backend
+        return backend
+
+    def fake_kernel(transformer, block_modules, saved, dev, dtype, sage, forced, log):
+        seen.append({"sage": sage, "forced": forced, "blocks": {id(m) for m in block_modules}})
+        race = (
+            {"keep": world["keep"], "ms": [1.0, 1.2], "native": "_native_flash"}
+            if sage is None
+            else None
+        )
+        return (world["kernel"] and len(block_modules)), race
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    monkeypatch.setattr(
+        h3i,
+        "race_checkpoint_attention",
+        lambda *a, **k: {"keep": world["keep"], "ms": [1.0, 1.2], "native": "_native_flash"},
+    )
+    monkeypatch.setattr(h3i, "_race_int8_kernel", fake_kernel)
+    removed: list = []
+    monkeypatch.setattr(int8, "remove_int8_attention", lambda t: removed.append(t) or 0)
+    monkeypatch.delenv(h3i.INT8_ATTENTION_ENV, raising = False)
+
+    def backends():
+        return {id(m): m.processor._attention_backend for m in mods}
+
+    def install():
+        seen.clear()
+        return h3i.install_checkpoint_attention(p, "cuda", scheme = "int8")
+
+    for sage, keep, incumbent_is_sage in (
+        (True, True, None),
+        (True, False, None),
+        (False, True, False),
+    ):
+        world.update(sage = sage, keep = keep, kernel = 1)
+        assert install() == int8.BACKEND
+        assert seen == [
+            {"sage": incumbent_is_sage, "forced": False, "blocks": blocks & set(before)}
+        ]
+        assert backends() == before
+        assert install() is None and not seen
+        assert h3i.remove_checkpoint_attention(p) == len(mods) and removed.pop() is p.transformer
+        assert backends() == before
+    world.update(sage = True, keep = True, kernel = 0)
+    assert install() == "sage" and seen[0]["sage"] is None
+    assert all((m.processor._attention_backend == "sage") == (id(m) in blocks) for m in mods)
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+    for sage, keep in ((True, False), (False, True)):
+        world.update(sage = sage, keep = keep)
+        assert install() is None and not seen[0]["sage"]
+        assert backends() == before and not getattr(p, h3i.ATTENTION_SAVED_ATTR, None)
+    world.update(sage = True, keep = False)
+    monkeypatch.setenv(h3i.INT8_ATTENTION_ENV, "1")
+    assert install() == "sage" and seen == [
+        {"sage": True, "forced": True, "blocks": blocks & set(before)}
+    ]
     assert h3i.remove_checkpoint_attention(p) == len(mods)
 
 
