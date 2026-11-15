@@ -30161,8 +30161,10 @@ async def _proxy_to_external_provider(
                 if not _ui_events:
                     _tool_call_stripper.end_turn()
 
-            def _pass_reported() -> None:
-                # Every line of a reported pass was relayed (and counted) before the loop reads on.
+            def _pass_reported(totals: dict) -> None:
+                # Every line of a reported pass was relayed (and counted) before the loop reads on,
+                # so the running totals cover the reply so far even if a later pass fails.
+                _monitor_usage(monitor_id, totals)
                 _covered_chars[0] = api_monitor.reply_chars(monitor_id)
 
             gen = stream_with_studio_tools(
@@ -33698,6 +33700,16 @@ async def produce_openai_chat_completions(
                 )
 
             # Non-streaming: drain into one ChatCompletion; CLI forced tools reach this path.
+            # The kept turn's text and the last pass usage that covers it, for a drain that fails.
+            _gguf_partial: dict = {"text": "", "settled": None}
+
+            def _gguf_settle_partial():
+                if _gguf_partial["text"]:
+                    api_monitor.set_reply(monitor_id, _gguf_partial["text"])
+                if _gguf_partial["settled"] is not None:
+                    # Re-settled after the reply so that report covers it.
+                    _monitor_usage(monitor_id, _gguf_partial["settled"], _monitor_context_length())
+
             def _drain_gguf_tool_loop():
                 full_text = ""
                 usage = None
@@ -33727,6 +33739,7 @@ async def produce_openai_chat_completions(
                                 "total_tokens": pass_prompt + passes_completion,
                             }
                             _monitor_usage(monitor_id, settled, _monitor_context_length())
+                            _gguf_partial["settled"] = settled
                         elif event.get("type") == "context_truncated":
                             context_truncation = _accumulate_context_truncation(
                                 context_truncation, event
@@ -33739,6 +33752,7 @@ async def produce_openai_chat_completions(
                             # turn) isn't carried -- only the final turn is.
                             raw_text = event.get("text", "")
                             settled = None
+                            _gguf_partial.update(text = raw_text, settled = None)
                     if raw_text is not None:
                         # Stripped once: stripping every cumulative event is quadratic in the turn.
                         full_text = _strip_tool_xml_for_display(
@@ -33884,6 +33898,7 @@ async def produce_openai_chat_completions(
             except asyncio.CancelledError:
                 cancel_event.set()
                 await _drain_cancelled_gguf_tool_task()
+                _gguf_settle_partial()
                 api_monitor.finish(monitor_id, "cancelled")
                 reservation.cancel()
                 if admission_lease is not None:
@@ -33925,6 +33940,7 @@ async def produce_openai_chat_completions(
                 )
             except Exception as e:
                 logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
+                _gguf_settle_partial()
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)

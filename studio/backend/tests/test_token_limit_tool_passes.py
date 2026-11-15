@@ -358,6 +358,8 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     assert "api_monitor.set_reply(monitor_id, _sf_partial_text)" in source
     # A stopped Studio-tools provider run keeps its summed usage to the passes that reported.
     assert "_monitor_usage(monitor_id, _summed, reported_chars = _covered_chars[0])" in source
+    # Each reported pass's running usage reaches the monitor, so a later failure keeps it.
+    assert "_monitor_usage(monitor_id, totals)" in source
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
@@ -593,6 +595,7 @@ def _gguf_tool_route(
     *,
     parse_think = False,
     tools = True,
+    status = 200,
 ):
     class _Backend(FakeLlamaCppBackend):
         supports_tools = True
@@ -608,6 +611,8 @@ def _gguf_tool_route(
 
         def generate_chat_completion_with_tools(self, **kwargs):
             for event in events:
+                if event == "boom":
+                    raise RuntimeError("backend died")
                 if event == "stop":
                     # The user stops the run while it waits on the approval.
                     for bucket in list(inference_route._CANCEL_REGISTRY.values()):
@@ -636,7 +641,7 @@ def _gguf_tool_route(
     app = FastAPI()
     app.include_router(inference_route.router)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    response = TestClient(app).post(
+    response = TestClient(app, raise_server_exceptions = False).post(
         "/chat/completions",
         json = {
             "messages": [{"role": "user", "content": "search it"}],
@@ -645,7 +650,7 @@ def _gguf_tool_route(
             "cancel_id": "token-limit-drain",
         },
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == status, response.text
     [receipt] = receipts
     return receipt
 
@@ -838,7 +843,7 @@ def test_the_tool_loop_marks_where_reported_passes_end(monkeypatch):
                 confirm_calls = False,
                 bypass_permissions = False,
                 rag_scope = None,
-                on_pass_reported = lambda: marks.append(streamed[0]),
+                on_pass_reported = lambda totals: marks.append((streamed[0], totals["total_tokens"])),
             ),
             cancel_event = cancel,
         )
@@ -854,6 +859,28 @@ def test_the_tool_loop_marks_where_reported_passes_end(monkeypatch):
                     streamed[0] += len(content)
 
     asyncio.run(asyncio.wait_for(run(), timeout = 30.0))
-    # One reported pass, marked after its 40 characters and before the stopped pass's 400.
-    assert marks == [40]
+    # One reported pass with its usage, marked after its 40 characters and before the stopped 400.
+    assert marks == [(40, 1000)]
     assert streamed[0] >= 440
+
+
+@pytest.mark.parametrize(
+    "events, expected",
+    [
+        # Output, then the backend dies before any pass reports: the text is estimated.
+        ([{"type": "content", "text": "r" * 400}, "boom"], 100),
+        # A reported pass, then a failure: its report stands and covers its text.
+        (
+            [
+                {"type": "content", "text": "hi there"},
+                {"type": "context_usage", "prompt_tokens": 900, "completion_tokens": 100},
+                "boom",
+            ],
+            100,
+        ),
+    ],
+)
+def test_a_failed_whole_tool_run_keeps_what_it_generated(monkeypatch, events, expected):
+    receipt = _gguf_tool_route(monkeypatch, events, status = 500)
+    assert receipt.status == "error"
+    assert receipt.completion_tokens == expected
