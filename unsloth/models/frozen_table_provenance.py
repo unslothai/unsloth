@@ -12,6 +12,7 @@ it. UNSLOTH_FROZEN_TABLE_PROVENANCE = "warn" (default: a warning on a mismatch),
 """
 
 import functools
+import inspect
 import json
 import os
 import sys
@@ -22,6 +23,7 @@ __all__ = [
     "table_provenance",
     "merge_provenance",
     "write_provenance",
+    "write_adapter_provenance",
     "check_provenance",
     "install",
 ]
@@ -69,6 +71,35 @@ def write_provenance(save_directory, provenance):
     return path
 
 
+def adapter_directories(
+    model,
+    save_directory,
+    selected_adapters = None,
+):
+    """Where PeftModel.save_pretrained writes each adapter: "default" at save_directory, every other one in
+    save_directory/<name> (every adapter in peft_config unless selected_adapters names some)."""
+    names = list(selected_adapters) if selected_adapters is not None else None
+    if names is None:
+        names = list(getattr(model, "peft_config", None) or ()) or ["default"]
+    root = os.fspath(save_directory)
+    return [root if name == "default" else os.path.join(root, name) for name in names]
+
+
+def write_adapter_provenance(
+    model,
+    save_directory,
+    provenance,
+    selected_adapters = None,
+):
+    """write_provenance next to each adapter a PEFT save wrote (see adapter_directories)."""
+    if not provenance or _mode() == "off":
+        return []
+    return [
+        write_provenance(directory, provenance)
+        for directory in adapter_directories(model, save_directory, selected_adapters)
+    ]
+
+
 def check_provenance(model, directory):
     """Compare directory/frozen_tables.json with the tables bound in `model`: [] when they are the same base
     tables (or there is nothing to check), else what differs (a warning, or an error in strict mode)."""
@@ -97,11 +128,73 @@ def check_provenance(model, directory):
     return problems
 
 
-def _adapter_dir(model_id, kwargs):
-    if not isinstance(model_id, (str, os.PathLike)):
+_HUB_OPTIONS = (
+    "subfolder",
+    "revision",
+    "repo_type",
+    "cache_dir",
+    "token",
+    "local_files_only",
+    "force_download",
+    "proxies",
+    "endpoint",
+)
+
+
+def _hub_sidecar(model_id, kwargs):
+    """The directory holding the Hub adapter's frozen_tables.json (downloaded into the Hub cache with the load's
+    revision / subfolder / token / cache options), or None when the repo has none (an adapter of a model without
+    frozen tables, or saved before provenance existed). In strict mode an unanswerable question (offline and not
+    cached, a network error) is an error: the file may exist."""
+    from huggingface_hub import hf_hub_download
+
+    try:
+        from huggingface_hub.errors import (
+            EntryNotFoundError,
+            LocalEntryNotFoundError,
+            RepositoryNotFoundError,
+            RevisionNotFoundError,
+        )
+    except ImportError:  # huggingface_hub < 0.23
+        from huggingface_hub.utils import (
+            EntryNotFoundError,
+            LocalEntryNotFoundError,
+            RepositoryNotFoundError,
+            RevisionNotFoundError,
+        )
+    options = {k: kwargs[k] for k in _HUB_OPTIONS if kwargs.get(k) is not None}
+    if "token" not in options and kwargs.get("use_auth_token") is not None:
+        options["token"] = kwargs["use_auth_token"]
+    try:
+        return os.path.dirname(hf_hub_download(os.fspath(model_id), FILE_NAME, **options))
+    except (
+        LocalEntryNotFoundError
+    ) as e:  # before EntryNotFoundError: a subclass of it on older hubs
+        error = e
+    except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError):
+        return None  # no sidecar, or no such repo (the adapter load itself reports that)
+    except OSError as e:
+        error = e
+    if _mode() == "strict":
+        raise ValueError(
+            f"Unsloth: cannot read {FILE_NAME} of the adapter {model_id} ({type(error).__name__}: {error}), so its "
+            "frozen lookup tables cannot be checked (UNSLOTH_FROZEN_TABLE_PROVENANCE=strict)."
+        ) from error
+    return None
+
+
+def _adapter_dir(model, model_id, kwargs):
+    """Where the adapter's frozen_tables.json is: its local directory, or (a Hub id, only for a model with frozen
+    tables) the Hub cache directory it was downloaded to; None when there is nothing to check."""
+    if _mode() == "off" or not isinstance(model_id, (str, os.PathLike)):
         return None
-    folder = os.path.join(os.fspath(model_id), kwargs.get("subfolder") or "")
-    return folder if os.path.isdir(folder) else None
+    root = os.fspath(model_id)
+    if os.path.isdir(root):
+        folder = os.path.join(root, kwargs.get("subfolder") or "")
+        return folder if os.path.isdir(folder) else None
+    if table_provenance(model) is None:
+        return None  # nothing of this model to check: no Hub request
+    return _hub_sidecar(model_id, kwargs)
 
 
 def install():
@@ -114,29 +207,41 @@ def install():
     if getattr(PeftModel.save_pretrained, _MARK, False):
         return True
     save = PeftModel.save_pretrained
+    try:
+        save_signature = inspect.signature(save)
+    except (TypeError, ValueError):
+        save_signature = None
 
     @functools.wraps(save)
     def save_pretrained(self, save_directory, *args, **kwargs):
         out = save(self, save_directory, *args, **kwargs)
-        if kwargs.get("is_main_process", True):
-            write_provenance(save_directory, table_provenance(self))
+        selected, main = kwargs.get("selected_adapters"), kwargs.get("is_main_process", True)
+        if save_signature is not None:
+            try:
+                bound = save_signature.bind(self, save_directory, *args, **kwargs).arguments
+                selected = bound.get("selected_adapters", selected)
+                main = bound.get("is_main_process", main)
+            except TypeError:
+                pass
+        if main:
+            write_adapter_provenance(self, save_directory, table_provenance(self), selected)
         return out
 
     load = PeftModel.load_adapter
 
     @functools.wraps(load)
     def load_adapter(self, model_id, *args, **kwargs):
-        out = load(self, model_id, *args, **kwargs)
-        check_provenance(self, _adapter_dir(model_id, kwargs))
-        return out
+        # Before PEFT touches the model: a refused adapter must leave it as it was.
+        check_provenance(self, _adapter_dir(self, model_id, kwargs))
+        return load(self, model_id, *args, **kwargs)
 
     original = PeftModel.__dict__["from_pretrained"].__func__
 
     @functools.wraps(original)
     def from_pretrained(cls, model, model_id, *args, **kwargs):
-        out = original(cls, model, model_id, *args, **kwargs)
-        check_provenance(out, _adapter_dir(model_id, kwargs))
-        return out
+        # Before PEFT injects the adapter's layers into `model` (in place).
+        check_provenance(model, _adapter_dir(model, model_id, kwargs))
+        return original(cls, model, model_id, *args, **kwargs)
 
     for fn in (save_pretrained, load_adapter, from_pretrained):
         setattr(fn, _MARK, True)

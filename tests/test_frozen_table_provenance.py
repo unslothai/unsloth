@@ -123,3 +123,101 @@ def test_pipeline_stages_merge_their_tables():
     merged = provenance.merge_provenance([a, None, b])
     assert merged["tables"] == {"model.layers.1.t": {"n": 1}, "model.layers.4.t": {"n": 2}}
     assert provenance.merge_provenance([None, None]) is None
+
+
+def _has_lora(model, name = None):
+    return any(
+        "lora_A" in n and (name is None or f".{name}." in n + ".") for n, _ in model.named_modules()
+    )
+
+
+def test_strict_load_adapter_refuses_before_touching_the_model(checkpoints, adapter, monkeypatch):
+    """A refused adapter is never installed: the check runs before PEFT loads it."""
+    from peft import LoraConfig, get_peft_model
+
+    model = get_peft_model(_base(checkpoints[1]), LoraConfig(r = 2, target_modules = ["o_proj"]))
+    monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
+    with pytest.raises(ValueError, match = "other frozen lookup tables"):
+        model.load_adapter(adapter, adapter_name = "other")
+    assert "other" not in model.peft_config and not _has_lora(model, "other")
+
+
+def test_strict_from_pretrained_refuses_before_touching_the_base(checkpoints, adapter, monkeypatch):
+    """PeftModel.from_pretrained injects the adapter's layers into the base in place: refused first."""
+    from peft import PeftModel
+
+    base = _base(checkpoints[1])
+    monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
+    with pytest.raises(ValueError, match = "other frozen lookup tables"):
+        PeftModel.from_pretrained(base, adapter)
+    assert not _has_lora(base)
+
+
+def test_named_adapters_carry_their_own_record(checkpoints, tmp_path):
+    """PEFT saves "default" at the directory and every other adapter in <directory>/<name>: each gets the record,
+    also when the adapters to save are passed positionally."""
+    from peft import LoraConfig, get_peft_model
+
+    provenance = ftp.load_module("frozen_table_provenance")
+    assert provenance.install()
+    model = get_peft_model(_base(checkpoints[0]), LoraConfig(r = 2, target_modules = ["o_proj"]))
+    model.add_adapter("second", LoraConfig(r = 2, target_modules = ["o_proj"]))
+    out = tmp_path / "both"
+    model.save_pretrained(str(out))
+    assert (out / "frozen_tables.json").is_file() and (
+        out / "second" / "frozen_tables.json"
+    ).is_file()
+    only = tmp_path / "only"
+    model.save_pretrained(str(only), True, ["second"])
+    assert (only / "second" / "frozen_tables.json").is_file()
+    assert not (only / "frozen_tables.json").exists()
+
+
+def test_hub_adapter_is_checked_before_loading(checkpoints, adapter, monkeypatch):
+    """A Hub adapter id: frozen_tables.json comes through the Hub cache (with the load's revision / subfolder /
+    token options), and strict mode refuses a mismatch before PEFT fetches or installs anything."""
+    import huggingface_hub
+    from peft import PeftModel
+
+    provenance = ftp.load_module("frozen_table_provenance")
+    calls = []
+
+    def download(repo_id, filename, **options):
+        calls.append((repo_id, filename, options))
+        assert filename == provenance.FILE_NAME
+        return os.path.join(adapter, filename)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    base = _base(checkpoints[1])
+    with pytest.raises(ValueError, match = "other frozen lookup tables"):
+        PeftModel.from_pretrained(base, "some-org/some-adapter", revision = "abc123")
+    assert calls == [("some-org/some-adapter", provenance.FILE_NAME, {"revision": "abc123"})]
+    assert not _has_lora(base)
+
+
+def test_hub_sidecar_absent_or_unreachable(monkeypatch):
+    """No record on the Hub: nothing to check. Not answerable (offline, not cached): strict refuses, warn goes
+    on. A model without frozen tables never asks the Hub."""
+    import huggingface_hub
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+    provenance = ftp.load_module("frozen_table_provenance")
+    monkeypatch.setattr(provenance, "table_provenance", lambda model: {"tables": {}})
+    raised = []
+
+    def download(repo_id, filename, **options):
+        raise raised[-1]
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    raised.append(EntryNotFoundError("no such file"))
+    assert provenance._adapter_dir(None, "org/adapter", {}) is None
+    raised.append(LocalEntryNotFoundError("offline"))
+    assert provenance._adapter_dir(None, "org/adapter", {}) is None
+    monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
+    with pytest.raises(ValueError, match = "cannot read frozen_tables.json"):
+        provenance._adapter_dir(None, "org/adapter", {})
+    monkeypatch.setattr(provenance, "table_provenance", lambda model: None)
+    raised.append(AssertionError("asked the Hub"))
+    assert provenance._adapter_dir(None, "org/adapter", {}) is None
