@@ -396,6 +396,54 @@ def test_a_target_that_moved_since_the_screenshot_is_not_clicked(desktop):
     assert [event for event in desktop.events if event[0] == "click"]
 
 
+def test_a_later_target_in_a_chain_is_checked_after_the_actions_before_it(desktop):
+    look()
+    original = desktop.capture
+
+    def dialog_after_first_click(display):
+        from PIL import ImageDraw
+
+        image = original(display)
+        if any(event[0] == "click" for event in desktop.events):
+            ImageDraw.Draw(image).rectangle([900, 700, 1700, 1100], fill = (200, 30, 30))
+        return image
+
+    desktop.capture = dialog_after_first_click
+    text, images = split_images(
+        run({"action": "click", **at(*FIELD), "then": [{"action": "click", **at(*BUTTON)}]})
+    )
+    assert text.startswith("Error: Click at") and "changed after the screenshot" in text
+    assert "Done before it: Click at" in text
+    assert len([event for event in desktop.events if event[0] == "click"]) == 1
+    assert len(images) == 1
+
+
+def test_a_stop_is_not_forgotten_when_many_chats_come_after_it(desktop):
+    stopped = state.session_key("stopped-chat")
+    state.grant(stopped)
+    state.stop(stopped)
+    for n in range(state._MAX_SESSIONS * 2):
+        state.session(state.session_key(f"chat-{n}"))
+    assert state.is_stopped(stopped)
+    assert len(state._sessions) <= state._MAX_SESSIONS + 1
+    result = run({"action": "screenshot"}, session_id = "stopped-chat", full_access = True)
+    assert result.startswith("Error: the user stopped computer use")
+
+
+def test_a_macos_security_prompt_floating_over_an_app_is_found_under_a_click():
+    from core.inference.computer_use.backends.macos import MacBackend
+
+    mac = object.__new__(MacBackend)
+    prompt = FrontWindow(app = "SecurityAgent", pid = 9, bounds = (100, 100, 300, 200))
+    menubar = FrontWindow(app = "Window Server", pid = 1, bounds = (0, 0, 800, 25))
+    notes = FrontWindow(app = "Notes", pid = 5, bounds = (0, 0, 800, 600))
+    mac._windows = lambda: [(25, menubar), (2001, prompt), (0, notes)]
+    mac._front_app = lambda: ("Notes", "com.apple.Notes", 5)
+    assert mac.window_at(150, 150).app == "SecurityAgent"
+    assert mac.window_at(10, 10).app == "Notes"
+    assert mac.window_at(500, 500).app_id == "com.apple.Notes"
+
+
 def test_grid_coordinates_span_the_picture(desktop):
     desktop.chosen["coordinates"] = "grid"
     key = state.session_key(SESSION)

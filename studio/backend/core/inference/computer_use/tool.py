@@ -189,7 +189,9 @@ class _Run:
         self.cancel_event = cancel_event
         self.allowed = allowed
         self.displays = backend.displays()
-        self.checked_target = False
+        # Actions done so far, and how many were done when the screen was last compared.
+        self.done = 0
+        self.checked_at: Optional[int] = None
         self.zoomed: Any = None
         self.wants_shot = False
         self.shown: Any = None
@@ -320,8 +322,8 @@ class _Run:
     ) -> tuple[float, float]:
         frame = self._frame()
         ix, iy = self._image_point(frame, x, y)
-        if not self.checked_target:
-            self.checked_target = True
+        if self.checked_at != self.done:
+            self.checked_at = self.done
             if not frame.lenient:
                 now = self._shoot()
                 if screen.target_moved(frame, now.frame, ix, iy):
@@ -332,7 +334,8 @@ class _Run:
                         now,
                     )
                 self._adopt(now)
-                self.before = now.frame
+                if not self.done:
+                    self.before = now.frame
         if self._stopped():
             # The look above can take a while, and control may have been taken back meanwhile.
             raise _Halt("it was stopped.")
@@ -472,6 +475,7 @@ class _Run:
                 failed, failed_at = str(exc), index
                 break
             done.append(describe(action))
+            self.done += 1
             if action["op"] in INPUT_OPS or action["op"] in ("open_app", "wait"):
                 acted = True
             if action["op"] in INPUT_OPS or action["op"] in ("open_app", "wait", "screenshot"):
