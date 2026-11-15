@@ -21,7 +21,12 @@ export async function voiceServing(id: string): Promise<boolean> {
   if (isChatModelVoice(id)) {
     // The model that answers, which may sit in a kept slot rather than the primary.
     const checkpoint = useChatRuntimeStore.getState().params.checkpoint || undefined;
-    return Boolean((await getInferenceStatus(undefined, checkpoint)).speaks);
+    if (!checkpoint) return false;
+    const status = await getInferenceStatus(undefined, checkpoint);
+    // An unserved model (a hosted one) gets the primary slot's status back: its speaks is not this model's.
+    const want = checkpoint.toLowerCase();
+    const routed = [status.model_identifier, status.active_model].some((id) => id?.toLowerCase() === want);
+    return routed && Boolean(status.speaks);
   }
   const status = await getInferenceStatus();
   return (status.serving ?? status.loaded ?? []).some((s) => voiceIdServes(s, id));
