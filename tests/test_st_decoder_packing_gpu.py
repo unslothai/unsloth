@@ -33,6 +33,11 @@ def test_qwen3_embedder_packs_like_padded(monkeypatch, side):
     )
     transformer = model[0]
     assert transformer._unsloth_packing_installed
+    torch.manual_seed(0)
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "lora_B" in name:
+                param.normal_(0, 0.02)
     transformer.tokenizer.padding_side = side
     texts = [
         "hi",
