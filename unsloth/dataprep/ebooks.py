@@ -72,7 +72,7 @@ _VOID = {
     "track",
     "wbr",
 }
-# <rt> is a ruby reading drawn above its base text and <rp> its no-ruby fallback; neither is prose.
+# Ruby readings (<rt>) and their fallback parentheses (<rp>) are not prose.
 _IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp"}
 
 
@@ -89,8 +89,7 @@ class _BookTextParser(HTMLParser):
         if tag == "body":
             self.handle_endtag("head")
         elif tag in {"rb", "rp", "rt", "rtc"} and any(t == "ruby" for t, _ in self.stack):
-            # HTML lets </rb>, </rp>, </rt> (and </rtc> before rb/rtc) be omitted; close them like
-            # the spec's tree builder, else base text after an unclosed <rt> would stay hidden.
+            # Implied ruby end tags (HTML tree builder), else base text after an unclosed <rt> is lost.
             closes = {"rb", "rp", "rt", "rtc"} if tag in {"rb", "rtc"} else {"rb", "rp", "rt"}
             while self.stack and self.stack[-1][0] in closes:
                 self.stack.pop()
