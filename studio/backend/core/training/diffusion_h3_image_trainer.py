@@ -1,0 +1,788 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""LoRA training for MiniMax-H3-Image (33B DiT, Qwen3-VL-32B conditioner).
+
+Its own loop, like the MiniMax-H3 video trainer, sharing ``diffusion_train_common`` (config, events, stop, trust gate,
+publishing, EMA, the 8-bit optimizer), because the model fits none of ``diffusion_dit_trainer``'s ``_FamilySpec``
+seams:
+1. **Native layout, modular-only.** The release ships MiniMax's own key layout and no diffusers pipeline, so the DiT,
+   VAE and conditioner come from Studio's inference loaders (``diffusion_minimax_h3_image``), which convert the shards
+   while streaming them. Training and inference therefore run the same converted module.
+2. **Distilled per-step heads.** The checkpoint is distilled to 6 sampler steps with one output head per step
+   (``pdd_proj_out.{0..5}``), and every AdaLN projection is collapsed at load into a lookup table over the timesteps
+   the sampler visits. The objective draws one of the 6 sampler sigmas per step and runs that step's own frozen head:
+   the AdaLN table stays exact (its rows ARE those timesteps), and the adapter is never asked to fit timesteps a
+   distilled model never runs.
+3. **Velocity form.** The head predicts a DATA-ward velocity (``x0 = x_t + sigma * v``), so the target is
+   ``latents - noise`` on ``x_t = (1 - sigma) * latents + sigma * noise``, the reference's rectified flow.
+
+The adapter covers the trunk's attention and MLP Linears only (``transformer_blocks.N.attn.to_{q,k,v,out.0}``,
+``ff.net.{0.proj,2}``): the AdaLN tables, the text refiner and the per-step heads stay frozen.
+
+Memory: the Qwen3-VL-32B conditioner (Studio's hosted int8 copy, 27 GB) encodes every caption once and is freed
+before the VAE caches the latents and long before the DiT loads. The DiT trains in bf16 (40 GB with the AdaLN
+table) on a card with room for it, else as a torchao int8 weight-only base (about 21 GB).
+"""
+
+from __future__ import annotations
+
+import gc
+import math
+import os
+import random
+import time
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, Optional
+
+from core.training.diffusion_train_common import (
+    DEFAULT_LORA_FILENAME,
+    DEFAULT_LORA_TARGETS,
+    DiffusionLoraConfig,
+    EventCb,
+    PermutationBatchSampler,
+    StopCb,
+    _apply_perf_flags,
+    _assert_trusted_base_model,
+    _emit,
+    _restore_perf_flags,
+    discover_image_caption_pairs,
+    enable_diffusion_gradient_checkpointing,
+    flow_bf16_trainable,
+    h3_train_unsupported_reason,
+    native_bf16_supported_xpu,
+    reset_training_peak_memory,
+    resolve_train_device,
+    resolve_train_steps,
+    train_recipe_overrides,
+    training_fetch_repo,
+    training_peak_memory_gb,
+)
+from core.training.diffusion_train_extras import (
+    LoRAEMA,
+    accumulate_loss,
+    loss_value,
+    save_ema_adapter,
+)
+
+H3_IMAGE_TRAIN_FAMILY = "minimax-h3-image"
+
+# The trunk only: the AdaLN tables carry no input rows to adapt, the per-step heads are the distillation, and the
+# text refiner runs once per caption. A REGEX: PEFT suffix-matches a list and would also adapt the token refiner.
+H3_IMAGE_TARGET_LEAVES = (
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "ff.net.0.proj",
+    "ff.net.2",
+)
+H3_IMAGE_TARGETS = (
+    r"transformer_blocks\.\d+\.(?:"
+    + "|".join(leaf.replace(".", r"\.") for leaf in H3_IMAGE_TARGET_LEAVES)
+    + ")"
+)
+
+# Free device memory (GB) above which ``auto`` trains on the bf16 base: 40.3 GB of table-form DiT, the adapter and
+# its optimizer state, and the activations of a 2048 x 2048 step under gradient checkpointing.
+H3_IMAGE_BF16_MIN_FREE_GB = 56.0
+
+# "grid" (default): one of the 6 distilled sampler sigmas per step, each with its own head. "continuous": sigma
+# uniform in (0, 1], read through the dt-weighted head bank; needs the dense AdaLN projections (UNSLOTH_H3_IMAGE_
+# ADALN_TABLE is ignored), so it costs the 13B AdaLN parameters on top. Diagnostic, not a UI option.
+SIGMA_MODE_ENV = "UNSLOTH_H3_IMAGE_TRAIN_SIGMAS"
+
+# The conditioner the run encodes with: "int8" (Studio's hosted ConvRot copy, default) or "bf16" (66.7 GB).
+TEXT_ENCODER_ENV = "UNSLOTH_H3_IMAGE_TRAIN_TEXT_ENCODER"
+
+
+def sigma_mode() -> str:
+    value = (os.environ.get(SIGMA_MODE_ENV) or "grid").strip().lower()
+    return "continuous" if value == "continuous" else "grid"
+
+
+def resolve_h3_image_base_precision(requested: str, free_gb: Optional[float]) -> str:
+    """bf16 or int8. ``auto`` (and the config default nf4, which this family normalises to auto) takes bf16 when the
+    card has room for it, else int8."""
+    mode = (requested or "auto").strip().lower()
+    if mode in ("bf16", "int8"):
+        return mode
+    if mode in ("fp8", "mxfp8"):
+        raise ValueError(
+            f"base_precision={mode!r} is not supported for MiniMax-H3-Image training: use 'bf16', 'int8' or 'auto'."
+        )
+    if free_gb is not None and free_gb >= H3_IMAGE_BF16_MIN_FREE_GB:
+        return "bf16"
+    return "int8"
+
+
+def training_sigmas():
+    """``[(sampler sigma, model timestep, head index)]`` for the 6 distilled steps, exactly as the sampler runs them."""
+    from core.inference.diffusion_minimax_h3_image import (
+        H3_IMAGE_SIGMAS,
+        H3_IMAGE_STEPS,
+        MiniMaxH3ImageScheduler,
+        pdd_head_span,
+    )
+
+    sched = MiniMaxH3ImageScheduler(sample_sigmas = list(H3_IMAGE_SIGMAS))
+    sched.set_timesteps(H3_IMAGE_STEPS, device = "cpu")
+    sample_sigmas = sched.sigmas.cpu()
+    out = []
+    for k in range(H3_IMAGE_STEPS):
+        start, stop = pdd_head_span(sched.model_sigmas[k], sample_sigmas, sched.head_grid)
+        if (start, stop) != (k, k + 1):
+            raise ValueError(
+                f"step {k} of the 6-step schedule spans heads {start}..{stop - 1}, not one head"
+            )
+        out.append((float(sample_sigmas[k]), float(sched.timesteps[k]), k))
+    return out
+
+
+def canvas_for(width: int, height: int, resolution: int) -> tuple[int, int]:
+    """The training canvas of one picture: ``resolution ** 2`` pixels at its aspect, sides multiples of 32."""
+    from core.inference.diffusion_minimax_h3_image import H3_IMAGE_CANVAS_MULTIPLE as m
+
+    scale = math.sqrt(float(resolution) * float(resolution) / float(width * height))
+    w = max(m, int(round(width * scale / m)) * m)
+    h = max(m, int(round(height * scale / m)) * m)
+    return w, h
+
+
+def load_picture(path: str, resolution: int):
+    """Upright RGB, cover-resized (LANCZOS) and centre-cropped onto its canvas; float ``[1, H, W, 3]`` in [0, 1]."""
+    import numpy as np
+    import torch
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as im:
+        image = ImageOps.exif_transpose(im).convert("RGB")
+    w, h = canvas_for(image.width, image.height, resolution)
+    scale = max(w / image.width, h / image.height)
+    sw, sh = max(w, math.ceil(image.width * scale)), max(h, math.ceil(image.height * scale))
+    image = image.resize((sw, sh), resample = Image.LANCZOS)
+    left, top = (sw - w) // 2, (sh - h) // 2
+    image = image.crop((left, top, left + w, top + h))
+    array = np.asarray(image, dtype = np.float32) / 255.0
+    return torch.from_numpy(array).unsqueeze(0)
+
+
+def _hub_root(cfg, patterns) -> Path:
+    from core.inference.diffusion import hub_cache_dir
+    from core.inference.diffusion_minimax_h3_image import _hub_files
+
+    repo = getattr(cfg, "fetch_base_model", None) or cfg.base_model
+    return _hub_files(
+        repo, patterns, hf_token = cfg.hf_token, cache_dir = hub_cache_dir(), local_files_only = False
+    )
+
+
+def load_text_encoder(cfg, root: Path):
+    """(encoder on the host, tokenizer, processor). Module-level so tests hand in a tiny conditioner."""
+    import torch
+    from transformers import AutoTokenizer
+
+    from core.inference.diffusion import hub_cache_dir
+    from core.inference.diffusion_minimax_h3_image import (
+        H3_IMAGE_TEXT_ENCODER_REPO,
+        _read_json,
+        load_h3_image_text_encoder,
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained(str(root / "tokenizer"))
+    processor = None
+    if (root / "processor").is_dir():
+        try:
+            from transformers import AutoProcessor
+            processor = AutoProcessor.from_pretrained(str(root / "processor"))
+        except Exception:  # noqa: BLE001 - text-only captions do not need it on transformers 4.x
+            processor = None
+    index = _read_json(root / "model_index.json") if (root / "model_index.json").is_file() else {}
+    entry = index.get("text_encoder")
+    te_repo = None
+    if isinstance(entry, list) and len(entry) > 2 and isinstance(entry[2], dict):
+        te_repo = entry[2].get("pretrained_model_name_or_path")
+    scheme = (os.environ.get(TEXT_ENCODER_ENV) or "int8").strip().lower()
+    encoder, _engaged = load_h3_image_text_encoder(
+        "int8" if scheme == "int8" else None,
+        dtype = torch.bfloat16,
+        text_encoder_repo = te_repo or H3_IMAGE_TEXT_ENCODER_REPO,
+        hf_token = cfg.hf_token,
+        cache_dir = hub_cache_dir(),
+        local_files_only = False,
+    )
+    return encoder, tokenizer, processor
+
+
+def release_text_encoder(encoder) -> None:
+    """Free the conditioner's storage in place (it is never needed again in this run)."""
+    from core.inference.diffusion_minimax_h3_image import free_module_storage
+    free_module_storage(encoder)
+
+
+def encode_captions(encoder, tokenizer, processor, captions, device) -> dict:
+    """caption -> ``hidden_states[50]`` ``(1, L, text_dim)`` float32 on the host, tokenized as the pipeline does."""
+    import torch
+
+    from core.inference.diffusion_minimax_h3_image import (
+        H3_IMAGE_EMPTY_TOKEN,
+        H3_IMAGE_TEXT_ENCODER_LAYER,
+        qwen3vl_hidden_state,
+    )
+
+    out = {}
+    with torch.no_grad():
+        for caption in captions:
+            ids = tokenizer(caption, add_special_tokens = False)["input_ids"] if caption else []
+            if not ids:
+                ids = [int(tokenizer.convert_tokens_to_ids(H3_IMAGE_EMPTY_TOKEN))]
+            hidden = qwen3vl_hidden_state(
+                encoder, processor, ids, {}, layer = H3_IMAGE_TEXT_ENCODER_LAYER, device = device
+            )
+            out[caption] = hidden.to("cpu", torch.float32)
+    return out
+
+
+def encode_latent_stats(vae, picture, device) -> tuple[Any, Any]:
+    """Normalised posterior (mean, std) ``(1, C, h, w)`` float32 on the host: each step draws a fresh sample."""
+    import torch
+
+    from core.inference.diffusion_minimax_h3_image import (
+        H3_IMAGE_PIXEL_MEAN,
+        H3_IMAGE_PIXEL_STD,
+        reference_vae_pixels,
+    )
+
+    mean = torch.tensor(H3_IMAGE_PIXEL_MEAN, device = device).view(1, -1, 1, 1)
+    std = torch.tensor(H3_IMAGE_PIXEL_STD, device = device).view(1, -1, 1, 1)
+    lmean = torch.tensor(vae.config.latents_mean, device = device).view(1, -1, 1, 1)
+    lstd = torch.tensor(vae.config.latents_std, device = device).view(1, -1, 1, 1)
+    with torch.no_grad():
+        posterior = vae.encode(
+            reference_vae_pixels(picture.to(device), torch.float32, mean, std), return_dict = False
+        )[0]
+        moments = posterior.parameters.float()
+        mu, logvar = moments.chunk(2, dim = 1)
+        sd = torch.exp(0.5 * logvar.clamp(-30.0, 20.0))
+    return ((mu - lmean) / lstd).cpu(), (sd / lstd).cpu()
+
+
+def load_transformer(root: Path, device, base_precision: str, table: bool):
+    """The converted DiT with the AdaLN table; bf16 straight onto the card, int8 parked on the host (quantized onto
+    the card after the adapter attaches)."""
+    import torch
+
+    from core.inference.diffusion_minimax_h3_image import (
+        install_h3_image_forward,
+        install_pdd_head_bank,
+        load_h3_image_transformer,
+    )
+
+    keep = base_precision == "bf16" and device != "cpu"
+    transformer, _stats = load_h3_image_transformer(
+        root,
+        dtype = torch.bfloat16 if device != "cpu" else torch.float32,
+        scheme = None,
+        device = device,
+        keep_on_device = keep,
+        table = table,
+    )
+    install_h3_image_forward(transformer)
+    install_pdd_head_bank(transformer)
+    if device == "cpu":
+        transformer.to("cpu")
+    return transformer
+
+
+def _save_lora(
+    out_dir: str,
+    layers: dict,
+    adapter_config: Optional[dict] = None,
+) -> None:
+    """diffusers' single-file layout (``transformer.`` keys, adapter config in the metadata so alpha survives)."""
+    import json
+
+    from safetensors.torch import save_file
+
+    Path(out_dir).mkdir(parents = True, exist_ok = True)
+    state = {f"transformer.{k}": v.to("cpu").contiguous() for k, v in layers.items()}
+    metadata = {"format": "pt", "unsloth_family": H3_IMAGE_TRAIN_FAMILY}
+    if adapter_config:
+        packed = {
+            f"transformer.{key}": list(value) if isinstance(value, set) else value
+            for key, value in adapter_config.items()
+        }
+        metadata["lora_adapter_metadata"] = json.dumps(
+            packed, indent = 2, sort_keys = True, default = str
+        )
+    save_file(state, str(Path(out_dir) / DEFAULT_LORA_FILENAME), metadata = metadata)
+
+
+class _Layouts:
+    """Packed ``[text | image]`` layout per (text rows, latent h, latent w), host copy + device copy."""
+
+    def __init__(self, patch, device) -> None:
+        self.patch = patch
+        self.device = device
+        self._cache: dict = {}
+
+    def get(self, num_text: int, lh: int, lw: int) -> dict:
+        import torch
+
+        from core.inference.diffusion_minimax_h3_image import H3_IMAGE_TEXT_TAG, build_packed_layout
+
+        key = (num_text, lh, lw)
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        tags = torch.full((num_text,), H3_IMAGE_TEXT_TAG, dtype = torch.long)
+        pos, token_tags, image_idx, text_idx, _n_ref = build_packed_layout(
+            tags, [], lh, lw, self.patch
+        )
+        dev = torch.device(self.device)
+        pos_dtype = torch.float64 if dev.type in ("cpu", "cuda") else torch.float32
+        layout = {
+            "position_ids": pos.to(dev, pos_dtype),
+            "token_tags": token_tags.to(dev),
+            "image_indices": image_idx.to(dev),
+            "text_indices": text_idx.to(dev),
+            "seq": int(pos.shape[0]),
+        }
+        self._cache[key] = layout
+        return layout
+
+
+def denoise_velocity(
+    transformer,
+    layout,
+    rows,
+    embeds,
+    text_embeds,
+    t: float,
+    head_index: int,
+    head = None,
+):
+    """One DiT call at timestep ``t`` on the generated rows only: the velocity ``(n_rows, C * patch)``."""
+    import torch
+
+    timestep = torch.tensor([float(t)], dtype = torch.float32, device = rows.device)
+    index = torch.zeros(layout["seq"], dtype = torch.long, device = rows.device)
+    extra = {"output_indices": layout["image_indices"], "text_embeds": text_embeds}
+    if head is not None:
+        extra["head"] = head
+    out = transformer(
+        hidden_states = rows[None],
+        encoder_hidden_states = embeds,
+        timestep = timestep,
+        timestep_indices = index,
+        token_tags = layout["token_tags"],
+        position_ids = layout["position_ids"],
+        image_indices = layout["image_indices"],
+        text_indices = layout["text_indices"],
+        pdd_step_index = int(head_index),
+        return_dict = False,
+        **extra,
+    )[0]
+    return out[0]
+
+
+def run_h3_image_lora_training(
+    config: DiffusionLoraConfig,
+    *,
+    on_event: Optional[EventCb] = None,
+    should_stop: Optional[StopCb] = None,
+) -> str:
+    """Train a MiniMax-H3-Image LoRA from a captioned image folder and export it."""
+    cfg = config.normalized()
+    if cfg.resolved_family != H3_IMAGE_TRAIN_FAMILY:
+        raise ValueError(
+            f"This trainer is for {H3_IMAGE_TRAIN_FAMILY}, not {cfg.resolved_family!r}."
+        )
+    reason = h3_train_unsupported_reason(cfg)
+    if reason:
+        raise ValueError(reason)
+    cfg = replace(cfg, **train_recipe_overrides(cfg))
+
+    import torch
+
+    rng = random.Random(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    save_on_stop = True
+
+    def _check_stop() -> bool:
+        nonlocal save_on_stop
+        if should_stop is None:
+            return False
+        sig = should_stop()
+        if not sig:
+            return False
+        if isinstance(sig, dict) and sig.get("save") is False:
+            save_on_stop = False
+        return True
+
+    device = resolve_train_device()
+    if device == "cuda" and not flow_bf16_trainable():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA device does not support bf16."
+        )
+    if device == "xpu" and not native_bf16_supported_xpu():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU; this XPU device does not support bf16 natively."
+        )
+    _assert_trusted_base_model(cfg.base_model, family = H3_IMAGE_TRAIN_FAMILY)
+    pairs = discover_image_caption_pairs(
+        cfg.data_dir,
+        instance_prompt = cfg.instance_prompt,
+        caption_column = cfg.caption_column,
+        verify_images = True,
+    )
+    cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
+    _emit(
+        on_event, "model_load_started", num_images = len(pairs), fetch_repo = training_fetch_repo(cfg)
+    )
+    out_dir = Path(cfg.output_dir).expanduser()
+    if _check_stop():
+        _emit(
+            on_event, "complete", output_dir = str(out_dir), lora_path = None, stopped = True, steps_run = 0
+        )
+        return str(out_dir)
+    perf_snap = _apply_perf_flags(cfg, device)
+    try:
+        return _train(cfg, pairs, rng, device, on_event, _check_stop, lambda: save_on_stop)
+    finally:
+        _restore_perf_flags(perf_snap)
+
+
+def _empty(device) -> None:
+    import torch
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
+
+
+def _free_gb(device) -> Optional[float]:
+    import torch
+    try:
+        if device == "cuda":
+            free, _total = torch.cuda.mem_get_info()
+            return free / 1024**3
+        if device == "xpu":
+            props = torch.xpu.get_device_properties()
+            return (props.total_memory - torch.xpu.memory_reserved()) / 1024**3
+    except Exception:  # noqa: BLE001 - unknown: int8
+        return None
+    return None
+
+
+def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
+    import torch
+    import torch.nn.functional as F
+    from diffusers.optimization import get_scheduler
+    from diffusers.training_utils import cast_training_params
+    from peft import LoraConfig
+    from peft.utils import get_peft_model_state_dict
+
+    from core.inference import diffusion_minimax_h3_image as h3i
+    from core.training.diffusion_dit_trainer import _int8_quantize_base, _make_optimizer
+    from core.training.diffusion_samples import isolated_sampling, plan_samples, run_sample_round
+
+    out_dir = Path(cfg.output_dir).expanduser()
+    paths = [p for p, _ in pairs]
+    captions = [c for _, c in pairs]
+    sample_plan = plan_samples(cfg, H3_IMAGE_TRAIN_FAMILY, captions)
+    mode = sigma_mode()
+
+    def _stopped_early() -> str:
+        _emit(
+            on_event, "complete", output_dir = str(out_dir), lora_path = None, stopped = True, steps_run = 0
+        )
+        return str(out_dir)
+
+    # Phase 1: captions (and sample prompts) through the conditioner, which is then freed.
+    root = _hub_root(cfg, h3i.H3_IMAGE_BASE_PATTERNS)
+    encoder, tokenizer, processor = load_text_encoder(cfg, root)
+    encoder.to(device)
+    texts = list(dict.fromkeys(captions + list(sample_plan.prompts if sample_plan else ())))
+    embeds_by_text = encode_captions(encoder, tokenizer, processor, texts, device)
+    _emit(on_event, "preparing", stage = "encode_prompts", done = len(texts), total = len(texts))
+    release_text_encoder(encoder)
+    del encoder
+    _empty(device)
+    if _check_stop():
+        return _stopped_early()
+
+    # Phase 2: VAE posterior stats per picture (the VAE stays on the host afterwards for the preview decode).
+    vae = h3i.load_h3_image_vae(root)
+    vae.to(device)
+    cache = []
+    for i, path in enumerate(paths):
+        picture = load_picture(path, cfg.resolution)
+        cache.append(encode_latent_stats(vae, picture, device))
+        _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = len(paths))
+        if _check_stop():
+            return _stopped_early()
+    vae.to("cpu")
+    if sample_plan is None:
+        del vae
+        vae = None
+    _empty(device)
+
+    # Phase 3: the DiT, frozen, with the adapter on the trunk.
+    base_precision = resolve_h3_image_base_precision(cfg.base_precision, _free_gb(device))
+    if device not in ("cuda", "xpu") and base_precision == "int8":
+        base_precision = "bf16"  # CPU (tests): torchao int8 is a CUDA path
+    dense_adaln = mode == "continuous"
+    _emit(on_event, "model_load_started", fetch_repo = training_fetch_repo(cfg))
+    dit_root = _hub_root(
+        cfg, tuple(h3i.H3_IMAGE_BASE_PATTERNS) + tuple(h3i.H3_IMAGE_DENSE_DIT_PATTERNS)
+    )
+    transformer = load_transformer(dit_root, device, base_precision, table = not dense_adaln)
+    transformer.requires_grad_(False)
+    targets: Any = (
+        H3_IMAGE_TARGETS
+        if tuple(cfg.lora_target_modules) == DEFAULT_LORA_TARGETS
+        else list(cfg.lora_target_modules)
+    )
+    lora_config = LoraConfig(
+        r = cfg.lora_rank,
+        lora_alpha = cfg.lora_alpha,
+        lora_dropout = cfg.lora_dropout,
+        init_lora_weights = "gaussian",
+        target_modules = targets,
+    )
+    if hasattr(transformer, "add_adapter"):
+        transformer.add_adapter(lora_config)
+    else:
+        # The vendored class (diffusers without MiniMax-H3-Image) carries no PeftAdapterMixin.
+        from peft import inject_adapter_in_model
+        inject_adapter_in_model(lora_config, transformer, adapter_name = "default")
+        if not isinstance(getattr(transformer, "peft_config", None), dict):
+            transformer.peft_config = {"default": lora_config}
+    if cfg.gradient_checkpointing:
+        enable_diffusion_gradient_checkpointing(transformer)
+    cast_training_params(transformer, dtype = torch.float32)
+    if base_precision == "int8":
+        _int8_quantize_base(transformer, H3_IMAGE_TRAIN_FAMILY, device = device)
+    lora_params = [p for p in transformer.parameters() if p.requires_grad]
+    if not lora_params:
+        raise ValueError(
+            f"No LoRA target matched the MiniMax-H3-Image transformer for {targets!r}."
+        )
+    # A refiner the adapter does not touch gives the same rows every step: refine each caption once.
+    refiner_adapted = any(
+        p.requires_grad
+        for n, p in transformer.named_parameters()
+        if n.startswith(("token_refiner.", "context_embedder."))
+    )
+    ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
+    optimizer = _make_optimizer(lora_params, cfg.learning_rate)
+    lr_sched = get_scheduler(
+        cfg.lr_scheduler,
+        optimizer = optimizer,
+        num_warmup_steps = cfg.lr_warmup_steps,
+        num_training_steps = cfg.train_steps,
+    )
+    compute_dtype = h3i._module_dtype(transformer, skip_fp32 = True)
+    patch = tuple(transformer.config.patch_size)
+    layouts = _Layouts(patch, device)
+    grid_steps = training_sigmas()
+    bank = getattr(transformer, h3i.PDD_BANK_ATTR, None)
+    if mode == "continuous":
+        bank = tuple(t.to(device) for t in bank)
+        sample_sigmas = torch.tensor([s for s, _t, _k in grid_steps] + [0.0])
+
+    def _embeds(text: str):
+        return embeds_by_text[text].to(device, compute_dtype)
+
+    refined: dict = {}
+
+    def _refined(text: str):
+        if refiner_adapted:
+            return h3i.refined_text(transformer, _embeds(text))
+        hit = refined.get(text)
+        if hit is None:
+            with torch.no_grad():
+                hit = h3i.refined_text(transformer, _embeds(text)).detach()
+            refined[text] = hit
+        return hit
+
+    _emit(
+        on_event,
+        "model_load_completed",
+        compiled = False,
+        base_precision = base_precision,
+        sigma_mode = mode,
+        sequence_length = max(
+            layouts.get(int(embeds_by_text[c].shape[1]), a.shape[-2], a.shape[-1])["seq"]
+            for c, (a, _b) in zip(captions, cache)
+        ),
+    )
+
+    def _render(index: int, prompt: str):
+        """One 6-step preview at the plan's canvas, decoded to [-1, 1]."""
+        from core.training.diffusion_samples import initial_noise
+
+        side = max(
+            256,
+            (int(sample_plan.resolution) // h3i.H3_IMAGE_CANVAS_MULTIPLE)
+            * h3i.H3_IMAGE_CANVAS_MULTIPLE,
+        )
+        lh = lw = side // h3i.H3_IMAGE_VAE_SCALE
+        channels = int(vae.config.latent_channels)
+        x = h3i.patchify(initial_noise(sample_plan, index, (1, channels, 1, lh, lw), device), patch)
+        layout = layouts.get(int(embeds_by_text[prompt].shape[1]), lh, lw)
+        text_embeds = _refined(prompt)
+        sched = h3i.MiniMaxH3ImageScheduler(sample_sigmas = list(h3i.H3_IMAGE_SIGMAS))
+        sched.set_timesteps(h3i.H3_IMAGE_STEPS, device = "cpu")
+        for k, t in enumerate(sched.timesteps):
+            v = denoise_velocity(
+                transformer, layout, x.to(compute_dtype), _embeds(prompt), text_embeds, float(t), k
+            )
+            x = sched.step(v.to(compute_dtype).float(), t, x)[0]
+        vae.to(device)
+        try:
+            lmean = torch.tensor(vae.config.latents_mean, device = device).view(1, -1, 1, 1)
+            lstd = torch.tensor(vae.config.latents_std, device = device).view(1, -1, 1, 1)
+            z = h3i.unpatchify(x, lh, lw, channels, patch) * lstd + lmean
+            image = vae.decode(z.to(torch.float32), return_dict = False)[0].float()
+        finally:
+            vae.to("cpu")
+        mean = torch.tensor(h3i.H3_IMAGE_PIXEL_MEAN, device = image.device).view(1, -1, 1, 1)
+        std = torch.tensor(h3i.H3_IMAGE_PIXEL_STD, device = image.device).view(1, -1, 1, 1)
+        return ((image * std + mean).clamp(0, 1) * 2.0 - 1.0).cpu()
+
+    def _sample_round(step: int) -> None:
+        if sample_plan is None:
+            return
+        try:
+            with isolated_sampling(device, False):
+                run_sample_round(
+                    sample_plan, step, _render, on_event, _emit, stop_requested = _check_stop
+                )
+        except Exception as exc:  # noqa: BLE001 - a preview never ends the run
+            _emit(on_event, "warning", message = f"Sample images skipped: {exc}")
+
+    _sample_round(0)
+    index_sampler = PermutationBatchSampler(len(paths), rng)
+    transformer.train()
+    stopped = False
+    running_loss = 0.0
+    t_start = time.time()
+    t_steady = None
+    done = 0
+    per_head: dict = {}
+    reset_training_peak_memory(device)
+    for opt_step in range(cfg.train_steps):
+        optimizer.zero_grad(set_to_none = True)
+        step_acc = None
+        for _ in range(cfg.gradient_accumulation_steps):
+            index = index_sampler.next_batch(1)[0]
+            mean, std = cache[index]
+            mean = mean.to(device, non_blocking = True)
+            std = std.to(device, non_blocking = True)
+            clean = (mean + std * torch.randn_like(mean))[:, :, None]
+            head = None
+            if mode == "grid":
+                sigma, t, head_index = grid_steps[rng.randrange(len(grid_steps))]
+            else:
+                sigma = 1.0 - rng.random() * 0.999
+                t = float(torch.tensor(1.0 - sigma, dtype = torch.float32))
+                head_index = h3i.pdd_head_span(sigma, sample_sigmas)[0]
+                head = h3i.pdd_head_weights(bank, sigma, sample_sigmas)
+            noise = torch.randn_like(clean)
+            noisy = (1.0 - sigma) * clean + sigma * noise
+            rows = h3i.patchify(noisy, patch).to(compute_dtype)
+            # DATA-ward velocity: x0 = x_t + sigma * v.
+            target = h3i.patchify(clean - noise, patch)
+            caption = captions[index]
+            layout = layouts.get(
+                int(embeds_by_text[caption].shape[1]), mean.shape[-2], mean.shape[-1]
+            )
+            pred = denoise_velocity(
+                transformer, layout, rows, _embeds(caption), _refined(caption), t, head_index, head
+            )
+            loss = F.mse_loss(pred.float(), target.float())
+            (loss / cfg.gradient_accumulation_steps).backward()
+            step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
+            stats = per_head.setdefault(head_index, [0.0, 0])
+            stats[0] += float(loss.detach())
+            stats[1] += 1
+        grad_norm = None
+        if cfg.max_grad_norm and cfg.max_grad_norm > 0:
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
+        step_loss = loss_value(step_acc)
+        optimizer.step()
+        lr_sched.step()
+        if ema is not None:
+            ema.update(transformer)
+        running_loss += step_loss
+        done = opt_step + 1
+        now = time.time()
+        if done == 1:
+            t_steady = now
+        if done % cfg.log_every == 0 or done == cfg.train_steps:
+            per_step = cfg.gradient_accumulation_steps
+            if t_steady is not None and done > 1:
+                sps = round((done - 1) * per_step / max(now - t_steady, 1e-6), 3)
+            else:
+                sps = round(done * per_step / max(now - t_start, 1e-6), 3)
+            peak_gb = training_peak_memory_gb(device)
+            _emit(
+                on_event,
+                "progress",
+                step = done,
+                total_steps = cfg.train_steps,
+                loss = round(step_loss, 5),
+                avg_loss = round(running_loss / done, 5),
+                learning_rate = lr_sched.get_last_lr()[0],
+                grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
+                samples_per_second = sps,
+                peak_memory_gb = peak_gb or None,
+                head_losses = {
+                    str(k): round(v[0] / max(1, v[1]), 5) for k, v in sorted(per_head.items())
+                },
+            )
+        if sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+            transformer.eval()
+            _sample_round(done)
+            transformer.train()
+        if _check_stop():
+            stopped = True
+            break
+
+    lora_path: Optional[str] = None
+    ema_path: Optional[str] = None
+    if not (stopped and not _save_on_stop()):
+        layers = get_peft_model_state_dict(transformer)
+        adapter_config = dict(transformer.peft_config["default"].to_dict())
+        _save_lora(str(out_dir), layers, adapter_config)
+        lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
+        if ema is not None and ema.updates > 0:
+            try:
+                ema_dir = save_ema_adapter(
+                    ema,
+                    transformer,
+                    lambda _pipe, d, l: _save_lora(d, l, adapter_config),
+                    str(out_dir),
+                )
+                ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
+            except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
+                _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")
+    _emit(
+        on_event,
+        "complete",
+        output_dir = str(out_dir),
+        lora_path = lora_path,
+        ema_path = ema_path,
+        catalog_path = None,
+        family = cfg.resolved_family,
+        base_model = cfg.base_model,
+        stopped = stopped,
+        steps_run = done if cfg.train_steps else 0,
+        wall_seconds = round(time.time() - t_start, 1),
+        base_precision = base_precision,
+    )
+    return str(out_dir)

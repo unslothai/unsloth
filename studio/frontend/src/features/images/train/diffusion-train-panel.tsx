@@ -446,9 +446,11 @@ export function DiffusionTrainPanel({
   // sdxl trains the U-Net with mixed_precision; every other family is a DiT using base_precision.
   const isDiT = familyName !== "sdxl";
   const isH3 = familyName === "minimax-h3";
-  const supportsCfgDropout = isDiT && !isH3;
+  // MiniMax-H3-Image trains on its 6 distilled sampler steps: no shift and no CFG dropout (guidance-distilled).
+  const isH3Image = familyName === "minimax-h3-image";
+  const supportsCfgDropout = isDiT && !isH3 && !isH3Image;
   // H3 shifts its video and audio schedules separately and applies a number to video only: no shared control.
-  const supportsFlowShift = isDiT && !isH3;
+  const supportsFlowShift = isDiT && !isH3 && !isH3Image;
   // An EMPTY precision_modes list on a DiT family means this host cannot train it at all (the reason rides in
   // vram_note); only an ABSENT field means an older backend. SDXL reports [] too but is not precision-gated,
   // hence the isDiT scope.
@@ -1716,7 +1718,7 @@ export function DiffusionTrainPanel({
             </Select>
           </div>
         )}
-        {!isH3 && (
+        {!isH3 && !isH3Image && (
           <div className={fieldClass}>
             <FieldLabel hint="Mirrors images left-right at random for extra variety. Leave off for text, logos or subjects with one-sided features (a side parting, a scar); try on for styles and symmetric subjects.">
               Random flip

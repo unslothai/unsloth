@@ -16,7 +16,16 @@ from typing import Any, Callable, Optional
 
 # Video families are left out: a preview there is a clip with audio, not a cheap still.
 SAMPLE_FAMILIES: frozenset[str] = frozenset(
-    {"sdxl", "z-image", "flux.1", "flux.2-klein", "flux.2-dev", "qwen-image", "krea-2"}
+    {
+        "sdxl",
+        "z-image",
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "qwen-image",
+        "krea-2",
+        "minimax-h3-image",
+    }
 )
 MAX_SAMPLE_PROMPTS = 4
 MAX_SAMPLE_PROMPT_CHARS = 1000
@@ -87,6 +96,9 @@ def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
         return SampleSettings(20, 0.0)
     if family == "qwen-image":
         return SampleSettings(20, 4.0, mode)
+    if family == "minimax-h3-image":
+        # Distilled to 6 steps with one head each, guidance-distilled (no CFG); the trainer runs its own sampler.
+        return SampleSettings(6, 0.0)
     if family == "krea-2":
         if "turbo" in name:
             return SampleSettings(8, 0.0, mode, mu = 1.15)
