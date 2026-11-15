@@ -1216,6 +1216,24 @@ def test_qwen3_5_gdn_block_has_no_break():
             )
 
 
+def test_gdn_op_name_pins_its_fake_meta():
+    """Inductor's on-disk caches key on the graph, which names the op but not its fake meta: a changed fake under
+    the same name replays the old output shapes (A with the q / k heads), so every grouped value head layer was
+    demoted to the stock forward wherever an older Unsloth had compiled it. One op name, one fake meta."""
+    M = _load("_gdn_op")
+    if M._gdn_chunk is None:
+        pytest.skip("torch without torch.library.custom_op")
+    q = torch.empty(2, 64, 4, 32, device = "meta", dtype = torch.bfloat16)
+    v = torch.empty(2, 64, 16, 32, device = "meta", dtype = torch.bfloat16)
+    g = torch.empty(2, 64, 16, device = "meta")
+    A = [tuple(shape) for shape, _ in M._chunk_meta(q, q, v, g)][-1]
+    published = {
+        "unsloth::qwen3_5_gdn_chunk": (2, 64, 4, 64),
+        "unsloth::qwen3_5_gdn_chunk_v2": (2, 64, 16, 64),
+    }
+    assert published[M._gdn_chunk._qualname] == A, (M._gdn_chunk._qualname, A)
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need a GPU")
 @pytest.mark.parametrize("qk_heads", [4, 2], ids = ["equal_heads", "grouped_value_heads"])
 def test_opaque_fla_op_matches_fla_function(qk_heads):
@@ -1249,7 +1267,7 @@ def test_gdn_adapter_routes_only_the_self_checked_call(monkeypatch):
     monkeypatch.setattr(
         torch.ops,
         "unsloth",
-        types.SimpleNamespace(qwen3_5_gdn_chunk = lambda *a: seen.append("op") or ("out",)),
+        types.SimpleNamespace(qwen3_5_gdn_chunk_v2 = lambda *a: seen.append("op") or ("out",)),
         raising = False,
     )
     adapter = M._gdn_chunk_adapter(lambda *a, **kw: seen.append("fla") or ("fla", None))
@@ -1283,7 +1301,7 @@ def test_gdn_adapter_routes_packed_batches_once_self_checked(monkeypatch):
         return ("out",)
 
     monkeypatch.setattr(
-        torch.ops, "unsloth", types.SimpleNamespace(qwen3_5_gdn_chunk = op), raising = False
+        torch.ops, "unsloth", types.SimpleNamespace(qwen3_5_gdn_chunk_v2 = op), raising = False
     )
     adapter = M._gdn_chunk_adapter(lambda *a, **kw: seen.append(("fla", None)) or ("fla", None))
     stock = dict(use_qk_l2norm_in_kernel = True, initial_state = None, output_final_state = False)
@@ -1321,7 +1339,7 @@ def test_gdn_adapter_ignores_kwargs_the_hub_wrapper_drops(monkeypatch):
     monkeypatch.setattr(
         torch.ops,
         "unsloth",
-        types.SimpleNamespace(qwen3_5_gdn_chunk = lambda *a: seen.append("op") or ("out",)),
+        types.SimpleNamespace(qwen3_5_gdn_chunk_v2 = lambda *a: seen.append("op") or ("out",)),
         raising = False,
     )
     fla = lambda *a, **kw: seen.append("fla") or ("fla", None)
