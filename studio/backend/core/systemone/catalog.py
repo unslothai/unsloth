@@ -626,7 +626,7 @@ FOLDER_PREFIX = "decision-folder:"
 
 
 def _folder_checkpoint(folder: Path) -> Checkpoint | None:
-    from utils.models.model_config import clef_folder_kind
+    from utils.models.model_config import clef_folder_kind, is_d1_folder
 
     from .laya_runtime import is_cached
 
@@ -646,6 +646,7 @@ def _folder_checkpoint(folder: Path) -> Checkpoint | None:
         f"{family} in a custom model folder.",
         layout = layout,
         label = folder.name,
+        backend = "mlx" if layout == "clef" and is_d1_folder(folder) else "pytorch",
     )
     return checkpoint if is_cached(checkpoint) else None
 
