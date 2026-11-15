@@ -260,3 +260,211 @@ def test_windows_open_app_takes_names_not_paths(windows):
     for name in ("C:\\Windows\\notepad.exe", "..\\x", "-n", "a|b"):
         with pytest.raises(BackendError, match = "name"):
             windows.open_app(name)
+
+
+_TK_APP = r"""
+import sys, tkinter as tk
+out, ready = sys.argv[1], sys.argv[2]
+root = tk.Tk()
+root.title("cu-e2e")
+root.geometry("640x420+120+120")
+root.attributes("-topmost", True)
+root.configure(bg = "#202020")
+field = tk.Entry(root, bg = "#ff00ff", fg = "#000000", font = ("Courier", 24), relief = "flat")
+field.place(x = 40, y = 40, width = 560, height = 120)
+def press(_event = None):
+    open(out, "w", encoding = "utf-8").write(field.get())
+    button.configure(bg = "#0000ff")
+button = tk.Label(root, bg = "#00c800", text = "")
+button.place(x = 40, y = 240, width = 560, height = 140)
+button.bind("<Button-1>", press)
+def shown():
+    root.lift()
+    root.focus_force()
+    open(ready, "w").write("1")
+root.after(800, shown)
+root.mainloop()
+"""
+
+
+@pytest.fixture
+def real_desktop(request):
+    if sys.platform.startswith("linux"):
+        request.getfixturevalue("xvfb")
+    elif not (LIVE or os.environ.get("CI")):
+        pytest.skip("drives the real pointer: set UNSLOTH_COMPUTER_USE_LIVE=1")
+    pytest.importorskip("tkinter", reason = "needs Tk to draw the target window")
+    from core.inference.computer_use import backends
+
+    backends.reset_backend()
+    backend = backends.get_backend()
+    reason = backend.unavailable_reason()
+    if sys.platform == "darwin" and reason:
+        pytest.skip(f"this runner holds no macOS grants: {reason}")
+    assert reason is None, reason
+    yield backend
+    backends.reset_backend()
+
+
+def _latest_picture(messages):
+    import base64
+    import io
+    import json
+    import re
+
+    from PIL import Image
+
+    found = re.findall(r"data:image/(?:png|jpeg);base64,([A-Za-z0-9+/=]+)", json.dumps(messages))
+    assert found, "the model never got a screenshot back"
+    return Image.open(io.BytesIO(base64.b64decode(found[-1]))).convert("RGB")
+
+
+def _centre(
+    picture,
+    colour,
+    tolerance = 70,
+):
+    import numpy as np
+
+    pixels = np.asarray(picture).astype(int)
+    near = (np.abs(pixels - np.array(colour)).sum(axis = 2)) < tolerance
+    ys, xs = np.nonzero(near)
+    assert len(xs) > 500, f"{colour} is not on the screenshot the model got"
+    return int(np.median(xs)), int(np.median(ys))
+
+
+def test_a_scripted_model_types_into_a_real_window(real_desktop, tmp_path, monkeypatch):
+    """A fake model sees the real screen through the tool loop, clicks and types into a Tk window."""
+    import asyncio
+    import json
+    import threading
+    import time
+
+    from core.inference import studio_tool_loop as loop_mod
+    from core.inference.computer_use import computer_tool, policy, screen
+    from core.inference.studio_tool_loop import (
+        ToolLoopPolicy,
+        ToolLoopRun,
+        stream_with_studio_tools,
+    )
+    from state import computer_use as state
+    from utils import host_policy
+
+    state.reset()
+    host_policy._reset_loopback_default_state()
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    chosen = {"enabled": True, "coordinates": "pixels", "allowed_apps": [], "blocked_apps": []}
+    monkeypatch.setattr(policy, "settings", lambda: dict(chosen))
+    asked: list = []
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: {"slot": True})
+    monkeypatch.setattr(
+        loop_mod,
+        "wait_tool_decision",
+        lambda slot, approval, cancel_event = None: asked.append(approval) or "allow",
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+
+    out, ready = tmp_path / "typed.txt", tmp_path / "ready"
+    app = subprocess.Popen([sys.executable, "-c", _TK_APP, str(out), str(ready)])
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            assert app.poll() is None and time.monotonic() < deadline, "the Tk window never showed"
+            time.sleep(0.1)
+        time.sleep(0.5)
+
+        typed = "hello computer"
+
+        def turn(messages):
+            calls = sum(1 for m in messages if m.get("role") == "tool")
+            if calls == 0:
+                return {"action": "screenshot", "why": "look"}
+            if calls == 1:
+                picture = _latest_picture(messages)
+                fx, fy = _centre(picture, (255, 0, 255))
+                bx, by = _centre(picture, (0, 200, 0))
+                return {
+                    "action": "click", "x": fx, "y": fy,
+                    "then": [{"action": "type", "text": typed}, {"action": "click", "x": bx, "y": by}],
+                }  # fmt: skip
+            return None
+
+        class Model:
+            heals_text_tool_calls = False
+            sanitizes_provider_frames = False
+
+            def __init__(self):
+                self.seen = []
+
+            def stream(self, *, messages, tools, tool_choice, cancel_event):
+                self.seen.append([dict(m) for m in messages])
+                call = turn(messages)
+                if call is None:
+                    delta, finish = {"content": "done"}, "stop"
+                else:
+                    delta = {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": f"c{len(self.seen)}",
+                                "function": {"name": "computer", "arguments": json.dumps(call)},
+                            }
+                        ]
+                    }
+                    finish = "tool_calls"
+
+                async def lines():
+                    for payload in (
+                        {"choices": [{"index": 0, "delta": delta}]},
+                        {"choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
+                    ):
+                        yield "data: " + json.dumps(payload)
+                    yield "data: [DONE]"
+
+                return lines()
+
+        model = Model()
+
+        async def drive():
+            events = []
+            async for line in stream_with_studio_tools(
+                model,
+                run = ToolLoopRun(
+                    messages = [{"role": "user", "content": "type into the pink field"}],
+                    session_id = "e2e",
+                    thread_id = "e2e",
+                    supports_vision = True,
+                ),
+                policy = ToolLoopPolicy(
+                    tools = [computer_tool("pixels", real_desktop)],
+                    max_calls = 10,
+                    timeout = 120,
+                    permission_mode = "ask",
+                    confirm_calls = True,
+                    bypass_permissions = False,
+                    rag_scope = None,
+                ),
+                cancel_event = threading.Event(),
+            ):
+                events.append(line)
+            return events
+
+        monkeypatch.setattr(screen, "_SETTLE_FIRST_S", 0.3)
+        lines = asyncio.run(asyncio.wait_for(drive(), timeout = 180))
+        results = [
+            json.loads(line[6:])
+            for line in lines
+            if line.startswith("data: {") and '"tool_end"' in line
+        ]
+        texts = [result.get("result", "") for result in results]
+        assert len(results) == 2 and not any(t.startswith("Error") for t in texts), texts
+        assert len(asked) == 2, "each call in ask mode waits for Allow"
+        assert out.read_text(encoding = "utf-8") == typed, texts
+        assert _centre(
+            _latest_picture(model.seen[-1]), (0, 0, 255)
+        ), "the last screenshot shows the press"
+    finally:
+        app.terminate()
+        app.wait(timeout = 10)
+        state.reset()
+        host_policy._reset_loopback_default_state()
