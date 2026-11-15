@@ -184,3 +184,17 @@ test("the barge-in bar applies only while the reply is audible, not while it is 
   assert.match(engine, /registerVoicePlayback\(\s*\(\) => isPlayingRef\.current \|\| performance\.now\(\) - playedAtRef\.current < PLAYBACK_TAIL_MS,\s*\)/);
   assert.match(engine, /if \(isPlayingRef\.current && !isPlaying\) playedAtRef\.current = performance\.now\(\);/);
 });
+
+test("speech already underway when the reply starts playing keeps recording as a barge-in", () => {
+  const frame = loop.slice(loop.indexOf("processor.onaudioprocess = (event) => {"));
+  const latch = frame.indexOf("if (heardSpeech && !bargedIn && isVoicePlaybackActive()) {\n            bargedIn = true;\n            requestVoiceBargeIn();");
+  assert.ok(latch > 0 && latch < frame.indexOf("if (!bargedIn && (isVoicePlaybackActive() || bargeConfirming)) {"));
+});
+
+test("a message sent from the composer drops a voice fragment still waiting for its continuation", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const submit = thread.slice(thread.indexOf("const handleSubmit = useCallback("));
+  assert.ok(submit.indexOf("noteTypedSend();") > 0 && submit.indexOf("noteTypedSend();") < submit.indexOf("isRewindCommand(composerText)"));
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /registerVoiceTypedSend\(\(\) => \{\s*if \(voiceModeRef\.current === "active"\) clearHeldTurn\(\);\s*\}\);/);
+});

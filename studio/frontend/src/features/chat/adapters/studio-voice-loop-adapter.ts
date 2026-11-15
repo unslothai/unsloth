@@ -480,6 +480,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const now = performance.now();
 
           const frameMs = (input.length / sampleRate) * 1000;
+          // Speech already underway when the reply starts playing barges in: never cut down to the louder bar.
+          if (heardSpeech && !bargedIn && isVoicePlaybackActive()) {
+            bargedIn = true;
+            requestVoiceBargeIn();
+          }
           // A probe still pending keeps collecting here, so its frames stay ahead of the ones after them.
           if (!bargedIn && (isVoicePlaybackActive() || bargeConfirming)) {
             preroll.push(new Float32Array(input));

@@ -121,6 +121,16 @@ export function requestVoiceResume(): void {
   voiceResume?.();
 }
 
+let voiceTypedSend: (() => void) | null = null;
+export function registerVoiceTypedSend(fn: (() => void) | null): void {
+  voiceTypedSend = fn;
+}
+
+// A message sent from the composer supersedes a voice fragment still waiting for its continuation.
+export function noteTypedSend(): void {
+  voiceTypedSend?.();
+}
+
 export function registerVoiceBargeIn(fn: (() => void) | null): void {
   voiceBargeIn = fn;
 }
