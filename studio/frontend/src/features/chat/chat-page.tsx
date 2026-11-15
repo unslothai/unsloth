@@ -3216,6 +3216,7 @@ export function ChatPage({
           loadedVoiceRef.current = null;
           const own = voiceToUnload(previous);
           if (own) await unloadVoice(own).catch(() => {});
+          if (epoch !== voiceEpochRef.current) return false;
         }
         await loadVoice(id);
         const settled = settleVoiceLoad(id, epoch, voiceEpochRef.current);
