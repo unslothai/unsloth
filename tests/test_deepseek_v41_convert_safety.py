@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
 """Safety of the offline DeepSeek-V4.1 released-checkpoint conversion cache."""
 
 import json
