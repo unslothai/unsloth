@@ -186,6 +186,7 @@ import {
 } from "@/features/chat/api/chat-adapter";
 import {
   loadVoiceMode,
+  noteTypedSend,
   requestVoiceToggle,
   requestVoiceTypedSubmit,
   useVoiceAvailable,
@@ -5794,6 +5795,7 @@ const Composer: FC<{
         aui.composer().stopDictation();
         return;
       }
+      noteTypedSend();
       // A command, not a prompt: ahead of the model and queue gates, so it works with no model loaded.
       if (!overlay && !hasAttachments && isRewindCommand(composerText)) {
         event.preventDefault();
