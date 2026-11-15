@@ -19,6 +19,22 @@ needs_native = pytest.mark.skipif(
 )
 
 
+def _cpu_backend_child_env(*paths):
+    """A child process that takes Unsloth's CPU backend whatever earlier tests left in os.environ: every variable
+    that steers the backend choice (unsloth / unsloth_zoo device_type) is dropped, then the CPU backend forced."""
+    steering = (
+        "UNSLOTH_DISABLE_CPU_FALLBACK",
+        "UNSLOTH_FORCE_GPU_PATH",
+        "UNSLOTH_ALLOW_CPU",
+        "UNSLOTH_ZOO_DISABLE_GPU_INIT",
+        "UNSLOTH_FORCE_CPU",
+    )
+    env = {k: v for k, v in os.environ.items() if k not in steering}
+    env.update(CUDA_VISIBLE_DEVICES = "", UNSLOTH_FORCE_CPU = "1")
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [*paths, env.get("PYTHONPATH")]))
+    return env
+
+
 def _tiny_config(**over):
     text = dict(
         vocab_size = 512,
@@ -818,12 +834,7 @@ def test_a_direct_native_class_load_registers_the_release_renames_itself(tmp_pat
         print("PROBE", json.dumps({{"missing": len(info["missing_keys"]), "unexpected": len(info["unexpected_keys"])}}))
         """
     )
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in ("UNSLOTH_DISABLE_CPU_FALLBACK", "UNSLOTH_FORCE_GPU_PATH", "UNSLOTH_ALLOW_CPU")
-    }
-    env.update(CUDA_VISIBLE_DEVICES = "", UNSLOTH_FORCE_CPU = "1")
+    env = _cpu_backend_child_env()
     env["PYTHONPATH"] = os.pathsep.join(sys.path)
     run = subprocess.run(
         [sys.executable, "-c", child], env = env, capture_output = True, text = True, timeout = 600
@@ -833,6 +844,28 @@ def test_a_direct_native_class_load_registers_the_release_renames_itself(tmp_pat
     import json
 
     assert json.loads(probe[0][6:]) == {"missing": 0, "unexpected": 0}
+
+
+def test_each_release_rename_applies_once_per_model_root():
+    """transformers collects conversion rules per PreTrainedModel submodule (class name, then model_type): the
+    text model nested in a causal LM must not add a second, scoped copy of every rule."""
+    from unsloth.models.deepseek_v41.modeling import has_core_model_loading
+
+    if not has_core_model_loading():
+        pytest.skip("transformers without core_model_loading")
+    from transformers.conversion_mapping import get_model_conversion_mapping
+
+    from unsloth.models import deepseek_v41 as pkg
+
+    pkg._register_conversions()
+    n_rules = len(pkg._conversion_rules())
+    model = _tiny_model()
+    text = dsv41.DeepseekV41TextForCausalLM(model.config.text_config)
+    assert len(get_model_conversion_mapping(model, add_legacy = False)) == n_rules
+    assert len(get_model_conversion_mapping(text, add_legacy = False)) == n_rules
+    assert (
+        len(get_model_conversion_mapping(model.model, add_legacy = False)) == n_rules - 1
+    )  # no head
 
 
 def test_a_config_that_does_not_fit_the_release_raises_instead_of_random_init(
@@ -908,6 +941,172 @@ def test_packed_sequences_match_each_sequence_run_alone():
     # every token but the row's last one predicts a label, so its embedding row gets a gradient
     assert torch.isfinite(out.loss)
     assert model.model.embed_tokens.weight.grad[ids[0, :-1]].abs().sum(-1).gt(0).all()
+
+
+@pytest.mark.parametrize("layout", ["packed", "left_padded"])
+def test_packed_rows_and_left_padding_stay_separated_under_torch_compile(layout):
+    """torch.compile of the whole model keeps the relayout (it runs outside the traced graph): compiled logits and
+    gradients equal eager for packed rows and left padding (the compiled path used to skip it, letting sequences
+    attend across each other)."""
+    torch._dynamo.reset()
+    model = _tiny_model().eval()
+    torch.manual_seed(3)
+    if layout == "packed":
+        a, b = torch.randint(0, 512, (9,)), torch.randint(0, 512, (11,))
+        kw = dict(
+            input_ids = torch.cat([a, b]).unsqueeze(0),
+            position_ids = torch.cat([torch.arange(9), torch.arange(11)]).unsqueeze(0),
+        )
+    else:
+        a, b = torch.randint(0, 512, (11,)), torch.randint(0, 512, (16,))
+        kw = dict(
+            input_ids = torch.stack([torch.cat([torch.zeros(5, dtype = torch.long), a]), b]),
+            attention_mask = torch.stack(
+                [torch.cat([torch.zeros(5), torch.ones(11)]), torch.ones(16)]
+            ).long(),
+        )
+    with torch.no_grad():
+        want = model(**kw).logits
+    compiled = torch.compile(model, backend = "eager")
+    with torch.no_grad():
+        got = compiled(**kw).logits
+    torch.testing.assert_close(got, want, rtol = 1e-5, atol = 1e-5)
+    model.train()
+    model.zero_grad(set_to_none = True)
+    model(**kw, labels = kw["input_ids"]).loss.backward()
+    want_g = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad(set_to_none = True)
+    compiled(**kw, labels = kw["input_ids"]).loss.backward()
+    for n, g in want_g.items():
+        torch.testing.assert_close(
+            dict(model.named_parameters())[n].grad, g, rtol = 1e-4, atol = 1e-6, msg = n
+        )
+    torch._dynamo.reset()
+
+
+def test_embeddings_without_token_ids_are_refused_where_engram_layers_need_them():
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 12))
+    embeds = model.model.embed_tokens(ids).detach()
+    with pytest.raises(ValueError, match = "engram layers hash the token ids"):
+        with torch.no_grad():
+            model(inputs_embeds = embeds)
+    with torch.no_grad():
+        torch.testing.assert_close(
+            model(inputs_embeds = embeds, input_ids = ids).logits, model(input_ids = ids).logits
+        )
+    text = model.model
+    engram = set(text.config.engram_layer_ids)
+    owner = min(engram)
+    with torch.no_grad():
+        h, pre, state = text.pipeline_stage_forward(0, owner, input_ids = ids)
+        with pytest.raises(ValueError, match = "engram layers hash the token ids"):
+            text.pipeline_stage_forward(owner, owner + 1, h, pre, state)
+        # a stage that owns no engram layer does not need the ids
+        free = next(i for i in range(len(text.layers)) if i not in engram and i > 0)
+        text.pipeline_stage_forward(free, free + 1, h, pre, dsv41.DeepseekV41GroupState())
+
+
+def test_grouped_lora_is_not_marked_ready_when_nothing_was_installed(monkeypatch):
+    peft = pytest.importorskip("peft")
+    zoo = pytest.importorskip("unsloth_zoo.temporary_patches.deepseek_v41")
+    from peft.tuners.lora.model import LoraModel
+
+    create = LoraModel.__dict__["_create_new_module"]
+    func = getattr(create, "__func__", create)
+    while getattr(func, "_unsloth_dsv41_grouped", False):
+        func = func.__wrapped__
+    monkeypatch.setattr(LoraModel, "_create_new_module", staticmethod(func))
+    monkeypatch.setattr(zoo, "patch_deepseek_v41_grouped_lora", lambda: None)
+    monkeypatch.setattr(dsv41, "_GROUPED_LORA_READY", [False])
+    assert dsv41.ensure_grouped_lora() is False
+    assert dsv41._GROUPED_LORA_READY[0] is False
+
+
+def test_standard_gradient_checkpointing_gives_exact_gradients_in_a_fresh_process():
+    """Nothing installs the zoo replay explicitly: building the model and model.gradient_checkpointing_enable()
+    alone must give the gradients of the plain run (unsloth_zoo's patches ran before the native module existed,
+    so they had no-opped and the recompute read overwritten group state)."""
+    import json
+    import subprocess
+    import sys
+
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    child = (
+        "import json, sys, torch\n"
+        f"sys.path.insert(0, {tests_dir!r})\n"
+        "import test_deepseek_v41_native as t\n"
+        "model = t._tiny_model().train()\n"
+        "ids = torch.randint(0, 512, (2, 24), generator = torch.Generator().manual_seed(0))\n"
+        "def grads():\n"
+        "    model.zero_grad(set_to_none = True)\n"
+        "    model(input_ids = ids, labels = ids).loss.backward()\n"
+        "    return {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}\n"
+        "plain = grads()\n"
+        "model.gradient_checkpointing_enable()\n"
+        "ckpt = grads()\n"
+        "diff = max(float((plain[n] - ckpt[n]).abs().max()) for n in plain)\n"
+        "print('PROBE', json.dumps({'diff': diff, 'same_keys': plain.keys() == ckpt.keys(), "
+        "'checkpointing': bool(model.model.layers[0].gradient_checkpointing)}))\n"
+    )
+    env = _cpu_backend_child_env()
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    run = subprocess.run(
+        [sys.executable, "-c", child], env = env, capture_output = True, text = True, timeout = 600
+    )
+    probe = [line for line in run.stdout.splitlines() if line.startswith("PROBE ")]
+    assert probe, run.stdout[-2000:] + run.stderr[-3000:]
+    out = json.loads(probe[0][6:])
+    assert out["checkpointing"] and out["same_keys"]
+    assert out["diff"] <= 1e-6, out
+
+
+def test_labels_with_logits_to_keep_score_the_kept_positions_against_their_own_targets():
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (2, 10))
+    labels = ids.clone()
+    labels[0, 3] = -100
+    with torch.no_grad():
+        full = model(input_ids = ids).logits
+    shifted = torch.nn.functional.pad(labels, (0, 1), value = -100)[..., 1:]
+
+    def reference(sel):
+        logits = full[:, sel].float()
+        targets = shifted[:, sel]
+        return torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]), targets.reshape(-1), ignore_index = -100
+        )
+
+    with torch.no_grad():
+        out = model(input_ids = ids, labels = labels, logits_to_keep = 4)
+        assert out.logits.shape[1] == 4
+        torch.testing.assert_close(out.loss, reference(slice(-4, None)), rtol = 1e-5, atol = 1e-6)
+        positions = torch.tensor([1, 3, 6])
+        out = model(input_ids = ids, labels = labels, logits_to_keep = positions)
+        assert out.logits.shape[1] == 3
+        torch.testing.assert_close(out.logits, full[:, positions], rtol = 1e-5, atol = 1e-6)
+        torch.testing.assert_close(out.loss, reference(positions), rtol = 1e-5, atol = 1e-6)
+        # without labels a tensor selector keeps only those positions (it used to return every position)
+        assert model(input_ids = ids, logits_to_keep = torch.tensor([1, 3])).logits.shape[1] == 2
+        # logits_to_keep = 0 (all) with labels: the usual full loss
+        torch.testing.assert_close(
+            model(input_ids = ids, labels = labels).loss, reference(slice(None)), rtol = 1e-5, atol = 1e-6
+        )
+
+
+def test_generation_projects_only_the_last_position():
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 9))
+    inputs = model.prepare_inputs_for_generation(ids, attention_mask = torch.ones_like(ids))
+    assert inputs["logits_to_keep"] == 1
+    with torch.no_grad():
+        out = model(**inputs)
+        assert out.logits.shape[1] == 1
+        torch.testing.assert_close(
+            out.logits[:, -1], model(input_ids = ids).logits[:, -1], rtol = 1e-5, atol = 1e-6
+        )
+        gen = model.generate(ids, max_new_tokens = 2, do_sample = False)
+    assert gen.shape[1] == 11
 
 
 def test_left_padding_matches_the_unpadded_sequence():
@@ -1587,9 +1786,9 @@ def test_pipeline_stages_with_the_group_state_handoff_match_the_whole_model(cut)
 
 @pytest.mark.parametrize("install", [True, False])
 def test_building_the_model_installs_grouped_lora_for_plain_peft(monkeypatch, install):
-    """The CPU backend (and plain transformers + PEFT) never ran the zoo patch that gives o_a_proj a grouped LoRA,
-    so PEFT's plain LoRA failed with a shape error. Building the attention installs it. Flip: without it, the
-    plain LoRA's shape error."""
+    """The CPU backend (and plain transformers + PEFT) never ran the zoo patch that gives o_a_proj a grouped LoRA.
+    Building the attention installs it; without it, the plain PEFT LoRA's stacked-width delta is reduced to the
+    per-group blocks (it used to fail with a shape error). Either way adapted == merged."""
     peft = pytest.importorskip("peft")
     pytest.importorskip("unsloth_zoo.temporary_patches.deepseek_v41")
     from peft.tuners.lora.model import LoraModel
@@ -1607,18 +1806,18 @@ def test_building_the_model_installs_grouped_lora_for_plain_peft(monkeypatch, in
     lora = peft.get_peft_model(
         model, peft.LoraConfig(r = 4, target_modules = ["self_attn.o_a_proj"], init_lora_weights = False)
     ).eval()
-    if not install:
-        with pytest.raises(RuntimeError, match = "size"):
-            with torch.no_grad():
-                lora(input_ids = ids)
-        return
-    assert (
-        type(lora.base_model.model.model.layers[0].self_attn.o_a_proj).__name__
-        == "DeepseekV41GroupedLoraLinear"
-    )
+    o_a = lora.base_model.model.model.layers[0].self_attn.o_a_proj
+    if install:
+        assert type(o_a).__name__ == "DeepseekV41GroupedLoraLinear"
+    else:
+        # plain PEFT LoRA (no grouped handler): grouped_projection takes the diagonal blocks of its delta too
+        assert type(o_a).__name__ == "Linear" and hasattr(o_a, "lora_A")
     with torch.no_grad():
+        with lora.disable_adapter():
+            base = lora(input_ids = ids).logits
         adapted = lora(input_ids = ids).logits
         merged = lora.merge_and_unload()(input_ids = ids).logits
+    assert not torch.allclose(adapted, base)
     torch.testing.assert_close(adapted, merged, rtol = 1e-4, atol = 1e-4)
 
 
@@ -1631,14 +1830,7 @@ def test_cpu_backend_import_registers_deepseek_v41(tmp_path):
 
     _tiny_config().save_pretrained(tmp_path)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in ("UNSLOTH_DISABLE_CPU_FALLBACK", "UNSLOTH_FORCE_GPU_PATH")
-    }
-    env.pop("UNSLOTH_ALLOW_CPU", None)
-    env.update(CUDA_VISIBLE_DEVICES = "", UNSLOTH_FORCE_CPU = "1")
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, [root, env.get("PYTHONPATH")]))
+    env = _cpu_backend_child_env(root)
     child = (
         "import json, sys, unsloth\n"
         "from transformers import AutoConfig\n"

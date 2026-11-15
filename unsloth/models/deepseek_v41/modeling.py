@@ -304,15 +304,36 @@ def ensure_grouped_lora():
     """Install unsloth_zoo's grouped LoRA for DeepseekV41GroupedLinear (PEFT would wrap o_a_proj with a plain LoRA
     whose delta multiplies every group by the whole stacked weight, a shape error). Unsloth's GPU import applies the
     zoo patches; the CPU backend, plain transformers + PEFT and distributed launchers may not, so building the
-    attention installs it. Idempotent; a no-op without unsloth_zoo."""
+    attention installs it. Idempotent. True once PEFT's dispatcher carries the grouped handler; without unsloth_zoo
+    (or PEFT) it stays unready, and grouped_projection's fallback keeps a plain PEFT LoRA correct."""
     if _GROUPED_LORA_READY[0]:
-        return
-    _GROUPED_LORA_READY[0] = True
+        return True
     try:
+        from peft.tuners.lora.model import LoraModel
         from unsloth_zoo.temporary_patches.deepseek_v41 import patch_deepseek_v41_grouped_lora
         patch_deepseek_v41_grouped_lora()
     except Exception:
-        pass
+        return False
+    create = LoraModel.__dict__.get("_create_new_module")
+    if getattr(getattr(create, "__func__", create), "_unsloth_dsv41_grouped", False):
+        _GROUPED_LORA_READY[0] = True
+    return _GROUPED_LORA_READY[0]
+
+
+def ensure_checkpoint_replay():
+    """Install unsloth_zoo's decoder-layer checkpoint replay (each checkpointed layer recomputes from a private copy
+    of the per-forward group state it first saw; without it a recompute reads state later layers overwrote and the
+    gradients are wrong). Idempotent, whatever was imported first; True once DeepseekV41DecoderLayer carries it."""
+    if getattr(DeepseekV41DecoderLayer.__call__, "_unsloth_patched", False):
+        return True
+    try:
+        from unsloth_zoo.temporary_patches.deepseek_v41 import (
+            patch_deepseek_v41_gradient_checkpointing,
+        )
+        patch_deepseek_v41_gradient_checkpointing()
+    except Exception:
+        return False
+    return bool(getattr(DeepseekV41DecoderLayer.__call__, "_unsloth_patched", False))
 
 
 def grouped_projection(module, x, out_per_group):
@@ -321,8 +342,26 @@ def grouped_projection(module, x, out_per_group):
     not skip o_a_proj, another quantizer, plain PEFT over those) multiplies every group by the whole stacked weight;
     the diagonal blocks of that product are exactly the grouped result (G times the work, never wrong). Shapes alone
     decide, so a tensor-parallel shard holding a subset of the groups works either way."""
-    out = module(x)
     groups = x.shape[-2]
+    base = getattr(module, "base_layer", None)
+    if base is not None and hasattr(module, "lora_A") and hasattr(base, "n_groups") and groups > 1:
+        # A plain PEFT LoRA around the grouped Linear (unsloth_zoo's grouped handler absent): the base gives the
+        # per-group width, the plain delta the full stacked width; take the delta's diagonal blocks too.
+        out = base(x)
+        if not getattr(module, "merged", False) and not getattr(module, "disable_adapters", False):
+            for adapter in getattr(module, "active_adapters", ()):
+                if adapter not in module.lora_A:
+                    continue
+                lora_a, lora_b = module.lora_A[adapter], module.lora_B[adapter]
+                delta = lora_b(lora_a(module.lora_dropout[adapter](x.to(lora_a.weight.dtype))))
+                delta = delta * module.scaling[adapter]
+                if delta.shape[-1] == groups * out_per_group:
+                    delta = torch.diagonal(
+                        delta.unflatten(-1, (groups, out_per_group)), dim1 = -3, dim2 = -2
+                    ).movedim(-1, -2)
+                out = out + delta.to(out.dtype)
+        return out
+    out = module(x)
     if groups > 1 and out.shape[-1] == groups * out_per_group:
         _count("o_a_ungrouped")
         out = torch.diagonal(out.unflatten(-1, (groups, out_per_group)), dim1 = -3, dim2 = -2).movedim(
@@ -1423,6 +1462,17 @@ def _engram_table_entries(model):
     return out
 
 
+def _keep_positions(x, positions):
+    """x [b, s, ...] at a tensor of kept positions: 1-D (the same for every row) or 2-D [b, k]."""
+    positions = torch.as_tensor(positions, device = x.device, dtype = torch.long)
+    if positions.dim() <= 1:
+        return x[:, positions.reshape(-1)]
+    index = positions.view(*positions.shape, *([1] * (x.dim() - 2))).expand(
+        *positions.shape, *x.shape[2:]
+    )
+    return x.gather(1, index)
+
+
 def _engram_cut_safe(config, cut):
     """True when a pipeline stage may start at layer ``cut``: no layer at or after it reads per-forward group
     state (compressed KV, indexer keys, top-k, candidates) written by a layer before it."""
@@ -1474,6 +1524,10 @@ def pipeline_handoff_keys(config, cut):
         if j in ix_src and cand is not None and 0 <= cand < cut and cand < j:
             keys.add("candidates")
     return sorted(keys)
+
+
+def _forward_segments_call(model, *args, **kwargs):
+    return model._forward_segments(*args, **kwargs)
 
 
 def sequence_segments(position_ids, attention_mask, bsz, seqlen):
@@ -1543,6 +1597,11 @@ _LORA_TARGET_MAP = {
 }
 
 
+# Eager boundaries (not defs, so unsloth_zoo's compiler leaves them as they are): see DeepseekV41TextModel.forward.
+_sequence_segments_outside_trace = torch.compiler.disable(sequence_segments)
+_forward_segments_outside_trace = torch.compiler.disable(_forward_segments_call)
+
+
 class DeepseekV41PreTrainedModel(PreTrainedModel):
     config_class = DeepseekV41Config
     base_model_prefix = "model"
@@ -1579,6 +1638,19 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         r"(^|\.)image_(start|end|newline)$",
     ]
     _keys_to_ignore_on_load_missing = [r"engram_tables\.\d+\.weight_scale_inv$"]
+
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs = None):
+        """The decoder layers share per-forward group state; a checkpointed layer is exact only through unsloth_zoo's
+        replay (a private copy of the state for the recompute). Fail closed without it."""
+        if not ensure_checkpoint_replay():
+            raise RuntimeError(
+                "Unsloth: DeepSeek-V4.1 gradient checkpointing needs unsloth_zoo's decoder-layer replay "
+                "(unsloth_zoo.temporary_patches.deepseek_v41); without it the recomputed layers read overwritten "
+                "group state and the gradients are wrong. Update unsloth_zoo."
+            )
+        return super().gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs = gradient_checkpointing_kwargs
+        )
 
     def save_pretrained(self, *args, **kwargs):
         _ENGRAM_FULL_SAVE[0] += 1
@@ -1845,6 +1917,8 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         else:
             self.ngram_hash = None
         self.gradient_checkpointing = False
+        # whatever was imported first: unsloth_zoo's patches may have run before this module existed
+        ensure_checkpoint_replay()
         self._register_state_dict_hook(_drop_engram_tables_outside_full_save)
         self.post_init()
 
@@ -1907,12 +1981,14 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
                 )
             inputs_embeds = self.embed_tokens(input_ids)
         bsz, seqlen = inputs_embeds.shape[:2]
-        if not torch.compiler.is_compiling():
-            segments = sequence_segments(position_ids, attention_mask, bsz, seqlen)
-            if segments is not None:
-                return self._forward_segments(
-                    segments, input_ids, inputs_embeds, output_hidden_states, **kwargs
-                )
+        # Packed rows / left padding are moved into their own rows also under torch.compile: the layout read and the
+        # relayout run outside the traced graph (a deliberate boundary; skipping them while compiling would let
+        # sequences attend across each other).
+        segments = _sequence_segments_outside_trace(position_ids, attention_mask, bsz, seqlen)
+        if segments is not None:
+            return _forward_segments_outside_trace(
+                self, segments, input_ids, inputs_embeds, output_hidden_states, **kwargs
+            )
         positions = torch.arange(seqlen, device = inputs_embeds.device)
         # right padding only here (sequence_segments moved anything else): pads never reach a real token's hash / gate
         token_mask = (
@@ -1952,8 +2028,16 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         """{layer_id: rows} gathered from the model-level engram tables for the n-gram hashes of ``input_ids``
         (frozen, no gradient). ``layer_ids`` limits it to the engram layers a pipeline stage owns."""
         rows = {}
-        if self.ngram_hash is None or input_ids is None:
+        if self.ngram_hash is None:
             return rows
+        if layer_ids is not None and not any(l in layer_ids for l in self.ngram_hash.layer_ids):
+            return rows
+        if input_ids is None:
+            # inputs_embeds alone cannot drive the engram layers: their n-gram hashes read the token ids
+            raise ValueError(
+                "Unsloth: DeepSeek-V4.1's engram layers hash the token ids: pass input_ids (with or without "
+                "inputs_embeds), also to a pipeline stage that owns an engram layer."
+            )
         self._maybe_autobind()
         hash_ids = self.ngram_hash(input_ids, token_mask, left_context)
         for k, layer_id in enumerate(self.ngram_hash.layer_ids):
@@ -2135,11 +2219,18 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             engram_left_context = kwargs.pop("engram_left_context", None),
         )
         hidden = out.last_hidden_state
+        keep_all = isinstance(logits_to_keep, int) and logits_to_keep <= 0
+        if labels is not None and not keep_all:
+            return self._loss_on_kept_positions(
+                hidden, labels, logits_to_keep, out.hidden_states, **kwargs
+            )
         sl = (
             slice(-logits_to_keep, None)
             if isinstance(logits_to_keep, int) and logits_to_keep > 0
             else slice(None)
         )
+        if not isinstance(logits_to_keep, int):
+            hidden = _keep_positions(hidden, logits_to_keep)
         logits = self.lm_head(hidden[:, sl, :])
         loss = None
         if labels is not None:
@@ -2150,14 +2241,57 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             loss = loss, logits = logits, past_key_values = None, hidden_states = out.hidden_states
         )
 
-    # Generation recomputes the whole prefix every step (sanity evaluation only; no KV cache).
+    def _loss_on_kept_positions(
+        self,
+        hidden,
+        labels,
+        logits_to_keep,
+        hidden_states = None,
+        **kwargs,
+    ):
+        """labels with logits_to_keep: the logits of the kept positions against their own next-token targets
+        (labels shifted once over the whole sequence, then the same positions picked)."""
+        from transformers.loss.loss_utils import ForCausalLMLoss
+
+        shift_labels = F.pad(labels, (0, 1), value = -100)[..., 1:]
+        if isinstance(logits_to_keep, int):
+            kept_hidden, kept_targets = (
+                hidden[:, -logits_to_keep:],
+                shift_labels[:, -logits_to_keep:],
+            )
+        else:
+            kept_hidden = _keep_positions(hidden, logits_to_keep)
+            kept_targets = _keep_positions(shift_labels.unsqueeze(-1), logits_to_keep).squeeze(-1)
+        logits = self.lm_head(kept_hidden)
+        kwargs.pop("shift_labels", None)
+        loss = ForCausalLMLoss(
+            logits,
+            None,
+            vocab_size = self.vocab_size,
+            shift_labels = kept_targets.contiguous(),
+            **kwargs,
+        )
+        return CausalLMOutputWithPast(
+            loss = loss, logits = logits, past_key_values = None, hidden_states = hidden_states
+        )
+
+    # Generation recomputes the whole prefix every step (sanity evaluation only; no KV cache); only the last
+    # position's logits are projected (a full-prefix vocabulary projection is S x vocab per step).
     def prepare_inputs_for_generation(
         self,
         input_ids,
         attention_mask = None,
+        logits_to_keep = None,
         **kwargs,
     ):
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "use_cache": False}
+        if logits_to_keep is None:
+            logits_to_keep = kwargs.get("num_logits_to_keep")
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "use_cache": False,
+            "logits_to_keep": 1 if logits_to_keep is None else logits_to_keep,
+        }
 
     @classmethod
     def _supports_default_dynamic_cache(cls):
