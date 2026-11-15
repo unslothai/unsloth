@@ -1342,6 +1342,61 @@ def test_greedy_generate_equals_full_prefix_recompute_across_the_boundaries():
     assert not torch.equal(with_lora, plain)  # the adapter changes the continuation
 
 
+def test_opt_in_fast_lora_matches_peft_on_the_plain_projections(monkeypatch):
+    """UNSLOTH_DSV41_FAST_LORA=1 routes q_a / q_b / kv / o_b and the shared expert's LoRA through LoRA_W; loss and
+    every gradient equal PEFT's forward (fp32), and a dropout adapter keeps PEFT's forward."""
+    fast_lora = pytest.importorskip("unsloth.kernels.fast_lora")
+    from peft import LoraConfig, get_peft_model
+
+    targets = [
+        "q_a_proj",
+        "q_b_proj",
+        "self_attn.kv_proj",
+        "o_b_proj",
+        "shared_experts.gate_proj",
+        "shared_experts.up_proj",
+        "shared_experts.down_proj",
+    ]
+
+    def run(fast, dropout = 0.0):
+        monkeypatch.setattr(dsv41, "_FAST_LORA", fast)
+        monkeypatch.setattr(dsv41, "_LoRA_W", fast_lora.LoRA_W, raising = False)
+        monkeypatch.setattr(dsv41, "_fast_lora_apply", fast_lora._apply, raising = False)
+        monkeypatch.setattr(
+            dsv41, "_fast_lora_extras", fast_lora._lora_dropout_and_bias, raising = False
+        )
+        monkeypatch.setattr(
+            dsv41, "_fast_lora_parameters", fast_lora.get_lora_parameters, raising = False
+        )
+        model = get_peft_model(
+            _tiny_model(),
+            LoraConfig(
+                r = 4,
+                lora_alpha = 8,
+                lora_dropout = dropout,
+                target_modules = targets,
+                init_lora_weights = False,
+            ),
+        )
+        model.eval()  # dropout off, so both runs see the same adapter math
+        dsv41.DSV41_STATS["fast_lora"] = 0
+        ids = torch.randint(0, 512, (2, 12), generator = torch.Generator().manual_seed(0))
+        loss = model(input_ids = ids, labels = ids).loss
+        loss.backward()
+        grads = {n: p.grad for n, p in model.named_parameters() if p.grad is not None}
+        return loss.detach(), grads, dsv41.DSV41_STATS["fast_lora"]
+
+    loss0, g0, n0 = run(False)
+    loss1, g1, n1 = run(True)
+    layers = len(_tiny_model().model.layers)
+    assert (n0, n1) == (0, 7 * layers)
+    torch.testing.assert_close(loss1, loss0, rtol = 1e-6, atol = 1e-6)
+    assert g1.keys() == g0.keys() and any(".lora_A." in n for n in g0)
+    for name in g0:
+        torch.testing.assert_close(g1[name], g0[name], rtol = 1e-5, atol = 1e-6, msg = name)
+    assert run(True, dropout = 0.1)[2] == 0  # a dropout module: PEFT's forward
+
+
 def test_generation_projects_only_the_last_position():
     model = _tiny_model().eval()
     ids = torch.randint(0, 512, (1, 9))

@@ -91,12 +91,44 @@ DSV41_STATS = {
     "o_a_ungrouped": 0,
     "sparse_attn_window": 0,
     "experts_mxfp4_packed": 0,
+    "fast_lora": 0,
 }
 
 
 def _count(key):
     if not torch.compiler.is_compiling():
         DSV41_STATS[key] += 1
+
+
+# Opt-in: Unsloth's fused LoRA kernel (kernels/fast_lora.py LoRA_W) for the plain projections.
+_FAST_LORA = os.environ.get("UNSLOTH_DSV41_FAST_LORA", "0") == "1"
+_LoRA_W = None
+if _FAST_LORA:
+    try:
+        from unsloth.kernels.fast_lora import LoRA_W as _LoRA_W
+        from unsloth.kernels.fast_lora import _apply as _fast_lora_apply
+        from unsloth.kernels.fast_lora import _lora_dropout_and_bias as _fast_lora_extras
+        from unsloth.kernels.fast_lora import get_lora_parameters as _fast_lora_parameters
+    except Exception:
+        _LoRA_W = None
+
+
+def lora_linear(proj, x):
+    """``proj(x)``; with UNSLOTH_DSV41_FAST_LORA=1 a plain single-adapter LoRA layer (no dropout, no lora_B bias,
+    frozen base) runs as one LoRA_W instead. Only for the plain linears: q_a / q_b / kv / o_b and the shared expert.
+    Not ``o_a_proj`` (its LoRA applies group g's rows of B to group g's input, which LoRA_W's single X @ A @ B cannot
+    express), the compressor (zoo's pooled-LoRA patch reads the weights itself), nor the routed experts (3-D
+    grouped weights)."""
+    if not _FAST_LORA or _LoRA_W is None or not hasattr(proj, "lora_A"):
+        return proj(x)
+    extras = _fast_lora_extras((proj,), x)
+    if extras is None or extras[0] is not None or extras[1][0] is not None:
+        return proj(x)  # PEFT's forward: a variant, dropout, a lora_B bias or a trainable base
+    _count("fast_lora")
+    flat = x.dim() == 2
+    W, W_quant, A, B, S = _fast_lora_parameters(proj)
+    out = _fast_lora_apply(_LoRA_W, x.unsqueeze(0) if flat else x, W, W_quant, A, B, S)
+    return out.squeeze(0) if flat else out
 
 
 def sparse_attn_reference(q, kv, attn_sink, topk_idxs, softmax_scale):
@@ -588,12 +620,12 @@ class DeepseekV41Attention(nn.Module):
         inference = False if torch.compiler.is_compiling() else torch.is_inference_mode_enabled()
         inv_freq = _inv_freq_on(*self._rope_key, positions.device, inference)
         cos, sin = _rope_cos_sin(positions, inv_freq)
-        qr = self.q_a_norm(self.q_a_proj(x))
-        q = self.q_b_proj(qr).unflatten(
+        qr = self.q_a_norm(lora_linear(self.q_a_proj, x))
+        q = lora_linear(self.q_b_proj, qr).unflatten(
             -1, (-1, self.head_dim)
         )  # local heads under tensor parallelism
         q = apply_rotary(q, cos, sin)
-        kv = apply_rotary(self.kv_norm(self.kv_proj(x)), cos, sin)
+        kv = apply_rotary(self.kv_norm(lora_linear(self.kv_proj, x)), cos, sin)
         if _SPARSE_ATTN_WINDOW is not None:
             window_idxs = None
         else:
@@ -641,7 +673,7 @@ class DeepseekV41Attention(nn.Module):
         o = grouped_projection(
             self.o_a_proj, o.reshape(bsz, seqlen, -1, self.o_a_proj.in_features), self.o_lora_rank
         )
-        return self.o_b_proj(o.flatten(2))
+        return lora_linear(self.o_b_proj, o.flatten(2))
 
 
 class DeepseekV41TopKRouter(nn.Module):
@@ -816,12 +848,12 @@ class DeepseekV41MLP(nn.Module):
         self.limit = config.swiglu_limit
 
     def forward(self, x):
-        gate = self.gate_proj(x).float()
-        up = self.up_proj(x).float()
+        gate = lora_linear(self.gate_proj, x).float()
+        up = lora_linear(self.up_proj, x).float()
         if self.limit and self.limit > 0:
             up = up.clamp(min = -self.limit, max = self.limit)
             gate = gate.clamp(max = self.limit)
-        return self.down_proj((F.silu(gate) * up).to(x.dtype))
+        return lora_linear(self.down_proj, (F.silu(gate) * up).to(x.dtype))
 
 
 class DeepseekV41SparseMoeBlock(nn.Module):
