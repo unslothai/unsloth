@@ -1196,8 +1196,7 @@ def test_qwen3_5_gdn_block_has_no_break():
         counters.clear()
         got = [_grads_after_step(layers, run, xi.clone().requires_grad_()) for xi in x]
         assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])
-        # A layer that fell back to the stock forward also has no break: the block must have run (the
-        # grouped value heads, 4 q / k vs 16 v heads, demoted it on transformers 5.23 before the fix).
+        # A stock-forward fallback also has no break: assert the block ran (grouped heads demoted it on 5.23).
         for layer in layers:
             assert layer.__dict__.get("_unsloth_block_mode") == M._FULL, layer.__dict__.get(
                 "_unsloth_block_mode"

@@ -132,8 +132,7 @@ class Int4PackedLinear(nn.Linear):
     def weight(self):
         # The packed int32 words with `.quant_state`: the bitsandbytes contract Unsloth's kernels read.
         packed = self._parameters["weight_packed"]
-        # getattr, not packed.__dict__: Dynamo cannot put a tensor's __dict__ in a graph, so reading it
-        # broke every compiled block once per LoRA layer (PEFT's forward reads base_layer.weight).
+        # getattr, not packed.__dict__: Dynamo graph-breaks on a tensor's __dict__.
         if getattr(packed, "quant_state", None) is None:
             self.quant_state
         return packed

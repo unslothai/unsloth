@@ -1005,9 +1005,7 @@ def _route_fla_callers(gc):
 
 def _causal_conv1d_adapter(original, depthwise_conv):
     # Inductor's conv backward guards on the exact sequence length: recompile per length.
-    # transformers 5.x calls (hidden_states, weight, bias, activation = ...); the < 5.15 GatedDeltaNet calls
-    # self.causal_conv1d_fn(x = ..., weight = ..., bias = ..., activation = ..., seq_idx = None) (the
-    # causal-conv1d package API). Arguments pass through to `original` exactly as given.
+    # transformers < 5.15 calls with causal-conv1d kwargs (x = ..., seq_idx = None): pass args through unchanged.
     @functools.wraps(original, updated = ())
     def causal_conv1d_fn(*args, **kwargs):
         named = dict(zip(("hidden_states", "weight", "bias", "activation"), args))
@@ -1136,8 +1134,7 @@ def _prepare_gdn(layer, hidden_states):
         from ._gdn_op import _fla_ops, varlen_ok
 
         heads, dk, dv = gdn.num_v_heads, gdn.head_k_dim, gdn.head_v_dim
-        # transformers >= 5.23 passes q / k unrepeated (grouped value heads, huggingface/transformers#49141):
-        # check with that layout, the general case of the fake metas.
+        # transformers >= 5.23 passes q / k unrepeated (huggingface/transformers#49141).
         qk_heads = getattr(gdn, "num_k_heads", heads)
         if not qk_heads or heads % qk_heads:
             qk_heads = heads
@@ -2032,8 +2029,7 @@ def _install_router_capture_hooks(model):
     # recursion does not check that flag, so a module with an already hooked descendant (an earlier eager
     # capturing forward) is skipped: installing it would hook that descendant twice (duplicated outputs).
     for module in model.modules():
-        # dict.get: transformers 5.23's _CanRecordRegistry.get takes the model and stringifies its class itself
-        # (huggingface/transformers#49594), so its .get on our class string always answered {}. Keys stay strings.
+        # dict.get: 5.23's _CanRecordRegistry.get expects the model and returned {} for a string (transformers#49594).
         flags = dict.get(registry, str(type(module))) or {}
         if "router_logits" not in flags or any(
             getattr(m, "_output_capturing_hooks_installed", False) for m in module.modules()
