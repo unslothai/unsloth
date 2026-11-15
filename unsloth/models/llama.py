@@ -4839,8 +4839,7 @@ class FastLlamaModel:
             layers_to_transform = [layers_to_transform]
         # The flag reflects the LAST load, not this model.
         _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
-        # Models that translate LoRA names themselves (native DeepSeek-V4.1) need FastBaseModel's remap, whatever
-        # the last load set. Read from the class so an already wrapped PeftModel keeps the legacy path.
+        # Read from the class so an already wrapped PeftModel keeps the legacy path.
         _has_lora_remap = callable(getattr(type(model), "unsloth_lora_target_modules", None))
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq or _has_lora_remap:
             for peft_arg, flag in (

@@ -355,8 +355,7 @@ def test_real_device_forward_matches_the_dequant_reference():
 
 
 def test_grouped_fp8_eval_without_the_kernels_package_takes_the_dequant_path(monkeypatch):
-    """Newer transformers load the grouped fp8 eval kernel from the Hub through the optional `kernels` package;
-    without it eval / generate failed. Eval then uses the same dequant path as training (sm89+ too)."""
+    """Without the `kernels` package, grouped fp8 eval uses the dequant path."""
     from unsloth.kernels import fp8
 
     if getattr(fp8, "FP8GroupedLinear", None) is None:

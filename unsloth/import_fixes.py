@@ -13234,9 +13234,7 @@ def fix_transformers_longcat_lsa_config():
 
 
 def fix_transformers_deepseek_v41_native():
-    """Answer AutoConfig's "does not recognize this architecture" on a deepseek_v41 / deepseek_v41_text config
-    (transformers without DeepSeek-V4.1) by registering Unsloth's native implementation
-    (``models/deepseek_v41``) and retrying; all other loads are untouched."""
+    """On AutoConfig's unknown-architecture error for deepseek_v41, register the native implementation and retry."""
     try:
         import importlib.util
         from transformers import AutoConfig

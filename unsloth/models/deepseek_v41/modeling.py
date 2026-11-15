@@ -11,25 +11,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""DeepSeek-V4.1 text model for training, ported from deepseek-ai's reference implementation
-(``inference/model.py`` and ``inference/engram.py`` in deepseek-ai/DeepSeek-V4.1-Flash-1017).
-
-Every forward is the reference's prefill (``start_pos == 0``) over the whole sequence; there are no ring buffers.
-Citations below are ``model.py:<line>`` / ``engram.py:<line>`` of that reference.
-
-Differences from the reference, all deliberate for training:
-* The fp8 / fp4 activation fake-quantization (``act_quant`` / ``fp4_act_quant``, model.py:546-555, 727, 777, 784)
-  is not simulated: bf16 activations stay differentiable. Index top-k selection can therefore differ from the
-  reference at score ties.
-* Routed expert outputs are weighted after the down projection (transformers' experts contract), not before
-  (model.py:851). Same math, different rounding.
-* The output head is the model dtype (the reference keeps it fp32, model.py:1008).
-* DSpark / MTP heads (``mtp.*``) and the vision tower are not built; their checkpoint keys are ignored.
-
-Module and class names follow transformers' DeepSeek-V4 naming, so the released checkpoint loads through a
-renaming table and existing Unsloth / unsloth_zoo hooks (non-reentrant checkpointing with the per-forward
-``shared`` group state, grouped LoRA for ``o_a_proj``, the engram table store) apply unchanged.
-"""
+"""DeepSeek-V4.1 text model for training, ported from deepseek-ai's reference (inference/model.py, engram.py);
+citations are model.py:<line> / engram.py:<line>."""
 
 import copy
 import json
@@ -100,7 +83,7 @@ __all__ = [
 
 ENGRAM_DEAD = -1
 
-# Engagement counters for tests (which path ran). Never touched while compiling (Dynamo would bake / retrace them).
+# Engagement counters for tests; never touched while compiling (Dynamo would bake them).
 DSV41_STATS = {
     "sparse_attn_zoo": 0,
     "sparse_attn_torch": 0,
@@ -116,13 +99,8 @@ def _count(key):
         DSV41_STATS[key] += 1
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Sparse attention. unsloth_zoo ships the fused kernel; this is the exact torch fallback.
-# ----------------------------------------------------------------------------------------------------------------
 def sparse_attn_reference(q, kv, attn_sink, topk_idxs, softmax_scale):
-    """kernel.py:311-403 in plain torch. q [b, s, h, d], kv [b, n, d] (one shared KV head, both key and value),
-    attn_sink [h] fp32, topk_idxs [b, s, k] int (-1 = empty slot) -> [b, s, h, d] in q's dtype. The sink joins
-    the softmax denominator only; a row with no valid index returns zeros (kernel.py:343-346, 380-385)."""
+    """kernel.py:311-403 in plain torch."""
     b, s, h, d = q.shape
     valid = topk_idxs >= 0
     gather = topk_idxs.clamp_min(0).long()
@@ -147,9 +125,7 @@ def _resolve_sparse_attn():
 
 
 def _resolve_sparse_attn_window():
-    # unsloth_zoo's window-specialised entry (banded Triton window kernel merged with the compressed index kernel);
-    # None (an older unsloth_zoo, or a kill switch) keeps the window + compressed concatenation through sparse_attn.
-    # UNSLOTH_DSV41_SPARSE_ATTN_WINDOW=0 turns off only this entry, UNSLOTH_DSV41_SPARSE_ATTN=0 every zoo kernel.
+    # None (old unsloth_zoo or kill switch) falls back to window + compressed concat via sparse_attn.
     if os.environ.get("UNSLOTH_DSV41_SPARSE_ATTN", "1") == "0":
         return None
     if os.environ.get("UNSLOTH_DSV41_SPARSE_ATTN_WINDOW", "1") == "0":
@@ -186,18 +162,14 @@ def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale):
 
 
 def sparse_attn_window(q, window_kv, compress_kv, compress_idxs, attn_sink, softmax_scale, window):
-    """unsloth_zoo.sparse_attention.sparse_attn_window: this chunk's window KV [b, s, d] plus the selected rows of
-    compress_kv [b, nc, d] (compress_idxs [b, s, k] into compress_kv, -1 unused); equal to sparse_attn over
-    their concatenation with the window index lists (kernel.py:311-403 over model.py:409-427 + the indexer)."""
+    """Window KV [b, s, d] plus selected compress_kv rows via unsloth_zoo sparse_attn_window; equals sparse_attn
+    over their concatenation (kernel.py:311-403 over model.py:409-427)."""
     _count("sparse_attn_window")
     return _SPARSE_ATTN_WINDOW(
         q, window_kv, compress_kv, compress_idxs, attn_sink, softmax_scale, window
     )
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Small pieces
-# ----------------------------------------------------------------------------------------------------------------
 class DeepseekV41RMSNorm(nn.Module):
     """model.py:281-293: fp32 statistics, weight applied in fp32, cast back."""
 
@@ -256,8 +228,7 @@ def apply_rotary(
     inverse = False,
 ):
     """model.py:392-406 on the last ``2 * cos.shape[-1]`` channels: adjacent pairs as complex numbers, rotated by
-    the position (conjugate when ``inverse``). Functional; the result is rounded to x's dtype like the reference's
-    in-place copy. cos / sin are [s, r/2] or [b, s, r/2]; x is [b, s, d] or [b, s, h, d]."""
+    the position (conjugate when ``inverse``)."""
     rd = cos.shape[-1] * 2
     head, tail = x[..., :-rd], x[..., -rd:]
     pairs = tail.float().unflatten(-1, (-1, 2))
@@ -274,8 +245,7 @@ def apply_rotary(
 
 class DeepseekV41GroupedLinear(nn.Linear):
     """``wo_a`` (model.py:654-658, 787-789): one weight [G * out_g, in_g] holding G independent blocks; input
-    [..., G, in_g] -> [..., G, out_g]. An ``nn.Linear`` subclass so quantizers and PEFT see a Linear; the name holds
-    ``GroupedLinear`` for transformers' FP8 swap (FP8GroupedLinear) and unsloth's grouped LoRA."""
+    [..., G, in_g] -> [..., G, out_g]."""
 
     def __init__(
         self,
@@ -288,7 +258,7 @@ class DeepseekV41GroupedLinear(nn.Linear):
         self.n_groups = n_groups
 
     def forward(self, x):
-        # Groups from the input, not n_groups: under tensor parallelism a rank holds whole groups (colwise rows).
+        # Groups from the input: under tensor parallelism a rank holds a subset of whole groups.
         groups = x.shape[-2]
         weight = self.weight.view(groups, -1, self.in_features)
         out = torch.einsum("...gi,goi->...go", x, weight.to(x.dtype))
@@ -301,11 +271,8 @@ _GROUPED_LORA_READY = [False]
 
 
 def ensure_grouped_lora():
-    """Install unsloth_zoo's grouped LoRA for DeepseekV41GroupedLinear (PEFT would wrap o_a_proj with a plain LoRA
-    whose delta multiplies every group by the whole stacked weight, a shape error). Unsloth's GPU import applies the
-    zoo patches; the CPU backend, plain transformers + PEFT and distributed launchers may not, so building the
-    attention installs it. Idempotent. True once PEFT's dispatcher carries the grouped handler; without unsloth_zoo
-    (or PEFT) it stays unready, and grouped_projection's fallback keeps a plain PEFT LoRA correct."""
+    """Install unsloth_zoo's grouped LoRA for DeepseekV41GroupedLinear (PEFT would wrap o_a_proj with a plain
+    LoRA whose delta multiplies every group by the whole stacked weight, a shape error)."""
     if _GROUPED_LORA_READY[0]:
         return True
     try:
@@ -321,9 +288,8 @@ def ensure_grouped_lora():
 
 
 def ensure_checkpoint_replay():
-    """Install unsloth_zoo's decoder-layer checkpoint replay (each checkpointed layer recomputes from a private copy
-    of the per-forward group state it first saw; without it a recompute reads state later layers overwrote and the
-    gradients are wrong). Idempotent, whatever was imported first; True once DeepseekV41DecoderLayer carries it."""
+    """Install unsloth_zoo's decoder-layer checkpoint replay: a recompute must see the group state it first saw,
+    not state later layers overwrote. Idempotent."""
     if getattr(DeepseekV41DecoderLayer.__call__, "_unsloth_patched", False):
         return True
     try:
@@ -337,11 +303,7 @@ def ensure_checkpoint_replay():
 
 
 def grouped_projection(module, x, out_per_group):
-    """``wo_a`` on x [..., G, in_g] -> [..., G, out_per_group]. A DeepseekV41GroupedLinear (or a LoRA wrapper around
-    one) applies each group's block itself. A plain Linear in its place (bitsandbytes' Linear4bit swap when a load did
-    not skip o_a_proj, another quantizer, plain PEFT over those) multiplies every group by the whole stacked weight;
-    the diagonal blocks of that product are exactly the grouped result (G times the work, never wrong). Shapes alone
-    decide, so a tensor-parallel shard holding a subset of the groups works either way."""
+    """``wo_a`` on x [..., G, in_g] -> [..., G, out_per_group]."""
     groups = x.shape[-2]
     base = getattr(module, "base_layer", None)
     if (
@@ -349,11 +311,10 @@ def grouped_projection(module, x, out_per_group):
         and groups > 1
         and hasattr(base, "n_groups")
         and hasattr(module, "lora_A")
-        # PEFT's own plain LoRA layer only: grouped LoRA handlers (unsloth / unsloth_zoo, TP-aware) run themselves
+        # Plain PEFT LoRA only: grouped LoRA handlers run themselves.
         and type(module).__module__.startswith("peft.")
     ):
-        # A plain PEFT LoRA around the grouped Linear (unsloth_zoo's grouped handler absent): the base gives the
-        # per-group width, the plain delta the full stacked width; take the delta's diagonal blocks too.
+        # Plain PEFT LoRA delta spans the full stacked width: keep only its diagonal blocks.
         out = base(x)
         if not getattr(module, "merged", False) and not getattr(module, "disable_adapters", False):
             for adapter in getattr(module, "active_adapters", ()):
@@ -377,9 +338,6 @@ def grouped_projection(module, x, out_per_group):
     return out
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Hyper-connections (model.py:909-996, kernel.py:406-474)
-# ----------------------------------------------------------------------------------------------------------------
 class DeepseekV41HyperConnection(nn.Module):
     """The hc_mult-copy residual stream's mixing coefficients for one sublayer: ``fn`` / ``base`` / ``scale`` are
     the checkpoint's ``hc_{attn,ffn}_{fn,base,scale}`` (fp32)."""
@@ -399,13 +357,12 @@ class DeepseekV41HyperConnection(nn.Module):
     def forward(self, x):
         """x [b, s, hc, d] -> pre [b, s, hc], post [b, s, hc], comb [b, s, hc, hc] (fp32)."""
         hc, eps = self.hc_mult, self.hc_eps
-        # One statistic over the whole flattened hc*d stream (model.py:953-956). unsloth_zoo's compiler matches these
-        # three lines and the Sinkhorn loop below verbatim (eager projection recompute, compiled Sinkhorn).
+        # unsloth_zoo's compiler matches these lines and the Sinkhorn loop verbatim (model.py:953-956).
         flat = x.flatten(2).float()
         rsqrt = torch.rsqrt(flat.square().mean(-1, keepdim = True) + self.norm_eps)
         mixes = F.linear(flat, self.fn.float()) * rsqrt
         scale, base = self.scale.float(), self.base.float()
-        # kernel.py:427-462, the same operation order
+        # kernel.py:427-462 operation order
         pre = torch.sigmoid(mixes[..., :hc] * scale[0] + base[:hc]) + eps
         post = 2 * torch.sigmoid(mixes[..., hc : 2 * hc] * scale[1] + base[hc : 2 * hc])
         comb = (mixes[..., 2 * hc :] * scale[2] + base[2 * hc :]).unflatten(-1, (hc, hc))
@@ -430,9 +387,6 @@ def hc_post(x, residual, post, comb):
     return y.type_as(x)
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Attention: sliding window + compressed KV chosen by the indexer (model.py:409-792)
-# ----------------------------------------------------------------------------------------------------------------
 def _window_idxs(
     window,
     seqlen,
@@ -447,9 +401,7 @@ def _window_idxs(
 
 class DeepseekV41Compressor(nn.Module):
     """model.py:429-485: pools ``compress_ratio`` consecutive tokens into one KV latent with a learned softmax
-    gate (fp32), or projects each token when the ratio is 1. Returns the latent before RoPE. Projections are fp32
-    (``_keep_in_fp32_modules``) like the reference's promoted ``wkv`` / ``wgate`` (model.py:444-448); they are
-    called as modules so LoRA adapters on them apply."""
+    gate (fp32), or projects each token when the ratio is 1."""
 
     def __init__(self, config, layer_idx):
         super().__init__()
@@ -562,9 +514,7 @@ class DeepseekV41Indexer(nn.Module):
 
 
 class DeepseekV41Attention(nn.Module):
-    """model.py:614-792. Latent MQA over the sliding window of raw KV plus, when ``compress_ratio > 0``, the
-    indexer's top-k compressed positions. KV / index sources publish into the per-forward ``shared`` dict that later
-    layers of the same group read (model.py:1169-1183)."""
+    """model.py:614-792."""
 
     def __init__(self, config, layer_idx):
         super().__init__()
@@ -596,8 +546,7 @@ class DeepseekV41Attention(nn.Module):
         self.is_index_source = is_backbone and layer_idx in config.index_source_layer_ids
         self.compressor = DeepseekV41Compressor(config, layer_idx) if self.is_kv_source else None
         self.indexer = DeepseekV41Indexer(config, layer_idx) if self.is_index_source else None
-        # model.py:695-711: compressing layers rotate at compress_rope_theta with YaRN; sliding-only layers at
-        # rope_theta without it.
+        # model.py:695-711: only compressing layers use compress_rope_theta with YaRN.
         if self.compress_ratio:
             self._rope_key = (
                 self.rope_head_dim,
@@ -619,7 +568,7 @@ class DeepseekV41Attention(nn.Module):
 
     def forward(self, x, positions, shared):
         bsz, seqlen, _ = x.shape
-        # torch.is_inference_mode_enabled() is untraceable; traced graphs never run under inference_mode
+        # is_inference_mode_enabled() is untraceable
         inference = False if torch.compiler.is_compiling() else torch.is_inference_mode_enabled()
         inv_freq = _inv_freq_on(*self._rope_key, positions.device, inference)
         cos, sin = _rope_cos_sin(positions, inv_freq)
@@ -639,7 +588,7 @@ class DeepseekV41Attention(nn.Module):
         if self.compress_ratio:
             ratio = self.compress_ratio
             n_comp = seqlen // ratio
-            # a latent stands for the first token of its group: group j sits at position j * ratio (model.py:733)
+            # group j sits at position j * ratio (model.py:733)
             cpos = positions[..., : n_comp * ratio : ratio] if n_comp > 0 else positions[..., :0]
             ccos, csin = _rope_cos_sin(cpos, inv_freq)
             latent = None
@@ -656,8 +605,7 @@ class DeepseekV41Attention(nn.Module):
                 shared["compress_kv"] = apply_rotary(latent, ccos, csin)
             compress_kv = shared["compress_kv"][:, :n_comp].to(device = x.device, dtype = kv.dtype)
         if _SPARSE_ATTN_WINDOW is not None:
-            # Window KV stays contiguous (the window kernel's banded tiles); the indexer's rows carry offset = seqlen
-            # into the concatenation, so they are shifted back into compress_kv.
+            # Indexer rows carry offset = seqlen into the concatenation; shift back into compress_kv.
             if compress_kv is None:
                 compress_kv = kv.new_zeros(bsz, 0, kv.shape[-1])
                 comp_idxs = torch.empty(bsz, seqlen, 0, dtype = torch.int32, device = kv.device)
@@ -680,13 +628,8 @@ class DeepseekV41Attention(nn.Module):
         return self.o_b_proj(o.flatten(2))
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# MoE (model.py:794-906)
-# ----------------------------------------------------------------------------------------------------------------
 class DeepseekV41TopKRouter(nn.Module):
-    """model.py:794-829. Scores sqrt(softplus) (or softmax / sigmoid) in fp32; the correction bias picks experts,
-    the unbiased scores weight them. ``e_score_correction_bias_vl`` (image spans) is loaded but text-only routing
-    never reads it."""
+    """model.py:794-829."""
 
     def __init__(self, config, n_experts, top_k):
         super().__init__()
@@ -711,9 +654,7 @@ class DeepseekV41TopKRouter(nn.Module):
         elif self.score_func == "sigmoid":
             scores = scores.sigmoid()
         else:
-            # model.py:819. softplus underflows to exactly 0 for logits <= ~-104 (fp32), where sqrt's backward is
-            # 0 / 0 = NaN even for experts that are not picked. Clamping at the smallest normal changes the forward
-            # by < 1.1e-19 and gives those rows a zero gradient.
+            # model.py:819. softplus underflows to 0 below ~-104, making sqrt's backward NaN; clamp to smallest normal.
             scores = F.softplus(scores).clamp_min(torch.finfo(torch.float32).tiny).sqrt()
         indices = (scores + self.e_score_correction_bias.float()).topk(self.top_k, dim = -1)[1]
         weights = scores.gather(1, indices)
@@ -724,8 +665,7 @@ class DeepseekV41TopKRouter(nn.Module):
 
 class _DeepseekV41Experts(nn.Module):
     """Routed experts as 3-D tensors (transformers' experts layout): ``gate_up_proj`` [E, 2I, H] holds [w1; w3],
-    ``down_proj`` [E, H, I]. ``_apply_gate`` carries the reference's SwiGLU clamps (model.py:845-850), so
-    transformers' grouped_mm / batched_mm backends (and Unsloth's) apply them too."""
+    ``down_proj`` [E, H, I]."""
 
     def __init__(self, config, n_experts):
         super().__init__()
@@ -739,9 +679,7 @@ class _DeepseekV41Experts(nn.Module):
         E, H, I = n_experts, self.hidden_dim, self.intermediate_dim
         self._mxfp4 = getattr(config, "unsloth_experts_format", None) == "mxfp4"
         if self._mxfp4:
-            # The release's fp4 experts kept packed (convert.py): raw MXFP4 bytes as loaded, turned into
-            # unsloth_zoo Mxfp4ExpertParam gate_up_proj [E, 2I, H] / down_proj [E, H, I] (same logical shapes) by
-            # finalize_packed() after loading. Frozen, like every quantized base weight.
+            # fp4 experts kept packed; finalize_packed() turns them into Mxfp4ExpertParam after loading.
             def raw(*shape):
                 return nn.Parameter(torch.zeros(shape, dtype = torch.uint8), requires_grad = False)
 
@@ -781,8 +719,7 @@ class _DeepseekV41Experts(nn.Module):
         _count("experts_mxfp4_packed")
         device = self.gate_up_proj.device
         if device.type == "cuda":
-            # The fused MXFP4 grouped GEMM probes itself on first use; probing here, eagerly, keeps that probe out of
-            # the compiled MoE forward (a graph break per traced layer otherwise).
+            # Probe the fused MXFP4 GEMM eagerly so the probe is not a graph break in the compiled forward.
             try:
                 from unsloth_zoo.mxfp4_gemm import mxfp4_grouped_mm_available
                 mxfp4_grouped_mm_available(device)
@@ -894,13 +831,9 @@ class DeepseekV41SparseMoeBlock(nn.Module):
         return y.to(x.dtype).view(shape)
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Engram (model.py:296-365, engram.py)
-# ----------------------------------------------------------------------------------------------------------------
 class _TensorTableStore:
     """Rows held in memory as plain tensors (no Parameter / buffer): for a model built from a config rather than
-    a checkpoint (tests, tiny-model builders). Duck-types the parts of unsloth_zoo's FrozenTableStore that
-    UnslothFrozenTableEmbedding reads."""
+    a checkpoint (tests, tiny-model builders)."""
 
     def __init__(
         self,
@@ -925,7 +858,6 @@ class _TensorTableStore:
         dtype = None,
         host_ids = None,
     ):
-        # host_ids: unsloth_zoo's host copy of ids for file-backed stores; rows held in memory gather on their device
         idx = ids.to(self.weight.device).long()
         values = F.embedding(idx, self.weight)
         if self.scale is not None and values.dtype == getattr(torch, "float8_e4m3fn", None):
@@ -943,8 +875,7 @@ def make_engram_table(
     block_size = 32,
 ):
     """Parameter-free table (unsloth_zoo's UnslothFrozenTableEmbedding, bound to the checkpoint after the load)
-    when the installed unsloth_zoo provides it, else the Parameter-holding DeepseekV41EngramEmbedding.
-    UNSLOTH_DSV41_FROZEN_ENGRAM=0 forces the latter."""
+    when the installed unsloth_zoo provides it, else the Parameter-holding DeepseekV41EngramEmbedding."""
     if os.environ.get("UNSLOTH_DSV41_FROZEN_ENGRAM", "1") != "0":
         try:
             from unsloth_zoo.temporary_patches.deepseek_v41 import make_deepseek_v41_engram_table
@@ -963,9 +894,7 @@ def is_parameter_free_table(module):
 
 class DeepseekV41EngramEmbedding(nn.Embedding):
     """One n-gram hash table: rows in the checkpoint dtype (fp8 e4m3 with one e8m0 scale per ``block_size``
-    channels in the released files, or a float copy), dequantized on lookup (model.py:312-325). Lives at model level
-    (``engram_tables[str(layer)]``) so it can stay out of device placement and be streamed from disk by
-    unsloth_zoo's frozen table store. Frozen."""
+    channels in the released files, or a float copy), dequantized on lookup (model.py:312-325)."""
 
     def __init__(
         self,
@@ -985,8 +914,7 @@ class DeepseekV41EngramEmbedding(nn.Embedding):
         table_device = weight.device if weight.device.type != "meta" else ids.device
         idx = ids.to(table_device)
         values = F.embedding(idx, weight)
-        # Rows are always the stored codes times their per-block scale: a load can widen fp8 rows to the model dtype
-        # (losing the fp8 dtype, not the scale); float tables carry unit scales.
+        # A load can widen fp8 rows to the model dtype but keeps the scale; float tables have unit scales.
         fp8 = weight.dtype == getattr(torch, "float8_e4m3fn", None)
         if fp8 or (
             weight.shape[-1] % self.block_size == 0
@@ -1092,10 +1020,7 @@ def build_compressed_token_map(tokenizer):
 
 
 class DeepseekV41NgramHashState(nn.Module):
-    """engram.py:129-184 for a full sequence: hash ids of the 2..max_ngram_size-grams ending at each position.
-    Look-back stops at the start of the row and at DEAD tokens (padding); the compressed token map comes from the
-    tokenizer (``bind_tokenizer``). Holds no parameters or buffers: the config-derived tables are rebuilt per
-    device on first use."""
+    """engram.py:129-184 for a full sequence: hash ids of the 2..max_ngram_size-grams ending at each position."""
 
     def __init__(self, config):
         super().__init__()
@@ -1106,7 +1031,7 @@ class DeepseekV41NgramHashState(nn.Module):
         primes, offsets = engram_layout(
             self.layer_ids, self.max_ngram_size, config.engram_n_heads, config.engram_vocab_size
         )
-        # Plain Python / CPU data: __init__ may run under a meta device context (from_pretrained).
+        # __init__ may run under a meta device context (from_pretrained).
         self._layout = (primes, offsets)
         self._token_map = None
         self.pad_id = None
@@ -1153,13 +1078,7 @@ class DeepseekV41NgramHashState(nn.Module):
         token_mask = None,
         left_context = None,
     ):
-        """-> [b, s, n_engram_layers, (max_ngram_size - 1) * n_heads] int64 row ids.
-
-        A pure function of the token ids and the config (no rank, device or process state). ``left_context``
-        [b, k] holds the raw ids of the k tokens right before ``input_ids[:, 0]`` (-1 = no token / padding): a
-        sequence-sharded rank (context / sequence parallel) passes the previous shard's last
-        ``max_ngram_size - 1`` ids and gets the same hashes as one process over the whole sequence. None = the
-        sequence starts here."""
+        """-> [b, s, n_engram_layers, (max_ngram_size - 1) * n_heads] int64 row ids."""
         if self._token_map is None:
             raise ValueError(
                 "Unsloth: DeepSeek-V4.1's engram layers need the tokenizer's compressed token map: call "
@@ -1171,8 +1090,7 @@ class DeepseekV41NgramHashState(nn.Module):
             compressed = compressed.masked_fill(~token_mask.to(compressed.device), ENGRAM_DEAD)
         ctx_len = self.max_ngram_size - 1
         bsz, seqlen = compressed.shape
-        # History = [left context | ids]; the reference's "positions < shift" start-of-sequence block
-        # (engram.py:171-174) is a DEAD left context.
+        # The reference's start-of-sequence block (engram.py:171-174) is a dead left context.
         history = compressed.new_full((bsz, ctx_len), ENGRAM_DEAD)
         if left_context is not None and ctx_len > 0:
             ctx = left_context.to(compressed.device)[:, -ctx_len:]
@@ -1217,7 +1135,7 @@ class DeepseekV41Engram(nn.Module):
         rows,
         token_mask = None,
     ):
-        # the reference casts dequantized rows to bf16 before wkv (model.py:320); follow the stream's dtype
+        # reference casts rows to bf16 before wkv (model.py:320); we follow the stream dtype
         kv = self.wkv(rows.flatten(-2).to(device = x.device, dtype = x.dtype))
         key, value = kv.split([self.hc_mult * self.hidden_size, self.hidden_size], dim = -1)
         key = key.float().unflatten(-1, (self.hc_mult, self.hidden_size))
@@ -1233,18 +1151,9 @@ class DeepseekV41Engram(nn.Module):
         return (h + gate.unsqueeze(-1) * value.float().unsqueeze(-2)).to(x.dtype)
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Decoder layer and models
-# ----------------------------------------------------------------------------------------------------------------
 class _SharedState:
     """Per-forward group state that layers publish to and later layers read (compressed KV, indexer keys, top-k,
-    candidates; model.py:1169-1183). Deliberately not a dict / Mapping / dataclass: accelerate's send_to_device
-    (device_map, CPU / disk offload hooks) and FSDP2's forward-input cast (torch.distributed.utils._apply_to_tensors)
-    rebuild those containers per module, so a write made in one layer would never reach the next. An opaque object
-    passes through. Inside a decoder layer the attention and the indexer get the plain dict by keyword ``shared``,
-    which accelerate's ``_skip_keys_device_placement`` exempts on their offload hooks (and which torch.compile traces
-    as a dict). ``copy`` / ``clear`` / ``update`` / ``items`` serve unsloth_zoo's checkpoint replay; ``to_tensors`` /
-    ``from_tensors`` the pipeline-parallel handoff (``pipeline_handoff_keys``)."""
+    candidates; model.py:1169-1183)."""
 
     __slots__ = ("_d",)
 
@@ -1294,7 +1203,6 @@ class _SharedState:
         return cls(tensors)
 
 
-# Public name for pipeline-parallel callers (pipeline_stage_forward's group_state).
 DeepseekV41GroupState = _SharedState
 
 
@@ -1333,7 +1241,7 @@ class DeepseekV41DecoderLayer(GradientCheckpointingLayer):
         residual = x
         attn_pre, attn_post, attn_comb = self.attn_hc(x)
         h = self.input_layernorm(hc_pre(x, pre_mix))
-        # keyword: accelerate's offload hooks on self_attn / the indexer exempt `shared` (_skip_keys_device_placement)
+        # keyword: accelerate's offload hooks exempt `shared` (_skip_keys_device_placement)
         h = self.self_attn(h, positions, shared = shared._d if hasattr(shared, "_d") else shared)
         x = hc_post(h, residual, attn_post, attn_comb)
         residual = x
@@ -1409,8 +1317,7 @@ def _attach_release_quantization_config(cls, path, kwargs, hub):
             return
     if getattr(config, "quantization_config", None) is None:
         config.quantization_config = dict(release_qc)
-    # dtype="auto" reads config.dtype, else the first safetensors header, whose F8_E8M0 scales transformers cannot
-    # read: give a passed-in text config the checkpoint's dtype, as the checkpoint's own config has it.
+    # transformers cannot read the F8_E8M0 header dtype: pass the checkpoint's dtype explicitly.
     release_dtype = config_dict.get("dtype") or config_dict.get("torch_dtype")
     if release_dtype is not None and getattr(config, "dtype", None) is None:
         config.dtype = release_dtype
@@ -1428,7 +1335,6 @@ def _drop_engram_tables_outside_full_save(module, state_dict, prefix, local_meta
     """The engram tables (~98 GB each) go into a state dict only inside save_pretrained of the full model; DCP,
     FSDP2 state dicts, Trainer and adapter saves never carry them (they stay in the base checkpoint)."""
     if _ENGRAM_FULL_SAVE[0] > 0:
-        # A file-backed table exports its own checkpoint views (unsloth_zoo); rows held in memory are added here.
         for key, table in getattr(module, "engram_tables", {}).items():
             store = getattr(table, "frozen_table_store", None)
             if isinstance(store, _TensorTableStore):
@@ -1436,8 +1342,7 @@ def _drop_engram_tables_outside_full_save(module, state_dict, prefix, local_meta
                 if store.scale is not None:
                     state_dict[f"{prefix}engram_tables.{key}.weight_scale_inv"] = store.scale
         return state_dict
-    # Parameter-free tables only: a Parameter-backed DeepseekV41EngramEmbedding (UNSLOTH_DSV41_FROZEN_ENGRAM=0, or no
-    # unsloth_zoo) holds real weights that from_pretrained / load_state_dict must find.
+    # Parameter-backed tables hold real weights that loading must find.
     for key, table in getattr(module, "engram_tables", {}).items():
         if not is_parameter_free_table(table):
             continue
@@ -1511,8 +1416,7 @@ def pipeline_safe_cut_points(config):
 
 def pipeline_handoff_keys(config, cut):
     """The DeepseekV41GroupState keys a pipeline stage starting at layer ``cut`` needs from the stages before it
-    (empty at the safe cut points). ``compress_kv`` / ``index_k`` come from the last KV source before ``cut``,
-    ``topk_idxs`` from the last index source, ``candidates`` from the candidate source."""
+    (empty at the safe cut points)."""
     config = config.get_text_config() if hasattr(config, "get_text_config") else config
     kv_src, ix_src = list(config.kv_source_layer_ids), list(config.index_source_layer_ids)
     cand = config.candidate_source_layer_id
@@ -1538,10 +1442,7 @@ def _forward_segments_call(model, *args, **kwargs):
 
 
 def sequence_segments(position_ids, attention_mask, bsz, seqlen):
-    """[(row, start, length)] of the sequences in a batch when a row holds several of them (position_ids restarting
-    at 0, padding-free packing) or starts with padding (left padding); None when every row is one sequence from
-    column 0 followed only by padding (the plain path). One host read of a flag, then (only when needed) of the
-    layout. Each sequence's positions must run 0, 1, 2, ...: offset positions (a continuation) are refused."""
+    """[(row, start, length)] of each sequence when rows are packed or left padded; None for the plain path."""
     pos = None
     if position_ids is not None and seqlen > 1:
         pos = position_ids if position_ids.dim() == 2 else position_ids.view(1, -1)
@@ -1556,7 +1457,6 @@ def sequence_segments(position_ids, attention_mask, bsz, seqlen):
     if pos is not None:
         flags.append((pos != torch.arange(seqlen, device = pos.device)).any())
     if mask is not None:
-        # left padding, or a sequence resuming after padding
         flags.append((~mask[:, 0]).any() | (mask[:, 1:] & ~mask[:, :-1]).any())
     if not bool(torch.stack(flags).any()):
         return None
@@ -1596,15 +1496,14 @@ _LORA_TARGET_MAP = {
     "k_proj": _LORA_KV_TARGETS,
     "v_proj": _LORA_KV_TARGETS,
     "o_proj": ("self_attn.o_a_proj", "self_attn.o_b_proj"),
-    # Qualified to the shared expert: a bare gate_proj would also hit self_attn.compressor.gate_proj (attention).
-    # The routed experts are 3D Parameters, reached through Unsloth's MoE detection from the caller's bare aliases.
+    # Qualified: a bare gate_proj would also hit self_attn.compressor.gate_proj.
     "gate_proj": ("mlp.shared_experts.gate_proj",),
     "up_proj": ("mlp.shared_experts.up_proj",),
     "down_proj": ("mlp.shared_experts.down_proj",),
 }
 
 
-# Eager boundaries (not defs, so unsloth_zoo's compiler leaves them as they are): see DeepseekV41TextModel.forward.
+# Not defs, so unsloth_zoo's compiler leaves these eager.
 _sequence_segments_outside_trace = torch.compiler.disable(sequence_segments)
 _forward_segments_outside_trace = torch.compiler.disable(_forward_segments_call)
 
@@ -1614,7 +1513,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["DeepseekV41DecoderLayer", "DeepseekV41EngramEmbedding"]
-    # accelerate's device hooks rebuild dict kwargs; the per-forward `shared` group state must stay one object
+    # accelerate's hooks rebuild dict kwargs; `shared` must stay one object
     _skip_keys_device_placement = ["past_key_values", "shared"]
     _supports_flash_attn = False
     _supports_flash_attn_2 = False
@@ -1624,7 +1523,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     _can_compile_fullgraph = False
     _supports_cache_class = False
     _supports_static_cache = False
-    # Kept fp32 like the reference (hc params, sinks, router bias, the pooling compressor).
+    # Kept fp32 like the reference.
     _keep_in_fp32_modules = ["attn_hc", "ffn_hc", "sinks", "e_score_correction_bias", "compressor"]
     _keep_in_fp32_modules_strict = [
         "attn_hc",
@@ -1633,10 +1532,8 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         "e_score_correction_bias",
         "compressor",
     ]
-    # The engram tables stay wherever they fit under device_map (the frozen table store streams them from disk).
     _no_placement_params = ["weight", "weight_scale_inv"]
     _keys_to_ignore_on_load_unexpected = [
-        # parameter-free engram tables: bound to the checkpoint by unsloth_zoo after the load
         r"(^|\.)engram_tables\.\d+\.(weight|weight_scale_inv|scale)$",
         r"(^|\.)layers\.\d+\.engram\.embed\.(weight|scale)$",
         r"(^|\.)mtp\.",
@@ -1661,8 +1558,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
 
     def save_pretrained(self, *args, **kwargs):
         _ENGRAM_FULL_SAVE[0] += 1
-        # unsloth_zoo's save patch writes packed MXFP4 experts dequantized: the saved config then describes dense
-        # experts. Without it the packed blocks + scales are written (state_dict hook) and the flag stays.
+        # unsloth_zoo's save patch dequantizes packed experts, so the saved config describes dense experts.
         dense_save = zoo_saves_mxfp4_dense()
         configs = [
             c for c in (self.config, getattr(self.config, "text_config", None)) if c is not None
@@ -1674,8 +1570,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
                     dropped.append((c, c.unsloth_experts_format))
                     del c.unsloth_experts_format
         try:
-            # A full save handed a state dict collected beforehand (state_dict() drops the tables outside a full save)
-            # still writes the engram tables; the caller's dict is not modified.
+            # A pre-collected state dict lacks the engram tables; add them without mutating the caller's dict.
             positional = len(args) > 2 and isinstance(args[2], dict)
             supplied = args[2] if positional else kwargs.get("state_dict")
             if isinstance(supplied, dict) and not getattr(self, "_hf_peft_config_loaded", False):
@@ -1696,10 +1591,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
-        # The released files use DeepSeek's own key names, per-expert weights and ue8m0 fp8 / fp4 blocks. transformers
-        # 5 with core_model_loading and an FP8 quantizer that knows fp4 experts loads them directly (the conversion
-        # rules registered in __init__.py). Older releases would silently skip every tensor, so the files are
-        # converted once into this layout (convert.py) and loaded from there.
+        # Older transformers silently skip the release's DeepSeek-named tensors: convert once (convert.py).
         from .convert import convert_released_checkpoint, released_needs_conversion
 
         hub = {
@@ -1712,38 +1604,29 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         except Exception:
             names = None
         released = _released_layout(names)
-        # The caller's config object is never mutated (the release's metadata goes onto a copy).
         if kwargs.get("config") is not None and not isinstance(
             kwargs["config"], (str, os.PathLike)
         ):
             kwargs["config"] = copy.deepcopy(kwargs["config"])
         if released and not released_needs_conversion():
-            # A direct native-class load may run before anything registered the release's renames.
             from . import _register_conversions
             if not _register_conversions():
                 raise RuntimeError(
                     "Unsloth: could not register the DeepSeek-V4.1 checkpoint conversions with transformers."
                 )
-            # transformers 5 loads the release itself through the registered renames and the release's FP8
-            # quantization_config. A config passed in (a DeepseekV41TextConfig, or the text class's own config
-            # class) does not carry that quantization_config, and without it the fp8 / fp4 tensors cannot load:
-            # take it from the checkpoint, as a config read from the checkpoint would have it.
+            # A passed-in config lacks the release's FP8 quantization_config: take the checkpoint's.
             _attach_release_quantization_config(cls, pretrained_model_name_or_path, kwargs, hub)
         if released and released_needs_conversion():
-            # the converted copy is flat: the subfolder is consumed by the conversion
+            # the conversion consumes the subfolder
             pretrained_model_name_or_path = convert_released_checkpoint(
                 pretrained_model_name_or_path, **hub
             )
             kwargs.pop("subfolder", None)
-            # The converted weights are dequantized: drop the release's FP8 config wherever a caller carried
-            # it over (a config object read from the original repo, or a quantization_config kwarg); a
-            # bitsandbytes config asked for by the caller stays.
+            # Converted weights are dequantized: drop any carried-over FP8 config (bitsandbytes stays).
             if _is_fp8_quant_config(kwargs.get("quantization_config")):
                 kwargs.pop("quantization_config")
             config = kwargs.get("config")
             if isinstance(config, (str, os.PathLike)):
-                # a config path still has to build the experts the converted files hold (resolved as transformers
-                # resolves it: with the caller's subfolder)
                 config = cls.config_class.from_pretrained(str(config), **hub)
                 kwargs["config"] = config
             experts_format = converted_experts_format(pretrained_model_name_or_path)
@@ -1756,7 +1639,6 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
                             del c.quantization_config
                         except AttributeError:
                             c.quantization_config = None
-                    # A config read from the original repo must build the experts the converted files hold.
                     if experts_format is not None:
                         c.unsloth_experts_format = experts_format
                     elif getattr(c, "unsloth_experts_format", None) is not None:
@@ -1767,7 +1649,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
         if released:
             model, info = model
-            # Never a silent random-weights load: every parameter must come from the release.
+            # Never a silent random-weights load.
             missing = sorted(info.get("missing_keys") or [])
             if missing:
                 raise RuntimeError(
@@ -1781,14 +1663,11 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
                 model = (model, info)
         target = model[0] if isinstance(model, tuple) else model
         for module in target.modules():
-            # duck-typed: unsloth_zoo's compiler re-creates these classes in its compiled module
+            # duck-typed: unsloth_zoo's compiler re-creates these classes
             if callable(getattr(module, "finalize_packed", None)):
                 module.finalize_packed()
-        # The engram hashes need the tokenizer's compressed token map; the checkpoint ships the tokenizer.
         target = model[0] if isinstance(model, tuple) else model
         if hasattr(target, "_autobind_tokenizer"):
-            # the tokenizer sits next to the weights: subfolder included (a converted copy is flat, its subfolder
-            # was consumed above)
             hub = {
                 k: kwargs[k]
                 for k in ("cache_dir", "token", "revision", "subfolder", "local_files_only")
@@ -1803,22 +1682,14 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         attention = True,
         mlp = True,
     ):
-        """Unsloth's get_peft_model calls this to translate the usual LoRA names into this model's Linears.
-        q_proj -> q_a_proj / q_b_proj, k_proj / v_proj -> the single KV head (kv_proj), the compressor (kv_proj /
-        gate_proj) and the engram key-value (wkv), o_proj -> o_a_proj (grouped) / o_b_proj; gate / up / down_proj ->
-        the shared expert, qualified so the compressor's gate_proj is not hit (the routed experts are reached by
-        Unsloth's MoE detection from the caller's bare names). None and "all-linear" select all of them. Every list,
-        explicit or automatic, is filtered by the attention family (self_attn, compressor, engram) and the mlp family
-        (shared and routed experts). The indexer (selection only, no gradient) and the routers (frozen) are never
-        targeted. A regex string passes through unchanged, as do names this map cannot place in a family."""
+        """Unsloth's get_peft_model calls this to translate the usual LoRA names into this model's Linears."""
         if isinstance(target_modules, str) and target_modules != "all-linear":
             return target_modules
         if target_modules is None or target_modules == "all-linear":
             wanted = ["q_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         else:
             wanted = list(target_modules)
-        # Every target, mapped or passed through, is filtered by its family: attention = self_attn (incl. the
-        # compressor and indexer) and the engram, mlp = the shared and routed experts. Unknown leaves stay.
+        # Every target is filtered by family: attention = self_attn + engram, mlp = shared and routed experts.
         attention_parts = {"self_attn", "compressor", "indexer", "engram"}
         mlp_parts = {"mlp", "shared_experts", "experts"}
         attention_leaves = {
@@ -1924,7 +1795,7 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         else:
             self.ngram_hash = None
         self.gradient_checkpointing = False
-        # whatever was imported first: unsloth_zoo's patches may have run before this module existed
+        # unsloth_zoo's patches may have run before this module existed
         ensure_checkpoint_replay()
         self._register_state_dict_hook(_drop_engram_tables_outside_full_save)
         self.post_init()
@@ -1988,16 +1859,14 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
                 )
             inputs_embeds = self.embed_tokens(input_ids)
         bsz, seqlen = inputs_embeds.shape[:2]
-        # Packed rows / left padding are moved into their own rows also under torch.compile: the layout read and the
-        # relayout run outside the traced graph (a deliberate boundary; skipping them while compiling would let
-        # sequences attend across each other).
+        # Relayout runs outside the traced graph even under compile, else sequences attend across each other.
         segments = _sequence_segments_outside_trace(position_ids, attention_mask, bsz, seqlen)
         if segments is not None:
             return _forward_segments_outside_trace(
                 self, segments, input_ids, inputs_embeds, output_hidden_states, **kwargs
             )
         positions = torch.arange(seqlen, device = inputs_embeds.device)
-        # right padding only here (sequence_segments moved anything else): pads never reach a real token's hash / gate
+        # right padding only here: pads never reach a real token's hash / gate
         token_mask = (
             attention_mask.bool()
             if attention_mask is not None and attention_mask.dim() == 2
@@ -2040,7 +1909,7 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         if layer_ids is not None and not any(l in layer_ids for l in self.ngram_hash.layer_ids):
             return rows
         if input_ids is None:
-            # inputs_embeds alone cannot drive the engram layers: their n-gram hashes read the token ids
+            # engram hashes need token ids
             raise ValueError(
                 "Unsloth: DeepSeek-V4.1's engram layers hash the token ids: pass input_ids (with or without "
                 "inputs_embeds), also to a pipeline stage that owns an engram layer."
@@ -2073,20 +1942,7 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         inputs_embeds = None,
         attention_mask = None,
     ):
-        """Layers ``[start, end)`` of one pipeline stage. What crosses a stage boundary:
-
-        * ``hidden_states`` [b, s, hc_mult, hidden] (the residual streams) and ``pre_mix`` [b, s, hc_mult] fp32
-          (the lagged mHC collapse weights) -- both differentiable;
-        * ``group_state``: the per-forward group state written by earlier source layers, a DeepseekV41GroupState
-          (send ``group_state.to_tensors(pipeline_handoff_keys(config, end))``, rebuild with ``from_tensors``):
-          compressed KV [b, s // ratio, head_dim] (differentiable: the later layers' loss reaches the source layer's
-          compressor), indexer keys, top-k int32 and candidate bool masks (selection, no gradient);
-        * ``input_ids`` (and ``attention_mask``): every stage that owns an engram layer hashes them itself and
-          reads its own tables (frozen, model level), so engram rows never cross a boundary.
-
-        The first stage (``start == 0``) embeds ``input_ids`` / takes ``inputs_embeds``; the last stage
-        (``end == num_hidden_layers``) returns the final normed hidden states [b, s, hidden]. Returns
-        (hidden_states, pre_mix, group_state). One sequence per row (pack before splitting into stages)."""
+        """Layers ``[start, end)`` of one pipeline stage."""
         if start == 0 and hidden_states is None:
             if inputs_embeds is None:
                 inputs_embeds = self.embed_tokens(input_ids)
@@ -2119,10 +1975,8 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         return h, pre_mix, group_state
 
     def _forward_segments(self, segments, input_ids, inputs_embeds, output_hidden_states, **kwargs):
-        """Packed rows (several sequences, position_ids restarting at 0) or left padding: every sequence is moved to
-        its own row starting at column 0 (right padded), run exactly as the reference runs one sequence, and its
-        hidden states are put back where it came from (padding columns get zeros). The compressor groups, the sliding
-        window, the top-k blocks and the engram n-grams therefore never cross a sequence boundary."""
+        """Move each packed / left-padded sequence to its own right-padded row, run it as the reference does,
+        and scatter hidden states back (padding gets zeros)."""
         if kwargs.get("engram_left_context") is not None:
             raise ValueError(
                 "Unsloth: DeepSeek-V4.1 engram_left_context continues one sequence across shards; it cannot be "
@@ -2282,8 +2136,7 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             loss = loss, logits = logits, past_key_values = None, hidden_states = hidden_states
         )
 
-    # Generation recomputes the whole prefix every step (sanity evaluation only; no KV cache); only the last
-    # position's logits are projected (a full-prefix vocabulary projection is S x vocab per step).
+    # No KV cache (sanity evaluation only); project only the last position's logits.
     def prepare_inputs_for_generation(
         self,
         input_ids,
