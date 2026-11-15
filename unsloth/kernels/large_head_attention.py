@@ -762,9 +762,13 @@ def _measured_faster_on(device):
         return False
 
 
-def _self_check(device, dtype):
-    """One small fwd + bwd against SDPA math per (device, dtype) before first use."""
-    key = (str(device), dtype)
+def _self_check(
+    device,
+    dtype,
+    head_dim = 512,
+):
+    """One small fwd + bwd against SDPA math per (device, dtype[, head_dim]) before first use."""
+    key = (str(device), dtype) if head_dim == 512 else (str(device), dtype, head_dim)
     if key in _SELF_CHECK:
         return _SELF_CHECK[key]
     passed = False
@@ -782,11 +786,16 @@ def _self_check(device, dtype):
         with torch.inference_mode(False), torch.enable_grad(), hooks:
             q, k, v, g = [
                 torch.randn(shape, device = device, dtype = dtype, generator = gen)
-                for shape in ((1, 4, 80, 512), (1, 2, 80, 512), (1, 2, 80, 512), (1, 80, 4, 512))
+                for shape in (
+                    (1, 4, 80, head_dim),
+                    (1, 2, 80, head_dim),
+                    (1, 2, 80, head_dim),
+                    (1, 80, 4, head_dim),
+                )
             ]
             q, k, v = [x.requires_grad_() for x in (q, k, v)]
             lo, hi = _dense_intervals(1, 80, True, device)
-            out = large_head_attention(q, k, v, lo, hi, 512**-0.5)
+            out = large_head_attention(q, k, v, lo, hi, head_dim**-0.5)
             grads = torch.autograd.grad(out, (q, k, v), g)
             qf, kf, vf = [x.detach().float().requires_grad_() for x in (q, k, v)]
             ref = torch.nn.functional.scaled_dot_product_attention(

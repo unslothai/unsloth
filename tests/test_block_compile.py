@@ -815,6 +815,87 @@ def test_gemma4_global_layer_mask_gets_a_causal_verdict(monkeypatch):
     M._precheck_band(layer, 96, (), {"attention_mask": padded})
     assert scans == [(96, 96), (96, 96)]
     assert plain_causal._unsloth_plain_causal is True and padded._unsloth_plain_causal is False
+    assert plain_causal._unsloth_block_long_band is False
+
+
+def _sliding_layer(window = 64, head_dim = 256):
+    class Gemma4TextAttention(torch.nn.Module):
+        is_sliding, sliding_window, is_causal, training = True, window, True, True
+
+    attn = Gemma4TextAttention()
+    attn.head_dim = head_dim
+    layer = torch.nn.Module()
+    layer.self_attn = attn
+    return layer, attn
+
+
+def test_gemma4_long_band_verdict_needs_the_kernel(monkeypatch):
+    M = _load()
+    scans = []
+    _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    layer, _ = _sliding_layer()
+    hidden = torch.zeros(1, 96, 8, dtype = torch.bfloat16)
+    ready = []
+    monkeypatch.setattr(M, "_band_kernel_ready", lambda layer, h: ready.append(h) or True)
+    long = torch.zeros(1, 1, 96, 96)
+    M._precheck_band(layer, 96, (long,), {}, hidden)
+    assert scans == [(96, 64)] and long._unsloth_block_long_band is True
+    assert long._unsloth_block_band is False and long._unsloth_plain_causal is False
+    monkeypatch.setattr(M, "_band_kernel_ready", lambda layer, h: False)
+    other = torch.zeros(1, 1, 96, 96)
+    M._precheck_band(layer, 96, (other,), {}, hidden)
+    assert other._unsloth_block_long_band is False and scans == [(96, 64)]
+    # Within the window the existing is_causal route decides; no long-band scan.
+    short = torch.zeros(1, 1, 32, 32)
+    M._precheck_band(layer, 32, (short,), {}, hidden)
+    assert short._unsloth_block_long_band is False and short._unsloth_block_band is True
+
+
+def test_gemma4_band_kernel_kill_switch(monkeypatch):
+    M = _load()
+    layer, _ = _sliding_layer()
+    monkeypatch.setenv("UNSLOTH_BLOCK_SLIDING_KERNEL", "0")
+    assert M._band_kernel_ready(layer, torch.zeros(1, 4, 8)) is False
+    monkeypatch.delenv("UNSLOTH_BLOCK_SLIDING_KERNEL")
+    assert M._band_kernel_ready(layer, torch.zeros(1, 4, 8)) is False  # CPU tensor
+
+
+def test_gemma4_long_band_routes_to_the_interval_kernel(monkeypatch):
+    M = _load()
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    scans = []
+    calls, _ = _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    _, attn = _sliding_layer(window = 16, head_dim = 32)
+    kernel = []
+    monkeypatch.setattr(
+        M,
+        "_band_kernel_attention",
+        lambda q, k, v, w, s: kernel.append((q.shape, w, s)) or "kernel",
+    )
+    monkeypatch.setattr(M, "_band_kernel_checked", lambda q: True)
+    q = torch.randn(1, 4, 48, 32, dtype = torch.bfloat16)
+    kv = torch.randn(1, 2, 48, 32, dtype = torch.bfloat16)
+    mask = torch.zeros(1, 1, 48, 48)
+    mask._unsloth_block_long_band = True
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    M._IN_BLOCK[0] = M._FULL
+    try:
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "kernel"
+        assert kernel == [(q.shape, 16, 1.0)]
+        mask._unsloth_block_long_band = False
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "plain"
+        mask._unsloth_block_long_band = True
+        assert (
+            wrapped(attn, q, kv, kv, mask, dropout = 0.1, scaling = 1.0)[0] == "plain"
+        )  # training dropout
+        assert wrapped(attn, q.float(), kv.float(), kv.float(), mask, scaling = 1.0)[0] == "plain"
+    finally:
+        M._IN_BLOCK[0] = M._OFF
+    assert len(kernel) == 1 and len(calls["plain"]) == 3
 
 
 def test_kill_switch(monkeypatch):

@@ -827,6 +827,48 @@ def test_router_captures_into_a_cuda_graph_with_an_inference_mask():
     torch.testing.assert_close(dense, eager_dense)
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.parametrize("S", [70, 200])
+@pytest.mark.parametrize("heads", [(8, 4), (8, 8)])
+@pytest.mark.parametrize("window", [16, 64])
+def test_kernel_sliding_band_head_dim_256(S, heads, window):
+    # Gemma-4 sliding layers (head_dim 256) longer than the window: rows attend (i - w, i].
+    H, HKV = heads
+    dtype = _cuda_dtype()
+    torch.manual_seed(S + H + window)
+    B, D = 2, 256
+    i = torch.arange(S)
+    allowed = (
+        (_causal(S) & (i[None, :] > i[:, None] - window)).cuda()[None, None].expand(B, 1, S, S)
+    )
+    q = torch.randn(B, S, H, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    k = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    v = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    grad = torch.randn(B, S, H, D, device = "cuda", dtype = dtype)
+    lo, hi = LH.intervals_from_mask(allowed, B, S)
+    assert int(lo[0, -1]) == S - window and int(hi[0, -1]) == S - 1
+    ours_in = [x.detach().clone().requires_grad_() for x in (q, k, v)]
+    out = LH.large_head_attention(*ours_in, lo, hi)
+    out.backward(grad)
+    ref_in = [x.detach().float().requires_grad_() for x in (q, k, v)]
+    ref = _reference(*ref_in, allowed)
+    ref.backward(grad.float())
+    for a, b in zip([out] + [x.grad for x in ours_in], [ref] + [x.grad for x in ref_in]):
+        assert torch.isfinite(a).all()
+        err = (a.float() - b).abs()
+        assert err.max() <= 0.03 * b.abs().max() + 0.02
+        assert err.mean() <= 0.01 * b.abs().mean() + 2e-3
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_self_check_per_head_dim():
+    dtype = _cuda_dtype()
+    device = torch.device("cuda", torch.cuda.current_device())
+    assert LH._self_check(device, dtype, 256) is True
+    assert (str(device), dtype, 256) in LH._SELF_CHECK
+    assert LH._self_check(device, dtype) is True and (str(device), dtype) in LH._SELF_CHECK
+
+
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_compiled_takes_a_block_verified_causal_mask(monkeypatch):
     # Block compile scans the mask eagerly and marks it plain causal; the compiled graph then runs
