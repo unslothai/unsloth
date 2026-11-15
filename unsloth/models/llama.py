@@ -260,6 +260,12 @@ def lm_head_needs_forward(lm_head_module):
 
 
 def original_apply_o(self, X):
+    # run_attention downcasts fp32 Q/K/V to bf16 / fp16 for kernels without fp32 support (FlashAttention,
+    # xformers on sm_100+), so an fp32 model outside autocast hands a half-precision X to an fp32 o_proj.
+    if X.dtype in (torch.float16, torch.bfloat16) and not torch.is_autocast_enabled():
+        o_weight = getattr(getattr(self.o_proj, "base_layer", self.o_proj), "weight", None)
+        if o_weight is not None and o_weight.dtype == torch.float32:
+            X = X.to(torch.float32)
     O = self.o_proj(X)
     return O
 
