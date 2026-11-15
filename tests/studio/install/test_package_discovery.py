@@ -131,6 +131,13 @@ def test_desktop_crate_sources_stay_out_of_the_wheel():
     assert not leaked, f"{len(leaked)} desktop crate files would ship, e.g. {leaked[:3]}"
 
 
+def test_frontend_lockfiles_stay_out_of_the_wheel():
+    """npm and bun lockfiles are build inputs for `npm ci`, not files an install reads."""
+    shipped = set(_wheel_payload())
+    for path in ("studio/frontend/package-lock.json", "studio/frontend/bun.lock"):
+        assert path not in shipped, f"{path} must not ship in the wheel"
+
+
 def test_installer_icons_survive_the_src_tauri_exclusion():
     # install.sh copies icons out of site-packages/studio/src-tauri/icons, so keep that dir.
     shipped = set(_wheel_payload())
