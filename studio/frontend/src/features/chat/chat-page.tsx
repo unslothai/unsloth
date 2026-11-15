@@ -27,6 +27,7 @@ import {
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import {
+  endVoiceOnSignOut,
   getVoiceMode,
   loadVoiceMode,
   requestVoiceThreadReset,
@@ -3291,6 +3292,9 @@ export function ChatPage({
       void unloadSttModel().catch(() => {});
       void unloadVadModel();
       useChatRuntimeStore.getState().setVadSlotLoaded(false);
+      // Chat only unmounts on sign-out: voice ends with it instead of reopening the mic on the next login.
+      endVoiceOnSignOut();
+      useChatRuntimeStore.getState().setVoiceMode("off");
     },
     [unloadOwnVoice],
   );

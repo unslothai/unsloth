@@ -48,6 +48,7 @@ import {
   requestVoiceBargeIn,
   requestVoiceEarlyInterject,
   requestVoiceResume,
+  registerVoiceSessionEnd,
   requestVoiceSubmit,
   voiceLoopSupported,
 } from "@/features/chat/voice/voice-loop-bridge";
@@ -247,8 +248,11 @@ export function getHeldTurnText(): string {
 let utterancesPending = 0;
 // Hearing ends before VAD and STT run: the coalesced reply must still wait for this phrase.
 export function voiceUtterancePending(): boolean {
-  return utterancesPending > 0;
+  // A fragment held for its continuation ("... and") is still this turn.
+  return utterancesPending > 0 || heldTurn !== null;
 }
+
+registerVoiceSessionEnd(() => liveSession?.cancel());
 
 export function clearHeldTurn(): void {
   heldEpoch += 1;
