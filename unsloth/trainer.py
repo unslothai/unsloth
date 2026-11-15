@@ -212,6 +212,32 @@ def _should_pack(config) -> bool:
     return not getattr(config, "_unsloth_disable_auto_packing", False)
 
 
+_DEFAULT_PACKING_NOTE = (
+    "Unsloth: Packing is on by default - documents are packed into full rows with no cross-document "
+    "attention. Set packing = False in SFTConfig (or UNSLOTH_DEFAULT_PACKING=0) to turn it off."
+)
+
+
+def _default_packing_env_on() -> bool:
+    value = os.environ.get("UNSLOTH_DEFAULT_PACKING", "1").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def _default_packing_dataset(dataset, config, formatting_func) -> bool:
+    """A non-empty map-style text dataset in a layout TRL's packer tokenizes per document."""
+    try:
+        from datasets import Dataset
+    except Exception:
+        return False
+    if not isinstance(dataset, Dataset) or len(dataset) == 0:
+        return False
+    if formatting_func is not None:
+        return True
+    columns = set(dataset.column_names or ())
+    field = getattr(config, "dataset_text_field", None) or "text"
+    return bool(columns & {"input_ids", field, "messages"}) or {"prompt", "completion"} <= columns
+
+
 def _pipeline_parallel_env_requested() -> bool:
     try:
         return int(os.environ.get("UNSLOTH_PP_SIZE", "1").strip() or 1) > 1
@@ -1842,6 +1868,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
             config_arg = args[1]
         else:
             config_arg = kwargs.get("args")
+        # UnslothSFTConfig leaves packing None when the user did not set it (models/rl.py).
+        packing_unset = config_arg is not None and getattr(config_arg, "packing", False) is None
+        if packing_unset:
+            setattr(config_arg, "packing", False)
 
         model = args[0] if len(args) >= 1 else kwargs.get("model")
         model_config = None
@@ -2042,6 +2072,28 @@ def _patch_sft_trainer_auto_packing(trl_module):
             flag = "packing" if requested_pack else "padding_free"
             logger.warning(f"Unsloth: {flag}=True ignored ({reason}).")
 
+        default_packing = False
+        if (
+            packing_unset
+            and not blocked
+            and not is_processor
+            and not is_vlm
+            and not is_hybrid
+            and getattr(config_arg, "padding_free", None) is None
+            and _default_packing_env_on()
+        ):
+            try:
+                bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs)
+                formatting_func = bound.arguments.get("formatting_func")
+            except Exception:
+                formatting_func = kwargs.get("formatting_func")
+            if _default_packing_dataset(train_dataset, config_arg, formatting_func):
+                setattr(config_arg, "packing", True)
+                # Eval batches stay padding-free as before, so eval_loss is unchanged.
+                if hasattr(config_arg, "eval_packing") and config_arg.eval_packing is None:
+                    setattr(config_arg, "eval_packing", False)
+                default_packing = True
+
         packing_active = False
         if _should_pack(config_arg) and not blocked:
             configure_sample_packing(config_arg)
@@ -2089,6 +2141,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 blocked = True
                 # Release the failed attempt's frames (may hold a loaded model) before retrying.
                 exc.__traceback__ = None
+                original_init(self, *args, **kwargs)
+            elif default_packing:
+                # Default packing must never cost a run that trained before: back to padding-free.
+                logger.info("Unsloth: default packing turned off (%s).", exc)
+                setattr(config_arg, "packing", False)
+                if getattr(config_arg, "eval_packing", None) is False:
+                    setattr(config_arg, "eval_packing", None)
+                exc.__traceback__ = None
+                packing_active = default_packing = False
+                auto_padding_free_active = True
                 original_init(self, *args, **kwargs)
             elif packing_active and _should_skip_auto_packing_error(exc):
                 logger.info(
@@ -2151,7 +2213,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)
-            print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
+            if default_packing:
+                print(_DEFAULT_PACKING_NOTE)
+            else:
+                print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
         elif not blocked and trainer_padding_free:
             enable_padding_free_metadata(self.model, self)
             message = (
