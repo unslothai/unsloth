@@ -534,6 +534,43 @@ def _strip_client_id_under_basic_auth(auth) -> None:
         logger.warning("MCP OAuth: client_id fixup could not be applied: %s", exc)
 
 
+class _RootSlashIssuer(str):
+    """The SDK compares a PRM-advertised issuer with a plain ``!=``; apply its own root-slash rule there."""
+
+    __slots__ = ()
+
+    def __eq__(self, other):
+        from mcp.client.auth.utils import issuers_match
+        if not isinstance(other, str):
+            return False
+        try:
+            return issuers_match(str.__str__(self), str.__str__(other))
+        except ValueError:
+            return False
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = str.__hash__
+
+
+def _accept_root_issuer_slash(auth) -> None:
+    """Google advertises https://accounts.google.com/ but issues https://accounts.google.com (python-sdk#1919)."""
+    expected = getattr(auth, "_expected_issuer", None)
+    if expected is None:
+        logger.warning("MCP OAuth: _expected_issuer missing; issuer slash fixup skipped")
+        return
+
+    def _expected_issuer():
+        issuer = expected()
+        return _RootSlashIssuer(issuer) if type(issuer) is str else issuer
+
+    try:
+        auth._expected_issuer = _expected_issuer
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
+
+
 def _oauth(
     url: str,
     oauth_client_id: Optional[str] = None,
@@ -549,6 +586,7 @@ def _oauth(
         client_secret = oauth_client_secret,
     )
     _strip_client_id_under_basic_auth(auth)
+    _accept_root_issuer_slash(auth)
     return auth
 
 
