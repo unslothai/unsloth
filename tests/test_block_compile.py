@@ -1064,6 +1064,54 @@ def test_failed_attempt_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
     torch.testing.assert_close(layer.proj.weight.grad, ref.proj.weight.grad)
 
 
+def _record_proj(layer, style, recorded):
+    if style == "hook":
+        from transformers.utils.output_capturing import _active_collector
+
+        def hook(module, args, output):
+            collected = _active_collector.get()
+            if collected is not None:
+                collected["router_logits"].append(output)
+
+        layer.proj.register_forward_hook(hook)
+        return _active_collector.set({"router_logits": recorded})
+
+    def make_capture_wrapper(orig):
+        @functools.wraps(orig)
+        def wrapped_forward(*args, **kwargs):
+            out = orig(*args, **kwargs)
+            recorded.append(out)
+            return out
+
+        return wrapped_forward
+
+    layer.proj.forward = make_capture_wrapper(layer.proj.forward)
+    return None
+
+
+@pytest.mark.parametrize("style", ["hook", "forward"])
+def test_trial_forward_is_not_recorded_as_a_model_output(monkeypatch, style):
+    # Qwen3-MoE tiny: trial forward added an extra router_logits entry (grad norm 1.04 vs 1.21).
+    from torch.utils.checkpoint import checkpoint
+
+    if style == "hook":
+        pytest.importorskip("transformers.utils.output_capturing")
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    recorded = []
+    token = _record_proj(layer, style, recorded)
+    try:
+        checkpoint(layer, torch.randn(2, 4, 8, requires_grad = True), use_reentrant = False)
+    finally:
+        if token is not None:
+            from transformers.utils.output_capturing import _active_collector
+            _active_collector.reset(token)
+    assert len(recorded) == 1, f"{len(recorded)} recorded outputs for one forward"
+
+
 def test_gdn_self_check_leaves_default_rng_alone():
     # Checkpoint recompute replays the default generator for LoRA dropout masks.
     pytest.importorskip("fla.ops.gated_delta_rule.chunk")

@@ -287,6 +287,36 @@ def _same(tensor):
     return tensor
 
 
+@contextlib.contextmanager
+def _no_output_capture(layer):
+    """Hide the trial forward from transformers output recording (an extra router_logits entry skews the aux loss)."""
+    swapped = []
+    for module in layer.modules():
+        fn = module.__dict__.get("forward")
+        # functools.wraps copies __qualname__, not the code object's.
+        code = getattr(fn, "__code__", None)
+        qual = getattr(code, "co_qualname", None)  # Python >= 3.11
+        if qual is None:
+            qual = (
+                "make_capture_wrapper" if getattr(code, "co_name", "") == "wrapped_forward" else ""
+            )
+        if hasattr(fn, "__wrapped__") and "make_capture_wrapper" in qual:
+            swapped.append((module, fn))
+            module.forward = fn.__wrapped__
+    try:
+        from transformers.utils.output_capturing import _active_collector
+    except Exception:
+        _active_collector = None
+    token = _active_collector.set(None) if _active_collector is not None else None
+    try:
+        yield
+    finally:
+        if _active_collector is not None:
+            _active_collector.reset(token)
+        for module, fn in swapped:
+            module.forward = fn
+
+
 # output_hidden_states hands block outputs to the caller, who may keep them past the generation.
 _HIDDEN_STATES_EXPOSED = [False]
 
@@ -1927,7 +1957,12 @@ def _wrap(
                 if nonreentrant
                 else contextlib.nullcontext()
             )
-            with torch.random.fork_rng(devices = devices), torch.enable_grad(), hooks:
+            with (
+                torch.random.fork_rng(devices = devices),
+                torch.enable_grad(),
+                hooks,
+                _no_output_capture(self),
+            ):
                 _IN_TRIAL[0] = "nonreentrant" if nonreentrant else True
                 try:
                     forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
