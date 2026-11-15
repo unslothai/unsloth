@@ -221,9 +221,10 @@ def _cover_inductor_workers(module):
 
 
 def _current_cuda_capability():
+    from .rocm_bf16 import is_rocm_torch
     torch = sys.modules.get("torch")
     try:
-        if torch is None or getattr(torch.version, "hip", None) or not torch.cuda.is_initialized():
+        if torch is None or is_rocm_torch(torch) or not torch.cuda.is_initialized():
             return None
         major, minor = torch.cuda.get_device_capability()
         return major * 10 + minor
