@@ -45,6 +45,24 @@ try:
 except Exception:  # noqa: BLE001 -- no Triton: the module imports, nothing here runs
     triton = None
 
+
+def _rocm_build() -> bool:
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+        return bool(is_rocm_torch(torch))
+    except Exception:  # noqa: BLE001 -- read as an NVIDIA build: sizes stay out of the compile key
+        return False
+
+
+# Sequence lengths kept out of the attention kernel's compile key, except on ROCm: there the % 16 facts on sq / sk are
+# worth 3% at 75k tokens on gfx1151 (Wan 2.2 A14B 720p), and a run keeps one resolution, so they cost one compile per
+# shape class, not per step. NVIDIA times the same either way.
+_ATTN_NO_SPECIALIZE = (
+    ["n_heads"] if triton is not None and _rocm_build() else ["sq", "sk", "n_heads"]
+)
+
 if triton is not None:
 
     @triton.jit
@@ -636,7 +654,7 @@ if triton is not None:
         m_i = m_new
         return acc, l_i, m_i
 
-    @triton.jit(do_not_specialize = ["sq", "sk", "n_heads"])
+    @triton.jit(do_not_specialize = _ATTN_NO_SPECIALIZE)
     def attn_kernel(
         q_ptr,
         qs_ptr,

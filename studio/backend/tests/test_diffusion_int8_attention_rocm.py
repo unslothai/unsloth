@@ -338,7 +338,8 @@ def test_varying_sizes_stay_out_of_the_compile_key():
     if T.triton is None:
         pytest.skip("no Triton")
     for kernel, names in (
-        (T.attn_kernel, {"sq", "sk", "n_heads"}),
+        # ROCm keeps sq / sk specialised in the attention kernel (3% at 75k tokens on gfx1151)
+        (T.attn_kernel, {"n_heads"} if T._rocm_build() else {"sq", "sk", "n_heads"}),
         (T.prep_kernel, {"sq", "sk", "n_heads", "n_qblk"}),
         (T.kv_kernel, {"sk", "n_heads", "n_kblk"}),
     ):
@@ -347,6 +348,8 @@ def test_varying_sizes_stay_out_of_the_compile_key():
             kernel.arg_names[i] if isinstance(i, int) else i for i in kernel.do_not_specialize
         }
         assert names <= skipped, (kernel.fn.__name__, skipped)
+        if kernel is T.attn_kernel and T._rocm_build():
+            assert not {"sq", "sk"} & skipped, skipped
 
 
 def test_launch_plan_is_made_once_per_call_signature(monkeypatch):
