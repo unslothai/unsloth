@@ -1719,6 +1719,12 @@ class ResearchSupervisor:
             "qwen",
             "qwencloud",
             "mistral",
+            "xai",
+            "nvidia",
+            "cohere",
+            "vercel",
+            "azure",
+            "bedrock",
         ):
             # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
             # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
