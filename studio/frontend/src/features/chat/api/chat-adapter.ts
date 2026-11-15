@@ -2020,7 +2020,7 @@ export function messagesUsePrivateContent(messages: RunMessages): boolean {
 }
 
 /** Every clip on the newest user message, in the order it was attached. */
-function latestUserAudioClips(messages: RunMessages): string[] {
+function latestUserAudioClips(messages: RunMessages, skipVoiceRecording = false): string[] {
   messages = messages.map(modelVisibleMessage);
   const clips: string[] = [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -2034,6 +2034,8 @@ function latestUserAudioClips(messages: RunMessages): string[] {
 
     if ("attachments" in message) {
       for (const attachment of message.attachments ?? []) {
+        // The voice loop's own recording (voiceTurnAttachment); an uploaded file is never skipped.
+        if (skipVoiceRecording && (attachment as { name?: string }).name === "voice.wav") continue;
         for (const part of attachment.content ?? []) {
           const base64 = extractAudioPartBase64(part);
           if (base64) clips.push(base64);
@@ -2051,8 +2053,9 @@ function latestUserAudioClips(messages: RunMessages): string[] {
 export function findLatestUserAudioBase64(
   messages: RunMessages,
   includePendingAudio = true,
+  skipVoiceRecording = false,
 ): string | undefined {
-  const [first] = latestUserAudioClips(messages);
+  const [first] = latestUserAudioClips(messages, skipVoiceRecording);
   if (first) return first;
 
   const pendingAudio = includePendingAudio
@@ -2064,8 +2067,9 @@ export function findLatestUserAudioBase64(
 /** Clips after the first, for extra_audio_base64. Undefined when empty so text turns stay durable. */
 export function findLatestUserExtraAudioBase64(
   messages: RunMessages,
+  skipVoiceRecording = false,
 ): string[] | undefined {
-  const extra = latestUserAudioClips(messages).slice(1);
+  const extra = latestUserAudioClips(messages, skipVoiceRecording).slice(1);
   return extra.length > 0 ? extra : undefined;
 }
 
@@ -7004,9 +7008,11 @@ export function createOpenAIStreamAdapter(
               localMediaTools.length > 0 ||
               deepResearchArmed);
           const voiceTurnAsText = getVoiceMode() === "active" && studioToolsOn;
-          const turnAudioBase64 = voiceTurnAsText
-            ? undefined
-            : findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation);
+          const turnAudioBase64 = findLatestUserAudioBase64(
+            currentTurnMessages,
+            !queuedRunSettings && !continuation,
+            voiceTurnAsText,
+          );
           return {
             model: params.checkpoint,
             messages: outboundMessages,
@@ -7048,9 +7054,7 @@ export function createOpenAIStreamAdapter(
             })
               ? { modalities: ["text", "audio"] }
               : {}),
-            extra_audio_base64: voiceTurnAsText
-              ? undefined
-              : findLatestUserExtraAudioBase64(currentTurnMessages),
+            extra_audio_base64: findLatestUserExtraAudioBase64(currentTurnMessages, voiceTurnAsText),
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
