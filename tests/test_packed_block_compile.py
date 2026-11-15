@@ -143,9 +143,9 @@ def _per_document(
     outs, start = [], 0
     for length in list(lengths) + ([total - sum(lengths)] if sum(lengths) < total else []):
         q, k, v = (x[:, :, start : start + length] for x in (Q, K, V))
-        mask = torch.ones(length, length, dtype = torch.bool).tril()
+        mask = torch.ones(length, length, dtype = torch.bool, device = Q.device).tril()
         if window is not None:
-            idx = torch.arange(length)
+            idx = torch.arange(length, device = Q.device)
             mask &= idx[None, :] > idx[:, None] - window
         outs.append(torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask = mask))
         start += length
@@ -180,3 +180,37 @@ def test_prepared_attention_is_block_diagonal_and_compiles_once(window):
         out2 = compiled(Q2, K2, V, cu, carrier)
         assert torch.equal(out2[:, lengths[0] :], out[:, lengths[0] :])
     assert len(graphs) == 1
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize("window", [None, 5])
+def test_prepared_attention_runs_flash_varlen_in_one_graph_on_cuda(window):
+    """sm80+: aten's flash varlen inside the graph (not the dense-mask fallback), no recompile."""
+    if torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("flash varlen needs sm80+")
+    graphs, calls = [], []
+
+    def backend(gm, example_inputs):
+        graphs.append(gm)
+        calls.extend(str(n.target) for n in gm.graph.nodes if n.op == "call_function")
+        return gm.forward
+
+    compiled = torch.compile(_attend(None, None, window), backend = backend, fullgraph = True)
+    for lengths, total in (([3, 1, 50, 7], 64), ([1, 90, 2, 26, 4, 2], 128)):
+        g = torch.Generator(device = "cuda").manual_seed(total)
+        Q = torch.randn(1, 4, total, 64, generator = g, device = "cuda", dtype = torch.bfloat16)
+        K, V = (
+            torch.randn(1, 2, total, 64, generator = g, device = "cuda", dtype = torch.bfloat16)
+            for _ in range(2)
+        )
+        cu, carrier = (t.cuda() for t in _prepared(lengths, total))
+        for t in (Q, K, V):
+            torch._dynamo.mark_dynamic(t, 2)
+        torch._dynamo.mark_dynamic(cu, 0)
+        torch._dynamo.mark_dynamic(carrier, 0)
+        out = compiled(Q, K, V, cu, carrier)
+        ref = _per_document(Q.float(), K.float(), V.float(), lengths, total, window)
+        torch.testing.assert_close(out.float(), ref, atol = 2e-2, rtol = 2e-2)
+    assert len(graphs) == 1
+    assert any("_flash_attention_forward" in c for c in calls), calls
