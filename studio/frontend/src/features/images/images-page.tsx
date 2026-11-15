@@ -248,7 +248,7 @@ import {
   defaultSizeFor,
   defaultsFor,
   defaultsKeyFor,
-  fixedStepsFor,
+  maxStepsFor,
   loadedRecipeFor,
   residentDefaultsKey,
   residentRecipeFor,
@@ -2447,10 +2447,10 @@ export function ImagesPage({
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
-  const fixedSteps = !external && status?.loaded === true ? fixedStepsFor(status.family) : null;
+  const maxSteps = !external && status?.loaded === true ? maxStepsFor(status.family) : null;
   useEffect(() => {
-    if (fixedSteps !== null && steps !== fixedSteps) setSteps(fixedSteps);
-  }, [fixedSteps, steps]);
+    if (maxSteps !== null && steps > maxSteps) setSteps(maxSteps);
+  }, [maxSteps, steps]);
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
@@ -7176,16 +7176,15 @@ export function ImagesPage({
                   <SliderField
                     label="Steps"
                     hint={
-                      fixedSteps !== null
-                        ? `The loaded model is distilled to exactly ${fixedSteps} steps, one output head per step, so the count is fixed.`
+                      maxSteps !== null
+                        ? `The loaded model is distilled to ${maxSteps} steps, one output head per step: it runs 1 to ${maxSteps}, and the reference workflows use ${maxSteps}.`
                         : "Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
                     }
-                    value={fixedSteps ?? steps}
+                    value={maxSteps !== null ? Math.min(steps, maxSteps) : steps}
                     min={1}
-                    max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
+                    max={maxSteps ?? stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
-                    disabled={fixedSteps !== null}
                   />
                 </div>
                 <SliderField

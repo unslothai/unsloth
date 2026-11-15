@@ -10,10 +10,10 @@
 
 Runs on today's pinned diffusers: the transformer and VAE classes come from diffusers when it ships them, else from
 the vendored PR copy. The released checkpoint is in MiniMax's native layout, so the DiT and VAE are converted while
-they stream off the safetensors shards, never as a second full copy. The 6-step PDD grid is fixed, so every block's
-AdaLN projection (13B of the 33B parameters) collapses to a lookup table over the 7 timesteps a render can ask for
-(6 steps + the 0.999 reference level), computed from the dense weights at load: exact to the dense bf16 math and
-20B parameters left to quantize."""
+they stream off the safetensors shards, never as a second full copy. The sampler's timesteps are known at load, so every block's
+AdaLN projection (13B of the 33B parameters) collapses to a lookup table over the timesteps a render can ask for
+(the reference sampler's steps for 1 to 6 steps + the 0.999 reference level), interpolated from dense rows on a
+uniform knot grid at load, so 20B parameters are left to quantize."""
 
 from __future__ import annotations
 
@@ -59,7 +59,13 @@ H3_IMAGE_SIGMAS: tuple[float, ...] = (
     0.23200887441635132,
     0.0,
 )
-# Smaller requests are generated on a canvas of this area at the same aspect and resized back (LANCZOS).
+# Each step uses the dt-weighted mean of the heads its sigma interval spans.
+H3_IMAGE_MAX_STEPS = H3_IMAGE_STEPS
+# Reference sampler: sigma linear in the grid index over 1000 timesteps, "simple" pick, t = 1 - timestep / 1000.
+H3_IMAGE_SAMPLING_TIMESTEPS = 1000
+H3_IMAGE_TIMESTEP_MULTIPLIER = 1000.0
+H3_IMAGE_ADALN_KNOTS = 1025
+# Opt-in floor (min_generation_area=): a smaller request renders on this area, then resizes back.
 H3_IMAGE_MIN_GENERATION_AREA = 2048 * 2048
 H3_IMAGE_MIN_GENERATION_AREA_RANGE = (1024, 4096 * 4096)
 # Kept for callers that pass max_sequence_length; the prompt is not truncated (the reference implementation has no cap).
@@ -448,6 +454,141 @@ def grid_timesteps(sigmas: Sequence[float] = H3_IMAGE_SIGMAS) -> list[float]:
     return out
 
 
+def sampling_sigma_table(grid: Sequence[float] = H3_IMAGE_SIGMAS) -> Any:
+    """The reference model sampling's 1000 sigmas: ``sigma(timestep)`` is linear in the grid index, float32."""
+    import torch
+
+    g = torch.tensor(list(grid), dtype = torch.float32).flip(0)
+    n = g.shape[0] - 1
+    ts = (
+        torch.arange(1, H3_IMAGE_SAMPLING_TIMESTEPS + 1, 1) / H3_IMAGE_SAMPLING_TIMESTEPS
+    ) * H3_IMAGE_TIMESTEP_MULTIPLIER
+    pos = (ts / H3_IMAGE_TIMESTEP_MULTIPLIER).clamp(0.0, 1.0) * n
+    i = pos.floor().long().clamp(max = n - 1)
+    return torch.lerp(g[i], g[i + 1], pos - i)
+
+
+def reference_sigmas(steps: int = H3_IMAGE_STEPS, grid: Sequence[float] = H3_IMAGE_SIGMAS) -> Any:
+    """The reference "simple" scheduler over ``sampling_sigma_table``: ``steps + 1`` float32 sigmas ending at 0. At 6
+    steps they sit up to 9e-4 off the distilled grid, as in the reference."""
+    import torch
+
+    table = sampling_sigma_table(grid)
+    ss = len(table) / int(steps)
+    sigs = [float(table[-(1 + int(x * ss))]) for x in range(int(steps))]
+    return torch.FloatTensor(sigs + [0.0])
+
+
+def model_sigma(sigma: Any) -> float:
+    """The sigma the DiT sees for one sampler sigma, as the reference derives it: ``timestep = sigma * 1000`` in
+    float32, read back as ``timestep / 1000`` in double."""
+    import torch
+
+    s = torch.as_tensor(sigma, dtype = torch.float32).reshape(1)
+    timestep = (s * H3_IMAGE_TIMESTEP_MULTIPLIER).float()
+    return float(timestep.flatten()[0]) / H3_IMAGE_TIMESTEP_MULTIPLIER
+
+
+def model_timestep(sigma: Any) -> float:
+    """The DiT's ``t = 1 - sigma`` for one sampler sigma (double; float32 when it reaches the model)."""
+    return 1.0 - model_sigma(sigma)
+
+
+def model_io(tensor: Any, dtype: Any) -> Any:
+    """The DiT's input latent and its output velocity in the compute dtype, as the reference casts them."""
+    return tensor.to(dtype)
+
+
+def reference_row_timestep(t: float) -> float:
+    """Reference picture rows sit at ``max(t, 0.999)``."""
+    return max(float(t), H3_IMAGE_REFERENCE_NOISE_AUG)
+
+
+def table_timesteps(max_steps: int = H3_IMAGE_MAX_STEPS) -> list[float]:
+    """Every float32 timestep a render can ask the DiT for at 1 to ``max_steps`` steps, reference rows included."""
+    import torch
+
+    seen: list[float] = []
+    for steps in range(1, int(max_steps) + 1):
+        for sigma in reference_sigmas(steps)[:-1]:
+            t = model_timestep(sigma)
+            for value in (t, reference_row_timestep(t)):
+                v = float(torch.tensor(value, dtype = torch.float32))
+                if v not in seen:
+                    seen.append(v)
+    return sorted(seen)
+
+
+PDD_BANK_ATTR = "_unsloth_pdd_bank"
+
+
+def install_pdd_head_bank(transformer: Any) -> bool:
+    """Turn the release's fused per-step heads into the reference's head bank: head 0 is a full head and the others
+    are offsets from it (``fused_k - fused_0``, float32). The bank is kept on the transformer for other step counts,
+    and each ``pdd_proj_out[k]`` becomes the head the reference runs for step ``k`` of 6 (``head_0 + offset_k``, which
+    is not bit for bit ``fused_k``), so the stock call matches it too."""
+    import torch
+
+    heads = getattr(transformer, "pdd_proj_out", None)
+    if heads is None or len(heads) < 1:
+        return False
+    if getattr(transformer, PDD_BANK_ATTR, None) is not None:
+        return True
+    with torch.no_grad():
+        w0 = heads[0].weight.detach().to(torch.float32).clone()
+        b0 = heads[0].bias.detach().to(torch.float32).clone()
+        offsets_w = [heads[k].weight.detach().to(torch.float32) - w0 for k in range(1, len(heads))]
+        offsets_b = [heads[k].bias.detach().to(torch.float32) - b0 for k in range(1, len(heads))]
+        rows_w = torch.stack([w0] + offsets_w)
+        rows_b = torch.stack([b0] + offsets_b)
+        for k in range(1, len(heads)):
+            heads[k].weight.data.copy_(w0 + rows_w[k])
+            heads[k].bias.data.copy_(b0 + rows_b[k])
+    object.__setattr__(transformer, PDD_BANK_ATTR, (rows_w.cpu(), rows_b.cpu()))
+    return True
+
+
+def pdd_head_span(
+    sigma: float,
+    sample_sigmas: Any,
+    grid: Sequence[float] = H3_IMAGE_SIGMAS,
+) -> tuple:
+    """``(start, stop)``: the grid intervals a step from ``sigma`` to the next sampler sigma spans, as the reference
+    final layer picks them (nearest grid points, at least one interval)."""
+    import torch
+
+    n = len(grid) - 1
+    sample_sigmas = torch.as_tensor(sample_sigmas)
+    i = int((sample_sigmas - sigma).abs().argmin())
+    sigma_next = sample_sigmas[min(i + 1, sample_sigmas.shape[0] - 1)]
+    start, stop = (
+        min(range(n + 1), key = lambda k: abs(grid[k] - float(s))) for s in (sigma, sigma_next)
+    )
+    start = min(start, n - 1)
+    return start, max(stop, start + 1)
+
+
+def pdd_head_weights(
+    bank: tuple,
+    sigma: float,
+    sample_sigmas: Any,
+    grid: Sequence[float] = H3_IMAGE_SIGMAS,
+) -> tuple:
+    """The (weight, bias) of the output head for one step, as the reference's PDD head bank computes it: head 0 plus
+    the dt-weighted mean of the offsets of the grid intervals the step spans (``install_pdd_head_bank``)."""
+    import torch
+
+    rows, brows = bank
+    start, stop = pdd_head_span(sigma, sample_sigmas, grid)
+    dt = [grid[k] - grid[k + 1] for k in range(start, stop)]
+    w = torch.tensor(dt, dtype = rows.dtype, device = rows.device) / sum(dt)
+    first = max(start, 1)
+    return (
+        rows[0] + torch.einsum("n,noi->oi", w[first - start :], rows[first:stop]),
+        brows[0] + torch.einsum("n,no->o", w[first - start :], brows[first:stop]),
+    )
+
+
 def adaln_table_enabled() -> bool:
     return not _env_off(ADALN_TABLE_ENV)
 
@@ -473,8 +614,8 @@ def _grid_embedder_class() -> Any:
             # A timestep off the grid has no table row: refuse rather than return a neighbour's modulation.
             if not torch.compiler.is_compiling() and bool((best > 1e-6).any()):
                 raise ValueError(
-                    "MiniMax-H3-Image samples on its fixed 6-step grid (the AdaLN table holds only those timesteps); "
-                    f"got timesteps {timestep.tolist()}"
+                    "MiniMax-H3-Image's AdaLN table holds only the reference sampler's timesteps for 1 to "
+                    f"{H3_IMAGE_MAX_STEPS} steps; got timesteps {timestep.tolist()}"
                 )
             return torch.nn.functional.one_hot(index, grid.numel()).to(torch.float32)
 
@@ -561,24 +702,74 @@ def grid_temb(transformer_dense_time: Any, grid: Sequence[float]) -> Any:
         return time_embedder(time_proj(t).to(torch.float32)).to(torch.float32)
 
 
+def adaln_curve_plan(timesteps: Sequence[float], knots: int = H3_IMAGE_ADALN_KNOTS) -> tuple:
+    """``(knot timesteps, lower, upper, fraction)``: the AdaLN rows of each timestep are read as the reference reads
+    its curve table, ``pos = clamp(t, 0, 1) * (knots - 1)`` and a linear blend of the two knots around it. Only the
+    knots some timestep needs are listed (``lower`` / ``upper`` index into them)."""
+    import torch
+
+    t = torch.tensor([float(v) for v in timesteps], dtype = torch.float32)
+    pos = t.clamp(0.0, 1.0) * (knots - 1)
+    i0 = pos.floor().long().clamp(max = knots - 2)
+    frac = pos - i0
+    needed = sorted(set(i0.tolist()) | set((i0 + 1).tolist()))
+    where = {k: j for j, k in enumerate(needed)}
+    knot_t = torch.tensor(needed, dtype = torch.float32) / (knots - 1)
+    lower = torch.tensor([where[k] for k in i0.tolist()], dtype = torch.long)
+    upper = torch.tensor([where[k + 1] for k in i0.tolist()], dtype = torch.long)
+    return knot_t.tolist(), lower, upper, frac
+
+
+ADALN_ROW_CHUNK = 16384
+
+
+def curve_adaln_rows(
+    knot_temb: Any,
+    weight: Any,
+    bias: Any,
+    plan: tuple,
+    dtype: Any,
+    device: Any = None,
+) -> Any:
+    """Rows per timestep: the dense projection ``linear(silu(temb))`` at the knots in float32, blended linearly per
+    ``plan``, then cast to ``dtype`` (the reference also projects in float32 and casts at use). Computed on ``device``
+    in output chunks, returned on the CPU."""
+    import torch
+    import torch.nn.functional as F
+
+    _knots, lower, upper, frac = plan
+    dev = torch.device(device) if device is not None else weight.device
+    x = F.silu(knot_temb.to(dev, torch.float32))
+    lower, upper, frac = lower.to(dev), upper.to(dev), frac.to(dev).unsqueeze(1)
+    out = []
+    for a in range(0, weight.shape[0], ADALN_ROW_CHUNK):
+        w = weight[a : a + ADALN_ROW_CHUNK].to(dev, torch.float32)
+        b = None if bias is None else bias[a : a + ADALN_ROW_CHUNK].to(dev, torch.float32)
+        rows = F.linear(x, w, b)
+        out.append(torch.lerp(rows[lower], rows[upper], frac).to(dtype).to("cpu"))
+    return torch.cat(out, dim = 1)
+
+
 def convert_dense_transformer_to_table(
     transformer: Any, grid: Optional[Sequence[float]] = None
 ) -> int:
-    """In place on an already-loaded dense model (tests, small builds): every AdaLN projection -> its grid table."""
+    """In place on an already-loaded dense model (tests, small builds): every AdaLN projection -> its table over
+    ``grid`` (default ``table_timesteps()``), rows interpolated on the knot grid."""
     import torch
 
-    grid = list(grid or grid_timesteps())
-    temb = grid_temb((transformer.time_proj, transformer.time_embedder), grid)
+    grid = list(grid or table_timesteps())
+    plan = adaln_curve_plan(grid)
+    temb = grid_temb((transformer.time_proj, transformer.time_embedder), plan[0])
     converted = 0
     with torch.no_grad():
         for block in transformer.transformer_blocks:
             lin = block.adaln_proj.linear
-            rows = dense_adaln_rows(temb, lin.weight, lin.bias, lin.weight.dtype)
+            rows = curve_adaln_rows(temb, lin.weight, lin.bias, plan, lin.weight.dtype)
             convert_block_adaln_to_table(block, rows)
             converted += 1
         lin = transformer.norm_out.linear
         convert_norm_out_to_table(
-            transformer.norm_out, dense_adaln_rows(temb, lin.weight, lin.bias, lin.weight.dtype)
+            transformer.norm_out, curve_adaln_rows(temb, lin.weight, lin.bias, plan, torch.float32)
         )
     install_grid_time_embedding(transformer, grid)
     return converted
@@ -589,8 +780,9 @@ def canvas_size(
     width: int,
     min_generation_area: int = H3_IMAGE_MIN_GENERATION_AREA,
 ) -> tuple[int, int]:
-    """The ``(height, width)`` canvas a ``height x width`` request is generated on: scaled up to
-    ``min_generation_area`` at the same aspect when smaller, both sides rounded to multiples of 32."""
+    """The opt-in canvas floor (``min_generation_area=``; the default renders natively): the ``(height, width)``
+    canvas a ``height x width`` request is generated on, scaled up to ``min_generation_area`` at the same aspect when
+    smaller, both sides rounded to multiples of 32."""
     if height <= 0 or width <= 0:
         raise ValueError(f"height and width must be positive, got {height}x{width}")
     lo, hi = H3_IMAGE_MIN_GENERATION_AREA_RANGE
@@ -618,6 +810,198 @@ def size_short_edge(
         max(multiple, round(width * scale / multiple) * multiple),
         max(multiple, round(height * scale / multiple) * multiple),
     )
+
+
+# Reference edit workflow: Picture 1 to this many MP (area), then cover-cropped to multiples of 32.
+H3_IMAGE_SOURCE_MEGAPIXELS = 4
+
+
+def total_pixels_size(
+    width: int,
+    height: int,
+    megapixels: float = H3_IMAGE_SOURCE_MEGAPIXELS,
+) -> tuple:
+    """``(width, height)`` scaled to ``megapixels`` (units of 1024 * 1024 pixels) at the same aspect, sides rounded
+    (Python ``round``), up or down."""
+    total = int(megapixels * 1024 * 1024)
+    scale = math.sqrt(total / (width * height))
+    return round(width * scale), round(height * scale)
+
+
+def multiple_cover_size(
+    width: int,
+    height: int,
+    multiple: int = H3_IMAGE_CANVAS_MULTIPLE,
+) -> tuple:
+    """``(scaled_w, scaled_h, target_w, target_h)``: the size a picture is scaled to so that it covers the floored
+    multiple-of-``multiple`` target, then centre-cropped to it. Unchanged sizes when already on the grid or when a
+    side would floor to 0."""
+    target_w = (width // multiple) * multiple
+    target_h = (height // multiple) * multiple
+    if target_w == 0 or target_h == 0 or (target_w == width and target_h == height):
+        return width, height, width, height
+    s_w = target_w / width
+    s_h = target_h / height
+    if s_w >= s_h:
+        scaled_w, scaled_h = target_w, max(target_h, int(math.ceil(height * s_w)))
+    else:
+        scaled_w, scaled_h = max(target_w, int(math.ceil(width * s_h))), target_h
+    return scaled_w, scaled_h, target_w, target_h
+
+
+def reference_edit_size(width: int, height: int) -> tuple:
+    """The default output size of an edit with Picture 1 of ``width x height``, as the reference edit workflow
+    derives it: Picture 1 at 4 MP, then cut to multiples of 32."""
+    w, h = total_pixels_size(int(width), int(height))
+    return multiple_cover_size(w, h)[2:]
+
+
+# "0": Picture 1 keeps its own size (no 4 MP rescale).
+SOURCE_RESIZE_ENV = "UNSLOTH_H3_IMAGE_SOURCE_RESIZE"
+
+
+def source_resize_enabled() -> bool:
+    return not _env_off(SOURCE_RESIZE_ENV)
+
+
+def picture_float(image: Any) -> Any:
+    """A picture as the reference loads it: ``[1, H, W, 3]`` float32 ``uint8 / 255``; a float array passes through."""
+    import numpy as np
+    import torch
+
+    array = np.asarray(image)
+    if array.dtype != np.float32:
+        array = array.astype(np.float32) / 255.0
+    return torch.from_numpy(np.ascontiguousarray(array))[None]
+
+
+def _area_resize(picture: Any, width: int, height: int) -> Any:
+    """``[1, H, W, 3]`` float -> ``[1, height, width, 3]``, area interpolation on the channels-first view."""
+    import torch.nn.functional as F
+    return F.interpolate(picture.movedim(-1, 1), size = (height, width), mode = "area").movedim(1, -1)
+
+
+def reference_source_picture(image: Any) -> Any:
+    """Picture 1 of the reference edit workflow: scaled to 4 MP (area), then scaled to cover the floored multiple of
+    32 (area) and centre-cropped to it. A float32 ``(H, W, 3)`` array in [0, 1], not rounded to 8 bits."""
+    import numpy as np
+
+    x = picture_float(image)
+    w, h = total_pixels_size(int(x.shape[2]), int(x.shape[1]))
+    x = _area_resize(x, w, h)
+    sw, sh, tw, th = multiple_cover_size(w, h)
+    if (tw, th) != (w, h):
+        x = _area_resize(x, sw, sh)
+        x0, y0 = (sw - tw) // 2, (sh - th) // 2
+        x = x[:, y0 : y0 + th, x0 : x0 + tw, :]
+    return np.ascontiguousarray(x[0].numpy())
+
+
+PREPARED_PICTURE_ENTRIES = 4
+_PREPARED_PICTURES: "OrderedDict[tuple, tuple]" = OrderedDict()
+
+
+def _digested_picture_class() -> Any:
+    import numpy as np
+    class DigestedPicture(np.ndarray):
+        """A float picture carrying the digest of its bytes, so the reference-latent cache does not rehash it."""
+
+        digest: Optional[str] = None
+
+        @classmethod
+        def of(cls, array: Any) -> Any:
+            out = np.ascontiguousarray(array).view(cls)
+            out.digest = hashlib.blake2b(out.tobytes(), digest_size = 16).hexdigest()
+            return out
+
+    return DigestedPicture
+
+
+class _LazyDigested:
+    _cls = None
+
+    def of(self, array: Any) -> Any:
+        if _LazyDigested._cls is None:
+            _LazyDigested._cls = _digested_picture_class()
+        return _LazyDigested._cls.of(array)
+
+
+_DigestedPicture = _LazyDigested()
+
+
+def upright_size(image: Any) -> tuple:
+    """``(width, height)`` of a PIL image after its EXIF orientation is applied, without transposing it."""
+    width, height = image.size
+    try:
+        orientation = image.getexif().get(0x0112)
+    except Exception:  # noqa: BLE001 - unreadable EXIF is treated as upright
+        orientation = None
+    return (height, width) if orientation in (5, 6, 7, 8) else (width, height)
+
+
+def picture_size(picture: Any) -> tuple:
+    """``(width, height)`` of a prepared picture: a PIL image or an ``(H, W, 3)`` array."""
+    if hasattr(picture, "size") and not hasattr(picture, "shape"):
+        return tuple(picture.size)
+    return int(picture.shape[1]), int(picture.shape[0])
+
+
+def lanczos_resize(picture: Any, size: tuple) -> Any:
+    """The reference's LANCZOS resize: a float picture is truncated to 8 bits first (``clip(255 * x)`` cast to uint8),
+    an 8-bit one is used as is (it round-trips exactly). Returns a PIL image."""
+    import numpy as np
+    from PIL import Image
+
+    if not isinstance(picture, Image.Image):
+        picture = Image.fromarray(np.clip(255.0 * np.asarray(picture), 0, 255).astype(np.uint8))
+    return picture.resize(tuple(size), resample = Image.LANCZOS)
+
+
+def vision_pixel_values(pictures: Sequence[Any], patch: int, temporal: int, merge: int) -> tuple:
+    """``(pixel_values, image_grid_thw)`` for the Qwen3-VL tower, as the reference prepares each picture: float
+    ``uint8 / 255``, bilinear (no antialias) to the processor's bounded size only when it differs (above
+    ``H3_IMAGE_VISION_MAX_PIXELS`` or off the grid), normalized to [-1, 1] per channel, then patchified."""
+    import torch
+    import torch.nn.functional as F
+
+    values, grids = [], []
+    factor = patch * merge
+    for picture in pictures:
+        img = picture_float(picture).permute(0, 3, 1, 2)[0]
+        height, width = int(img.shape[1]), int(img.shape[2])
+        h_bar, w_bar = vision_smart_resize(height, width, factor)
+        img = F.interpolate(
+            img.unsqueeze(0), size = (h_bar, w_bar), mode = "bilinear", align_corners = False
+        ).squeeze(0)
+        normalized = img.clone()
+        for c in range(3):
+            normalized[c] = (img[c] - 0.5) / 0.5
+        frames = normalized.unsqueeze(0).repeat(temporal, 1, 1, 1)
+        grid_t, grid_h, grid_w = frames.shape[0] // temporal, h_bar // patch, w_bar // patch
+        x = frames.reshape(
+            grid_t, temporal, 3, grid_h // merge, merge, patch, grid_w // merge, merge, patch
+        )
+        x = x.permute(0, 3, 6, 4, 7, 2, 1, 5, 8)
+        values.append(x.reshape(grid_t * grid_h * grid_w, 3 * temporal * patch * patch))
+        grids.append([grid_t, grid_h, grid_w])
+    return torch.cat(values), torch.tensor(grids, dtype = torch.long)
+
+
+def vision_smart_resize(height: int, width: int, factor: int) -> tuple:
+    """The Qwen2-VL target size the reference uses: multiples of ``factor`` with the pixel count inside
+    ``[H3_IMAGE_VISION_MIN_PIXELS, H3_IMAGE_VISION_MAX_PIXELS]``."""
+    lo, hi = H3_IMAGE_VISION_MIN_PIXELS, H3_IMAGE_VISION_MAX_PIXELS
+    h_bar = round(height / factor) * factor
+    w_bar = round(width / factor) * factor
+    if h_bar * w_bar > hi:
+        beta = math.sqrt((height * width) / hi)
+        h_bar = max(factor, math.floor(height / beta / factor) * factor)
+        w_bar = max(factor, math.floor(width / beta / factor) * factor)
+    elif h_bar * w_bar < lo:
+        beta = math.sqrt(lo / (height * width))
+        h_bar = math.ceil(height * beta / factor) * factor
+        w_bar = math.ceil(width * beta / factor) * factor
+    return h_bar, w_bar
 
 
 def request_seed(generator: Any) -> int:
@@ -656,6 +1040,50 @@ def reference_noise(rows: Any, seed: int) -> Any:
     request seed for every reference."""
     import torch
     return torch.randn(tuple(rows.shape), generator = cpu_generator(seed), dtype = torch.float32)
+
+
+VAE_ENCODE_HALF_ENV = "UNSLOTH_H3_IMAGE_VAE_ENCODE_HALF"
+
+
+def reference_encode_dtype(device: Any, vae: Any = None) -> Any:
+    """The reference VAE's working dtype for an encode: float16 on CUDA, float32 elsewhere, with
+    ``UNSLOTH_H3_IMAGE_VAE_ENCODE_HALF=0``, or once fp16 overflowed on this VAE."""
+    import torch
+
+    if (
+        getattr(torch.device(device), "type", "cpu") == "cuda"
+        and not _env_off(VAE_ENCODE_HALF_ENV)
+        and not getattr(vae, "_unsloth_h3_encode_fp32", False)
+    ):
+        return torch.float16
+    return torch.float32
+
+
+def _decoder_input_dtype(vae: Any) -> Any:
+    """The dtype the decode path takes its latent in: its first module's, not the whole VAE's (the encoder may run in
+    another dtype, and it owns the VAE's first parameters)."""
+    import torch
+
+    for name in ("post_quant_conv", "decoder"):
+        module = getattr(vae, name, None)
+        if isinstance(module, torch.nn.Module) and any(True for _ in module.parameters()):
+            return _module_dtype(module)
+    return _module_dtype(vae)
+
+
+def set_encoder_dtype(vae: Any, dtype: Any) -> None:
+    """Cast the VAE encoder and its moment projection (the decoder keeps its own dtype)."""
+    for name in ("encoder", "quant_conv"):
+        module = getattr(vae, name, None)
+        if module is not None:
+            module.to(dtype = dtype)
+
+
+def reference_vae_pixels(picture: Any, dtype: Any, mean: Any, std: Any) -> Any:
+    """Encoder input as the reference builds it: ``[1, H, W, 3]`` float pixels to ``2x - 1``, cast to the working
+    dtype, then normalized in that dtype (``(x + 1) * 0.5``, minus mean, over std)."""
+    x = picture.permute(0, 3, 1, 2).mul(2.0).sub_(1.0).to(dtype)
+    return x.add_(1.0).mul_(0.5).sub_(mean.to(x)).div_(std.to(x))
 
 
 def reference_posterior_latents(posterior: Any, latents_mean: Any, latents_std: Any) -> Any:
@@ -750,14 +1178,14 @@ def build_packed_layout(
 
 
 def row_timestep_plan(timesteps: Any, seq_len: int, reference_rows: Any) -> list:
-    """Per step: (distinct timesteps, per-row index); reference rows stay at 0.999 for every step."""
+    """Per step: (distinct timesteps, per-row index); reference rows sit at ``max(t, 0.999)``."""
     import torch
 
     plan = []
     for t in timesteps:
         row = torch.full((seq_len,), float(t), dtype = torch.float32)
         if reference_rows is not None and reference_rows.numel():
-            row[reference_rows] = H3_IMAGE_REFERENCE_NOISE_AUG
+            row[reference_rows] = reference_row_timestep(float(t))
         unique, index = torch.unique(row, sorted = True, return_inverse = True)
         plan.append((unique, index))
     return plan
@@ -765,9 +1193,7 @@ def row_timestep_plan(timesteps: Any, seq_len: int, reference_rows: Any) -> list
 
 # "0": the text refiner runs every step again (the stock forward); the cached rows are bit-identical to it.
 REFINER_CACHE_ENV = "UNSLOTH_H3_IMAGE_REFINER_CACHE"
-# "1": the output norm and head run on the generated rows only, as the reference implementation does. Off by default:
-# on a GPU the smaller row count can select other kernels, so an edit is not bit-identical to the stock forward (a
-# rounding-level difference that grows over the steps), and the head is too small for it to save measurable time.
+# Output norm + head on the generated rows only, as the reference; "0" runs them on every row (stock forward).
 TARGET_HEAD_ENV = "UNSLOTH_H3_IMAGE_TARGET_HEAD"
 
 
@@ -776,7 +1202,7 @@ def refiner_cache_enabled() -> bool:
 
 
 def target_head_enabled() -> bool:
-    return (os.environ.get(TARGET_HEAD_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+    return not _env_off(TARGET_HEAD_ENV)
 
 
 def refined_text(transformer: Any, encoder_hidden_states: Any) -> Any:
@@ -801,11 +1227,13 @@ def _h3_image_forward(
     return_dict: bool = True,
     text_embeds: Any = None,
     output_indices: Any = None,
+    head: Any = None,
 ) -> Any:
-    """The stock transformer forward plus ``text_embeds`` (refined text rows, computed once per render) and
-    ``output_indices`` (rows the output norm and head run on)."""
+    """The stock transformer forward plus ``text_embeds`` (refined text rows, computed once per render),
+    ``output_indices`` (rows the output norm and head run on) and ``head`` (this step's ``(weight, bias)``, in place
+    of ``pdd_proj_out[pdd_step_index]``)."""
     stock = type(self).forward
-    if text_embeds is None and output_indices is None:
+    if text_embeds is None and output_indices is None and head is None:
         return stock(
             self,
             hidden_states = hidden_states,
@@ -857,7 +1285,10 @@ def _h3_image_forward(
     hidden_states = self.norm_out(
         hidden_states.index_select(1, rows), temb, timestep_indices.index_select(0, rows)
     ).to(get_parameter_dtype(proj_out))
-    output = proj_out(hidden_states)
+    if head is not None:
+        output = torch.nn.functional.linear(hidden_states, head[0], head[1])
+    else:
+        output = proj_out(hidden_states)
     if not return_dict:
         return (output,)
     return Transformer2DModelOutput(sample = output)
@@ -912,9 +1343,10 @@ _SchedulerMixin, _ConfigMixin, _register_to_config = _scheduler_bases()
 
 
 class MiniMaxH3ImageScheduler(_SchedulerMixin, _ConfigMixin):
-    """The release's sampler: explicit sigma grid taken verbatim, ``t = 1 - sigma``, Euler in velocity form
-    ``x_next = x + (sigma - sigma_next) * v`` in float32 (MiniMaxH3Scheduler with ``euler_update_form="velocity"``,
-    ``shift_provided_sigmas=False``)."""
+    """The reference sampler: the "simple" scheduler over the grid-linear model sampling (``reference_sigmas``), the
+    DiT at ``t = 1 - timestep / 1000`` with ``timestep = sigma * 1000`` in float32, and the Euler step on the denoised
+    estimate ``x0 = x - out * sigma``, ``d = (x - x0) / sigma``, ``x_next = x + d * (sigma_next - sigma)`` in float32
+    (``out`` is the model output, minus the head's velocity). ``sample_sigmas`` is the distilled head grid."""
 
     config_name = "scheduler_config.json"
     order = 1
@@ -923,27 +1355,34 @@ class MiniMaxH3ImageScheduler(_SchedulerMixin, _ConfigMixin):
     def __init__(self, sample_sigmas: Optional[list] = None) -> None:
         self.sigmas = None
         self.timesteps = None
+        self.model_sigmas = None
         self.num_inference_steps = None
         self._step_index = None
 
+    @property
+    def head_grid(self) -> list:
+        return [float(s) for s in (self.config.sample_sigmas or H3_IMAGE_SIGMAS)]
+
     def set_timesteps(
         self,
-        sigmas: Optional[Sequence[float]] = None,
+        num_inference_steps: Optional[int] = None,
         device: Any = None,
+        sigmas: Optional[Sequence[float]] = None,
         **_: Any,
     ) -> None:
         import torch
 
-        base = list(
-            sigmas if sigmas is not None else (self.config.sample_sigmas or H3_IMAGE_SIGMAS)
-        )
-        # The released sampler rounds every sigma through its float32 timestep 1 - sigma and back.
-        timesteps = torch.tensor([1.0 - s for s in base[:-1]], dtype = torch.float32)
-        sig = torch.cat([1.0 - timesteps, torch.zeros(1)])
-        if sig.numel() < 2 or not bool((sig[1:] < sig[:-1]).all()):
+        if sigmas is not None:
+            sig = torch.tensor([float(s) for s in sigmas], dtype = torch.float32)
+        else:
+            sig = reference_sigmas(int(num_inference_steps or H3_IMAGE_STEPS), self.head_grid)
+        if sig.numel() < 2 or float(sig[-1]) != 0.0 or not bool((sig[1:] < sig[:-1]).all()):
             raise ValueError("sigmas must be strictly decreasing and end at 0.0")
+        self.model_sigmas = [model_sigma(s) for s in sig[:-1]]
         self.sigmas = sig.to(device)
-        self.timesteps = (1.0 - sig[:-1]).to(device)
+        self.timesteps = torch.tensor([1.0 - s for s in self.model_sigmas], dtype = torch.float32).to(
+            device
+        )
         self.num_inference_steps = int(self.timesteps.numel())
         self._step_index = 0
 
@@ -955,12 +1394,17 @@ class MiniMaxH3ImageScheduler(_SchedulerMixin, _ConfigMixin):
         return_dict: bool = False,
         **_: Any,
     ) -> tuple:
+        """``model_output`` is the head's velocity (the reference model returns its negative)."""
         import torch
 
         i = self._step_index
         sigma = self.sigmas[i].to(device = sample.device, dtype = torch.float32)
         sigma_next = self.sigmas[i + 1].to(device = sample.device, dtype = torch.float32)
-        prev = sample.to(torch.float32) + (sigma - sigma_next) * model_output.to(torch.float32)
+        x = sample.to(torch.float32)
+        out = -model_output.to(torch.float32)
+        denoised = x - out * sigma
+        d = (x - denoised) / sigma
+        prev = x + d * (sigma_next - sigma)
         self._step_index = i + 1
         return (prev.to(sample.dtype),)
 
@@ -1392,31 +1836,23 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         tags: list[int] = []
         vision_inputs: dict = {}
         if vision_images:
-            processor = self._processor()
-            # prepare_references already sized them to multiples of 32: the processor must not resample again
-            on_grid = all(
-                i.size[0] % H3_IMAGE_CANVAS_MULTIPLE == 0
-                and i.size[1] % H3_IMAGE_CANVAS_MULTIPLE == 0
-                and H3_IMAGE_VISION_MIN_PIXELS
-                <= i.size[0] * i.size[1]
-                <= H3_IMAGE_VISION_MAX_PIXELS
-                for i in vision_images
+            ip = self._processor().image_processor
+            pixel_values, grid_thw = vision_pixel_values(
+                vision_images,
+                int(getattr(ip, "patch_size", 16)),
+                int(getattr(ip, "temporal_patch_size", 2)),
+                int(getattr(ip, "merge_size", 2)),
             )
-            extra = {"do_resize": False} if on_grid else {}
-            vision = processor.image_processor(images = vision_images, return_tensors = "pt", **extra)
-            merge = int(processor.image_processor.merge_size) ** 2
+            merge = int(getattr(ip, "merge_size", 2)) ** 2
             start = tokenizer.convert_tokens_to_ids("<|vision_start|>")
             pad = tokenizer.convert_tokens_to_ids("<|image_pad|>")
             end = tokenizer.convert_tokens_to_ids("<|vision_end|>")
-            for index, grid in enumerate(vision["image_grid_thw"]):
+            for index, grid in enumerate(grid_thw):
                 label = tokenizer(f"Picture {index + 1}: ", add_special_tokens = False)["input_ids"]
                 block = [start] + [pad] * (int(grid.prod()) // merge) + [end]
                 token_ids += label + block
                 tags += [H3_IMAGE_TEXT_TAG] * len(label) + [H3_IMAGE_IMAGE_TAG] * len(block)
-            vision_inputs = {
-                "pixel_values": vision["pixel_values"],
-                "image_grid_thw": vision["image_grid_thw"],
-            }
+            vision_inputs = {"pixel_values": pixel_values, "image_grid_thw": grid_thw}
         prompt_ids = tokenizer(prompt, add_special_tokens = False)["input_ids"] if prompt else []
         token_ids += prompt_ids
         tags += [H3_IMAGE_TEXT_TAG] * len(prompt_ids)
@@ -1464,7 +1900,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         device = self._device()
         vae = self._enter("vae")
         try:
-            vae_dtype = _module_dtype(vae)
+            vae_dtype = reference_encode_dtype(device, vae)
+            encoder = getattr(vae, "encoder", None)
+            if isinstance(encoder, torch.nn.Module) and _module_dtype(encoder) != vae_dtype:
+                set_encoder_dtype(vae, vae_dtype)
             mean = torch.tensor(H3_IMAGE_PIXEL_MEAN, device = device).view(1, -1, 1, 1)
             std = torch.tensor(H3_IMAGE_PIXEL_STD, device = device).view(1, -1, 1, 1)
             lmean = torch.tensor(vae.config.latents_mean, device = device).view(1, -1, 1, 1)
@@ -1472,14 +1911,17 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             out = []
             r = H3_IMAGE_VAE_SCALE
             for image in images:
-                array = np.array(image)
+                array = np.asarray(image)
                 if array.shape[0] % (2 * r) or array.shape[1] % (2 * r):
                     raise ValueError(
                         f"a reference must be sized to multiples of {2 * r} pixels, got {array.shape[1]}x{array.shape[0]}"
                     )
                 key = None
                 if ref_cache_enabled():
-                    digest = hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
+                    digest = (
+                        getattr(image, "digest", None)
+                        or hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
+                    )
                     key = (id(vae), str(vae_dtype), str(device), tuple(array.shape), digest)
                 cache = self.__dict__.setdefault("_unsloth_h3_ref_posteriors", OrderedDict())
                 stats = self.__dict__.setdefault("_unsloth_h3_ref_stats", {"hits": 0, "misses": 0})
@@ -1488,11 +1930,27 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                     cache.move_to_end(key)
                     stats["hits"] += 1
                 else:
-                    pixels = torch.from_numpy(array).to(device).permute(2, 0, 1)[None]
-                    pixels = (pixels.to(torch.float32).div(255.0) - mean) / std
-                    posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                    picture = picture_float(array).to(device)
+                    posterior = vae.encode(
+                        reference_vae_pixels(picture, vae_dtype, mean, std), return_dict = False
+                    )[0]
+                    if vae_dtype != torch.float32 and not bool(
+                        torch.isfinite(posterior.parameters).all()
+                    ):
+                        # fp16 overflowed on this picture: this load encodes in float32 from now on
+                        logger.warning(
+                            "diffusion.minimax_h3_image: fp16 VAE encode overflowed; using float32"
+                        )
+                        vae._unsloth_h3_encode_fp32 = True
+                        vae_dtype = torch.float32
+                        set_encoder_dtype(vae, vae_dtype)
+                        posterior = vae.encode(
+                            reference_vae_pixels(picture, vae_dtype, mean, std), return_dict = False
+                        )[0]
+                        if key is not None:
+                            key = (key[0], str(vae_dtype)) + key[2:]
                     latents = reference_posterior_latents(posterior, lmean, lstd)
-                    del posterior
+                    del posterior, picture
                     if key is not None:
                         stats["misses"] += 1
                         cache[key] = latents
@@ -1504,8 +1962,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             self._leave("vae")
 
     @staticmethod
-    def prepare_references(images: Any) -> tuple[list, list]:
-        """(VAE copies, encoder copies) of the references, upright RGB, LANCZOS-resized to each short-edge rule."""
+    def prepare_references(images: Any, source_resize: Optional[bool] = None) -> tuple[list, list]:
+        """(VAE copies, encoder copies) of the references, upright RGB, LANCZOS-resized to each short-edge rule. Picture
+        1 first goes through the reference edit workflow's 4 MP rescale (``reference_source_picture``) unless
+        ``source_resize`` (default ``source_resize_enabled()``) is off; a copy that keeps its size stays float."""
         from PIL import Image, ImageOps
 
         if images is None:
@@ -1527,11 +1987,34 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             prepared.append(image)
 
         def resize(image: Any, lo: int, hi: int) -> Any:
-            size = size_short_edge(*image.size, lo, hi)
-            return image if image.size == size else image.resize(size, resample = Image.LANCZOS)
+            size = size_short_edge(*picture_size(image), lo, hi)
+            return image if picture_size(image) == size else lanczos_resize(image, size)
 
-        vae_images = [resize(i, *H3_IMAGE_REFERENCE_SHORT_EDGE) for i in prepared]
-        vision_images = [resize(i, *H3_IMAGE_VISION_SHORT_EDGE) for i in prepared]
+        rescale_first = bool(prepared) and (
+            source_resize_enabled() if source_resize is None else source_resize
+        )
+        vae_images, vision_images = [], []
+        for index, image in enumerate(prepared):
+            source = index == 0 and rescale_first
+            key = (source, image.size, hashlib.blake2b(image.tobytes(), digest_size = 16).hexdigest())
+            copies = _PREPARED_PICTURES.get(key)
+            if copies is None:
+                picture = reference_source_picture(image) if source else image
+                vae_copy = resize(picture, *H3_IMAGE_REFERENCE_SHORT_EDGE)
+                vision_copy = resize(picture, *H3_IMAGE_VISION_SHORT_EDGE)
+                if source and (vae_copy is picture or vision_copy is picture):
+                    # digest once: the latent and prompt caches both key on it
+                    digested = _DigestedPicture.of(picture)
+                    vae_copy = digested if vae_copy is picture else vae_copy
+                    vision_copy = digested if vision_copy is picture else vision_copy
+                copies = (vae_copy, vision_copy)
+                _PREPARED_PICTURES[key] = copies
+                while len(_PREPARED_PICTURES) > PREPARED_PICTURE_ENTRIES:
+                    _PREPARED_PICTURES.popitem(last = False)
+            else:
+                _PREPARED_PICTURES.move_to_end(key)
+            vae_images.append(copies[0])
+            vision_images.append(copies[1])
         return vae_images, vision_images
 
     def __call__(
@@ -1540,7 +2023,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         image: Any = None,
         height: Optional[int] = None,
         width: Optional[int] = None,
-        num_inference_steps: int = H3_IMAGE_STEPS,
+        num_inference_steps: Optional[int] = H3_IMAGE_STEPS,
         guidance_scale: float = H3_IMAGE_GUIDANCE,
         negative_prompt: Any = None,
         num_images_per_prompt: int = 1,
@@ -1550,16 +2033,22 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         return_dict: bool = True,
         callback_on_step_end: Optional[Callable] = None,
         callback_on_step_end_tensor_inputs: Optional[list] = None,
-        min_generation_area: int = H3_IMAGE_MIN_GENERATION_AREA,
+        min_generation_area: Optional[int] = None,
         max_sequence_length: int = H3_IMAGE_MAX_SEQUENCE_LENGTH,
     ) -> Any:
         import torch
 
-        if num_inference_steps not in (None, H3_IMAGE_STEPS):
+        steps = H3_IMAGE_STEPS if num_inference_steps is None else num_inference_steps
+        if (
+            isinstance(steps, bool)
+            or int(steps) != steps
+            or not 1 <= int(steps) <= H3_IMAGE_MAX_STEPS
+        ):
             raise ValueError(
-                f"MiniMax-H3-Image is distilled to {H3_IMAGE_STEPS} steps with one output head each; "
+                f"MiniMax-H3-Image takes 1 to {H3_IMAGE_MAX_STEPS} steps (its distilled head bank); "
                 f"got num_inference_steps={num_inference_steps}."
             )
+        steps = int(steps)
         if guidance_scale is not None and float(guidance_scale) != H3_IMAGE_GUIDANCE:
             raise ValueError(
                 "MiniMax-H3-Image is guidance-distilled: guidance_scale must be 1 (no CFG)."
@@ -1579,10 +2068,14 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         if len(generators) != len(jobs):
             raise ValueError(f"got {len(generators)} generators for {len(jobs)} images")
         vae_refs, vision_refs = self.prepare_references(image)
-        # no size: an edit renders at Image 1's reference size, text-to-image at 2048x2048
-        default_w, default_h = (
-            vae_refs[0].size if vae_refs else (H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE)
-        )
+        # no size: an edit takes the reference edit size of Picture 1 (as the API and UI); text-to-image 2048x2048
+        if not vae_refs:
+            default_w, default_h = H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE
+        elif source_resize_enabled():
+            first = image[0] if isinstance(image, (list, tuple)) else image
+            default_w, default_h = reference_edit_size(*upright_size(first))
+        else:
+            default_w, default_h = picture_size(vae_refs[0])
         height = int(height or default_h)
         width = int(width or default_w)
         self._interrupt = False
@@ -1597,6 +2090,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 gen,
                 latents if index == 0 else None,
                 min_generation_area,
+                steps,
                 callback_on_step_end,
                 callback_on_step_end_tensor_inputs or ["latents"],
                 output_type,
@@ -1621,7 +2115,8 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         width: int,
         generator: Any,
         latents: Any,
-        min_generation_area: int,
+        min_generation_area: Optional[int],
+        steps: int,
         callback: Optional[Callable],
         callback_inputs: list,
         output_type: str,
@@ -1632,7 +2127,15 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         stats: dict = {"canvas": None}
         t0 = time.perf_counter()
         device = self._device()
-        canvas_h, canvas_w = canvas_size(height, width, min_generation_area)
+        if min_generation_area is None:
+            m = H3_IMAGE_CANVAS_MULTIPLE
+            if height <= 0 or width <= 0 or height % m or width % m:
+                raise ValueError(
+                    f"MiniMax-H3-Image renders at multiples of {m} pixels, got {width}x{height}."
+                )
+            canvas_h, canvas_w = height, width
+        else:
+            canvas_h, canvas_w = canvas_size(height, width, min_generation_area)
         stats["canvas"] = (canvas_w, canvas_h)
         hits = self._prompt_cache_hits()
         embeds, text_tags = self.encode_prompt(prompt, vision_refs)
@@ -1673,7 +2176,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             rows = torch.cat([cond, target_rows])
         else:
             rows = target_rows
-        self.scheduler.set_timesteps(device = device)
+        self.scheduler.set_timesteps(steps, device = device)
         timesteps = self.scheduler.timesteps
         self._num_timesteps = len(timesteps)
         seq = int(image_idx.numel() + text_idx.numel())
@@ -1691,32 +2194,61 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             dtype = _module_dtype(transformer, skip_fp32 = True)
             prompt_embeds = embeds.to(device = device, dtype = dtype)
             extra: dict = {}
-            if h3_image_forward_active(transformer):
+            ours = h3_image_forward_active(transformer)
+            if ours:
                 if target_head_enabled():
                     extra["output_indices"] = image_idx[n_ref:].to(device)
                 if refiner_cache_enabled():
                     # the text rows do not change across steps: refine them once per render
                     extra["text_embeds"] = refined_text(transformer, prompt_embeds)
             stats["refiner_cached"] = "text_embeds" in extra
+            stats["steps"] = steps
+            grid = self.scheduler.head_grid
+            sample_sigmas = self.scheduler.sigmas.cpu()
+            bank = getattr(transformer, PDD_BANK_ATTR, None)
+            if bank is None and steps != H3_IMAGE_STEPS:
+                install_pdd_head_bank(transformer)
+                bank = getattr(transformer, PDD_BANK_ATTR, None)
+            spans = [pdd_head_span(s, sample_sigmas, grid) for s in self.scheduler.model_sigmas]
+            if bank is not None and any(stop - start != 1 for start, stop in spans):
+                bank = tuple(t.to(device) for t in bank)
+            else:
+                # every step spans one grid interval: pdd_proj_out[k] already is the reference's head for it
+                bank = None
+            if bank is not None and not ours:
+                raise ValueError(
+                    f"MiniMax-H3-Image renders {steps} steps through its own forward (blended heads), and this "
+                    "transformer's forward is wrapped."
+                )
+            stats["pdd_blended_steps"] = sum(stop - start != 1 for start, stop in spans)
+            # sampler state stays float32 in x; rows = the model input in the compute dtype, as the reference casts it
+            x = rows[n_ref:].clone()
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     return None
                 unique, index = plan[i]
+                start, _stop = spans[i]
+                if bank is not None:
+                    extra["head"] = pdd_head_weights(
+                        bank, self.scheduler.model_sigmas[i], sample_sigmas, grid
+                    )
+                rows[n_ref:] = model_io(x, dtype)
                 velocity = transformer(
                     hidden_states = rows[None],
                     encoder_hidden_states = prompt_embeds,
                     timestep = unique.to(device),
                     timestep_indices = index.to(device),
-                    pdd_step_index = i,
+                    pdd_step_index = start,
                     return_dict = False,
                     **fields,
                     **extra,
                 )[0]
                 if "output_indices" not in extra:
                     velocity = velocity[:, n_ref:]
-                rows[n_ref:] = self.scheduler.step(velocity[0].float(), t, rows[n_ref:])[0]
+                velocity = model_io(velocity[0], dtype).float()
+                x = self.scheduler.step(velocity, t, x)[0]
                 if callback is not None:
-                    view = unpatchify(rows[n_ref:], lh, lw, channels, patch)
+                    view = unpatchify(x, lh, lw, channels, patch)
                     payload = {"latents": view} if "latents" in callback_inputs else {}
                     callback(self, i, t, payload)
         finally:
@@ -1725,7 +2257,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             torch.cuda.synchronize(device)
         stats["denoise_s"] = time.perf_counter() - t1
         t2 = time.perf_counter()
-        final = unpatchify(rows[n_ref:], lh, lw, channels, patch)
+        final = unpatchify(x, lh, lw, channels, patch)
         if output_type == "latent":
             self._unsloth_h3_last_stats = stats
             return [final[0]]
@@ -1750,13 +2282,13 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             lmean = torch.tensor(vae.config.latents_mean, device = device).view(1, -1, 1, 1)
             lstd = torch.tensor(vae.config.latents_std, device = device).view(1, -1, 1, 1)
             z = latents.to(device, torch.float32) * lstd + lmean
-            image = vae.decode(z.to(_module_dtype(vae)), return_dict = False)[0]
+            image = vae.decode(z.to(_decoder_input_dtype(vae)), return_dict = False)[0]
         finally:
             self._leave("vae")
         mean = torch.tensor(H3_IMAGE_PIXEL_MEAN, device = image.device).view(1, -1, 1, 1)
         std = torch.tensor(H3_IMAGE_PIXEL_STD, device = image.device).view(1, -1, 1, 1)
         image = (image.float() * std + mean).clamp(0, 1)
-        # The release truncates to 8 bits, then resizes the 8-bit image (LANCZOS).
+        # Truncated to 8 bits as the reference saves it; only the opt-in canvas floor resizes the 8-bit image back.
         u8 = (image * 255).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
         out = []
         for frame in u8:
@@ -2602,7 +3134,8 @@ def load_h3_image_transformer(
     else:
         config = {k: v for k, v in raw_config.items() if not k.startswith("_")}
     heads, head_dim = int(config["num_attention_heads"]), int(config["attention_head_dim"])
-    grid = grid_timesteps() if table else None
+    grid = table_timesteps() if table else None
+    curve = adaln_curve_plan(grid) if grid is not None else None
     model = build_transformer_skeleton(config, table_grid = None)
     shard_map = native_shard_map(tdir)
     reader = _ShardReader(shard_map)
@@ -2655,10 +3188,15 @@ def load_h3_image_transformer(
         model.transformer_blocks = blocks
         if "rope.inv_freq" in shard_map:
             stats["rope_inv_freq"] = apply_checkpoint_inv_freq(model, reader.get("rope.inv_freq"))
-        temb = grid_temb((model.time_proj, model.time_embedder), grid) if grid is not None else None
+        temb = (
+            grid_temb((model.time_proj, model.time_embedder), curve[0])
+            if curve is not None
+            else None
+        )
         if temb is not None:
             lin = model.norm_out.linear
-            rows = dense_adaln_rows(temb, lin.weight, lin.bias, dtype, target)
+            # float32 rows: the final modulation runs in float32 against the float32 heads, as in the reference
+            rows = curve_adaln_rows(temb, lin.weight, lin.bias, curve, torch.float32, target)
             convert_norm_out_to_table(model.norm_out, rows)
         check()
         for index, block in enumerate(model.transformer_blocks):
@@ -2668,7 +3206,7 @@ def load_h3_image_transformer(
             if temb is not None:
                 weight = local.pop("adaln_proj.linear.weight")
                 bias = local.pop("adaln_proj.linear.bias", None)
-                rows = dense_adaln_rows(temb, weight, bias, dtype, target)
+                rows = curve_adaln_rows(temb, weight, bias, curve, dtype, target)
                 del weight, bias
                 convert_block_adaln_to_table(block, rows)
             _assign(block, local, where = f"transformer_blocks.{index}")
@@ -3462,6 +4000,7 @@ def load_minimax_h3_image_pipeline(
         )
     check()
     install_h3_image_forward(transformer)
+    install_pdd_head_bank(transformer)
     vae = load_h3_image_vae(root)
     check()
     early_streamer = None
