@@ -28,6 +28,7 @@ from core.inference.external_provider import _SERVED_WINDOW_PROVIDERS, ExternalP
 from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
 from core.inference.providers import validate_provider_base_url
+from core.inference.http_stream import aiter_sse_lines
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import (
@@ -1611,7 +1612,7 @@ class ResearchSupervisor:
         response: httpx.Response,
         semantic_deadline: Callable[[], tuple[float, type[BaseException]] | None] | None = None,
     ) -> AsyncIterator[str]:
-        iterator = response.aiter_lines().__aiter__()
+        iterator = aiter_sse_lines(response).__aiter__()
 
         def wait_timeout() -> float:
             if semantic_deadline is None:

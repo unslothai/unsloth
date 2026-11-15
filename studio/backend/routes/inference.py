@@ -176,6 +176,7 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.http_stream import SSE_LINE_END, aiter_sse_lines
 from core.inference import model_slots
 from core.inference.llama_cpp import (
     _TERMINAL_RETIREMENT_HOOKS,
@@ -7739,7 +7740,7 @@ def _monitor_openai_sse_event(
 ) -> Optional[str]:
     # Returns error if any line is an upstream error payload (HTTP 200 SSE data with an error key), so relays mark it failed, not kept warm.
     status = None
-    for line in event.decode("utf-8", errors = "ignore").splitlines():
+    for line in SSE_LINE_END.split(event.decode("utf-8", errors = "ignore")):
         stripped = line.strip()
         result = _monitor_openai_sse_line(monitor_id, stripped, context_length)
         if result is None and not monitor_id:
@@ -7940,7 +7941,7 @@ def _monitor_anthropic_response(
                     if isinstance(chunk, (bytes, bytearray))
                     else str(chunk)
                 )
-                for line in text.splitlines():
+                for line in SSE_LINE_END.split(text):
                     if (
                         _monitor_anthropic_sse_line(
                             monitor_id,
@@ -41587,7 +41588,7 @@ async def _responses_stream(
                     )
                     return
 
-                lines_iter = resp.aiter_lines()
+                lines_iter = aiter_sse_lines(resp)
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, disconnect_event)
                 )
@@ -46404,7 +46405,7 @@ async def _anthropic_passthrough_stream(
         # cancel scope in a different task` / `RuntimeError: async generator
         # ignored GeneratorExit` as "Exception ignored in:" unraisable warnings.
         #
-        # Fix: save `resp.aiter_lines()` as `lines_iter`, and in finally
+        # Fix: save `aiter_sse_lines(resp)` as `lines_iter`, and in finally
         # explicitly `await lines_iter.aclose()` BEFORE `resp.aclose()` /
         # `client.aclose()`. This closes the iterator in our own task's event
         # loop, cleaning up the httpcore byte-stream before the asyncgen
@@ -46496,7 +46497,7 @@ async def _anthropic_passthrough_stream(
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
-            lines_iter = resp.aiter_lines()
+            lines_iter = aiter_sse_lines(resp)
             items_iter = _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = cancel_event,
@@ -47922,7 +47923,7 @@ async def _openai_passthrough_stream_admitted(
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, cancel_event)
                 )
-                lines_iter = resp.aiter_lines()
+                lines_iter = aiter_sse_lines(resp)
                 _keepalive_s = _openai_passthrough_stream_keepalive_interval()
                 items_iter = _aiter_llama_stream_items(
                     lines_iter,
