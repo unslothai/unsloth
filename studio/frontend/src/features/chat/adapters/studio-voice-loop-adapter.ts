@@ -236,6 +236,12 @@ export function getHeldTurnText(): string {
   return heldTurn?.text ?? "";
 }
 
+let utterancesPending = 0;
+// Hearing ends before VAD and STT run: the coalesced reply must still wait for this phrase.
+export function voiceUtterancePending(): boolean {
+  return utterancesPending > 0;
+}
+
 export function clearHeldTurn(): void {
   heldEpoch += 1;
   heldTurn = null;
@@ -590,6 +596,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (finalizing || ended) return;
       finalizing = true;
       teardown();
+      utterancesPending += 1;
+      try {
+        await finalizeHeard();
+      } finally {
+        utterancesPending -= 1;
+      }
+    };
+    const finalizeHeard = async () => {
 
       // A barge-in already passed its own bar: a quick "stop" is shorter than a turn.
       const minMs = bargedIn ? BARGE_CONFIRMED_MS : MIN_SPEECH_MS;
