@@ -2503,8 +2503,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if do_bfloat16_mixed_precision:
         cache_implementation = None
     # transformers refuses a static cache next to the caller's own cache or with assisted decoding (#4232).
+    # Assisted decoding can also arrive on the generation config.
+    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     if kwargs.get("past_key_values") is not None or any(
-        kwargs.get(k) is not None
+        kwargs.get(k) is not None or getattr(generation_config, k, None) is not None
         for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
     ):
         cache_implementation = None
@@ -2523,7 +2525,6 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         force_dynamic_cache = False
 
-    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     compile_decode = (
         cache_implementation == "static"
         and not force_dynamic_cache

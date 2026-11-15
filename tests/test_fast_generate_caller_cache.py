@@ -30,7 +30,9 @@ def _model():
     return model
 
 
-@pytest.mark.parametrize("case", ["past_key_values", "prompt_lookup_num_tokens"])
+@pytest.mark.parametrize(
+    "case", ["past_key_values", "prompt_lookup_num_tokens", "generation_config"]
+)
 def test_caller_cache_and_assisted_decoding_match_transformers(case):
     model = _model()
     history = torch.randint(3, 64, (1, 8), generator = torch.Generator().manual_seed(0))
@@ -46,6 +48,9 @@ def test_caller_cache_and_assisted_decoding_match_transformers(case):
                 extra = {
                     "past_key_values": model(input_ids = history, use_cache = True).past_key_values
                 }
+        elif case == "generation_config":
+            from transformers import GenerationConfig
+            extra = {"generation_config": GenerationConfig(prompt_lookup_num_tokens = 3)}
         return generate(input_ids = ids, **kwargs, **extra)
 
     torch.testing.assert_close(run(model.generate), run(model._old_generate), rtol = 0, atol = 0)
