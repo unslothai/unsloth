@@ -46,6 +46,7 @@ from core.training.diffusion_train_common import (
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
+    _publish_to_lora_catalog,
     _restore_perf_flags,
     discover_image_caption_pairs,
     enable_diffusion_gradient_checkpointing,
@@ -871,12 +872,15 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
 
     _target_error("after")
     lora_path: Optional[str] = None
+    catalog_path: Optional[str] = None
     ema_path: Optional[str] = None
     if not (stopped and not _save_on_stop()):
         layers = get_peft_model_state_dict(transformer)
         adapter_config = dict(transformer.peft_config["default"].to_dict())
         _save_lora(str(out_dir), layers, adapter_config)
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
+        # The Images LoRA picker, Deploy and Export read the catalog copy.
+        catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
         if ema is not None and ema.updates > 0:
             try:
                 ema_dir = save_ema_adapter(
@@ -894,7 +898,7 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
         output_dir = str(out_dir),
         lora_path = lora_path,
         ema_path = ema_path,
-        catalog_path = None,
+        catalog_path = catalog_path,
         family = cfg.resolved_family,
         base_model = cfg.base_model,
         stopped = stopped,

@@ -118,6 +118,9 @@ def test_trainer_end_to_end_loss_falls_and_saves_trunk_keys(
     torch = _stack()
     from safetensors import safe_open
 
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    monkeypatch.setattr("core.inference.diffusion_lora.loras_dir", lambda: catalog)
     events = _train(release, dataset, tmp_path / "out", monkeypatch, steps = 30)
     progress = [e for e in events if e["type"] == "progress"]
     assert len(progress) == 30
@@ -128,6 +131,9 @@ def test_trainer_end_to_end_loss_falls_and_saves_trunk_keys(
     done = [e for e in events if e["type"] == "complete"][-1]
     path = Path(done["lora_path"])
     assert path.is_file()
+    # published to the Images LoRA catalog, which Deploy, Export and the picker read
+    assert done["catalog_path"] and Path(done["catalog_path"]).parent == catalog
+    assert Path(done["catalog_path"]).read_bytes() == path.read_bytes()
     with safe_open(str(path), framework = "pt") as f:
         keys = list(f.keys())
         meta = f.metadata()
