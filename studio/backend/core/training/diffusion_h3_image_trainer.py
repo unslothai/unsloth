@@ -103,6 +103,7 @@ TEXT_ENCODER_ENV = "UNSLOTH_H3_IMAGE_TRAIN_TEXT_ENCODER"
 # G4 A/B (300 steps, 18 tarot images) the adapter arm kept clean line art and legible card titles where the plain arm
 # came out blotchy; both leak the style into untriggered prompts alike.
 TRAINING_ADAPTER_ENV = "UNSLOTH_H3_IMAGE_TRAINING_ADAPTER"
+EVAL_ENV = "UNSLOTH_H3_IMAGE_TRAIN_EVAL"
 OSTRIS_ADAPTER = (
     "ostris/minimax_h3_training_adapter",
     "minimax_h3_image_training_adapter_v1.safetensors",
@@ -719,6 +720,48 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
         except Exception as exc:  # noqa: BLE001 - a preview never ends the run
             _emit(on_event, "warning", message = f"Sample images skipped: {exc}")
 
+    def _target_error(tag: str) -> None:
+        """Diagnostic (UNSLOTH_H3_IMAGE_TRAIN_EVAL=1): per head, the mean over the dataset of the sampler's x0-estimate
+        error ||x_t + sigma * v - x0||^2 on fixed noise (the posterior mean as x0), before and after training."""
+        if (os.environ.get(EVAL_ENV) or "").strip() != "1":
+            return
+        gen = torch.Generator().manual_seed(1234)
+        was_training = transformer.training
+        transformer.eval()
+        per_head = {}
+        with torch.no_grad():
+            for i, (mean, _std) in enumerate(cache):
+                x0 = mean.to(device)[:, :, None]
+                noise = torch.randn(tuple(x0.shape), generator = gen).to(device)
+                layout = layouts.get(
+                    int(embeds_by_text[captions[i]].shape[1]), mean.shape[-2], mean.shape[-1]
+                )
+                for sigma, t, head_index in grid_steps:
+                    x_t = (1.0 - sigma) * x0 + sigma * noise
+                    v = denoise_velocity(
+                        transformer,
+                        layout,
+                        h3i.patchify(x_t, patch).to(compute_dtype),
+                        _embeds(captions[i]),
+                        _refined(captions[i]),
+                        t,
+                        head_index,
+                    ).float()
+                    x0_hat = h3i.patchify(x_t, patch) + sigma * v
+                    err = float((x0_hat - h3i.patchify(x0, patch)).pow(2).mean())
+                    per_head.setdefault(head_index, []).append(err)
+        if was_training:
+            transformer.train()
+        _emit(
+            on_event,
+            "eval",
+            tag = tag,
+            x0_error_by_head = {
+                str(k): round(sum(v) / len(v), 6) for k, v in sorted(per_head.items())
+            },
+        )
+
+    _target_error("before")
     _sample_round(0)
     index_sampler = PermutationBatchSampler(len(paths), rng)
     transformer.train()
@@ -807,6 +850,7 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
             stopped = True
             break
 
+    _target_error("after")
     lora_path: Optional[str] = None
     ema_path: Optional[str] = None
     if not (stopped and not _save_on_stop()):

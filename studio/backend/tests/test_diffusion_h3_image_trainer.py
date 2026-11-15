@@ -86,7 +86,7 @@ def _train(
         model_family = "minimax-h3-image",
         resolution = 64,
         train_steps = steps,
-        learning_rate = 3e-3,
+        learning_rate = extra.pop("learning_rate", 3e-3),
         lora_rank = 4,
         lr_scheduler = "constant",
         seed = 0,
@@ -463,3 +463,22 @@ def test_training_adapter_auto_falls_back_and_explicit_values(tmp_path, monkeypa
     f.write_bytes(b"x")
     monkeypatch.setenv(trainer.TRAINING_ADAPTER_ENV, str(f))
     assert trainer.training_adapter_path(None) == str(f)
+
+
+def test_x0_error_eval_covers_all_six_heads_and_grads_reach_the_adapter(
+    release, dataset, tmp_path, monkeypatch
+):
+    """The diagnostic the GPU sweep reads (UNSLOTH_H3_IMAGE_TRAIN_EVAL=1): the sampler's x0-estimate error from the
+    MODEL output per head, before / after; every head is trained, and the adapter gets gradient through checkpointing.
+    (The tiny random DiT's gates are ~0.05, so its error barely moves; the real reduction is measured on GPU.)"""
+    torch = _stack()
+    from core.training import diffusion_h3_image_trainer as trainer
+
+    monkeypatch.setenv(trainer.EVAL_ENV, "1")
+    events = _train(release, dataset, tmp_path / "out", monkeypatch, steps = 40)
+    ev = {e["tag"]: e["x0_error_by_head"] for e in events if e["type"] == "eval"}
+    assert set(ev["before"]) == set(ev["after"]) == {str(k) for k in range(6)}
+    assert all(torch.isfinite(torch.tensor(list(v.values()))).all() for v in ev.values())
+    progress = [e for e in events if e["type"] == "progress"]
+    assert set(progress[-1]["head_losses"]) == {str(k) for k in range(6)}
+    assert all(e["grad_norm"] and e["grad_norm"] > 0 for e in progress)
