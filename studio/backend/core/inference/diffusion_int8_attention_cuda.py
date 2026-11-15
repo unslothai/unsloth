@@ -1188,7 +1188,7 @@ CACHE_MAX_FILES = 64  # images per version directory
 _MAGIC = b"UI8ATTN1"
 _VERSION_DIR = re.compile(r"^v[0-9]+-[0-9a-f]{16}$")
 _OFF = ("0", "off", "false", "no")
-# where each image came from in this process (tests and benchmarks read it)
+# where each image came from in this process (read by tests)
 CACHE_STATS = {
     "compiled": 0,
     "cubin": 0,
@@ -1606,7 +1606,7 @@ def binary(
     if machine_code_matches_driver():
         try:
             found = ("cubin", compile_cubin(source, memo[1], defines, max_registers))
-        except Exception:  # noqa: BLE001 -- no nvrtcGetCUBIN, no --ptxas-options: the PTX, as before
+        except Exception:  # noqa: BLE001 -- no nvrtcGetCUBIN, no --ptxas-options: fall back to the PTX
             found = None
     if found is None:
         ptx = compile_ptx(source, f"compute_{capability[0]}{capability[1]}", defines)
@@ -1752,7 +1752,7 @@ def load_module(
             except RuntimeError:
                 if kind == "ptx":
                     raise
-                # machine code this driver cannot load: the PTX, as before the image cache, from here on
+                # machine code this driver cannot load: use the PTX from here on
                 CACHE_STATS["load_fallback"] += 1
                 ptx = compile_ptx(source, f"compute_{capability[0]}{capability[1]}", defines)
                 if max_registers:
