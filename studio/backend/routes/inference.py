@@ -26898,12 +26898,10 @@ async def vad_unload(current_subject: str = Depends(get_current_subject)):
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
 
     sidecar = get_audio_cpp_vad_sidecar()
-    # Another account's detector is not this caller's to stop.
-    # loaded_model takes the sidecar lock, which a detect holds for its whole run: never on the event loop.
-    resident = await asyncio.to_thread(lambda: sidecar.loaded_model)
-    if account_access.resident_hidden("vad", resident):
-        return JSONResponse(content = {"released": False})
-    released = await asyncio.to_thread(sidecar.unload)
+    # Another account's detector is not this caller's to stop; the sidecar lock (held by a detect) stays off the event loop.
+    released = await asyncio.to_thread(
+        sidecar.unload, lambda resident: account_access.resident_hidden("vad", resident)
+    )
     return JSONResponse(content = {"released": released})
 
 

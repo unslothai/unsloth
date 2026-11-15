@@ -73,7 +73,8 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
           deps.setLoaded(true);
           return true;
         }
-        if (!deps.hasChatModel()) return false;
+        // Queued behind a load that voice off already undid: never start another.
+        if (stale() || !deps.hasChatModel()) return false;
         deps.setLoaded(false);
         deps.setLoading(true);
         const previous = loaded;
@@ -82,6 +83,7 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
           loaded = null;
           owned = false;
           if (mine) await unloadVoice(previous).catch(() => {});
+          if (stale()) return false;
         }
         await loadVoice(id);
         if (stale()) {

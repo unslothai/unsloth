@@ -9,7 +9,7 @@ import threading
 import wave
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from core.inference import audio_cpp_files
 from core.inference.audio_cpp_models import (
@@ -169,8 +169,11 @@ class AudioCppVadSidecar:
         self._server = None
         self._model = None
 
-    def unload(self) -> bool:
+    def unload(self, keep: Optional[Callable[[Optional[str]], bool]] = None) -> bool:
         with self._lock:
+            # keep() judges the resident under the lock a load takes, so a detector swapped in meanwhile is never stopped.
+            if keep is not None and keep(self.loaded_model):
+                return False
             had = self._server is not None
             self._release_locked()
             return had

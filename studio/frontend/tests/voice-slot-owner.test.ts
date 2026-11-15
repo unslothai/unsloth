@@ -186,3 +186,40 @@ test("switching to a voice already serving still unloads the one voice mode load
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(calls, ["load kokoro", "unload kokoro"]);
 });
+
+test("a load queued behind one that voice off undid never starts", async () => {
+  const calls: string[] = [];
+  let picked = "first";
+  const finish: Array<() => void> = [];
+  const state = { voiceOff: false };
+  const owner = createVoiceSlotOwner({
+    api: async () => ({
+      voiceServing: async () => false,
+      loadVoice: (id) => {
+        calls.push(`load ${id}`);
+        if (id !== "first") return Promise.resolve();
+        return new Promise<void>((resolve) => finish.push(resolve));
+      },
+      unloadVoice: async (id) => {
+        calls.push(`unload ${id}`);
+      },
+    }),
+    pickedVoice: () => picked,
+    hasChatModel: () => true,
+    voiceOff: () => state.voiceOff,
+    setLoaded: () => {},
+    setLoading: () => {},
+    onError: (error) => {
+      throw error;
+    },
+  });
+  const first = owner.ensure();
+  while (!calls.includes("load first")) await new Promise((r) => setTimeout(r, 0));
+  picked = "second";
+  const second = first.then(() => owner.ensure());
+  state.voiceOff = true;
+  finish[0]();
+  assert.equal(await first, false);
+  assert.equal(await second, false);
+  assert.deepEqual(calls, ["load first", "unload first"]);
+});
