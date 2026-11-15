@@ -525,7 +525,7 @@ function MaxSeqLengthSetting({
   unknownLabel?: string;
   hint?: string;
 }) {
-  const label = isMlx ? "Context Length" : "Max Seq Length";
+  const label = isMlx ? "Context" : "Max Seq Length";
   const { draft, sliderProps } = useSliderDraft(
     // Clamped, or the first nudge would jump from the shown number to the bound.
     Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max),
@@ -573,6 +573,8 @@ function MaxSeqLengthSetting({
   );
 }
 
+const CONTEXT_SLIDER_STEP = 128;
+
 function GgufContextLengthSetting({
   value,
   autoValue,
@@ -594,18 +596,27 @@ function GgufContextLengthSetting({
   onChange: (value: number) => void;
   renderWarning: (value: number) => ReactNode;
 }) {
-  const { draft, sliderProps } = useSliderDraft(value, onChange);
-  const shown = draft ?? value;
+  // The slider's far right is Auto (a full bar); value 0 stays Auto for the caller. Within a step of
+  // max counts, as Radix rounds steps from min and may never land on max itself.
+  const isAutoPosition = (v: number) => v > max - CONTEXT_SLIDER_STEP;
+  const toSlider = (v: number) => (v === 0 ? max : v);
+  const fromSlider = (v: number) => (isAutoPosition(v) ? 0 : v);
+  const { draft, sliderProps } = useSliderDraft(toSlider(value), (v) =>
+    onChange(fromSlider(v)),
+  );
+  const shown = draft == null ? value : fromSlider(draft);
   const isAuto = shown === 0;
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
+      {/* One row, as the Settings sliders: label, slider, value. */}
       <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Context Length</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Context</span>
           <InfoHint>
-            Drag all the way left for Auto, which picks a context that
-            fits while keeping GPU speed. Custom values request an exact
-            context; higher ones use more memory.
+            The model&apos;s context window. Drag all the way right for Auto,
+            which picks a context window that fits while keeping GPU speed.
+            Anything short of that requests an exact context window, up to{" "}
+            {max.toLocaleString()} tokens; larger ones use more memory.
             {isAuto && activeLoadedContext != null
               ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
               : ""}
@@ -614,46 +625,40 @@ function GgufContextLengthSetting({
               : ""}
           </InfoHint>
         </div>
-        <NumericValueInput
-          ref={inputRef}
-          value={isAuto ? autoValue : shown}
-          min={min}
-          max={max}
-          step={1}
-          onChange={onChange}
-          displayValue={isAuto ? "Auto" : undefined}
-          ariaLabel="Context Length"
-          className={NUMBER_INPUT_CLASS}
-          fixedWidth={true}
-          size={8}
-        />
-      </div>
-      {/* Grouped so the warning sits 4px under the slider, as advice does elsewhere. */}
-      <div className="space-y-1">
-        {nativeContextLength != null ? (
-          <div className="space-y-1">
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+          {nativeContextLength != null ? (
             <Slider
-              min={0}
+              min={min}
               max={max}
-              step={128}
+              step={CONTEXT_SLIDER_STEP}
               {...sliderProps}
-              aria-label="Context Length"
+              className="min-w-0 flex-1"
+              aria-label="Context"
               thumbValueText={(v) =>
-                v !== 0
+                !isAutoPosition(v)
                   ? `${v.toLocaleString()} tokens`
                   : activeLoadedContext != null
                     ? `Auto, currently ${autoValue.toLocaleString()} tokens`
                     : "Auto"
               }
             />
-            <div className="flex justify-between text-ui-10 text-muted-foreground">
-              <span>Auto</span>
-              <span>{max.toLocaleString()}</span>
-            </div>
-          </div>
-        ) : null}
-        {renderWarning(shown)}
+          ) : null}
+          <NumericValueInput
+            ref={inputRef}
+            value={isAuto ? autoValue : shown}
+            min={min}
+            max={max}
+            step={1}
+            onChange={onChange}
+            displayValue={isAuto ? "Auto" : undefined}
+            ariaLabel="Context"
+            className={NUMBER_INPUT_CLASS}
+            fixedWidth={true}
+            size={8}
+          />
+        </div>
       </div>
+      {renderWarning(shown)}
     </div>
   );
 }
@@ -1472,7 +1477,7 @@ function NpuAdvancedSettings({
           <span className={LABEL_CLASS}>Prefill Chunk Length</span>
           <InfoHint>
             Prompt tokens FastFlowLM reads per step. Leave blank for its
-            default. Never more than the context length.
+            default. Never more than the context window.
           </InfoHint>
         </div>
         <input

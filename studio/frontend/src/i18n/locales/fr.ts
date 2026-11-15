@@ -4361,7 +4361,7 @@ export const fr = {
       useEpochs: "Utiliser les époques",
       maxStepsTooltip: "Remplace le nombre total d'étapes d'optimisation.",
       epochsTooltip: "Nombre de passages complets sur le jeu de données.",
-      contextLength: "Longueur de contexte",
+      contextLength: "Contexte",
       contextLengthTooltip:
         "Nombre maximal de tokens par échantillon d'entraînement.",
       customContextLength: "Saisir une valeur personnalisée",
@@ -4685,7 +4685,7 @@ export const fr = {
       learningRate: "Taux d'apprentissage",
       optimizer: "Optimiseur",
       maxSteps: "Nombre max d'étapes",
-      contextLength: "Longueur de contexte",
+      contextLength: "Contexte",
       warmupSteps: "Étapes de préchauffage",
       rank: "Rang",
       alpha: "Alpha",

@@ -18,7 +18,7 @@ const panel = readFileSync(
 );
 const panelCode = panel.replace(/\s+/g, " ");
 
-test("the far-left slider position is Auto", () => {
+test("the far-right slider position is Auto, a full bar", () => {
   assert.match(
     panelCode,
     /const contextIsAuto = config\.customContextLength == null;/,
@@ -27,19 +27,23 @@ test("the far-left slider position is Auto", () => {
     panelCode,
     /<GgufContextLengthSetting value=\{contextIsAuto \? 0 : contextValue\}/,
   );
-  assert.match(panelCode, /<Slider min=\{0\}/);
+  assert.match(panelCode, /<Slider min=\{min\} max=\{max\}/);
+  // Auto (0) sits at max on the slider; within one step of max reads as Auto.
+  assert.match(panelCode, /const toSlider = \(v: number\) => \(v === 0 \? max : v\);/);
+  assert.match(panelCode, /const isAutoPosition = \(v: number\) => v > max - CONTEXT_SLIDER_STEP;/);
   assert.match(panelCode, /customContextLength: v === 0 \? null : v/);
-  assert.match(panelCode, /<span>Auto<\/span>/);
+  // The value box names Auto; the slider shares its row.
+  assert.match(panelCode, /displayValue=\{isAuto \? "Auto" : undefined\}/);
 });
 
-test("moving right or typing a number creates a custom context", () => {
+test("moving left or typing a number creates a custom context", () => {
   assert.match(
     panelCode,
     /onChange=\{\(v\) => update\(\{ customContextLength: v === 0 \? null : v \}\)\}/,
   );
   assert.match(
     panelCode,
-    /const \{ draft, sliderProps \} = useSliderDraft\(value, onChange\); const shown = draft \?\? value; const isAuto = shown === 0;/,
+    /useSliderDraft\(toSlider\(value\), \(v\) => onChange\(fromSlider\(v\)\), \); const shown = draft == null \? value : fromSlider\(draft\); const isAuto = shown === 0;/,
   );
   assert.match(
     panelCode,
@@ -59,7 +63,7 @@ test("the Auto number editor opens at the fitted or safe offload context", () =>
 test("the existing info hint owns the mode explanation and fitted result", () => {
   assert.match(
     panelCode,
-    /<InfoHint> Drag all the way left for Auto,[\s\S]*Custom values request an exact context;[\s\S]*Auto currently selected \$\{activeLoadedContext\.toLocaleString\(\)\} tokens\.[\s\S]*<\/InfoHint>/,
+    /<InfoHint> The model&apos;s context window\. Drag all the way right for Auto,[\s\S]*Anything short of that requests an exact context window,[\s\S]*Auto currently selected \$\{activeLoadedContext\.toLocaleString\(\)\} tokens\.[\s\S]*<\/InfoHint>/,
   );
   assert.match(
     panelCode,
