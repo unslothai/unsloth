@@ -2,13 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """Keep packed per-expert NVFP4 / MXFP8 checkpoint tensors packed in transformers 5 fused expert stacks.
 
-transformers 5 merges per-expert ``experts.{e}.{gate,up,down}_proj`` checkpoint keys into fused 3-D
-``gate_up_proj`` / ``down_proj`` stacks, dequantizing compressed-tensors experts on the way: NVFP4 experts come out
-multiplied by their global scale (the decompress never receives it; 5.18 to 5.23) and MXFP8 experts fail to convert.
-Here the fused stacks of a planned experts module are swapped, before loading, for small packed placeholders; the
-model's converters for those stacks are dropped, and after loading the placeholders are filled with the exact
-checkpoint bytes and installed as ``Nvfp4ExpertParam`` / ``Mxfp8ExpertParam`` (zoo ``packed_experts``).
-``UNSLOTH_PACKED_EXPERTS=0`` installs the same values dequantized to 16 bit instead.
+transformers 5 dequantizes them while fusing: NVFP4 comes out multiplied by its global scale (5.18 to 5.23) and
+MXFP8 fails. So fused stacks become packed placeholders, their converters are dropped, and after loading they are
+filled with exact checkpoint bytes. ``UNSLOTH_PACKED_EXPERTS=0`` installs them dequantized to 16 bit instead.
 """
 
 import os
@@ -44,8 +40,7 @@ _ST_DTYPES = {
 
 
 def packed_experts_enabled() -> bool:
-    """Keep packed expert stacks packed (default); 0, or full finetuning (the experts train), installs them
-    dequantized to 16 bit."""
+    """Packed by default; 0 or full finetuning installs them dequantized to 16 bit."""
     if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
         return False
     return os.environ.get(PACKED_EXPERTS_ENV, "1").strip().lower() not in (
@@ -233,7 +228,6 @@ def _swap_in_placeholders(plan):
                         torch.empty(shape, dtype = dtype, device = param.device), requires_grad = False
                     ),
                 )
-            # Plain attribute while loading: model init code may still touch the name.
             module.__dict__[stack] = torch.empty(0, dtype = param.dtype, device = "meta")
         item["originals"] = originals
         item["dtype"] = originals["gate_up_proj"].dtype

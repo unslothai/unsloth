@@ -2,13 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """ModelOpt NVFP4 checkpoints (nvidia/*-NVFP4) load as compressed-tensors NVFP4A16, weights only.
 
-No transformers release has a ModelOpt quantizer, so the config is rewritten into a compressed-tensors
-``nvfp4-pack-quantized`` (tensor_group, group 16) config. The quantized Linears then hold ``weight_packed`` /
-``weight_scale`` / ``weight_global_scale``; ModelOpt stores ``weight`` / ``weight_scale`` / ``weight_scale_2`` with
-value = e2m1 * scale * weight_scale_2, while compressed-tensors decodes e2m1 * (scale / global_scale). So while
-loading the Linears expose the ModelOpt names, and afterwards the global scale becomes 1 / weight_scale_2 in fp32,
-read from the raw shards. Activation and kv-cache scales are dropped (W4A16). Routed experts are filled packed by
-``packed_expert_loader`` from the raw shards (multiply mode, exact).
+No transformers release has a ModelOpt quantizer, so the config is rewritten to compressed-tensors
+``nvfp4-pack-quantized``. ModelOpt decodes e2m1 * scale * weight_scale_2, compressed-tensors e2m1 * (scale /
+global_scale): Linears expose ModelOpt names while loading, then global_scale = 1 / weight_scale_2 (fp32, raw shards).
 """
 
 import fnmatch
@@ -352,8 +348,7 @@ def _source_is_modelopt_nvfp4(name, token = None) -> bool:
 
 
 def refuse_modelopt_nvfp4_merged_save() -> None:
-    """unsloth_zoo's merges reread the base shards and have no ModelOpt NVFP4 decode: the uint8 ``weight`` codes
-    would be taken for 16-bit weights. Refuse them with a clear message instead."""
+    """unsloth_zoo merges have no ModelOpt NVFP4 decode (uint8 codes would read as 16-bit weights): refuse."""
     try:
         import unsloth_zoo.saving_utils as zoo_saving
     except Exception:
