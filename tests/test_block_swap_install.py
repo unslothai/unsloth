@@ -425,6 +425,20 @@ def test_every_unsupported_load_mode_is_refused_before_trimming():
         assert hits and min(hits) < trim, needle
 
 
+def test_generic_load_refuses_the_load_modes_the_llama_path_refuses():
+    # FastModel (vision.py) loaded load_in_8bit / caller quantization_config / state_dict / gguf with offload_layers
+    # although the host tail is only rebuilt as dense or bnb 4-bit layers.
+    fn = _method("vision.py", "FastBaseModel", "from_pretrained")
+    begin = min(
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "begin_block_swap_load"
+    )
+    for needle in ("load_in_8bit", "quantization_config", "state_dict", "gguf_file"):
+        hits = _refusals(fn, needle)
+        assert hits and min(hits) < begin, needle
+
+
 def test_older_zoo_without_placement_still_installs():
     ns, calls = _load()
 
