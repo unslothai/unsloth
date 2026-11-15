@@ -9,7 +9,6 @@ from core.inference.chat_generation_runs import _SSEDecoder
 
 
 def _chunk(content: str) -> str:
-    # model_dump_json and llama-server both write U+2028, U+2029 and U+0085 unescaped.
     payload = {"choices": [{"index": 0, "delta": {"content": content}}]}
     return "data: " + json.dumps(payload, ensure_ascii = False) + "\n\n"
 

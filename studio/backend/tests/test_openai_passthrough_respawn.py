@@ -557,7 +557,6 @@ def test_streaming_keeps_a_delta_holding_a_unicode_line_separator(monkeypatch, s
     content = f"first{separator}second"
 
     def handler(_request: httpx.Request) -> httpx.Response:
-        # llama-server writes these separators unescaped.
         delta = json.dumps({"choices": [{"delta": {"content": content}}]}, ensure_ascii = False)
         return httpx.Response(
             200,

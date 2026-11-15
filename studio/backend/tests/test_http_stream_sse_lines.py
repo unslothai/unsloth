@@ -42,7 +42,6 @@ def _httpx_lines(chunks):
 
 
 def _event(content: str) -> str:
-    # llama-server, vLLM and model_dump_json all write these separators unescaped.
     payload = {"choices": [{"index": 0, "delta": {"content": content}}]}
     return "data: " + json.dumps(payload, ensure_ascii = False)
 
