@@ -4848,6 +4848,7 @@ export const ptBR = {
       notifyFailures: "Só em caso de falha",
       notifyNone: "Desativadas",
       archiveSuccessful: "Arquivar execuções bem-sucedidas",
+      webSearch: "Pesquisa na web",
       project: "Projeto",
       projectNone: "Nenhum",
       model: "Modelo",

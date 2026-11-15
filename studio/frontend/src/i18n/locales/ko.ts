@@ -4810,6 +4810,7 @@ export const ko = {
       notifyFailures: "실패 시에만",
       notifyNone: "끄기",
       archiveSuccessful: "성공한 실행 보관",
+      webSearch: "웹 검색",
       project: "프로젝트",
       projectNone: "없음",
       model: "모델",

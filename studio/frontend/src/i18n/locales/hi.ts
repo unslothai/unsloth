@@ -4830,6 +4830,7 @@ export const hi = {
       notifyFailures: "सिर्फ़ विफल होने पर",
       notifyNone: "बंद",
       archiveSuccessful: "सफल रन संग्रहित करें",
+      webSearch: "वेब सर्च",
       project: "प्रोजेक्ट",
       projectNone: "कोई नहीं",
       model: "मॉडल",

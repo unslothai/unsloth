@@ -5213,6 +5213,7 @@ export const pl = {
       notifyFailures: "Tylko niepowodzenia",
       notifyNone: "Wyłączone",
       archiveSuccessful: "Archiwizuj udane uruchomienia",
+      webSearch: "Wyszukiwanie w sieci",
       project: "Projekt",
       projectNone: "Brak",
       model: "Model",

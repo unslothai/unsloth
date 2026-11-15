@@ -4721,6 +4721,7 @@ export const zhCN = {
       notifyFailures: "仅失败时",
       notifyNone: "关闭",
       archiveSuccessful: "归档成功的运行",
+      webSearch: "网页搜索",
       project: "项目",
       projectNone: "无",
       model: "模型",

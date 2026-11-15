@@ -5158,6 +5158,7 @@ export const vi = {
       notifyFailures: "Chỉ khi thất bại",
       notifyNone: "Tắt",
       archiveSuccessful: "Lưu trữ các lượt chạy thành công",
+      webSearch: "Tìm kiếm trên web",
       project: "Dự án",
       projectNone: "Không có",
       model: "Mô hình",

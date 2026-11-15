@@ -1359,9 +1359,8 @@ def _band_kernel_check(layer, device):
     if head_dim not in (64, 128, 256):
         return False
     try:
-        import importlib
+        from unsloth.kernels import large_head_attention as lh
 
-        lh = importlib.import_module(_LH_MODULE)
         if not lh._enabled() or not lh._measured_faster_on(device):
             return False
         dtypes = [torch.float16] + ([torch.bfloat16] if torch.cuda.is_bf16_supported() else [])

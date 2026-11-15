@@ -95,7 +95,7 @@ def _fake_nvidia(
         calls.append((int(q.shape[-1]), dict(config or {})))
         return I.reference_attention(q, k, v).to(v.dtype)
 
-    monkeypatch.setattr(T, "int8_attention", triton_kernel)
+    monkeypatch.setattr(T, "_int8_attention", triton_kernel)
     return calls
 
 
