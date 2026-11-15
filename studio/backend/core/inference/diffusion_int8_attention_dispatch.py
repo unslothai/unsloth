@@ -503,17 +503,45 @@ def mid_verdict(
     return (large + MID_RACE_TOKENS) // 2
 
 
-def _secondary_cards(primary: int) -> tuple:
+def _secondary_cards(primary: int, dits: Any = ()) -> tuple:
     """The other CUDA cards of this load's multi-GPU selection (a layer split or a CFG replica places DiT blocks
-    there after the attention pick), or none."""
+    there after the attention pick), or, outside a load (the deferred speed profile re-installs at the 3rd image),
+    the other cards ``dits`` already run on: an armed CFG-parallel replica's card and a layer split's block cards."""
     try:
         from .diffusion_multigpu import current_selection
         selection = current_selection()
     except Exception:  # noqa: BLE001
         return ()
-    if selection is None or int(selection.primary) != int(primary):
+    if selection is None:
+        return tuple(c for c in _denoiser_cards(dits) if c != int(primary))
+    if int(selection.primary) != int(primary):
         return ()
     return tuple(int(c) for c in selection.secondaries)
+
+
+def _denoiser_cards(dits: Any) -> tuple:
+    """CUDA indices the DiTs compute on: their weights' cards and an armed CFG-parallel router's replica card."""
+    cards: dict = {}
+    for dit in dits or ():
+        router = getattr(dit, "__dict__", {}).get("_unsloth_cfg_router")
+        secondary = getattr(router, "secondary", None)
+        if (
+            getattr(router, "disabled_reason", None) is None
+            and getattr(secondary, "type", None) == "cuda"
+            and secondary.index is not None
+        ):
+            cards[int(secondary.index)] = None
+        tensors = getattr(dit, "parameters", None), getattr(dit, "buffers", None)
+        for fn in tensors:
+            if not callable(fn):
+                continue
+            try:
+                for t in fn():
+                    if t.device.type == "cuda" and t.device.index is not None:
+                        cards[int(t.device.index)] = None
+            except Exception:  # noqa: BLE001 - an unreadable module adds no card
+                continue
+    return tuple(cards)
 
 
 def _card_floor(
@@ -597,7 +625,7 @@ def _install(
     I8.int8_attention_op()
     original = original_dispatch()
     env_force = setting == "force"
-    cards = [index] + [c for c in _secondary_cards(index) if c != index]
+    cards = [index] + [c for c in _secondary_cards(index, _dits(pipe)) if c != index]
     report: dict = {}
     routed = 0
     for m in candidates:

@@ -1034,6 +1034,16 @@ def _sdpa_incumbent(backend: Any) -> tuple:
     return value, run
 
 
+def _secondary_cards(primary: int, transformer: Any = None) -> tuple:
+    """The other cards this DiT runs on in a multi-GPU load (the dispatch route checks the same set), or none."""
+    try:
+        from .diffusion_int8_attention_dispatch import _secondary_cards as cards
+        dits = () if transformer is None else (transformer,)
+        return tuple(c for c in cards(primary, dits) if int(c) != int(primary))
+    except Exception:  # noqa: BLE001 - no selection: the load's card only
+        return ()
+
+
 def install_int8_attention(
     transformer: Any,
     *,
@@ -1124,10 +1134,21 @@ def _install(
         proc._unsloth_int8 = True
         proc._unsloth_int8_min_tokens = minimum
         engaged += 1
+        # A layer split or CFG replica runs this processor on the selection's other cards too: the op runs the kernel
+        # only on a card whose own accuracy check passed, so check each of them here (the race stays the primary's).
+        for card in _secondary_cards(index, transformer):
+            if implementation(card, head_dim) is None:
+                continue
+            report[(card, int(m.heads), head_dim, name)] = verdict(
+                torch.device("cuda", card), dtype, int(m.heads), head_dim, fn, name, timed = False
+            )
     if logger is not None:
-        for (heads, head_dim, name), found in report.items():
+        for key, found in report.items():
+            card, heads, head_dim, name = key if len(key) == 4 else (index, *key)
             logger.info(
-                "diffusion.int8_attention: heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s min_tokens=%s%s",
+                "diffusion.int8_attention: cuda:%d heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s "
+                "min_tokens=%s%s",
+                card,
                 heads,
                 head_dim,
                 name,
