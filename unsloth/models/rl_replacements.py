@@ -6697,11 +6697,8 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
 
 
 def _unsloth_prepare_frozen_teacher(accelerator, teacher):
-    """``accelerator.prepare_model(teacher, evaluation_mode = True)``, except that a frozen teacher on one
-    process moves off the training card when another visible GPU has room for it, and one held wholly by
-    other GPUs stays there: accelerate would otherwise send it to the training card, or refuse it when
-    quantized ("loaded in 8-bit or 4-bit precision on a different device"). UNSLOTH_KD_TEACHER_PLACEMENT=0
-    restores accelerate's handling."""
+    """Like accelerate's prepare_model, but keeps a frozen teacher off the training card when another GPU fits it
+    (accelerate would move it there, or refuse it if quantized). UNSLOTH_KD_TEACHER_PLACEMENT=0 disables."""
     default = lambda: accelerator.prepare_model(teacher, evaluation_mode = True)
     try:
         from accelerate.utils import DistributedType
@@ -6775,8 +6772,7 @@ def _unsloth_prepare_frozen_teacher(accelerator, teacher):
                 )
         if train in on_device:
             return default()
-        # Wholly on other GPUs: no move (device_placement = False), and the 4/8-bit device check needs
-        # hf_device_map, so hide it for the call. Outputs return to the input device via accelerate's hook.
+        # accelerate's 4/8-bit device check reads hf_device_map, so hide it for the call.
         if getattr(teacher, "_hf_hook", None) is None:
             from accelerate.hooks import AlignDevicesHook, add_hook_to_module
             add_hook_to_module(
