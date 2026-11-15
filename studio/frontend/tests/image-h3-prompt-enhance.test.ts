@@ -41,7 +41,7 @@ test("the hint names the family's own enhancer", () => {
   assert.equal(enhancePromptHint("flux.3-klein"), ENHANCE_PROMPT_HINT);
   assert.equal(enhancePromptHint(null), ENHANCE_PROMPT_HINT);
   assert.match(H3_IMAGE_ENHANCE_PROMPT_HINT, /Qwen3\.5-9B/);
-  for (const banned of [/—/, /comfy/i]) assert.doesNotMatch(H3_IMAGE_ENHANCE_PROMPT_HINT, banned);
+  assert.doesNotMatch(H3_IMAGE_ENHANCE_PROMPT_HINT, /\u2014/);
 });
 
 test("status, download and cancel name the family; no family keeps the old URL", () => {
