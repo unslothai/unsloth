@@ -263,6 +263,8 @@ def test_windows_reads_a_non_ascii_start_menu_name_and_looks_it_up_once(windows,
     folder = os.path.join(root, "Microsoft", "Windows", "Start Menu", "Programs")
     os.makedirs(folder, exist_ok = True)
     link = os.path.join(folder, shown + ".lnk")
+    # WScript saves through the ANSI code page, so the name is given afterwards.
+    ascii_link = os.path.join(folder, "unsloth-cu-test.lnk")
     target = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "notepad.exe")
     make = (
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:LINK); "
@@ -271,8 +273,9 @@ def test_windows_reads_a_non_ascii_start_menu_name_and_looks_it_up_once(windows,
     subprocess.run(
         ["powershell", "-NoProfile", "-Command", make],
         check = True,
-        env = {**os.environ, "LINK": link, "TARGET": target},
+        env = {**os.environ, "LINK": ascii_link, "TARGET": target},
     )
+    os.replace(ascii_link, link)
     try:
         found = ""
         for _ in range(20):
@@ -282,6 +285,17 @@ def test_windows_reads_a_non_ascii_start_menu_name_and_looks_it_up_once(windows,
                 break
             time.sleep(0.5)
         assert found == shown, repr(found)
+        from core.inference.computer_use.backends import windows as windows_mod
+
+        # The same lookup decoded the way it was before: the console code page mangles the name.
+        before = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             windows_mod._OPEN_APP_SCRIPT.split("; ", 1)[1]],
+            capture_output = True,
+            text = True,
+            env = {**os.environ, "UNSLOTH_COMPUTER_USE_APP": "Unsloth Café", "UNSLOTH_COMPUTER_USE_RESOLVE": "1"},
+        )  # fmt: skip
+        assert before.stdout.strip() != shown, before.stdout
         runs = []
         real = subprocess.run
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: runs.append(a) or real(*a, **k))
