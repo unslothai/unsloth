@@ -113,7 +113,6 @@ def _array_fingerprint(value: Any) -> Optional[list]:
         return None
     if not isinstance(value, np.ndarray) or value.dtype.kind not in "biuf":
         return None
-    # a digest attached by the producer covers these exact bytes, so it is not recomputed
     digest = getattr(value, "digest", None) if not module.startswith("numpy") else None
     if not isinstance(digest, str):
         digest = hashlib.blake2b(

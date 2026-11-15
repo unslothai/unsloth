@@ -51180,7 +51180,6 @@ async def _generate_diffusion_image_run(
     size_omitted = request.workflow == "edit" and not (
         {"width", "height"} & request.model_fields_set
     )
-    # A text-to-image run that names no size takes the loaded family's default (MiniMax-H3-Image: 2048x2048).
     txt2img_size_omitted = (
         request.workflow is None
         and request.init_image is None
@@ -51194,7 +51193,7 @@ async def _generate_diffusion_image_run(
     submitted = request
     generation_started = time.perf_counter()
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
-    # the enhance step's status read also serves the first attempt's omitted size (no second read)
+    # reuse the enhance step's status read (no second read)
     probe: dict = {}
     enhancement = await _enhance_generate_prompts(backend, request, probe)
     if enhancement.status != "applied":
@@ -51252,7 +51251,7 @@ async def _generate_diffusion_image_run(
             if size is not None:
                 request = request.model_copy(update = {"width": size[0], "height": size[1]})
                 if expected_load is None:
-                    # Same pin as the omitted steps: a replaced model retries with its own default size.
+                    # a replaced model retries with its own default size
                     expected_load = load_identity(
                         status.get("repo_id"), status.get("base_repo"), status.get("family")
                     )

@@ -59,15 +59,13 @@ H3_IMAGE_SIGMAS: tuple[float, ...] = (
     0.23200887441635132,
     0.0,
 )
-# Step counts a render takes: each step uses the dt-weighted mean of the heads its sigma interval spans.
+# Each step uses the dt-weighted mean of the heads its sigma interval spans.
 H3_IMAGE_MAX_STEPS = H3_IMAGE_STEPS
-# The reference sampler: sigma(timestep) is linear in the grid index over 1000 timesteps, the "simple" scheduler
-# picks steps from them, and the model sees timestep = sigma * 1000 (float32), so t = 1 - timestep / 1000.
+# Reference sampler: sigma linear in the grid index over 1000 timesteps, "simple" pick, t = 1 - timestep / 1000.
 H3_IMAGE_SAMPLING_TIMESTEPS = 1000
 H3_IMAGE_TIMESTEP_MULTIPLIER = 1000.0
-# AdaLN rows are interpolated linearly over this many knots uniform in t (the reference curve table's grid).
 H3_IMAGE_ADALN_KNOTS = 1025
-# Opt-in only (``min_generation_area=``): a smaller request is generated on a canvas of this area and resized back.
+# Opt-in floor (min_generation_area=): a smaller request renders on this area, then resizes back.
 H3_IMAGE_MIN_GENERATION_AREA = 2048 * 2048
 H3_IMAGE_MIN_GENERATION_AREA_RANGE = (1024, 4096 * 4096)
 # Kept for callers that pass max_sequence_length; the prompt is not truncated (the reference implementation has no cap).
@@ -546,7 +544,6 @@ def install_pdd_head_bank(transformer: Any) -> bool:
         for k in range(1, len(heads)):
             heads[k].weight.data.copy_(w0 + rows_w[k])
             heads[k].bias.data.copy_(b0 + rows_b[k])
-    # a plain attribute on the host (not in the state dict, no device memory): moved only for a blended render
     object.__setattr__(transformer, PDD_BANK_ATTR, (rows_w.cpu(), rows_b.cpu()))
     return True
 
@@ -815,8 +812,7 @@ def size_short_edge(
     )
 
 
-# The reference edit workflow scales Picture 1 to this many megapixels ("scale total pixels", area), then cuts it
-# to multiples of 32 ("scale to multiple", cover + centre crop); the result is Picture 1 and the output size.
+# Reference edit workflow: Picture 1 to this many MP (area), then cover-cropped to multiples of 32.
 H3_IMAGE_SOURCE_MEGAPIXELS = 4
 
 
@@ -860,8 +856,7 @@ def reference_edit_size(width: int, height: int) -> tuple:
     return multiple_cover_size(w, h)[2:]
 
 
-# "0": Picture 1 of an edit is used at its own size (the conditioning node's rule only) instead of the reference edit
-# workflow's 4 MP rescale.
+# "0": Picture 1 keeps its own size (no 4 MP rescale).
 SOURCE_RESIZE_ENV = "UNSLOTH_H3_IMAGE_SOURCE_RESIZE"
 
 
@@ -902,7 +897,6 @@ def reference_source_picture(image: Any) -> Any:
     return np.ascontiguousarray(x[0].numpy())
 
 
-# Prepared copies of recent reference pictures (a 4 MP float Picture 1 is about 50 MB of host memory).
 PREPARED_PICTURE_ENTRIES = 4
 _PREPARED_PICTURES: "OrderedDict[tuple, tuple]" = OrderedDict()
 
@@ -1199,8 +1193,7 @@ def row_timestep_plan(timesteps: Any, seq_len: int, reference_rows: Any) -> list
 
 # "0": the text refiner runs every step again (the stock forward); the cached rows are bit-identical to it.
 REFINER_CACHE_ENV = "UNSLOTH_H3_IMAGE_REFINER_CACHE"
-# The output norm and head run on the generated rows only, as the reference's final layer does. "0" runs them over
-# every image row and then selects (the stock forward; on a GPU the row count can pick other kernels for edits).
+# Output norm + head on the generated rows only, as the reference; "0" runs them on every row (stock forward).
 TARGET_HEAD_ENV = "UNSLOTH_H3_IMAGE_TARGET_HEAD"
 
 
@@ -2002,7 +1995,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         )
         vae_images, vision_images = [], []
         for index, image in enumerate(prepared):
-            # both copies are cached per source picture: a repeat edit resizes nothing
             source = index == 0 and rescale_first
             key = (source, image.size, hashlib.blake2b(image.tobytes(), digest_size = 16).hexdigest())
             copies = _PREPARED_PICTURES.get(key)
@@ -2011,7 +2003,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 vae_copy = resize(picture, *H3_IMAGE_REFERENCE_SHORT_EDGE)
                 vision_copy = resize(picture, *H3_IMAGE_VISION_SHORT_EDGE)
                 if source and (vae_copy is picture or vision_copy is picture):
-                    # a float copy reaches the latent and prompt caches: digest its bytes once for both
+                    # digest once: the latent and prompt caches both key on it
                     digested = _DigestedPicture.of(picture)
                     vae_copy = digested if vae_copy is picture else vae_copy
                     vision_copy = digested if vision_copy is picture else vision_copy
@@ -2076,9 +2068,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         if len(generators) != len(jobs):
             raise ValueError(f"got {len(generators)} generators for {len(jobs)} images")
         vae_refs, vision_refs = self.prepare_references(image)
-        # no size: an edit renders at the reference edit workflow's size for Picture 1 (as the API and UI do), not
-        # the VAE copy's size, which the short-edge rule can enlarge; with that rescale off, at the VAE copy's size;
-        # text-to-image at 2048x2048 (the reference text-to-image workflow)
+        # no size: an edit takes the reference edit size of Picture 1 (as the API and UI); text-to-image 2048x2048
         if not vae_refs:
             default_w, default_h = H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE
         elif source_resize_enabled():
@@ -2138,7 +2128,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         t0 = time.perf_counter()
         device = self._device()
         if min_generation_area is None:
-            # native, as the reference renders: the latent is the request // 16
             m = H3_IMAGE_CANVAS_MULTIPLE
             if height <= 0 or width <= 0 or height % m or width % m:
                 raise ValueError(
@@ -2232,8 +2221,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                     "transformer's forward is wrapped."
                 )
             stats["pdd_blended_steps"] = sum(stop - start != 1 for start, stop in spans)
-            # the sampler state stays float32 in ``x``; ``rows`` holds the model input, the generated rows rounded to
-            # the compute dtype (the reference casts its input), the reference rows float32
+            # sampler state stays float32 in x; rows = the model input in the compute dtype, as the reference casts it
             x = rows[n_ref:].clone()
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -2257,7 +2245,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 )[0]
                 if "output_indices" not in extra:
                     velocity = velocity[:, n_ref:]
-                # the model output reaches the sampler in the compute dtype, as in the reference
                 velocity = model_io(velocity[0], dtype).float()
                 x = self.scheduler.step(velocity, t, x)[0]
                 if callback is not None:

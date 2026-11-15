@@ -56,7 +56,6 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 25, guidance: 3 },
   { match: "ideogram", steps: 20, guidance: 7 },
-  // MiniMax-H3-Image: 6 distilled steps by default (1-6 accepted), no CFG.
   { match: "minimax-h3-image", steps: 6, guidance: 1 },
   { match: "moss-image", steps: 25, guidance: 2.5 },
   { match: "moss_image", steps: 25, guidance: 2.5 },
@@ -71,8 +70,7 @@ const MODEL_DEFAULTS: Array<{
   { match: "sdxl", steps: 25, guidance: 7 },
 ];
 
-// Families whose checkpoint caps the step count (one distilled output head per step): the backend refuses more, so
-// the slider tops out there.
+// Families whose checkpoint caps the step count (one head per step): the slider stops there.
 const MAX_STEPS: Readonly<Record<string, number>> = { "minimax-h3-image": 6 };
 
 /** The most steps the loaded family accepts, or null when only the request's own limit applies. */
