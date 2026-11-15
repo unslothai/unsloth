@@ -41,7 +41,6 @@ _sessions: "OrderedDict[Key, Session]" = OrderedDict()
 _control = threading.Lock()
 _holder: Optional[Key] = None
 _held_at = 0.0
-# Bumped per account to end that account's chains of actions running now.
 _halts: dict[str, int] = {}
 
 
