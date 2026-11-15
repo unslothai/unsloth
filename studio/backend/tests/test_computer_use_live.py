@@ -259,7 +259,9 @@ def test_windows_names_an_app_as_the_start_menu_does(windows):
 
 def test_windows_reads_a_non_ascii_start_menu_name_and_looks_it_up_once(windows, monkeypatch):
     shown = "Unsloth Café 日本"
-    folder = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs")
+    root = os.environ.get("ProgramData") or r"C:\ProgramData"
+    folder = os.path.join(root, "Microsoft", "Windows", "Start Menu", "Programs")
+    os.makedirs(folder, exist_ok = True)
     link = os.path.join(folder, shown + ".lnk")
     target = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "notepad.exe")
     make = (

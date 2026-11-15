@@ -107,3 +107,8 @@ test("an order saved before computer use gains it after browser use", () => {
   const order = normalizePlusMenuOrder(["skills", "browserUse", "deepResearch"]);
   assert.equal(order.indexOf("computerUse"), order.indexOf("browserUse") + 1);
 });
+
+test("the card names the point the server clicks when a call gives two", () => {
+  assert.deepEqual(describe({ action: "click", x: 900, y: 50, coordinate: [10, 10] }), ["Click at (900, 50)"]);
+  assert.deepEqual(describe({ action: "left_click", coordinate: [10, 10] }), ["Click at (10, 10)"]);
+});

@@ -13,10 +13,16 @@ const num = (value: unknown): string =>
     ? String(Math.round(Number(value)))
     : "?";
 
+const given = (value: unknown) => value !== undefined && value !== null && value !== "";
+
+// x and y first, as the server reads them, so the card names the point that is clicked.
 function point(raw: Raw, prefix = ""): string {
+  const [x, y] = [raw[`${prefix}x`], raw[`${prefix}y`]];
   const pair = raw.coordinate ?? raw.coordinates;
-  if (!prefix && Array.isArray(pair) && pair.length === 2) return `(${num(pair[0])}, ${num(pair[1])})`;
-  return `(${num(raw[`${prefix}x`])}, ${num(raw[`${prefix}y`])})`;
+  if (!prefix && !(given(x) && given(y)) && Array.isArray(pair) && pair.length === 2) {
+    return `(${num(pair[0])}, ${num(pair[1])})`;
+  }
+  return `(${num(x)}, ${num(y)})`;
 }
 
 function one(raw: Raw): string {
