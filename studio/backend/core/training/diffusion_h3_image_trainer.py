@@ -142,11 +142,21 @@ def sigma_mode() -> str:
     return "continuous" if value == "continuous" else "grid"
 
 
-def resolve_h3_image_base_precision(requested: str, free_gb: Optional[float]) -> str:
+def resolve_h3_image_base_precision(
+    requested: str,
+    free_gb: Optional[float],
+    int8_ok: bool = True,
+) -> str:
     """bf16 or int8. ``auto`` (and the config default nf4, which this family normalises to auto) takes bf16 when the
-    card has room for it, else int8."""
+    card has room for it, else int8; ``int8_ok`` False (no functional torchao, ROCm) refuses rather than load a dense
+    base that does not fit."""
     mode = (requested or "auto").strip().lower()
-    if mode in ("bf16", "int8"):
+    int8_missing = "MiniMax-H3-Image int8 training needs a CUDA GPU with a working torchao, which this machine does not have"
+    if mode == "bf16":
+        return mode
+    if mode == "int8":
+        if not int8_ok:
+            raise ValueError(int8_missing + ".")
         return mode
     if mode in ("fp8", "mxfp8"):
         raise ValueError(
@@ -154,6 +164,10 @@ def resolve_h3_image_base_precision(requested: str, free_gb: Optional[float]) ->
         )
     if free_gb is not None and free_gb >= H3_IMAGE_BF16_MIN_FREE_GB:
         return "bf16"
+    if not int8_ok:
+        raise ValueError(
+            f"{int8_missing}, and a bf16 base needs about {H3_IMAGE_BF16_MIN_FREE_GB:g} GB of free GPU memory."
+        )
     return "int8"
 
 
@@ -536,6 +550,14 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
     from core.training.diffusion_dit_trainer import _int8_quantize_base, _make_optimizer
     from core.training.diffusion_samples import isolated_sampling, plan_samples, run_sample_round
 
+    # Resolved before any download: a precision this machine cannot run fails here, not after 90 GB of fetches.
+    if device in ("cuda", "xpu"):
+        from core.training.diffusion_train_common import train_precision_modes
+        base_precision = resolve_h3_image_base_precision(
+            cfg.base_precision, _free_gb(device), int8_ok = "int8" in train_precision_modes()[0]
+        )
+    else:
+        base_precision = "bf16"  # CPU (tests): torchao int8 is a CUDA path
     out_dir = Path(cfg.output_dir).expanduser()
     paths = [p for p, _ in pairs]
     captions = [c for _, c in pairs]
@@ -578,9 +600,6 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
     _empty(device)
 
     # Phase 3: the DiT, frozen, with the adapter on the trunk.
-    base_precision = resolve_h3_image_base_precision(cfg.base_precision, _free_gb(device))
-    if device not in ("cuda", "xpu") and base_precision == "int8":
-        base_precision = "bf16"  # CPU (tests): torchao int8 is a CUDA path
     dense_adaln = mode == "continuous"
     _emit(on_event, "model_load_started", fetch_repo = training_fetch_repo(cfg))
     dit_root = _hub_root(

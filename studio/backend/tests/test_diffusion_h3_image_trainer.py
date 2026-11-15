@@ -314,6 +314,12 @@ def test_auto_precision_follows_free_memory():
     assert pick("int8", 200.0) == "int8"
     with pytest.raises(ValueError):
         pick("fp8", 80.0)
+    # no functional int8 (ROCm, torchao stub): bf16 when it fits, else a clear refusal, never a dense "int8" base
+    assert pick("auto", 79.0, int8_ok = False) == "bf16"
+    with pytest.raises(ValueError, match = "torchao"):
+        pick("auto", 39.0, int8_ok = False)
+    with pytest.raises(ValueError, match = "torchao"):
+        pick("int8", 200.0, int8_ok = False)
 
 
 def test_backend_runs_only_the_load_time_lora_set_for_h3_image():
