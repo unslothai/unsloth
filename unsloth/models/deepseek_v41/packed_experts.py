@@ -30,7 +30,7 @@ __all__ = [
 
 def converted_experts_format(path):
     try:
-        with open(os.path.join(str(path), "config.json")) as f:
+        with open(os.path.join(str(path), "config.json"), encoding = "utf-8") as f:
             return json.load(f).get("unsloth_experts_format")
     except Exception:
         return None

@@ -7,7 +7,9 @@ import types
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+from real_accelerator import has_real_cuda  # noqa: E402
+
+pytestmark = pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 
 BLOCK = [128, 128]
 

@@ -31,6 +31,7 @@ renaming table and existing Unsloth / unsloth_zoo hooks (non-reentrant checkpoin
 ``shared`` group state, grouped LoRA for ``o_a_proj``, the engram table store) apply unchanged.
 """
 
+import copy
 import json
 import math
 import os
@@ -303,15 +304,36 @@ def ensure_grouped_lora():
     """Install unsloth_zoo's grouped LoRA for DeepseekV41GroupedLinear (PEFT would wrap o_a_proj with a plain LoRA
     whose delta multiplies every group by the whole stacked weight, a shape error). Unsloth's GPU import applies the
     zoo patches; the CPU backend, plain transformers + PEFT and distributed launchers may not, so building the
-    attention installs it. Idempotent; a no-op without unsloth_zoo."""
+    attention installs it. Idempotent. True once PEFT's dispatcher carries the grouped handler; without unsloth_zoo
+    (or PEFT) it stays unready, and grouped_projection's fallback keeps a plain PEFT LoRA correct."""
     if _GROUPED_LORA_READY[0]:
-        return
-    _GROUPED_LORA_READY[0] = True
+        return True
     try:
+        from peft.tuners.lora.model import LoraModel
         from unsloth_zoo.temporary_patches.deepseek_v41 import patch_deepseek_v41_grouped_lora
         patch_deepseek_v41_grouped_lora()
     except Exception:
-        pass
+        return False
+    create = LoraModel.__dict__.get("_create_new_module")
+    if getattr(getattr(create, "__func__", create), "_unsloth_dsv41_grouped", False):
+        _GROUPED_LORA_READY[0] = True
+    return _GROUPED_LORA_READY[0]
+
+
+def ensure_checkpoint_replay():
+    """Install unsloth_zoo's decoder-layer checkpoint replay (each checkpointed layer recomputes from a private copy
+    of the per-forward group state it first saw; without it a recompute reads state later layers overwrote and the
+    gradients are wrong). Idempotent, whatever was imported first; True once DeepseekV41DecoderLayer carries it."""
+    if getattr(DeepseekV41DecoderLayer.__call__, "_unsloth_patched", False):
+        return True
+    try:
+        from unsloth_zoo.temporary_patches.deepseek_v41 import (
+            patch_deepseek_v41_gradient_checkpointing,
+        )
+        patch_deepseek_v41_gradient_checkpointing()
+    except Exception:
+        return False
+    return bool(getattr(DeepseekV41DecoderLayer.__call__, "_unsloth_patched", False))
 
 
 def grouped_projection(module, x, out_per_group):
@@ -320,8 +342,33 @@ def grouped_projection(module, x, out_per_group):
     not skip o_a_proj, another quantizer, plain PEFT over those) multiplies every group by the whole stacked weight;
     the diagonal blocks of that product are exactly the grouped result (G times the work, never wrong). Shapes alone
     decide, so a tensor-parallel shard holding a subset of the groups works either way."""
-    out = module(x)
     groups = x.shape[-2]
+    base = getattr(module, "base_layer", None)
+    if (
+        base is not None
+        and groups > 1
+        and hasattr(base, "n_groups")
+        and hasattr(module, "lora_A")
+        # PEFT's own plain LoRA layer only: grouped LoRA handlers (unsloth / unsloth_zoo, TP-aware) run themselves
+        and type(module).__module__.startswith("peft.")
+    ):
+        # A plain PEFT LoRA around the grouped Linear (unsloth_zoo's grouped handler absent): the base gives the
+        # per-group width, the plain delta the full stacked width; take the delta's diagonal blocks too.
+        out = base(x)
+        if not getattr(module, "merged", False) and not getattr(module, "disable_adapters", False):
+            for adapter in getattr(module, "active_adapters", ()):
+                if adapter not in module.lora_A:
+                    continue
+                lora_a, lora_b = module.lora_A[adapter], module.lora_B[adapter]
+                delta = lora_b(lora_a(module.lora_dropout[adapter](x.to(lora_a.weight.dtype))))
+                delta = delta * module.scaling[adapter]
+                if delta.shape[-1] == groups * out_per_group:
+                    delta = torch.diagonal(
+                        delta.unflatten(-1, (groups, out_per_group)), dim1 = -3, dim2 = -2
+                    ).movedim(-1, -2)
+                out = out + delta.to(out.dtype)
+        return out
+    out = module(x)
     if groups > 1 and out.shape[-1] == groups * out_per_group:
         _count("o_a_ungrouped")
         out = torch.diagonal(out.unflatten(-1, (groups, out_per_group)), dim1 = -3, dim2 = -2).movedim(
@@ -938,11 +985,19 @@ class DeepseekV41EngramEmbedding(nn.Embedding):
         table_device = weight.device if weight.device.type != "meta" else ids.device
         idx = ids.to(table_device)
         values = F.embedding(idx, weight)
-        if weight.dtype == getattr(torch, "float8_e4m3fn", None):
-            scales = F.embedding(idx, self.weight_scale_inv).float()
+        # Rows are always the stored codes times their per-block scale: a load can widen fp8 rows to the model dtype
+        # (losing the fp8 dtype, not the scale); float tables carry unit scales.
+        fp8 = weight.dtype == getattr(torch, "float8_e4m3fn", None)
+        if fp8 or (
+            weight.shape[-1] % self.block_size == 0
+            and self.weight_scale_inv.shape[-1] == weight.shape[-1] // self.block_size
+        ):
+            scales = F.embedding(idx, self.weight_scale_inv.to(idx.device)).float()
             values = (
                 values.float().unflatten(-1, (-1, self.block_size)) * scales.unsqueeze(-1)
             ).flatten(-2)
+            if not fp8:
+                values = values.to(weight.dtype)
         return values.to(ids.device)
 
 
@@ -1295,7 +1350,7 @@ def _checkpoint_key_names(path, **hub_kwargs):
     import struct
 
     def _local_or_cached(name):
-        local = os.path.join(str(path), name)
+        local = os.path.join(str(path), hub_kwargs.get("subfolder") or "", name)
         if os.path.isfile(local):
             return local
         try:
@@ -1308,7 +1363,7 @@ def _checkpoint_key_names(path, **hub_kwargs):
 
     index = _local_or_cached("model.safetensors.index.json")
     if index:
-        with open(index) as f:
+        with open(index, encoding = "utf-8") as f:
             return set(json.load(f).get("weight_map", {}))
     single = _local_or_cached("model.safetensors")
     if single:
@@ -1381,9 +1436,48 @@ def _drop_engram_tables_outside_full_save(module, state_dict, prefix, local_meta
                 if store.scale is not None:
                     state_dict[f"{prefix}engram_tables.{key}.weight_scale_inv"] = store.scale
         return state_dict
-    for key in [k for k in state_dict if k.startswith(prefix + "engram_tables.")]:
-        del state_dict[key]
+    # Parameter-free tables only: a Parameter-backed DeepseekV41EngramEmbedding (UNSLOTH_DSV41_FROZEN_ENGRAM=0, or no
+    # unsloth_zoo) holds real weights that from_pretrained / load_state_dict must find.
+    for key, table in getattr(module, "engram_tables", {}).items():
+        if not is_parameter_free_table(table):
+            continue
+        table_prefix = f"{prefix}engram_tables.{key}."
+        for name in [k for k in state_dict if k.startswith(table_prefix)]:
+            del state_dict[name]
     return state_dict
+
+
+def _engram_table_entries(model):
+    """{state-dict key: tensor} of every engram table a full save writes: rows held in memory (_TensorTableStore)
+    and Parameter-backed tables. File-backed tables (unsloth_zoo's store) export through unsloth_zoo's save guard."""
+    out = {}
+    for module_name, module in model.named_modules():
+        tables = getattr(module, "engram_tables", None)
+        if not isinstance(tables, nn.ModuleDict):
+            continue
+        prefix = f"{module_name}." if module_name else ""
+        for key, table in tables.items():
+            table_prefix = f"{prefix}engram_tables.{key}."
+            store = getattr(table, "frozen_table_store", None)
+            if isinstance(store, _TensorTableStore):
+                out[table_prefix + "weight"] = store.weight
+                if store.scale is not None:
+                    out[table_prefix + "weight_scale_inv"] = store.scale
+            elif not is_parameter_free_table(table):
+                for name, tensor in table.state_dict().items():
+                    out[table_prefix + name] = tensor
+    return out
+
+
+def _keep_positions(x, positions):
+    """x [b, s, ...] at a tensor of kept positions: 1-D (the same for every row) or 2-D [b, k]."""
+    positions = torch.as_tensor(positions, device = x.device, dtype = torch.long)
+    if positions.dim() <= 1:
+        return x[:, positions.reshape(-1)]
+    index = positions.view(*positions.shape, *([1] * (x.dim() - 2))).expand(
+        *positions.shape, *x.shape[2:]
+    )
+    return x.gather(1, index)
 
 
 def _engram_cut_safe(config, cut):
@@ -1437,6 +1531,10 @@ def pipeline_handoff_keys(config, cut):
         if j in ix_src and cand is not None and 0 <= cand < cut and cand < j:
             keys.add("candidates")
     return sorted(keys)
+
+
+def _forward_segments_call(model, *args, **kwargs):
+    return model._forward_segments(*args, **kwargs)
 
 
 def sequence_segments(position_ids, attention_mask, bsz, seqlen):
@@ -1498,7 +1596,17 @@ _LORA_TARGET_MAP = {
     "k_proj": _LORA_KV_TARGETS,
     "v_proj": _LORA_KV_TARGETS,
     "o_proj": ("self_attn.o_a_proj", "self_attn.o_b_proj"),
+    # Qualified to the shared expert: a bare gate_proj would also hit self_attn.compressor.gate_proj (attention).
+    # The routed experts are 3D Parameters, reached through Unsloth's MoE detection from the caller's bare aliases.
+    "gate_proj": ("mlp.shared_experts.gate_proj",),
+    "up_proj": ("mlp.shared_experts.up_proj",),
+    "down_proj": ("mlp.shared_experts.down_proj",),
 }
+
+
+# Eager boundaries (not defs, so unsloth_zoo's compiler leaves them as they are): see DeepseekV41TextModel.forward.
+_sequence_segments_outside_trace = torch.compiler.disable(sequence_segments)
+_forward_segments_outside_trace = torch.compiler.disable(_forward_segments_call)
 
 
 class DeepseekV41PreTrainedModel(PreTrainedModel):
@@ -1538,6 +1646,19 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     ]
     _keys_to_ignore_on_load_missing = [r"engram_tables\.\d+\.weight_scale_inv$"]
 
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs = None):
+        """The decoder layers share per-forward group state; a checkpointed layer is exact only through unsloth_zoo's
+        replay (a private copy of the state for the recompute). Fail closed without it."""
+        if not ensure_checkpoint_replay():
+            raise RuntimeError(
+                "Unsloth: DeepSeek-V4.1 gradient checkpointing needs unsloth_zoo's decoder-layer replay "
+                "(unsloth_zoo.temporary_patches.deepseek_v41); without it the recomputed layers read overwritten "
+                "group state and the gradients are wrong. Update unsloth_zoo."
+            )
+        return super().gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs = gradient_checkpointing_kwargs
+        )
+
     def save_pretrained(self, *args, **kwargs):
         _ENGRAM_FULL_SAVE[0] += 1
         # unsloth_zoo's save patch writes packed MXFP4 experts dequantized: the saved config then describes dense
@@ -1553,6 +1674,20 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
                     dropped.append((c, c.unsloth_experts_format))
                     del c.unsloth_experts_format
         try:
+            # A full save handed a state dict collected beforehand (state_dict() drops the tables outside a full save)
+            # still writes the engram tables; the caller's dict is not modified.
+            positional = len(args) > 2 and isinstance(args[2], dict)
+            supplied = args[2] if positional else kwargs.get("state_dict")
+            if isinstance(supplied, dict) and not getattr(self, "_hf_peft_config_loaded", False):
+                missing = {
+                    k: v for k, v in _engram_table_entries(self).items() if k not in supplied
+                }
+                if missing:
+                    supplied = {**supplied, **missing}
+                    if positional:
+                        args = (*args[:2], supplied, *args[3:])
+                    else:
+                        kwargs["state_dict"] = supplied
             return super().save_pretrained(*args, **kwargs)
         finally:
             for c, value in dropped:
@@ -1577,23 +1712,40 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         except Exception:
             names = None
         released = _released_layout(names)
+        # The caller's config object is never mutated (the release's metadata goes onto a copy).
+        if kwargs.get("config") is not None and not isinstance(
+            kwargs["config"], (str, os.PathLike)
+        ):
+            kwargs["config"] = copy.deepcopy(kwargs["config"])
         if released and not released_needs_conversion():
+            # A direct native-class load may run before anything registered the release's renames.
+            from . import _register_conversions
+            if not _register_conversions():
+                raise RuntimeError(
+                    "Unsloth: could not register the DeepSeek-V4.1 checkpoint conversions with transformers."
+                )
             # transformers 5 loads the release itself through the registered renames and the release's FP8
             # quantization_config. A config passed in (a DeepseekV41TextConfig, or the text class's own config
             # class) does not carry that quantization_config, and without it the fp8 / fp4 tensors cannot load:
             # take it from the checkpoint, as a config read from the checkpoint would have it.
             _attach_release_quantization_config(cls, pretrained_model_name_or_path, kwargs, hub)
         if released and released_needs_conversion():
-            hub.pop("subfolder", None)
+            # the converted copy is flat: the subfolder is consumed by the conversion
             pretrained_model_name_or_path = convert_released_checkpoint(
                 pretrained_model_name_or_path, **hub
             )
+            kwargs.pop("subfolder", None)
             # The converted weights are dequantized: drop the release's FP8 config wherever a caller carried
             # it over (a config object read from the original repo, or a quantization_config kwarg); a
             # bitsandbytes config asked for by the caller stays.
             if _is_fp8_quant_config(kwargs.get("quantization_config")):
                 kwargs.pop("quantization_config")
             config = kwargs.get("config")
+            if isinstance(config, (str, os.PathLike)):
+                # a config path still has to build the experts the converted files hold (resolved as transformers
+                # resolves it: with the caller's subfolder)
+                config = cls.config_class.from_pretrained(str(config), **hub)
+                kwargs["config"] = config
             experts_format = converted_experts_format(pretrained_model_name_or_path)
             if config is not None and not isinstance(config, (str, os.PathLike)):
                 for c in (config, getattr(config, "text_config", None)):
@@ -1635,9 +1787,11 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         # The engram hashes need the tokenizer's compressed token map; the checkpoint ships the tokenizer.
         target = model[0] if isinstance(model, tuple) else model
         if hasattr(target, "_autobind_tokenizer"):
+            # the tokenizer sits next to the weights: subfolder included (a converted copy is flat, its subfolder
+            # was consumed above)
             hub = {
                 k: kwargs[k]
-                for k in ("cache_dir", "token", "revision", "local_files_only")
+                for k in ("cache_dir", "token", "revision", "subfolder", "local_files_only")
                 if k in kwargs
             }
             target._autobind_tokenizer(pretrained_model_name_or_path, **hub)
@@ -1651,22 +1805,42 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     ):
         """Unsloth's get_peft_model calls this to translate the usual LoRA names into this model's Linears.
         q_proj -> q_a_proj / q_b_proj, k_proj / v_proj -> the single KV head (kv_proj), the compressor (kv_proj /
-        gate_proj) and the engram key-value (wkv), o_proj -> o_a_proj (grouped) / o_b_proj; gate / up / down_proj stay
-        leaves, which reach the shared expert and, through Unsloth's MoE detection, the routed experts. None and
-        "all-linear" select all of them (filtered by the attention / mlp families). The indexer (selection only, no
-        gradient) and the routers (frozen) are never targeted. A regex string or names this map does not know pass
-        through unchanged."""
+        gate_proj) and the engram key-value (wkv), o_proj -> o_a_proj (grouped) / o_b_proj; gate / up / down_proj ->
+        the shared expert, qualified so the compressor's gate_proj is not hit (the routed experts are reached by
+        Unsloth's MoE detection from the caller's bare names). None and "all-linear" select all of them. Every list,
+        explicit or automatic, is filtered by the attention family (self_attn, compressor, engram) and the mlp family
+        (shared and routed experts). The indexer (selection only, no gradient) and the routers (frozen) are never
+        targeted. A regex string passes through unchanged, as do names this map cannot place in a family."""
         if isinstance(target_modules, str) and target_modules != "all-linear":
             return target_modules
         if target_modules is None or target_modules == "all-linear":
-            wanted = (["q_proj", "k_proj", "o_proj"] if attention else []) + (
-                ["gate_proj", "up_proj", "down_proj"] if mlp else []
-            )
+            wanted = ["q_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         else:
             wanted = list(target_modules)
+        # Every target, mapped or passed through, is filtered by its family: attention = self_attn (incl. the
+        # compressor and indexer) and the engram, mlp = the shared and routed experts. Unknown leaves stay.
+        attention_parts = {"self_attn", "compressor", "indexer", "engram"}
+        mlp_parts = {"mlp", "shared_experts", "experts"}
+        attention_leaves = {
+            "q_a_proj",
+            "q_b_proj",
+            "kv_proj",
+            "o_a_proj",
+            "o_b_proj",
+            "wkv",
+            "weights_proj",
+        }
+        mlp_leaves = {"gate_up_proj"}
         out = []
         for name in wanted:
             for target in _LORA_TARGET_MAP.get(name, (name,)):
+                parts = str(target).split(".")
+                is_mlp = bool(mlp_parts.intersection(parts)) or parts[-1] in mlp_leaves
+                is_attention = not is_mlp and (
+                    bool(attention_parts.intersection(parts)) or parts[-1] in attention_leaves
+                )
+                if (is_attention and not attention) or (is_mlp and not mlp):
+                    continue
                 if target not in out:
                     out.append(target)
         return out
@@ -1750,6 +1924,8 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         else:
             self.ngram_hash = None
         self.gradient_checkpointing = False
+        # whatever was imported first: unsloth_zoo's patches may have run before this module existed
+        ensure_checkpoint_replay()
         self._register_state_dict_hook(_drop_engram_tables_outside_full_save)
         self.post_init()
 
@@ -1812,12 +1988,14 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
                 )
             inputs_embeds = self.embed_tokens(input_ids)
         bsz, seqlen = inputs_embeds.shape[:2]
-        if not torch.compiler.is_compiling():
-            segments = sequence_segments(position_ids, attention_mask, bsz, seqlen)
-            if segments is not None:
-                return self._forward_segments(
-                    segments, input_ids, inputs_embeds, output_hidden_states, **kwargs
-                )
+        # Packed rows / left padding are moved into their own rows also under torch.compile: the layout read and the
+        # relayout run outside the traced graph (a deliberate boundary; skipping them while compiling would let
+        # sequences attend across each other).
+        segments = _sequence_segments_outside_trace(position_ids, attention_mask, bsz, seqlen)
+        if segments is not None:
+            return _forward_segments_outside_trace(
+                self, segments, input_ids, inputs_embeds, output_hidden_states, **kwargs
+            )
         positions = torch.arange(seqlen, device = inputs_embeds.device)
         # right padding only here (sequence_segments moved anything else): pads never reach a real token's hash / gate
         token_mask = (
@@ -1857,8 +2035,16 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         """{layer_id: rows} gathered from the model-level engram tables for the n-gram hashes of ``input_ids``
         (frozen, no gradient). ``layer_ids`` limits it to the engram layers a pipeline stage owns."""
         rows = {}
-        if self.ngram_hash is None or input_ids is None:
+        if self.ngram_hash is None:
             return rows
+        if layer_ids is not None and not any(l in layer_ids for l in self.ngram_hash.layer_ids):
+            return rows
+        if input_ids is None:
+            # inputs_embeds alone cannot drive the engram layers: their n-gram hashes read the token ids
+            raise ValueError(
+                "Unsloth: DeepSeek-V4.1's engram layers hash the token ids: pass input_ids (with or without "
+                "inputs_embeds), also to a pipeline stage that owns an engram layer."
+            )
         self._maybe_autobind()
         hash_ids = self.ngram_hash(input_ids, token_mask, left_context)
         for k, layer_id in enumerate(self.ngram_hash.layer_ids):
@@ -2040,11 +2226,18 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             engram_left_context = kwargs.pop("engram_left_context", None),
         )
         hidden = out.last_hidden_state
+        keep_all = isinstance(logits_to_keep, int) and logits_to_keep <= 0
+        if labels is not None and not keep_all:
+            return self._loss_on_kept_positions(
+                hidden, labels, logits_to_keep, out.hidden_states, **kwargs
+            )
         sl = (
             slice(-logits_to_keep, None)
             if isinstance(logits_to_keep, int) and logits_to_keep > 0
             else slice(None)
         )
+        if not isinstance(logits_to_keep, int):
+            hidden = _keep_positions(hidden, logits_to_keep)
         logits = self.lm_head(hidden[:, sl, :])
         loss = None
         if labels is not None:
@@ -2055,14 +2248,57 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             loss = loss, logits = logits, past_key_values = None, hidden_states = out.hidden_states
         )
 
-    # Generation recomputes the whole prefix every step (sanity evaluation only; no KV cache).
+    def _loss_on_kept_positions(
+        self,
+        hidden,
+        labels,
+        logits_to_keep,
+        hidden_states = None,
+        **kwargs,
+    ):
+        """labels with logits_to_keep: the logits of the kept positions against their own next-token targets
+        (labels shifted once over the whole sequence, then the same positions picked)."""
+        from transformers.loss.loss_utils import ForCausalLMLoss
+
+        shift_labels = F.pad(labels, (0, 1), value = -100)[..., 1:]
+        if isinstance(logits_to_keep, int):
+            kept_hidden, kept_targets = (
+                hidden[:, -logits_to_keep:],
+                shift_labels[:, -logits_to_keep:],
+            )
+        else:
+            kept_hidden = _keep_positions(hidden, logits_to_keep)
+            kept_targets = _keep_positions(shift_labels.unsqueeze(-1), logits_to_keep).squeeze(-1)
+        logits = self.lm_head(kept_hidden)
+        kwargs.pop("shift_labels", None)
+        loss = ForCausalLMLoss(
+            logits,
+            None,
+            vocab_size = self.vocab_size,
+            shift_labels = kept_targets.contiguous(),
+            **kwargs,
+        )
+        return CausalLMOutputWithPast(
+            loss = loss, logits = logits, past_key_values = None, hidden_states = hidden_states
+        )
+
+    # Generation recomputes the whole prefix every step (sanity evaluation only; no KV cache); only the last
+    # position's logits are projected (a full-prefix vocabulary projection is S x vocab per step).
     def prepare_inputs_for_generation(
         self,
         input_ids,
         attention_mask = None,
+        logits_to_keep = None,
         **kwargs,
     ):
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "use_cache": False}
+        if logits_to_keep is None:
+            logits_to_keep = kwargs.get("num_logits_to_keep")
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "use_cache": False,
+            "logits_to_keep": 1 if logits_to_keep is None else logits_to_keep,
+        }
 
     @classmethod
     def _supports_default_dynamic_cache(cls):

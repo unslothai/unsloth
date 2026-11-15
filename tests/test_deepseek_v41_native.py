@@ -9,6 +9,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from real_accelerator import has_real_cuda  # noqa: E402
 from unsloth.models.deepseek_v41 import register_deepseek_v41, transformers_has_deepseek_v41  # noqa: E402
 from unsloth.models.deepseek_v41 import modeling as dsv41  # noqa: E402
 from unsloth.models.deepseek_v41.configuration import DeepseekV41Config, DeepseekV41TextConfig  # noqa: E402
@@ -17,6 +18,52 @@ needs_native = pytest.mark.skipif(
     transformers_has_deepseek_v41(),
     reason = "transformers ships deepseek_v41; the native classes are not registered",
 )
+
+
+def _zoo_dsv41():
+    try:
+        import unsloth_zoo.temporary_patches.deepseek_v41 as zoo_dsv41
+    except Exception:
+        return None
+    return zoo_dsv41
+
+
+def _zoo_resolves_native():
+    """unsloth_zoo's DeepSeek-V4.1 patches (checkpoint replay, grouped LoRA) find Unsloth's native module."""
+    zoo_dsv41 = _zoo_dsv41()
+    try:
+        return zoo_dsv41 is not None and zoo_dsv41._modeling() is dsv41
+    except Exception:
+        return False
+
+
+# Capability probes for the companion unsloth_zoo (not version strings): on an unsloth_zoo without them these tests
+# skip; the model falls back (Parameter-backed engram tables, the torch sparse attention, plain-PEFT grouped
+# blocks) or refuses (gradient checkpointing without the replay).
+needs_frozen_tables = pytest.mark.skipif(
+    not hasattr(_zoo_dsv41(), "make_deepseek_v41_engram_table"),
+    reason = "unsloth_zoo without the parameter-free DeepSeek-V4.1 engram table (unsloth-zoo #2510)",
+)
+needs_zoo_native = pytest.mark.skipif(
+    not _zoo_resolves_native(),
+    reason = "unsloth_zoo's DeepSeek-V4.1 patches do not resolve Unsloth's native module (unsloth-zoo #2510)",
+)
+
+
+def _cpu_backend_child_env(*paths):
+    """A child process that takes Unsloth's CPU backend whatever earlier tests left in os.environ: every variable
+    that steers the backend choice (unsloth / unsloth_zoo device_type) is dropped, then the CPU backend forced."""
+    steering = (
+        "UNSLOTH_DISABLE_CPU_FALLBACK",
+        "UNSLOTH_FORCE_GPU_PATH",
+        "UNSLOTH_ALLOW_CPU",
+        "UNSLOTH_ZOO_DISABLE_GPU_INIT",
+        "UNSLOTH_FORCE_CPU",
+    )
+    env = {k: v for k, v in os.environ.items() if k not in steering}
+    env.update(CUDA_VISIBLE_DEVICES = "", UNSLOTH_FORCE_CPU = "1")
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [*paths, env.get("PYTHONPATH")]))
+    return env
 
 
 def _tiny_config(**over):
@@ -282,9 +329,12 @@ def _released_state_dict(model):
         out[name] = t
     text = model.config.text_config
     for layer_id in text.engram_layer_ids:
-        out[f"layers.{layer_id}.engram.embed.weight"] = model.model.engram_tables[
-            str(layer_id)
-        ].frozen_table_store.weight.clone()
+        # parameter-free (frozen table store) or Parameter-backed (UNSLOTH_DSV41_FROZEN_ENGRAM=0) representation
+        table = model.model.engram_tables[str(layer_id)]
+        store = getattr(table, "frozen_table_store", None)
+        out[f"layers.{layer_id}.engram.embed.weight"] = (
+            (store.weight if store is not None else table.weight).detach().clone()
+        )
     out["mtp.0.norm.weight"] = torch.ones(
         text.hidden_size
     )  # DSpark / MTP head: never built, never loaded
@@ -603,6 +653,254 @@ def test_every_call_shape_loads_the_release_without_missing_or_unexpected_keys(
         torch.testing.assert_close(logits, want, rtol = 0, atol = 0, msg = name)
 
 
+def _parameter_backed_engram(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DSV41_FROZEN_ENGRAM", "0")
+
+
+def test_parameter_backed_engram_tables_survive_state_dict_and_reload(tmp_path, monkeypatch):
+    """Parameter-backed tables (no frozen table store) are real weights: an ordinary state_dict keeps them, so
+    load_state_dict and save / from_pretrained reproduce the logits exactly (they used to stay random / meta)."""
+    _parameter_backed_engram(monkeypatch)
+    model = _tiny_model().eval()
+    table = model.model.engram_tables["1"]
+    assert not dsv41.is_parameter_free_table(table) and isinstance(
+        table, dsv41.DeepseekV41EngramEmbedding
+    )
+    sd = model.state_dict()
+    assert "model.engram_tables.1.weight" in sd and "model.engram_tables.4.weight" in sd
+    ids = torch.randint(0, 512, (1, 16))
+    with torch.no_grad():
+        want = model(input_ids = ids).logits
+    fresh = _tiny_model(seed = 5).eval()
+    fresh.load_state_dict(sd)
+    with torch.no_grad():
+        assert torch.equal(fresh(input_ids = ids).logits, want)
+    model.save_pretrained(tmp_path / "saved")
+    loaded = dsv41.DeepseekV41ForCausalLM.from_pretrained(
+        tmp_path / "saved", dtype = torch.float32
+    ).eval()
+    loaded.bind_token_map([i % 97 for i in range(512)])
+    with torch.no_grad():
+        assert torch.equal(loaded(input_ids = ids).logits, want)
+
+
+@needs_frozen_tables
+@pytest.mark.parametrize("positional", [False, True])
+def test_full_save_with_a_supplied_state_dict_still_writes_the_engram_tables(tmp_path, positional):
+    """state_dict() leaves the (in-memory, parameter-free) tables out; a full save handed that dict must still write
+    them, without modifying the caller's dict, and the reload gives the same logits."""
+    from safetensors import safe_open
+
+    model = _tiny_model().eval()
+    assert dsv41.is_parameter_free_table(model.model.engram_tables["1"])
+    sd = model.state_dict()
+    assert not any(".engram_tables." in k for k in sd)
+    keys_before = set(sd)
+    out = tmp_path / "saved"
+    if positional:
+        model.save_pretrained(out, True, sd)
+    else:
+        model.save_pretrained(out, state_dict = sd)
+    assert set(sd) == keys_before
+    saved = set()
+    for f in os.listdir(out):
+        if f.endswith(".safetensors"):
+            with safe_open(os.path.join(out, f), "pt") as h:
+                saved |= set(h.keys())
+    # native names, or the release's under the base-model prefix (transformers 5 writes the renames back); the
+    # reload below reads them back through the anchored rule
+    for layer_id in (1, 4):
+        names = {
+            f"model.engram_tables.{layer_id}.weight",
+            f"model.layers.{layer_id}.engram.embed.weight",
+        }
+        assert names & saved
+    ids = torch.randint(0, 512, (1, 16))
+    with torch.no_grad():
+        want = model(input_ids = ids).logits
+    loaded = dsv41.DeepseekV41ForCausalLM.from_pretrained(out, dtype = torch.float32).eval()
+    loaded.bind_token_map([i % 97 for i in range(512)])
+    with torch.no_grad():
+        assert torch.equal(loaded(input_ids = ids).logits, want)
+
+
+@pytest.mark.parametrize("convert", ["auto", "1"])
+def test_parameter_backed_fp8_engram_keeps_its_block_scale_on_load(tmp_path, monkeypatch, convert):
+    """The release's fp8 engram rows (+ e8m0 scale per 32) loaded into Parameter-backed tables give the same rows
+    as the frozen table store: the scale is applied after a load that widened the fp8 rows, and transformers 5's
+    direct load renames the release's .scale onto weight_scale_inv."""
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    src = _quantized_release(tmp_path, _tiny_model())
+    if convert == "1":
+        monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    ids = torch.randint(0, 512, (1, 16))
+
+    def rows(model):
+        model = model.float().eval()
+        model.bind_token_map([i % 97 for i in range(512)])
+        with torch.no_grad():
+            return model.model.engram_rows(ids), model(input_ids = ids).logits
+
+    want_rows, want_logits = rows(dsv41.DeepseekV41ForCausalLM.from_pretrained(src))
+    _parameter_backed_engram(monkeypatch)
+    model, info = dsv41.DeepseekV41ForCausalLM.from_pretrained(src, output_loading_info = True)
+    assert not dsv41.is_parameter_free_table(model.model.engram_tables["1"])
+    assert not info["missing_keys"] and not info["unexpected_keys"]
+    got_rows, got_logits = rows(model)
+    for layer_id in want_rows:
+        torch.testing.assert_close(
+            got_rows[layer_id].float(), want_rows[layer_id].float(), rtol = 0, atol = 0
+        )
+    torch.testing.assert_close(got_logits, want_logits, rtol = 1e-5, atol = 1e-5)
+
+
+@pytest.mark.parametrize("convert", ["auto", "1"])
+def test_a_released_checkpoint_in_a_subfolder_loads_from_that_subfolder(
+    tmp_path, monkeypatch, convert
+):
+    """from_pretrained(root, subfolder=...) on a released layout: discovery, conversion and loading all read the
+    subfolder (the conversion used to drop it and convert / load the root)."""
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    import shutil
+
+    src = _quantized_release(tmp_path, _tiny_model())
+    root = tmp_path / "repo"
+    shutil.copytree(src, root / "sub")
+    if convert == "1":
+        monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    ids = torch.randint(0, 512, (1, 16))
+    outs = []
+    for path, kw in ((root / "sub", {}), (root, {"subfolder": "sub"})):
+        model, info = dsv41.DeepseekV41ForCausalLM.from_pretrained(
+            path, output_loading_info = True, **kw
+        )
+        assert not info["missing_keys"] and not info["unexpected_keys"], kw
+        model = model.float().eval()
+        model.bind_token_map([i % 97 for i in range(512)])
+        with torch.no_grad():
+            outs.append(model(input_ids = ids).logits)
+    assert torch.equal(outs[0], outs[1])
+
+
+def test_tokenizer_autobinding_reads_the_checkpoint_subfolder(tmp_path, monkeypatch):
+    model = _tiny_model()
+    model.save_pretrained(tmp_path / "repo" / "sub")
+    seen = []
+    monkeypatch.setattr(
+        dsv41.DeepseekV41ForCausalLM,
+        "_autobind_tokenizer",
+        lambda self, path = None, **hub: seen.append((str(path), hub)) or False,
+    )
+    dsv41.DeepseekV41ForCausalLM.from_pretrained(tmp_path / "repo", subfolder = "sub")
+    assert seen and seen[0][1].get("subfolder") == "sub"
+
+
+@pytest.mark.parametrize("as_path", [False, True])
+def test_a_config_path_picks_up_the_converted_packed_expert_format(tmp_path, monkeypatch, as_path):
+    pytest.importorskip("unsloth_zoo.mxfp4_dequant")
+    from pathlib import Path
+
+    from unsloth_zoo.mxfp4_dequant import is_mxfp4_expert_param
+
+    src = _fp4_release(tmp_path, _tiny_model().to(torch.bfloat16).float().eval())
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    config = Path(src) if as_path else str(src)
+    model, info = dsv41.DeepseekV41ForCausalLM.from_pretrained(
+        src, config = config, output_loading_info = True
+    )
+    assert not info["missing_keys"] and not info["unexpected_keys"]
+    assert is_mxfp4_expert_param(model.model.layers[0].mlp.experts.gate_up_proj)
+
+
+@pytest.mark.parametrize("convert", ["auto", "1"])
+def test_loading_never_mutates_the_callers_config(tmp_path, monkeypatch, convert):
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    src = _quantized_release(tmp_path, _tiny_model())
+    if convert == "1":
+        monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    for config in (
+        DeepseekV41Config.from_pretrained(src),
+        dsv41.DeepseekV41TextConfig(**DeepseekV41Config.from_pretrained(src).text_config.to_dict()),
+    ):
+        before = config.to_json_string()
+        text_before = getattr(config, "text_config", None)
+        text_before = text_before.to_json_string() if text_before is not None else None
+        dsv41.DeepseekV41ForCausalLM.from_pretrained(src, config = config)
+        assert config.to_json_string() == before
+        if text_before is not None:
+            assert config.text_config.to_json_string() == text_before
+
+
+def test_a_direct_native_class_load_registers_the_release_renames_itself(tmp_path):
+    """A fresh transformers 5 process where nothing registered the conversion rules yet (they used to come only from
+    the Auto registration): DeepseekV41ForCausalLM.from_pretrained on the release still maps every tensor."""
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    from unsloth.models.deepseek_v41.modeling import has_core_model_loading
+    from unsloth.models.deepseek_v41.convert import released_needs_conversion
+
+    if not has_core_model_loading() or released_needs_conversion():
+        pytest.skip("transformers without the direct release load")
+    import subprocess
+    import sys
+    import textwrap
+
+    src = _quantized_release(tmp_path, _tiny_model())
+    child = textwrap.dedent(
+        f"""
+        import json
+        import transformers.conversion_mapping as cm
+        from unsloth.models.deepseek_v41.modeling import DeepseekV41ForCausalLM
+        cache = cm._checkpoint_conversion_mapping_cache
+        if cache is not None:
+            for key in [k for k in list(cache) if "deepseek_v41" in k.lower()]:
+                cache.pop(key)
+        model, info = DeepseekV41ForCausalLM.from_pretrained({str(src)!r}, output_loading_info = True)
+        print("PROBE", json.dumps({{"missing": len(info["missing_keys"]), "unexpected": len(info["unexpected_keys"])}}))
+        """
+    )
+    env = _cpu_backend_child_env()
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    run = subprocess.run(
+        [sys.executable, "-c", child], env = env, capture_output = True, text = True, timeout = 600
+    )
+    probe = [line for line in run.stdout.splitlines() if line.startswith("PROBE ")]
+    assert probe, run.stdout[-2000:] + run.stderr[-3000:]
+    import json
+
+    assert json.loads(probe[0][6:]) == {"missing": 0, "unexpected": 0}
+
+
+def test_each_release_rename_applies_once_per_model_root():
+    """transformers collects conversion rules per PreTrainedModel submodule (class name, then model_type): the
+    text model nested in a causal LM must not add a second, scoped copy of every rule."""
+    from unsloth.models.deepseek_v41.convert import released_needs_conversion
+    from unsloth.models.deepseek_v41.modeling import has_core_model_loading
+
+    if not has_core_model_loading() or released_needs_conversion():
+        pytest.skip("transformers without the direct release load (convert.py loads it)")
+    from transformers.conversion_mapping import get_model_conversion_mapping
+
+    from unsloth.models import deepseek_v41 as pkg
+
+    pkg._register_conversions()
+    n_rules = len(pkg._conversion_rules())
+    model = _tiny_model()
+    text = dsv41.DeepseekV41TextForCausalLM(model.config.text_config)
+    assert len(get_model_conversion_mapping(model, add_legacy = False)) == n_rules
+    assert len(get_model_conversion_mapping(text, add_legacy = False)) == n_rules
+    assert (
+        len(get_model_conversion_mapping(model.model, add_legacy = False)) == n_rules - 1
+    )  # no head
+
+
 def test_a_config_that_does_not_fit_the_release_raises_instead_of_random_init(
     tmp_path, monkeypatch
 ):
@@ -678,6 +976,181 @@ def test_packed_sequences_match_each_sequence_run_alone():
     assert model.model.embed_tokens.weight.grad[ids[0, :-1]].abs().sum(-1).gt(0).all()
 
 
+@pytest.mark.parametrize("layout", ["packed", "left_padded"])
+def test_packed_rows_and_left_padding_stay_separated_under_torch_compile(layout):
+    """torch.compile of the whole model keeps the relayout (it runs outside the traced graph): compiled logits and
+    gradients equal eager for packed rows and left padding (the compiled path used to skip it, letting sequences
+    attend across each other)."""
+    torch._dynamo.reset()
+    model = _tiny_model().eval()
+    torch.manual_seed(3)
+    if layout == "packed":
+        a, b = torch.randint(0, 512, (9,)), torch.randint(0, 512, (11,))
+        kw = dict(
+            input_ids = torch.cat([a, b]).unsqueeze(0),
+            position_ids = torch.cat([torch.arange(9), torch.arange(11)]).unsqueeze(0),
+        )
+    else:
+        a, b = torch.randint(0, 512, (11,)), torch.randint(0, 512, (16,))
+        kw = dict(
+            input_ids = torch.stack([torch.cat([torch.zeros(5, dtype = torch.long), a]), b]),
+            attention_mask = torch.stack(
+                [torch.cat([torch.zeros(5), torch.ones(11)]), torch.ones(16)]
+            ).long(),
+        )
+    with torch.no_grad():
+        want = model(**kw).logits
+    compiled = torch.compile(model, backend = "eager")
+    with torch.no_grad():
+        got = compiled(**kw).logits
+    torch.testing.assert_close(got, want, rtol = 1e-5, atol = 1e-5)
+    model.train()
+    model.zero_grad(set_to_none = True)
+    model(**kw, labels = kw["input_ids"]).loss.backward()
+    want_g = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad(set_to_none = True)
+    compiled(**kw, labels = kw["input_ids"]).loss.backward()
+    for n, g in want_g.items():
+        torch.testing.assert_close(
+            dict(model.named_parameters())[n].grad, g, rtol = 1e-4, atol = 1e-6, msg = n
+        )
+    torch._dynamo.reset()
+
+
+def test_embeddings_without_token_ids_are_refused_where_engram_layers_need_them():
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 12))
+    embeds = model.model.embed_tokens(ids).detach()
+    with pytest.raises(ValueError, match = "engram layers hash the token ids"):
+        with torch.no_grad():
+            model(inputs_embeds = embeds)
+    with torch.no_grad():
+        torch.testing.assert_close(
+            model(inputs_embeds = embeds, input_ids = ids).logits, model(input_ids = ids).logits
+        )
+    text = model.model
+    engram = set(text.config.engram_layer_ids)
+    owner = min(engram)
+    with torch.no_grad():
+        h, pre, state = text.pipeline_stage_forward(0, owner, input_ids = ids)
+        with pytest.raises(ValueError, match = "engram layers hash the token ids"):
+            text.pipeline_stage_forward(owner, owner + 1, h, pre, state)
+        # a stage that owns no engram layer does not need the ids
+        free = next(i for i in range(len(text.layers)) if i not in engram and i > 0)
+        text.pipeline_stage_forward(free, free + 1, h, pre, dsv41.DeepseekV41GroupState())
+
+
+def test_grouped_lora_is_not_marked_ready_when_nothing_was_installed(monkeypatch):
+    peft = pytest.importorskip("peft")
+    zoo = pytest.importorskip("unsloth_zoo.temporary_patches.deepseek_v41")
+    from peft.tuners.lora.model import LoraModel
+
+    create = LoraModel.__dict__["_create_new_module"]
+    func = getattr(create, "__func__", create)
+    while getattr(func, "_unsloth_dsv41_grouped", False):
+        func = func.__wrapped__
+    monkeypatch.setattr(LoraModel, "_create_new_module", staticmethod(func))
+    monkeypatch.setattr(zoo, "patch_deepseek_v41_grouped_lora", lambda: None)
+    monkeypatch.setattr(dsv41, "_GROUPED_LORA_READY", [False])
+    assert dsv41.ensure_grouped_lora() is False
+    assert dsv41._GROUPED_LORA_READY[0] is False
+
+
+def test_gradient_checkpointing_without_the_zoo_replay_fails_closed(monkeypatch):
+    """An unsloth_zoo that cannot install the decoder-layer replay must not give silently wrong gradients."""
+    monkeypatch.setattr(dsv41, "ensure_checkpoint_replay", lambda: False)
+    model = _tiny_model()
+    with pytest.raises(RuntimeError, match = "replay"):
+        model.gradient_checkpointing_enable()
+
+
+@needs_zoo_native
+def test_standard_gradient_checkpointing_gives_exact_gradients_in_a_fresh_process():
+    """Nothing installs the zoo replay explicitly: building the model and model.gradient_checkpointing_enable()
+    alone must give the gradients of the plain run (unsloth_zoo's patches ran before the native module existed,
+    so they had no-opped and the recompute read overwritten group state)."""
+    import json
+    import subprocess
+    import sys
+
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    child = (
+        "import json, sys, torch\n"
+        f"sys.path.insert(0, {tests_dir!r})\n"
+        "import test_deepseek_v41_native as t\n"
+        "model = t._tiny_model().train()\n"
+        "ids = torch.randint(0, 512, (2, 24), generator = torch.Generator().manual_seed(0))\n"
+        "def grads():\n"
+        "    model.zero_grad(set_to_none = True)\n"
+        "    model(input_ids = ids, labels = ids).loss.backward()\n"
+        "    return {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}\n"
+        "plain = grads()\n"
+        "model.gradient_checkpointing_enable()\n"
+        "ckpt = grads()\n"
+        "diff = max(float((plain[n] - ckpt[n]).abs().max()) for n in plain)\n"
+        "print('PROBE', json.dumps({'diff': diff, 'same_keys': plain.keys() == ckpt.keys(), "
+        "'checkpointing': bool(model.model.layers[0].gradient_checkpointing)}))\n"
+    )
+    env = _cpu_backend_child_env()
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    run = subprocess.run(
+        [sys.executable, "-c", child], env = env, capture_output = True, text = True, timeout = 600
+    )
+    probe = [line for line in run.stdout.splitlines() if line.startswith("PROBE ")]
+    assert probe, run.stdout[-2000:] + run.stderr[-3000:]
+    out = json.loads(probe[0][6:])
+    assert out["checkpointing"] and out["same_keys"]
+    assert out["diff"] <= 1e-6, out
+
+
+def test_labels_with_logits_to_keep_score_the_kept_positions_against_their_own_targets():
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (2, 10))
+    labels = ids.clone()
+    labels[0, 3] = -100
+    with torch.no_grad():
+        full = model(input_ids = ids).logits
+    shifted = torch.nn.functional.pad(labels, (0, 1), value = -100)[..., 1:]
+
+    def reference(sel):
+        logits = full[:, sel].float()
+        targets = shifted[:, sel]
+        return torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]), targets.reshape(-1), ignore_index = -100
+        )
+
+    with torch.no_grad():
+        out = model(input_ids = ids, labels = labels, logits_to_keep = 4)
+        assert out.logits.shape[1] == 4
+        torch.testing.assert_close(out.loss, reference(slice(-4, None)), rtol = 1e-5, atol = 1e-6)
+        positions = torch.tensor([1, 3, 6])
+        out = model(input_ids = ids, labels = labels, logits_to_keep = positions)
+        assert out.logits.shape[1] == 3
+        torch.testing.assert_close(out.logits, full[:, positions], rtol = 1e-5, atol = 1e-6)
+        torch.testing.assert_close(out.loss, reference(positions), rtol = 1e-5, atol = 1e-6)
+        # without labels a tensor selector keeps only those positions (it used to return every position)
+        assert model(input_ids = ids, logits_to_keep = torch.tensor([1, 3])).logits.shape[1] == 2
+        # logits_to_keep = 0 (all) with labels: the usual full loss
+        torch.testing.assert_close(
+            model(input_ids = ids, labels = labels).loss, reference(slice(None)), rtol = 1e-5, atol = 1e-6
+        )
+
+
+def test_generation_projects_only_the_last_position():
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (1, 9))
+    inputs = model.prepare_inputs_for_generation(ids, attention_mask = torch.ones_like(ids))
+    assert inputs["logits_to_keep"] == 1
+    with torch.no_grad():
+        out = model(**inputs)
+        assert out.logits.shape[1] == 1
+        torch.testing.assert_close(
+            out.logits[:, -1], model(input_ids = ids).logits[:, -1], rtol = 1e-5, atol = 1e-6
+        )
+        gen = model.generate(ids, max_new_tokens = 2, do_sample = False)
+    assert gen.shape[1] == 11
+
+
 def test_left_padding_matches_the_unpadded_sequence():
     model = _tiny_model().eval()
     torch.manual_seed(2)
@@ -737,7 +1210,7 @@ def test_sparse_attention_engages_the_torch_reference_without_unsloth_zoo_kernel
     assert dsv41.DSV41_STATS["sparse_attn_torch"] == before + 6  # one call per layer
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA")
 def test_window_only_layers_take_the_hd512_kernel_and_compressed_layers_the_window_kernel(
     monkeypatch,
 ):
@@ -809,9 +1282,7 @@ def test_an_unsloth_zoo_without_the_window_entry_keeps_the_concatenated_path(mon
     "device",
     [
         "cpu",
-        pytest.param(
-            "cuda", marks = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA")
-        ),
+        pytest.param("cuda", marks = pytest.mark.skipif(not has_real_cuda(), reason = "CUDA")),
     ],
 )
 def test_window_attention_entry_matches_the_concatenated_index_path(monkeypatch, device):
@@ -903,15 +1374,6 @@ def test_shared_group_state_is_not_a_container_that_device_moves_rebuild():
     assert operations.send_to_device((state,), "cpu")[0] is state
     assert _apply_to_tensors(lambda t: t.clone(), (state,))[0] is state
     assert "index_k" in state and state.get("missing") is None
-
-
-needs_frozen_tables = pytest.mark.skipif(
-    not hasattr(
-        __import__("unsloth_zoo.temporary_patches.deepseek_v41", fromlist = ["x"]),
-        "make_deepseek_v41_engram_table",
-    ),
-    reason = "unsloth_zoo without the parameter-free DeepSeek-V4.1 engram table",
-)
 
 
 @needs_frozen_tables
@@ -1034,7 +1496,7 @@ def test_router_sqrtsoftplus_backward_stays_finite_when_softplus_underflows():
     raw = torch.nn.functional.softplus(
         torch.nn.functional.linear(x, router.weight) / router.gate_temp
     )
-    assert float(raw[0, 0]) == 0.0
+    assert float(raw[0, 0].detach()) == 0.0
     (g,) = torch.autograd.grad(raw.sqrt().sum(), x)
     assert not torch.isfinite(g).all()  # the trap is real for a plain sqrt
     weights, _ = router(x)
@@ -1249,6 +1711,7 @@ def test_group_state_survives_fsdp2_input_casting(monkeypatch):
         h.remove()
 
 
+@needs_zoo_native
 def test_group_state_survives_fsdp2_input_casting_under_gradient_checkpointing():
     """unsloth_zoo replays each checkpointed layer with a copy of the group state; the copy is a group state too."""
     from unsloth_zoo.temporary_patches.deepseek_v41 import patch_deepseek_v41_gradient_checkpointing
@@ -1353,11 +1816,11 @@ def test_pipeline_stages_with_the_group_state_handoff_match_the_whole_model(cut)
         torch.testing.assert_close(got[name], want[name], rtol = 1e-4, atol = 1e-6, msg = name)
 
 
-@pytest.mark.parametrize("install", [True, False])
+@pytest.mark.parametrize("install", [pytest.param(True, marks = needs_zoo_native), False])
 def test_building_the_model_installs_grouped_lora_for_plain_peft(monkeypatch, install):
-    """The CPU backend (and plain transformers + PEFT) never ran the zoo patch that gives o_a_proj a grouped LoRA,
-    so PEFT's plain LoRA failed with a shape error. Building the attention installs it. Flip: without it, the
-    plain LoRA's shape error."""
+    """The CPU backend (and plain transformers + PEFT) never ran the zoo patch that gives o_a_proj a grouped LoRA.
+    Building the attention installs it; without it, the plain PEFT LoRA's stacked-width delta is reduced to the
+    per-group blocks (it used to fail with a shape error). Either way adapted == merged."""
     peft = pytest.importorskip("peft")
     pytest.importorskip("unsloth_zoo.temporary_patches.deepseek_v41")
     from peft.tuners.lora.model import LoraModel
@@ -1375,18 +1838,18 @@ def test_building_the_model_installs_grouped_lora_for_plain_peft(monkeypatch, in
     lora = peft.get_peft_model(
         model, peft.LoraConfig(r = 4, target_modules = ["self_attn.o_a_proj"], init_lora_weights = False)
     ).eval()
-    if not install:
-        with pytest.raises(RuntimeError, match = "size"):
-            with torch.no_grad():
-                lora(input_ids = ids)
-        return
-    assert (
-        type(lora.base_model.model.model.layers[0].self_attn.o_a_proj).__name__
-        == "DeepseekV41GroupedLoraLinear"
-    )
+    o_a = lora.base_model.model.model.layers[0].self_attn.o_a_proj
+    if install:
+        assert type(o_a).__name__ == "DeepseekV41GroupedLoraLinear"
+    else:
+        # plain PEFT LoRA (no grouped handler): grouped_projection takes the diagonal blocks of its delta too
+        assert type(o_a).__name__ == "Linear" and hasattr(o_a, "lora_A")
     with torch.no_grad():
+        with lora.disable_adapter():
+            base = lora(input_ids = ids).logits
         adapted = lora(input_ids = ids).logits
         merged = lora.merge_and_unload()(input_ids = ids).logits
+    assert not torch.allclose(adapted, base)
     torch.testing.assert_close(adapted, merged, rtol = 1e-4, atol = 1e-4)
 
 
@@ -1399,14 +1862,7 @@ def test_cpu_backend_import_registers_deepseek_v41(tmp_path):
 
     _tiny_config().save_pretrained(tmp_path)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in ("UNSLOTH_DISABLE_CPU_FALLBACK", "UNSLOTH_FORCE_GPU_PATH")
-    }
-    env.pop("UNSLOTH_ALLOW_CPU", None)
-    env.update(CUDA_VISIBLE_DEVICES = "", UNSLOTH_FORCE_CPU = "1")
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, [root, env.get("PYTHONPATH")]))
+    env = _cpu_backend_child_env(root)
     child = (
         "import json, sys, unsloth\n"
         "from transformers import AutoConfig\n"

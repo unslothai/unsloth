@@ -5575,15 +5575,26 @@ class FastBaseModel:
         # "all-linear" and None into their real Linears; the attention / mlp family choice is applied there.
         _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
         _targets_remapped = False
+        _remapped_moe_targets = None
         if callable(_remap_targets) and finetune_language_layers:
+            _requested_targets = target_modules
             _remapped = _remap_targets(
                 target_modules,
                 attention = finetune_attention_modules,
                 mlp = finetune_mlp_modules,
             )
             if _remapped is not target_modules:
+                # Routed-expert intent comes from the caller's bare aliases: the remapped MLP names are qualified to
+                # the shared expert. The family flags stay as the caller set them, so expert detection follows them.
+                if _requested_targets is None or _requested_targets == "all-linear":
+                    _requested_targets = ["gate_proj", "up_proj", "down_proj"]
+                _remapped_moe_targets = [
+                    name
+                    for name in _requested_targets
+                    if finetune_mlp_modules
+                    and name in ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
+                ]
                 target_modules = _remapped
-                finetune_attention_modules = finetune_mlp_modules = True
                 # Final module-name suffixes: get_peft_regex would read the qualified ones as leaves.
                 _targets_remapped = True
 
@@ -5669,6 +5680,8 @@ class FastBaseModel:
                 ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+        if _targets_remapped:
+            _moe_detect_target = _remapped_moe_targets
         # Auto regex is built after MXFP4 expert stacking, so it no longer names per-expert Linears.
         _auto_targets = target_modules is None or target_modules == "all-linear"
 

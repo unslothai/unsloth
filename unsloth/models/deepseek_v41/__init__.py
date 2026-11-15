@@ -51,6 +51,11 @@ def _conversion_rules():
 
     R = WeightRenaming
     return [
+        # the release's per-block engram scales load as weight_scale_inv, as convert.py writes them
+        R(
+            source_patterns = r"^layers\.(\d+)\.engram\.embed\.scale",
+            target_patterns = r"engram_tables.\1.weight_scale_inv",
+        ),
         R(source_patterns = r"^layers\.(\d+)\.engram\.embed\.", target_patterns = r"engram_tables.\1."),
         R(source_patterns = r"\.attn\.", target_patterns = r".self_attn."),
         R(source_patterns = r"\.ffn\.", target_patterns = r".mlp."),
@@ -94,6 +99,10 @@ def _conversion_rules():
 
 
 def _register_conversions():
+    """Register the renames once per scope. transformers collects them per PreTrainedModel submodule (class name
+    first, then model_type) and adds a scoped copy for a child that matches under another identifier, so: the
+    text-model rules under ``deepseek_v41_text`` (the text model's model_type, whichever root holds it, and a
+    standalone text model) and only the head rename under the two causal-LM classes. Idempotent."""
     try:
         from transformers.conversion_mapping import register_checkpoint_conversion_mapping
     except Exception:
@@ -102,15 +111,22 @@ def _register_conversions():
         rules = _conversion_rules()
     except Exception:
         return False
-    for key in (
-        "deepseek_v41",
-        "deepseek_v41_text",
-        "DeepseekV41ForCausalLM",
-        "DeepseekV41TextForCausalLM",
-        "DeepseekV41TextModel",
-    ):
-        register_checkpoint_conversion_mapping(key, list(rules), overwrite = True)
+    head = [r for r in rules if "lm_head.weight" in list(getattr(r, "target_patterns", None) or [])]
+    text = [r for r in rules if r not in head]
+    if len(head) != 1:
+        return False
+    register_checkpoint_conversion_mapping("deepseek_v41_text", text, overwrite = True)
+    for key in ("DeepseekV41ForCausalLM", "DeepseekV41TextForCausalLM"):
+        register_checkpoint_conversion_mapping(key, _conversion_rules_head(), overwrite = True)
     return True
+
+
+def _conversion_rules_head():
+    return [
+        r
+        for r in _conversion_rules()
+        if "lm_head.weight" in list(getattr(r, "target_patterns", None) or [])
+    ]
 
 
 def register_deepseek_v41():
