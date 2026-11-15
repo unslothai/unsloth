@@ -6667,7 +6667,8 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
                 self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
             except Exception:
                 pass
-        return loss
+        # The head may sit on another GPU (dispatched student); the Trainer accumulates on the input device.
+        return loss.to(inputs["input_ids"].device)
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
         student_states,
         teacher_states.detach(),
@@ -6692,7 +6693,7 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
             self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
         except Exception:
             pass
-    return loss
+    return loss.to(inputs["input_ids"].device)
 
 
 def _unsloth_prepare_frozen_teacher(accelerator, teacher):
