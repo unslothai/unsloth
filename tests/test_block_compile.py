@@ -1231,6 +1231,80 @@ def test_block_flex_forces_the_main_kernel(monkeypatch):
     ]
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
+@pytest.mark.parametrize("guard", ["0", "1"], ids = ["no_align_guard", "torch_guard"])
+def test_block_does_not_recompile_per_length_mod_8(monkeypatch, guard):
+    """torch 2.14 SDPA lowering guards `Mod(s, 8)` on strides: a block recompiled per alignment class."""
+    import inspect
+
+    import torch._inductor.lowering as lowering
+    from transformers.models.qwen3 import modeling_qwen3 as modeling
+    from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+
+    M = _load()
+    stock = lowering.sdpa_constraint
+    stock = (
+        getattr(stock, "__wrapped__", stock)
+        if getattr(stock, "_unsloth_no_align_guard", False)
+        else stock
+    )
+    if "is_aligned_realized_tensor" not in inspect.getsource(stock):
+        pytest.skip("this torch has no alignment check in the SDPA lowering")
+    monkeypatch.setattr(lowering, "sdpa_constraint", stock)
+    for op, fn in list(lowering._maybe_layout_constraints.items()):
+        if getattr(fn, "_unsloth_no_align_guard", False):
+            monkeypatch.setitem(lowering._maybe_layout_constraints, op, stock)
+    monkeypatch.setenv("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", guard)
+    assert M._sdpa_alignment_without_guard() is (guard == "0")
+    # A cached graph from the other arm would carry its guards.
+    monkeypatch.setattr(torch._inductor.config, "fx_graph_cache", False)
+    monkeypatch.setattr(torch._functorch.config, "enable_autograd_cache", False)
+    import torch._dynamo.convert_frame as convert_frame
+
+    reasons = []
+    stock_reasons = convert_frame.get_and_maybe_log_recompilation_reasons
+
+    def record(*a, **k):
+        out = stock_reasons(*a, **k)
+        reasons.extend(str(r) for r in out)
+        return out
+
+    monkeypatch.setattr(convert_frame, "get_and_maybe_log_recompilation_reasons", record)
+
+    cfg = Qwen3Config(
+        vocab_size = 64,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+    )
+    cfg._attn_implementation = "sdpa"
+    torch.manual_seed(0)
+    cls = modeling.Qwen3DecoderLayer
+    model = modeling.Qwen3Model(cfg).cuda().to(torch.bfloat16).train()
+    layer = model.layers[0]
+
+    def run(L):
+        # Causal flash SDPA: backward reads a (B, H, L) logsumexp, strides (H*L, L, 1).
+        ids = torch.randint(0, 64, (2, L), device = "cuda")
+        model(input_ids = ids, use_cache = False).last_hidden_state.float().sum().backward()
+
+    original = cls.forward
+    try:
+        M._wrap(cls, M._COMPILE_OPTIONS)
+        torch._dynamo.reset()
+        for L in (517, 520, 523, 528):  # unaligned, aligned, unaligned, aligned
+            run(L)
+        assert layer.__dict__.get("_unsloth_block_checked", 0) & 2
+    finally:
+        cls.forward = original
+        torch._dynamo.reset()
+    mod_8 = [r for r in reasons if "% 8" in r]
+    assert bool(mod_8) is (guard == "1"), reasons
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "flex_attention kernels need CUDA")
 def test_block_flex_options_lower_short_gqa_training_queries():
     """Qwen3.5 GRPO shapes: with the block options, compiled flex fwd + bwd lower and match eager."""
