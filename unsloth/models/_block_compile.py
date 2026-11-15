@@ -274,6 +274,10 @@ def _trainable(layer):
 _IN_TRIAL = [False]
 
 
+def _same(tensor):
+    return tensor
+
+
 # output_hidden_states hands block outputs to the caller, who may keep them past the generation.
 _HIDDEN_STATES_EXPOSED = [False]
 
@@ -415,6 +419,8 @@ def _param_grads_out_of_pool(layer):
 
 def _in_nonreentrant_checkpoint():
     """Non-reentrant checkpoint frees recomputed inputs mid graph recording, which cudagraph trees refuse."""
+    if _IN_TRIAL[0] == "nonreentrant":
+        return True
     try:
         hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
     except Exception:
@@ -1842,11 +1848,21 @@ def _wrap(
             _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
         bit = 2 if torch.is_grad_enabled() else 1
         checked = self.__dict__.get("_unsloth_block_checked", 0)
-        if bit == 1 and not checked & 2:
+        nonreentrant = (
+            bit == 2 and not checked & 2 and not _IN_TRIAL[0] and _in_nonreentrant_checkpoint()
+        )
+        if (bit == 1 or nonreentrant) and not checked & 2:
             # Grad-mode trial first (RNG forked): a checkpoint recompute must not demote below this call.
+            # Non-reentrant: identity saved-tensor hooks (innermost wins) keep a failed attempt's partly
+            # run graph out of the checkpoint, else its saved count differs from the recompute's.
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
-            with torch.random.fork_rng(devices = devices), torch.enable_grad():
-                _IN_TRIAL[0] = True
+            hooks = (
+                torch.autograd.graph.saved_tensors_hooks(_same, _same)
+                if nonreentrant
+                else contextlib.nullcontext()
+            )
+            with torch.random.fork_rng(devices = devices), torch.enable_grad(), hooks:
+                _IN_TRIAL[0] = "nonreentrant" if nonreentrant else True
                 try:
                     forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
                 finally:
