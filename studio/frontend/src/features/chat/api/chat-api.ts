@@ -1335,6 +1335,32 @@ export async function setChatProjectWorkingFolder(
   return project;
 }
 
+/** Sets the folder by path: the backend takes one only where nothing off this machine can reach it. */
+export async function setChatProjectWorkingFolderPath(
+  projectId: string,
+  serverPath: string,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}/working-folder`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverPath }),
+    },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatProjectsUpdated();
+  return project;
+}
+
+export async function getProjectFolderAccess(): Promise<{
+  serverPath: boolean;
+}> {
+  const response = await authFetch("/api/chat/project-folder-access");
+  const body = await parseJsonOrThrow<{ serverPath?: unknown }>(response);
+  return { serverPath: body?.serverPath === true };
+}
+
 /** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,

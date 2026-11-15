@@ -6,7 +6,10 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import type { NativeDocumentFolderSelection } from "@/features/native-intents";
-import { WorkingFolderPicker } from "./working-folder-picker";
+import {
+  type ServerFolderSelection,
+  WorkingFolderPicker,
+} from "./working-folder-picker";
 import {
   Dialog,
   DialogContent,
@@ -33,6 +36,7 @@ import {
   getChatProject,
   notifyChatProjectsUpdated,
   setChatProjectWorkingFolder,
+  setChatProjectWorkingFolderPath,
 } from "../api/chat-api";
 import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -71,6 +75,10 @@ export function NewProjectDialog({
   const [busy, setBusy] = useState(false);
   const [workingFolder, setWorkingFolder] =
     useState<NativeDocumentFolderSelection | null>(null);
+  // Picked in the in-app browser: a path, applied after the create, with no grant to spend or expire.
+  const [serverFolder, setServerFolder] = useState<ServerFolderSelection | null>(
+    null,
+  );
   const [pickingWorkingFolder, setPickingWorkingFolder] = useState(false);
   const [needsReselect, setNeedsReselect] = useState(false);
   const [createdProject, setCreatedProject] = useState<ProjectRecord | null>(
@@ -130,6 +138,7 @@ export function NewProjectDialog({
     setStagingDrop(false);
     setPickingFolder(false);
     setWorkingFolder(null);
+    setServerFolder(null);
     setPickingWorkingFolder(false);
     setNeedsReselect(false);
     setCreatedProject(null);
@@ -176,6 +185,13 @@ export function NewProjectDialog({
       } else if (!token && project.workingFolder) {
         project = await setChatProjectWorkingFolder(project.id, null);
         appliedLease.current = null;
+        setCreatedProject(project);
+      }
+      if (serverFolder) {
+        project = await setChatProjectWorkingFolderPath(
+          project.id,
+          serverFolder.serverPath,
+        );
         setCreatedProject(project);
       }
       // Upload before closing so the Sources panel lists them on first fetch.
@@ -266,9 +282,12 @@ export function NewProjectDialog({
           />
         </div>
         <WorkingFolderPicker
-          value={workingFolder?.displayName ?? null}
+          value={serverFolder?.serverPath ?? workingFolder?.displayName ?? null}
+          detail={serverFolder ? { path: serverFolder.serverPath } : undefined}
           onChange={(value) => {
-            setWorkingFolder(value);
+            const byPath = value && "serverPath" in value ? value : null;
+            setServerFolder(byPath);
+            setWorkingFolder(byPath ? null : (value as typeof workingFolder));
             setNeedsReselect(false);
           }}
           disabled={busy || (!!createdProject && !needsReselect)}

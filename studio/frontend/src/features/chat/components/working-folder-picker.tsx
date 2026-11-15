@@ -20,8 +20,46 @@ import {
 import { Folder02Icon } from "@/lib/folder-icons";
 import { Alert02Icon, GitBranchIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { getProjectFolderAccess } from "../api/chat-api";
 import { MANAGED_FOLDER_LABEL } from "../utils/project-folder-state";
+
+const FolderBrowser = lazy(() =>
+  import(
+    "@/features/model-picker/components/model-selector/folder-browser"
+  ).then((module) => ({ default: module.FolderBrowser })),
+);
+
+/** A folder picked in the in-app browser, named by its path on the server. */
+export type ServerFolderSelection = { serverPath: string; displayName: string };
+export type WorkingFolderSelection =
+  | NativeDocumentFolderSelection
+  | ServerFolderSelection;
+
+let serverPickAllowed: Promise<boolean> | null = null;
+
+/** Whether this browser session may name a folder by path; asked once, false until answered. */
+function useServerFolderPick(enabled: boolean): boolean {
+  const [allowed, setAllowed] = useState(false);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    serverPickAllowed ??= getProjectFolderAccess().then(
+      (access) => access.serverPath,
+      () => {
+        serverPickAllowed = null;
+        return false;
+      },
+    );
+    void serverPickAllowed.then((value) => {
+      if (live) setAllowed(value);
+    });
+    return () => {
+      live = false;
+    };
+  }, [enabled]);
+  return enabled && allowed;
+}
 
 /** Live facts about a saved folder: what the row names, and why tools may not be using it. */
 export type WorkingFolderDetail = {
@@ -39,9 +77,7 @@ export function WorkingFolderPicker({
   detail,
 }: {
   value: string | null;
-  onChange: (
-    value: NativeDocumentFolderSelection | null,
-  ) => void | Promise<void>;
+  onChange: (value: WorkingFolderSelection | null) => void | Promise<void>;
   disabled?: boolean;
   needsReselect?: boolean;
   onPendingChange?: (pending: boolean) => void;
@@ -58,15 +94,25 @@ export function WorkingFolderPicker({
       mounted.current = false;
     };
   }, []);
-  const available = isTauri && supported && isOwner;
+  const native = isTauri && supported && isOwner;
+  // The Desktop grant is the stronger proof, so the in-app browser is only the web's way in.
+  const browse = useServerFolderPick(!isTauri && isOwner);
+  const available = native || browse;
+  const [browsing, setBrowsing] = useState(false);
 
-  async function change(choose: boolean) {
+  async function change(choose: boolean, picked?: ServerFolderSelection) {
     if ((choose && !available) || disabled || pending.current) return;
+    if (choose && !native && !picked) {
+      setBrowsing(true);
+      return;
+    }
     pending.current = true;
     setPicking(true);
     onPendingChange?.(true);
     try {
-      const selected = choose ? await pickNativeDocumentFolder() : null;
+      const selected = !choose
+        ? null
+        : (picked ?? (await pickNativeDocumentFolder()));
       if (mounted.current && (!choose || selected)) await onChange(selected);
     } catch (error) {
       if (mounted.current) {
@@ -209,11 +255,36 @@ export function WorkingFolderPicker({
           {needsReselect
             ? "Choose the folder again to retry, or use the managed folder."
             : !isTauri
-              ? "Choose an existing folder in Unsloth Desktop, or use the managed folder."
+              ? isOwner
+                ? "Choosing a folder here works on this computer with remote access off. Otherwise use Unsloth Desktop, or the managed folder."
+                : "Only the owner can choose a local working folder."
               : !isOwner
                 ? "Only the owner can choose a local working folder."
                 : "Folder selection is unavailable with this connection."}
         </p>
+      )}
+      {browsing && (
+        <Suspense fallback={null}>
+          <FolderBrowser
+            open={true}
+            onOpenChange={setBrowsing}
+            onSelect={(path) =>
+              void change(true, {
+                serverPath: path,
+                displayName:
+                  path
+                    .replace(/[\\/]+$/, "")
+                    .split(/[\\/]/)
+                    .pop() || path,
+              })
+            }
+            initialPath={(value && detail?.path) || undefined}
+            title="Choose a working folder"
+            description="Code and file tools will read and write in the folder you choose"
+            confirmLabel="Use this folder"
+            showModelHints={false}
+          />
+        </Suspense>
       )}
     </section>
   );

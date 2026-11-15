@@ -13,15 +13,20 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import type { NativeDocumentFolderSelection } from "@/features/native-intents";
-import { WorkingFolderPicker } from "./working-folder-picker";
+import {
+  type WorkingFolderSelection,
+  WorkingFolderPicker,
+} from "./working-folder-picker";
 import { LinkedFoldersManager } from "@/features/rag/components/linked-folders-manager";
 import { isModEnter } from "@/features/settings/lib/keyboard-shortcuts";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 
-import { setChatProjectWorkingFolder } from "../api/chat-api";
+import {
+  setChatProjectWorkingFolder,
+  setChatProjectWorkingFolderPath,
+} from "../api/chat-api";
 import {
   renameChatProject,
   updateChatProjectInstructions,
@@ -53,9 +58,11 @@ function ProjectWorkingFolder({
   }
   const folder = projectFolderState(saved);
 
-  async function apply(selection: NativeDocumentFolderSelection | null) {
+  async function apply(selection: WorkingFolderSelection | null) {
     setSaved(
-      await setChatProjectWorkingFolder(project.id, selection?.token ?? null),
+      selection && "serverPath" in selection
+        ? await setChatProjectWorkingFolderPath(project.id, selection.serverPath)
+        : await setChatProjectWorkingFolder(project.id, selection?.token ?? null),
     );
   }
 

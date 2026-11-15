@@ -98,3 +98,19 @@ test("a failed project load is not shown as an empty list", () => {
     /loadFailed \? "Couldn't load projects" : "No projects yet"/,
   );
 });
+
+test("the web picks a working folder by path, and only when the backend allows it", () => {
+  const picker = readSrc("features/chat/components/working-folder-picker.tsx");
+  // The Desktop grant stays first; the browser is asked for only outside the app.
+  assert.match(picker, /const browse = useServerFolderPick\(!isTauri && isOwner\);/);
+  assert.match(picker, /const available = native \|\| browse;/);
+  assert.match(picker, /if \(choose && !native && !picked\) \{\n\s*setBrowsing\(true\);/);
+  const api = readSrc("features/chat/api/chat-api.ts");
+  assert.match(api, /body: JSON\.stringify\(\{ serverPath \}\)/);
+  assert.match(api, /serverPath: body\?\.serverPath === true/);
+  const create = readSrc("features/chat/components/new-project-dialog.tsx");
+  assert.match(
+    create,
+    /if \(serverFolder\) \{\n\s*project = await setChatProjectWorkingFolderPath\(/,
+  );
+});

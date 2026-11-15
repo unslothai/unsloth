@@ -334,8 +334,23 @@ class ChatProject(BaseModel):
 
 
 class ChatProjectWorkingFolder(BaseModel):
+    """One of a Desktop grant or, on a server only this machine can reach, a path."""
+
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
-    native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+    native_path_lease: Optional[str] = Field(default = None, alias = "nativePathLease", min_length = 1)
+    server_path: Optional[str] = Field(
+        default = None, alias = "serverPath", min_length = 1, max_length = 4096
+    )
+
+    @model_validator(mode = "after")
+    def _exactly_one(self):
+        if (self.native_path_lease is None) == (self.server_path is None):
+            raise ValueError("Send exactly one of nativePathLease or serverPath.")
+        return self
+
+
+class ChatProjectFolderAccess(BaseModel):
+    serverPath: bool = False
 
 
 class ChatProjectCreate(ChatProject):
@@ -1447,16 +1462,8 @@ def patch_project(
 
 
 def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
-    """Studio's own roots are reserved: they hold every account's data."""
-    from core.inference.tools import shared_sandbox_root
     from core.rag import folder_sync
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
-    from utils.paths.path_utils import is_path_within
-    from utils.paths.storage_roots import (
-        shared_project_workspaces_root,
-        shared_tmp_root,
-        studio_root,
-    )
 
     try:
         grant = verify_native_path_lease(
@@ -1468,6 +1475,41 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         path = folder_sync.validate_folder_path(str(grant.canonical_path))
     except (NativePathLeaseError, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _checked_project_folder(path)
+
+
+def _resolve_server_working_folder(server_path: str) -> tuple[str, tuple[int, int]]:
+    """A typed or browsed path stands in for the Desktop grant only while nothing off this machine can send it."""
+    from core.rag import folder_sync
+    from routes.models import _build_browse_allowlist, _resolve_browse_target
+
+    if not policy.server_folder_pick_permitted():
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Choosing a folder from the browser only works on this computer with remote "
+                "access off. Use Unsloth Desktop, or turn off remote access."
+            ),
+        )
+    # The same places the folder browser can show, so the route takes nothing the dialog could not.
+    target = _resolve_browse_target(server_path, _build_browse_allowlist())
+    try:
+        path = folder_sync.validate_folder_path(str(target))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _checked_project_folder(path)
+
+
+def _checked_project_folder(path: str) -> tuple[str, tuple[int, int]]:
+    """Studio's own roots are reserved: they hold every account's data."""
+    from core.inference.tools import shared_sandbox_root
+    from utils.paths.path_utils import is_path_within
+    from utils.paths.storage_roots import (
+        shared_project_workspaces_root,
+        shared_tmp_root,
+        studio_root,
+    )
+
     for reserved in (
         studio_root(),
         shared_project_workspaces_root(),
@@ -1494,6 +1536,11 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
     return path, (st.st_dev, st.st_ino)
 
 
+@router.get("/project-folder-access", response_model = ChatProjectFolderAccess)
+def get_project_folder_access(current_subject: str = Depends(get_current_subject)):
+    return ChatProjectFolderAccess(serverPath = policy.server_folder_pick_permitted())
+
+
 @router.put("/projects/{project_id}/working-folder", response_model = ChatProject)
 def set_project_working_folder(
     project_id: str,
@@ -1505,7 +1552,11 @@ def set_project_working_folder(
     if get_chat_project(project_id) is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
     try:
-        path, identity = _resolve_project_working_folder(payload.native_path_lease)
+        path, identity = (
+            _resolve_project_working_folder(payload.native_path_lease)
+            if payload.native_path_lease is not None
+            else _resolve_server_working_folder(payload.server_path or "")
+        )
         project = set_chat_project_working_folder(project_id, path, identity)
     except HTTPException:
         raise
