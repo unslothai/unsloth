@@ -43,7 +43,9 @@ def _stub_if_missing(name, attrs):
         setattr(sys.modules[parent], child, mod)
 
 
-_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing(
+    "unsloth", ("FastLanguageModel", "FastVisionModel", "FastModel", "is_bfloat16_supported")
+)
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 
 import core.inference.inference as inf  # noqa: E402
@@ -215,7 +217,7 @@ def test_spoken_reply_yields_text_then_one_wav():
     assert kwargs["continue_final_message"] is True
     assert model.kwargs["return_dict_in_generate"] is True
     # Each checkpoint's generation_config carries its own audio sampling (Audio and Omni differ).
-    assert not [k for k in model.kwargs if k.startswith("audio_")]
+    assert not [k for k in model.kwargs if k.startswith("audio_") and k != "audio_streamer"]
     assert b.last_generation_stats["usage"]["completion_tokens"] == 5
 
 
@@ -344,3 +346,260 @@ def test_unset_spoken_budget_fits_the_served_window(monkeypatch, window, expecte
         )
     )
     assert model.kwargs["max_new_tokens"] == expected
+
+
+class LiquidCodecStreamingCache:
+    """Stands in for the codec's own cache: holds nothing back, counts chunks."""
+
+    def __init__(self, config):
+        self.chunks = 0
+        self.finished = False
+
+
+class _StreamingCodec(_Codec):
+    config = types.SimpleNamespace(sampling_rate = 24000, n_q = 12)
+
+    def decode(
+        self,
+        codes,
+        streaming_cache = None,
+        finalize = True,
+    ):
+        if streaming_cache is not None:
+            streaming_cache.chunks += 1
+            streaming_cache.finished = finalize
+        return types.SimpleNamespace(audio_values = torch.full((1, codes.shape[-1] * 1920), 0.25))
+
+
+# _SpeechChunker finds the cache class in the codec's module, as with the remote LiquidCodec.
+_StreamingCodec.__module__ = __name__
+
+
+class _TokenTokenizer:
+    words = {1: "Paris", 2: " is", 3: " the", 4: " capital."}
+
+    def decode(
+        self,
+        ids,
+        skip_special_tokens = False,
+    ):
+        ids = ids.tolist() if hasattr(ids, "tolist") else ids
+        return "".join(self.words.get(int(i), "") for i in ids)
+
+
+class _StreamingModel(torch.nn.Module):
+    """Interleaves text tokens and speech frames through the streamers, as LFM3's generate does,
+    and waits after the first chunk's frames until the caller lets it finish."""
+
+    config = types.SimpleNamespace(interleaved_n_audio = 12)
+    device = "cpu"
+
+    def __init__(self, frames = 10):
+        super().__init__()
+        self.p = torch.nn.Parameter(torch.zeros(1))
+        self.frames = frames
+        self.release = threading.Event()
+        self.finished = threading.Event()
+
+    def generate(self, streamer, audio_streamer, **kwargs):
+        streamer.put(torch.zeros((1, 7), dtype = torch.long))  # the prompt
+        for token in (1, 2):
+            streamer.put(torch.tensor([[token]]))
+        for i in range(self.frames):
+            if i == inf._SPEECH_FIRST_CHUNK_FRAMES:
+                assert self.release.wait(5)
+            audio_streamer.put(torch.zeros(12, dtype = torch.long))
+            if i == 5:
+                for token in (3, 4):
+                    streamer.put(torch.tensor([[token]]))
+        self.finished.set()
+        return types.SimpleNamespace(
+            sequences = torch.tensor([[0] * 7 + [1, 2, 3, 4]]),
+            audio_codes = torch.zeros((1, 12, self.frames), dtype = torch.long),
+            audio_lengths = torch.tensor([self.frames]),
+        )
+
+
+def _streaming_backend(model):
+    processor = _Processor(_StreamingCodec())
+    processor.tokenizer = _TokenTokenizer()
+    return _backend(model, processor)
+
+
+def _spoken_iter(b, cancel_event = None):
+    return inf.InferenceBackend.generate_audio_input_response(
+        b,
+        messages = [{"role": "user", "content": "Answer this."}],
+        system_prompt = None,
+        audio_array = np.zeros(1600, dtype = np.float32),
+        temperature = 0.7,
+        top_p = 0.9,
+        top_k = 40,
+        min_p = 0.0,
+        max_new_tokens = 256,
+        repetition_penalty = 1.0,
+        cancel_event = cancel_event,
+        speak = True,
+    )
+
+
+def test_spoken_reply_streams_speech_before_generation_ends():
+    model = _StreamingModel(frames = 10)
+    b = _streaming_backend(model)
+    gen = _spoken_iter(b)
+
+    early = []
+    for item in gen:
+        early.append(item)
+        if isinstance(item, dict):
+            break
+    # The first chunk is out while generate still waits to make the rest.
+    assert not model.finished.is_set()
+    assert early == ["Paris", " is", early[-1]]
+    assert _wav(early[-1]["speech"]) == (24000, inf._SPEECH_FIRST_CHUNK_FRAMES * 1920)
+    model.release.set()
+    rest = list(gen)
+
+    text = "".join(x for x in early + rest if isinstance(x, str))
+    speech = [x for x in early + rest if isinstance(x, dict)]
+    assert text == "Paris is the capital."
+    rest_frames = 10 - inf._SPEECH_FIRST_CHUNK_FRAMES
+    assert len(speech) == 1 + -(-rest_frames // inf._SPEECH_CHUNK_FRAMES)
+    assert sum(_wav(x["speech"])[1] for x in speech) == 10 * 1920
+    assert b.last_generation_stats["usage"]["completion_tokens"] == 4
+
+
+def test_stopping_a_streamed_spoken_reply_ends_generate():
+    model = _StreamingModel(frames = 10)
+    cancel = threading.Event()
+    gen = _spoken_iter(_streaming_backend(model), cancel)
+    for item in gen:
+        if isinstance(item, dict):
+            break
+    cancel.set()
+    model.release.set()
+    assert list(gen) == []
+    assert not model.finished.is_set()
+
+
+def test_closing_a_streamed_spoken_reply_frees_the_generation_lock():
+    model = _StreamingModel(frames = 10)
+    b = _streaming_backend(model)
+    gen = _spoken_iter(b)
+    for item in gen:
+        if isinstance(item, dict):
+            break
+    model.release.set()
+    gen.close()
+    assert b._generation_lock.acquire(timeout = 5)
+    b._generation_lock.release()
+
+
+def test_non_streamed_route_joins_speech_chunks_into_one_wav():
+    import routes.inference as route
+    from core.inference.speech_wav import speech_item as _speech_item
+
+    chunks = [_speech_item(np.full(n, 0.25, dtype = np.float32), 24000) for n in (1920, 3840)]
+    joined = route._joined_speech_reply(chunks)
+    assert joined["format"] == "wav" and joined["sample_rate"] == 24000
+    assert _wav(joined["data"]) == (24000, 5760)
+    assert route._joined_speech_reply(chunks[:1])["data"] == chunks[0]["speech"]
+    assert route._joined_speech_reply([]) == {}
+
+
+def test_a_worker_still_alive_after_finishing_keeps_the_reply(monkeypatch):
+    # The worker queues `done` from its finally block and can still be alive when it is read.
+    real_put = inf.queue.Queue.put if hasattr(inf, "queue") else None
+    import queue
+
+    class _SlowExit(queue.Queue):
+        def put(self, item, *a, **k):
+            super().put(item, *a, **k)
+            if not isinstance(item, tuple):
+                threading.Event().wait(0.2)
+
+    monkeypatch.setattr(queue, "Queue", _SlowExit)
+    b = _backend(_Model(frames = 0), _Processor(_Codec()))
+    assert _spoken(b, speak = True) == ["Paris is the capital."]
+
+
+class _ByteTokenizer:
+    """Byte-level ids, as LFM3's BPE splits an emoji: a prefix ending mid-character decodes to U+FFFD."""
+
+    def decode(
+        self,
+        ids,
+        skip_special_tokens = False,
+    ):
+        ids = ids.tolist() if hasattr(ids, "tolist") else ids
+        return bytes(int(i) for i in ids if int(i) < 256).decode("utf-8", errors = "replace")
+
+
+class _ByteModel(_StreamingModel):
+    reply = "Hi \N{SMILING FACE WITH SMILING EYES} there.".encode()
+
+    def generate(self, streamer, audio_streamer, **kwargs):
+        streamer.put(torch.full((1, 7), 300, dtype = torch.long))
+        for byte in self.reply:
+            streamer.put(torch.tensor([[byte]]))
+        return types.SimpleNamespace(
+            sequences = torch.tensor([[300] * 7 + list(self.reply)]),
+            audio_codes = torch.zeros((1, 12, 0), dtype = torch.long),
+            audio_lengths = torch.tensor([0]),
+        )
+
+
+def test_a_character_split_over_tokens_streams_whole_and_keeps_the_rest_of_the_reply():
+    processor = _Processor(_StreamingCodec())
+    processor.tokenizer = _ByteTokenizer()
+    b = _backend(_ByteModel(), processor)
+    text = [x for x in _spoken_iter(b) if isinstance(x, str)]
+    assert "".join(text) == _ByteModel.reply.decode()
+    assert not any("\ufffd" in t for t in text)
+
+
+class _Lora:
+    disabled = False
+
+    def disable_adapter_layers(self):
+        self.disabled = True
+
+    def enable_adapter_layers(self):
+        self.disabled = False
+
+
+class _LoraStreamingModel(_StreamingModel):
+    def __init__(self):
+        super().__init__(frames = 2)
+        self.base_model = _Lora()
+        self.release.set()
+        self.seen = []
+
+    def generate(self, **kwargs):
+        self.seen.append(self.base_model.disabled)
+        return super().generate(**kwargs)
+
+
+def test_a_base_model_spoken_reply_turns_the_lora_back_on(monkeypatch):
+    model = _LoraStreamingModel()
+    monkeypatch.setattr(inf, "PeftModel", _LoraStreamingModel)
+    monkeypatch.setattr(inf, "PeftModelForCausalLM", _LoraStreamingModel)
+    b = _streaming_backend(model)
+    del b._apply_adapter_state
+    list(
+        inf.InferenceBackend.generate_audio_input_response(
+            b,
+            messages = [{"role": "user", "content": "Answer this."}],
+            system_prompt = None,
+            audio_array = np.zeros(1600, dtype = np.float32),
+            temperature = 0.7,
+            top_p = 0.9,
+            top_k = 40,
+            min_p = 0.0,
+            max_new_tokens = 256,
+            repetition_penalty = 1.0,
+            use_adapter = False,
+            speak = True,
+        )
+    )
+    assert model.seen == [True] and model.base_model.disabled is False

@@ -492,7 +492,8 @@ def test_vad_families_never_reach_the_folder_check(monkeypatch, tmp_path):
     _runtime(monkeypatch, tmp_path, record = {"release_tag": "v0.9.2-unsloth.1"}, specs = ("owsm",))
     for family in ("silero_vad", "marblenet_vad"):
         assert family in acm.FAMILIES
-        assert acm.family_policy(family).unsupported.startswith("Voice activity detection")
+        reason = acm.family_policy(family).unsupported
+        assert reason.startswith("Voice activity detection") and "asset bundle" in reason
 
 
 @pytest.fixture

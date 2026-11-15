@@ -1,0 +1,14 @@
+{
+  "identifier": "orb-widget",
+  "description": "The floating voice orb: mirrors the main window's voice state and forwards its buttons",
+  "windows": [
+    "orb-widget"
+  ],
+  "permissions": [
+    "core:event:default",
+    "core:window:default",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-destroy"
+  ]
+}

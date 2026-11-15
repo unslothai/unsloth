@@ -53,6 +53,7 @@ function player(store: ReturnType<typeof unseenStore>) {
     threadListItem: { id: "local", remoteId: "result" },
     thread: { isLoading: false, messages: [] as AutoReadMessage[], speech: null as unknown },
     voice: { ttsEnabled: true, autoReadAloud: true },
+    voiceMode: "off",
   };
   const spoken: string[] = [];
   const thread = {
@@ -65,7 +66,14 @@ function player(store: ReturnType<typeof unseenStore>) {
   const component = loadWithStubs<{ AutoReadAloud: () => void }>(
     new URL("../src/components/assistant-ui/auto-read-aloud.tsx", import.meta.url),
     {
-      "@/features/chat": { decideAutoRead, useChatActive: () => state.active },
+      "@/features/chat": {
+        decideAutoRead,
+        useChatActive: () => state.active,
+        useChatRuntimeStore: Object.assign(
+          (select: (s: { voiceMode: string }) => unknown) => select({ voiceMode: state.voiceMode }),
+          { getState: () => ({ voiceMode: state.voiceMode }) },
+        ),
+      },
       "@/features/settings": { useVoiceSettingsStore: { getState: () => state.voice } },
       "@/features/scheduled-tasks": {
         useUnseenScheduledRuns: Object.assign(
@@ -152,4 +160,17 @@ test("an ordinary reply or disabled voice settings consume the opening silently"
     assert.deepEqual(p.spoken, [], kind);
     assert.equal(store.getState().pendingReadAloudThreadId, null, kind);
   }
+});
+
+test("a result opened in voice mode waits and reads once voice is off", () => {
+  const store = openedResult();
+  const p = player(store);
+  p.state.thread.messages = [scheduledReply()];
+  p.state.voiceMode = "active";
+  p.render();
+  assert.deepEqual(p.spoken, []);
+  assert.equal(store.getState().pendingReadAloudThreadId, "result");
+  p.state.voiceMode = "off";
+  p.render();
+  assert.deepEqual(p.spoken, ["answer"]);
 });

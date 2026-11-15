@@ -9,6 +9,12 @@ import {
   type ChatFullAccessGrant,
   type ChatFullAccessGrants,
 } from "../utils/chat-full-access.ts";
+import type { VoiceOrbState } from "@/features/chat/voice/orb-state";
+import {
+  VOICE_DEFAULT_STT_MODEL,
+  migrateVoiceTtsModel,
+} from "@/features/chat/voice/voice-models";
+import { VOICE_DEFAULT_VAD_MODEL } from "@/features/chat/voice/vad-client";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
@@ -193,6 +199,11 @@ export type PermissionMode = "ask" | "auto" | "off" | "full";
 export type SandboxLevel = "high" | "low";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
+const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
+const CHAT_VOICE_SAVED_ID_KEY = "unsloth_chat_voice_saved_id";
+const CHAT_VOICE_SPEAKER_KEY = "unsloth_chat_voice_speaker";
+const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
+const CHAT_VAD_MODEL_ID_KEY = "unsloth_chat_vad_model_id";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
@@ -2696,11 +2707,45 @@ type ChatRuntimeStore = {
   activeNativePathToken: string | null;
   // The desktop host prunes file leases on a TTL, so an expired token forces re-selection.
   activeNativePathExpiresAtMs: number | null;
+  voiceMode: "off" | "configuring" | "active";
+  selectedVoiceModelId: string;
+  selectedVoiceId: string;
+  selectedVoiceSpeaker: string;
+  selectedSttModelId: string;
+  selectedVadModelId: string;
+  vadSlotLoaded: boolean;
+  voiceSlotLoading: boolean;
+  voiceSlotLoaded: boolean;
+  voiceTranscribing: boolean;
+  voiceHearing: boolean;
+  voiceHeldForEdit: boolean;
+  voiceMuted: boolean;
+  voicePaused: boolean;
+  voiceOrbState: VoiceOrbState | null;
+  voiceOrbCollapsed: boolean;
+  ensureVoiceSlotLoaded: (() => Promise<boolean>) | null;
+  setEnsureVoiceSlotLoaded: (fn: (() => Promise<boolean>) | null) => void;
   hydratePersistedSettings: () => Promise<void>;
   beginModelLoading: (phase?: ModelLifecyclePhase) => ModelLifecycleLease | null;
   endModelLoading: (lease: ModelLifecycleLease) => void;
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
+  setVoiceMode: (mode: "off" | "configuring" | "active") => void;
+  setSelectedVoiceModelId: (id: string) => void;
+  setSelectedVoiceId: (id: string) => void;
+  setSelectedVoiceSpeaker: (speaker: string) => void;
+  setSelectedSttModelId: (id: string) => void;
+  setSelectedVadModelId: (id: string) => void;
+  setVadSlotLoaded: (loaded: boolean) => void;
+  setVoiceSlotLoading: (loading: boolean) => void;
+  setVoiceSlotLoaded: (loaded: boolean) => void;
+  setVoiceTranscribing: (transcribing: boolean) => void;
+  setVoiceHearing: (hearing: boolean) => void;
+  setVoiceHeldForEdit: (held: boolean) => void;
+  setVoiceMuted: (muted: boolean) => void;
+  setVoicePaused: (paused: boolean) => void;
+  setVoiceOrbState: (state: VoiceOrbState | null) => void;
+  setVoiceOrbCollapsed: (collapsed: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (
     params: InferenceParams,
@@ -4478,6 +4523,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeLoadId: null,
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
+  voiceMode: "off" as const,
+  selectedVoiceModelId: migrateVoiceTtsModel(loadString(CHAT_VOICE_MODEL_ID_KEY, "")),
+  selectedVoiceId: loadString(CHAT_VOICE_SAVED_ID_KEY, ""),
+  selectedVoiceSpeaker: loadString(CHAT_VOICE_SPEAKER_KEY, ""),
+  selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || VOICE_DEFAULT_STT_MODEL,
+  selectedVadModelId: loadString(CHAT_VAD_MODEL_ID_KEY, "") || VOICE_DEFAULT_VAD_MODEL,
+  vadSlotLoaded: false,
+  voiceSlotLoading: false,
+  voiceSlotLoaded: false,
+  voiceTranscribing: false,
+  voiceHearing: false,
+  voiceHeldForEdit: false,
+  voiceMuted: false,
+  voicePaused: false,
+  voiceOrbState: null,
+  voiceOrbCollapsed: false,
+  ensureVoiceSlotLoaded: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -4670,6 +4732,49 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return { loadingModelPick: null };
     }),
+  // Clears the orb's last state too: a stale "listening" came back over the welcome composer on reopen.
+  setVoiceMode: (voiceMode) =>
+    set(
+      voiceMode === "off"
+        ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false, voiceOrbState: null, voicePaused: false }
+        : { voiceMode },
+    ),
+  setVoiceHearing: (voiceHearing) => set({ voiceHearing }),
+  setVoiceHeldForEdit: (voiceHeldForEdit) => set({ voiceHeldForEdit }),
+  setVoiceMuted: (voiceMuted) => set(voiceMuted ? { voiceMuted, voiceHearing: false } : { voiceMuted }),
+  setVoicePaused: (voicePaused) => set(voicePaused ? { voicePaused, voiceHearing: false } : { voicePaused }),
+  setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),
+  setVoiceOrbCollapsed: (voiceOrbCollapsed) => set({ voiceOrbCollapsed }),
+  setEnsureVoiceSlotLoaded: (ensureVoiceSlotLoaded) => set({ ensureVoiceSlotLoaded }),
+  setSelectedVoiceModelId: (selectedVoiceModelId) =>
+    set(() => {
+      saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId);
+      return { selectedVoiceModelId };
+    }),
+  setSelectedVoiceId: (selectedVoiceId) =>
+    set(() => {
+      saveString(CHAT_VOICE_SAVED_ID_KEY, selectedVoiceId);
+      return { selectedVoiceId };
+    }),
+  setSelectedVoiceSpeaker: (selectedVoiceSpeaker) =>
+    set(() => {
+      saveString(CHAT_VOICE_SPEAKER_KEY, selectedVoiceSpeaker);
+      return { selectedVoiceSpeaker };
+    }),
+  setSelectedSttModelId: (selectedSttModelId) =>
+    set(() => {
+      saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId);
+      return { selectedSttModelId };
+    }),
+  setSelectedVadModelId: (selectedVadModelId) =>
+    set(() => {
+      saveString(CHAT_VAD_MODEL_ID_KEY, selectedVadModelId);
+      return { selectedVadModelId, vadSlotLoaded: false };
+    }),
+  setVadSlotLoaded: (vadSlotLoaded) => set({ vadSlotLoaded }),
+  setVoiceSlotLoading: (voiceSlotLoading) => set({ voiceSlotLoading }),
+  setVoiceSlotLoaded: (voiceSlotLoaded) => set({ voiceSlotLoaded }),
+  setVoiceTranscribing: (voiceTranscribing) => set({ voiceTranscribing }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params, options) => {

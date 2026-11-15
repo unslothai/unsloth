@@ -30,6 +30,7 @@ class ExtraSlot:
     last_used: float = 0.0
     generations: set = field(default_factory = set)
     refs: int = 0
+    voice: bool = False
 
 
 slots: list[ExtraSlot] = []
@@ -152,10 +153,14 @@ def eviction_victims(
     short_mib: int,
     gpu_indices = None,
     discrete: bool = False,
+    voices_only: bool = False,
 ) -> list[ExtraSlot]:
     """LRU idle slots freeing short_mib on gpu_indices, one at a time when a footprint is unknown
-    since the retry prices the rest; a slot still answering is never a victim."""
-    candidates = [s for s in visible() if s is not exclude and in_use(s)]
+    since the retry prices the rest; a slot still answering is never a victim. ``voices_only``:
+    a voice makes room among other voices only, never by unloading a chat model."""
+    candidates = [
+        s for s in visible() if s is not exclude and in_use(s) and (s.voice or not voices_only)
+    ]
     victims, freed = [], 0
     for slot in sorted(candidates, key = lambda s: s.last_used):
         planned = getattr(slot.llama, "_planned_vram_mib", {})
@@ -295,7 +300,11 @@ def unload_extra_models(
 def unload_idle() -> int:
     """Drop every kept model no request is using or loading."""
     filling = loading[0] if loading else None
-    idle = [s for s in list(slots) if s is not filling and not s.generations and not s.refs]
+    idle = [
+        s
+        for s in list(slots)
+        if s is not filling and not s.generations and not s.refs and not s.voice
+    ]
     return len(evict_these(idle))
 
 

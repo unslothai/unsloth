@@ -301,3 +301,25 @@ def test_mlx_loop_ticks_only_when_loaded_recent_and_idle(monkeypatch, blocked, e
         ),
     )
     assert ticks == (["model", "model"] if blocked is None else ["model"])
+
+
+def test_a_cancelled_audio_reply_closes_its_generator_before_gen_done():
+    events = []
+
+    def reply(**_kwargs):
+        try:
+            yield "Hi"
+            yield "there"
+        finally:
+            events.append("closed")
+
+    resp = _RespQueue()
+    resp.put = lambda item, *a, **k: events.append(item.get("type"))
+    cancelled = iter([False, True])
+    worker._handle_generate_audio_input(
+        SimpleNamespace(generate_audio_input_response = reply, last_generation_stats = None),
+        {"request_id": "r4", "audio_data": [0.0], "speak": True},
+        resp,
+        SimpleNamespace(is_set = lambda: next(cancelled, True)),
+    )
+    assert events == ["token", "closed", "gen_done"]

@@ -136,6 +136,7 @@ interface ModelSelectorProps {
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
+  embedded?: boolean;
 }
 
 // Drawn inside the text box so the gap truncates away with the text.
@@ -317,7 +318,9 @@ function ModelSelectorContent({
   rowFilter,
   cpuLoad,
   moreModels,
+  embedded = false,
 }: {
+  embedded?: boolean;
   open: boolean;
   models: ModelOption[];
   additionalOnDeviceModels?: ModelOption[];
@@ -493,6 +496,105 @@ function ModelSelectorContent({
     snapInlinePadding(surface);
   }, [showingConfig]);
 
+  const panel = (
+    <>
+        <TooltipProvider
+          delayDuration={0}
+          skipDelayDuration={0}
+          disableHoverableContent={true}
+        >
+          {visibleConfigTarget ? (
+            <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
+              <ModelConfigPage
+                key={modelConfigInstanceKey(
+                  visibleConfigTarget.configId ?? visibleConfigTarget.id,
+                  visibleConfigTarget.ggufVariant,
+                  null,
+                )}
+                target={visibleConfigTarget}
+                onBack={() => setConfigTarget(null)}
+                onRun={(config, isDiffusion) =>
+                  onSelect(
+                    visibleConfigTarget.configId ?? visibleConfigTarget.id,
+                    {
+                      ...visibleConfigTarget.meta,
+                      config,
+                      isDiffusion,
+                      forceReload: true,
+                    },
+                  )
+                }
+                loadedConfig={null}
+                loadedContextLength={null}
+                initialConfig={null}
+              />
+            </div>
+          ) : (
+            <>
+              <HubModelPicker
+                open={open}
+                models={models}
+                additionalOnDeviceModels={additionalOnDeviceModels}
+                loadedModelIdOverride={loadedModelIdOverride}
+                loadedGgufVariantOverride={loadedGgufVariantOverride}
+                externalModels={externalModels}
+                value={value}
+                valueLoaded={loaded}
+                onSelect={handlePick}
+                resolveDownloadFootprint={resolveDownloadFootprint}
+                onBrowseHub={onBrowseHub}
+                onConfigureConnection={onConfigureConnection}
+                onConfigure={openConfigPage}
+                onEject={hasSelection && onEject ? onEject : undefined}
+                task={task}
+                catalog={catalog}
+                communityModelPolicy={communityModelPolicy}
+                opaqueKind={opaqueKind}
+                rowFilter={rowFilter}
+                cpuLoad={cpuLoad}
+                moreModels={moreModels}
+                npu={npu}
+                onDeviceInventoryChange={setHasDeviceModels}
+                section={effectiveHubSection}
+                sectionToggle={
+                  <PillTabs
+                    className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
+                    ariaLabel={t("picker.hubSectionAriaLabel")}
+                    tabs={hubSectionTabs}
+                    value={effectiveHubSection}
+                    onValueChange={(next) => {
+                      const section = next as HubSection;
+                      setSectionChosenThisOpen(true);
+                      setHubSection(section);
+                      saveLastHubSection(section);
+                    }}
+                    fit={true}
+                  />
+                }
+              />
+            </>
+          )}
+        </TooltipProvider>
+    </>
+  );
+  if (embedded) {
+    return (
+      <div
+        data-external={hasExternal || undefined}
+        onKeyDown={handlePickerEntryKeyDown}
+        className={cn(
+          "flex min-w-0 max-w-[calc(100vw-1rem)] flex-col",
+          visibleConfigTarget
+            ? "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden"
+            : hasExternal
+              ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pt-2 pl-4 pr-4"
+              : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pt-2 pl-4 pr-2",
+        )}
+      >
+        {panel}
+      </div>
+    );
+  }
   return (
     <PopoverContent
       align="start"
@@ -527,85 +629,7 @@ function ModelSelectorContent({
             ),
       )}
     >
-      <TooltipProvider
-        delayDuration={0}
-        skipDelayDuration={0}
-        disableHoverableContent={true}
-      >
-        {visibleConfigTarget ? (
-          // 28px sides like the list's text; the right is 20px plus the bar, an overlay strip capped at 8px.
-          <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
-            <ModelConfigPage
-              key={modelConfigInstanceKey(
-                visibleConfigTarget.configId ?? visibleConfigTarget.id,
-                visibleConfigTarget.ggufVariant,
-                null,
-              )}
-              target={visibleConfigTarget}
-              onBack={() => setConfigTarget(null)}
-              onRun={(config, isDiffusion) =>
-                onSelect(
-                  visibleConfigTarget.configId ?? visibleConfigTarget.id,
-                  {
-                    ...visibleConfigTarget.meta,
-                    config,
-                    isDiffusion,
-                    forceReload: true,
-                  },
-                )
-              }
-              loadedConfig={null}
-              loadedContextLength={null}
-              initialConfig={null}
-            />
-          </div>
-        ) : (
-          <>
-            <HubModelPicker
-              open={open}
-              models={models}
-              additionalOnDeviceModels={additionalOnDeviceModels}
-              loadedModelIdOverride={loadedModelIdOverride}
-              loadedGgufVariantOverride={loadedGgufVariantOverride}
-              externalModels={externalModels}
-              value={value}
-              valueLoaded={loaded}
-              onSelect={handlePick}
-              resolveDownloadFootprint={resolveDownloadFootprint}
-              onBrowseHub={onBrowseHub}
-              onConfigureConnection={onConfigureConnection}
-              onConfigure={openConfigPage}
-              onEject={hasSelection && onEject ? onEject : undefined}
-              task={task}
-              catalog={catalog}
-              communityModelPolicy={communityModelPolicy}
-              opaqueKind={opaqueKind}
-              rowFilter={rowFilter}
-              cpuLoad={cpuLoad}
-              moreModels={moreModels}
-              npu={npu}
-              onDeviceInventoryChange={setHasDeviceModels}
-              section={effectiveHubSection}
-              sectionToggle={
-                <PillTabs
-                  // The panel reserves --picker-tab-pad per pill, so keep the two in step.
-                  className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
-                  ariaLabel={t("picker.hubSectionAriaLabel")}
-                  tabs={hubSectionTabs}
-                  value={effectiveHubSection}
-                  onValueChange={(next) => {
-                    const section = next as HubSection;
-                    setSectionChosenThisOpen(true);
-                    setHubSection(section);
-                    saveLastHubSection(section);
-                  }}
-                  fit={true}
-                />
-              }
-            />
-          </>
-        )}
-      </TooltipProvider>
+      {panel}
     </PopoverContent>
   );
 }
@@ -637,6 +661,7 @@ export function ModelSelector({
   hubTask,
   placeholder,
   loaded,
+  embedded = false,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -768,6 +793,36 @@ export function ModelSelector({
     useSettingsDialogStore.getState().openConnectionSettings(providerId);
   }
 
+  const content = (
+    <ModelSelectorContent
+      embedded={embedded}
+      open={embedded || open}
+      models={models}
+      additionalOnDeviceModels={additionalOnDeviceModels}
+      loadedModelIdOverride={loadedModelIdOverride}
+      loadedGgufVariantOverride={loadedGgufVariantOverride}
+      externalModels={externalModels}
+      value={selected}
+      loaded={loaded}
+      onSelect={handleSelect}
+      resolveDownloadFootprint={resolveDownloadFootprint}
+      onEject={onEject ? handleEject : undefined}
+      onBrowseHub={
+        task && communityModelPolicy === "none" && !hubCapability
+          ? undefined
+          : handleBrowseHub
+      }
+      onConfigureConnection={handleConfigureConnection}
+      task={task}
+      catalog={catalog}
+      communityModelPolicy={communityModelPolicy}
+      opaqueKind={opaqueKind}
+      rowFilter={rowFilter}
+      cpuLoad={cpuLoad}
+      moreModels={moreModels}
+    />
+  );
+  if (embedded) return content;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -779,32 +834,7 @@ export function ModelSelector({
         onEject={onEject ? () => handleEject() : undefined}
         placeholder={placeholder}
       />
-      <ModelSelectorContent
-        open={open}
-        models={models}
-        additionalOnDeviceModels={additionalOnDeviceModels}
-        loadedModelIdOverride={loadedModelIdOverride}
-        loadedGgufVariantOverride={loadedGgufVariantOverride}
-        externalModels={externalModels}
-        value={selected}
-        loaded={loaded}
-        onSelect={handleSelect}
-        resolveDownloadFootprint={resolveDownloadFootprint}
-        onEject={onEject ? handleEject : undefined}
-        onBrowseHub={
-          task && communityModelPolicy === "none" && !hubCapability
-            ? undefined
-            : handleBrowseHub
-        }
-        onConfigureConnection={handleConfigureConnection}
-        task={task}
-        catalog={catalog}
-        communityModelPolicy={communityModelPolicy}
-        opaqueKind={opaqueKind}
-        rowFilter={rowFilter}
-        cpuLoad={cpuLoad}
-        moreModels={moreModels}
-      />
+      {content}
     </Popover>
   );
 }

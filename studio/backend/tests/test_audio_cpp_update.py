@@ -832,6 +832,17 @@ def test_a_kept_audio_cpp_slot_is_dropped(slots):
     assert slots.dropped == [music]
 
 
+def test_the_voice_speech_detector_is_stopped_before_the_install(slots, monkeypatch):
+    from core.inference import vad_audiocpp_sidecar
+
+    stopped: list = []
+    fake = SimpleNamespace(unload = lambda: stopped.append(True) or True)
+    monkeypatch.setattr(vad_audiocpp_sidecar, "get_audio_cpp_vad_sidecar", lambda: fake)
+    # It reloads on its own next check, so it does not ask the UI to resync.
+    assert aupd._unload_audio_cpp_models() is False
+    assert stopped == [True]
+
+
 # --- installed version (Settings > About) ---
 
 

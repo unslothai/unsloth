@@ -337,7 +337,7 @@ export function curatedAudioInventoryMatches({
 }: {
   isActiveCatalogArtifact: boolean;
   catalogScope: string | null | undefined;
-  catalogTask: "tts" | "stt" | null | undefined;
+  catalogTask: "tts" | "stt" | "vad" | null | undefined;
   pickerTask: string | readonly string[] | null | undefined;
 }): boolean {
   // An active id with no seed artifact is a fetched catalog row the page already scoped (a
@@ -350,12 +350,17 @@ export function curatedAudioInventoryMatches({
     !pickerTask
   )
     return false;
-  const expected =
-    catalogTask === "tts" ? "text-to-speech" : "automatic-speech-recognition";
+  const expected = AUDIO_TASK_PIPELINE_TAG[catalogTask];
   return Array.isArray(pickerTask)
     ? pickerTask.includes(expected)
     : pickerTask === expected;
 }
+
+const AUDIO_TASK_PIPELINE_TAG = {
+  tts: "text-to-speech",
+  stt: "automatic-speech-recognition",
+  vad: "voice-activity-detection",
+} as const;
 
 /** Only an exact catalog artifact may replace a text-generation fallback for a cached Audio GGUF. */
 export function curatedAudioInventoryTask({
@@ -367,7 +372,7 @@ export function curatedAudioInventoryTask({
   inventoryTask: string | null | undefined;
   isExactCatalogArtifact: boolean;
   catalogScope: string | null | undefined;
-  catalogTask: "tts" | "stt" | null | undefined;
+  catalogTask: "tts" | "stt" | "vad" | null | undefined;
 }): string | null {
   if (
     inventoryTask !== "text-generation" ||
@@ -377,9 +382,7 @@ export function curatedAudioInventoryTask({
   ) {
     return inventoryTask ?? null;
   }
-  return catalogTask === "tts"
-    ? "text-to-speech"
-    : "automatic-speech-recognition";
+  return AUDIO_TASK_PIPELINE_TAG[catalogTask];
 }
 
 /** Hidden infrastructure rows stay hidden unless the active task page passed their exact

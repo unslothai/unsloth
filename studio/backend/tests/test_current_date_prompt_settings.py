@@ -703,6 +703,15 @@ class TestDateStaysInTheSystemTurn:
         monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
         assert self.inference._audio_input_system_prompt("", object()) == instruction
 
+    def test_an_audio_turn_with_words_is_answered_not_transcribed(self):
+        asks = self.inference._audio_turn_asks
+        assert asks([{"role": "user", "content": "What is the capital of France?"}])
+        assert not asks([{"role": "user", "content": ""}])
+        assert not asks([{"role": "assistant", "content": "hi"}, {"role": "user", "content": " "}])
+        assert (
+            self.inference._AUDIO_ANSWER_SYSTEM_PROMPT != self.inference._AUDIO_INPUT_SYSTEM_PROMPT
+        )
+
     def test_a_managed_engine_gets_no_unrequested_system_turn(self, monkeypatch):
         from types import SimpleNamespace
 
