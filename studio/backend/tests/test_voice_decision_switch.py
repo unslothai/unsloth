@@ -382,3 +382,20 @@ def test_the_trace_probe_loads_no_decision_model(monkeypatch, tmp_path):
     assert client.get("/api/inference/voice/trace").json() == {"trace": False}
     monkeypatch.setenv("UNSLOTH_VAD_DEBUG_DIR", str(tmp_path))
     assert client.get("/api/inference/voice/trace").json() == {"trace": True}
+
+
+def test_a_clef_folder_without_the_optional_decision_config_is_still_found(monkeypatch, tmp_path):
+    from core.systemone import catalog, laya_runtime
+    from utils.models.model_config import CLEF_ADAPTER_MARKERS, CLEF_MARKERS
+
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: True)
+    root = (tmp_path / "shared").resolve()
+    for name, markers in (("merged-clef", CLEF_MARKERS), ("adapter-clef", CLEF_ADAPTER_MARKERS)):
+        folder = root / name
+        folder.mkdir(parents = True)
+        for marker in markers:
+            (folder / marker).write_text("{}")
+        assert not (folder / "unsloth_decision_config.json").exists()
+    monkeypatch.setattr(catalog, "_custom_roots", lambda: [(root, False)])
+    found = sorted((c.label, c.layout) for c in catalog.folder_decisions())
+    assert found == [("adapter-clef", "clef"), ("merged-clef", "clef")]
