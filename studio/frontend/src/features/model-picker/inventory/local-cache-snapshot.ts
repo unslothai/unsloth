@@ -34,18 +34,16 @@ export function isOtherCacheSnapshot(row: {
 export function pickerLocalCacheSnapshots(
   localRows: readonly LocalInventoryRow[],
   cachedRows: readonly CachedInventoryRow[] = [],
+  ggufLoadIds: Iterable<string> = [],
 ): Set<LocalInventoryRow> {
-  const ggufLoadIds = new Set(
-    [...localRows, ...cachedRows]
-      // A partial GGUF has no file linked into the snapshot yet, so the directory load skips it.
-      .filter((row) => row.modelFormat === "gguf" && !row.partial)
-      .map((row) => row.loadId),
-  );
+  const gguf = new Set(ggufLoadIds);
+  for (const row of [...localRows, ...cachedRows]) {
+    // A partial GGUF has no file linked into the snapshot yet, so the directory load skips it.
+    if (row.modelFormat === "gguf" && !row.partial) gguf.add(row.loadId);
+  }
   return new Set(
     localRows.filter(
-      (row) =>
-        isLocalCacheSnapshot(row) &&
-        (row.modelFormat === "gguf" || !ggufLoadIds.has(row.loadId)),
+      (row) => isLocalCacheSnapshot(row) && (row.modelFormat === "gguf" || !gguf.has(row.loadId)),
     ),
   );
 }

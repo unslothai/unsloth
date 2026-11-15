@@ -156,8 +156,13 @@ export function useChatPickerInventory(
     [inventory.cachedRows, options.allowedHiddenModelIds, options.opaqueKind],
   );
   const cacheSnapshots = useMemo(
-    () => pickerLocalCacheSnapshots(inventory.localRows, inventory.cachedRows),
-    [inventory.localRows, inventory.cachedRows],
+    () =>
+      pickerLocalCacheSnapshots(
+        inventory.localRows,
+        inventory.cachedRows,
+        inventory.hfCacheGgufLoadIds,
+      ),
+    [inventory.localRows, inventory.cachedRows, inventory.hfCacheGgufLoadIds],
   );
   const localModels = useMemo(
     () =>

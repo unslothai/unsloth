@@ -64,6 +64,18 @@ test("a GGUF the cached listing kept still hides the snapshot's other formats", 
   );
 });
 
+test("an active-cache GGUF copy cannot unhide a custom snapshot's other formats", () => {
+  const rows = snapshot("example/Mixed", ["safetensors", "gguf"]);
+  const active = buildCachedInventoryRow({ repo_id: "example/Mixed", size_bytes: 1 }, "gguf");
+  const inventory = dedupeSameSourceHubCacheRows({ cachedRows: [active], localRows: rows });
+  assert.deepEqual(inventory.localRows.map((row) => row.modelFormat), ["safetensors"]);
+  const preDedupe = rows.filter((row) => row.modelFormat === "gguf").map((row) => row.loadId);
+  assert.equal(
+    pickerLocalCacheSnapshots(inventory.localRows, inventory.cachedRows, preDedupe).size,
+    0,
+  );
+});
+
 test("only complete, loadable snapshots pinned to another cache qualify", () => {
   const [row] = snapshot("example/St", ["safetensors"]);
   assert.equal(isLocalCacheSnapshot(row), true);
