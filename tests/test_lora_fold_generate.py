@@ -394,6 +394,35 @@ def test_short_calls_and_threshold(monkeypatch):
     assert fold._min_tokens() == 64
 
 
+def test_threshold_follows_the_call_plan(monkeypatch):
+    # Inside generate_scope() graphs are allowed, but the call's plan decides what this call decodes with.
+    # Both modules under one stand-in package, so the fold's relative import of _decode_graphs resolves.
+    pkg_name = "_unsloth_models_under_test"
+    pkg = types.ModuleType(pkg_name)
+    pkg.__path__ = [str(MODULE_PATH.parent)]
+    monkeypatch.setitem(sys.modules, pkg_name, pkg)
+    loaded = {}
+    for name in ("_decode_graphs", "_lora_fold_generate"):
+        spec = importlib.util.spec_from_file_location(
+            f"{pkg_name}.{name}", MODULE_PATH.parent / f"{name}.py"
+        )
+        loaded[name] = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, spec.name, loaded[name])
+        spec.loader.exec_module(loaded[name])
+    G, fold = loaded["_decode_graphs"], loaded["_lora_fold_generate"]
+    monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", raising = False)
+    monkeypatch.setattr(G, "ENABLED", True)
+    assert fold._min_tokens() == 512
+    with G.plan_scope("eager"):
+        assert fold._min_tokens() == 128
+    with G.plan_scope("graph"):
+        assert fold._min_tokens() == 512
+    monkeypatch.setattr(G, "ENABLED", False)
+    with G.plan_scope("graph"):
+        assert fold._min_tokens() == 512
+    assert fold._min_tokens() == 128
+
+
 def test_other_threads_wait_for_restore(_clean):
     import threading
 

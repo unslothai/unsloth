@@ -68,10 +68,21 @@ def _min_tokens():
     return _DEFAULT_MIN_TOKENS_GRAPHS if _graphs_enabled() else _DEFAULT_MIN_TOKENS
 
 
+def _decode_graphs():
+    from . import _decode_graphs as G
+    return G
+
+
 def _graphs_enabled():
+    # The call's own plan first: inside generate_scope() enabled() is True even when this call decodes
+    # eagerly (FastModel's ineligible / short calls), which would hold the fold to the graphs threshold.
     try:
-        from ._decode_graphs import enabled
-        return bool(enabled())
+        G = _decode_graphs()
+        call_plan = getattr(G, "call_plan", None)
+        plan = call_plan() if call_plan is not None else None
+        if plan is not None:
+            return plan == "graph"
+        return bool(G.enabled())
     except Exception:
         return False
 
