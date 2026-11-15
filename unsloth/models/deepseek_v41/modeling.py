@@ -344,7 +344,14 @@ def grouped_projection(module, x, out_per_group):
     decide, so a tensor-parallel shard holding a subset of the groups works either way."""
     groups = x.shape[-2]
     base = getattr(module, "base_layer", None)
-    if base is not None and hasattr(module, "lora_A") and hasattr(base, "n_groups") and groups > 1:
+    if (
+        base is not None
+        and groups > 1
+        and hasattr(base, "n_groups")
+        and hasattr(module, "lora_A")
+        # PEFT's own plain LoRA layer only: grouped LoRA handlers (unsloth / unsloth_zoo, TP-aware) run themselves
+        and type(module).__module__.startswith("peft.")
+    ):
         # A plain PEFT LoRA around the grouped Linear (unsloth_zoo's grouped handler absent): the base gives the
         # per-group width, the plain delta the full stacked width; take the delta's diagonal blocks too.
         out = base(x)
