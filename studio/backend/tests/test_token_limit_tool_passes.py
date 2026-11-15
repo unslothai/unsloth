@@ -985,6 +985,13 @@ def test_a_stopped_mlx_completion_without_stats_is_estimated(monkeypatch):
                 usage = {"prompt_tokens": 2, "completion_tokens": 700, "total_tokens": 702}
                 stats_holder["stats"] = {"usage": usage, "finish_reason": "stop"}
                 return
+            if kw["stop"] == ["fails"]:
+                from core.inference.orchestrator import GenStreamError
+
+                # A backend error after decoding began.
+                yield "r" * 400
+                yield GenStreamError("backend died")
+                return
             if kw["stop"] not in (["nostats"], ["partial"]):
                 yield from super().generate_completion(prompt_ids, cancel_event, stats_holder, **kw)
                 return
@@ -1005,8 +1012,12 @@ def test_a_stopped_mlx_completion_without_stats_is_estimated(monkeypatch):
     passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "stop": "nostats"})
     # A reported choice keeps its count; only the stopped one's 400 characters are estimated.
     passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "n": 2, "stop": "partial"})
-    alone, batch = receipts
+    with pytest.raises(Exception):
+        passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "stop": "fails"})
+    alone, batch, failed = receipts
     assert alone.status == batch.status == "cancelled"
+    # A failed drain still settles what it generated.
+    assert (failed.status, failed.completion_tokens) == ("error", 100)
     # The client's zero stood in for missing stats; the 400 characters are estimated.
     assert alone.completion_tokens == 100
     assert batch.completion_tokens == 800
@@ -1058,3 +1069,15 @@ def test_a_stopped_later_choice_is_estimated_beside_the_reported_ones(monkeypatc
     assert receipt.status == "cancelled"
     # 700 reported for the first choice, plus 400 unreported characters for the second.
     assert receipt.completion_tokens == 800
+
+
+@pytest.mark.parametrize(
+    "ending, status, code", [("stop", "cancelled", 200), ("boom", "error", 500)]
+)
+def test_whole_tool_run_arguments_are_generated_output(monkeypatch, ending, status, code):
+    receipt = _gguf_tool_route(
+        monkeypatch,
+        [{"type": "tool_args", "tool_name": "render_html", "text": "h" * 400}, ending],
+        status = code,
+    )
+    assert (receipt.status, receipt.completion_tokens) == (status, 100)

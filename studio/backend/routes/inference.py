@@ -33708,12 +33708,14 @@ async def produce_openai_chat_completions(
 
             # Non-streaming: drain into one ChatCompletion; CLI forced tools reach this path.
             # The kept turn's text and the last pass usage that covers it, for a drain that fails.
-            _gguf_partial: dict = {"text": "", "settled": None}
+            _gguf_partial: dict = {"text": "", "settled": None, "args": 0}
 
             def _gguf_settle_partial():
                 target = _settle_target(monitor_id)
                 if _gguf_partial["text"]:
                     api_monitor.set_reply(target, _gguf_partial["text"])
+                # Streamed tool-call arguments never reach the kept text.
+                api_monitor.count_output(target, _gguf_partial["args"])
                 if _gguf_partial["settled"] is not None:
                     # Re-settled after the reply so that report covers it.
                     _monitor_usage(target, _gguf_partial["settled"], _monitor_context_length())
@@ -33752,6 +33754,13 @@ async def produce_openai_chat_completions(
                             context_truncation = _accumulate_context_truncation(
                                 context_truncation, event
                             )
+                        elif event.get("type") == "tool_args":
+                            # Generated arguments, counted as the streaming branch does.
+                            _args_text = event.get("text")
+                            if isinstance(_args_text, str) and _args_text:
+                                _gguf_partial["args"] += len(_args_text)
+                                settled = None
+                                _gguf_partial["settled"] = None
                         elif event.get("type") == "content":
                             # Content is cumulative within a turn and resets
                             # between turns, so the last event holds the final
@@ -33878,7 +33887,7 @@ async def produce_openai_chat_completions(
                     ),
                 )
                 api_monitor.set_reply(monitor_id, visible_text)
-                api_monitor.count_output(monitor_id, len(reasoning_text))
+                api_monitor.count_output(monitor_id, len(reasoning_text) + _gguf_partial["args"])
                 if settled_usage is not None and not completion_usage:
                     # Stopped after a reported pass: re-settled so that report covers the reply set above.
                     _monitor_usage(monitor_id, settled_usage, _monitor_context_length())
@@ -38684,8 +38693,28 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         for i in range(len(resolved) * n)
     ]
 
+    # Rows already drained, and the live texts of the chunk in flight, for a drain that fails.
+    partial: dict = {"rows": [], "texts": []}
+
+    def settle_partial():
+        rows_done = partial["rows"]
+        text = "".join(t for t, _s in rows_done) + "".join(partial["texts"])
+        if text:
+            api_monitor.set_reply(monitor_id, text)
+        reported = [(t, s["usage"]) for t, s in rows_done if (s or {}).get("usage")]
+        if reported:
+            _monitor_usage(
+                monitor_id,
+                {
+                    "prompt_tokens": sum(u.get("prompt_tokens") or 0 for _t, u in reported),
+                    "completion_tokens": sum(u.get("completion_tokens") or 0 for _t, u in reported),
+                },
+                reported_chars = sum(len(t) for t, _u in reported),
+            )
+
     def drain_rows(chunk):
         texts, batch_stats = [""] * len(chunk), {}
+        partial["texts"] = texts
         if len(rows) == 1:
             events = (
                 text if isinstance(text, GenStreamError) else (0, text)
@@ -38724,6 +38753,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             if isinstance(result, GenStreamError):
                 return result
             produced += result
+            partial["rows"], partial["texts"] = produced, []
         return produced
 
     choices, replies, stats = [], [], None
@@ -38767,6 +38797,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             replies.append(text)
     except asyncio.CancelledError:
         backend.reset_generation_state(cancel_event)
+        settle_partial()
         api_monitor.finish(monitor_id, "cancelled")
         raise
     except Exception as exc:
@@ -38781,6 +38812,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             if isinstance(failure, GenStreamError)
             else _friendly_error(failure)
         )
+        settle_partial()
         api_monitor.fail(monitor_id, message)
         status, error = _mlx_completion_error(failure, message, body)
         raise HTTPException(status_code = status, detail = message if status == 500 else error)
