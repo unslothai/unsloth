@@ -306,6 +306,7 @@ from models import (
 from models.models import (
     BrowseEntry,
     BrowseFoldersResponse,
+    BrowsePlace,
     ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
@@ -2081,10 +2082,14 @@ def browse_folders(
     else:
         parent = str(target.parent)
 
-    suggestions: list[str] = []
+    places: list[BrowsePlace] = []
     seen_sug: set[str] = set()
 
-    def _add_sug(p: Optional[Path]) -> None:
+    def _add_sug(
+        p: Optional[Path],
+        label: Optional[str] = None,
+        kind: str = "models",
+    ) -> None:
         if p is None:
             return
         try:
@@ -2098,19 +2103,26 @@ def browse_folders(
             return
         if _safe_is_dir(resolved):
             seen_sug.add(resolved)
-            suggestions.append(resolved)
+            trimmed = resolved.rstrip("\\/")
+            name = os.path.basename(trimmed) or ("Computer" if resolved == os.sep else resolved)
+            if name.lower() in ("models", "hub"):
+                # `models` alone names nothing: keep the folder that says whose they are.
+                name = f"{os.path.basename(os.path.dirname(trimmed)).lstrip('.')}/{name}"
+            places.append(BrowsePlace(path = resolved, label = label or name, kind = kind))
 
     if managed:
         for root in allowed_roots:
-            _add_sug(root)
+            _add_sug(root, "Workspace", "home")
     else:
-        _add_sug(Path.home())
-        for p in media_roots:
-            _add_sug(p)
-        for p in drive_roots:
-            _add_sug(p)
+        home = Path.home()
+        _add_sug(home, "Home", "home")
+        for name in ("Desktop", "Documents", "Downloads"):
+            _add_sug(home / name, kind = "user")
+        for p in (*media_roots, *drive_roots):
+            # A volume resolves to `/` or a bare drive, so its own name is the label.
+            _add_sug(p, p.name or None, "drive")
         try:
-            _add_sug(hf_default_cache_dir())
+            _add_sug(hf_default_cache_dir(), "Hugging Face cache")
         except Exception:
             pass
         try:
@@ -2128,7 +2140,8 @@ def browse_folders(
         current = str(target),
         parent = parent,
         entries = entries,
-        suggestions = suggestions,
+        suggestions = [place.path for place in places],
+        places = places,
         truncated = truncated,
         model_files_here = _count_model_files(target) if model_hints else 0,
     )

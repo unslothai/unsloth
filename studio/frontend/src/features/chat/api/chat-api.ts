@@ -1618,11 +1618,19 @@ export interface BrowseEntry {
   hidden: boolean;
 }
 
+export interface BrowsePlace {
+  path: string;
+  label: string;
+  kind: "home" | "user" | "drive" | "models";
+}
+
 export interface BrowseFoldersResponse {
   current: string;
   parent: string | null;
   entries: BrowseEntry[];
   suggestions: string[];
+  /** Absent on a backend that predates named places. */
+  places?: BrowsePlace[];
   truncated?: boolean;
   model_files_here?: number;
 }

@@ -13,7 +13,12 @@ import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { GitBranchIcon } from "@hugeicons/core-free-icons";
+import {
+  FOLDER_CARD_CLASS,
+  FOLDER_ROW_CLASS,
+} from "@/features/rag/components/linked-folders-manager";
+import { Folder02Icon } from "@/lib/folder-icons";
+import { Alert02Icon, GitBranchIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { MANAGED_FOLDER_LABEL } from "../utils/project-folder-state";
@@ -78,6 +83,9 @@ export function WorkingFolderPicker({
     }
   }
 
+  const chosen = Boolean(value);
+  const problem = detail?.problem && !needsReselect ? detail.problem : null;
+
   return (
     <section className="min-w-0 space-y-2" aria-label="Working folder">
       <h3 className="text-ui-15 font-medium text-foreground">Working folder</h3>
@@ -85,96 +93,117 @@ export function WorkingFolderPicker({
         Where code and file tools run for every chat in this project.
       </p>
       <div
-        className={cn(
-          "flex min-w-0 items-center gap-2 rounded-full border border-border py-2 pr-2 pl-5",
-          detail?.problem && "border-amber-500/60",
-        )}
-        data-folder-problem={detail?.problem ? "true" : undefined}
+        className={cn(FOLDER_CARD_CLASS, problem && "border-amber-500/60")}
+        data-folder-problem={problem ? "true" : undefined}
       >
-        <span
-          className={cn(
-            "min-w-0 flex-1 truncate text-left text-sm",
-            value && detail?.path && "font-mono text-ui-13",
-          )}
-          title={detail?.path ?? value ?? undefined}
-          // A path is cut from its start, so the folder's own name stays in view.
-          dir={value && detail?.path ? "rtl" : undefined}
-        >
-          <bdi dir="ltr">{value ?? MANAGED_FOLDER_LABEL}</bdi>
-        </span>
-        {value && detail?.branch && (
-          <span
-            className="hidden min-w-0 shrink items-center gap-1 text-muted-foreground sm:flex"
-            title={`Branch ${detail.branch}`}
-          >
-            <HugeiconsIcon
-              icon={GitBranchIcon}
-              strokeWidth={1.75}
-              className="size-3 shrink-0"
-            />
-            <span className="max-w-28 truncate font-mono text-ui-12">
-              {detail.branch}
+        <div className={FOLDER_ROW_CLASS}>
+          <HugeiconsIcon
+            icon={problem ? Alert02Icon : Folder02Icon}
+            strokeWidth={1.75}
+            className={cn(
+              "size-4 shrink-0",
+              problem
+                ? "text-amber-600 dark:text-amber-400"
+                : "text-muted-foreground",
+            )}
+          />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span
+              className={cn(
+                "truncate text-left text-sm",
+                chosen && detail?.path && "font-mono text-ui-13",
+              )}
+              title={detail?.path ?? value ?? undefined}
+              // A path is cut from its start, so the folder's own name stays in view.
+              dir={chosen && detail?.path ? "rtl" : undefined}
+            >
+              <bdi dir="ltr">{value ?? MANAGED_FOLDER_LABEL}</bdi>
             </span>
-          </span>
-        )}
-        {value && detail?.path && (
+            {problem ? (
+              <span
+                className="text-ui-12 text-amber-600 dark:text-amber-400"
+                role="alert"
+              >
+                {problem}
+              </span>
+            ) : (
+              <span className="truncate text-ui-12 text-muted-foreground">
+                {chosen
+                  ? "Tools read and write files here."
+                  : "Unsloth keeps this project's files in a folder of its own."}
+              </span>
+            )}
+          </div>
+          {chosen && detail?.branch && (
+            <span
+              className="hidden max-w-32 min-w-0 shrink-0 items-center gap-1 text-muted-foreground sm:flex"
+              title={`Branch ${detail.branch}`}
+            >
+              <HugeiconsIcon
+                icon={GitBranchIcon}
+                strokeWidth={1.75}
+                className="size-3 shrink-0"
+              />
+              <span className="truncate font-mono text-ui-12">
+                {detail.branch}
+              </span>
+            </span>
+          )}
+          {chosen && detail?.path && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="shrink-0 rounded-full"
+              aria-label="Copy folder path"
+              title="Copy folder path"
+              onClick={() => {
+                const path = detail.path;
+                if (!path) return;
+                void copyToClipboard(path).then((copied) => {
+                  if (copied) toast.success("Folder path copied");
+                  else toast.error("Could not copy the folder path");
+                });
+              }}
+            >
+              <HugeiconsIcon
+                icon={Copy01Icon}
+                strokeWidth={1.75}
+                className="size-3.5"
+              />
+            </Button>
+          )}
+        </div>
+        <div
+          className={cn(FOLDER_ROW_CLASS, "flex-wrap justify-end gap-2 py-2")}
+        >
+          {value && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="shrink-0"
+              disabled={disabled || picking}
+              onClick={() => void change(false)}
+            >
+              Use managed folder
+            </Button>
+          )}
           <Button
             type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="shrink-0 rounded-full"
-            aria-label="Copy folder path"
-            title="Copy folder path"
-            onClick={() => {
-              const path = detail.path;
-              if (!path) return;
-              void copyToClipboard(path).then((copied) => {
-                if (copied) toast.success("Folder path copied");
-                else toast.error("Could not copy the folder path");
-              });
-            }}
-          >
-            <HugeiconsIcon
-              icon={Copy01Icon}
-              strokeWidth={1.75}
-              className="size-3.5"
-            />
-          </Button>
-        )}
-        {value && (
-          <Button
-            type="button"
-            variant="ghost"
+            variant="dark"
             size="sm"
             className="shrink-0"
-            disabled={disabled || picking}
-            onClick={() => void change(false)}
+            disabled={!available || disabled || picking}
+            onClick={() => void change(true)}
           >
-            Use managed folder
+            {picking ? "Choosing…" : value ? "Change folder" : "Choose folder"}
           </Button>
-        )}
-        <Button
-          type="button"
-          variant="dark"
-          size="sm"
-          className="shrink-0"
-          disabled={!available || disabled || picking}
-          onClick={() => void change(true)}
-        >
-          {picking ? "Choosing…" : value ? "Change folder" : "Choose folder"}
-        </Button>
+        </div>
       </div>
-      {detail?.problem && !needsReselect && (
-        <p
-          className="text-ui-11 text-amber-600 dark:text-amber-400"
-          role="alert"
-        >
-          {detail.problem}
-        </p>
-      )}
       {(needsReselect || !available) && (
         <p
-          className="text-ui-11 text-muted-foreground"
+          className="px-1 text-ui-11 text-muted-foreground"
           role={needsReselect ? "alert" : undefined}
         >
           {needsReselect

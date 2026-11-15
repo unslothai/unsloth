@@ -96,3 +96,56 @@ export function filterEntries<T extends { name: string }>(
   }
   return [...starts, ...contains];
 }
+
+/** The trail cut to its last `keep` crumbs; `hidden` holds the ones folded behind the ellipsis. */
+export function collapseCrumbs(
+  crumbs: Crumb[],
+  keep = 3,
+): { hidden: Crumb[]; shown: Crumb[] } {
+  if (crumbs.length <= keep + 1) return { hidden: [], shown: crumbs };
+  return {
+    hidden: crumbs.slice(0, crumbs.length - keep),
+    shown: crumbs.slice(crumbs.length - keep),
+  };
+}
+
+export function folderName(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return trimmed.slice(cut + 1) || path;
+}
+
+export const RECENT_FOLDERS_KEY = "unsloth_folder_browser_recent";
+const RECENT_FOLDERS_MAX = 5;
+
+type RecentStore = Pick<Storage, "getItem" | "setItem">;
+
+export function readRecentFolders(store: RecentStore | undefined): string[] {
+  try {
+    const parsed: unknown = JSON.parse(
+      store?.getItem(RECENT_FOLDERS_KEY) ?? "[]",
+    );
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Most recent first, without repeats. */
+export function rememberRecentFolder(
+  store: RecentStore | undefined,
+  path: string,
+): string[] {
+  const next = [
+    path,
+    ...readRecentFolders(store).filter((item) => item !== path),
+  ].slice(0, RECENT_FOLDERS_MAX);
+  try {
+    store?.setItem(RECENT_FOLDERS_KEY, JSON.stringify(next));
+  } catch {
+    // Private mode or a full quota: the list is a convenience.
+  }
+  return next;
+}

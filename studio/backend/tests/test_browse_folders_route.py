@@ -241,3 +241,25 @@ def test_create_browse_folder_refuses_studio_data_and_api_keys(browse_home, monk
         )
     assert exc_info.value.status_code == 403
     assert not (browse_home / "from-api").exists()
+
+
+def test_browse_names_its_places(browse_home, monkeypatch):
+    (browse_home / "Documents").mkdir()
+    (browse_home / ".lmstudio" / "models").mkdir(parents = True)
+    monkeypatch.setattr(models_route.Path, "home", classmethod(lambda cls: browse_home))
+    import utils.paths as paths
+
+    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
+    monkeypatch.setattr(
+        paths, "well_known_model_dirs", lambda: [browse_home / ".lmstudio" / "models"]
+    )
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
+
+    listing = models_route.browse_folders(str(browse_home), False, "owner", False)
+
+    named = {place.label: (place.kind, place.path) for place in listing.places}
+    assert named["Home"] == ("home", str(browse_home.resolve()))
+    assert named["Documents"][0] == "user"
+    assert named["lmstudio/models"][0] == "models"
+    assert "Desktop" not in named
+    assert listing.suggestions == [place.path for place in listing.places]

@@ -7,9 +7,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  collapseCrumbs,
   filterEntries,
+  folderName,
   isPathLike,
   joinChild,
+  readRecentFolders,
+  rememberRecentFolder,
   resolveTypedPath,
   splitBreadcrumb,
   splitTypedPath,
@@ -100,4 +104,44 @@ test("the browser keeps the last good folder on screen when a path fails", async
     /browseFolders\(target, hidden, ctrl\.signal, showModelHints\)/,
   );
   assert.match(source, /role="listbox"/);
+});
+
+test("a deep trail folds its start behind one ellipsis", () => {
+  const crumbs = splitBreadcrumb("/home/me/code/app/src");
+  const { hidden, shown } = collapseCrumbs(crumbs);
+  assert.deepEqual(
+    shown.map((crumb) => crumb.label),
+    ["code", "app", "src"],
+  );
+  assert.equal(hidden[hidden.length - 1].value, "/home/me");
+  const short = splitBreadcrumb("/home/me/code");
+  assert.deepEqual(collapseCrumbs(short), { hidden: [], shown: short });
+});
+
+test("recent folders keep the newest five without repeats", () => {
+  const data = new Map<string, string>();
+  const store = {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => void data.set(key, value),
+  };
+  assert.deepEqual(readRecentFolders(store), []);
+  for (const name of ["a", "b", "c", "d", "e", "f", "b"]) {
+    rememberRecentFolder(store, `/x/${name}`);
+  }
+  assert.deepEqual(readRecentFolders(store), [
+    "/x/b",
+    "/x/f",
+    "/x/e",
+    "/x/d",
+    "/x/c",
+  ]);
+  data.set([...data.keys()][0], "not json");
+  assert.deepEqual(readRecentFolders(store), []);
+  assert.deepEqual(readRecentFolders(undefined), []);
+});
+
+test("a folder is named by its last segment", () => {
+  assert.equal(folderName("/home/me/code/"), "code");
+  assert.equal(folderName("C:\\Users\\me"), "me");
+  assert.equal(folderName("/"), "/");
 });
