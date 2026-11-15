@@ -197,3 +197,19 @@ def test_the_pipeline_default_follows_the_exif_orientation(pipe, monkeypatch):
     pic.getexif()[0x0112] = 6
     pipe(prompt = "<Picture 1>", image = pic)
     assert seen["size"] == h3i.reference_edit_size(100, 600)
+
+
+def test_decode_takes_the_decoder_dtype_after_an_fp16_reference_encode():
+    """An fp16 encoder (reference encode) must not round the float32 latent the decoder takes."""
+    import torch
+
+    from core.inference import diffusion_minimax_h3_image as H
+
+    vae = torch.nn.Module()
+    vae.encoder = torch.nn.Conv2d(3, 4, 1)
+    vae.quant_conv = torch.nn.Conv2d(8, 8, 1)
+    vae.post_quant_conv = torch.nn.Conv2d(4, 4, 1)
+    vae.decoder = torch.nn.Conv2d(4, 3, 1)
+    H.set_encoder_dtype(vae, torch.float16)
+    assert H._module_dtype(vae) == torch.float16
+    assert H._decoder_input_dtype(vae) == torch.float32

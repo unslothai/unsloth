@@ -1065,6 +1065,18 @@ def reference_encode_dtype(device: Any, vae: Any = None) -> Any:
     return torch.float32
 
 
+def _decoder_input_dtype(vae: Any) -> Any:
+    """The dtype the decode path takes its latent in: its first module's, not the whole VAE's (the encoder may run in
+    another dtype, and it owns the VAE's first parameters)."""
+    import torch
+
+    for name in ("post_quant_conv", "decoder"):
+        module = getattr(vae, name, None)
+        if isinstance(module, torch.nn.Module) and any(True for _ in module.parameters()):
+            return _module_dtype(module)
+    return _module_dtype(vae)
+
+
 def set_encoder_dtype(vae: Any, dtype: Any) -> None:
     """Cast the VAE encoder and its moment projection (the decoder keeps its own dtype)."""
     for name in ("encoder", "quant_conv"):
@@ -2283,7 +2295,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             lmean = torch.tensor(vae.config.latents_mean, device = device).view(1, -1, 1, 1)
             lstd = torch.tensor(vae.config.latents_std, device = device).view(1, -1, 1, 1)
             z = latents.to(device, torch.float32) * lstd + lmean
-            image = vae.decode(z.to(_module_dtype(vae)), return_dict = False)[0]
+            image = vae.decode(z.to(_decoder_input_dtype(vae)), return_dict = False)[0]
         finally:
             self._leave("vae")
         mean = torch.tensor(H3_IMAGE_PIXEL_MEAN, device = image.device).view(1, -1, 1, 1)
