@@ -2933,7 +2933,13 @@ def densify_conditioning_path(transformer: Any, dtype: Any = None) -> int:
     from .diffusion_quant_pad import is_quantized_linear
 
     if os.environ.get(QUANT_CONDITIONING_ENV, "").strip() == "1":
-        return 0
+        if dtype is not torch.float16:
+            return 0
+        # fp16 cards (sm75): the conditioning stream outgrows float16, and only the dense path computes it in float32
+        logger.warning(
+            "diffusion.minimax_h3_image: %s=1 ignored on a float16 load; the text-conditioning path stays dense",
+            QUANT_CONDITIONING_ENV,
+        )
     dtype = dtype or torch.bfloat16
     count = 0
     for name, module in transformer.named_modules():

@@ -1112,6 +1112,37 @@ def test_the_hosted_files_conditioning_path_runs_dense(h3i, monkeypatch):
     assert is_quantized_linear(model.transformer_blocks[0])
 
 
+def test_the_quantized_conditioning_switch_is_ignored_on_an_fp16_load(h3i, monkeypatch):
+    """UNSLOTH_H3_IMAGE_QUANT_CONDITIONING=1 keeps the conditioning int8 on bf16 loads only: on an fp16 card its stream
+    overflows float16 and only the dense path computes in float32, so an fp16 load densifies anyway."""
+    import torch
+
+    pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_quant_pad import is_quantized_linear
+    from core.inference.diffusion_transformer_quant import _make_quant_config
+
+    def model():
+        torch.manual_seed(0)
+        m = torch.nn.Module()
+        m.context_embedder = torch.nn.Linear(256, 64)
+        m.token_refiner = torch.nn.Module()
+        m.token_refiner.refiner_blocks = torch.nn.ModuleList([torch.nn.Linear(256, 256)])
+        m.to(torch.bfloat16)
+        quantize_(m, _make_quant_config("int8"))
+        return m
+
+    monkeypatch.setenv(h3i.QUANT_CONDITIONING_ENV, "1")
+    bf16 = model()
+    assert h3i.densify_conditioning_path(bf16, torch.bfloat16) == 0
+    assert is_quantized_linear(bf16.context_embedder)
+    fp16 = model()
+    assert h3i.densify_conditioning_path(fp16, torch.float16) == 2
+    assert not is_quantized_linear(fp16.context_embedder)
+    assert fp16.context_embedder.weight.dtype == torch.float16
+
+
 def test_the_dense_conditioning_path_runs_in_fp16_where_the_card_has_no_bf16(h3i):
     """sm75 runs the pipeline in fp16: the densified weights, their biases and the refiner's own small layers all
     follow, so context_embedder never adds a bf16 bias to fp16 activations."""
