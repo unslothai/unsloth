@@ -963,12 +963,20 @@ def test_a_stopped_mlx_completion_without_stats_is_estimated(monkeypatch):
 
     class _NoStats(passthrough._MLXCompletionBackend):
         def generate_completion(self, prompt_ids, cancel_event, stats_holder, **kw):
-            if kw["stop"] != ["nostats"]:
+            if kw["stop"] == ["partial"] and not getattr(self, "reported_one", False):
+                # The first choice finishes and reports; the second is the stopped one.
+                self.reported_one = True
+                yield "a" * 400
+                usage = {"prompt_tokens": 2, "completion_tokens": 700, "total_tokens": 702}
+                stats_holder["stats"] = {"usage": usage, "finish_reason": "stop"}
+                return
+            if kw["stop"] not in (["nostats"], ["partial"]):
                 yield from super().generate_completion(prompt_ids, cancel_event, stats_holder, **kw)
                 return
             # Stopped before gen_done: text streamed, no stats ever reported.
             cancel_event.set()
             yield "r" * 400
+            stats_holder["stats"] = {}
 
     receipts = []
 
@@ -980,10 +988,13 @@ def test_a_stopped_mlx_completion_without_stats_is_estimated(monkeypatch):
     monkeypatch.setattr(passthrough, "_MLXCompletionBackend", _NoStats)
     monkeypatch.setattr(passthrough, "ApiMonitor", monitor)
     passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "stop": "nostats"})
-    [receipt] = receipts
-    assert receipt.status == "cancelled"
+    # A reported choice keeps its count; only the stopped one's 400 characters are estimated.
+    passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "n": 2, "stop": "partial"})
+    alone, batch = receipts
+    assert alone.status == batch.status == "cancelled"
     # The client's zero stood in for missing stats; the 400 characters are estimated.
-    assert receipt.completion_tokens == 100
+    assert alone.completion_tokens == 100
+    assert batch.completion_tokens == 800
 
 
 def test_a_suppressed_drain_settles_into_its_wrappers_row():
@@ -994,3 +1005,23 @@ def test_a_suppressed_drain_settles_into_its_wrappers_row():
     finally:
         inference_route._monitor_perf_sink.reset(token)
     assert inference_route._settle_target(None) is None
+
+
+def test_choice_labels_alone_are_not_generated_output():
+    monitor = ApiMonitor()
+    entry = monitor.start(
+        endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "", via_api_key = True
+    )
+    claim = {"spent": 1, "generated": False}
+    with override_claim_scope(claim):
+        empty = {"role": "assistant", "content": ""}
+        choices = [{"index": 0, "message": empty}, {"index": 1, "message": dict(empty)}]
+        monitor_route = inference_route.api_monitor
+        try:
+            inference_route.api_monitor = monitor
+            inference_route._monitor_openai_chunk(entry, {"choices": choices})
+        finally:
+            inference_route.api_monitor = monitor_route
+    # "Choice 1:" / "Choice 2:" are the preview's, not the model's: nothing was generated.
+    assert not claim["generated"]
+    assert monitor.reply_chars(entry) == 0

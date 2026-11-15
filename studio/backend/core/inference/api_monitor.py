@@ -593,6 +593,7 @@ class ApiMonitor:
         stamp_first_token: bool = True,
         separate_from_openai_tool: bool = False,
         counted: bool = False,
+        output_chars: Optional[int] = None,
     ) -> None:
         if not entry_id or not text:
             return
@@ -605,8 +606,9 @@ class ApiMonitor:
                     text = "\n" + text
                 entry.openai_stream_last_segment_was_tool = False
             if not counted:
-                entry.reply_chars += len(text)
-            _note_generated(entry)
+                entry.reply_chars += len(text) if output_chars is None else output_chars
+            if counted or output_chars is None or output_chars:
+                _note_generated(entry)
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
                 entry.running_phase = "token_generation"
@@ -811,7 +813,14 @@ class ApiMonitor:
                 entry.reply_chars += chars
                 _note_generated(entry)
 
-    def set_reply(self, entry_id: Optional[str], text: str) -> None:
+    def set_reply(
+        self,
+        entry_id: Optional[str],
+        text: str,
+        *,
+        output_chars: Optional[int] = None,
+    ) -> None:
+        """``output_chars``: the generated length when ``text`` adds labels (``Choice 1:``)."""
         if not entry_id:
             return
         with self._lock:
@@ -819,8 +828,8 @@ class ApiMonitor:
             if entry is None:
                 return
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
-            entry.reply_chars = len(text)
-            if text:
+            entry.reply_chars = len(text) if output_chars is None else output_chars
+            if entry.reply_chars:
                 _note_generated(entry)
             _advance_updated_at(entry)
 

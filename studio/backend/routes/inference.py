@@ -7761,6 +7761,7 @@ def _monitor_openai_chunk(
         monitor_id,
         "\n\n".join(f"Choice {idx + 1}:\n{text}" for idx, text in reply_parts),
         stamp_first_token = streaming,
+        output_chars = sum(len(text) for _idx, text in reply_parts),
     )
 
 
@@ -34609,7 +34610,9 @@ async def produce_openai_chat_completions(
                     monitor_reply = "\n\n".join(
                         f"Choice {_idx + 1}:\n{text}" for _idx, text in enumerate(_monitor_replies)
                     )
-                api_monitor.set_reply(monitor_id, monitor_reply)
+                api_monitor.set_reply(
+                    monitor_id, monitor_reply, output_chars = sum(map(len, _monitor_replies))
+                )
                 # set_reply replaces the count; thinking is split out of the replies above.
                 api_monitor.count_output(
                     monitor_id,
@@ -36621,7 +36624,14 @@ async def produce_openai_chat_completions(
                 )
             else:
                 _monitor_reply = _reply_text(_msg, _finish)
-            api_monitor.set_reply(monitor_id, _monitor_reply)
+            api_monitor.set_reply(
+                monitor_id,
+                _monitor_reply,
+                output_chars = sum(
+                    len(_reply_text(_reply, _choice.finish_reason))
+                    for _reply, _choice in zip(_monitor_replies, _choices)
+                ),
+            )
             api_monitor.count_output(
                 monitor_id,
                 sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies),
@@ -38661,7 +38671,8 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
 
     choices, replies, stats = [], [], None
     prompt_tokens = completion_tokens = 0
-    every_choice_reported = True
+    # Output the reported rows' counts cover; a stopped row without stats is estimated instead.
+    reported_rows = reported_chars = 0
     cached_tokens: Optional[int] = None
     failure = None
     watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
@@ -38676,7 +38687,9 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         for index, (text, stats) in enumerate(produced):
             prompt_index, choice = divmod(index, n)
             reason, usage = choice_end(resolved[prompt_index]["ids"], stats)
-            every_choice_reported = every_choice_reported and bool((stats or {}).get("usage"))
+            if (stats or {}).get("usage"):
+                reported_rows += 1
+                reported_chars += len(text)
             if not choice:
                 prompt_tokens += usage["prompt_tokens"]
                 cached = cached_prompt_tokens(usage)
@@ -38727,14 +38740,16 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         replies[0]
         if single
         else "\n\n".join(f"Choice {i + 1}:\n{r}" for i, r in enumerate(replies)),
+        output_chars = sum(map(len, replies)),
     )
     # One choice's reason and timings would misdescribe several.
     if single:
         api_monitor.set_perf(monitor_id, stop_reason = choices[0]["finish_reason"])
     _monitor_usage(
         monitor_id,
-        monitored_usage(usage, every_choice_reported),
+        monitored_usage(usage, bool(reported_rows)),
         timings = (stats or {}).get("timings") if single else None,
+        reported_chars = None if reported_rows == len(produced) or budget == 0 else reported_chars,
     )
     if cancel_event.is_set():
         from core.inference.llama_keepwarm import mark_current_response_failed
