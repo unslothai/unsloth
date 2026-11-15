@@ -1045,7 +1045,6 @@ def test_failed_attempt_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
 
 
 def _record_proj(layer, style, recorded):
-    """Record layer.proj's output the way transformers records router logits (5.x hook, 4.x forward swap)."""
     if style == "hook":
         from transformers.utils.output_capturing import _active_collector
 
@@ -1072,9 +1071,7 @@ def _record_proj(layer, style, recorded):
 
 @pytest.mark.parametrize("style", ["hook", "forward"])
 def test_trial_forward_is_not_recorded_as_a_model_output(monkeypatch, style):
-    """The non-reentrant first-call trial ran the block once more while transformers recorded outputs: a MoE
-    model then summed one extra layer's router logits into the load-balancing loss (Qwen3-MoE tiny, step 1:
-    LoRA grad norm 1.04 with checkpointing vs 1.21 without)."""
+    # Qwen3-MoE tiny: trial forward added an extra router_logits entry (grad norm 1.04 vs 1.21).
     from torch.utils.checkpoint import checkpoint
 
     if style == "hook":
