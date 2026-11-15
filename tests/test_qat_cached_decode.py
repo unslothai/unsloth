@@ -117,7 +117,6 @@ def test_qat_lm_head_decode_logits(bsz):
     hidden = torch.randn(bsz, 1, DIM)
     with torch.no_grad():
         assert torch.equal(_decode_logits(_head_self(lm_head), hidden), lm_head(hidden))
-        # Batch 1 equals its row in a duplicated batch 2.
         one = _decode_logits(_head_self(lm_head), hidden[:1])
         two = _decode_logits(_head_self(lm_head), hidden[:1].repeat(2, 1, 1))
         torch.testing.assert_close(one[0], two[0], rtol = 1e-5, atol = 1e-5)
