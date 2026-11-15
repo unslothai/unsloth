@@ -48,6 +48,11 @@ from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
 _apply_fsdp2_env()
 del _apply_fsdp2_env
 
+from .parallel_env import bind_local_cuda_device as _bind_local_cuda_device
+
+_bind_local_cuda_device()
+del _bind_local_cuda_device
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See

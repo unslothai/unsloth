@@ -59,6 +59,7 @@ def _args(**kwargs):
 def ddp_env(monkeypatch):
     monkeypatch.setenv("WORLD_SIZE", "2")
     monkeypatch.delenv("UNSLOTH_DDP_FIND_UNUSED_PARAMETERS_AUTO", raising = False)
+    monkeypatch.delenv("UNSLOTH_DDP_TOWER_SYNC", raising = False)
 
 
 def test_plain_lora_defaults_to_false(ddp_env):
@@ -156,9 +157,21 @@ def test_vision_config_under_text_config_keeps_default(ddp_env):
     assert _helper()(_args(), model) is None
 
 
-def test_two_adapters_keep_default(ddp_env):
+def test_frozen_second_adapter_defaults_to_false(ddp_env):
+    # TRL's DPOTrainer adds a frozen "ref" copy of the policy adapter after Unsloth's trainer init decided
+    # False; the Trainer.__init__ re-decision kept transformers' True, which crashes under checkpointing.
+    model = _lora(_llama())
+    model.add_adapter("ref", peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj"]))
+    assert not any(p.requires_grad for n, p in model.named_parameters() if ".ref." in n)
+    assert _helper()(_args(), model) is False
+
+
+def test_two_trainable_adapters_keep_default(ddp_env):
     model = _lora(_llama())
     model.add_adapter("second", peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj"]))
+    for n, p in model.named_parameters():
+        if ".second." in n:
+            p.requires_grad_(True)
     assert _helper()(_args(), model) is None
 
 
@@ -440,12 +453,19 @@ def test_gemma4_language_lora_defaults_to_false(ddp_env):
     assert args.ddp_find_unused_parameters is False
 
 
-@pytest.mark.parametrize("case", ["tower_lora", "moe", "not_gemma4", "no_checkpointing"])
-def test_gemma4_lora_rule_needs_text_only_dense_adapters(ddp_env, case):
+def test_gemma4_tower_lora_defaults_to_false(ddp_env, monkeypatch):
+    # Vision / audio notebooks also adapt the towers: those are kept out of DDP and averaged separately.
+    model = _lora(_gemma4_like(), target_modules = ["q_proj", "v_proj"])
+    assert any("vision" in n for n, p in model.named_parameters() if p.requires_grad)
+    assert _helper()(_args(), model) is False
+    monkeypatch.setenv("UNSLOTH_DDP_TOWER_SYNC", "0")
+    assert _helper()(_args(), model) is None
+
+
+@pytest.mark.parametrize("case", ["moe", "not_gemma4", "no_checkpointing"])
+def test_gemma4_lora_rule_needs_dense_adapters(ddp_env, case):
     kwargs, extra, targets = {}, {}, r".*language_model.*\.(q_proj|v_proj)"
-    if case == "tower_lora":
-        targets = ["q_proj", "v_proj"]  # also the CLIP tower's projections
-    elif case == "moe":
+    if case == "moe":
         extra = {"num_local_experts": 4}
     elif case == "no_checkpointing":
         kwargs["gradient_checkpointing"] = False
