@@ -130,7 +130,7 @@ test("voice off waits for a detect in flight before unloading the detector", () 
 test("a recording that crossed a voice off stays dropped after voice comes back", () => {
   const bridge = readSrc("features/chat/voice/voice-loop-bridge.ts");
   assert.match(bridge, /if \(next === "off" && voiceMode !== "off"\) offEpoch\+\+;/);
-  assert.match(loop, /const switchedOff = \(\) => getVoiceMode\(\) === "off" \|\| voiceOffEpoch\(\) !== offAtOpen;/);
+  assert.match(loop, /const switchedOff = \(\) =>\s*getVoiceMode\(\) === "off" \|\| voiceOffEpoch\(\) !== offAtOpen \|\| epoch !== heldEpoch;/);
 });
 
 test("speech heard after the chat model went away is never sent", () => {
@@ -157,4 +157,9 @@ test("the mic re-arms for every reply stream, and a deleted saved voice falls ba
   assert.match(engine, /\}, \[isSpeaking, streamSeq\]\);/);
   const player = readSrc("features/chat/hooks/use-tts-player.ts");
   assert.match(player, /if \(\/saved voice no longer exists\/i\.test\([^)]*\)\) \{[\s\S]{0,200}useChatRuntimeStore\.getState\(\)\.setSelectedVoiceId\(""\);\s*url = await request\(\);/);
+});
+
+test("a thread switch drops the old chat's pending transcript and its claim on the box", () => {
+  assert.match(loop, /export function clearHeldTurn\(\): void \{\s*heldEpoch \+= 1;[\s\S]{0,250}voiceBoxText = "";/);
+  assert.match(loop, /const epoch = heldEpoch;/);
 });

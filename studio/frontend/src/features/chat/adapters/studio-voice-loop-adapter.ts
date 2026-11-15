@@ -107,9 +107,15 @@ export function withoutVoiceText(text: string): string | null {
   return before.trimEnd();
 }
 
+// Bumped by clearHeldTurn (voice off, thread switch): a recording still in STT belongs to the turn it cleared.
+let heldEpoch = 0;
+
 export function clearHeldTurn(): void {
+  heldEpoch += 1;
   heldTurn = null;
   heldFromBarge = false;
+  // The box it named belongs to the chat being left; a matching draft in the next one is the user's.
+  voiceBoxText = "";
 }
 
 export class StudioVoiceLoopAdapter implements DictationAdapter {
@@ -139,8 +145,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     const chunkVoiced: boolean[] = [];
     let voicedMs = 0;
     const offAtOpen = voiceOffEpoch();
-    // Off now, or off and back on since this recording opened: either way its words are dropped.
-    const switchedOff = () => getVoiceMode() === "off" || voiceOffEpoch() !== offAtOpen;
+    const epoch = heldEpoch;
+    // Off now, off and back on, or a thread switch since this recording opened: its words are dropped.
+    const switchedOff = () =>
+      getVoiceMode() === "off" || voiceOffEpoch() !== offAtOpen || epoch !== heldEpoch;
     let prerollVoicedMs = 0;
     const bargeGate = createBargeGate(
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
