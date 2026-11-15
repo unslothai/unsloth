@@ -357,7 +357,10 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     # A finalized call runs after its pass ended, so that pass's report already covers it.
     assert "Executed after its pass ended, so that pass's reported usage covers it." in source
     # The whole safetensors reply's thinking is split out of the preview, so it is counted beside it.
-    assert "api_monitor.count_output(monitor_id, len(_reasoning_text))" in source
+    assert "api_monitor.count_output(monitor_id, len(_reasoning_text) + _sf_partial_args)" in source
+    # The JSON drain counts tool arguments, streamed or finalized, for a failed or stopped run.
+    assert "_sf_partial_args += len(_args)" in source
+    assert "api_monitor.count_output(target, _sf_partial_args)" in source
     # A stop mid-pass in the JSON drain keeps the kept turn outside the earlier passes' report.
     assert "reported_chars = None if _stats is not _sf_text_stats else 0," in source
     assert '_sf_text_stats = _sf_stats_holder.get("stats")' in source
@@ -613,6 +616,8 @@ def _gguf_tool_route(
     parse_think = False,
     tools = True,
     status = 200,
+    per_call = None,
+    extra = None,
 ):
     class _Backend(FakeLlamaCppBackend):
         supports_tools = True
@@ -639,9 +644,14 @@ def _gguf_tool_route(
                 yield event
 
         def generate_chat_completion(self, **kwargs):
-            for event in events:
+            for event in per_call.pop(0) if per_call else events:
                 if event == "boom":
                     raise RuntimeError("backend died")
+                if event == "stop":
+                    for bucket in list(inference_route._CANCEL_REGISTRY.values()):
+                        for cancel in list(bucket):
+                            cancel.set()
+                    continue
                 yield event
 
     receipts = []
@@ -668,6 +678,7 @@ def _gguf_tool_route(
             "stream": False,
             "enable_tools": tools,
             "cancel_id": "token-limit-drain",
+            **(extra or {}),
         },
     )
     assert response.status_code == status, response.text
@@ -1025,3 +1036,21 @@ def test_choice_labels_alone_are_not_generated_output():
     # "Choice 1:" / "Choice 2:" are the preview's, not the model's: nothing was generated.
     assert not claim["generated"]
     assert monitor.reply_chars(entry) == 0
+
+
+def test_a_stopped_later_choice_is_estimated_beside_the_reported_ones(monkeypatch):
+    usage = {"prompt_tokens": 9, "completion_tokens": 700, "total_tokens": 709}
+    receipt = _gguf_tool_route(
+        monkeypatch,
+        [],
+        tools = False,
+        extra = {"n": 2},
+        per_call = [
+            ["a" * 400, {"type": "metadata", "usage": usage, "finish_reason": "stop"}],
+            # The user stops the run partway through the second choice.
+            ["r" * 400, "stop"],
+        ],
+    )
+    assert receipt.status == "cancelled"
+    # 700 reported for the first choice, plus 400 unreported characters for the second.
+    assert receipt.completion_tokens == 800
