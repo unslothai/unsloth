@@ -48,7 +48,7 @@ test("a voice turn with attachments goes through the composer, and the run waits
     commit,
     /if \(composer\.getState\(\)\.attachments\.length > 0\) \{[\s\S]*?composer\.setText\(text\);\s*composer\.send\(\{ startRun: false \}\);/,
   );
-  assert.match(commit, /if \(msgs\.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES\) \{/);
+  assert.match(commit, /if \(msgs\.length <= before && Date\.now\(\) - armedAt < VOICE_APPEND_WAIT_MAX_MS\) \{/);
 });
 
 test("only the same request again counts as impatience", () => {
@@ -404,4 +404,10 @@ test("a clip dropped by a reset re-arms the mic while voice stays on", () => {
   assert.match(loop, /const dropSwitched = \(\) => \{\s*finish\("cancelled"\);\s*if \(getVoiceMode\(\) === "active"\) setTimeout\(\(\) => requestVoiceResume\(\), 0\);\s*\};/);
   // Part C drops a cleared reveal through stt.drop, which resumes on its own.
   assert.equal((loop.match(/if \(switchedOff\(\)\) \{\s*dropSwitched\(\);/g) ?? []).length, 1);
+});
+
+test("a voice turn whose attachment send is slow still gets its reply", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /if \(msgs\.length <= before && Date\.now\(\) - armedAt < VOICE_APPEND_WAIT_MAX_MS\) \{/);
+  assert.doesNotMatch(engine, /msgs\.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES/);
 });

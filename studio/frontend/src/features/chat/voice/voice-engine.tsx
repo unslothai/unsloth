@@ -139,6 +139,7 @@ function speaksWithChatModel(): boolean {
 
 const IGNORE_MAX_WORDS = 3;
 const PLAYBACK_TAIL_MS = 500;
+const VOICE_APPEND_WAIT_MAX_MS = 120_000;
 const VOICE_COALESCE_MS = 250;
 const VOICE_COALESCE_POLL_MS = 250;
 // After a barge-in cut an unanswered run the user tends to keep going; each restart threw the thinking away.
@@ -599,7 +600,8 @@ export const VoiceEngine: FC = () => {
         return;
       }
       const msgs = t.getState().messages;
-      if (msgs.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES) {
+      // An attachment's send uploads its original first: wait for the message on the clock, not a tick budget.
+      if (msgs.length <= before && Date.now() - armedAt < VOICE_APPEND_WAIT_MAX_MS) {
         voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_POLL_MS);
         return;
       }
