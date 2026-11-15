@@ -972,8 +972,9 @@ def _reserve_step(
     """Grows a growable cache to hold this generate step. `call` tracks tokens in the cache but not in input_ids
     (inputs_embeds prompt, or a returned cache continued with only new tokens)."""
     call = {} if call is None else call
+    # Dim 1 is the sequence: CSM's input_ids are (batch, frames, codebooks), shape[-1] the 33 codebooks.
     total = (
-        input_ids.shape[-1] if isinstance(input_ids, torch.Tensor) and input_ids.dim() >= 2 else 0
+        input_ids.shape[1] if isinstance(input_ids, torch.Tensor) and input_ids.dim() >= 2 else 0
     )
     embeds = bound.get("inputs_embeds")
     q = bound.get("next_sequence_length")
