@@ -365,6 +365,9 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     assert "A finalized call runs after its pass reported, so its stats cover it." in source
     # A stopped later choice is estimated beside the reported ones, and settles as cancelled.
     assert 'if _sf_plain_partial["reported"] == len(_choices)' in source
+    # A parallel batch's live and discarded output reaches the failed-request settlement.
+    assert '_sf_plain_partial["batch"] = texts' in source
+    assert '_sf_plain_partial["extra"] += len(texts[_row])' in source
     # A stop mid-pass in the JSON drain keeps the kept turn outside the earlier passes' report.
     assert "reported_chars = None if _stats is not _sf_text_stats else 0," in source
     assert '_sf_text_stats = _sf_stats_holder.get("stats")' in source
@@ -1081,3 +1084,21 @@ def test_whole_tool_run_arguments_are_generated_output(monkeypatch, ending, stat
         status = code,
     )
     assert (receipt.status, receipt.completion_tokens) == (status, 100)
+
+
+@pytest.mark.parametrize(
+    "ending, status, code", [("stop", "cancelled", 200), ("boom", "error", 500)]
+)
+def test_reported_arguments_are_not_charged_again(monkeypatch, ending, status, code):
+    receipt = _gguf_tool_route(
+        monkeypatch,
+        [
+            {"type": "tool_args", "tool_name": "render_html", "text": "h" * 400},
+            {"type": "context_usage", "prompt_tokens": 900, "completion_tokens": 100},
+            # The next pass writes 80 more characters, unreported, before it ends.
+            {"type": "tool_args", "tool_name": "render_html", "text": "h" * 80},
+            ending,
+        ],
+        status = code,
+    )
+    assert (receipt.status, receipt.completion_tokens) == (status, 120)

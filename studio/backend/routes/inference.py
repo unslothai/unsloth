@@ -33707,8 +33707,15 @@ async def produce_openai_chat_completions(
                 )
 
             # Non-streaming: drain into one ChatCompletion; CLI forced tools reach this path.
-            # The kept turn's text and the last pass usage that covers it, for a drain that fails.
-            _gguf_partial: dict = {"text": "", "settled": None, "args": 0}
+            # The kept turn's text, every pass's tool arguments, the last pass report, and the output
+            # that report covered (its pass's text plus the arguments streamed up to it).
+            _gguf_partial: dict = {
+                "text": "",
+                "args": 0,
+                "report": None,
+                "covered_text": 0,
+                "covered_args": 0,
+            }
 
             def _gguf_settle_partial():
                 target = _settle_target(monitor_id)
@@ -33716,9 +33723,15 @@ async def produce_openai_chat_completions(
                     api_monitor.set_reply(target, _gguf_partial["text"])
                 # Streamed tool-call arguments never reach the kept text.
                 api_monitor.count_output(target, _gguf_partial["args"])
-                if _gguf_partial["settled"] is not None:
-                    # Re-settled after the reply so that report covers it.
-                    _monitor_usage(target, _gguf_partial["settled"], _monitor_context_length())
+                if _gguf_partial["report"] is not None:
+                    # Re-settled after the reply so the report covers only what it counted.
+                    _monitor_usage(
+                        target,
+                        _gguf_partial["report"],
+                        _monitor_context_length(),
+                        reported_chars = _gguf_partial["covered_text"]
+                        + _gguf_partial["covered_args"],
+                    )
 
             def _drain_gguf_tool_loop():
                 full_text = ""
@@ -33749,7 +33762,11 @@ async def produce_openai_chat_completions(
                                 "total_tokens": pass_prompt + passes_completion,
                             }
                             _monitor_usage(monitor_id, settled, _monitor_context_length())
-                            _gguf_partial["settled"] = settled
+                            _gguf_partial.update(
+                                report = settled,
+                                covered_text = len(_gguf_partial["text"]),
+                                covered_args = _gguf_partial["args"],
+                            )
                         elif event.get("type") == "context_truncated":
                             context_truncation = _accumulate_context_truncation(
                                 context_truncation, event
@@ -33760,7 +33777,6 @@ async def produce_openai_chat_completions(
                             if isinstance(_args_text, str) and _args_text:
                                 _gguf_partial["args"] += len(_args_text)
                                 settled = None
-                                _gguf_partial["settled"] = None
                         elif event.get("type") == "content":
                             # Content is cumulative within a turn and resets
                             # between turns, so the last event holds the final
@@ -33769,7 +33785,8 @@ async def produce_openai_chat_completions(
                             # turn) isn't carried -- only the final turn is.
                             raw_text = event.get("text", "")
                             settled = None
-                            _gguf_partial.update(text = raw_text, settled = None)
+                            # Text after a report is the next pass's own.
+                            _gguf_partial.update(text = raw_text, covered_text = 0)
                     if raw_text is not None:
                         # Stripped once: stripping every cumulative event is quadratic in the turn.
                         full_text = _strip_tool_xml_for_display(
@@ -33888,9 +33905,15 @@ async def produce_openai_chat_completions(
                 )
                 api_monitor.set_reply(monitor_id, visible_text)
                 api_monitor.count_output(monitor_id, len(reasoning_text) + _gguf_partial["args"])
-                if settled_usage is not None and not completion_usage:
-                    # Stopped after a reported pass: re-settled so that report covers the reply set above.
-                    _monitor_usage(monitor_id, settled_usage, _monitor_context_length())
+                if _gguf_partial["report"] is not None and not completion_usage:
+                    # Stopped after a reported pass: that report covers only the output it counted.
+                    _monitor_usage(
+                        monitor_id,
+                        _gguf_partial["report"],
+                        _monitor_context_length(),
+                        reported_chars = _gguf_partial["covered_text"]
+                        + _gguf_partial["covered_args"],
+                    )
                 _monitor_usage(
                     monitor_id,
                     {
@@ -36345,6 +36368,9 @@ async def produce_openai_chat_completions(
         _sf_plain_partial: dict = {
             "done": "",
             "current": "",
+            # A parallel batch's live texts, and batch output a fallback discarded.
+            "batch": [],
+            "extra": 0,
             "usage": None,
             # Choices that reported usage, and their generated length: the rest are estimated.
             "reported": 0,
@@ -36354,8 +36380,10 @@ async def produce_openai_chat_completions(
         def _sf_plain_settle():
             target = _settle_target(monitor_id)
             done = _sf_plain_partial["done"]
-            if done or _sf_plain_partial["current"]:
-                api_monitor.set_reply(target, done + _sf_plain_partial["current"])
+            live = _sf_plain_partial["current"] + "".join(_sf_plain_partial["batch"])
+            if done or live:
+                api_monitor.set_reply(target, done + live)
+            api_monitor.count_output(target, _sf_plain_partial["extra"])
             if _sf_plain_partial["usage"] is not None:
                 _monitor_usage(
                     target,
@@ -36400,6 +36428,7 @@ async def produce_openai_chat_completions(
                 ]
                 batch_stats: dict = {}
                 texts = [""] * len(rows)
+                _sf_plain_partial["batch"] = texts
                 _finished = set()
 
                 def _drain_batch():
@@ -36427,6 +36456,7 @@ async def produce_openai_chat_completions(
                     name = "openai-chat-nonstream-batch",
                 )
                 _reported = batch_stats.get("stats") or []
+                _sf_plain_partial["batch"] = []
 
                 def _keep(_row, idx):
                     _stats = _reported[_row] if _row < len(_reported) else None
@@ -36442,6 +36472,9 @@ async def produce_openai_chat_completions(
                     for _row, idx in enumerate(_indices):
                         if _row in _finished:
                             _keep(_row, idx)
+                        else:
+                            # Generated, then discarded for the fallback: still output.
+                            _sf_plain_partial["extra"] += len(texts[_row])
                     return False
                 for _row, idx in enumerate(_indices):
                     _keep(_row, idx)
@@ -36694,7 +36727,8 @@ async def produce_openai_chat_completions(
             )
             api_monitor.count_output(
                 monitor_id,
-                sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies),
+                sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies)
+                + _sf_plain_partial["extra"],
             )
             if len(_choices) <= 1:
                 # Suppressed for n > 1: choices can end differently.
