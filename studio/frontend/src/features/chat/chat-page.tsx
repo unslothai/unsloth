@@ -347,7 +347,7 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./components/export-format-items";
 import { providerModelDisplayName, useModelDisplayNamesVersion } from "./model-display-names";
-import { trackThreadScroll } from "./thread-scroll-flag";
+import { syncThreadScroll, trackThreadScroll } from "./thread-scroll-flag";
 import { lazyWithoutSuspense, preloadWhenIdle } from "@/lib/lazy-without-suspense";
 
 // Not lazy(): a Suspense reveal is held up to 300 ms, which was most of the pane's first open.
@@ -2361,6 +2361,7 @@ function ProjectLanding({
         </div>
       ) : (
         <div
+          ref={syncThreadScroll}
           data-wallpaper-reading-surface=""
           data-header-fade-scroller=""
           className="relative flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"

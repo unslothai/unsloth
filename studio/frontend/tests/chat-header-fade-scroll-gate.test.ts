@@ -57,7 +57,7 @@ class FakeElement {
   }
 }
 (globalThis as { HTMLElement?: unknown }).HTMLElement = FakeElement;
-const { trackThreadScroll, THREAD_SCROLLED_ATTR } = await import("../src/features/chat/thread-scroll-flag.ts");
+const { syncThreadScroll, trackThreadScroll, THREAD_SCROLLED_ATTR } = await import("../src/features/chat/thread-scroll-flag.ts");
 
 test("the flag follows the thread viewport's scrollTop, captured on the fade's parent", () => {
   const host = new FakeElement();
@@ -97,6 +97,24 @@ test("the project landing list drives the shared header fade like a thread", () 
   const page = readSrc("features/chat/chat-page.tsx");
   const landingFn = page.slice(page.indexOf("function ProjectLanding("));
   assert.match(landingFn.slice(0, landingFn.indexOf("\nfunction ")), /data-header-fade-scroller=""/);
+});
+
+test("a replacement scroller mounting at the top clears the flag its predecessor left", () => {
+  const root = new FakeElement();
+  trackThreadScroll(root as unknown as HTMLElement);
+  const old = new FakeElement(["aui-thread-viewport"], root);
+  old.scrollTop = 900;
+  root.fire(old);
+  assert.ok(root.attrs.has(THREAD_SCROLLED_ATTR));
+  syncThreadScroll(new FakeElement(["aui-thread-viewport"], root) as unknown as HTMLElement);
+  assert.ok(!root.attrs.has(THREAD_SCROLLED_ATTR), "new empty chat: no fade over the flat page");
+  syncThreadScroll(new FakeElement(["aui-thread-viewport"], root, true) as unknown as HTMLElement);
+  syncThreadScroll(null);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const ref = thread.slice(thread.indexOf("const composedViewportRef"));
+  assert.match(ref.slice(0, ref.indexOf("[viewportRef, runtimeThreadId]")), /syncThreadScroll\(node\)/);
+  const page = readSrc("features/chat/chat-page.tsx");
+  assert.match(page, /ref=\{syncThreadScroll\}\s+data-wallpaper-reading-surface=""\s+data-header-fade-scroller=""/);
 });
 
 test("a compare pane's scroll moves only its own flag, not the backgrounded chat's", () => {
