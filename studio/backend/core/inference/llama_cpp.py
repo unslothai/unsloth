@@ -26,6 +26,7 @@ import os
 import re
 import struct
 from core.inference.inference_gate import holds_inference
+from core.inference.http_stream import SSE_LINE_END
 from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
 from utils import host_memory as _host_memory
@@ -37432,7 +37433,7 @@ class LlamaCppBackend:
     def _sse_event_payload(event: str) -> Optional[dict]:
         """Decode one complete SSE event's ``data:`` payload, or None."""
         payload_lines = [
-            line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")
+            line[5:].lstrip() for line in SSE_LINE_END.split(event) if line.startswith("data:")
         ]
         if not payload_lines:
             return None
