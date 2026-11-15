@@ -2098,17 +2098,18 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             engram_left_context = kwargs.pop("engram_left_context", None),
         )
         hidden = out.last_hidden_state
-        keep_all = isinstance(logits_to_keep, int) and logits_to_keep <= 0
-        if labels is not None and not keep_all:
-            return self._loss_on_kept_positions(
-                hidden, labels, logits_to_keep, out.hidden_states, **kwargs
-            )
         sl = (
             slice(-logits_to_keep, None)
             if isinstance(logits_to_keep, int) and logits_to_keep > 0
             else slice(None)
         )
-        if not isinstance(logits_to_keep, int):
+        if labels is not None and not (isinstance(logits_to_keep, int) and logits_to_keep <= 0):
+            # Kept positions against their own next-token targets: shift the labels once over the whole sequence,
+            # then pick the same positions. One lm_head / loss_function pair below, so the compiler's fused-CE
+            # rewrite covers this case too (no full-vocab logits).
+            hidden, kwargs["shift_labels"] = self._kept_positions(hidden, labels, logits_to_keep)
+            sl = slice(None)
+        elif not isinstance(logits_to_keep, int):
             hidden = _keep_positions(hidden, logits_to_keep)
         logits = self.lm_head(hidden[:, sl, :])
         loss = None
@@ -2120,39 +2121,14 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             loss = loss, logits = logits, past_key_values = None, hidden_states = out.hidden_states
         )
 
-    def _loss_on_kept_positions(
-        self,
-        hidden,
-        labels,
-        logits_to_keep,
-        hidden_states = None,
-        **kwargs,
-    ):
-        """labels with logits_to_keep: the logits of the kept positions against their own next-token targets
-        (labels shifted once over the whole sequence, then the same positions picked)."""
-        from transformers.loss.loss_utils import ForCausalLMLoss
-
+    @staticmethod
+    def _kept_positions(hidden, labels, logits_to_keep):
+        """(hidden at the kept positions, their next-token targets)."""
         shift_labels = F.pad(labels, (0, 1), value = -100)[..., 1:]
         if isinstance(logits_to_keep, int):
-            kept_hidden, kept_targets = (
-                hidden[:, -logits_to_keep:],
-                shift_labels[:, -logits_to_keep:],
-            )
-        else:
-            kept_hidden = _keep_positions(hidden, logits_to_keep)
-            kept_targets = _keep_positions(shift_labels.unsqueeze(-1), logits_to_keep).squeeze(-1)
-        logits = self.lm_head(kept_hidden)
-        kwargs.pop("shift_labels", None)
-        loss = ForCausalLMLoss(
-            logits,
-            None,
-            vocab_size = self.vocab_size,
-            shift_labels = kept_targets.contiguous(),
-            **kwargs,
-        )
-        return CausalLMOutputWithPast(
-            loss = loss, logits = logits, past_key_values = None, hidden_states = hidden_states
-        )
+            return hidden[:, -logits_to_keep:], shift_labels[:, -logits_to_keep:].contiguous()
+        kept = _keep_positions(shift_labels.unsqueeze(-1), logits_to_keep).squeeze(-1)
+        return _keep_positions(hidden, logits_to_keep), kept.contiguous()
 
     # No KV cache (sanity evaluation only); project only the last position's logits.
     def prepare_inputs_for_generation(

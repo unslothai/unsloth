@@ -1164,6 +1164,73 @@ def test_labels_with_logits_to_keep_score_the_kept_positions_against_their_own_t
         )
 
 
+def _zoo_ast_rewriter():
+    """unsloth_zoo's fused-CE AST rewriter, loaded from its file (importing unsloth_zoo initialises the GPU)."""
+    import importlib.util
+    import sys
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    locations = list(getattr(spec, "submodule_search_locations", None) or []) if spec else []
+    path = os.path.join(locations[0], "fused_losses", "ast_rewriter.py") if locations else ""
+    if not os.path.isfile(path):
+        pytest.skip("unsloth_zoo's fused_losses/ast_rewriter.py is not installed")
+    file_spec = importlib.util.spec_from_file_location("_dsv41_test_ast_rewriter", path)
+    module = importlib.util.module_from_spec(file_spec)
+    sys.modules[file_spec.name] = module
+    file_spec.loader.exec_module(module)
+    return module
+
+
+def test_kept_position_loss_goes_through_the_fused_ce_rewrite(monkeypatch):
+    """The compiler's fused-CE rewrite of the forward also scores labels with logits_to_keep (kept positions against
+    their own targets) through the fused kernel, with the unfused loss."""
+    import inspect
+    import textwrap
+
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    source = textwrap.dedent(inspect.getsource(dsv41.DeepseekV41ForCausalLM.forward))
+    rewritten, _ = _zoo_ast_rewriter().rewrite_forward_source(source)
+    assert rewritten is not None
+    calls = []
+
+    def fused(
+        hidden,
+        head,
+        labels,
+        vocab_size = None,
+        accelerator_scaler = None,
+        **kwargs,
+    ):
+        calls.append(hidden.shape[1])
+        target = kwargs.get("shift_labels")
+        if target is None:
+            target = torch.nn.functional.pad(labels, (0, 1), value = -100)[..., 1:]
+        logits = head(hidden).float()
+        return torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]), target.reshape(-1), ignore_index = -100
+        )
+
+    namespace = dict(vars(dsv41))
+    namespace.update(
+        os = os,
+        unsloth_fused_lm_head_loss = fused,
+        EMPTY_LOGITS = torch.empty(0),
+        _can_fuse_loss = lambda f: True,
+    )
+    exec(rewritten, namespace)
+    forward = namespace["forward"]
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (2, 10), generator = torch.Generator().manual_seed(0))
+    labels = ids.clone()
+    labels[0, 3] = -100
+    with torch.no_grad():
+        for keep in (0, 4, torch.tensor([1, 3, 6])):
+            want = model(input_ids = ids, labels = labels, logits_to_keep = keep).loss
+            got = forward(model, input_ids = ids, labels = labels, logits_to_keep = keep).loss
+            torch.testing.assert_close(got, want, rtol = 1e-5, atol = 1e-6)
+    assert calls == [10, 4, 3]
+
+
 def test_generation_projects_only_the_last_position():
     model = _tiny_model().eval()
     ids = torch.randint(0, 512, (1, 9))
