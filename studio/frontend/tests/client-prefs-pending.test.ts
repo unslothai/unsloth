@@ -24,6 +24,7 @@ const none = {
   browser: false,
   chat: false,
   plusMenu: false,
+  material: false,
   timeFormat: false,
   spellcheck: false,
 };

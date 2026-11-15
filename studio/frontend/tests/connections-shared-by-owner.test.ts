@@ -27,8 +27,15 @@ test("a single-account save sends no shared field", () => {
   );
 });
 
-test("a row shared by the owner has no edit or delete action", () => {
-  assert.equal([...dialog.matchAll(/\{provider\.sharedByOwner \? null : \(/g)].length, 2);
+test("a row shared by the owner has no edit, delete or on/off action", () => {
+  const row = readSrc("features/chat/connection-row.tsx");
+  assert.match(row, /const readOnly = provider\.sharedByOwner === true;/);
+  const actions = row.match(/\{readOnly \? null : \(\s*<>([\s\S]*?)<\/>\s*\)\}/)?.[1];
+  assert.ok(actions, "owner-only actions not found");
+  assert.match(actions, /onClick=\{onEdit\}/);
+  assert.match(actions, /onClick=\{onDelete\}/);
+  assert.match(actions, /onCheckedChange=\{onEnabledChange\}/);
+  assert.match(row, /\{readOnly \? \(\s*<div/);
   assert.match(dialog, /if \(provider\.sharedByOwner\) \{\s*toast\.info\(/);
 });
 

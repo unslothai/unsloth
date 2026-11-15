@@ -559,6 +559,7 @@ function TauriUpdateLayer({
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
       className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       data-testid="overlay-rail"
+      data-overlay-rail=""
       // Its cards stay clickable over a macOS browser page (native-view.ts).
       data-native-rail=""
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
@@ -977,6 +978,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
           className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
           data-testid="overlay-rail"
+          data-overlay-rail=""
           // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
           style={{
             paddingTop: STACK_SHADOW_GUTTER_TOP,

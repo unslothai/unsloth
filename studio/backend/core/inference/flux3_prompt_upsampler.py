@@ -715,24 +715,46 @@ def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> 
     return None
 
 
+def _pair_at(
+    hub_cache: Optional[Path], model_file: str, *, need_mmproj: bool
+) -> Optional[tuple[str, Optional[str]]]:
+    """``model_file`` and the projector from ONE revision (the recorded one first); without ``need_mmproj``, the model
+    alone when no revision holds both."""
+    model_only = None
+    for revision in _candidate_revisions(hub_cache):
+        model = _cached_file(model_file, hub_cache = hub_cache, revision = revision)
+        if model is None:
+            continue
+        mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
+        if mmproj is not None:
+            return model, mmproj
+        model_only = model_only or model
+    return (model_only, None) if model_only is not None and not need_mmproj else None
+
+
 def _cached_pair(
     hub_cache: Optional[Path] = None, model_files: tuple = UPSAMPLER_MODEL_FILE_PREFERENCE
 ) -> tuple[Optional[str], Optional[str]]:
-    """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
-    with no projector at its revision when no revision holds both. A complete pair of any ``model_files`` beats a
-    model alone, so an interrupted default download does not cost edits their reference images."""
-    revisions = _candidate_revisions(hub_cache)
-    model_only = None
-    for model_file in model_files:
-        for revision in revisions:
-            model = _cached_file(model_file, hub_cache = hub_cache, revision = revision)
-            if model is None:
-                continue
-            mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
-            if mmproj is not None:
-                return model, mmproj
-            model_only = model_only or model
-    return model_only, None
+    """The model and projector from one revision, in ``model_files`` order. A complete pair of any of them beats a
+    model alone, so an interrupted default download does not cost edits their reference images. Without *hub_cache*,
+    each quant is searched in every cache before the next, so the current quant anywhere beats an older active one.
+    Only Hub caches count: ``mmproj-F16.gguf`` is a common name."""
+    from core.inference.model_cache_search import find_in_hub_caches
+
+    for need_mmproj in (True, False):
+        for model_file in model_files:
+            if hub_cache is not None:
+                found = _pair_at(hub_cache, model_file, need_mmproj = need_mmproj)
+            else:
+                found = find_in_hub_caches(
+                    UPSAMPLER_REPO,
+                    lambda root, model_file = model_file, need_mmproj = need_mmproj: _pair_at(
+                        root, model_file, need_mmproj = need_mmproj
+                    ),
+                )
+            if found is not None:
+                return found
+    return None, None
 
 
 def _cached_download_paths(
@@ -765,8 +787,12 @@ def mmproj_path() -> Optional[str]:
     if (os.environ.get(ENV_MMPROJ_OVERRIDE) or "").strip():
         return _env_path(ENV_MMPROJ_OVERRIDE)
     if _overridden():
+        from core.inference.model_cache_search import find_in_hub_caches
+
         # Beside a local model file there is no revision to match.
-        return _cached_at_any_revision(UPSAMPLER_MMPROJ_FILE)
+        return find_in_hub_caches(
+            UPSAMPLER_REPO, lambda root: _cached_at_any_revision(UPSAMPLER_MMPROJ_FILE, root)
+        )
     return _cached_pair()[1]
 
 
@@ -836,7 +862,7 @@ def status() -> dict:
         or None not in _cached_pair(model_files = (UPSAMPLER_MODEL_FILE,))
         or (mmproj is not None and model_name not in UPSAMPLER_SUPERSEDED_FILES)
     )
-    # Bytes still to fetch: a file already cached at any revision is a blob the hub cache reuses.
+    # Bytes still to fetch from the active cache (the download writes there): any cached revision's blob is reused.
     missing = (
         []
         if current_downloaded

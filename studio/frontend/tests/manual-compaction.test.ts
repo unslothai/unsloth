@@ -187,7 +187,20 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   assert.match(submit, /resumesThought\(\{/);
   assert.match(submit, /!runtime\.supportsTools \|\|/);
   assert.match(submit, /runtime\.incognito \|\| isThreadIncognito\(referenceThreadId\)/);
+  // A cloud model skips the local gate: it summarizes rather than starting a checkpoint.
+  assert.match(
+    submit,
+    /!isExternalModelId\(runtime\.params\.checkpoint\) &&\s+\(!runtime\.supportsTools \|\|/,
+  );
   const adapter = await readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(
+    adapter,
+    /\(isGgufForCompaction \|\| isMlxForCompaction \|\| isNpuForCompaction \|\|\s+isCloudForCompaction\);/,
+  );
+  assert.match(
+    adapter,
+    /autoCompactTokens: externalProvider\.autoCompactTokens,\n\s+compactNow,\n\s+\}\),/,
+  );
   assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\) &&/);
   assert.match(adapter, /compactNow,\n\s+\}\),/);
   // Only a reset started by this request counts; a replayed manual epoch is not one.
@@ -322,7 +335,9 @@ function compactMenu(threadId: string) {
       });
       return supported;
     },
+    isNpuModelId: (value: string) => value.startsWith("lemonade:"),
     requestThreadCompaction,
+    isExternalModelId: (id: string) => id.startsWith("external::"),
     hasPreStreamRunReservation,
     liveThreadRunning,
     toast: { info: (text: string) => notices.push(text) },
@@ -360,6 +375,17 @@ test("the compact button does not queue empty, hidden, unsupported or busy chats
   }
 });
 
+test("the compact button works on a cloud model, which needs neither tools nor a local runtime", () => {
+  const menu = compactMenu("cloud-chat");
+  menu.runtime.params.checkpoint = "external::provider-1::vendor/model";
+  menu.runtime.loadedIsGguf = false;
+  menu.runtime.supportsTools = false;
+  menu.unsupported();
+  menu.click();
+  assert.deepEqual(menu.notices, ["chatMenu.compactQueued"]);
+  assert.equal(takeThreadCompactionRequest("cloud-chat"), true);
+});
+
 test("the compact button requires tool capability for both local backends", () => {
   for (const mlx of [false, true]) {
     const menu = compactMenu(`tools-${mlx}`);
@@ -374,6 +400,20 @@ test("the compact button requires tool capability for both local backends", () =
     assert.equal(takeThreadCompactionRequest(menu.menu.item.id), true);
     assert.deepEqual(menu.notices, ["chatMenu.compactUnsupported", "chatMenu.compactQueued"]);
   }
+});
+
+test("the compact button queues for a tool-capable NPU model", () => {
+  const menu = compactMenu("npu-chat");
+  menu.unsupported();
+  menu.runtime.loadedIsGguf = false;
+  menu.runtime.params.checkpoint = "lemonade:qwen3-0.6b-FLM";
+  menu.click();
+  assert.equal(takeThreadCompactionRequest("npu-chat"), true);
+  assert.deepEqual(menu.notices, ["chatMenu.compactQueued"]);
+  assert.match(
+    readSrc("components/assistant-ui/thread.tsx"),
+    /\}\) \|\| isNpuModelId\(runtime\.params\.checkpoint\)/,
+  );
 });
 
 test("the compact button waits for its accepted send's preflight to release", () => {

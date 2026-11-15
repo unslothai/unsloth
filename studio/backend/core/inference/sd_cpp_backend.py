@@ -2462,24 +2462,15 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
 
 
 _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
+_SD_CPP_LIBS = ("stable-diffusion.dll", "libstable-diffusion.so", "libstable-diffusion.dylib")
 
 
-def binary_carries_marker(
-    binary: Optional[str],
-    marker: Optional[str],
-    *,
-    unreadable: bool = True,
-) -> bool:
-    """No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the caller passes unreadable=False."""
-    if not marker:
-        return True
-    if not binary:
-        return False
+def _file_carries_marker(path: str, marker: str) -> Optional[bool]:
     try:
-        st = os.stat(binary)
-        key = (str(binary), int(st.st_size), int(st.st_mtime_ns), marker)
+        st = os.stat(path)
+        key = (str(path), int(st.st_size), int(st.st_mtime_ns), marker)
     except OSError:
-        return unreadable
+        return None
     hit = _ARCH_MARKER_CACHE.get(key)
     if hit is not None:
         return hit
@@ -2487,7 +2478,7 @@ def binary_carries_marker(
     chunk = 8 << 20
     found = False
     try:
-        with open(binary, "rb") as fh:
+        with open(path, "rb") as fh:
             tail = b""
             while True:
                 block = fh.read(chunk)
@@ -2498,9 +2489,31 @@ def binary_carries_marker(
                     break
                 tail = block[-(len(needle) - 1) :] if len(needle) > 1 else b""
     except OSError:
-        return unreadable
+        return None
     _ARCH_MARKER_CACHE[key] = found
     return found
+
+
+def binary_carries_marker(
+    binary: Optional[str],
+    marker: Optional[str],
+    *,
+    unreadable: bool = True,
+) -> bool:
+    """The binary or the libstable-diffusion beside it (shared builds keep some markers only there) carries the
+    marker. No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the
+    caller passes unreadable=False."""
+    if not marker:
+        return True
+    if not binary:
+        return False
+    found = _file_carries_marker(binary, marker)
+    if found is None:
+        return unreadable
+    return found or any(
+        _file_carries_marker(os.path.join(os.path.dirname(binary), lib), marker)
+        for lib in _SD_CPP_LIBS
+    )
 
 
 def _native_output_image(fam: Any, im: Any) -> Any:
