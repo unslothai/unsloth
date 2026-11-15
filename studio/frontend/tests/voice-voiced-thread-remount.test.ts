@@ -16,7 +16,7 @@ test("the voiced thread outlives a VoiceEngine remount (New Chat)", () => {
   assert.doesNotMatch(engine, /voicedThreadRef\s*=\s*useRef/);
   assert.match(engine, /^let _voicedThreadId: string \| null = null;$/m);
   assert.match(engine, /voiceRunToStop\(\s*prevThreadId,\s*_voicedThreadId,/);
-  assert.match(engine, /const turnOff = useCallback\(\(\) => \{\s*_voicedThreadId = null;/);
+  assert.match(engine, /const turnOff = useCallback\(\(\) => \{[^}]{0,200}_voicedThreadId = null;/);
   assert.match(
     engine,
     /if \(_voicedThreadId && !useChatRuntimeStore\.getState\(\)\.runningByThreadId\[_voicedThreadId\]\)/,

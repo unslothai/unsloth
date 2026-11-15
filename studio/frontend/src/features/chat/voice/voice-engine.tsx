@@ -1175,6 +1175,8 @@ export const VoiceEngine: FC = () => {
   // No session-end watcher: the adapter raises requestVoiceSubmit itself.
 
   const turnOff = useCallback(() => {
+    // Dismissing the setup panel leaves a typed reply running: only an active voice owns the run.
+    const wasActive = voiceModeRef.current === "active";
     _voicedThreadId = null;
     setLoopVoiceMode("off");
     voiceModeRef.current = "off";
@@ -1203,7 +1205,7 @@ export const VoiceEngine: FC = () => {
     stop();
     pauseOutputSpectrum();
     const thread = auiRef.current.thread();
-    if (thread.getState().isRunning) {
+    if (wasActive && thread.getState().isRunning) {
       try {
         thread.cancelRun();
       } catch {

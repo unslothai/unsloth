@@ -251,9 +251,9 @@ test("a long utterance the interject model would ignore is queued instead", () =
 
 test("a research run keeps its own Stop while voice mode is on", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
-  assert.match(thread, /\{voiceEngaged && !isResearchActive \? \(\s*<VoicePauseStopButton \/>/);
+  assert.match(thread, /\{voiceActive && !isResearchActive \? \(\s*<VoicePauseStopButton \/>/);
   assert.match(thread, /\{isResearchActive \? \(\s*<Button[\s\S]{0,200}aria-label=\{researchStopping \? "Stopping research" : "Stop research"\}/);
-  assert.match(thread, /\) : voiceEngaged \? null : \(\s*<AuiIf condition=\{\(\{ thread \}\) => thread\.isRunning\}>/);
+  assert.match(thread, /\) : voiceActive \? null : \(\s*<AuiIf condition=\{\(\{ thread \}\) => thread\.isRunning\}>/);
 });
 
 test("a noise word continuing a held turn is kept, and an edit claimed mid-judgment is never auto-sent", () => {
@@ -302,4 +302,14 @@ test("a phrase still in VAD/STT holds the coalesced reply; an unmounted engine's
   assert.match(loop, /teardown\(\);\s*utterancesPending \+= 1;\s*try \{\s*await finalizeHeard\(\);\s*\} finally \{\s*utterancesPending -= 1;/);
   assert.match(engine, /if \(\(rt\.voiceHearing \|\| rt\.voiceTranscribing \|\| voiceUtterancePending\(\)\) && Date\.now\(\)/);
   assert.match(engine, /return \(\) => \{\s*rearmSeqRef\.current \+= 1;\s*if \(voiceCoalesceTimerRef\.current\) clearTimeout/);
+});
+
+test("opening and dismissing voice setup keeps typed Send/Stop and the running reply", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(thread, /const voiceActive = useChatRuntimeStore\(\(s\) => s\.voiceMode === "active"\);/);
+  assert.match(thread, /\{voiceActive && !isResearchActive \? \(\s*<VoicePauseStopButton \/>/);
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const off = engine.slice(engine.indexOf("const turnOff = useCallback("));
+  assert.match(off.slice(0, 300), /const wasActive = voiceModeRef\.current === "active";/);
+  assert.match(off.slice(0, 2500), /if \(wasActive && thread\.getState\(\)\.isRunning\) \{\s*try \{\s*thread\.cancelRun\(\);/);
 });

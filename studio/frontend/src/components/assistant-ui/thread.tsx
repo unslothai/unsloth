@@ -7614,6 +7614,7 @@ const ComposerRightControls: FC<{
     },
   );
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
+  const voiceActive = useChatRuntimeStore((s) => s.voiceMode === "active");
   const voiceRequested = useVoiceRequested();
   return (
     <div
@@ -7665,7 +7666,8 @@ const ComposerRightControls: FC<{
           is in flight (reply, run, held utterances) and goes back to listening.
           Voice mode stays on; the plus-menu Voice item turns it off and unloads. */}
       {/* A research run keeps its own Stop: the voice button cancels only a chat run. */}
-      {voiceEngaged && !isResearchActive ? (
+      {/* While voice is only being configured, typed Send and Stop still work. */}
+      {voiceActive && !isResearchActive ? (
         <VoicePauseStopButton />
       ) : (
       <AuiIf
@@ -7699,7 +7701,7 @@ const ComposerRightControls: FC<{
         </ComposerPrimitive.Send>
       </AuiIf>
       )}
-      {!voiceEngaged && isQueueRunning && !isResearchActive ? (
+      {!voiceActive && isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
           {queueEntry?.paused && queueDisabled ? (
             <TooltipIconButton
@@ -7758,7 +7760,7 @@ const ComposerRightControls: FC<{
             <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
           )}
         </Button>
-      ) : voiceEngaged ? null : (
+      ) : voiceActive ? null : (
         <AuiIf condition={({ thread }) => thread.isRunning}>
           {/* Classed so the narrow-screen rules can treat this like the
               sibling send/stop buttons; it is the flex item, not the button. */}
