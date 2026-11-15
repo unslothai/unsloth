@@ -920,3 +920,264 @@ def test_dkdv_head_split_matches_unsplit(monkeypatch, heads):
     assert LH._dkdv_splits(device, B * HKV, S, H // HKV) == 1
     for a, b in zip(*grads):
         torch.testing.assert_close(a, b, rtol = 2e-2, atol = 2e-2 * b.abs().max().item())
+
+
+def _spy_launches(monkeypatch):
+    seen = []
+    real = LH._launch
+
+    def spy(kernel, grid, tile, *args, **kwargs):
+        seen.append((kernel.fn.__name__, tile, kwargs.get("DO_DK"), kwargs.get("DO_DV")))
+        return real(kernel, grid, tile, *args, **kwargs)
+
+    monkeypatch.setattr(LH, "_launch", spy)
+    return seen
+
+
+def _gqa_case(
+    S,
+    H,
+    HKV,
+    kind = "causal",
+):
+    dtype = _cuda_dtype()
+    torch.manual_seed(S + H)
+    B, D = 2, 512
+    allowed = (
+        (_causal(S) if kind == "causal" else _packed(S, [S // 3, S // 2]))
+        .cuda()[None, None]
+        .expand(B, 1, S, S)
+    )
+    q = torch.randn(B, S, H, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    k = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    v = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    grad = torch.randn(B, S, H, D, device = "cuda", dtype = dtype)
+    return q, k, v, grad, allowed
+
+
+def _run(q, k, v, grad, allowed):
+    lo, hi = LH.intervals_from_mask(allowed, q.shape[0], q.shape[2])
+    ins = [x.detach().clone().requires_grad_() for x in (q, k, v)]
+    out = LH.large_head_attention(*ins, lo, hi)
+    out.backward(grad)
+    return [out.float()] + [x.grad.float() for x in ins]
+
+
+@pytest.mark.skipif(not _SM80, reason = "the kernel runs on sm80+ only")
+@pytest.mark.parametrize("tile_class", ["sm80", "sm8x_101k", "sm12x"])
+@pytest.mark.parametrize("heads", [(16, 1), (8, 2)])
+@pytest.mark.parametrize("kind", ["causal", "packed"])
+def test_fixed_tiles_match_reference(monkeypatch, tile_class, heads, kind):
+    # Each per-GPU table (fixed tiles, dK and dV in separate passes) against fp32 math, on whatever GPU runs
+    # the test; the spy proves the fixed tiles and both dK / dV passes launched.
+    index = torch.cuda.current_device()
+    monkeypatch.setenv("UNSLOTH_LH_TMA", "0")
+    monkeypatch.setitem(LH._TILE_CLASS, index, tile_class)
+    seen = _spy_launches(monkeypatch)
+    q, k, v, grad, allowed = _gqa_case(131, *heads, kind)
+    got = _run(q, k, v, grad, allowed)
+    ref_in = [x.detach().float().requires_grad_() for x in (q, k, v)]
+    ref = _reference(*ref_in, allowed)
+    ref.backward(grad.float())
+    for a, b in zip(got, [ref] + [x.grad for x in ref_in]):
+        assert torch.isfinite(a).all()
+        err = (a - b).abs()
+        assert err.max() <= 0.03 * b.abs().max() + 0.02
+        assert err.mean() <= 0.01 * b.abs().mean() + 2e-3
+    if LH._TILE_CLASS[index] is None:
+        # This GPU cannot fit the table (A100 tiles on a 101 KB card): the numbers above came from the
+        # autotuned fallback, which must then serve every kernel.
+        assert ("_lh_bwd_dkdv", None, True, True) in seen
+        return
+    table = LH._TILES[tile_class]
+    assert ("_lh_fwd", table["fwd"], None, None) in seen and (
+        "_lh_bwd_dq",
+        table["dq"],
+        None,
+        None,
+    ) in seen
+    if "dkdv" in table:
+        assert ("_lh_bwd_dkdv", table["dkdv"], True, True) in seen
+    else:
+        assert ("_lh_bwd_dkdv", table["dk"], True, False) in seen
+        assert ("_lh_bwd_dkdv", table["dv"], False, True) in seen
+
+
+@pytest.mark.skipif(not _SM80, reason = "the kernel runs on sm80+ only")
+def test_kill_switches_restore_the_autotuned_fused_pass(monkeypatch):
+    index = torch.cuda.current_device()
+    monkeypatch.setenv("UNSLOTH_LH_TMA", "0")
+    monkeypatch.setitem(LH._TILE_CLASS, index, "sm12x")
+    case = _gqa_case(96, 16, 1)
+    seen = _spy_launches(monkeypatch)
+    split = _run(*case)
+    assert sum(name == "_lh_bwd_dkdv" for name, *_ in seen) == 2
+    for env in ("UNSLOTH_LH_SPLIT_DKDV", "UNSLOTH_LH_TILES"):
+        seen.clear()
+        monkeypatch.setenv(env, "0")
+        fused = _run(*case)
+        monkeypatch.delenv(env)
+        dkdv = [x for x in seen if x[0] == "_lh_bwd_dkdv"]
+        assert dkdv == [("_lh_bwd_dkdv", None, True, True)]
+        if env == "UNSLOTH_LH_TILES":
+            assert all(tile is None for _, tile, *_ in seen)
+        for a, b in zip(split, fused):
+            torch.testing.assert_close(a, b, rtol = 2e-2, atol = 2e-2 * b.abs().max().item())
+
+
+@pytest.mark.skipif(not _SM80, reason = "the kernel runs on sm80+ only")
+def test_tile_too_large_for_the_gpu_falls_back_to_autotune(monkeypatch):
+    # A 256 x 256 hd 512 tile needs over 256 KB of shared memory on every GPU: Triton raises OutOfResources
+    # at launch, the device drops its table and the call finishes on the autotuned configs.
+    index = torch.cuda.current_device()
+    monkeypatch.setitem(
+        LH._TILES, "too_big", {k: (256, 256, 4, 1) for k in ("fwd", "dq", "dk", "dv")}
+    )
+    monkeypatch.setitem(LH._TILE_CLASS, index, "too_big")
+    case = _gqa_case(64, 8, 2)
+    got = _run(*case)
+    assert LH._TILE_CLASS[index] is None
+    monkeypatch.setitem(LH._TILE_CLASS, index, None)
+    for a, b in zip(got, _run(*case)):
+        torch.testing.assert_close(a, b, rtol = 2e-2, atol = 2e-2 * b.abs().max().item())
+
+
+def test_tile_classes_by_capability_and_shared_memory(monkeypatch):
+    class Props:
+        def __init__(self, major, smem):
+            self.major, self.shared_memory_per_block_optin = major, smem
+
+    for (major, smem), want in {
+        (8, 166912): "sm80",
+        (8, 101376): "sm8x_101k",
+        (12, 101376): "sm12x",
+        (9, 232448): None,
+        (10, 232448): None,
+        (7, 65536): None,
+        (8, 65536): None,
+    }.items():
+        monkeypatch.setattr(
+            torch.cuda, "get_device_properties", lambda index, p = Props(major, smem): p
+        )
+        monkeypatch.setattr(LH, "_TILE_CLASS", {})
+        tiles = LH._tiles(torch.device("cuda", 0))
+        assert tiles == (LH._TILES[want] if want else None), (major, smem)
+    assert LH._tiles(torch.device("cuda", 0), 256) is None  # timed at head_dim 512 only
+    monkeypatch.setenv("UNSLOTH_LH_TILES", "0")
+    monkeypatch.setattr(LH, "_TILE_CLASS", {})
+    assert LH._tiles(torch.device("cuda", 0)) is None
+
+
+_TMA = (
+    has_real_cuda()
+    and LH.TensorDescriptor is not None
+    and torch.cuda.get_device_capability()[0] >= 9
+)
+
+
+@pytest.mark.skipif(not _TMA, reason = "TMA descriptors need sm90+ and Triton >= 3.4")
+@pytest.mark.parametrize("heads", [(16, 1), (8, 2)])
+@pytest.mark.parametrize("kind", ["causal", "packed"])
+@pytest.mark.parametrize("S", [131, 1100])
+def test_tma_path_matches_reference_and_the_pointer_kernels(monkeypatch, heads, kind, S):
+    # The sm12x table's TMA kernels (forced here on any sm90+ GPU) against fp32 math and against the pointer
+    # kernels; descriptors built = engagement (3 forward, 12 backward), 0 with UNSLOTH_LH_TMA=0.
+    index = torch.cuda.current_device()
+    monkeypatch.setitem(LH._TILE_CLASS, index, "sm12x")
+    LH._TMA_BROKEN.discard(index)
+    made = []
+    real = LH._desc
+    monkeypatch.setattr(LH, "_desc", lambda t, rows: made.append(rows) or real(t, rows))
+    case = _gqa_case(S, *heads, kind)
+    got = _run(*case)
+    assert len(made) == 15 and index not in LH._TMA_BROKEN
+    q, k, v, grad, allowed = case
+    ref_in = [x.detach().float().requires_grad_() for x in (q, k, v)]
+    ref = _reference(*ref_in, allowed)
+    ref.backward(grad.float())
+    for a, b in zip(got, [ref] + [x.grad for x in ref_in]):
+        err = (a - b).abs()
+        assert torch.isfinite(a).all()
+        assert err.max() <= 0.03 * b.abs().max() + 0.02
+        assert err.mean() <= 0.01 * b.abs().mean() + 2e-3
+    made.clear()
+    monkeypatch.setenv("UNSLOTH_LH_TMA", "0")
+    pointer = _run(*case)
+    assert made == []
+    for a, b in zip(got, pointer):
+        torch.testing.assert_close(a, b, rtol = 2e-2, atol = 2e-2 * b.abs().max().item())
+
+
+@pytest.mark.skipif(not _TMA, reason = "TMA descriptors need sm90+ and Triton >= 3.4")
+def test_tma_failure_falls_back_to_the_pointer_kernels(monkeypatch):
+    index = torch.cuda.current_device()
+    monkeypatch.setitem(LH._TILE_CLASS, index, "sm12x")
+    LH._TMA_BROKEN.discard(index)
+
+    def broken(t, rows):
+        raise RuntimeError("descriptor refused")
+
+    monkeypatch.setattr(LH, "_desc", broken)
+    case = _gqa_case(64, 8, 2)
+    got = _run(*case)
+    assert index in LH._TMA_BROKEN
+    LH._TMA_BROKEN.discard(index)
+    monkeypatch.setenv("UNSLOTH_LH_TMA", "0")
+    for a, b in zip(got, _run(*case)):
+        torch.testing.assert_close(a, b, rtol = 0, atol = 0)
+
+
+def test_tma_needs_aligned_descriptor_operands(monkeypatch):
+    tiles = LH._TILES["sm12x"]
+    monkeypatch.setattr(LH, "TensorDescriptor", object)
+    x = torch.zeros(1, 2, 8, 512, dtype = torch.bfloat16)
+    assert LH._tma_tiles(tiles, torch.device("cuda", 0), x) is tiles["tma"]
+    assert LH._tma_tiles(LH._TILES["sm80"], torch.device("cuda", 0), x) is None
+    assert (
+        LH._tma_tiles(tiles, torch.device("cuda", 0), x.view(-1)[1:4097].view(1, 1, 8, 512)) is None
+    )
+    monkeypatch.setenv("UNSLOTH_LH_TMA", "0")
+    assert LH._tma_tiles(tiles, torch.device("cuda", 0), x) is None
+
+
+@pytest.mark.skipif(not _SM80 or not LH._HAS_CUSTOM_OP, reason = "the kernel runs on sm80+ only")
+@pytest.mark.parametrize("tile_class", ["sm80", "sm12x", None])
+def test_fullgraph_compile_matches_eager(monkeypatch, tile_class):
+    # The opaque op keeps every table (and the sm12x TMA path) out of the graph: fullgraph, 0 breaks, bitwise.
+    import torch._dynamo
+
+    index = torch.cuda.current_device()
+    monkeypatch.setitem(LH._TILE_CLASS, index, tile_class)
+    LH._TMA_BROKEN.discard(index)
+    q, k, v, grad, allowed = _gqa_case(96, 16, 1)
+    lo, hi = LH.intervals_from_mask(allowed, 2, 96)
+
+    def step(q, k, v):
+        return LH.large_head_attention(q, k, v, lo, hi, 1.0)
+
+    outs = []
+    for fn in (step, torch.compile(step, fullgraph = True, dynamic = False)):
+        torch._dynamo.utils.counters.clear()
+        ins = [x.detach().clone().requires_grad_() for x in (q, k, v)]
+        out = fn(*ins)
+        out.backward(grad)
+        outs.append([out] + [x.grad for x in ins])
+        assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
+    for a, b in zip(*outs):
+        assert torch.equal(a, b)
+    assert index not in LH._TMA_BROKEN
+
+
+@pytest.mark.skipif(not _SM80, reason = "the kernel runs on sm80+ only")
+def test_head_dim_256_keeps_the_autotuned_path(monkeypatch):
+    # zoo's Gemma-4 sliding band calls this kernel at head_dim 256; the tables were timed at 512 only.
+    index = torch.cuda.current_device()
+    monkeypatch.setitem(LH._TILE_CLASS, index, "sm12x")
+    seen = _spy_launches(monkeypatch)
+    made = []
+    monkeypatch.setattr(LH, "_desc", lambda t, rows: made.append(rows))
+    q = torch.randn(1, 8, 300, 256, device = "cuda", dtype = _cuda_dtype(), requires_grad = True)
+    k = torch.randn(1, 2, 300, 256, device = "cuda", dtype = _cuda_dtype(), requires_grad = True)
+    lo, hi = LH._dense_intervals(1, 300, True, q.device)
+    LH.large_head_attention(q, k, k, lo, hi).float().sum().backward()
+    assert seen and all(tile is None for _, tile, *_ in seen) and made == []
