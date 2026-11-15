@@ -2605,10 +2605,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
 
 def unsloth_nested_fast_generate(self, *args, **kwargs):
-    """generate() of a sub-model its parent's generate() calls once per step: CSM's depth decoder decodes the 31
-    remaining codebooks of every audio frame. Over a static cache, the one-token steps replay a decode CUDA graph
-    kept (with its cache) from frame to frame. Runs inside the parent's inference mode and autocast, so it sets
-    neither; outside a parent call (or with a caller cache) it is the stock generate()."""
+    """Per-step sub-model generate() (CSM depth decoder): replays a decode graph kept across frames.
+    Relies on the parent's inference mode/autocast; outside a parent call (or with a caller cache) it is stock."""
     if (
         not torch.is_inference_mode_enabled()
         or kwargs.get("past_key_values") is not None
@@ -2626,8 +2624,7 @@ def unsloth_nested_fast_generate(self, *args, **kwargs):
     static.setdefault("compile_config", _compile_config)
     with _decode_graphs.generate_scope():
         if _generic_decode_graphs.plan(self, args, static, input_ids) != "graph":
-            # Graphs off (kill switch, ROCm, short call): the stock call, as before. Its growing cache decodes
-            # faster eagerly than a static one (Kaggle T4, csm-1b depth decoder: 13% slower static).
+            # Graphs off (kill switch, ROCm, short call): stock call; static eager is 13% slower (T4, csm-1b).
             with _decode_graphs.plan_scope("eager"):
                 return self._old_generate(*args, **kwargs)
         scope = _GraphDecodeSteps(self)

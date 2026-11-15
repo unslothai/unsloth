@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 
-"""Whisper generate() decodes through CUDA graphs (host stand-in backend of test_generic_decode_graphs): the plan
-counts the decoder prompt, not the mel frames, and the decode step graphs over the EncoderDecoderCache's
-self-attention half while its cross-attention half (filled at prefill) is only read. Tokens match eager decoding,
-also on a second call with different audio (a new cross-attention cache, no stale conditioning)."""
+"""Whisper generate() through decode graphs: plan counts the decoder prompt; tokens match eager, also on new audio."""
 
 import os
 import sys

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 
-"""CSM generate(): the depth decoder's per-frame generate() (the remaining codebooks of every audio frame) decodes
-over a static cache through decode CUDA graphs kept from frame to frame (host stand-in backend of
-test_generic_decode_graphs). Codes match eager decoding; outside a parent generate() it is the stock generate()."""
+"""CSM depth decoder: per-frame generate() replays decode graphs kept across frames; codes match eager."""
 
 import os
 import sys
@@ -100,7 +98,6 @@ def test_depth_decoder_frames_replay_one_kept_graph(host, csm, monkeypatch):
     stats = GG.stats(csm.depth_decoder) or {"captures": 0, "replays": 0, "refusals": {}}
     assert torch.equal(graphed, eager)
     assert graphed.shape[-1] == csm.config.num_codebooks
-    # One capture, kept with its static cache: every later frame replays from its first decode step.
     assert stats["captures"] == 1 and stats["replays"] > 0, stats
     assert stats["refusals"] == {}, stats
     assert GG.PLANS["reused kept cache"] > reused

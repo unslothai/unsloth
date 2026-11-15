@@ -509,8 +509,8 @@ def _decoder_prompt(kwargs):
 
 
 def _plan_len(model, args, kwargs):
-    """prompt + new tokens this call can reach (0 if unknown), as the llama path sizes its plan. An encoder-decoder
-    decodes from its decoder prompt: the encoder input (Whisper's mel frames) is not part of it."""
+    """prompt + new tokens this call can reach (0 if unknown), as the llama path sizes its plan.
+    Encoder-decoder: the decoder prompt only, not the encoder input (Whisper mel frames)."""
     try:
         from .llama import _generation_plan_len
         if _encoder_decoder(model):
@@ -1248,8 +1248,7 @@ def _refusal(state, reason):
 
 
 def _self_attention_cache(cache):
-    """The cache a decode step writes: an encoder-decoder cache's self-attention half (Whisper). Its cross-attention
-    half is written once at prefill and only read afterwards, so the graph addresses it like a weight."""
+    """The cache a decode step writes: an encoder-decoder's self-attention half; cross-attention is read-only."""
     inner = getattr(cache, "self_attention_cache", None)
     if inner is not None and getattr(cache, "cross_attention_cache", None) is not None:
         return inner

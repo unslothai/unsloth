@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 
-"""Gemma 3n shares KV: its last num_kv_shared_layers read the cache of an earlier layer, and transformers 5.x gives
-them a DummyLayer (no tensors) in the StaticCache. Decode graphs replay over such a cache (host stand-in backend of
-test_generic_decode_graphs) instead of refusing every step with "layer DummyLayer"; tokens match eager decoding."""
+"""Gemma 3n shared-KV layers (transformers 5.x) decode through graphs instead of refusing; tokens match eager."""
 
 import os
 import sys
