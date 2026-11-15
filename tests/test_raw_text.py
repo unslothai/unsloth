@@ -869,6 +869,15 @@ def test_add_structure_tokens_reads_any_fence_info_string():
     )
 
 
+def test_add_structure_tokens_unclosed_long_fence_line_is_linear():
+    import time
+
+    text = "```" + "a" * 200_000 + " b`"
+    start = time.perf_counter()
+    assert TextPreprocessor().add_structure_tokens(text) == text
+    assert time.perf_counter() - start < 1.0
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     test_clean_text_keeps_text_in_any_script()
@@ -890,4 +899,5 @@ if __name__ == "__main__":
     test_chunk_size_one_keeps_the_final_eos_overflow()
     test_add_structure_tokens_leaves_code_blocks_alone()
     test_add_structure_tokens_reads_any_fence_info_string()
+    test_add_structure_tokens_unclosed_long_fence_line_is_linear()
     sys.exit(0 if success else 1)
