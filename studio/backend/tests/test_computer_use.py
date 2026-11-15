@@ -464,6 +464,33 @@ def test_the_schema_offers_every_field_the_parser_reads_for_a_screenshot():
     assert actions_mod.parse_actions({"action": "screenshot", "display": 2})[0]["display"] == 2
 
 
+def test_a_windows_window_is_named_as_the_start_menu_names_its_app(desktop, monkeypatch):
+    from core.inference.computer_use.backends.windows import WindowsBackend
+
+    windows = object.__new__(WindowsBackend)
+    windows._start_index = None
+    runs = []
+    listing = (
+        "Command Prompt\t{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\cmd.exe\n"
+        "Windows PowerShell (x86)\t{D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27}\\WindowsPowerShell\\v1.0\\powershell.exe\n"
+        "Windows PowerShell\t{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe\n"
+        "Calculator\tMicrosoft.WindowsCalculator_8wekyb3d8bbwe!App\n"
+    )
+    monkeypatch.setattr(
+        windows,
+        "_powershell",
+        lambda script, env: runs.append(script)
+        or types.SimpleNamespace(returncode = 0, stdout = listing),
+    )
+    monkeypatch.setattr(windows, "_description", lambda path: "Windows Command Processor")
+    assert windows._app_name(r"C:\Windows\System32\cmd.exe") == "Command Prompt"
+    assert windows._start_names()["powershell.exe"] == "Windows PowerShell"
+    assert windows._app_name(r"C:\tools\other.exe") == "Windows Command Processor"
+    assert len(runs) == 1
+    desktop.chosen["blocked_apps"] = ["Command Prompt"]
+    assert policy.blocked_window(FrontWindow(app = "Command Prompt", app_id = "cmd.exe"))
+
+
 def test_grid_coordinates_span_the_picture(desktop):
     desktop.chosen["coordinates"] = "grid"
     key = state.session_key(SESSION)

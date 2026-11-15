@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import ntpath
 import os
 import subprocess
 import time
@@ -32,6 +33,8 @@ _MONITORINFOF_PRIMARY = 1
 _CREATE_NO_WINDOW = 0x08000000
 _GA_ROOT = 2
 _RESOLVE_TTL_S = 60.0
+_START_INDEX_TTL_S = 600.0
+_START_INDEX_SCRIPT = "Get-StartApps | ForEach-Object { $_.Name + [char]9 + $_.AppID }"
 
 _VK_MODIFIERS = {"ctrl": 0x11, "alt": 0x12, "shift": 0x10, "cmd": 0x5B}
 _VK = {
@@ -113,6 +116,7 @@ class WindowsBackend(Backend):
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
         self._descriptions: dict[str, str] = {}
         self._resolved: dict[str, tuple[float, str]] = {}
+        self._start_index: Optional[tuple[float, dict[str, str]]] = None
         user32 = self._user32
         user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(_Input), ctypes.c_int]
         user32.SendInput.restype = wintypes.UINT
@@ -344,11 +348,10 @@ class WindowsBackend(Backend):
                 size = wintypes.DWORD(len(path))
                 if self._kernel32.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size)):
                     exe = os.path.basename(path.value)
-                    shown = self._description(path.value)
+                    shown = self._app_name(path.value)
             finally:
                 self._kernel32.CloseHandle(handle)
         return FrontWindow(
-            # The Start menu's name, so one name covers opening an app and acting in it.
             app = shown or (exe.rsplit(".", 1)[0] if exe else ""),
             app_id = exe.lower(),
             title = title.value,
@@ -359,6 +362,30 @@ class WindowsBackend(Backend):
                 else None
             ),
         )
+
+    def _start_names(self) -> dict[str, str]:
+        """Start menu names by executable: a desktop app's AppID ends in its path."""
+        cached = self._start_index
+        if cached is not None and time.monotonic() - cached[0] < _START_INDEX_TTL_S:
+            return cached[1]
+        names: dict[str, str] = {}
+        try:
+            done = self._powershell(_START_INDEX_SCRIPT, dict(os.environ))
+            lines = done.stdout.splitlines() if done.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError):
+            lines = []
+        for line in lines:
+            name, _tab, app_id = line.partition("\t")
+            exe = app_id.strip().replace("/", "\\").rsplit("\\", 1)[-1].lower()
+            name = name.strip()
+            if name and exe.endswith(".exe") and len(name) < len(names.get(exe, name + " ")):
+                names[exe] = name
+        self._start_index = (time.monotonic(), names)
+        return names
+
+    def _app_name(self, path: str) -> str:
+        """The Start menu's name, as open_app uses, so blocking or allowing one name covers both."""
+        return self._start_names().get(ntpath.basename(path).lower()) or self._description(path)
 
     def _description(self, path: str) -> str:
         if path in self._descriptions:

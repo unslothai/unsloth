@@ -310,6 +310,14 @@ def test_windows_reads_a_non_ascii_app_name_back_from_powershell(windows):
     assert windows._powershell(echo, env).stdout.strip() == shown
 
 
+def test_windows_names_a_window_by_its_start_menu_entry(windows):
+    names = windows._start_names()
+    assert names and all(exe.endswith(".exe") for exe in names), names
+    system = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32")
+    if "cmd.exe" in names:
+        assert windows._app_name(os.path.join(system, "cmd.exe")) == names["cmd.exe"]
+
+
 def test_windows_open_app_takes_names_not_paths(windows):
     for name in ("C:\\Windows\\notepad.exe", "..\\x", "-n", "a|b"):
         with pytest.raises(BackendError, match = "name"):

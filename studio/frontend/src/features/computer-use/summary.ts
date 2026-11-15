@@ -25,6 +25,27 @@ function point(raw: Raw, prefix = ""): string {
   return `(${num(x)}, ${num(y)})`;
 }
 
+// The server's rule: a list holding any "a+b" is one shortcut per item, else one chord.
+function keysText(keys: unknown): string {
+  if (Array.isArray(keys)) {
+    const names = keys.filter((key) => key !== null && key !== undefined && String(key) !== "").map(String);
+    return names.some((name) => name.includes("+") && name !== "+") ? names.join(", then ") : names.join("+");
+  }
+  const written = text(keys);
+  return written === " " ? "space" : written.trim().split(/\s+/).join(", then ");
+}
+
+const isNumber = (value: unknown) => num(value) !== "?";
+
+// A point the card prints as written; a box or a bad value keeps the call shown as sent.
+function pointSaid(raw: Raw): boolean {
+  const pair = raw.coordinate ?? raw.coordinates;
+  if (pair !== undefined && !(given(raw.x) && given(raw.y))) {
+    return Array.isArray(pair) && pair.length === 2 && pair.every(isNumber);
+  }
+  return [raw.x, raw.y, raw.to_x, raw.to_y].every((value) => value === undefined || isNumber(value));
+}
+
 function one(raw: Raw): string {
   const action = text(raw.action || raw.type).toLowerCase();
   switch (action) {
@@ -60,10 +81,8 @@ function one(raw: Raw): string {
       return `Type "${typed}"${submit ? " and press Enter" : ""}`;
     }
     case "key":
-    case "keypress": {
-      const keys = raw.keys ?? raw.key ?? raw.text;
-      return `Press ${Array.isArray(keys) ? keys.join("+") : text(keys)}`;
-    }
+    case "keypress":
+      return `Press ${keysText(raw.keys ?? raw.key ?? raw.text)}`;
     case "wait":
       return "Wait";
     case "open_app":
@@ -121,6 +140,7 @@ export function computerCallFullySaid(argsText: string | undefined): boolean {
       typeof item === "object" &&
       !Array.isArray(item) &&
       Object.keys(item).every((key) => SAID.has(key)) &&
+      pointSaid(item as Raw) &&
       // An action the summary has no words for. A bare wrapper around a chain is not one.
       (isWrapper(item as Raw) || !one(item as Raw).startsWith("Do: ")),
   );

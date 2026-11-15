@@ -118,3 +118,12 @@ test("a typed line end reads as pressing Enter, as the server runs it", () => {
   assert.deepEqual(describe({ action: "type", text: "a\r\n" }), ['Type "a" and press Enter']);
   assert.deepEqual(describe({ action: "type", text: "two\nlines" }), ['Type "two\nlines"']);
 });
+
+test("the card names each shortcut the server presses, and shows a call it cannot say", () => {
+  assert.deepEqual(describe({ action: "key", keys: ["CTRL+A", "DELETE"] }), ["Press CTRL+A, then DELETE"]);
+  assert.deepEqual(describe({ action: "key", keys: ["ctrl", "shift", "t"] }), ["Press ctrl+shift+t"]);
+  assert.deepEqual(describe({ action: "key", keys: "cmd+a cmd+c" }), ["Press cmd+a, then cmd+c"]);
+  assert.equal(computerCallFullySaid(JSON.stringify({ action: "click", coordinate: [100, 200, 300, 400] })), false);
+  assert.equal(computerCallFullySaid(JSON.stringify({ action: "click", x: "left", y: 5 })), false);
+  assert.equal(computerCallFullySaid(JSON.stringify({ action: "click", x: 5, y: 6 })), true);
+});
