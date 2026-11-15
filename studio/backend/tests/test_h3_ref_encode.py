@@ -43,12 +43,20 @@ def _pixels(
     return torch.randint(0, 256, (1, 3, frames, height, width), generator = g, dtype = torch.uint8)
 
 
+def _stock_encode():
+    # Diffusers' own function, even when a render's recipe install (another test file) left the shim installed
+    current = encoders.encode_vae_condition
+    while getattr(current, "_unsloth_chunked_ref_encode", False):
+        current = current.__wrapped__
+    return current
+
+
 @pytest.fixture
 def shim(monkeypatch):
     # These compare the chunked encode with Diffusers' own, so they run its sampled posterior (the explicit switch).
     monkeypatch.delenv(ref_encode.H3_CHUNKED_REF_ENCODE_ENV, raising = False)
     monkeypatch.setenv(ref_encode.H3_REFERENCE_LATENT_ENV, ref_encode.H3_REFERENCE_LATENT_SAMPLE)
-    original = encoders.encode_vae_condition
+    original = _stock_encode()
     if ref_encode._sha(original) not in ref_encode._KNOWN_SOURCES["encode_vae_condition"]:
         pytest.skip("diffusers H3 encoder source this shim does not mirror")
     monkeypatch.setattr(encoders, "encode_vae_condition", original)
@@ -137,7 +145,7 @@ def _ref_mean_latents(vae, pixels):
 def test_conditions_take_the_posterior_mean_by_default(monkeypatch, frames):
     monkeypatch.delenv(ref_encode.H3_CHUNKED_REF_ENCODE_ENV, raising = False)
     monkeypatch.delenv(ref_encode.H3_REFERENCE_LATENT_ENV, raising = False)
-    original = encoders.encode_vae_condition
+    original = _stock_encode()
     if ref_encode._sha(original) not in ref_encode._KNOWN_SOURCES["encode_vae_condition"]:
         pytest.skip("diffusers H3 encoder source this shim does not mirror")
     monkeypatch.setattr(encoders, "encode_vae_condition", original)
@@ -159,7 +167,7 @@ def test_conditions_take_the_posterior_mean_by_default(monkeypatch, frames):
 def test_the_mean_installs_even_with_chunking_off(monkeypatch):
     monkeypatch.setenv(ref_encode.H3_CHUNKED_REF_ENCODE_ENV, "0")
     monkeypatch.delenv(ref_encode.H3_REFERENCE_LATENT_ENV, raising = False)
-    original = encoders.encode_vae_condition
+    original = _stock_encode()
     if ref_encode._sha(original) not in ref_encode._KNOWN_SOURCES["encode_vae_condition"]:
         pytest.skip("diffusers H3 encoder source this shim does not mirror")
     monkeypatch.setattr(encoders, "encode_vae_condition", original)

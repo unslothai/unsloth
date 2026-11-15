@@ -25,6 +25,16 @@ from core.inference import video_minimax_h3 as VM  # noqa: E402
 from core.inference import video_minimax_h3_sampling as VS  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def _restore_condition_encode(monkeypatch):
+    # install_h3_reference_recipe shims Diffusers' module-level condition encode; keep it to this file's tests
+    try:
+        from diffusers.modular_pipelines.minimax_h3 import encoders
+    except Exception:  # noqa: BLE001 - no H3-capable diffusers: nothing to restore
+        return
+    monkeypatch.setattr(encoders, "encode_vae_condition", encoders.encode_vae_condition)
+
+
 # ---- the reference implementation, literally -------------------------------------------------------------------
 
 
