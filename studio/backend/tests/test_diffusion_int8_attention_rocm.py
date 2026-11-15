@@ -186,7 +186,7 @@ def test_rocm_call_runs_the_triton_kernel(monkeypatch):
         calls.append((tuple(q.shape), dict(config), pv, scale))
         return v.clone()
 
-    monkeypatch.setattr(T, "int8_attention", fake)
+    monkeypatch.setattr(T, "_int8_attention", fake)
     monkeypatch.setattr(I, "unsupported_reason", lambda q, k, v: None)
     monkeypatch.setattr(torch.cuda, "device", lambda *a, **k: contextlib.nullcontext())
     q = torch.randn(1, 8, 2, 128, dtype = torch.bfloat16)
@@ -282,6 +282,85 @@ def test_triton_kernel_numerics_interpreted():
         assert m["cos"] >= (I.MIN_COSINE if gain == 1.0 else I.MIN_SHARP_COSINE), (key, m)
         if gain == 1.0:
             assert m["rel_l1"] <= I.MAX_REL_L1 / 2, (key, m)
+
+
+_LAUNCHES = textwrap.dedent(
+    """
+    import json, torch
+    from core.inference import diffusion_int8_attention_triton as T
+    out = {}
+    for tokens, D, strided in ((131, 64, False), (200, 128, True)):
+        g = torch.Generator().manual_seed(tokens)
+        if strided:
+            q, k, v = (torch.randn(1, tokens, 3, 2, D, generator = g) * 1.6).half().unbind(2)
+        else:
+            q, k, v = ((torch.randn(1, tokens, 2, D, generator = g) * 1.6).half() for _ in range(3))
+        for pv in ("int8", "half_strided", "f16_t"):
+            cfg = {"bm": 64, "bn": 32, "warps": 4, "stages": 1, "kscale": "tile"}
+            fused = T.int8_attention(q, k, v, cfg, pv = pv)
+            again = T.int8_attention(q, k, v, cfg, pv = pv)
+            T.GRID_LIMIT, limit = 0, T.GRID_LIMIT
+            T._PLANS.clear()
+            single = T.int8_attention(q, k, v, cfg, pv = pv)
+            T.GRID_LIMIT = limit
+            T._PLANS.clear()
+            out[f"{tokens}/{D}/{pv}"] = [torch.equal(single, x) for x in (fused, again)]
+    print("RESULT " + json.dumps(out))
+    """
+)
+
+
+@pytest.mark.skipif(not _interpreter_ok(), reason = "needs the Triton >= 3.7 interpreter")
+def test_fused_launches_match_one_launch_per_quantiser_interpreted():
+    """The two quantiser launches (prep_kernel, kv_kernel) and a cached launch plan give the output of one launch per
+    quantiser bit for bit (Triton interpreter, CPU)."""
+    env = dict(os.environ, TRITON_INTERPRET = "1")
+    r = subprocess.run(
+        [sys.executable, "-c", _LAUNCHES],
+        cwd = BACKEND_DIR,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    line = [x for x in r.stdout.splitlines() if x.startswith("RESULT ")]
+    assert line, (r.stdout[-2000:], r.stderr[-3000:])
+    res = json.loads(line[0][7:])
+    assert len(res) == 6 and all(all(v) for v in res.values()), res
+
+
+def test_launch_plan_is_made_once_per_call_signature(monkeypatch):
+    from core.inference import diffusion_int8_attention_triton as T
+
+    monkeypatch.setattr(T, "_PLANS", {})
+    q = torch.zeros(1, 1000, 4, 128, dtype = torch.float16)
+    cfg = {
+        "bm": 64,
+        "bn": 32,
+        "warps": 4,
+        "stages": 1,
+        "pv": "f16_t",
+        "kscale": "tile",
+        "long_keys": 800,
+        "long": {"bm": 128, "warps": 8},
+    }
+    p = T._plan(q, q, q, dict(cfg), None, None)
+    assert T._plan(q, q, q, dict(cfg), None, None) is p
+    # the long overrides apply from long_keys keys on; Q tiles and the channel-major V copy share the first launch
+    assert (
+        p["bm"] == 128 and p["attn_meta"]["num_warps"] == 8 and p["attn_grid"] == (1024 // 128, 4)
+    )
+    assert (
+        p["fused"]
+        and p["prep_grid"] == (4, 1 + 1024 // 64 + 1024 // 64)
+        and p["kv_grid"] == (4, 1024 // 32)
+    )
+    strided = torch.zeros(1, 1000, 3, 4, 128, dtype = torch.float16)[:, :, 0]
+    assert T._plan(strided, q, q, dict(cfg), None, None) is not p and len(T._PLANS) == 2
+    # past the grid limit: one launch per quantiser
+    monkeypatch.setattr(T, "GRID_LIMIT", 32)
+    T._PLANS.clear()
+    assert not T._plan(q, q, q, dict(cfg), None, None)["fused"]
 
 
 def _rotate_ref(x):
