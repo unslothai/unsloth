@@ -1070,6 +1070,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Different architecture from qwen-image, so its own family.
         name = "qwen-image-2.1",
         comfy_shift_node = "flux",
+        label = "Qwen-Image-2.1",
         profile = FamilyProfile(
             # 2.1 is a 32-block single-stream DiT with no add-prefixed projections or txt_mlp, so
             # the 20B MMDiT exclusion list does not apply; excluding txt_in scores LPIPS 0.064 vs
@@ -1190,6 +1191,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_arch_marker = "qwen_image_2_1",
         # The edit path's no-projector refusal: in the pinned build, absent from the one before it.
         sd_cpp_edit_marker = "Qwen Image 2.1 editing requires Qwen3-VL vision weights",
+        # LoRA training on the undistilled 2.1 (diffusion_dit_trainer "qwen-image-2.1"); fp8 bases seed from the hosted
+        # unsloth/Qwen-Image-2.1-FP8 file. Turbo is distilled from 2.1 with the same DiT, so a 2.1 adapter deploys on
+        # the 8-step Turbo; the same file also applies on 2.1 itself.
+        trainable = True,
+        train_base_repos = ("Qwen/Qwen-Image-2.1",),
+        deploy_base_repos = (("Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"),),
     ),
     DiffusionFamily(
         name = "z-image",

@@ -99,3 +99,32 @@ test("the Train panel preselect actually consults the pairing", async () => {
   assert.ok(paired < first && first - paired < 40, "base_repos[0] is no longer the last resort");
   assert.match(source, /resolveDiffusionTrainingBase\(reportedFamily, loadedBaseRepo\)/);
 });
+
+// What the backend's family_train_infos returns for Qwen-Image-2.1: both training ids deploy on upstream Turbo.
+const qwen21 = {
+  name: "qwen-image-2.1",
+  label: "Qwen-Image-2.1",
+  default_base: "Qwen/Qwen-Image-2.1",
+  base_repos: ["Qwen/Qwen-Image-2.1"],
+  deploy_bases: {
+    "Qwen/Qwen-Image-2.1": "Qwen/Qwen-Image-2.1-Turbo",
+    "unsloth/Qwen-Image-2.1": "Qwen/Qwen-Image-2.1-Turbo",
+  },
+};
+
+test("a Qwen-Image-2.1 adapter deploys on Turbo, and a loaded Turbo preselects 2.1", () => {
+  assert.equal(
+    resolveDiffusionDeployBase(qwen21, "Qwen/Qwen-Image-2.1"),
+    "Qwen/Qwen-Image-2.1-Turbo",
+  );
+  assert.equal(
+    resolveDiffusionDeployBase(qwen21, "unsloth/Qwen-Image-2.1"),
+    "Qwen/Qwen-Image-2.1-Turbo",
+  );
+  assert.equal(
+    resolveDiffusionTrainingBase(qwen21, "Qwen/Qwen-Image-2.1-Turbo"),
+    "Qwen/Qwen-Image-2.1",
+  );
+  // 2.1 itself is the training base, not a distilled pair, so the reverse lookup does not claim it.
+  assert.equal(resolveDiffusionTrainingBase(qwen21, "Qwen/Qwen-Image-2.1"), null);
+});
