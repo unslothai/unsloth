@@ -10,6 +10,7 @@ import os
 from functools import lru_cache
 from typing import Any, Optional
 
+from . import diffusion_int8_attention as _i8
 from .rocm_bf16 import is_rocm_torch
 
 STRIDED_ATTN_ENV = "UNSLOTH_DIFFUSION_FLUX3_STRIDED_ATTN"
@@ -84,7 +85,7 @@ def strided_processor_class() -> Any:
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                out = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
+                out = _i8.int8_attention_call(query, key, value)
                 hidden_states = out.flatten(2, 3)
             else:
                 if cudnn:

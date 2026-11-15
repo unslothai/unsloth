@@ -356,8 +356,9 @@ class TextPreprocessor:
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n\n\n+")
     # One pass, so a "# comment" inside a fenced block stays code instead of becoming a heading.
+    # Language = info string's first word (c++); the lookbehind keeps a failed fence line linear.
     _STRUCTURE_PATTERN = re.compile(
-        r"```(\w*)\n((?s:.*?))\n```|^(#{1,3}) (.+)$",
+        r"```[^\S\n]*([^\s`]*)(?:(?<=[^\s`])[^\S\n][^\n`]*)?\n((?s:.*?))\n```|^(#{1,3}) (.+)$",
         re.MULTILINE,
     )
     _HEADING_TAGS = {1: "chapter", 2: "section", 3: "subsection"}

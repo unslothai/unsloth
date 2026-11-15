@@ -49,6 +49,7 @@ from unsloth._decision_common import (
     _option_keys,
     _parsed,
     _predicted,
+    _refuse_private_push_to_public_repo,
     _row_images,
     _rows_problem,
     _served_lengths,
@@ -392,6 +393,7 @@ def _clef_push(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    _refuse_private_push_to_public_repo(repo_id, private, api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained(folder, tokenizer)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -562,6 +564,7 @@ def _decision_push_merged(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    _refuse_private_push_to_public_repo(repo_id, private, api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained_merged(folder, tokenizer, save_method)
         api.upload_folder(folder_path = folder, repo_id = repo_id)

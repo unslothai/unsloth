@@ -176,6 +176,7 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.http_stream import SSE_LINE_END, aiter_sse_lines
 from core.inference import model_slots
 from core.inference.llama_cpp import (
     _TERMINAL_RETIREMENT_HOOKS,
@@ -7741,7 +7742,7 @@ def _monitor_openai_sse_event(
 ) -> Optional[str]:
     # Returns error if any line is an upstream error payload (HTTP 200 SSE data with an error key), so relays mark it failed, not kept warm.
     status = None
-    for line in event.decode("utf-8", errors = "ignore").splitlines():
+    for line in SSE_LINE_END.split(event.decode("utf-8", errors = "ignore")):
         stripped = line.strip()
         result = _monitor_openai_sse_line(monitor_id, stripped, context_length)
         if result is None and not monitor_id:
@@ -7942,7 +7943,7 @@ def _monitor_anthropic_response(
                     if isinstance(chunk, (bytes, bytearray))
                     else str(chunk)
                 )
-                for line in text.splitlines():
+                for line in SSE_LINE_END.split(text):
                     if (
                         _monitor_anthropic_sse_line(
                             monitor_id,
@@ -42350,7 +42351,7 @@ async def _responses_stream(
                     )
                     return
 
-                lines_iter = resp.aiter_lines()
+                lines_iter = aiter_sse_lines(resp)
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, disconnect_event)
                 )
@@ -43495,6 +43496,7 @@ async def _mlx_count_chat_tokens(
         if not _tools_to_use:
             _tools_to_use = None
 
+    _nudge = ""
     if (
         not _tools_to_use
         and _takes_tools
@@ -43643,16 +43645,33 @@ async def _mlx_count_chat_tokens(
             status_code = 503,
             detail = "Cannot count tokens while a generation is in progress.",
         )
-    try:
-        count, _counted = await asyncio.to_thread(
-            backend.count_chat_tokens,
-            messages,
-            system_prompt or "",
-            tools = _tools_to_use,
+
+    def _count(
+        count_messages,
+        tools,
+        *,
+        include_system = True,
+    ) -> int:
+        instructions = system_prompt if include_system else ""
+        if instructions and _tools_to_use and not tools:
+            instructions = _without_tool_nudge(instructions, _nudge)
+        count, _counted = backend.count_chat_tokens(
+            count_messages,
+            instructions or "",
+            tools = tools,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
             preserve_thinking = payload.preserve_thinking,
         )
+        return count
+
+    try:
+        if payload.breakdown:
+            count, breakdown = await asyncio.to_thread(
+                _count_breakdown, _count, messages, _tools_to_use
+            )
+        else:
+            count, breakdown = await asyncio.to_thread(_count, messages, _tools_to_use), None
     except Exception:
         raise HTTPException(
             status_code = 503,
@@ -43669,9 +43688,65 @@ async def _mlx_count_chat_tokens(
         )
     # The id /status publishes as model_identifier (the raw active name, a local folder or
     # snapshot path included): the client drops a count naming any other checkpoint.
-    return JSONResponse(
-        content = {"input_tokens": int(count), "model": _count_model_id(active, via_api_key)}
+    # The MLX worker returns only the total, no rendered prompt.
+    return _count_response(
+        payload,
+        count,
+        _count_model_id(active, via_api_key),
+        breakdown,
+        _monitor_context_length(),
+        None,
     )
+
+
+def _count_breakdown(count, messages: list[dict], tools) -> tuple[int, dict]:
+    """Marginal costs of tools and history; messages carry the template framing. Each is capped
+    at what remains, since a template can grow when an instruction or catalog is removed."""
+    total = count(messages, tools)
+    without_tools = count(messages, None) if tools else total
+    tool_tokens = max(0, total - without_tools)
+    remainder = total - tool_tokens
+    history = [m for m in messages if m.get("role") not in ("system", "developer")]
+    message_tokens = min(remainder, count(history, None, include_system = False)) if history else 0
+    return total, {
+        "system": remainder - message_tokens,
+        "tools": tool_tokens,
+        "messages": message_tokens,
+        "tool_names": [(t.get("function") or {}).get("name") for t in tools or []],
+    }
+
+
+def _without_tool_nudge(text: str, nudge: str) -> str:
+    """``text`` without the tool nudge, which a breakdown counts under Tools."""
+    if not nudge:
+        return text
+    if "\n\n" + nudge in text:
+        return text.replace("\n\n" + nudge, "", 1)
+    return text.replace(nudge, "", 1)
+
+
+def _count_response(
+    payload,
+    total: int,
+    model,
+    parts: Optional[dict],
+    context_length,
+    prompt,
+    *,
+    passthrough = False,
+):
+    content = {"input_tokens": int(total), "model": model}
+    if parts is not None:
+        from core.inference.context_window import prompt_budget
+        content.update(
+            breakdown = parts,
+            context_length = context_length,
+            compaction_budget = prompt_budget(context_length, payload.max_tokens)
+            if context_length and not passthrough and _rolling_context_policy(payload) is not None
+            else None,
+            prompt = prompt,
+        )
+    return JSONResponse(content = content)
 
 
 def _count_model_id(model_id, via_api_key):
@@ -43683,7 +43758,8 @@ def _count_model_id(model_id, via_api_key):
     ]
 
 
-def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs):
+def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs, nudge):
+    """``(total, parts, prompt)``; parts and the rendered prompt only for a breakdown."""
     from core.inference.llama_cpp import (
         _can_reset_epoch,
         _compaction_fit_kwargs,
@@ -43692,15 +43768,20 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
         _sticky_compaction_details,
     )
 
-    def count_tokens(candidate):
+    def count_tokens(
+        candidate,
+        candidate_tools = tools,
+        **extra,
+    ):
         return backend.count_chat_tokens(
             candidate,
             None,
-            tools,
+            candidate_tools,
             strict = True,
             chat_template_kwargs = template_kwargs,
             # A generation can start between /apply-template and /tokenize.
             should_abort = lambda: model_slots.routed_generation_count() > 0,
+            **extra,
         )
 
     context_length = getattr(backend, "_effective_context_length", None)
@@ -43743,10 +43824,43 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
                 replay_only = True,
                 **_compaction_fit_kwargs(policy, ratio),
             )
-            if truncation is not None:
-                return int(truncation["prompt_tokens_after"])
+            if truncation is not None and not payload.breakdown:
+                return int(truncation["prompt_tokens_after"]), None, None
             messages = fitted
-    return count_tokens(messages)
+    if not payload.breakdown:
+        return count_tokens(messages), None, None
+    # The first render is the full prompt.
+    rendered: dict = {}
+
+    def without_nudge(candidate):
+        out = []
+        for message in candidate:
+            content = message.get("content")
+            if message.get("role") in ("system", "developer") and isinstance(content, str):
+                stripped = _without_tool_nudge(content, nudge)
+                if stripped != content:
+                    if not stripped:
+                        continue
+                    message = {**message, "content": stripped}
+            out.append(message)
+        return out
+
+    def priced(
+        candidate,
+        candidate_tools,
+        *,
+        include_system = True,
+    ):
+        if include_system and not candidate_tools:
+            candidate = without_nudge(candidate)
+        return count_tokens(
+            candidate,
+            candidate_tools,
+            on_prompt = lambda text: rendered.setdefault("prompt", text),
+        )
+
+    total, parts = _count_breakdown(priced, messages, tools)
+    return total, parts, rendered.get("prompt")
 
 
 @router.post("/chat/count_tokens")
@@ -43891,12 +44005,17 @@ async def chat_count_tokens(
 
     # Only the passthrough sends the caller's own catalog; others render from the selection below.
     openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
+    _count_nudge = ""
     # The CLI hard-override still applies: _effective_enable_tools resolves it into _tools_on.
     _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
     # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
     _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
+    if _tools_on and not _launcher_tool_default_applies(
+        payload, _ui_stream_events_enabled(request)
+    ):
+        _tools_on = False
     # Same rule as the completion path, so both agree on whether MCP schemas are in the prompt.
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
 
@@ -44026,13 +44145,14 @@ async def chat_count_tokens(
     from core.inference.llama_cpp import CountAborted
 
     try:
-        count = await asyncio.to_thread(
+        count, breakdown, prompt = await asyncio.to_thread(
             _count_chat_context_tokens,
             llama_backend,
             payload,
             openai_messages,
             openai_tools,
             _template_kwargs,
+            _count_nudge,
         )
     except CountAborted:
         raise HTTPException(
@@ -44050,11 +44170,14 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    return JSONResponse(
-        content = {
-            "input_tokens": int(count),
-            "model": _count_model_id(_tokenizer_model, via_api_key),
-        }
+    return _count_response(
+        payload,
+        count,
+        _count_model_id(_tokenizer_model, via_api_key),
+        breakdown,
+        getattr(llama_backend, "context_length", None),
+        prompt,
+        passthrough = _takes_passthrough,
     )
 
 
@@ -47167,7 +47290,7 @@ async def _anthropic_passthrough_stream(
         # cancel scope in a different task` / `RuntimeError: async generator
         # ignored GeneratorExit` as "Exception ignored in:" unraisable warnings.
         #
-        # Fix: save `resp.aiter_lines()` as `lines_iter`, and in finally
+        # Fix: save `aiter_sse_lines(resp)` as `lines_iter`, and in finally
         # explicitly `await lines_iter.aclose()` BEFORE `resp.aclose()` /
         # `client.aclose()`. This closes the iterator in our own task's event
         # loop, cleaning up the httpcore byte-stream before the asyncgen
@@ -47259,7 +47382,7 @@ async def _anthropic_passthrough_stream(
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
-            lines_iter = resp.aiter_lines()
+            lines_iter = aiter_sse_lines(resp)
             items_iter = _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = cancel_event,
@@ -48685,7 +48808,7 @@ async def _openai_passthrough_stream_admitted(
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, cancel_event)
                 )
-                lines_iter = resp.aiter_lines()
+                lines_iter = aiter_sse_lines(resp)
                 _keepalive_s = _openai_passthrough_stream_keepalive_interval()
                 items_iter = _aiter_llama_stream_items(
                     lines_iter,
@@ -52788,26 +52911,55 @@ async def clear_diffusion_queue(current_subject: str = Depends(get_current_subje
 # ── FLUX.3 prompt upsampler (llama.cpp sidecar) ──────────────────────────────────────────────────────────
 
 
+async def _upsampler_for(family: Optional[str]) -> Any:
+    """The enhancer module serving ``family`` (the loaded family when None): MiniMax-H3-Image's own, else the FLUX.3
+    upsampler."""
+    from core.inference import flux3_prompt_upsampler as pup
+
+    if family is None:
+        try:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            status = await asyncio.to_thread(get_active_diffusion_engine().status)
+            family = status.get("family") if status.get("loaded") else None
+        except Exception:  # noqa: BLE001 -- nothing loaded reads as FLUX.3
+            family = None
+    if pup.uses_h3_image_enhancer(family):
+        from core.inference import h3_image_prompt_enhancer
+        return h3_image_prompt_enhancer
+    return pup
+
+
 @studio_router.get("/images/prompt-upsampler/status")
-async def prompt_upsampler_status(current_subject: str = Depends(get_current_subject)):
-    """Whether the FLUX.3 prompt upsampler can run (llama-server present), is downloaded, is loaded, and the
-    download progress (the dictation download's shape)."""
-    from core.inference import flux3_prompt_upsampler
-    return JSONResponse(content = await asyncio.to_thread(flux3_prompt_upsampler.status))
+async def prompt_upsampler_status(
+    family: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Whether the prompt upsampler of ``family`` (the loaded family's; FLUX.3's by default) can run (llama-server
+    present), is downloaded, is loaded, and the download progress (the dictation download's shape)."""
+    module = await _upsampler_for(family)
+    return JSONResponse(content = await asyncio.to_thread(module.status))
 
 
 @studio_router.post("/images/prompt-upsampler/download")
 async def prompt_upsampler_download(
     payload: Optional[PromptUpsamplerDownloadRequest] = None,
+    family: Optional[str] = Query(None, max_length = 64),
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Start the background download of the upsampler GGUF and its vision projector; progress on /status."""
-    from core.inference import flux3_prompt_upsampler
+    from core.inference import flux3_prompt_upsampler as pup
     from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
 
     account_access.require_installation_owner()
-    if flux3_prompt_upsampler._overridden():
+    upsampler = await _upsampler_for(family)
+    if upsampler is not pup:
+        if upsampler.overridden():
+            raise HTTPException(
+                status_code = 409,
+                detail = "The prompt enhancer files come from UNSLOTH_H3_IMAGE_ENHANCER_GGUF / _MMPROJ; set both instead.",
+            )
+    elif upsampler._overridden():
         raise HTTPException(
             status_code = 409,
             detail = "The prompt upsampler files come from UNSLOTH_FLUX3_UPSAMPLER_GGUF / _MMPROJ; set both instead.",
@@ -52816,24 +52968,22 @@ async def prompt_upsampler_download(
         (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
     )
     try:
-        download_id = await asyncio.to_thread(flux3_prompt_upsampler.start_download, token)
+        download_id = await asyncio.to_thread(upsampler.start_download, token)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
-    return JSONResponse(
-        content = {**flux3_prompt_upsampler.download_status(), "download_id": download_id}
-    )
+    return JSONResponse(content = {**upsampler.download_status(), "download_id": download_id})
 
 
 @studio_router.post("/images/prompt-upsampler/cancel")
-async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_subject)):
+async def prompt_upsampler_cancel(
+    family: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
     """Stop the upsampler download; partial files stay cached, so the next download resumes."""
-    from core.inference import flux3_prompt_upsampler
-
     account_access.require_installation_owner()
-    cancelled = await asyncio.to_thread(flux3_prompt_upsampler.cancel_download)
-    return JSONResponse(
-        content = {**flux3_prompt_upsampler.download_status(), "cancelled": cancelled}
-    )
+    upsampler = await _upsampler_for(family)
+    cancelled = await asyncio.to_thread(upsampler.cancel_download)
+    return JSONResponse(content = {**upsampler.download_status(), "cancelled": cancelled})
 
 
 def _cancel_upsampler_warm_start() -> None:
@@ -52982,22 +53132,34 @@ async def prompt_upsampler_preview(
     from core.inference import flux3_prompt_upsampler as pup
 
     variant = request.variant
-    if variant is None:
+    family = request.family
+    if variant is None or family is None:
         try:
             from core.inference.diffusion_engine_router import get_active_diffusion_engine
             status = await asyncio.to_thread(get_active_diffusion_engine().status)
-            variant = pup.variant_for_family(status.get("family") if status.get("loaded") else None)
+            loaded_family = status.get("family") if status.get("loaded") else None
         except Exception:  # noqa: BLE001 -- nothing loaded reads as distilled
-            variant = "distilled"
+            loaded_family = None
+        family = loaded_family if family is None else family
+        if variant is None:
+            variant = pup.variant_for_family(loaded_family)
     account_access.require_idle_other_accounts()
     try:
         with account_access.media_generation("diffusion"):
-            caption = await asyncio.to_thread(
-                pup.upsample,
-                request.prompt,
-                variant = variant,
-                reference_images = request.reference_images or None,
-            )
+            if pup.uses_h3_image_enhancer(family):
+                from core.inference import h3_image_prompt_enhancer
+                caption = await asyncio.to_thread(
+                    h3_image_prompt_enhancer.upsample,
+                    request.prompt,
+                    reference_images = request.reference_images or None,
+                )
+            else:
+                caption = await asyncio.to_thread(
+                    pup.upsample,
+                    request.prompt,
+                    variant = variant,
+                    reference_images = request.reference_images or None,
+                )
     except pup.UpsamplerNotDownloadedError as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
     except pup.UpsamplerUnavailableError as exc:
