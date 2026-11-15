@@ -213,6 +213,12 @@ def test_reference_frames_keep_the_plain_path_unchanged():
     ref = ve.x264_frame(av, rgb, reference = True)
     assert ref.format.name == "yuv420p" and int(ref.colorspace) == 1 and int(ref.color_range) == 1
     assert np.array_equal(ref.to_ndarray(), _bt709_yuv420(rgb))
+    # one reformatter for the whole encode converts the same way (the per-frame call rebuilds swscale each time)
+    shared = ve.x264_reformatter(av, reference = True)
+    assert ve.x264_reformatter(av) is None
+    for frame in _clip(frames = 3):
+        got = ve.x264_frame(av, frame, reference = True, reformatter = shared)
+        assert np.array_equal(got.to_ndarray(), _bt709_yuv420(frame)) and int(got.colorspace) == 1
 
 
 def test_reference_audio_takes_mono_and_channels_last(tmp_path):

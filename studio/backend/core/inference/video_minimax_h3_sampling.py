@@ -595,9 +595,14 @@ _TRUNCATED_MARK = "_unsloth_h3_truncated_postprocess"
 def h3_truncate_frames(frames: Any) -> Any:
     """[0, 1] float frames on the 8-bit grid by truncation, the reference's ``(x * 255).clamp(0, 255).byte()``, as
     float32 ``k / 255``: every later ``round(x * 255)`` (np, PIL, the on-device uint8 path, the stream encoder)
-    then returns the truncated ``k``."""
+    then returns the truncated ``k``. In place on float32 input (the decode's own fresh tensor), so no copy is
+    made; idempotent on the grid (``floor(fp32(k / 255) * 255) == k`` for every k), so a fallback that
+    postprocesses the same tensor again gets the same frames."""
     import torch
-    return (frames.to(torch.float32) * 255).clamp_(0, 255).floor_().div_(255)
+
+    if frames.dtype is not torch.float32:
+        frames = frames.to(torch.float32)
+    return frames.mul_(255).clamp_(0, 255).floor_().div_(255)
 
 
 def install_h3_output_truncation(pipe: Any) -> bool:

@@ -100,8 +100,20 @@ def test_every_truncated_level_survives_a_later_rounding():
     levels = torch.arange(256, dtype = torch.float32) / 255
     for nudge in (0.0, 0.4999 / 255, 0.9999 / 255):
         x = (levels + nudge).clamp(0, 1)
-        got = (VS.h3_truncate_frames(x) * 255).round().to(torch.uint8)
-        assert torch.equal(got, _ref_save_bytes(x))
+        expect = _ref_save_bytes(x)
+        got = (VS.h3_truncate_frames(x.clone()) * 255).round().to(torch.uint8)
+        assert torch.equal(got, expect)
+
+
+def test_truncation_is_in_place_and_idempotent():
+    x = torch.rand(2, 3, 8, 8)
+    expect = _ref_save_bytes(x)
+    out = VS.h3_truncate_frames(x)
+    assert out.data_ptr() == x.data_ptr()  # no copy of the clip
+    again = VS.h3_truncate_frames(out.clone())
+    assert torch.equal(again, out) and torch.equal((out * 255).round().to(torch.uint8), expect)
+    half = torch.rand(4, 4).half()
+    assert VS.h3_truncate_frames(half).dtype is torch.float32
 
 
 def test_the_on_device_uint8_export_keeps_the_truncation():

@@ -305,7 +305,9 @@ class StreamEncode:
                 frames = host.numpy()
                 if container is None:
                     container = av.open(self.path, mode = "w", format = "mp4")
-                    from .video_encode import add_x264_stream, x264_frame
+                    from .video_encode import add_x264_stream, x264_frame, x264_reformatter
+
+                    reformatter = x264_reformatter(av, reference = self.reference)
 
                     # the flag only for H3, so every other family opens the stream exactly as encode_x264 does
                     stream = add_x264_stream(
@@ -321,7 +323,9 @@ class StreamEncode:
                             container, self.audio_sample_rate
                         )
                 for frame in frames:
-                    for packet in stream.encode(x264_frame(av, frame, reference = self.reference)):
+                    for packet in stream.encode(
+                        x264_frame(av, frame, reference = self.reference, reformatter = reformatter)
+                    ):
                         container.mux(packet)
                 # the last ``frame`` is a view that would pin the whole chunk
                 frames = host = frame = None

@@ -88,18 +88,32 @@ def add_x264_stream(
     return stream
 
 
+def x264_reformatter(av: Any, *, reference: bool = False) -> Any:
+    """One reformatter for a whole encode (``reference`` only): a per-frame ``frame.reformat`` with a colorspace
+    rebuilds the swscale context every frame, 2.2x the conversion the encoder does on its own."""
+    if not reference:
+        return None
+    from av.video.reformatter import VideoReformatter
+
+    return VideoReformatter()
+
+
 def x264_frame(
     av: Any,
     rgb: Any,
     *,
     reference: bool = False,
+    reformatter: Any = None,
 ) -> Any:
     """One uint8 RGB frame for ``add_x264_stream``. ``reference``: converted to yuv420p with the BT.709 matrix and
     tagged, as the reference save does (left to the encoder, swscale would use its BT.601 default, untagged)."""
     frame = av.VideoFrame.from_ndarray(rgb, format = "rgb24")
     if not reference:
         return frame
-    frame = frame.reformat(format = "yuv420p", dst_colorspace = _BT709)
+    if reformatter is None:
+        frame = frame.reformat(format = "yuv420p", dst_colorspace = _BT709)
+    else:
+        frame = reformatter.reformat(frame, format = "yuv420p", dst_colorspace = _BT709)
     _tag_bt709(frame)
     return frame
 
@@ -163,8 +177,11 @@ def encode_x264(
             audio_stream = (
                 _prepare_audio_stream(container, audio_sample_rate) if audio is not None else None
             )
+            reformatter = x264_reformatter(av, reference = reference)
             for frame in frames:
-                for packet in stream.encode(x264_frame(av, frame, reference = reference)):
+                for packet in stream.encode(
+                    x264_frame(av, frame, reference = reference, reformatter = reformatter)
+                ):
                     container.mux(packet)
             for packet in stream.encode():
                 container.mux(packet)
