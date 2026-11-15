@@ -63,6 +63,8 @@ def _qkv(index, D = 128):
 @pytest.mark.parametrize("fused", [True, False])
 def test_int8_attention_launches_on_the_operands_card(card, monkeypatch, pv, fused):
     state, log = card
+    if pv == "half" and not torch.backends.cuda.is_built():
+        pytest.skip("a fake copy into the half V buffer needs a CUDA-built torch")
     if not fused:
         monkeypatch.setattr(T, "GRID_LIMIT", 0)
     with FakeTensorMode():
