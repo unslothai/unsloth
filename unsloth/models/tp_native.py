@@ -420,13 +420,22 @@ def _elementwise_scalars(module):
     return not _FEATURE_REDUCTIONS.search(_drop_init(source))
 
 
+def _config_value(config, name):
+    """config.<name>, or None when the config does not hold one global value: transformers' heterogeneous
+    configs (Gemma 4) raise AmbiguousGlobalPerLayerAttributeError, not AttributeError, for a per-layer attribute."""
+    try:
+        return getattr(config, name, None)
+    except Exception:
+        return None
+
+
 def _attention_sizes(module, projs, text):
     """(heads, kv_heads, head_dim) of one attention module, from its own projections."""
-    heads_cfg = getattr(text, "num_attention_heads", None)
-    kv_cfg = getattr(text, "num_key_value_heads", None) or heads_cfg
+    heads_cfg = _config_value(text, "num_attention_heads")
+    kv_cfg = _config_value(text, "num_key_value_heads") or heads_cfg
     head_dim = getattr(module, "head_dim", None)
     if not isinstance(head_dim, int):
-        head_dim = getattr(text, "head_dim", None) or (text.hidden_size // heads_cfg)
+        head_dim = _config_value(text, "head_dim") or (text.hidden_size // heads_cfg)
     by_name = {p.name: p for p in projs}
     q = next((by_name[n] for n in _Q if n in by_name), None)
     k = next((by_name[n] for n in _K if n in by_name), None)
@@ -626,7 +635,11 @@ def _replicate_kv_heads(region, path, tp):
             f"projections. Use tp <= {kv_heads}."
         )
     kv = [p for p in region.projs if p.name in _K + _V]
-    if not any(p.name in _K for p in kv) or not any(p.name in _V for p in kv):
+    # Values computed from the keys (Gemma 4 attention_k_eq_v: v_proj = None, value_states = key_states).
+    values_from_keys = any(
+        n in region.module.__dict__ and region.module.__dict__[n] is None for n in _V
+    ) or any(n in region.module._modules and region.module._modules[n] is None for n in _V)
+    if not any(p.name in _K for p in kv) or not (any(p.name in _V for p in kv) or values_from_keys):
         raise ValueError(
             f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} ({path}), and "
             f"no separate key and value projections ({_K + _V}) were found to replicate."
@@ -1731,7 +1744,7 @@ def _set_local_heads(module, region, tp):
         # Per-module config copy with local counts (Phi3 fused qkv); the shared config is left alone.
         local = copy.copy(config)
         local.num_attention_heads = heads
-        if getattr(config, "num_key_value_heads", None) is not None:
+        if _config_value(config, "num_key_value_heads") is not None:
             local.num_key_value_heads = kv_heads
         module.__dict__["config"] = local
 

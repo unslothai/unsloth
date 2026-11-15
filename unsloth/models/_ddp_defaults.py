@@ -221,12 +221,60 @@ def _vlm_tower_needs_unused_search(args, model):
     )
 
 
+def _reentrant_vlm_text_lora(model):
+    """A LoRA adapter on the language layers only of a VLM that vision.py checkpoints reentrantly (Gemma 4).
+
+    Under reentrant checkpointing transformers' True crashes on the first backward ("mark a variable ready only
+    once"), and a text-only adapter gets a gradient on every step, so False is the setting that trains. A
+    dense model only: routed experts, tower / embedding / head adapters and extra trainable tensors keep the default."""
+    from transformers import PreTrainedModel
+
+    if isinstance(model, PreTrainedModel):
+        return False
+    models = _unwrapped_models(model)
+    config = getattr(models[-1], "config", None)
+    model_type = str(getattr(config, "model_type", "") or "").lower()
+    if not model_type.startswith("gemma4"):
+        return False
+    peft_config = getattr(model, "peft_config", None)
+    if not isinstance(peft_config, dict) or len(peft_config) != 1:
+        return False
+    cfg = next(iter(peft_config.values()))
+    if (
+        str(getattr(getattr(cfg, "peft_type", None), "value", getattr(cfg, "peft_type", "")))
+        != "LORA"
+    ):
+        return False
+    for attr in ("modules_to_save", "target_parameters", "trainable_token_indices"):
+        if getattr(cfg, attr, None):
+            return False
+    for c in _configs(config):
+        if getattr(c, "enable_moe_block", False) is True:
+            return False
+        for key in _MOE_CONFIG_KEYS:
+            value = getattr(c, key, None)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return False
+    n_trainable = 0
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        n_trainable += 1
+        if not any(m in name for m in _LORA_PARAM_MARKERS):
+            return False
+        lowered = name.lower()
+        if any(m in lowered for m in _SKIPPABLE_NAME_MARKERS):
+            return False
+    return n_trainable > 0
+
+
 def unsloth_default_ddp_find_unused_parameters(args, model):
     """Set ``args.ddp_find_unused_parameters = False`` for a plain LoRA model under DDP with gradient
     checkpointing when the user left it None.
 
     Kept at None (transformers' True) for anything a step may skip: MoE / expert LoRA, vision or audio
     towers, MTP heads, lm_head / embedding adapters, modules_to_save, several adapters, non-LoRA PEFT.
+    False too for a language-layers-only LoRA on Gemma 4, which checkpoints reentrantly (True crashes there).
     Set to True for a VLM with a trainable tower under non-reentrant checkpointing. Returns the value now on ``args``.
     """
     if args is None or not hasattr(args, "ddp_find_unused_parameters"):
@@ -245,7 +293,9 @@ def unsloth_default_ddp_find_unused_parameters(args, model):
         return None
     try:
         gc_on = _gradient_checkpointing_on(args, model)
-        safe = gc_on and _lora_uses_every_trainable_param(model)
+        safe = gc_on and (
+            _lora_uses_every_trainable_param(model) or _reentrant_vlm_text_lora(model)
+        )
         tower = gc_on and not safe and _vlm_tower_needs_unused_search(args, model)
     except Exception:
         safe = tower = False
