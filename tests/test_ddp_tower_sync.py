@@ -17,6 +17,10 @@ pytest.importorskip("torch")
 pytest.importorskip("transformers")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "torchrun's rendezvous needs libuv, which Windows torch builds lack",
+)
 def test_vlm_full_finetune_with_text_only_batches_matches_one_process(tmp_path):
     from tests._rendezvous_port import free_port
 
