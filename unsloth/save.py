@@ -7313,6 +7313,11 @@ def _tp_collective_save(method):
     return decorate
 
 
+def _fsdp2_world():
+    import torch.distributed as dist
+    return dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+
+
 def _fsdp2_rank():
     import torch.distributed as dist
     return dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
@@ -9185,8 +9190,10 @@ def unsloth_tokenizer_save_pretrained(
     push_to_hub = False,
     **kwargs,
 ):
-    if self.__dict__.get("_unsloth_tp_world_save"):
-        from .models.tp_replica import tp_world_save
+    if self.__dict__.get("_unsloth_tp_world_save") or _fsdp2_world() > 1:
+        # Every DDP / FSDP2 rank saves the tokenizer to the same folder and re-reads tokenizer_config.json
+        # to fix it up: each rank works in a private copy and os.replace's the files in, and rank 0 pushes.
+        from .models.tp_replica import tp_world_push, tp_world_save
 
         push_kwargs = dict(kwargs)
         repo_id = push_kwargs.pop("repo_id", save_directory)
@@ -9198,7 +9205,7 @@ def unsloth_tokenizer_save_pretrained(
             save_directory,
         )
         if push_to_hub:
-            self.push_to_hub(repo_id, **push_kwargs)
+            tp_world_push("tokenizer.push_to_hub", lambda: self.push_to_hub(repo_id, **push_kwargs))
         return result
     return _unsloth_tokenizer_save_pretrained(
         self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
