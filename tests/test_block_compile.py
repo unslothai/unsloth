@@ -122,6 +122,107 @@ def test_batch_change_does_not_recompile(monkeypatch, dynamic_batch):
         assert extra >= 1  # the control: without the batch mark the batch change recompiles
 
 
+class _MaskDecoderLayer(torch.nn.Module):
+    """SDPA over a mask that transformers drops (None) for an unpadded micro batch."""
+
+    def __init__(self, causal = True):
+        super().__init__()
+        self.proj = torch.nn.Linear(8, 8)
+        self.self_attn = types.SimpleNamespace(is_causal = causal)
+        self.causal = causal
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask = None,
+        **kwargs,
+    ):
+        q = self.proj(hidden_states)[:, None]
+        if attention_mask is None:
+            out = torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal = self.causal)
+        else:
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q, q, q, attn_mask = attention_mask
+            )
+        return out[:, 0]
+
+
+def _compile_counter(monkeypatch):
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = counter, fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+    return counter
+
+
+def _padded_mask(
+    lengths,
+    L,
+    causal = True,
+):
+    keep = torch.arange(L)[None] < torch.tensor(lengths)[:, None]
+    base = torch.ones(L, L, dtype = torch.bool)
+    if causal:
+        base = base.tril()
+    return base[None, None] & keep[:, None, None, :]
+
+
+@pytest.mark.parametrize("causal", [True, False], ids = ["causal", "bidirectional"])
+def test_unpadded_batch_reuses_the_masked_graph(monkeypatch, causal):
+    """gemma-4 / Qwen3.5 vision: a padded micro batch hands the layer a mask, an unpadded one None; each
+    flip compiled a new graph per block kind and grad mode mid run (6-147 s stalls)."""
+    M = _load()
+    counter = _compile_counter(monkeypatch)
+    M._wrap(_MaskDecoderLayer, {})
+    layer = _MaskDecoderLayer(causal).train()
+    reference = _MaskDecoderLayer(causal).train()
+    reference.load_state_dict(layer.state_dict())
+
+    def step(lengths, L, padded):
+        x = torch.randn(len(lengths), L, 8)
+        mask = _padded_mask(lengths, L, causal) if padded else None
+        xs = x.clone().requires_grad_()
+        out = layer(xs, attention_mask = mask)
+        out.square().sum().backward()
+        xr = x.clone().requires_grad_()
+        ref = _MaskDecoderLayer.forward.__wrapped__(reference, xr, attention_mask = mask)
+        ref.square().sum().backward()
+        torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-5)
+        torch.testing.assert_close(xs.grad, xr.grad, rtol = 1e-5, atol = 1e-5)
+
+    step([16, 12], 16, True)
+    step([20, 17], 20, True)
+    before = counter.frame_count
+    step([24, 24], 24, False)  # unpadded: transformers passes None
+    step([18, 9], 18, True)
+    step([14, 14], 14, False)
+    extra = counter.frame_count - before
+    torch._dynamo.reset()
+    assert extra == 0
+
+
+def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
+    """Batch size 1 / never padded: None stays None (is_causal SDPA keeps its fast kernel)."""
+    M = _load()
+    layer = _MaskDecoderLayer().train()
+    hidden = torch.zeros(2, 6, 8)
+    assert M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"] is None
+    # Unknown attention direction: a 4D mask is not guessed.
+    layer.self_attn = types.SimpleNamespace()
+    M._normalise_mask(layer, hidden, {"attention_mask": _padded_mask([6, 4], 6)})
+    assert M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"] is None
+    # 2D padding masks (GDN / linear attention) rebuild as all ones in the same dtype.
+    M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1] * 6, [1] * 4 + [0] * 2])})
+    rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    assert rebuilt.dtype == torch.long and rebuilt.shape == (2, 6) and bool((rebuilt == 1).all())
+
+
 def test_rebind_globals_resolves():
     M = _load()
     ns = {"__name__": "not_a_registered_module", "OFFSET": 3}
