@@ -40,6 +40,7 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-cache-snapshot";
 import {
   isServedByLlamaCpp,
   resumesThought,
@@ -2941,7 +2942,7 @@ function isAutoLoadableLocalRow(
 ): boolean {
   return (
     (AUTO_LOAD_LOCAL_SOURCES.has(row.source) ||
-      (admitHfCache && row.source === "hf_cache")) &&
+      (row.source === "hf_cache" && (admitHfCache || isOtherCacheSnapshot(row)))) &&
     // Absent capabilities means unclassified, not "not chat": requiring true fell through to downloading the default.
     row.capabilities?.can_chat !== false &&
     row.partial !== true &&
