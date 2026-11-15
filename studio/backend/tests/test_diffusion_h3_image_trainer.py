@@ -76,6 +76,8 @@ def _train(
     # The tiny release shares the encoder across runs: the trainer frees its storage after encoding.
     monkeypatch.setattr(trainer, "release_text_encoder", lambda m: None)
     monkeypatch.setattr(trainer, "resolve_train_device", lambda: "cpu")
+    # the real training adapter is for the 33B DiT, not the tiny one
+    monkeypatch.setenv(trainer.TRAINING_ADAPTER_ENV, "off")
     events = []
     cfg = DiffusionLoraConfig(
         base_model = str(root),
@@ -437,3 +439,27 @@ def test_native_ai_toolkit_lora_names_merge_like_the_converted_weights():
     assert set(state) == set(want)
     for key in want:
         assert torch.allclose(state[key], want[key], atol = 1e-5), key
+
+
+def test_training_adapter_auto_falls_back_and_explicit_values(tmp_path, monkeypatch):
+    _stack()
+    import huggingface_hub
+
+    from core.training import diffusion_h3_image_trainer as trainer
+
+    def boom(*a, **k):
+        raise OSError("offline")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", boom)
+    notes = []
+    monkeypatch.delenv(trainer.TRAINING_ADAPTER_ENV, raising = False)
+    assert trainer.training_adapter_path(None, notes.append) is None and notes
+    monkeypatch.setenv(trainer.TRAINING_ADAPTER_ENV, "ostris")
+    with pytest.raises(OSError):
+        trainer.training_adapter_path(None)
+    monkeypatch.setenv(trainer.TRAINING_ADAPTER_ENV, "off")
+    assert trainer.training_adapter_path(None) is None
+    f = tmp_path / "a.safetensors"
+    f.write_bytes(b"x")
+    monkeypatch.setenv(trainer.TRAINING_ADAPTER_ENV, str(f))
+    assert trainer.training_adapter_path(None) == str(f)

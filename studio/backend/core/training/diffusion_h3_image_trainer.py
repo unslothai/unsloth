@@ -98,8 +98,10 @@ TEXT_ENCODER_ENV = "UNSLOTH_H3_IMAGE_TRAIN_TEXT_ENCODER"
 
 
 # A de-distillation "training adapter" merged into the FROZEN base while training only (never saved, never loaded at
-# inference), as ai-toolkit trains this model: "off" (default), "ostris" (ostris/minimax_h3_training_adapter's
-# minimax_h3_image_training_adapter_v1), or a local .safetensors path. Native or diffusers key names both load.
+# inference), as ai-toolkit trains this model. "auto" (default) = ostris' minimax_h3_image_training_adapter_v1, and no
+# adapter when it cannot be fetched; "ostris" = that file or fail; "off"; or a local .safetensors path. On an A100-80 /
+# G4 A/B (300 steps, 18 tarot images) the adapter arm kept clean line art and legible card titles where the plain arm
+# came out blotchy; both leak the style into untriggered prompts alike.
 TRAINING_ADAPTER_ENV = "UNSLOTH_H3_IMAGE_TRAINING_ADAPTER"
 OSTRIS_ADAPTER = (
     "ostris/minimax_h3_training_adapter",
@@ -107,19 +109,30 @@ OSTRIS_ADAPTER = (
 )
 
 
-def training_adapter_path(hf_token: Optional[str] = None) -> Optional[str]:
-    value = (os.environ.get(TRAINING_ADAPTER_ENV) or "off").strip()
-    if value.lower() in ("", "0", "off", "none", "false", "no"):
+def training_adapter_path(hf_token: Optional[str] = None, on_note = None) -> Optional[str]:
+    value = (os.environ.get(TRAINING_ADAPTER_ENV) or "auto").strip()
+    if value.lower() in ("0", "off", "none", "false", "no"):
         return None
-    if value.lower() == "ostris":
+    if value.lower() in ("auto", "ostris"):
         from huggingface_hub import hf_hub_download
 
         from core.inference.diffusion import hub_cache_dir
 
         repo, filename = OSTRIS_ADAPTER
-        return hf_hub_download(repo, filename, token = hf_token, cache_dir = hub_cache_dir())
+        try:
+            return hf_hub_download(repo, filename, token = hf_token, cache_dir = hub_cache_dir())
+        except Exception as exc:  # noqa: BLE001 - auto trains without it
+            if value.lower() == "ostris":
+                raise
+            if on_note is not None:
+                on_note(
+                    f"Training adapter {repo}/{filename} unavailable ({exc}); training without it."
+                )
+            return None
     if not Path(value).expanduser().is_file():
-        raise ValueError(f"{TRAINING_ADAPTER_ENV}={value!r} is not 'ostris', 'off' or a LoRA file")
+        raise ValueError(
+            f"{TRAINING_ADAPTER_ENV}={value!r} is not 'auto', 'ostris', 'off' or a LoRA file"
+        )
     return str(Path(value).expanduser())
 
 
@@ -572,7 +585,9 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
     dit_root = _hub_root(
         cfg, tuple(h3i.H3_IMAGE_BASE_PATTERNS) + tuple(h3i.H3_IMAGE_DENSE_DIT_PATTERNS)
     )
-    adapter = training_adapter_path(cfg.hf_token)
+    adapter = training_adapter_path(
+        cfg.hf_token, on_note = lambda m: _emit(on_event, "warning", message = m)
+    )
     adapter_deltas = h3i.read_lora_deltas([(adapter, 1.0)]) if adapter else None
     transformer = load_transformer(
         dit_root, device, base_precision, table = not dense_adaln, lora_deltas = adapter_deltas

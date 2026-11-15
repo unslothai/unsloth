@@ -523,7 +523,7 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video with sound: trains on clips that have a soundtrack.",
     },
-    # Measured on an A100-80 (rank 32, ~1 MP canvases): bf16 base peaks at 45.5 GB (0.94 step/s), int8 base at 24.3 GB
+    # Measured (rank 32, ~1 MP canvases): bf16 base peaks at 45.5 GB (0.94 step/s A100-80, 1.51 step/s G4), int8 base at 24.3 GB
     # (0.81 step/s); the int8 Qwen3-VL-32B conditioner is freed before the DiT loads. auto takes bf16 from 56 GB free.
     "minimax-h3-image": {
         "params": "33B",
