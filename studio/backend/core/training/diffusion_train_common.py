@@ -495,7 +495,7 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "params": "7B",
         "qlora_vram_gb": 20,
         "gated": False,
-        "note": "Also runs on Qwen-Image-2.1-Turbo.",
+        "note": "Trains on Qwen-Image-2.1, runs on 2.1 or Turbo.",
     },
     "z-image": {"params": "6B", "qlora_vram_gb": 12, "gated": False, "note": ""},
     "krea-2": {

@@ -145,6 +145,10 @@ def test_train_ui_pairs_both_training_ids_with_a_loadable_turbo_pipeline():
     # The mirror id pairs with upstream Turbo: Turbo's unsloth mirror is its prequant artifact repo, not a pipeline pick.
     assert info["deploy_bases"] == {BASE: TURBO, "unsloth/Qwen-Image-2.1": TURBO}
     assert info["supports_samples"] and info["max_train_batch_size"] is None
+    # info["note"] is blanked on a host without a training GPU, so read the spec the panel shows.
+    from core.training.diffusion_train_common import _FAMILY_TRAIN_SPECS
+
+    assert _FAMILY_TRAIN_SPECS[FAMILY]["note"] == "Trains on Qwen-Image-2.1, runs on 2.1 or Turbo."
 
 
 def test_defaults_sit_on_the_32_grid_and_off_grid_resolutions_are_refused(tmp_path):
