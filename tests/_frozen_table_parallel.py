@@ -346,6 +346,8 @@ def worker_case(
     fault = None,
     steps = 2,
     sharded_load = False,
+    second_adapter = False,
+    layers_per_stage = None,
 ):
     import gc as gc_module
 
@@ -371,6 +373,9 @@ def worker_case(
     except (ValueError, RuntimeError, NotImplementedError) as e:
         rec["load_refused"] = f"{type(e).__name__}: {e}"[:400]
         return rec
+    if second_adapter:  # a named adapter: PEFT saves it in <directory>/second
+        from peft import LoraConfig
+        model.add_adapter("second", LoraConfig(r = 2, target_modules = ["o_proj"]))
     files = set(table_files(path).values())
     table_keys = set(table_files(path))
     rec["table_keys_materialized"] = sorted(set(materialized) & table_keys)
@@ -427,7 +432,13 @@ def worker_case(
         ppn = load_module("pp_native")
         # leak_table: a reference kept to the table module, so a stage without its layer would still hold it.
         rec_leak = table_modules(model) if fault == "leak_table" else None
-        pp = ppn.apply_pipeline_parallel(model, mesh, n_microbatches = n_mb, schedule = schedule)
+        pp = ppn.apply_pipeline_parallel(
+            model,
+            mesh,
+            n_microbatches = n_mb,
+            schedule = schedule,
+            config = ppn.PPConfig(layers_per_stage = layers_per_stage),
+        )
         mine = list(ids.chunk(n_mb))
         step = lambda: pp.step(ids, labels)
         params = pp.parameters()
@@ -515,11 +526,16 @@ def worker_case(
             if writer:
                 model.save_pretrained(save_dir)
         dist.barrier()
-    record = os.path.join(save_dir, "frozen_tables.json")
-    if os.path.exists(record):
-        import json
-        with open(record) as f:
-            rec["provenance"] = json.load(f)
+    import json
+
+    for key, directory in (
+        ("provenance", save_dir),
+        ("second_provenance", os.path.join(save_dir, "second")),
+    ):
+        record = os.path.join(directory, "frozen_tables.json")
+        if os.path.exists(record):
+            with open(record) as f:
+                rec[key] = json.load(f)
     saved = os.path.join(save_dir, "adapter_model.safetensors")
     if os.path.exists(saved):
         from safetensors import safe_open

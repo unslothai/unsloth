@@ -2400,7 +2400,11 @@ class PipelineParallel:
             finally:
                 peft_model.get_peft_model_state_dict = selection
             if kwargs.get("is_main_process", True):
-                provenance.write_provenance(save_directory, tables)
+                # Every stage's tables, next to each adapter PEFT wrote ("default" here, others in <name>/),
+                # replacing the writer stage's own record that PEFT's save wrote there.
+                provenance.write_adapter_provenance(
+                    self.model, save_directory, tables, kwargs.get("selected_adapters")
+                )
         if self.composed:
             dist.barrier()
         elif self.num_stages > 1:

@@ -69,6 +69,19 @@ def test_pp_tables(ckpt, cell):
             assert res[0]["stats"]["gathers"] == 2 * 2 * 2, res[0]["stats"]
 
 
+def test_pp_named_adapter_gets_every_stages_tables(ckpt):
+    """The table lives on stage 1 only (stage 0 = layer 0), and pp rank 0 writes the adapter: both the default
+    adapter and the named one (saved in <directory>/second) get the merged record of every stage."""
+    _pipelining()
+    res = ftp.run(
+        2, mode = "pp", path = ckpt, table_mode = "ram", second_adapter = True, layers_per_stage = [1, 3]
+    )
+    assert [r["owns_table"] for r in res] == [False, True]
+    record, second = res[0].get("provenance"), res[0].get("second_provenance")
+    assert record and record["tables"], record
+    assert second == record
+
+
 def test_pp_catches_a_memo_that_crosses_micro_batches(ckpt):
     _pipelining()
     res = ftp.run(
