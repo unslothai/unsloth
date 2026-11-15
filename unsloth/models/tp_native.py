@@ -1542,6 +1542,11 @@ def _lora_dropout(self, adapter, x):
     if state is not None:
         state.bypass += 1
     try:
+        if _weight(self)[1].__dict__.get("_unsloth_tp_grouped"):
+            # A grouped linear's input [..., G / tp, in_g] holds only this rank's groups: its slice of the mask
+            # one process draws for [..., G, in_g].
+            rank, tp = self._unsloth_tp_coord
+            return _apply_mask(x, _full_mask(x.shape, x.dim() - 2, rank, tp, p, x), p)
         if self._unsloth_tp_style in (
             COLWISE,
             KV_REPLICATED,

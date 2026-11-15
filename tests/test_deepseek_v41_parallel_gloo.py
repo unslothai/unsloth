@@ -132,6 +132,7 @@ def _config(**over):
 def build(
     seed = 0,
     lora = True,
+    dropout = 0.0,
     **over,
 ):
     from peft import LoraConfig, get_peft_model
@@ -163,7 +164,9 @@ def build(
     names.discard("lm_head")
     # The indexer selects (no gradient) and the router stays frozen.
     regex = r"^(?!.*\.indexer\.)(?!.*\.gate\.).*\.(" + "|".join(sorted(names)) + r")$"
-    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = regex, init_lora_weights = False)
+    config = LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = regex, init_lora_weights = False, lora_dropout = dropout
+    )
     assert register_grouped_linear_lora(config, model)
     torch.manual_seed(seed + 1)
     return get_peft_model(model, config)
@@ -183,10 +186,17 @@ def _lora(model, full = lambda g, p: g):
     }
 
 
-def _reference(mode, ids, labels, parts, steps):
+def _reference(
+    mode,
+    ids,
+    labels,
+    parts,
+    steps,
+    dropout = 0.0,
+):
     from peft import get_peft_model_state_dict
 
-    model = build()
+    model = build(dropout = dropout)
     opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr = 1e-2)
     per = ids.shape[0] // parts
     chunks = [(ids[i * per : (i + 1) * per], labels[i * per : (i + 1) * per]) for i in range(parts)]
@@ -228,6 +238,7 @@ def _case_parity(
     steps = 2,
     fault = None,
     layers_per_stage = None,
+    dropout = 0.0,
 ):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
@@ -235,8 +246,10 @@ def _case_parity(
     bsz = max(2, world) if mode == "fsdp2" else (max(2, n_mb) if mode == "pp" else 2)
     ids, labels = batch(bsz)
     parts = world if mode == "fsdp2" else n_mb
-    ref = _reference(mode, ids, labels, parts, steps)
-    model = build()
+    ref = _reference(mode, ids, labels, parts, steps, dropout)
+    model = build(
+        dropout = dropout
+    )  # LoRA dropout: the same RNG draws as the reference, in the same order
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = (mode,))[mode]
     save_dir = os.path.join(tmp, "adapter")
     info = {}
@@ -447,6 +460,9 @@ def _parity_problems(results, cell):
 CELLS = {
     "tp2": dict(world = 2, mode = "tp"),
     "tp4": dict(world = 4, mode = "tp"),
+    # LoRA dropout on every linear: each rank's masks are its slice of the one-process masks (grouped o_a_proj:
+    # its own groups' slice)
+    "tp2_lora_dropout": dict(world = 2, mode = "tp", dropout = 0.3),
     "fsdp2_2": dict(world = 2, mode = "fsdp2"),
     "pp2_gpipe": dict(world = 2, mode = "pp"),
     "pp2_1f1b": dict(world = 2, mode = "pp", schedule = "1f1b"),
