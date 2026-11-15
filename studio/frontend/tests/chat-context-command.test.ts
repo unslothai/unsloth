@@ -141,7 +141,7 @@ function loadCount(
     {
       "../utils/refresh-context-usage": { branchSignature: JSON.stringify },
       "../stores/chat-runtime-store": {
-        useChatRuntimeStore: { getState: () => state },
+        useChatRuntimeStore: { getState: () => ({ ...state }) },
       },
       "./chat-adapter": {
         buildLocalTokenCountHistory: async () => ({
@@ -182,6 +182,7 @@ function runtimeState(overrides: Record<string, unknown> = {}) {
         cacheWriteTokens: 4,
       },
       params: { checkpoint: "org/A-GGUF" },
+      queuedSettingsEpoch: 0,
       runningByThreadId: {},
       setContextUsage: (usage: unknown) => published.push(usage),
       ...overrides,
@@ -250,6 +251,15 @@ test("the ring keeps its number when the branch moved during the count", async (
   await module.countContext([{ id: "m1" }, { id: "m2" }], "t1", () => [
     { id: "m1" },
   ]);
+  assert.deepEqual(published, []);
+});
+
+test("a prompt-settings change while counting invalidates the card and the ring", async () => {
+  const { state, published } = runtimeState();
+  const { module } = loadCount(state, { input_tokens: 348 });
+  const counting = module.countContext([], "t1", () => []);
+  state.queuedSettingsEpoch = 1;
+  assert.equal(await counting, null);
   assert.deepEqual(published, []);
 });
 

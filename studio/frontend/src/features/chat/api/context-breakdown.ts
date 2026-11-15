@@ -38,6 +38,7 @@ export async function countContext(
   const now = useChatRuntimeStore.getState();
   if (
     now.params.checkpoint !== checkpoint ||
+    now.queuedSettingsEpoch !== start.queuedSettingsEpoch ||
     branchSignature(readBranch()) !== signature
   ) {
     return null;
