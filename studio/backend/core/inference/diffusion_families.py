@@ -246,7 +246,7 @@ class DiffusionFamily:
     sd_cpp_flow_shift: Optional[float] = None
     # sd-cli --scheduler; "simple" matches the diffusers grid (sd.cpp's default ends at sigma ~0.003). None = sd.cpp's.
     sd_cpp_scheduler: Optional[str] = None
-    # sd-cli / sd-server --rng; "cpu" draws the release's CPU torch noise (same seed, same image as its CLI). None = sd.cpp's.
+    # sd-cli / sd-server --rng; "cpu" matches the release CLI's noise per seed. None = sd.cpp's default.
     sd_cpp_rng: Optional[str] = None
     # (id substring, shift) overriding sd_cpp_flow_shift under sd_cpp_scheduler; first match wins, None = sd.cpp's.
     sd_cpp_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(

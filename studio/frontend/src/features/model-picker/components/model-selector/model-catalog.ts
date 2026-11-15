@@ -245,9 +245,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
-    // The dense row is CUDA / ROCm only. Keeps the official id (loader reads VAE, tokenizer, config from it), so no
-    // fetchedFrom. Size is the bf16 total; the fit rule reads the measured offload tiers instead. The GGUFs run on
-    // sd.cpp anywhere (CPU, Apple Silicon, small cards), with the release VAE and the H3 Qwen3-VL-32B GGUF encoder.
+    // The dense row is CUDA / ROCm only and keeps the official id (the loader reads VAE, tokenizer, config from it).
+    // Size is the bf16 total; the fit rule reads the measured offload tiers instead.
     canonicalId: "MiniMaxAI/MiniMax-H3-Image",
     displayName: "MiniMax-H3-Image",
     description: "Text-to-image and image editing with up to 16 pictures",
