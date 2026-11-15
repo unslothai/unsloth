@@ -384,9 +384,9 @@ if triton is not None:
             TO_F16,
         )
 
-    # Token counts and block counts stay out of the compile key (Triton would otherwise specialise them on
-    # % 16 and == 1), so one compile serves every sequence length.
-    @triton.jit(do_not_specialize = ["sq", "sk", "n_qblk"])
+    # Token, block and head counts stay out of the compile key (Triton would otherwise specialise them on
+    # % 16 and == 1), so one compile per head dim serves every sequence length and head count.
+    @triton.jit(do_not_specialize = ["sq", "sk", "n_heads", "n_qblk"])
     def prep_kernel(
         q_ptr,
         k_ptr,
@@ -470,7 +470,7 @@ if triton is not None:
                     V_T == 2,
                 )
 
-    @triton.jit(do_not_specialize = ["sk", "n_kblk"])
+    @triton.jit(do_not_specialize = ["sk", "n_heads", "n_kblk"])
     def kv_kernel(
         k_ptr,
         kc_ptr,

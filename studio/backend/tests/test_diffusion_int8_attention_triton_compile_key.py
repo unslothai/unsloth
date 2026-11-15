@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """The fused INT8 attention quantiser launches (``prep_kernel``, ``kv_kernel``) compile once per configuration, not
-once per sequence length class: Triton specialises an int argument on ``% 16 == 0`` and ``== 1`` unless told not to,
-so the token and block counts must stay out of the compile key. CPU only: the key is computed from the launch
+once per sequence length or head count class: Triton specialises an int argument on ``% 16 == 0`` and ``== 1`` unless told not to,
+so the token, block and head counts must stay out of the compile key. CPU only: the key is computed from the launch
 arguments with Triton's own specialisation function, nothing is compiled."""
 
 from __future__ import annotations
@@ -54,13 +54,18 @@ def _key(kernel, args):
     return tuple(ints)
 
 
-@pytest.mark.parametrize("D,H", [(128, 24), (128, 56), (64, 32)])
-def test_fused_quantiser_kernels_compile_once_across_lengths(monkeypatch, D, H):
+# Head counts of the served models (Wan 2.2 5B 24, Z-Image 30, FLUX / Qwen-Image / LTX 32, Wan A14B 40,
+# HunyuanVideo 56): both residue classes mod 16.
+HEADS = (24, 30, 32, 40, 56)
+
+
+@pytest.mark.parametrize("D", [128, 64])
+def test_fused_quantiser_kernels_compile_once_across_lengths(monkeypatch, D):
     monkeypatch.setattr(T, "prefetch_fix", lambda: False)
     cfg = dict(T.DEFAULT_CONFIGS[D])
     keys = {"prep": set(), "kv": set()}
     n_ptrs = {"prep": 9, "kv": 9}
-    for S in LENGTHS:
+    for S, H in ((S, H) for S in LENGTHS for H in HEADS):
         q = torch.empty(1, S, H, D, device = "meta", dtype = torch.bfloat16)
         plan = T._make_plan(q, q, q, cfg, None, None)
         for name, kernel in (("prep", T.prep_kernel), ("kv", T.kv_kernel)):
