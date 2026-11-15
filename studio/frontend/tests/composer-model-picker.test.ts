@@ -318,6 +318,30 @@ test("the picker opens with its list unless the user collapsed it", () => {
   assert.match(picker, /onClick=\{\(\) => setExpanded\(false\)\}/);
 });
 
+test("each load starts collapsed, keeps the user's choice per model, and an eject forgets it", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /chosenLoaded && checkpoint \? `\$\{checkpoint\}/);
+  // A load seen in flight is fresh: collapsed, whatever was stored for that model.
+  assert.match(picker, /if \(modelLoading\) \{\s+sawLoad\.current = true;/);
+  assert.match(
+    picker,
+    /\(fresh \? undefined : readModelExpanded\(\)\[residentKey\]\) \?\? false/,
+  );
+  // A user toggle is stored against the resident model.
+  assert.match(
+    picker,
+    /if \(residentKeyRef\.current\) \{\s+writeModelExpanded\(residentKeyRef\.current, next\);/,
+  );
+  // An eject drops that model's choice and expands.
+  assert.match(
+    picker,
+    /writeModelExpanded\(prev, null\);\s+setExpanded\(true\);/,
+  );
+  assert.match(picker, /Math\.max\(0, keys\.length - MODEL_EXPANDED_MAX\)/);
+});
+
 test("On Device sections follow the header picker's buckets and order", () => {
   assert.equal(repoSection("unsloth/gemma-4-E2B-it-GGUF"), "unsloth");
   assert.equal(repoSection("Qwen/Qwen3-8B"), "other");
@@ -629,7 +653,7 @@ test("the open picker is one height on every tab, loaded model or not", () => {
   );
   assert.match(
     picker,
-    /\(isExpanded \|\| configTarget\) &&\s+"h-\[calc\(460px\*var\(--ui-space-scale,1\)\)\]"/,
+    /\(isExpanded \|\| configTarget\) &&\s+"h-\[calc\(440px\*var\(--ui-space-scale,1\)\)\]"/,
   );
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
@@ -1495,5 +1519,35 @@ test("a pinned-quant row reads its repo's disk state, opens its own Run settings
   assert.match(
     picker,
     /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*foldedQuants,\s*expandQuantizations,\s*quantsEpoch,\s*\]\);/,
+  );
+});
+
+test("a model with no logo of its own shows no icon", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const mark = picker.slice(
+    picker.indexOf("function RowMark("),
+    picker.indexOf("interface SourceTab"),
+  );
+  assert.doesNotMatch(mark, /OwnerAvatar|LaptopIcon|Download01Icon|CloudIcon/);
+  assert.match(mark, /return null;\s*\}\s*$/);
+  assert.match(picker, /\) : hasRowMark\(row\) \? \(/);
+  assert.equal(
+    picker.match(
+      /chosenName && chosenLoaded && hasRowMark\(chosenMark\) \? \(/g,
+    )?.length,
+    2,
+  );
+});
+
+test("a loaded cache path keeps its maker logo before the inventory lands", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // After a refresh the chip knows only the snapshot path until rows load.
+  assert.match(
+    picker,
+    /hubParts\(row\.id \? \(hfCacheRepoId\(row\.id\) \?\? undefined\) : undefined\)/,
   );
 });
