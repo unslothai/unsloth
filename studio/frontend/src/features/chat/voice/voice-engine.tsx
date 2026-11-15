@@ -89,7 +89,6 @@ export const VoiceEngine: FC = () => {
       // Leftover transcript doubles up as the next session appends; a typed draft is the user's.
       const typed = withoutVoiceText(fresh.getState().text);
       if (typed !== null) fresh.setText(typed);
-      // Via the runtime, not the Dictate button: voice mode hides it.
       fresh.startDictation();
     };
 
@@ -136,8 +135,7 @@ export const VoiceEngine: FC = () => {
   if (isPlayingRef.current && !isPlaying) playedAtRef.current = performance.now();
   isPlayingRef.current = isPlaying;
   useEffect(() => {
-    // Audible output only (plus its echo tail and sentence gaps): while the reply is still being thought
-    // or synthesized nothing plays, so a normal-volume interjection is heard, not held to the barge-in bar.
+    // Audible output only (plus echo tail and gaps): before playback an interjection is not held to the barge-in bar.
     registerVoicePlayback(
       () => isPlayingRef.current || performance.now() - playedAtRef.current < PLAYBACK_TAIL_MS,
     );
@@ -212,7 +210,6 @@ export const VoiceEngine: FC = () => {
     const deferredClear = (n: number) => {
       if (voiceModeRef.current !== "active") return;
       const fresh = auiRef.current.composer();
-      // Only the transcript the composer refills: a draft typed since, or another chat's, stays.
       if (voiceWroteBox(fresh.getState().text)) {
         fresh.setText("");
         if (n < 5) {
@@ -444,8 +441,7 @@ export const VoiceEngine: FC = () => {
 
     const text = latestAssistantText();
     if (!text) {
-      // A run with no answer text (reasoning only, an error) still closes the stream it opened:
-      // playback end resumes listening and sends queued utterances.
+      // A run with no answer text still closes its stream, or listening never resumes.
       if (streamBegun) endStreamRef.current("");
       else resumeListen();
       return;
@@ -486,7 +482,6 @@ export const VoiceEngine: FC = () => {
     useChatRuntimeStore.getState().setVoiceMode(next);
 
     if (next === "configuring") {
-      // The pick is kept: null means silence now that the browser voice is gone.
       primeAudio();
     }
 

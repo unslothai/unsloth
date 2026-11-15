@@ -34,7 +34,6 @@ test("the re-arm clears only the transcript the loop wrote, never a typed draft"
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(engine, /const typed = withoutVoiceText\(fresh\.getState\(\)\.text\);/);
   assert.doesNotMatch(engine, /if \(fresh\.getState\(\)\.text\) \{\s*fresh\.setText\(""\);/);
-  // Every transcript reaches the composer through emitSpeech, which records it.
   assert.equal((loop.match(/for \(const cb of speechCallbacks\)/g) ?? []).length, 1);
   assert.match(loop, /const emitSpeech = \(transcript: string, isFinal: boolean\) => \{\s*voiceBoxText = transcript;/);
 });
@@ -235,7 +234,6 @@ test("the orb's Escape stays out of other pages while Chat is hidden; speech own
   const synth = player.slice(player.indexOf("const synthesize = useCallback("));
   const own = synth.indexOf("if (tries >= 3 || !(await ensure())) {");
   assert.ok(own > 0 && own < synth.indexOf("url = await request();"));
-  // A failed voice load is tried once per reply, not once (and one toast) per sentence.
   assert.ok(synth.indexOf("if (slotFailedReqRef.current === reqId) return null;") < own);
 });
 

@@ -126,8 +126,7 @@ export class StudioDictationAdapter implements DictationAdapter {
   }
 
   private createSession(): StudioDictationSession {
-    // First, whatever the mic target: the loop owns its turns. A null chatId is an unlinked
-    // composer (annotations, Compare), which keeps plain dictation.
+    // First, whatever the mic target; a null chatId (annotations, Compare) keeps plain dictation.
     if (this.chatId !== null && getVoiceMode() === "active") {
       const session = startVoiceListen();
       if (session) return session;
