@@ -116,6 +116,32 @@ def _decode_buffers(model):
     return sum("paged_attention" in m.__dict__ for m in model.modules())
 
 
+def _resident_graph_buffers(model):
+    """Graph KV caches whose pages are mapped (a VMM cache asleep through training holds none)."""
+    from unsloth.models import _decode_vmm as V
+    return sum(
+        V.buffer_of(bufs[0]) is None or V.buffer_of(bufs[0]).awake
+        for m in model.modules()
+        for bufs in (m.__dict__.get("_unsloth_graph_buffers") or {}).values()
+    )
+
+
+def _vmm(runtime, vmm):
+    from unsloth.models import _decode_vmm as V
+    runtime.setenv("UNSLOTH_DECODE_GRAPHS_VMM", vmm)
+    if vmm == "1" and not V.available(torch.device("cuda", torch.cuda.current_device())):
+        pytest.skip("CUDA virtual memory management")
+
+
+def _assert_training_got_the_memory(model, vmm):
+    # VMM: the caches sleep (pages freed, addresses and graphs kept); else everything is released.
+    assert _resident_graph_buffers(model) == 0 and _decode_buffers(model) == 0
+    if vmm == "1":
+        assert _graph_buffers(model) > 0 and _Stats(model)()["graphs"] > 0
+    else:
+        assert _graph_buffers(model) == 0 and _Stats(model)()["graphs"] == 0
+
+
 def _gen(
     model,
     tok,
@@ -130,9 +156,11 @@ def _gen(
 
 
 @rl_default
-def test_plain_generate_on_by_default_bitwise_and_released(runtime):
+@pytest.mark.parametrize("vmm", ["0", "1"])
+def test_plain_generate_on_by_default_bitwise_and_released(runtime, vmm):
     if not G._STUDIO_DEFAULT_OK:
         pytest.skip("the plain generate() default stays eager on native Windows")
+    _vmm(runtime, vmm)
     model, tok = _load()
     FastLanguageModel.for_inference(model)
     runtime.setenv(ENV, "0")
@@ -160,10 +188,10 @@ def test_plain_generate_on_by_default_bitwise_and_released(runtime):
     model.generate(**enc, max_new_tokens = 8, do_sample = False, pad_token_id = tok.pad_token_id)
     assert _graph_buffers(model) > 0
     FastLanguageModel.for_training(model)
-    assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
-    assert _Stats(model)()["graphs"] == 0
+    _assert_training_got_the_memory(model, vmm)
 
-    # generate() called on a model in training mode returns to training: everything released.
+    # generate() called on a model in training mode returns to training, and it returned its cache (which
+    # views the decode buffers): everything is released, VMM or not.
     _gen(model, tok)
     assert model.training
     assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
@@ -284,11 +312,14 @@ def test_out_of_memory_in_the_graph_path_redoes_the_call_eagerly(runtime):
 
 
 @rl_default
-def test_training_forward_without_for_training_frees_generate_memory(runtime):
+@pytest.mark.parametrize("vmm", ["0", "1"])
+def test_training_forward_without_for_training_frees_generate_memory(runtime, vmm):
     """Sampling in a trainer callback: generate() on an inference-mode model, then training resumes
-    with model.train() only. The first training forward frees the graphs and decode caches."""
+    with model.train() only. The first training forward frees the decode caches (and, without VMM, the
+    graphs); with VMM the graphs replay on the next generate()."""
     if not G._STUDIO_DEFAULT_OK:
         pytest.skip("the plain generate() default stays eager on native Windows")
+    _vmm(runtime, vmm)
     model, tok = _load()
     FastLanguageModel.for_inference(model)
     enc = tok(PROMPTS, return_tensors = "pt", padding = True).to("cuda")
@@ -297,8 +328,15 @@ def test_training_forward_without_for_training_frees_generate_memory(runtime):
     model.train()
     out = model(**enc, labels = enc.input_ids)
     out.loss.backward()
-    assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
-    assert _Stats(model)()["graphs"] == 0
+    _assert_training_got_the_memory(model, vmm)
+    model.zero_grad(set_to_none = True)
+    FastLanguageModel.for_inference(model)
+    captures = _Stats(model)()["captures"]
+    graphed = _gen_tokens(model, tok, PROMPTS, 8)
+    if vmm == "1":
+        assert _Stats(model)()["captures"] == captures  # woken caches, same addresses: replayed
+    runtime.setenv(ENV, "0")
+    assert torch.equal(graphed, _gen_tokens(model, tok, PROMPTS, 8))
 
 
 def _gen_tokens(model, tok, prompts, new):

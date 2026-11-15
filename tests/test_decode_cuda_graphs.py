@@ -257,14 +257,20 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
 
 @cuda
 @pytest.mark.gpu
-@pytest.mark.parametrize("stale", [False, True])
-def test_kept_graphs_replay_updated_adapters_after_optimizer_steps(stale, monkeypatch):
+@pytest.mark.parametrize("stale, keep", [(False, "1"), (True, "1"), (False, "auto")])
+def test_kept_graphs_replay_updated_adapters_after_optimizer_steps(stale, keep, monkeypatch):
     """RL loop (decode, LoRA train step, decode, ...) with the graphs kept through training: no capture after
     the first round, and every round's graph decode is bit for bit the eager decode of the updated adapters.
     Freed cuBLAS workspaces (Inductor CUDA graph trees in training) re-capture the next round.
     stale: the decode casts are re-made (new addresses) behind a pinned fingerprint, so the kept graphs read
-    the old cast copies; the comparison must catch it."""
-    monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", "1")
+    the old cast copies; the comparison must catch it. auto: the KV caches on CUDA virtual memory sleep through
+    training (their pages go back), so the graphs are kept from the first round as well."""
+    from unsloth.models import _decode_vmm as V
+
+    monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", keep)
+    if keep == "auto" and not V.available(torch.device("cuda", torch.cuda.current_device())):
+        pytest.skip("CUDA virtual memory management")
+    sleeps = V.SLEEPS
     model, tok = _load(MODELS[1], False, lora = True)
     ids = tok(PROMPTS[:2], return_tensors = "pt", padding = True).input_ids.to("cuda")
     causal = _causal(model)
@@ -294,6 +300,8 @@ def test_kept_graphs_replay_updated_adapters_after_optimizer_steps(stale, monkey
             torch._C._cuda_clearCublasWorkspaces()
     assert not stale
     assert captures == [1, 0, 1], captures
+    if keep == "auto":
+        assert V.SLEEPS > sleeps
 
 
 @cuda

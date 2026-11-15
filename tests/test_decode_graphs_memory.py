@@ -733,7 +733,7 @@ def test_auto_keeps_graphs_through_training_only_after_a_measured_step(G, monkey
     # Less headroom: released.
     monkeypatch.setattr(G, "_free_bytes", lambda device: 7 * GB)
     assert G.release_for_training(model) is True
-    assert model.held() == 0 and G.KEEP_CASTS not in model.__dict__
+    assert model.held() == 0 and not model.__dict__.get(G.KEEP_CASTS)
 
 
 @pytest.mark.parametrize("mode, kept", [("0", False), ("1", True)])
@@ -771,3 +771,48 @@ def test_freed_cublas_workspaces_invalidate_every_graph(G, monkeypatch):
     G._watch_cublas_workspaces()  # wraps once
     torch._C._cuda_clearCublasWorkspaces()
     assert calls == [1, 1] and G.BUFFER_EPOCH == buffers + 2
+
+
+class _FakeVMM:
+    """Stands in for _decode_vmm: every graph KV cache is a VMM range."""
+
+    def __init__(self, busy = False):
+        self.busy, self.asleep, self.woken = busy, set(), 0
+
+    def buffer_of(self, tensor):
+        return self if isinstance(tensor, torch.Tensor) and tensor.dim() == 5 else None
+
+    def in_use(self, tensor):
+        return self.busy
+
+    def sleep(self, tensor):
+        self.asleep.add(id(tensor))
+        return tensor.numel()
+
+    def wake(self, tensor):
+        if id(tensor) in self.asleep:
+            self.asleep.discard(id(tensor))
+            self.woken += 1
+            return True
+        return False
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_vmm_caches_sleep_through_training_from_the_first_round(G, monkeypatch, busy):
+    monkeypatch.delenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", raising = False)
+    vmm = _FakeVMM(busy)
+    monkeypatch.setattr(G, "_vmm_module", lambda: vmm)
+    monkeypatch.setattr(G, "_total_bytes", lambda device: 80 * GB)
+    _keep_env(G, monkeypatch, [0], free = 0)  # no measured step, no headroom: only sleeping can keep
+    monkeypatch.setattr(G, "_held", lambda model: (0, CUDA0))
+    model = _Model()
+    _graphed(G, model)
+    caches = [bufs[0] for a in model.attns for bufs in a._unsloth_graph_buffers.values()]
+    released = G.release_for_training(model)
+    if busy:
+        # A caller still views a cache (a returned past_key_values): released as before, nothing slept.
+        assert released is True and model.held() == 0 and not vmm.asleep
+        return
+    assert released is False and G._state(model).graphs and model.held() == 1
+    assert vmm.asleep == {id(t) for t in caches}
+    assert not any("paged_attention" in a.__dict__ for a in model.attns)

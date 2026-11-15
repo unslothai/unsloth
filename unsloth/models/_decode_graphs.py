@@ -631,9 +631,11 @@ def alloc_decode_buffers(
             with _no_inference_tensors():
                 # Zeroed: a captured step reads every row of its bucket, and a masked row still
                 # multiplies its V by 0, which is NaN for uninitialised NaN / inf bit patterns.
-                paged = torch.zeros(
-                    (rows, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = device
-                )
+                paged = _vmm_zeros((rows, 2, bsz, n_kv_heads, head_dim), dtype, device)
+                if paged is None:
+                    paged = torch.zeros(
+                        (rows, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = device
+                    )
                 temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
                 temp_KV = torch.empty(
                     (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device
@@ -645,7 +647,8 @@ def alloc_decode_buffers(
                     temp_O = temp_QA[1][:, :, :hidden_size]
                 scores = torch.empty((bsz, n_heads, 1, rows), dtype = dtype, device = device)
             bufs = store[key] = (paged, temp_QA, temp_KV, RH_Q, temp_O, scores)
-        elif FULL:
+        elif not _vmm_wake(bufs[0]) and FULL:
+            # (Woken from sleep: fresh zeroed pages at the same addresses, the captured graphs replay.)
             # A reused buffer still holds the last generation's rows: a whole-step graph reads them
             # past this one's length, and a masked inf / NaN there still turns 0 * V into NaN.
             bufs[0][seq_len:].zero_()
@@ -681,13 +684,70 @@ def resize_decode_buffers(attn, increment, bsz, n_heads, n_kv_heads, head_dim):
         if MAX_LEN_HINT + 1 > rows:
             grown = min(grown, MAX_LEN_HINT + 1)
         increment = _round_up(grown, BUCKET) - rows
-    attn.paged_attention.resize_((rows + increment, 2, bsz, n_kv_heads, head_dim))
+    old = attn.paged_attention
+    if _vmm_buffer(old) is None:
+        old.resize_((rows + increment, 2, bsz, n_kv_heads, head_dim))
+    else:
+        # A VMM range cannot resize_: a new cache (new addresses, as resize_ gives), the rows copied over.
+        shape = (rows + increment, 2, bsz, n_kv_heads, head_dim)
+        with _no_inference_tensors():
+            grown = _vmm_zeros(shape, old.dtype, old.device)
+            if grown is None:
+                grown = torch.zeros(shape, dtype = old.dtype, device = old.device)
+        grown[:rows].copy_(old)
+        for key, bufs in list(store.items()):
+            if bufs[0] is old:
+                store[key] = (grown, *bufs[1:])
+        attn.paged_attention = grown
     attn.paged_attention_K = attn.paged_attention[:, 0]
     attn.paged_attention_V = attn.paged_attention[:, 1]
     attn.attention.resize_((bsz, n_heads, 1, attn.attention.shape[-1] + increment))
     if graph_backed:
         attn.paged_attention[rows:].zero_()
         BUFFER_EPOCH += 1
+
+
+def _vmm_module():
+    try:
+        from . import _decode_vmm
+    except ImportError:
+        return None
+    return _decode_vmm
+
+
+def _vmm_zeros(shape, dtype, device):
+    """Graph-mode KV cache on CUDA virtual memory (sleeps through training), else None."""
+    V = _vmm_module()
+    return None if V is None else V.zeros(shape, dtype, device)
+
+
+def _vmm_buffer(tensor):
+    V = _vmm_module()
+    return None if V is None else V.buffer_of(tensor)
+
+
+def _vmm_wake(tensor):
+    V = _vmm_module()
+    return False if V is None else V.wake(tensor)
+
+
+def _sleep_buffers(model):
+    """Unmaps the pages of every VMM KV cache the kept graphs read (addresses stay). False, sleeping none, if
+    a caller still views one of them."""
+    V = _vmm_module()
+    if V is None:
+        return True
+    caches = [
+        bufs[0]
+        for module in model.modules()
+        for bufs in (module.__dict__.get("_unsloth_graph_buffers") or {}).values()
+        if V.buffer_of(bufs[0]) is not None
+    ]
+    if any(V.in_use(t) for t in caches):
+        return False
+    for t in caches:
+        V.sleep(t)
+    return True
 
 
 def start_generation(max_len):
@@ -808,8 +868,6 @@ def release_for_training(model, force = False):
     graphs and their buffers stay when keep_for_training() allows it (only the eager buffers go then).
     Returns whether the graphs were released."""
     keep = not force and keep_for_training(model)
-    # for_training() drops the LoRA decode casts unless this is set: kept graphs read them.
-    model.__dict__[KEEP_CASTS] = keep
     if not keep:
         steps = _optimizer_steps()
         for state in _all_states(model):
@@ -823,6 +881,12 @@ def release_for_training(model, force = False):
             # the training forward then sees the module as it does after a release (same compiled block).
             for name in _BUFFER_NAMES:
                 d.pop(name, None)
+    if keep and not _sleep_buffers(model):
+        # A caller still views a VMM cache (e.g. a returned past_key_values): release as before, the views
+        # keep their memory.
+        release(model)
+        keep = False
+    model.__dict__[KEEP_CASTS] = keep
     return not keep
 
 
@@ -831,6 +895,23 @@ def release_for_training(model, force = False):
 # KEEP_FREE_FRACTION of the free memory.
 KEEP_FREE_FRACTION = float(os.environ.get("UNSLOTH_DECODE_GRAPHS_KEEP_FREE_FRACTION", "0.5"))
 KEEP_DECISIONS = {"kept": 0, "released": 0}
+
+
+# Graphs kept from the first round when their KV caches sleep and what stays resident (temporaries,
+# score rows) is at most this fraction of the card.
+KEEP_RESIDUAL_FRACTION = float(os.environ.get("UNSLOTH_DECODE_GRAPHS_KEEP_RESIDUAL", "0.01"))
+
+
+def _sleepable(model):
+    return any(
+        _vmm_buffer(bufs[0]) is not None
+        for module in model.modules()
+        for bufs in (module.__dict__.get("_unsloth_graph_buffers") or {}).values()
+    )
+
+
+def _total_bytes(device):
+    return torch.cuda.get_device_properties(device).total_memory
 
 
 def _optimizer_steps():
@@ -867,7 +948,10 @@ def _held(model):
         d = module.__dict__
         for bufs in (d.get("_unsloth_graph_buffers") or {}).values():
             for t in bufs:
-                add(t)
+                if _vmm_buffer(t) is None:
+                    add(t)
+                elif t.is_cuda:
+                    device = t.device  # VMM caches sleep through training: not held
         generic = d.get("_unsloth_generic_decode_graphs")
         kept = getattr(generic, "kept", None)
         for layer in getattr(kept, "layers", ()) or ():
@@ -886,6 +970,10 @@ def keep_for_training(model):
         if device is None:
             return False
         if mode == "1":
+            KEEP_DECISIONS["kept"] += 1
+            return True
+        if _sleepable(model) and held <= KEEP_RESIDUAL_FRACTION * _total_bytes(device):
+            # The KV caches sleep (pages back to training); what stays is small: keep from the first round.
             KEEP_DECISIONS["kept"] += 1
             return True
         steps = _optimizer_steps()
