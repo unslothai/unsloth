@@ -1293,7 +1293,7 @@ with sync_playwright() as p:
                 localStorage.setItem(key, JSON.stringify(prefs));"""
                 % json.dumps(shared)
             )
-            draft_page = draft_ctx.new_page()
+            draft_page = new_throttled_page(draft_ctx)
             draft_page.goto(f"{BASE}/chat", wait_until = "domcontentloaded")
             check_skills_command_draft(
                 draft_page, "chat-draft:latest" if shared else "chat-draft:__new__"
