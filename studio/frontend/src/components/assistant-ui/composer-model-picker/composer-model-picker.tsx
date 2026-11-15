@@ -1604,13 +1604,14 @@ export function ComposerModelPicker({
     let frame = 0;
     const update = () => {
       frame = 0;
+      // As the Library header: stuck once the row has pulled away from the eyebrow above it.
       const row = el.querySelector<HTMLElement>("[data-config-header-row]");
-      const offset = row
-        ? row.getBoundingClientRect().top - el.getBoundingClientRect().top
-        : Number.POSITIVE_INFINITY;
+      const above = row?.previousElementSibling;
       const stuck =
-        el.scrollTop > 0 &&
-        offset <= Number.parseFloat(getComputedStyle(el).getPropertyValue("--run-settings-stick-at")) + 0.5;
+        row != null &&
+        above != null &&
+        row.getBoundingClientRect().top - above.getBoundingClientRect().bottom >
+          Number.parseFloat(getComputedStyle(row).marginTop) + 0.5;
       if (stuck) {
         el.dataset.headerStuck = "";
       } else {

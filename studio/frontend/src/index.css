@@ -5317,8 +5317,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	position: sticky;
 	top: calc(var(--run-settings-stick-at) - var(--run-settings-pad-y));
 	z-index: 2;
-	padding-bottom: calc(6px * var(--ui-space-scale, 1));
-	margin-bottom: calc(-6px * var(--ui-space-scale, 1));
 	background: var(--popover);
 }
 .dark .composer-run-settings [data-config-header-row] {
@@ -5354,7 +5352,22 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	opacity: 1;
 }
 .composer-run-settings [data-config-header-row] {
-	margin-top: calc(4px * var(--ui-space-scale, 1));
+	--config-eyebrow-h: calc(0.59375rem * var(--ui-font-scale, 1));
+	--config-header-gap: calc(4px * var(--ui-space-scale, 1));
+	margin-top: var(--config-header-gap);
+}
+/* At rest Back centres on the eyebrow and title together, as before the row could stick; pinned,
+   with the eyebrow gone, it slides level with the title. */
+[data-config-header-row] {
+	--config-eyebrow-h: var(--text-ui-10);
+	--config-header-gap: calc(var(--spacing) * 1.5);
+}
+[data-config-header-row] > button:first-child {
+	transform: translateY(calc(-0.5 * (var(--config-eyebrow-h) + var(--config-header-gap))));
+	transition: transform 150ms ease;
+}
+.composer-run-settings[data-header-stuck] [data-config-header-row] > button:first-child {
+	transform: none;
 }
 .composer-run-settings [data-config-title] {
 	font-size: calc(0.84375rem * var(--ui-font-scale, 1));

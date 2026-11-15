@@ -4253,7 +4253,8 @@ export function ModelConfigPage({
       {variant === "page" && showHeader && (
         // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
         // The eyebrow scrolls away and the Back + title row sticks (index.css), as the Library header.
-        <div data-config-header="" className="pb-5">
+        // Siblings, not wrapped: a sticky row only sticks within its parent, here the whole page.
+        <>
           <div
             data-config-eyebrow=""
             className={cn(
@@ -4264,7 +4265,11 @@ export function ModelConfigPage({
           >
             Run settings
           </div>
-          <div data-config-header-row="" className="mt-1.5 flex items-center gap-2.5">
+          <div
+            data-config-header=""
+            data-config-header-row=""
+            className="mt-1.5 flex items-center gap-2.5 pb-5"
+          >
             {onBack && (
               <button
                 type="button"
@@ -4283,7 +4288,7 @@ export function ModelConfigPage({
               {npuName ?? target.displayName}
             </div>
           </div>
-        </div>
+        </>
       )}
 
       <SharedRunConfigReview
