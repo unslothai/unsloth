@@ -6,6 +6,7 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 import {
   isLocalCacheSnapshot,
+  isOtherCacheSnapshot,
   pickerLocalCacheSnapshots,
 } from "../src/features/model-picker/inventory/local-cache-snapshot.ts";
 
@@ -73,4 +74,16 @@ test("only complete, loadable snapshots pinned to another cache qualify", () => 
   ]) {
     assert.equal(isLocalCacheSnapshot({ ...row, ...override }), false);
   }
+});
+
+test("auto-load admits another cache's snapshot by path, never an active-cache or prefetch row", () => {
+  const path = String.raw`D:\models\hub\models--o--M\snapshots\abc`;
+  assert.equal(isOtherCacheSnapshot({ id: path, load_id: path, active_cache: false }), true);
+  assert.equal(isOtherCacheSnapshot({ id: "o/M", active_cache: true }), false);
+  assert.equal(isOtherCacheSnapshot({ id: "o/M", load_id: "o/M", active_cache: false }), false);
+  assert.equal(isOtherCacheSnapshot({ id: path, active_cache: null }), false);
+  assert.equal(
+    isOtherCacheSnapshot({ id: path, active_cache: false, companion_prefetch: true }),
+    false,
+  );
 });

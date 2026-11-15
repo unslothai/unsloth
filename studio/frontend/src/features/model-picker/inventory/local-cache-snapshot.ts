@@ -16,6 +16,20 @@ export function isLocalCacheSnapshot(row: LocalInventoryRow): boolean {
   );
 }
 
+// Auto-load reads raw /api/hub/local rows, which this picker rule covers too.
+export function isOtherCacheSnapshot(row: {
+  id: string;
+  load_id?: string | null;
+  active_cache?: boolean | null;
+  companion_prefetch?: boolean;
+}): boolean {
+  return (
+    row.active_cache === false &&
+    row.companion_prefetch !== true &&
+    looksLikeLocalPath(row.load_id ?? row.id)
+  );
+}
+
 // A directory load picks its GGUF before Transformers, so a mixed snapshot is offered as GGUF only.
 export function pickerLocalCacheSnapshots(
   localRows: readonly LocalInventoryRow[],
