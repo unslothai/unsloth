@@ -1978,6 +1978,24 @@ def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
     return logits
 
 
+def logits_to_keep_tensor(num_logits_to_keep, logits_to_keep):
+    """Tensor logits_to_keep (positions or bool mask), else None."""
+    for keep in (logits_to_keep, num_logits_to_keep):
+        if isinstance(keep, torch.Tensor):
+            return keep
+    return None
+
+
+def slice_hidden_to_keep(hidden_states, keep):
+    # Mirrors transformers' slice_logits_to_keep; a (B, T) bool mask flattens to (N, H).
+    keep = keep.to(hidden_states.device)
+    if keep.ndim == 2:
+        if keep.dtype == torch.bool:
+            return hidden_states[keep]
+        return torch.take_along_dim(hidden_states, keep[..., None], dim = 1)
+    return hidden_states[:, keep, :]
+
+
 def _run_backbone(self, **kwargs):
     # The CausalLM forward feeds the final norm's output to lm_head or the fused CE loss, which
     # return a fresh grad, so the norm may write dX over it. Hidden states handed back to the
@@ -2102,7 +2120,9 @@ def CausalLM_fast_forward(fast_forward_inference):
         lm_head_device = lm_head.device
 
         dtype = lm_head.dtype
-        # Skip int max() if either is a tensor (HF selective-decode form).
+        keep = logits_to_keep_tensor(num_logits_to_keep, logits_to_keep)
+        if keep is not None and (labels is not None or shift_labels is not None):
+            keep = None
         if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
             num_logits_to_keep = 0
         else:
@@ -2116,7 +2136,9 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         # Output last hidden states without logits if asked.
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
-            if num_logits_to_keep != 0:
+            if keep is not None:
+                hidden_states = slice_hidden_to_keep(hidden_states, keep)
+            elif num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
             return CausalLMOutputWithPast(
                 loss = None,
@@ -2126,7 +2148,9 @@ def CausalLM_fast_forward(fast_forward_inference):
                 attentions = outputs.attentions,
             )
 
-        if bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
+        if keep is not None:
+            logits = self.lm_head(slice_hidden_to_keep(hidden_states, keep).to(dtype))
+        elif bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
