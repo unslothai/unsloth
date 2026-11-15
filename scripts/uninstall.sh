@@ -684,6 +684,27 @@ _unsloth_uninstall_main() {
     }
     _remove_systemd_user_service
 
+    # Before the kill sweep too: a SIGKILLed server exits non-zero, and KeepAlive would restart it.
+    _remove_launchd_user_agent() {
+        [ "$_os" = "Darwin" ] || return 0
+        _ld_label="ai.unsloth.studio.server"
+        _ld_plist="$HOME/Library/LaunchAgents/$_ld_label.plist"
+        [ -f "$_ld_plist" ] || return 0
+        [ "$(sed -n 2p "$_ld_plist" 2>/dev/null)" = "<!-- unsloth-studio-managed-launchd -->" ] || return 0
+        _ld_stopped=0
+        if command -v launchctl >/dev/null 2>&1; then
+            if ! launchctl print "gui/$_uid/$_ld_label" >/dev/null 2>&1; then
+                _ld_stopped=1
+            elif launchctl bootout "gui/$_uid/$_ld_label" 2>/dev/null; then
+                _ld_stopped=1
+            fi
+        fi
+        _remove_path "$_ld_plist"
+        echo "Removed launchd user agent ($_ld_label)."
+        [ "$_ld_stopped" = 1 ] || echo "  could not unload it from launchd; it will not start again after the next login" >&2
+    }
+    _remove_launchd_user_agent
+
     echo "Stopping any running Unsloth Studio servers..."
     _pkill_studio
 

@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+# Writes (and with --enable/--start, loads) the optional launchd user agent for Unsloth Studio on macOS.
+# Bash 3.2 (macOS /bin/bash) compatible.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE="$SCRIPT_DIR/ai.unsloth.studio.server.plist.in"
+LABEL="ai.unsloth.studio.server"
+MARKER="<!-- unsloth-studio-managed-launchd -->"
+
+_UNSLOTH_EXE=""
+_STUDIO_HOME=""
+_HOST="${UNSLOTH_LAUNCHD_HOST:-127.0.0.1}"
+_PORT="${UNSLOTH_LAUNCHD_PORT:-8888}"
+_DO_ENABLE=false
+_DO_START=false
+
+_usage() {
+    cat <<'EOF'
+Usage: install_user_agent.sh --unsloth-exe PATH [options]
+
+Options:
+  --unsloth-exe PATH   Absolute path to the unsloth CLI (required)
+  --studio-home PATH   Sets UNSLOTH_STUDIO_HOME in the agent (custom installs)
+  --host HOST          Bind address (default: 127.0.0.1; UNSLOTH_LAUNCHD_HOST overrides;
+                       use 0.0.0.0 for LAN / all-interfaces)
+  --port PORT          Listen port (default: 8888; UNSLOTH_LAUNCHD_PORT overrides)
+  --enable             Write the agent and clear any launchctl disable, so it starts at login
+  --start              Also (re)load it now (implies --enable)
+  -h, --help           Show this help
+EOF
+}
+
+# A plist <string> holds any text once &, < and > are escaped (& first). Matches xml_escaped in
+# studio/src-tauri/src/main.rs. sed, not ${v//&/...}: bash 5.2 reads & in the replacement as the
+# match, and bash 3.2 keeps the quotes that would stop it. Values never hold a newline (rejected above).
+_xml_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --unsloth-exe) _UNSLOTH_EXE="${2:-}"; shift 2 ;;
+        --studio-home) _STUDIO_HOME="${2:-}"; shift 2 ;;
+        --host) _HOST="${2:-}"; shift 2 ;;
+        --port) _PORT="${2:-}"; shift 2 ;;
+        --enable) _DO_ENABLE=true; shift ;;
+        --start) _DO_ENABLE=true; _DO_START=true; shift ;;
+        -h|--help) _usage; exit 0 ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            _usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [ -z "$_UNSLOTH_EXE" ]; then
+    echo "ERROR: --unsloth-exe is required." >&2
+    exit 2
+fi
+if [ ! -x "$_UNSLOTH_EXE" ]; then
+    echo "ERROR: unsloth executable not found or not executable: $_UNSLOTH_EXE" >&2
+    exit 1
+fi
+case "$_PORT" in
+    ''|*[!0-9]*|0) echo "ERROR: --port must be a positive integer." >&2; exit 2 ;;
+esac
+if [ -z "$_HOST" ]; then
+    echo "ERROR: --host must not be empty." >&2
+    exit 2
+fi
+for _v in "$_HOST" "$_STUDIO_HOME" "$_UNSLOTH_EXE" "${HOME:-}"; do
+    case "$_v" in
+        *[[:cntrl:]]*) echo "ERROR: control characters are not allowed in agent values: $_v" >&2; exit 2 ;;
+    esac
+done
+case "${HOME:-}" in
+    /*) ;;
+    *) echo "ERROR: HOME must be an absolute path." >&2; exit 1 ;;
+esac
+if [ ! -f "$TEMPLATE" ]; then
+    echo "ERROR: agent template missing: $TEMPLATE" >&2
+    exit 1
+fi
+if [ "$(uname -s 2>/dev/null || true)" != "Darwin" ]; then
+    echo "ERROR: launchd user agent install is supported on macOS only." >&2
+    exit 1
+fi
+_uid="$(id -u)"
+_domain="gui/$_uid"
+if [ "$_DO_ENABLE" = true ]; then
+    if ! command -v launchctl >/dev/null 2>&1; then
+        echo "ERROR: launchctl not found; launchd is required." >&2
+        exit 1
+    fi
+    # Over SSH with nobody logged in at the console there is no GUI domain to load into.
+    if ! launchctl print "$_domain" >/dev/null 2>&1; then
+        echo "ERROR: no GUI login session for this user (SSH only?); log in on the Mac once, then re-run." >&2
+        exit 1
+    fi
+fi
+
+_UNSLOTH_EXE="$(CDPATH= cd -P -- "$(dirname "$_UNSLOTH_EXE")" && pwd -P)/$(basename "$_UNSLOTH_EXE")"
+_env_home=""
+if [ -n "$_STUDIO_HOME" ]; then
+    mkdir -p "$_STUDIO_HOME"
+    _STUDIO_HOME="$(CDPATH= cd -P -- "$_STUDIO_HOME" && pwd -P)"
+    _env_home="$_STUDIO_HOME"
+    _run_home="$_STUDIO_HOME"
+else
+    _run_home="$HOME/.unsloth/studio"
+fi
+# launchd does not create WorkingDirectory and refuses to start without it.
+mkdir -p "$_run_home"
+
+# launchd starts jobs with only /usr/bin:/bin:/usr/sbin:/sbin on PATH.
+_exe_dir="$(dirname "$_UNSLOTH_EXE")"
+_path="$_exe_dir:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+_agent_dir="$HOME/Library/LaunchAgents"
+mkdir -p "$_agent_dir"
+_plist_path="$_agent_dir/$LABEL.plist"
+if [ -e "$_plist_path" ] && [ "$(sed -n 2p "$_plist_path" 2>/dev/null)" != "$MARKER" ]; then
+    echo "ERROR: $_plist_path exists and was not written by Unsloth; leaving it alone." >&2
+    exit 1
+fi
+_tmp="$(mktemp "$_agent_dir/.$LABEL.XXXXXX")"
+trap 'rm -f "$_tmp"' EXIT
+# Placeholders sit on lines of their own and are replaced whole, so no value is ever parsed as a pattern.
+while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in
+        *"<string>@@UNSLOTH_EXE@@</string>") printf '    <string>%s</string>\n' "$(_xml_escape "$_UNSLOTH_EXE")" ;;
+        *"<string>@@HOST@@</string>") printf '    <string>%s</string>\n' "$(_xml_escape "$_HOST")" ;;
+        *"<string>@@PORT@@</string>") printf '    <string>%s</string>\n' "$_PORT" ;;
+        *"<string>@@PATH@@</string>") printf '    <string>%s</string>\n' "$(_xml_escape "$_path")" ;;
+        @@ENVIRONMENT_LINES@@)
+            if [ -n "$_env_home" ]; then
+                printf '    <key>UNSLOTH_STUDIO_HOME</key>\n    <string>%s</string>\n' "$(_xml_escape "$_env_home")"
+            fi
+            ;;
+        *"<string>@@STUDIO_HOME@@</string>") printf '  <string>%s</string>\n' "$(_xml_escape "$_run_home")" ;;
+        *) printf '%s\n' "$_line" ;;
+    esac
+done < "$TEMPLATE" > "$_tmp"
+chmod 0644 "$_tmp"
+mv "$_tmp" "$_plist_path"
+
+if [ "$_DO_ENABLE" != true ]; then
+    printf '%s\n' "$_plist_path"
+    exit 0
+fi
+
+# Clears a `launchctl disable` override, which would otherwise keep it from loading at login.
+launchctl enable "$_domain/$LABEL"
+if [ "$_DO_START" = true ]; then
+    # No stop hook: `unsloth studio stop` would also stop every other Studio on this home.
+    if launchctl print "$_domain/$LABEL" >/dev/null 2>&1; then
+        launchctl bootout "$_domain/$LABEL" >/dev/null 2>&1 || true
+        # bootstrap fails with "5: Input/output error" while the old instance is still unloading.
+        _waited=0
+        while launchctl print "$_domain/$LABEL" >/dev/null 2>&1; do
+            if [ "$_waited" -ge 30 ]; then
+                echo "ERROR: $LABEL did not unload within 30s; try: launchctl bootout $_domain/$LABEL" >&2
+                exit 1
+            fi
+            sleep 1
+            _waited=$((_waited + 1))
+        done
+    fi
+    launchctl bootstrap "$_domain" "$_plist_path"
+fi
+printf '%s\n' "$_plist_path"

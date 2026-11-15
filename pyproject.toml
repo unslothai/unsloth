@@ -92,6 +92,7 @@ studio = [
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
     "systemd/*",
+    "launchd/*",
 ]
 
 [tool.setuptools.packages.find]
