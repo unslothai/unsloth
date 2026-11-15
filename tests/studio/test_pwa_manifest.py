@@ -30,7 +30,10 @@ def test_index_links_install_icons():
         html,
     )
     assert apple_icons == ["/apple-touch-icon.png"]
-    assert png_size(PUBLIC / apple_icons[0].lstrip("/")) == (180, 180)
+    icon = PUBLIC / apple_icons[0].lstrip("/")
+    assert png_size(icon) == (180, 180)
+    # iOS paints transparent touch-icon pixels black; PNG colour type 2 = RGB, no alpha.
+    assert icon.read_bytes()[25] == 2
 
 
 def test_manifest_meets_install_criteria():
