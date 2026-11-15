@@ -518,6 +518,18 @@ def test_risky_actions_are_refused_unless_the_user_was_asked(desktop, monkeypatc
     assert run({"action": "open_app", "name": "Keychain Access"}).startswith("Error:")
 
 
+def test_input_to_an_app_that_cannot_be_identified_asks_first(desktop, monkeypatch):
+    look()
+    desktop.front = FrontWindow()
+    typing = {"action": "type", "text": "hi"}
+    assert policy.needs_confirmation(typing, SESSION)
+    assert policy.UNIDENTIFIED in policy.call_asks(typing, SESSION)["risks"]
+    assert run(typing).startswith("Error: Type")
+    assert ("type", "hi") not in desktop.events
+    assert run(typing, approved = True).startswith("Done:")
+    assert ("type", "hi") in desktop.events
+
+
 @pytest.mark.parametrize(
     "platform, combo",
     [

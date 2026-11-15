@@ -301,7 +301,12 @@ class _Run:
     ) -> None:
         """An answered call opens the app to the chat; any other may only use allowed apps."""
         if not name:
-            return
+            if self.allowed:
+                return
+            raise _Halt(
+                f"{policy.UNIDENTIFIED}, and this call was not asked about. Send this action "
+                "again on its own so the user can be asked."
+            )
         if policy.is_blocked(name):
             raise _Halt(_BLOCKED_APP.format(app = name))
         if self.allowed:

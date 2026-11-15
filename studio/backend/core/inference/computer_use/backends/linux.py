@@ -58,6 +58,7 @@ def _session_problem() -> Optional[str]:
 
 
 _IS_VIEWABLE = 2
+_POINTER_ROOT = 1
 _INPUT_OUTPUT = 1
 
 
@@ -161,6 +162,7 @@ class LinuxBackend(Backend):
             pointer(pointer(ulong)), pointer(uint),
         )  # fmt: skip
         sig(x11, "XGetWindowAttributes", cint, ref, ulong, pointer(_WindowAttributes))
+        sig(x11, "XGetInputFocus", cint, ref, pointer(ulong), pointer(cint))
         sig(xtst, "XTestFakeMotionEvent", cint, ref, cint, cint, cint, ulong)
         sig(xtst, "XTestFakeButtonEvent", cint, ref, uint, cint, ulong)
         sig(xtst, "XTestFakeKeyEvent", cint, ref, uint, cint, ulong)
@@ -434,9 +436,33 @@ class LinuxBackend(Backend):
         with self._lock:
             root = self._x11.XDefaultRootWindow(self._display)
             window = self._long_property(root, b"_NET_ACTIVE_WINDOW")
-            if not window:
-                return FrontWindow()
-            return self._describe(window)
+            if window:
+                return self._describe(window)
+            # No EWMH window manager: the keys go to the focus, or under the pointer.
+            focus, _revert = ctypes.c_ulong(0), ctypes.c_int(0)
+            self._x11.XGetInputFocus(self._display, ctypes.byref(focus), ctypes.byref(_revert))
+            if focus.value in (0, _POINTER_ROOT, root):
+                return self.window_at(*self.cursor()) or FrontWindow()
+            top = self._toplevel(focus.value, root)
+            client = self._client(top) if top else 0
+            return self._describe(client) if client else FrontWindow()
+
+    def _toplevel(self, window: int, root: int) -> int:
+        for _ in range(32):
+            found_root, parent = ctypes.c_ulong(0), ctypes.c_ulong(0)
+            children = ctypes.POINTER(ctypes.c_ulong)()
+            count = ctypes.c_uint(0)
+            if not self._x11.XQueryTree(
+                self._display, window, ctypes.byref(found_root), ctypes.byref(parent),
+                ctypes.byref(children), ctypes.byref(count),
+            ):  # fmt: skip
+                return 0
+            if children:
+                self._x11.XFree(children)
+            if parent.value in (0, root):
+                return window
+            window = parent.value
+        return 0
 
     def _children(self, window: int) -> list[int]:
         root, parent = ctypes.c_ulong(0), ctypes.c_ulong(0)

@@ -319,10 +319,9 @@ def _window_under_pointer(backend: Backend) -> Optional[FrontWindow]:
         return None
 
 
-def windows_used(
+def _targets(
     actions: list[dict], session: Any, backend: Backend, front: FrontWindow
 ) -> list[FrontWindow]:
-    """The windows a call's clicks and keys would land in, in order."""
     current = front
     used: list[FrontWindow] = []
     for action in actions:
@@ -346,11 +345,25 @@ def windows_used(
             used.append(at or current)
         elif op in ("type", "key"):
             used.append(current)
+    return used
+
+
+def _distinct(used: list[FrontWindow]) -> list[FrontWindow]:
     seen: dict[str, FrontWindow] = {}
     for window in used:
         if window.app:
             seen.setdefault(window.app, window)
     return list(seen.values())
+
+
+def windows_used(
+    actions: list[dict], session: Any, backend: Backend, front: FrontWindow
+) -> list[FrontWindow]:
+    """The windows a call's clicks and keys would land in, in order."""
+    return _distinct(_targets(actions, session, backend, front))
+
+
+UNIDENTIFIED = "the app that would get this input can't be identified"
 
 
 def apps_used(actions: list[dict], session: Any, backend: Backend, front: FrontWindow) -> list[str]:
@@ -424,7 +437,10 @@ def call_asks(arguments: Any, session_id: Optional[str]) -> dict:
         front = backend.front_window()
         key = state.session_key(session_id)
         session = state.session(key)
-        found = risks(actions, front, tuple(windows_used(actions, session, backend, front)))
+        used = _targets(actions, session, backend, front)
+        found = risks(actions, front, tuple(_distinct(used)))
+        if any(not window.app for window in used):
+            found.append(UNIDENTIFIED)
         if state.is_stopped(key):
             found.insert(0, "you stopped computer use in this chat")
         return {"risks": found, "apps": new_apps(actions, session, backend, front)}
@@ -451,5 +467,8 @@ def needs_confirmation(arguments: Any, session_id: Optional[str]) -> bool:
     except Exception:  # noqa: BLE001 - unknown front app: ask
         return True
     session = state.session(key)
-    used = tuple(windows_used(actions, session, backend, front))
+    targets = _targets(actions, session, backend, front)
+    if any(not window.app for window in targets):
+        return True
+    used = tuple(_distinct(targets))
     return bool(risks(actions, front, used) or new_apps(actions, session, backend, front))

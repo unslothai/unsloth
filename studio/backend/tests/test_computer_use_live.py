@@ -71,6 +71,24 @@ def test_x11_pointer_keys_and_capture(xvfb):
     assert image.size == (1280, 800)
 
 
+def test_x11_without_a_window_manager_knows_the_focused_window(xvfb, tmp_path):
+    pytest.importorskip("tkinter")
+    from core.inference.computer_use.backends.linux import LinuxBackend
+
+    ready = tmp_path / "ready"
+    app = subprocess.Popen([sys.executable, "-c", _TK_APP, str(tmp_path / "out"), str(ready)])
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            assert app.poll() is None and time.monotonic() < deadline, "the Tk window never showed"
+            time.sleep(0.1)
+        front = LinuxBackend().front_window()
+        assert front.app and front.title == "cu-e2e", front
+    finally:
+        app.terminate()
+        app.wait(timeout = 10)
+
+
 def test_x11_typing_borrows_a_key_and_gives_it_back(xvfb):
     import ctypes
 
