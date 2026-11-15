@@ -179,6 +179,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { forkChatThread } from "@/features/chat/api/chat-api";
+import { syncThreadScroll } from "@/features/chat/thread-scroll-flag";
 import {
   findLatestUserAudioBase64,
   resolveProjectId,
@@ -2154,6 +2155,7 @@ export const Thread: FC<{
       viewportElRef.current = node;
       setViewportSlot(node ? { el: node, threadId: runtimeThreadId } : null);
       viewportRef(node);
+      syncThreadScroll(node);
     },
     [viewportRef, runtimeThreadId],
   );
