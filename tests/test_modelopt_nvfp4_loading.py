@@ -322,3 +322,14 @@ def test_save_pretrained_writes_a_reloadable_checkpoint(ckpt, tmp_path):
         assert torch.equal(getattr(a, name), getattr(b, name))
     x = torch.tensor([[1, 2, 3, 4]])
     assert torch.equal(model(x).logits, reloaded(x).logits)
+
+
+def test_rewritten_config_reaches_the_fast_language_model_load(ckpt):
+    # FastLlamaModel hands model_config to from_pretrained only when modelopt_rewritten says so; without it
+    # transformers rereads the raw ModelOpt config and the NVFP4 checkpoint fails to load.
+    from unsloth.models.modelopt_fp8 import modelopt_rewritten
+
+    config = transformers.AutoConfig.from_pretrained(ckpt[0])
+    assert not modelopt_rewritten(config)
+    check_and_disable_bitsandbytes_loading(config, load_in_4bit = True, model_name = ckpt[0])
+    assert modelopt_rewritten(config)

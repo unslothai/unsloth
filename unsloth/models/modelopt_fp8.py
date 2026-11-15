@@ -330,9 +330,11 @@ def _remembered_mapping(config) -> Optional[dict]:
 
 
 def modelopt_rewritten(config) -> bool:
+    # ModelOpt NVFP4 is rewritten to compressed-tensors: the load must also be handed this config.
     return (
         hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
         or _remembered_mapping(config) is not None
+        or bool(getattr(config, "_unsloth_modelopt_nvfp4", False))
     )
 
 
