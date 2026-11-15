@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 
-"""VLM DPO through the hidden-state concatenated_forward (TRL < 0.29): a batch carrying pixel_values (plus
-pixel_attention_mask / token_type_ids where the processor emits them) must take the chunked head, not the full
-[2B, S, V] logits, and match TRL's own logits path on loss, every metric and every gradient, the vision tower's
-and projector's included. CPU only, same harness as test_dpo_chunked_logprobs."""
+"""VLM DPO (TRL < 0.29): a pixel_values batch takes the chunked head and matches TRL's logits path on loss, metrics
+and every gradient, vision tower included. CPU only."""
 
 from __future__ import annotations
 

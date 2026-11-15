@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 
-"""Block CUDA graphs with a side input that takes a gradient (Mllama: every cross-attention layer reads the same
-cross_attention_states from a trained vision tower). A replayed backward hands that gradient out in graph pool memory
-and the next replay of the same graph overwrites it before the engine sums it, so such calls run without graphs:
-auto mode turns graphs off with the reason (CPU), and forced graphs on a GPU train the same as eager, side gradient
-included."""
+"""Block CUDA graphs skip calls whose side input takes a gradient (Mllama cross-attention): auto mode reports the
+reason (CPU); forced graphs on a GPU train like eager, side gradient included."""
 
 import os
 import sys

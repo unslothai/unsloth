@@ -7149,9 +7149,7 @@ def _unsloth_dpo_chunked_head(
         reason = "use_weighting needs full-vocabulary log-probs"
     elif getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
         reason = "FSDP / DeepSpeed"
-    # Vision inputs are scored here too: the towers run inside the forward, the head only sees the final hidden
-    # states, and concatenated_forward trims a forward that prepends image positions (LLaVA) to the labels'
-    # length before the logps line this rewrite replaces, so hidden states are trimmed the same way.
+    # Vision inputs are fine: the head sees final hidden states, trimmed to the labels' length like LLaVA logits.
     if reason is None:
         try:
             unwrapped = self.accelerator.unwrap_model(model)

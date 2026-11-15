@@ -264,10 +264,8 @@ def _packed_kwargs(kwargs):
 
 
 def _grad_side_inputs(args, kwargs):
-    """True when a tensor input besides hidden_states takes a gradient (Mllama cross-attention states from a trained
-    vision tower): a replayed backward hands that gradient out in graph pool memory, which the next replay of the same
-    graph (the next cross-attention layer) overwrites before the engine has summed it. Only hidden_states is guarded
-    (_CloneGrad), so such blocks run without graphs."""
+    """A non-hidden_states input needing grad (Mllama cross-attention states): its replayed-backward grad lives in
+    graph pool memory the next replay overwrites before it is summed, and only hidden_states is guarded (_CloneGrad)."""
     for value in (*args, *kwargs.values()):
         if isinstance(value, torch.Tensor) and value.requires_grad:
             return True
