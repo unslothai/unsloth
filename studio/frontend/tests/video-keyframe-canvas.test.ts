@@ -5,9 +5,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { VideoGenerationDefaults } from "../src/features/video/api.ts";
 import {
+  defaultVideoResolution,
+  keyframeSelectsMatchSource,
   keyframeSupport,
   matchedCanvas,
   nearestPresetCanvas,
+  requestCanvas,
 } from "../src/features/video/keyframe-canvas.ts";
 
 const h3: VideoGenerationDefaults = {
@@ -137,4 +140,33 @@ test("snapping never leaves the pixel cap, and matches the backend at its edges"
       assert.equal(height % multiple, 0);
     }
   }
+});
+
+test("a family whose keyframes keep the canvas does not switch to Match source on its own", () => {
+  assert.equal(keyframeSelectsMatchSource({ ...h3, keyframe_keeps_canvas: true }), false);
+  assert.equal(keyframeSelectsMatchSource({ ...h3, keyframe_keeps_canvas: false }), true);
+  // older backends never sent the flag: the old behaviour
+  assert.equal(keyframeSelectsMatchSource(h3), true);
+  assert.equal(keyframeSelectsMatchSource(null), true);
+});
+
+test("Match source sends the matched size where an omitted size means the default canvas", () => {
+  assert.deepEqual(requestCanvas(false, [1024, 768], [864, 480], true), { width: 864, height: 480 });
+  assert.deepEqual(requestCanvas(true, [1024, 768], [864, 480], true), { width: 1024, height: 768 });
+  assert.deepEqual(requestCanvas(true, [1024, 768], [864, 480], false), {
+    width: undefined,
+    height: undefined,
+  });
+  assert.deepEqual(requestCanvas(false, null, [1344, 768], false), { width: 1344, height: 768 });
+});
+
+test("the page starts on the family's default size only when it is a preset", () => {
+  const presets: Array<[number, number]> = [
+    [1344, 768],
+    [864, 480],
+  ];
+  assert.deepEqual(defaultVideoResolution({ default_resolution: [864, 480] }, presets), [864, 480]);
+  assert.deepEqual(defaultVideoResolution({ default_resolution: [640, 640] }, presets), [1344, 768]);
+  assert.deepEqual(defaultVideoResolution({}, presets), [1344, 768]);
+  assert.deepEqual(defaultVideoResolution(null, []), null);
 });

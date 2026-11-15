@@ -261,9 +261,14 @@ def test_yuv_frames_go_through_float_rgb(tmp_path, size):
             converted = np.asarray(VM.h3_video_frame_rgb(frame))
         assert converted.shape == (size[1], size[0], 3)
         assert np.abs(converted.astype(int) - expect.astype(int)).max() <= 1
+    # truncated like the reference's LANCZOS helper, not rounded
     assert VM.h3_float_rgb_to_uint8(
-        np.array([0.5 / 255, 1.5 / 255, 254.6 / 255], np.float32)
-    ).tolist() == [0, 2, 255]
+        np.array([0.5 / 255, 1.5 / 255, 254.6 / 255, 1.2, -0.1], np.float32)
+    ).tolist() == [0, 1, 254, 255, 0]
+    sweep = np.random.default_rng(0).random((64, 64, 3), dtype = np.float32)
+    assert np.array_equal(
+        VM.h3_float_rgb_to_uint8(sweep), np.clip(255.0 * sweep, 0, 255).astype(np.uint8)
+    )
 
 
 ASPECTS = [

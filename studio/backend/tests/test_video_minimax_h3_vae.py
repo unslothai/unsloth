@@ -46,13 +46,13 @@ def test_off_tier_engages_nothing():
 
 @pytest.mark.parametrize("tier", ["default", "max", None, ""])
 def test_default_and_max_get_the_near_lossless_set(tier):
+    # The int8 decoder is not in it: the reference decodes with a float VAE (opt in with UNSLOTH_H3_VAE_INT8=1).
     plan = H.plan_h3_vae_levers(tier, workflow = "fl2va", consumer_gpu = False)
     assert plan == (
         H.LEVER_FUSED_ENCODER,
         H.LEVER_FP16_ENCODER,
         H.LEVER_FUSED_DECODER,
         H.LEVER_TILE_BATCH,
-        H.LEVER_INT8_DECODER,
     )
 
 
@@ -76,18 +76,19 @@ def test_fp16_accumulation_only_under_max_on_consumer_gpus(monkeypatch):
     )
 
 
-def test_int8_decoder_is_on_for_default_and_max_with_a_kill_switch(monkeypatch):
-    for tier in ("default", "max", None):
-        assert H.LEVER_INT8_DECODER in H.plan_h3_vae_levers(
+def test_int8_decoder_is_opt_in_on_every_tier(monkeypatch):
+    for tier in ("eager", "default", "max", None):
+        assert H.LEVER_INT8_DECODER not in H.plan_h3_vae_levers(
             tier, workflow = "fl2va", consumer_gpu = True
         )
-    assert H.LEVER_INT8_DECODER not in H.plan_h3_vae_levers("eager", workflow = "fl2va")
-    for value in ("0", "off", "false", "no"):
+    for value in ("0", "off", "false", "no", "", "maybe"):
         monkeypatch.setenv(H.H3_VAE_INT8_ENV, value)
         for tier in ("eager", "default", "max"):
             assert H.LEVER_INT8_DECODER not in H.plan_h3_vae_levers(tier, workflow = "fl2va")
-    monkeypatch.setenv(H.H3_VAE_INT8_ENV, "1")
-    assert H.LEVER_INT8_DECODER in H.plan_h3_vae_levers("eager", workflow = "fl2va")
+    for value in ("1", "true", "on"):
+        monkeypatch.setenv(H.H3_VAE_INT8_ENV, value)
+        for tier in ("eager", "default", "max"):
+            assert H.LEVER_INT8_DECODER in H.plan_h3_vae_levers(tier, workflow = "fl2va")
     assert H.plan_h3_vae_levers("off", workflow = "fl2va") == ()
 
 

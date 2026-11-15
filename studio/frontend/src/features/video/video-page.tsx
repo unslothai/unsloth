@@ -243,7 +243,13 @@ import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
 import { videoFailureToast } from "./generation-failure";
-import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
+import {
+  defaultVideoResolution,
+  keyframeSelectsMatchSource,
+  keyframeSupport,
+  matchedCanvas,
+  requestCanvas,
+} from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
   applyReferenceImageCrop,
@@ -1698,7 +1704,7 @@ function VideoGenerator({
     [durationOptions, durationTargets, fps, frameOffset, frameStep, maxFrames, minFrames],
   );
   const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
-    const resolution = resolutionPresets[0] ?? [768, 512];
+    const resolution = defaultVideoResolution(status?.defaults, resolutionPresets) ?? [768, 512];
     const recommended =
       pendingModelDefaults ??
       (defaultSteps != null && defaultGuidance != null
@@ -1723,7 +1729,7 @@ function VideoGenerator({
       audioFlowShift: defaultAudioFlowShift,
       fps: presetFps(null),
     };
-  }, [presetFps, presetDurationOptions, familyFps, fpsOptions, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
+  }, [presetFps, presetDurationOptions, familyFps, fpsOptions, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.defaults, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const size = fitVideoSize(params.width, params.height, sizeLimits);
@@ -1808,15 +1814,17 @@ function VideoGenerator({
     [claimVideoRecipe, familyOverride, videoFormClaimId],
   );
 
-  // Select "match source" only after the staged keyframe passes the aspect-ratio check.
+  // Select "match source" only after the staged keyframe passes the aspect-ratio check, and only for a family
+  // whose keyframes do not keep the chosen canvas.
+  const autoMatchSource = keyframeSelectsMatchSource(status?.defaults);
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
     const has = canvasSource != null;
     if (has === hadKeyframeRef.current) return;
     if (has && !matchedResolution) return;
     hadKeyframeRef.current = has;
-    setMatchSource(has);
-  }, [canvasSource, matchedResolution]);
+    setMatchSource(has && autoMatchSource);
+  }, [autoMatchSource, canvasSource, matchedResolution]);
 
   const prevFamilyRef = useRef<string | null>(null);
   const prevFpsRef = useRef(fps);
@@ -3774,8 +3782,7 @@ function VideoGenerator({
           status?.supports_cfg !== false && guidance > 0
             ? negativePrompt.trim() || undefined
             : undefined,
-        width: sourceSized ? undefined : videoSize[0],
-        height: sourceSized ? undefined : videoSize[1],
+        ...requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource),
         num_frames: numFrames,
         fps,
         steps,
@@ -4323,7 +4330,7 @@ function VideoGenerator({
                   </div>
                 )}
               </div>
-              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && (
+              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && autoMatchSource && (
                 // Surface the same aspect-ratio rejection before Generate.
                 <p className="text-ui-11 leading-snug text-destructive">
                   This picture is too far from square for MiniMax-H3, which was trained between
