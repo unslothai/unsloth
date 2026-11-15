@@ -1331,8 +1331,11 @@ function restoreChatOwnedValues(
 /** Full access saved with each chat, as last read from or written to its row. */
 const savedChatFullAccess = new Map<string, boolean>();
 const SAVED_GRANT_PREFIX = "saved:";
+/** Chats whose Full access was granted or left here since they were opened: that beats a row read meanwhile. */
+const chatFullAccessDecidedSinceOpen = new Set<string>();
 
 function saveChatFullAccess(threadId: string, on: boolean): void {
+  chatFullAccessDecidedSinceOpen.add(threadId);
   if (savedChatFullAccess.get(threadId) === on) return;
   savedChatFullAccess.set(threadId, on);
   void mergeThreadScopedSettingsIntoRow(threadId, { fullAccess: on }).catch(() => undefined);
@@ -1365,9 +1368,8 @@ function dropSavedChatGrant(threadId: string): void {
   });
 }
 
-/** `levelPickedDuringRead`: a level chosen while the chat's row was loading wins over the row. */
-function restoreSavedChatFullAccess(threadId: string, saved: unknown, levelPickedDuringRead: boolean): void {
-  if (typeof saved !== "boolean" || levelPickedDuringRead) return;
+function restoreSavedChatFullAccess(threadId: string, saved: unknown): void {
+  if (typeof saved !== "boolean" || chatFullAccessDecidedSinceOpen.has(threadId)) return;
   savedChatFullAccess.set(threadId, saved);
   if (!saved) {
     dropSavedChatGrant(threadId);
@@ -5126,6 +5128,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // Re-apply the incoming thread's usage: background runs never wrote the visible value.
   setActiveThreadId: (activeThreadId) =>
     set((state) => {
+      if (activeThreadId) chatFullAccessDecidedSinceOpen.delete(activeThreadId);
       const own = activeThreadId
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
         : null;
@@ -5140,7 +5143,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   applyThreadScopedSettings: (threadId, settings) => {
     const savedFullAccess = (settings as { fullAccess?: unknown } | null | undefined)?.fullAccess;
-    let levelPickedDuringRead = false;
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
       flushThreadScopedSettingsWrite();
@@ -5162,7 +5164,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           }
         }
         heldThreadScopedEdits = [];
-        levelPickedDuringRead = heldFields.has("permissionMode");
         pendingPairingThreadId = null;
         pairingWindowDefaultsThreadId = null;
         closeThreadScopedPairingGate(threadId);
@@ -5320,7 +5321,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     });
-    if (threadId !== null) restoreSavedChatFullAccess(threadId, savedFullAccess, levelPickedDuringRead);
+    if (threadId !== null) restoreSavedChatFullAccess(threadId, savedFullAccess);
   },
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {

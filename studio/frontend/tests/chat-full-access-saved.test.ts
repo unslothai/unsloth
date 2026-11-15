@@ -105,21 +105,26 @@ test("a saved chat Full access is not restored on an install with other accounts
   }
 });
 
-test("a level picked while the chat's settings load is not overridden by the saved Full access", async () => {
-  threadRows.reset();
-  threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: true });
-  const state = await start("saved-grant-pick-during-read");
-  state().setActiveThreadId(CHAT);
-  state().applyThreadScopedSettings(null, null);
-  state.module.beginThreadScopedPairing(CHAT);
-  state().setPermissionMode("ask");
-  state().applyThreadScopedSettings(CHAT, sanitizeThreadScopedSettings(threadRows.rows.get(CHAT)));
-  assert.equal(state().permissionMode, "ask");
-  assert.equal(state().bypassPermissions, false);
-  await settle();
-  assert.equal(state().permissionMode, "ask");
-  assert.equal(state().bypassPermissions, false);
-  assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false);
+test("leaving Full access while the chat's settings load is not overridden by the saved flag", async () => {
+  const exits: Array<[string, (state: State) => void]> = [
+    ["pick-ask", (state) => state().setPermissionMode("ask")],
+    ["deep-research", (state) => state().setDeepResearchEnabled(true)],
+  ];
+  for (const [name, leave] of exits) {
+    threadRows.reset();
+    threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: true });
+    const state = await start(`saved-grant-leave-during-read-${name}`);
+    state().setActiveThreadId(CHAT);
+    state().applyThreadScopedSettings(null, null);
+    state.module.beginThreadScopedPairing(CHAT);
+    leave(state);
+    state().applyThreadScopedSettings(CHAT, sanitizeThreadScopedSettings(threadRows.rows.get(CHAT)));
+    assert.notEqual(state().permissionMode, "full", name);
+    assert.equal(state().bypassPermissions, false, name);
+    await settle();
+    assert.notEqual(state().permissionMode, "full", name);
+    assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false, name);
+  }
 });
 
 test("reopening a chat whose saved Full access was revoked elsewhere drops the restored grant", async () => {
