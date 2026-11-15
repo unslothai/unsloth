@@ -344,55 +344,22 @@ def test_responses_tool_arguments_count_once(monkeypatch, healed):
     assert streamed == monitor._find_locked(entry).reply_chars == 404
 
 
-def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed():
+def test_streaming_and_provider_paths_keep_their_report_watermarks():
     import inspect
 
     source = inspect.getsource(inference_route)
     # An interrupted safetensors tool stream reports its earlier passes against their watermark.
     assert "reported_chars = _sf_reported_chars if cancel_event.is_set() else None" in source
-    # Non-streaming reasoning never reaches the reply preview, so it is counted beside it.
-    assert 'sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies)' in source
     assert '_sf_streamed_calls.add(event.get("tool_call_id"))' in source
     assert 'event.get("tool_call_id") not in _sf_streamed_calls' in source
-    # A finalized call runs after its pass ended, so that pass's report already covers it.
     assert "Executed after its pass ended, so that pass's reported usage covers it." in source
-    # The whole safetensors reply's thinking is split out of the preview, so it is counted beside it.
-    assert "api_monitor.count_output(monitor_id, len(_reasoning_text) + _sf_partial_args)" in source
-    # The JSON drain counts tool arguments, streamed or finalized, for a failed or stopped run.
-    assert "_sf_partial_args += len(_args)" in source
-    assert "api_monitor.count_output(target, _sf_partial_args)" in source
-    # Finalized arguments follow their pass's report, so only streamed ones move the coverage mark.
-    assert "A finalized call runs after its pass reported, so its stats cover it." in source
-    # A stopped later choice is estimated beside the reported ones, and settles as cancelled.
-    assert 'if _sf_plain_partial["reported"] == len(_choices)' in source
-    # A parallel batch's live and discarded output reaches the failed-request settlement.
-    assert '_sf_plain_partial["batch"] = texts' in source
-    assert '_sf_plain_partial["extra"] += len(texts[_row])' in source
-    # A stop mid-pass in the JSON drain keeps the kept turn outside the earlier passes' report.
-    assert (
-        "return None if stats is not _sf_json_seen else _sf_covered_text + _sf_covered_args"
-        in source
-    )
-    assert "_sf_covered_args = _sf_partial_args" in source
-    assert "_sf_covered_args += len(_args)" in source
-    # Discarded batch output is debited beside the fallback's reported usage.
-    assert '_discarded = -(-_sf_plain_partial["extra"] // 4)' in source
-    # A later pass's failure settles the passes that already reported, on every exit.
-    assert source.count("_sf_settle_reported_passes()") == 6  # the def and its five calls
     assert source.count("_sf_settle_streamed_passes()") == 5  # the def and its four calls
-    # A failed JSON drain still records the kept turn's text before settling.
-    assert "_sf_partial_text = raw_text" in source
-    assert "api_monitor.set_reply(target, _sf_partial_text)" in source
     # A stopped Studio-tools provider run keeps its summed usage to the passes that reported.
     assert "_monitor_usage(monitor_id, _summed, reported_chars = _covered_chars[0])" in source
-    # Each reported pass's running usage reaches the monitor, so a later failure keeps it.
     assert "_monitor_usage(monitor_id, totals)" in source
     assert "on_pass_reported = lambda totals: _monitor_usage(codex_monitor_id, totals)," in source
-    # The plain safetensors JSON path settles its partial choices on every failure exit.
-    assert source.count("_sf_plain_settle()") == 6  # the def and its five calls
-    assert '_sf_plain_partial["current"] = token' in source
-    # A wrapper that suppressed the inner row still receives that row's partial settlement.
-    assert source.count("target = _settle_target(monitor_id)") == 4
+    # Every non-streaming drain settles through the one tracker (its behaviour is tested below).
+    assert source.count("_DrainOutput()") == 5
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
@@ -727,7 +694,8 @@ def test_a_whole_reply_counts_thinking_split_from_it(monkeypatch, tools):
         parse_think = True,
         tools = tools,
     )
-    assert receipt.completion_tokens == 100
+    # 400 thinking characters plus the 15 of its markers, which the model generated too.
+    assert receipt.completion_tokens == 104
 
 
 def test_a_stopped_whole_tool_run_charges_its_reported_preamble_once(monkeypatch):
@@ -1016,15 +984,33 @@ def test_a_stopped_mlx_completion_without_stats_is_estimated(monkeypatch):
         made.set_terminal_callback(receipts.append)
         return made
 
-    monkeypatch.setattr(passthrough, "_MLXCompletionBackend", _NoStats)
+    class _RowFails(_NoStats):
+        def generate_completion_batch(self, rows, cancel_event, stats_holder, **kw):
+            if kw["stop"] != ["rowfail"]:
+                yield from super().generate_completion_batch(rows, cancel_event, stats_holder, **kw)
+                return
+            from core.inference.orchestrator import GenStreamError
+
+            # Row 0 finishes and reports; row 1 is mid-answer when the batch fails.
+            yield 0, "a" * 400
+            usage = {"prompt_tokens": 2, "completion_tokens": 700, "total_tokens": 702}
+            stats_holder["stats"] = [{"usage": usage}, {}]
+            yield 1, "r" * 400
+            yield GenStreamError("backend died")
+
+    monkeypatch.setattr(passthrough, "_MLXCompletionBackend", _RowFails)
     monkeypatch.setattr(passthrough, "ApiMonitor", monitor)
     passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "stop": "nostats"})
     # A reported choice keeps its count; only the stopped one's 400 characters are estimated.
     passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "n": 2, "stop": "partial"})
     with pytest.raises(Exception):
         passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "stop": "fails"})
-    alone, batch, failed = receipts
+    with pytest.raises(Exception):
+        passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "n": 2, "stop": "rowfail"})
+    alone, batch, failed, row_failed = receipts
     assert alone.status == batch.status == "cancelled"
+    # A failed batch keeps the row that reported and estimates only the unfinished one.
+    assert (row_failed.status, row_failed.completion_tokens) == ("error", 800)
     # A failed drain still settles what it generated.
     assert (failed.status, failed.completion_tokens) == ("error", 100)
     # The client's zero stood in for missing stats; the 400 characters are estimated.
@@ -1108,3 +1094,146 @@ def test_reported_arguments_are_not_charged_again(monkeypatch, ending, status, c
         status = code,
     )
     assert (receipt.status, receipt.completion_tokens) == (status, 120)
+
+
+def _drain_receipt(
+    feed,
+    status = "cancelled",
+    prompt = "",
+):
+    """Drives one _DrainOutput the way a drain does, then settles and finishes its row."""
+    receipts = []
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(receipts.append)
+    entry = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = prompt,
+        subject = "owner",
+        via_api_key = True,
+    )
+    out = inference_route._DrainOutput()
+    route_monitor = inference_route.api_monitor
+    inference_route.api_monitor = monitor
+    try:
+        feed(out, entry)
+        if status == "error":
+            out.settle(entry)
+            monitor.fail(entry, "backend died")
+        else:
+            monitor.finish(entry, status)
+    finally:
+        inference_route.api_monitor = route_monitor
+    [receipt] = receipts
+    return receipt
+
+
+def _usage(completion):
+    return {"prompt_tokens": 9, "completion_tokens": completion, "total_tokens": 9 + completion}
+
+
+def _settled(out, entry):
+    out.settle(entry)
+
+
+@pytest.mark.parametrize(
+    "steps, expected",
+    [
+        # Output with no report is estimated in full (4 characters a token).
+        ([("text", "r" * 400)], 100),
+        # Cumulative text is counted once, however many snapshots arrive.
+        ([("text", "r" * 200), ("text", "r" * 400)], 100),
+        # A report covers what came before it; only later output is estimated.
+        ([("text", "r" * 400), ("report", 100), ("args", 80)], 120),
+        # A later turn after a report is its own text, not a continuation of the reported one.
+        ([("text", "r" * 400), ("report", 100), ("text", "r" * 40)], 110),
+        ([("text", "r" * 40), ("report", 100), ("text", "r" * 400)], 200),
+        # A finalized call's arguments follow their pass's report and are covered by it.
+        ([("text", "r" * 400), ("report", 100), ("covered_args", 400)], 100),
+        # Choices: a report counts only its own choice; a stopped one is estimated.
+        ([("text", "a" * 400), ("choice_report", 700), ("finish",), ("text", "r" * 400)], 800),
+        # A parallel batch's live texts are output, and so are rows a fallback discarded.
+        ([("live", ["r" * 200, "r" * 200])], 100),
+        ([("discard", 400), ("text", "a" * 40), ("choice_report", 10), ("finish",)], 110),
+    ],
+)
+@pytest.mark.parametrize("status", ["cancelled", "error"])
+def test_a_drain_is_charged_its_reports_plus_the_output_after_them(steps, expected, status):
+    def feed(out, entry):
+        for step in steps:
+            kind, *value = step
+            if kind == "text":
+                out.text(value[0])
+            elif kind == "args":
+                out.add(value[0])
+            elif kind == "discard":
+                out.discard(value[0])
+            elif kind == "covered_args":
+                out.add(value[0], covered = True)
+            elif kind == "report":
+                out.report(_usage(value[0]))
+            elif kind == "choice_report":
+                out.report(_usage(value[0]), chars = len(out.current))
+            elif kind == "finish":
+                out.finish()
+            elif kind == "live":
+                out.live = value[0]
+        if status == "cancelled":
+            # A stop settles through the success path's charge, not settle().
+            inference_route.api_monitor.set_reply(entry, out.preview(), output_chars = out.total())
+            out.charge(entry, out.usage, completed = False)
+
+    assert _drain_receipt(feed, status).completion_tokens == expected
+
+
+def test_a_completed_drain_is_debited_output_its_reports_never_counted():
+    def feed(out, entry):
+        # The batch discarded 400 characters; the fallback's 200 tokens are reported.
+        out.discard(400)
+        out.text("a" * 800)
+        out.report(_usage(200), chars = 800)
+        out.finish()
+        inference_route.api_monitor.set_reply(entry, out.preview(), output_chars = out.total())
+        out.charge(entry, out.usage, completed = True)
+
+    assert _drain_receipt(feed, "completed").completion_tokens == 300
+
+
+def test_a_completed_drain_without_any_report_is_estimated_not_debited():
+    def feed(out, entry):
+        out.text("r" * 400)
+        inference_route.api_monitor.set_reply(entry, out.preview(), output_chars = out.total())
+        # An all-zero placeholder is no report, so nothing is debited on top of it.
+        out.charge(entry, _usage(0) | {"prompt_tokens": 0, "total_tokens": 0}, completed = True)
+
+    receipt = _drain_receipt(feed, "completed", prompt = "p" * 40)
+    # Both sides estimated, the prompt included: a debit would have recorded a zero prompt.
+    assert (receipt.prompt_tokens, receipt.completion_tokens) == (10, 100)
+
+
+def test_observed_stats_are_a_report_of_everything_so_far():
+    def feed(out, entry):
+        first = {"usage": _usage(100)}
+        out.observe(first)
+        out.text("r" * 400)
+        out.observe(first)  # Unchanged stats report nothing new.
+        out.observe({"usage": _usage(100)})  # A replaced value covers the 400 characters.
+        out.text("r" * 40)
+        out.settle(entry)
+
+    assert _drain_receipt(feed, "error").completion_tokens == 110
+
+
+def test_a_completed_choice_without_stats_keeps_the_reported_count():
+    def feed(out, entry):
+        # As on main: a finished choice that published no stats is not debited an estimate.
+        out.text("a" * 40)
+        out.report(_usage(3), chars = 40)
+        out.finish()
+        out.text("second")
+        out.finish()
+        inference_route.api_monitor.set_reply(entry, out.preview(), output_chars = out.total())
+        out.charge(entry, out.usage, completed = True)
+
+    assert _drain_receipt(feed, "completed").completion_tokens == 3

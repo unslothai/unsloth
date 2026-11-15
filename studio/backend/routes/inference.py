@@ -7290,6 +7290,120 @@ def _settle_target(monitor_id: Optional[str]) -> Optional[str]:
     return sink.get("monitor_id") if isinstance(sink, dict) else None
 
 
+class _DrainOutput:
+    """What a non-streaming drain generated and how much of it the usage reports cover.
+
+    Each drain feeds one of these; its success, stop and failure paths all settle from it, so a
+    stopped or crashed run is charged its reports plus an estimate of only the output after them.
+    """
+
+    __slots__ = (
+        "done",
+        "current",
+        "live",
+        "generated",
+        "covered",
+        "discarded",
+        "usage",
+        "_seen",
+        "_new_turn",
+    )
+
+    def __init__(self) -> None:
+        self.done = ""  # finished turns or choices, kept in the preview
+        self.current = ""  # the in-flight turn's cumulative text
+        self.live: list = []  # a parallel batch's in-flight texts
+        self.generated = 0  # every generated character, shown or not
+        self.covered = 0  # the characters the reports so far count
+        self.discarded = 0  # generated, then dropped for a retry: in no report
+        self.usage: Optional[dict] = None
+        self._seen = None
+        self._new_turn = False
+
+    def text(self, cumulative: str) -> None:
+        # Cumulative within a turn; after a report, or when it shrinks, a new turn has begun.
+        if self._new_turn or len(cumulative) < len(self.current):
+            self.generated += len(cumulative)
+        else:
+            self.generated += len(cumulative) - len(self.current)
+        self.current = cumulative
+        self._new_turn = False
+
+    def add(
+        self,
+        chars: int,
+        *,
+        covered: bool = False,
+    ) -> None:
+        """Output the preview never shows (tool arguments, discarded rows)."""
+        self.generated += chars
+        if covered:
+            self.covered += chars
+
+    def discard(self, chars: int) -> None:
+        """Output a retry replaced (a failed batch's rows): never reported, so always charged."""
+        self.generated += chars
+        self.discarded += chars
+
+    def report(
+        self,
+        usage: Optional[dict],
+        *,
+        chars: Optional[int] = None,
+    ) -> None:
+        """A running usage report; ``chars`` when it counts only one choice's text."""
+        self.usage = usage
+        self.covered = self.generated if chars is None else self.covered + chars
+        self._new_turn = True
+
+    def observe(self, stats: Optional[dict]) -> None:
+        """A replaced stats holder value is a pass's report of everything generated so far."""
+        if stats is not self._seen:
+            self._seen = stats
+            if stats:
+                self.report(stats.get("usage"))
+
+    def finish(self) -> None:
+        """A choice ended: its text stays in the preview."""
+        self.done += self.current
+        self.current = ""
+
+    def total(self) -> int:
+        return self.generated + sum(len(text) for text in self.live)
+
+    def preview(self) -> str:
+        return self.done + self.current + "".join(self.live)
+
+    def settle(self, monitor_id: Optional[str]) -> None:
+        """Records a failed or stopped drain's output, in its wrapper's row if it had none."""
+        target = _settle_target(monitor_id)
+        if self.total():
+            api_monitor.set_reply(target, self.preview(), output_chars = self.total())
+        if self.usage:
+            _monitor_usage(target, self.usage, reported_chars = self.covered)
+
+    def charge(
+        self, monitor_id: Optional[str], usage: Optional[dict], *, completed: bool, **kwargs
+    ):
+        """The success path's usage. A stop leaves output past the reports to the estimate; a
+        completed report is trusted whole, so only discarded output is debited beside it."""
+        # No report at all leaves the whole run to the estimate (a placeholder is not a report).
+        reported = self.usage and usage and usage.get("completion_tokens") is not None
+        if completed and self.discarded and reported:
+            debit = -(-self.discarded // 4)
+            total = usage.get("total_tokens") or (
+                (usage.get("prompt_tokens") or 0) + usage["completion_tokens"]
+            )
+            usage = {
+                **usage,
+                "completion_tokens": usage["completion_tokens"] + debit,
+                "total_tokens": total + debit,
+            }
+        _monitor_usage(
+            monitor_id, usage, reported_chars = None if completed else self.covered, **kwargs
+        )
+
+
 def _monitor_perf_callback(monitor_id: Optional[str], context_length):
     """Build a timing sink only when a monitor row or wrapper sink can consume it."""
     if not monitor_id and _monitor_perf_sink.get() is None:
@@ -33707,31 +33821,7 @@ async def produce_openai_chat_completions(
                 )
 
             # Non-streaming: drain into one ChatCompletion; CLI forced tools reach this path.
-            # The kept turn's text, every pass's tool arguments, the last pass report, and the output
-            # that report covered (its pass's text plus the arguments streamed up to it).
-            _gguf_partial: dict = {
-                "text": "",
-                "args": 0,
-                "report": None,
-                "covered_text": 0,
-                "covered_args": 0,
-            }
-
-            def _gguf_settle_partial():
-                target = _settle_target(monitor_id)
-                if _gguf_partial["text"]:
-                    api_monitor.set_reply(target, _gguf_partial["text"])
-                # Streamed tool-call arguments never reach the kept text.
-                api_monitor.count_output(target, _gguf_partial["args"])
-                if _gguf_partial["report"] is not None:
-                    # Re-settled after the reply so the report covers only what it counted.
-                    _monitor_usage(
-                        target,
-                        _gguf_partial["report"],
-                        _monitor_context_length(),
-                        reported_chars = _gguf_partial["covered_text"]
-                        + _gguf_partial["covered_args"],
-                    )
+            _gguf_out = _DrainOutput()
 
             def _drain_gguf_tool_loop():
                 full_text = ""
@@ -33742,8 +33832,6 @@ async def produce_openai_chat_completions(
                 gen = gguf_generate_with_tools()
                 raw_text = None
                 passes_completion = 0
-                # The last pass's usage while no text followed it, so the final reply is already covered.
-                settled = None
                 try:
                     for event in gen:
                         if cancel_event.is_set():
@@ -33752,20 +33840,18 @@ async def produce_openai_chat_completions(
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
                             timings = event.get("timings")
+                            if usage:
+                                _gguf_out.report(usage)
                         elif event.get("type") == "context_usage":
                             # As in the streaming branch: a run stopped at a tool wait keeps this pass's usage.
                             passes_completion += int(event.get("completion_tokens") or 0)
                             pass_prompt = int(event.get("prompt_tokens") or 0)
-                            settled = {
-                                "prompt_tokens": pass_prompt,
-                                "completion_tokens": passes_completion,
-                                "total_tokens": pass_prompt + passes_completion,
-                            }
-                            _monitor_usage(monitor_id, settled, _monitor_context_length())
-                            _gguf_partial.update(
-                                report = settled,
-                                covered_text = len(_gguf_partial["text"]),
-                                covered_args = _gguf_partial["args"],
+                            _gguf_out.report(
+                                {
+                                    "prompt_tokens": pass_prompt,
+                                    "completion_tokens": passes_completion,
+                                    "total_tokens": pass_prompt + passes_completion,
+                                }
                             )
                         elif event.get("type") == "context_truncated":
                             context_truncation = _accumulate_context_truncation(
@@ -33774,9 +33860,8 @@ async def produce_openai_chat_completions(
                         elif event.get("type") == "tool_args":
                             # Generated arguments, counted as the streaming branch does.
                             _args_text = event.get("text")
-                            if isinstance(_args_text, str) and _args_text:
-                                _gguf_partial["args"] += len(_args_text)
-                                settled = None
+                            if isinstance(_args_text, str):
+                                _gguf_out.add(len(_args_text))
                         elif event.get("type") == "content":
                             # Content is cumulative within a turn and resets
                             # between turns, so the last event holds the final
@@ -33784,9 +33869,7 @@ async def produce_openai_chat_completions(
                             # preamble emitted before a tool call (its own earlier
                             # turn) isn't carried -- only the final turn is.
                             raw_text = event.get("text", "")
-                            settled = None
-                            # Text after a report is the next pass's own.
-                            _gguf_partial.update(text = raw_text, covered_text = 0)
+                            _gguf_out.text(raw_text)
                     if raw_text is not None:
                         # Stripped once: stripping every cumulative event is quadratic in the turn.
                         full_text = _strip_tool_xml_for_display(
@@ -33794,7 +33877,7 @@ async def produce_openai_chat_completions(
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                             enabled_tool_names = _gguf_display_tool_names,
                         )
-                    return full_text, usage, finish, timings, context_truncation, settled
+                    return full_text, usage, finish, timings, context_truncation
                 finally:
                     # Close on early break/cancel so the llama-server socket is released.
                     try:
@@ -33868,7 +33951,6 @@ async def produce_openai_chat_completions(
                         completion_finish,
                         completion_timings,
                         completion_context_truncation,
-                        settled_usage,
                     ) = await asyncio.shield(drain_task)
                 finally:
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -33903,25 +33985,12 @@ async def produce_openai_chat_completions(
                         ),
                     ),
                 )
-                api_monitor.set_reply(monitor_id, visible_text)
-                api_monitor.count_output(monitor_id, len(reasoning_text) + _gguf_partial["args"])
-                if _gguf_partial["report"] is not None and not completion_usage:
-                    # Stopped after a reported pass: that report covers only the output it counted.
-                    _monitor_usage(
-                        monitor_id,
-                        _gguf_partial["report"],
-                        _monitor_context_length(),
-                        reported_chars = _gguf_partial["covered_text"]
-                        + _gguf_partial["covered_args"],
-                    )
-                _monitor_usage(
+                api_monitor.set_reply(monitor_id, visible_text, output_chars = _gguf_out.total())
+                _gguf_out.charge(
                     monitor_id,
-                    {
-                        "prompt_tokens": _prompt_tokens,
-                        "completion_tokens": _completion_tokens,
-                        "total_tokens": _prompt_tokens + _completion_tokens,
-                    },
-                    _monitor_context_length(),
+                    _gguf_out.usage,
+                    completed = not cancel_event.is_set(),
+                    context_length = _monitor_context_length(),
                     timings = completion_timings,
                     stop_reason = _clamp_finish_reason(completion_finish),
                 )
@@ -33938,7 +34007,7 @@ async def produce_openai_chat_completions(
             except asyncio.CancelledError:
                 cancel_event.set()
                 await _drain_cancelled_gguf_tool_task()
-                _gguf_settle_partial()
+                _gguf_out.settle(monitor_id)
                 api_monitor.finish(monitor_id, "cancelled")
                 reservation.cancel()
                 if admission_lease is not None:
@@ -33980,7 +34049,7 @@ async def produce_openai_chat_completions(
                 )
             except Exception as e:
                 logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
-                _gguf_settle_partial()
+                _gguf_out.settle(monitor_id)
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
@@ -34481,28 +34550,7 @@ async def produce_openai_chat_completions(
                     detail = _openai_admission_error_body(exc, status_code = 499),
                 )
 
-            # Finished choices' text (covered by their usage), the current one's, and the usage so far.
-            _choices_partial: dict = {
-                "done": "",
-                "current": "",
-                "usage": None,
-                # Choices that reported usage, and their generated length: the rest are estimated.
-                "reported": 0,
-                "reported_chars": 0,
-            }
-
-            def _gguf_choices_settle():
-                target = _settle_target(monitor_id)
-                done = _choices_partial["done"]
-                if done or _choices_partial["current"]:
-                    api_monitor.set_reply(target, done + _choices_partial["current"])
-                if _choices_partial["usage"] is not None:
-                    _monitor_usage(
-                        target,
-                        _choices_partial["usage"],
-                        _monitor_context_length(),
-                        reported_chars = _choices_partial["reported_chars"],
-                    )
+            _choices_out = _DrainOutput()
 
             try:
                 # The single decode slot yields one at a time, so n choices run sequentially.
@@ -34556,7 +34604,7 @@ async def produce_openai_chat_completions(
                                     )
                                 continue
                             full_text = token
-                            _choices_partial["current"] = token
+                            _choices_out.text(token)
 
                         if _choice_context_truncation is not None and (
                             _context_truncation is None
@@ -34590,17 +34638,16 @@ async def produce_openai_chat_completions(
                             _sum_completion += completion_usage.get("completion_tokens") or 0
                             if _prompt_details is None:
                                 _prompt_details = completion_usage.get("prompt_tokens_details")
-                            _choices_partial["usage"] = {
-                                "prompt_tokens": _prompt_tokens,
-                                "completion_tokens": _sum_completion,
-                                "total_tokens": _prompt_tokens + _sum_completion,
-                            }
-                            _choices_partial["reported"] += 1
-                            _choices_partial["reported_chars"] += len(visible_text) + len(
-                                reasoning_text
+                            # This choice's report counts its own text, not a stopped one's.
+                            _choices_out.report(
+                                {
+                                    "prompt_tokens": _prompt_tokens,
+                                    "completion_tokens": _sum_completion,
+                                    "total_tokens": _prompt_tokens + _sum_completion,
+                                },
+                                chars = len(_choices_out.current),
                             )
-                        _choices_partial["done"] += full_text
-                        _choices_partial["current"] = ""
+                        _choices_out.finish()
                     return (
                         _n,
                         _choices,
@@ -34653,28 +34700,16 @@ async def produce_openai_chat_completions(
                     monitor_reply = "\n\n".join(
                         f"Choice {_idx + 1}:\n{text}" for _idx, text in enumerate(_monitor_replies)
                     )
-                api_monitor.set_reply(
-                    monitor_id, monitor_reply, output_chars = sum(map(len, _monitor_replies))
-                )
-                # set_reply replaces the count; thinking is split out of the replies above.
-                api_monitor.count_output(
-                    monitor_id,
-                    sum(len(choice.message.reasoning_content or "") for choice in _choices),
-                )
-                _monitor_usage(
+                api_monitor.set_reply(monitor_id, monitor_reply, output_chars = _choices_out.total())
+                _choices_out.charge(
                     monitor_id,
                     {
                         "prompt_tokens": _prompt_tokens,
                         "completion_tokens": _sum_completion,
                         "total_tokens": _prompt_tokens + _sum_completion,
                     },
-                    _monitor_context_length(),
-                    # A stopped choice's output is past what the reported choices cover.
-                    reported_chars = (
-                        None
-                        if _choices_partial["reported"] == len(_monitor_replies)
-                        else _choices_partial["reported_chars"]
-                    ),
+                    completed = not cancel_event.is_set(),
+                    context_length = _monitor_context_length(),
                     # Omit for n > 1: they describe only the final choice.
                     timings = _last_timings if len(_monitor_replies) <= 1 else None,
                     stop_reason = (
@@ -34691,12 +34726,12 @@ async def produce_openai_chat_completions(
             except asyncio.CancelledError:
                 cancel_event.set()
                 await _drain_cancelled_gguf_task()
-                _gguf_choices_settle()
+                _choices_out.settle(monitor_id)
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
-                _gguf_choices_settle()
+                _choices_out.settle(monitor_id)
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
@@ -35592,37 +35627,19 @@ async def produce_openai_chat_completions(
                 monitor_id = monitor_id,
             )
 
-        # The kept turn's text and every pass's tool arguments, for a drain that fails; and the
-        # output the last-seen pass stats cover (its pass's text plus the arguments before it).
-        _sf_partial_text = ""
-        _sf_partial_args = 0
-        _sf_json_seen = None
-        _sf_covered_text = _sf_covered_args = 0
-
-        def _sf_json_reported_chars(stats):
-            # Stats published after the last event seen cover everything generated.
-            return None if stats is not _sf_json_seen else _sf_covered_text + _sf_covered_args
+        _sf_out = _DrainOutput()
 
         def _sf_settle_reported_passes():
-            target = _settle_target(monitor_id)
-            if _sf_partial_text:
-                api_monitor.set_reply(target, _sf_partial_text)
-            api_monitor.count_output(target, _sf_partial_args)
-            _stats = _sf_stats_holder.get("stats")
-            if _stats:
-                _monitor_usage(
-                    target,
-                    _stats.get("usage"),
-                    reported_chars = _sf_json_reported_chars(_stats),
-                )
+            # Stats published after the last event seen cover everything generated.
+            _sf_out.observe(_sf_stats_holder.get("stats"))
+            _sf_out.settle(monitor_id)
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
             _sf_context_truncation = None
 
             def _drain_to_text():
-                nonlocal _sf_context_truncation, _sf_partial_text, _sf_partial_args
-                nonlocal _sf_json_seen, _sf_covered_text, _sf_covered_args
+                nonlocal _sf_context_truncation
                 full_text = ""
                 # Only the resumed turn skips the generation prompt; track the mode of the kept turn.
                 continued = _sf_continue
@@ -35643,12 +35660,7 @@ async def produce_openai_chat_completions(
                             f"Invalid safetensors tool event: {type(event).__name__}"
                         )
                     _event_type = event.get("type")
-                    _seen = _sf_stats_holder.get("stats")
-                    if _seen is not _sf_json_seen:
-                        # A pass reported: everything generated so far is in its counts.
-                        _sf_json_seen = _seen
-                        _sf_covered_text = len(_sf_partial_text)
-                        _sf_covered_args = _sf_partial_args
+                    _sf_out.observe(_sf_stats_holder.get("stats"))
                     # Generated arguments, as sf_tool_stream counts them: streamed, or finalized whole.
                     _args = None
                     if _event_type == "tool_args":
@@ -35659,16 +35671,12 @@ async def produce_openai_chat_completions(
                         and event.get("tool_call_id") not in _streamed_calls
                     ):
                         _args = event.get("arguments_text")
-                    if isinstance(_args, str) and _args:
-                        _sf_partial_args += len(_args)
-                        if _event_type == "tool_start":
-                            # A finalized call runs after its pass reported, so its stats cover it.
-                            _sf_covered_args += len(_args)
+                    if isinstance(_args, str):
+                        # A finalized call runs after its pass reported, so its stats cover it.
+                        _sf_out.add(len(_args), covered = _event_type == "tool_start")
                     if _event_type == "content":
                         raw_text = event.get("text", "")
-                        _sf_partial_text = raw_text
-                        # Text after a report is the next pass's own.
-                        _sf_covered_text = 0
+                        _sf_out.text(raw_text)
                         prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                     elif _event_type == "tool_start" or (
                         _event_type == "status" and not event.get("text")
@@ -35693,19 +35701,18 @@ async def produce_openai_chat_completions(
                 parse_think_markers = _sf_parse_think,
                 reasoning_prefilled = _sf_drain_prefilled,
             )
-            api_monitor.set_reply(monitor_id, _visible_text)
-            api_monitor.count_output(monitor_id, len(_reasoning_text) + _sf_partial_args)
             _stats = _sf_stats_holder.get("stats")
+            _sf_out.observe(_stats)
+            api_monitor.set_reply(monitor_id, _visible_text, output_chars = _sf_out.total())
             # Outside the stats block: a run with unknown token count reports no stats.
             _sf_json_finish = "stop" if cancel_event.is_set() else _stats_finish_reason(_stats)
             api_monitor.set_perf(monitor_id, stop_reason = _sf_json_finish)
             if _stats:
-                _monitor_usage(
+                _sf_out.charge(
                     monitor_id,
                     _stats.get("usage"),
+                    completed = not cancel_event.is_set(),
                     timings = _stats.get("timings"),
-                    # A stop mid-pass: the earlier passes' counts do not cover the kept turn's text.
-                    reported_chars = _sf_json_reported_chars(_stats),
                 )
             if cancel_event.is_set():
                 from core.inference.llama_keepwarm import mark_current_response_failed
@@ -36376,32 +36383,7 @@ async def produce_openai_chat_completions(
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
-        # Finished choices' text (covered by their usage), the current one's, and the usage so far.
-        _sf_plain_partial: dict = {
-            "done": "",
-            "current": "",
-            # A parallel batch's live texts, and batch output a fallback discarded.
-            "batch": [],
-            "extra": 0,
-            "usage": None,
-            # Choices that reported usage, and their generated length: the rest are estimated.
-            "reported": 0,
-            "reported_chars": 0,
-        }
-
-        def _sf_plain_settle():
-            target = _settle_target(monitor_id)
-            done = _sf_plain_partial["done"]
-            live = _sf_plain_partial["current"] + "".join(_sf_plain_partial["batch"])
-            if done or live:
-                api_monitor.set_reply(target, done + live)
-            api_monitor.count_output(target, _sf_plain_partial["extra"])
-            if _sf_plain_partial["usage"] is not None:
-                _monitor_usage(
-                    target,
-                    _sf_plain_partial["usage"],
-                    reported_chars = _sf_plain_partial["reported_chars"],
-                )
+        _sf_plain_out = _DrainOutput()
 
         try:
             _n = payload.n or 1
@@ -36427,7 +36409,7 @@ async def produce_openai_chat_completions(
                     if isinstance(token, GenStreamError):
                         return token
                     final = token
-                    _sf_plain_partial["current"] = token
+                    _sf_plain_out.text(token)
                 return final
 
             _produced: dict = {}
@@ -36440,7 +36422,7 @@ async def produce_openai_chat_completions(
                 ]
                 batch_stats: dict = {}
                 texts = [""] * len(rows)
-                _sf_plain_partial["batch"] = texts
+                _sf_plain_out.live = texts
                 _finished = set()
 
                 def _drain_batch():
@@ -36468,7 +36450,7 @@ async def produce_openai_chat_completions(
                     name = "openai-chat-nonstream-batch",
                 )
                 _reported = batch_stats.get("stats") or []
-                _sf_plain_partial["batch"] = []
+                _sf_plain_out.live = []
 
                 def _keep(_row, idx):
                     _stats = _reported[_row] if _row < len(_reported) else None
@@ -36486,7 +36468,7 @@ async def produce_openai_chat_completions(
                             _keep(_row, idx)
                         else:
                             # Generated, then discarded for the fallback: still output.
-                            _sf_plain_partial["extra"] += len(texts[_row])
+                            _sf_plain_out.discard(len(texts[_row]))
                     return False
                 for _row, idx in enumerate(_indices):
                     _keep(_row, idx)
@@ -36499,6 +36481,7 @@ async def produce_openai_chat_completions(
                 stats_holder.pop("stats", None)
                 if choice_index in _produced:
                     full_text, stats_holder["stats"] = _produced[choice_index]
+                    _sf_plain_out.text(full_text)
                 else:
                     full_text = await _run_blocking_generation(
                         lambda: _drain_generate(choice_index = choice_index),
@@ -36508,7 +36491,7 @@ async def produce_openai_chat_completions(
                 if isinstance(full_text, GenStreamError):
                     backend.reset_generation_state(cancel_event)
                     _msg = _friendly_gen_stream_error(full_text)
-                    _sf_plain_settle()
+                    _sf_plain_out.settle(monitor_id)
                     api_monitor.fail(monitor_id, _msg)
                     _refused = _refused_parameter(full_text)
                     if _refused:
@@ -36670,10 +36653,6 @@ async def produce_openai_chat_completions(
                     )
                 )
                 _monitor_replies.append(_msg)
-                _sf_plain_partial["done"] += (_msg.get("reasoning_content") or "") + (
-                    _msg.get("content") or ""
-                )
-                _sf_plain_partial["current"] = ""
                 if _choice_stats:
                     _last_stats = _choice_stats
                     _choice_usage = _choice_stats.get("usage") or {}
@@ -36683,15 +36662,16 @@ async def produce_openai_chat_completions(
                         # Details come from the same choice as prompt_tokens, else cached can exceed prompt.
                         _prompt_details = _choice_usage.get("prompt_tokens_details")
                     _sum_completion += _choice_usage.get("completion_tokens") or 0
-                    _sf_plain_partial["usage"] = {
-                        "prompt_tokens": _prompt_tokens,
-                        "completion_tokens": _sum_completion,
-                        "total_tokens": _prompt_tokens + _sum_completion,
-                    }
-                    _sf_plain_partial["reported"] += 1
-                    _sf_plain_partial["reported_chars"] += len(
-                        _msg.get("reasoning_content") or ""
-                    ) + len(_msg.get("content") or "")
+                    # This choice's report counts its own text, not a stopped one's.
+                    _sf_plain_out.report(
+                        {
+                            "prompt_tokens": _prompt_tokens,
+                            "completion_tokens": _sum_completion,
+                            "total_tokens": _prompt_tokens + _sum_completion,
+                        },
+                        chars = len(_sf_plain_out.current),
+                    )
+                _sf_plain_out.finish()
             _mark_cancelled_json_response_failed(request, cancel_event)
             _msg, _finish = _monitor_replies[-1], _choices[-1].finish_reason
 
@@ -36729,40 +36709,17 @@ async def produce_openai_chat_completions(
                 )
             else:
                 _monitor_reply = _reply_text(_msg, _finish)
-            api_monitor.set_reply(
-                monitor_id,
-                _monitor_reply,
-                output_chars = sum(
-                    len(_reply_text(_reply, _choice.finish_reason))
-                    for _reply, _choice in zip(_monitor_replies, _choices)
-                ),
-            )
-            api_monitor.count_output(
-                monitor_id,
-                sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies)
-                # Estimated from its length only when no usage is reported (else charged below).
-                + (0 if _last_stats else _sf_plain_partial["extra"]),
-            )
+            api_monitor.set_reply(monitor_id, _monitor_reply, output_chars = _sf_plain_out.total())
             if len(_choices) <= 1:
                 # Suppressed for n > 1: choices can end differently.
                 api_monitor.set_perf(monitor_id, stop_reason = _finish)
             if _last_stats:
-                _monitored = _usage.model_dump()
-                # A batch's discarded output is in no reported count: debit it beside the fallback's.
-                _discarded = -(-_sf_plain_partial["extra"] // 4)
-                _monitored["completion_tokens"] += _discarded
-                _monitored["total_tokens"] += _discarded
-                _monitor_usage(
+                _sf_plain_out.charge(
                     monitor_id,
-                    _monitored,
+                    _usage.model_dump(),
+                    completed = not cancel_event.is_set(),
                     # Omitted for n > 1: timings describe only the last choice.
                     timings = _last_stats.get("timings") if len(_choices) <= 1 else None,
-                    # A stopped choice's output is past what the reported choices cover.
-                    reported_chars = (
-                        None
-                        if _sf_plain_partial["reported"] == len(_choices)
-                        else _sf_plain_partial["reported_chars"]
-                    ),
                 )
             api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             return _model_json_response_with_context_truncation(
@@ -36772,7 +36729,7 @@ async def produce_openai_chat_completions(
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state(cancel_event)
-            _sf_plain_settle()
+            _sf_plain_out.settle(monitor_id)
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except HTTPException:
@@ -36781,7 +36738,7 @@ async def produce_openai_chat_completions(
             # Compare-mode adapter failure: honor the public flag and the refused parameter so a contract refusal stays a client error
             backend.reset_generation_state(cancel_event)
             _msg = _friendly_gen_stream_error(exc)
-            _sf_plain_settle()
+            _sf_plain_out.settle(monitor_id)
             api_monitor.fail(monitor_id, _msg)
             _refused = _refused_parameter(exc)
             if _refused:
@@ -36794,13 +36751,13 @@ async def produce_openai_chat_completions(
             raise HTTPException(status_code = 500, detail = _msg)
         except context_refusal.ContextBudgetExceeded as e:
             backend.reset_generation_state(cancel_event)
-            _sf_plain_settle()
+            _sf_plain_out.settle(monitor_id)
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise _context_budget_http_error(e)
         except Exception as e:
             backend.reset_generation_state(cancel_event)
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
-            _sf_plain_settle()
+            _sf_plain_out.settle(monitor_id)
             api_monitor.fail(monitor_id, _friendly_error(e))
             from core.inference.engine_transport import EngineHTTPError
 
@@ -38745,28 +38702,23 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         for i in range(len(resolved) * n)
     ]
 
-    # Rows already drained, and the live texts of the chunk in flight, for a drain that fails.
-    partial: dict = {"rows": [], "texts": []}
+    out = _DrainOutput()
+    reported_usage = {"prompt_tokens": 0, "completion_tokens": 0}
 
-    def settle_partial():
-        rows_done = partial["rows"]
-        text = "".join(t for t, _s in rows_done) + "".join(partial["texts"])
-        if text:
-            api_monitor.set_reply(monitor_id, text)
-        reported = [(t, s["usage"]) for t, s in rows_done if (s or {}).get("usage")]
-        if reported:
-            _monitor_usage(
-                monitor_id,
-                {
-                    "prompt_tokens": sum(u.get("prompt_tokens") or 0 for _t, u in reported),
-                    "completion_tokens": sum(u.get("completion_tokens") or 0 for _t, u in reported),
-                },
-                reported_chars = sum(len(t) for t, _u in reported),
-            )
+    def record_rows(result):
+        for text, row_stats in result:
+            out.text(text)
+            row_usage = (row_stats or {}).get("usage")
+            if row_usage:
+                for key in reported_usage:
+                    reported_usage[key] += row_usage.get(key) or 0
+                # A row's report counts its own text, not a stopped row's.
+                out.report(dict(reported_usage), chars = len(text))
+            out.finish()
 
     def drain_rows(chunk):
         texts, batch_stats = [""] * len(chunk), {}
-        partial["texts"] = texts
+        out.live = texts
         if len(rows) == 1:
             events = (
                 text if isinstance(text, GenStreamError) else (0, text)
@@ -38782,6 +38734,15 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             )
         for event in events:
             if isinstance(event, GenStreamError):
+                # Rows that already reported keep their counts; only the rest is estimated.
+                stats = batch_stats.get("stats") or []
+                done = [
+                    row
+                    for row in range(len(texts))
+                    if row < len(stats) and (stats[row] or {}).get("usage")
+                ]
+                record_rows([(texts[row], stats[row]) for row in done])
+                out.live = [text for row, text in enumerate(texts) if row not in done]
                 return event
             row, text = event
             if text is not None:
@@ -38805,13 +38766,12 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             if isinstance(result, GenStreamError):
                 return result
             produced += result
-            partial["rows"], partial["texts"] = produced, []
+            out.live = []
+            record_rows(result)
         return produced
 
     choices, replies, stats = [], [], None
     prompt_tokens = completion_tokens = 0
-    # Output the reported rows' counts cover; a stopped row without stats is estimated instead.
-    reported_rows = reported_chars = 0
     cached_tokens: Optional[int] = None
     failure = None
     watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
@@ -38826,9 +38786,6 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         for index, (text, stats) in enumerate(produced):
             prompt_index, choice = divmod(index, n)
             reason, usage = choice_end(resolved[prompt_index]["ids"], stats)
-            if (stats or {}).get("usage"):
-                reported_rows += 1
-                reported_chars += len(text)
             if not choice:
                 prompt_tokens += usage["prompt_tokens"]
                 cached = cached_prompt_tokens(usage)
@@ -38849,7 +38806,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             replies.append(text)
     except asyncio.CancelledError:
         backend.reset_generation_state(cancel_event)
-        settle_partial()
+        out.settle(monitor_id)
         api_monitor.finish(monitor_id, "cancelled")
         raise
     except Exception as exc:
@@ -38864,7 +38821,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             if isinstance(failure, GenStreamError)
             else _friendly_error(failure)
         )
-        settle_partial()
+        out.settle(monitor_id)
         api_monitor.fail(monitor_id, message)
         status, error = _mlx_completion_error(failure, message, body)
         raise HTTPException(status_code = status, detail = message if status == 500 else error)
@@ -38881,16 +38838,16 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         replies[0]
         if single
         else "\n\n".join(f"Choice {i + 1}:\n{r}" for i, r in enumerate(replies)),
-        output_chars = sum(map(len, replies)),
+        output_chars = out.total(),
     )
     # One choice's reason and timings would misdescribe several.
     if single:
         api_monitor.set_perf(monitor_id, stop_reason = choices[0]["finish_reason"])
-    _monitor_usage(
+    out.charge(
         monitor_id,
-        monitored_usage(usage, bool(reported_rows)),
+        monitored_usage(usage, out.usage is not None),
+        completed = not cancel_event.is_set(),
         timings = (stats or {}).get("timings") if single else None,
-        reported_chars = None if reported_rows == len(produced) or budget == 0 else reported_chars,
     )
     if cancel_event.is_set():
         from core.inference.llama_keepwarm import mark_current_response_failed
