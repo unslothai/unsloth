@@ -37,6 +37,7 @@ from utils.account_context import (
 )
 
 from core.inference import mcp_images
+from core.inference.mcp_oauth_issuer import same_issuer
 
 logger = get_logger(__name__)
 
@@ -534,6 +535,42 @@ def _strip_client_id_under_basic_auth(auth) -> None:
         logger.warning("MCP OAuth: client_id fixup could not be applied: %s", exc)
 
 
+class _RootSlashIssuer(str):
+    """An expected issuer that equals its root spelling with or without the trailing slash. The SDK
+    checks the metadata issuer against it with a plain ``!=``, so the comparison is the only place
+    the rule can apply. It hashes like the plain string: not for use as a dict or set key."""
+
+    __slots__ = ()
+
+    def __eq__(self, other):
+        return isinstance(other, str) and same_issuer(str.__str__(self), str.__str__(other))
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = str.__hash__
+
+
+def _accept_root_issuer_slash(auth) -> None:
+    """The SDK takes the expected issuer from the server's resource metadata and wants the issuer
+    document to repeat it exactly. Google lists https://accounts.google.com/ and issues
+    https://accounts.google.com, which fails discovery before sign-in on every call."""
+    expected = getattr(auth, "_expected_issuer", None)
+    if expected is None:
+        logger.warning("MCP OAuth: _expected_issuer missing; issuer slash fixup skipped")
+        return
+
+    def _expected_issuer():
+        issuer = expected()
+        return _RootSlashIssuer(issuer) if type(issuer) is str else issuer
+
+    try:
+        auth._expected_issuer = _expected_issuer
+    except Exception as exc:  # noqa: BLE001
+        # Must never break OAuth: without the fixup only the mismatched servers fail, as before.
+        logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
+
+
 def _oauth(
     url: str,
     oauth_client_id: Optional[str] = None,
@@ -549,6 +586,7 @@ def _oauth(
         client_secret = oauth_client_secret,
     )
     _strip_client_id_under_basic_auth(auth)
+    _accept_root_issuer_slash(auth)
     return auth
 
 
