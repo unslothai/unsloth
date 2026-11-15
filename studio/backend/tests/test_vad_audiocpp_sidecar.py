@@ -204,3 +204,16 @@ def test_a_download_resolves_the_repo_with_the_callers_token(monkeypatch):
         ("download", "hf_secret"),
         ("forget", "org/private-vad-GGUF"),
     ]
+
+
+def test_a_detector_refused_during_an_audio_runtime_update_is_retryable():
+    from core.inference import audio_cpp_server
+    from core.inference.vad_audiocpp_sidecar import VadUnavailableError
+    from routes import inference
+
+    audio_cpp_server.UPDATE_IN_PROGRESS.set()
+    try:
+        assert inference._vad_http_error(VadUnavailableError("updating")).status_code == 503
+    finally:
+        audio_cpp_server.UPDATE_IN_PROGRESS.clear()
+    assert inference._vad_http_error(VadUnavailableError("no runtime")).status_code == 501

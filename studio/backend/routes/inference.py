@@ -26882,7 +26882,12 @@ def _vad_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, VadModelNotDownloadedError):
         return HTTPException(status_code = 409, detail = str(exc))
     if isinstance(exc, VadUnavailableError):
-        return HTTPException(status_code = 501, detail = str(exc))
+        from core.inference.audio_cpp_server import UPDATE_IN_PROGRESS
+
+        # 501 turns the detector off for the page; an audio.cpp update is over in a moment.
+        return HTTPException(
+            status_code = 503 if UPDATE_IN_PROGRESS.is_set() else 501, detail = str(exc)
+        )
     if isinstance(exc, VadError):
         return HTTPException(status_code = 422, detail = str(exc))
     logger.error(f"VAD error: {exc}", exc_info = True)
