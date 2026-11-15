@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 curve-form AdaLN; apply_h3_adaln_curve runs between from_config and load_state_dict;
-no SiLU; raw timestep indexes the table; b_curve = b_dense + W_dense @ mean"""
+"""MiniMax-H3 AdaLN. Curve form: apply_h3_adaln_curve runs between from_config and load_state_dict; no SiLU; raw
+timestep indexes the table, linearly interpolated as the reference does; b_curve = b_dense + W_dense @ mean.
+Dense form: install_h3_reference_temb rounds the time embedding to the compute dtype before the SiLU."""
 
 from __future__ import annotations
 
@@ -159,6 +160,57 @@ def apply_h3_adaln_curve(
             curve_dim,
             curve_grid,
             out_dtype or "the projection dtype",
+        )
+    return True
+
+
+_REFERENCE_TEMB_MARK = "_unsloth_h3_reference_temb"
+
+
+def _dense_compute_dtype(transformer: Any) -> Any:
+    """The dtype the reference rounds the dense time embedding to: its compute dtype, here the block stack's AdaLN
+    projection dtype; None when that is not a reduced float (a float32 stack has nothing to round)."""
+    import torch
+
+    blocks = getattr(transformer, "transformer_blocks", None) or ()
+    first = blocks[0] if len(blocks) else None
+    # a quantized projection stores codes, so the text stream's dtype (the packed sequence's) decides then
+    for module in (
+        getattr(getattr(first, "adaln_proj", None), "linear", None),
+        getattr(transformer, "context_embedder", None),
+        getattr(first, "norm1", None),
+    ):
+        weight = getattr(module, "weight", None)
+        dtype = getattr(weight, "dtype", None)
+        if dtype in (torch.bfloat16, torch.float16):
+            return dtype
+        if dtype is not None and getattr(dtype, "is_floating_point", False):
+            return None
+    return None
+
+
+def install_h3_reference_temb(transformer: Any, logger: Any = None) -> bool:
+    """Dense checkpoints: round the time embedding to the compute dtype before the AdaLN SiLU, as the reference does
+    (``time_embedder(t).to(dtype)``, then ``silu`` in that dtype). Diffusers keeps it float32 up to the SiLU. Curve-form
+    checkpoints are untouched (the reference keeps their interpolated rows float32 too). Idempotent, instance-level."""
+    embedder = getattr(transformer, "time_embedder", None)
+    if embedder is None or getattr(embedder, _REFERENCE_TEMB_MARK, False):
+        return embedder is not None
+    if type(embedder).__name__ == "_MiniMaxH3CurveTimeEmbedder" or hasattr(embedder, "table"):
+        return False
+    dtype = _dense_compute_dtype(transformer)
+    if dtype is None:
+        return False
+    stock = embedder.forward
+
+    def forward(self: Any, *args: Any, **kwargs: Any) -> Any:
+        return stock(*args, **kwargs).to(dtype)
+
+    embedder.forward = types.MethodType(forward, embedder)
+    setattr(embedder, _REFERENCE_TEMB_MARK, True)
+    if logger is not None:
+        logger.info(
+            "video.h3_temb: dense time embedding rounded to %s before the AdaLN SiLU", dtype
         )
     return True
 

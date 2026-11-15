@@ -393,3 +393,35 @@ def test_full_finetune_vlm_text_only_batches_train_under_ddp(tmp_path):
 def _free_port():
     from tests._rendezvous_port import free_port
     return free_port()
+
+
+def _gemma4_like(**text_extra):
+    # vision.py checkpoints Gemma 4 reentrantly even under DDP; only the model_type matters to the helper.
+    model = _llava(**text_extra)
+    model.config.model_type = "gemma4_unified"
+    model._unsloth_vlm_gc_non_reentrant = False
+    return model
+
+
+def test_gemma4_language_lora_defaults_to_false(ddp_env):
+    # transformers' True crashes on the first backward under reentrant checkpointing ("mark a variable ready
+    # only once"); every language-layer adapter gets a gradient on a text-only batch, so False trains.
+    args = _args()
+    model = _lora(_gemma4_like(), target_modules = r".*language_model.*\.(q_proj|v_proj)")
+    assert _helper()(args, model) is False
+    assert args.ddp_find_unused_parameters is False
+
+
+@pytest.mark.parametrize("case", ["tower_lora", "moe", "not_gemma4", "no_checkpointing"])
+def test_gemma4_lora_rule_needs_text_only_dense_adapters(ddp_env, case):
+    kwargs, extra, targets = {}, {}, r".*language_model.*\.(q_proj|v_proj)"
+    if case == "tower_lora":
+        targets = ["q_proj", "v_proj"]  # also the CLIP tower's projections
+    elif case == "moe":
+        extra = {"num_local_experts": 4}
+    elif case == "no_checkpointing":
+        kwargs["gradient_checkpointing"] = False
+    model = _gemma4_like(**extra)
+    if case == "not_gemma4":
+        model.config.model_type = "llava"
+    assert _helper()(_args(**kwargs), _lora(model, target_modules = targets)) is None

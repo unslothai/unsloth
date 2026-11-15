@@ -500,6 +500,41 @@ def test_strided_processor_with_fused_qk_rope_matches_stock(quantized):
     assert _equal(_run(stock), _run(quantized))
 
 
+def test_strided_processor_with_once_rounding_matches_the_reference_rotation(quantized):
+    """Video installs the reference kernel's rotation: the processor runs qk_norm_rope_once, which equals the unfused
+    single-rounding math on CPU, and differs from the stock diffusers chain only by that rounding."""
+    quantized.set_attention_backend("_native_math")
+    stock = copy.deepcopy(quantized)
+    once = copy.deepcopy(quantized)
+    A.install_strided_attention(once, qk_rope_rounding = "once")
+    A.install_strided_attention(quantized)
+    proc = once.transformer_blocks[0].attn.processor
+    assert proc._unsloth_qk_rope is True and proc._unsloth_qk_rope_once is True
+    assert quantized.transformer_blocks[0].attn.processor._unsloth_qk_rope_once is False
+    calls = []
+    real = Q.qk_norm_rope_impl
+
+    def spy(
+        x,
+        weight,
+        cos,
+        sin,
+        eps,
+        rounding = Q.ROUNDING_EAGER,
+    ):
+        calls.append(rounding)
+        return real(x, weight, cos, sin, eps, rounding)
+
+    Q.qk_norm_rope_impl = spy
+    try:
+        got = _run(once)
+    finally:
+        Q.qk_norm_rope_impl = real
+    assert calls and set(calls) == {Q.ROUNDING_ONCE}
+    assert _equal(_run(stock), _run(quantized))  # the eager install is unchanged
+    assert got is not None
+
+
 def test_fused_qk_rope_kill_switch(quantized, monkeypatch):
     monkeypatch.setenv(Q.QK_ROPE_ENV, "0")
     A.install_strided_attention(quantized)
