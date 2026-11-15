@@ -96,20 +96,20 @@ def _no_provenance_warning():
 def test_reload_on_the_same_tables_is_silent(checkpoints, adapter):
     from peft import PeftModel
     with _no_provenance_warning():
-        PeftModel.from_pretrained(_base(checkpoints[0], mode = "disk"), adapter)
+        PeftModel.from_pretrained(_base(checkpoints[0], mode = "disk"), adapter, torch_device = "cpu")
 
 
 def test_reload_on_other_tables_warns_or_refuses(checkpoints, adapter, monkeypatch):
     from peft import PeftModel
 
     with pytest.warns(UserWarning, match = "other frozen lookup tables"):
-        PeftModel.from_pretrained(_base(checkpoints[1]), adapter)
+        PeftModel.from_pretrained(_base(checkpoints[1]), adapter, torch_device = "cpu")
     monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
     with pytest.raises(ValueError, match = "contents differ"):
-        PeftModel.from_pretrained(_base(checkpoints[1]), adapter)
+        PeftModel.from_pretrained(_base(checkpoints[1]), adapter, torch_device = "cpu")
     monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "off")
     with _no_provenance_warning():
-        PeftModel.from_pretrained(_base(checkpoints[1]), adapter)
+        PeftModel.from_pretrained(_base(checkpoints[1]), adapter, torch_device = "cpu")
 
 
 def test_reload_with_the_table_resident_is_not_a_mismatch(checkpoints, adapter, monkeypatch):
@@ -119,10 +119,10 @@ def test_reload_with_the_table_resident_is_not_a_mismatch(checkpoints, adapter, 
 
     monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
     with _no_provenance_warning():
-        PeftModel.from_pretrained(_base(checkpoints[0], mode = "gpu"), adapter)
+        PeftModel.from_pretrained(_base(checkpoints[0], mode = "gpu"), adapter, torch_device = "cpu")
     monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "warn")
     with _no_provenance_warning():
-        PeftModel.from_pretrained(_base(checkpoints[0], mode = "gpu"), adapter)
+        PeftModel.from_pretrained(_base(checkpoints[0], mode = "gpu"), adapter, torch_device = "cpu")
     # A saved table the model has no module for at all is still reported.
     provenance = ftp.load_module("frozen_table_provenance")
     with open(os.path.join(adapter, "frozen_tables.json")) as f:
@@ -170,7 +170,7 @@ def test_strict_from_pretrained_refuses_before_touching_the_base(checkpoints, ad
     base = _base(checkpoints[1])
     monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
     with pytest.raises(ValueError, match = "other frozen lookup tables"):
-        PeftModel.from_pretrained(base, adapter)
+        PeftModel.from_pretrained(base, adapter, torch_device = "cpu")
     assert not _has_lora(base)
 
 
@@ -211,7 +211,9 @@ def test_hub_adapter_is_checked_before_loading(checkpoints, adapter, monkeypatch
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     base = _base(checkpoints[1])
     with pytest.raises(ValueError, match = "other frozen lookup tables"):
-        PeftModel.from_pretrained(base, "some-org/some-adapter", revision = "abc123")
+        PeftModel.from_pretrained(
+            base, "some-org/some-adapter", revision = "abc123", torch_device = "cpu"
+        )
     assert calls == [("some-org/some-adapter", provenance.FILE_NAME, {"revision": "abc123"})]
     assert not _has_lora(base)
 
