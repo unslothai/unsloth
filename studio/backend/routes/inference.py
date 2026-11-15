@@ -50937,7 +50937,11 @@ async def _external_image_generation(
         _stopped_external_image_runs.discard(task)
 
 
-async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
+async def _enhance_generate_prompts(
+    backend,
+    request: DiffusionGenerateRequest,
+    probe: Optional[dict] = None,
+):
     """FLUX.3 prompt upsampling for one generate call (``EnhanceOutcome``). Every other family, and FLUX.3 with
     ``enhance_prompt=false``, passes its prompts through untouched. Never fails the generation: only a Stop during
     the upsampling surfaces, as the cancelled 409."""
@@ -50950,6 +50954,8 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
     except Exception as exc:  # noqa: BLE001 -- no status, no upsampling
         logger.debug("flux3.prompt_upsampler: status probe failed: %s", exc)
         status, family = {}, None
+    if probe is not None and status:
+        probe["status"] = status
     if not pup.supports_family(family):
         return pup.EnhanceOutcome(status = None)
     # A workflow the family refuses fails in the run anyway: no upsampler start (or vision load) ahead of that 400.
@@ -51188,7 +51194,9 @@ async def _generate_diffusion_image_run(
     submitted = request
     generation_started = time.perf_counter()
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
-    enhancement = await _enhance_generate_prompts(backend, request)
+    # the enhance step's status read also serves the first attempt's omitted size (no second read)
+    probe: dict = {}
+    enhancement = await _enhance_generate_prompts(backend, request, probe)
     if enhancement.status != "applied":
         # A warm start still launching holds the engine's generation slot: a run that is not using the upsampler does
         # not wait it out.
@@ -51228,19 +51236,17 @@ async def _generate_diffusion_image_run(
                 expected_load = load_identity(None, None, None)
         if txt2img_size_omitted:
             if status is None:
+                status = probe.pop("status", None) if attempt == 0 else None
+            if status is None:
                 status = await asyncio.to_thread(backend.status)
             size = omitted_txt2img_size(status.get("family")) if status.get("loaded") else None
             if size is not None:
                 request = request.model_copy(update = {"width": size[0], "height": size[1]})
-            if expected_load is None:
-                # Same pin as the omitted steps: a replaced model retries with its own default size.
-                expected_load = (
-                    load_identity(
+                if expected_load is None:
+                    # Same pin as the omitted steps: a replaced model retries with its own default size.
+                    expected_load = load_identity(
                         status.get("repo_id"), status.get("base_repo"), status.get("family")
                     )
-                    if status.get("loaded")
-                    else load_identity(None, None, None)
-                )
         if enhancement.load is not None:
             # Captions are written for one family: a model swapped in since then retries with fresh ones.
             expected_load = enhancement.load
