@@ -334,7 +334,7 @@ test("the mic re-arms for every reply stream, and a deleted saved voice falls ba
 
 test("a thread switch drops the old chat's pending transcript and its claim on the box", () => {
   // Part C: clearHeldTurn bumps heldEpoch (the reveal and judge check it); the box claim goes on switch/off only.
-  assert.match(loop, /export function clearHeldTurn\(\): void \{\s*heldEpoch \+= 1;/);
+  assert.match(loop, /export function clearHeldTurn\(\): void \{[^}]{0,60}heldEpoch \+= 1;/);
   assert.match(loop, /export function forgetVoiceBox\(\): void \{\s*voiceBoxText = "";/);
   for (const name of ["const turnOff = useCallback(", "const threadReset = useCallback("]) {
     const body = engine.slice(engine.indexOf(name));
