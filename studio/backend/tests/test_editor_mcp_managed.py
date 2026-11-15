@@ -6,7 +6,7 @@ import subprocess
 import sys
 import textwrap
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
@@ -14,7 +14,13 @@ from pydantic import ValidationError
 
 from integrations import editors
 from integrations.blender import service as blender
-from models.mcp_servers import EditorSettings, EditorSetup, EditorTest, McpServerProbeResult
+from models.mcp_servers import (
+    EditorSettings,
+    EditorSetup,
+    EditorTest,
+    McpServerProbeResult,
+    McpUiToolCallRequest,
+)
 from routes import mcp_servers as routes
 from storage import mcp_servers_db as db
 
@@ -217,3 +223,28 @@ async def test_real_unreal_probe_needs_the_project_token(editor_server, tmp_path
     (tmp_path / "Saved" / "MCP" / "capability-token").write_text(TOKEN, encoding = "utf-8")
     ok = await editors.probe("unreal", EditorSettings(port = port, project_path = str(tmp_path)))
     assert ok.ok and ok.tool_count == 1 and ok.editor_ready is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via_api_key, stdio_on", [(True, True), (False, False)])
+async def test_mcp_app_tool_calls_on_editor_rows_follow_the_stdio_gate(
+    monkeypatch, via_api_key, stdio_on
+):
+    db.create_server(
+        "d" * 16, "Unity", "", is_enabled = True, builtin_id = "unity", builtin_config_json = "{}"
+    )
+    monkeypatch.setattr(routes, "stdio_mcp_enabled", lambda: stdio_on)
+    monkeypatch.setattr(routes, "_warm_tool_cache", AsyncMock())
+    from core.inference import tools
+
+    monkeypatch.setattr(tools, "mcp_tool_definition", lambda sid, name: {"name": name})
+    call = Mock(
+        return_value = {"content": [], "structured_content": None, "is_error": False, "meta": None}
+    )
+    monkeypatch.setattr(routes, "call_tool_structured_sync", call)
+    payload = McpUiToolCallRequest(
+        tool_name = "execute_code", arguments = {"code": "x"}, permission_mode = "full"
+    )
+    with pytest.raises(HTTPException):
+        await routes.call_mcp_ui_tool("d" * 16, payload, via_api_key = via_api_key)
+    call.assert_not_called()

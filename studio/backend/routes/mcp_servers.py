@@ -814,7 +814,8 @@ def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     if not server.get("is_enabled"):
         raise HTTPException(status_code = 400, detail = "MCP server is disabled")
-    if is_stdio(server["url"]):
+    # Managed editors run code here over loopback HTTP, so they take the stdio gate too.
+    if is_stdio(server["url"]) or server.get("builtin_id") in editors.EDITORS:
         require_ui_session_for_local_commands(via_api_key)
         if not stdio_mcp_enabled():
             raise HTTPException(status_code = 400, detail = stdio_mcp_disabled_reason())
