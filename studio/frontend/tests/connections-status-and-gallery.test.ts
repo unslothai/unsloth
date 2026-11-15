@@ -374,3 +374,8 @@ test("cloud presets keep their identity across a save and a sync", async () => {
     /bedrock-runtime\.us-east-1/,
   );
 });
+
+test("the gallery's leading popular group shows no heading", () => {
+  const gallery = readSrc("features/chat/connection-gallery.tsx");
+  assert.match(gallery, /\) : group\.id === "popular" \? null : \(/);
+});
