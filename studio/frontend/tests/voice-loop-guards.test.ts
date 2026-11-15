@@ -235,8 +235,8 @@ test("the orb's Escape stays out of other pages while Chat is hidden; speech own
   const own = synth.indexOf("if (tries >= 3 || !(await ensure())) {");
   assert.ok(own > 0 && own < synth.indexOf("url = await request();"));
   assert.ok(synth.indexOf("if (slotFailedReqRef.current === reqId) return null;") < own);
-  // Residency is rechecked once per reply, before the cached flag is trusted.
-  const check = synth.indexOf("slotCheckRef.current = { reqId, ok: check() };");
+  // Residency is rechecked for every sentence, before the cached flag is trusted.
+  const check = synth.indexOf("if (check && (slotFailedReqRef.current === reqId || !(await check()))) {");
   assert.ok(check > 0 && check < synth.indexOf("!useChatRuntimeStore.getState().voiceSlotLoaded; tries++"));
 });
 
