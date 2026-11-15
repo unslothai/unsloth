@@ -154,7 +154,11 @@ def encode_x264(
     try:
         with av.open(path, mode = "w", format = "mp4") as container:
             stream = add_x264_stream(
-                container, fps, frames.shape[2], frames.shape[1], reference = reference
+                container,
+                fps,
+                frames.shape[2],
+                frames.shape[1],
+                **({"reference": True} if reference else {}),
             )
             audio_stream = (
                 _prepare_audio_stream(container, audio_sample_rate) if audio is not None else None

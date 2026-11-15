@@ -307,12 +307,13 @@ class StreamEncode:
                     container = av.open(self.path, mode = "w", format = "mp4")
                     from .video_encode import add_x264_stream, x264_frame
 
+                    # the flag only for H3, so every other family opens the stream exactly as encode_x264 does
                     stream = add_x264_stream(
                         container,
                         self.fps,
                         frames.shape[2],
                         frames.shape[1],
-                        reference = self.reference,
+                        **({"reference": True} if self.reference else {}),
                     )
                     if self.audio_sample_rate is not None:
                         from diffusers.utils.export_utils import _prepare_audio_stream

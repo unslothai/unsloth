@@ -626,6 +626,10 @@ def test_install_is_idempotent_and_scoped():
         "MiniMaxH3KeyframeVaeEncoderStep": 0,
         "MiniMaxH3Ref2VAReferenceEncoderStep": 0,
         "sampler": None,
+        # a bare pipeline has no processor or denoiser; the condition encode shim is module-level
+        "output_truncated": False,
+        "dense_temb_rounded": False,
+        "condition_latent": "mean",
     }
     other = blocks_mod.MiniMaxH3Blocks().init_pipeline()
     assert (
