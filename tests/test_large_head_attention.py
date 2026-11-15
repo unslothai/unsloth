@@ -14,7 +14,7 @@ import os
 import pytest
 import torch
 
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import has_real_cuda
 
 pytest.importorskip("triton")
 
@@ -133,7 +133,6 @@ def test_router_defers_everything_it_cannot_run():
     before = LH.LARGE_HEAD_ENGAGED["calls"]
     q = torch.zeros(1, 4, 8, 512)
     kv = torch.zeros(1, 2, 8, 512)
-    # CPU tensors, a 256 head, dropout and a softcap never reach the kernel.
     assert router(_Module(), q, kv, kv, None, scaling = 1.0)[0] == "original"
     small = torch.zeros(1, 4, 8, 256)
     assert router(_Module(), small, small[:, :2], small[:, :2], None)[0] == "original"
@@ -388,7 +387,7 @@ def test_router_keeps_wrapped_router_sentinels():
     patch_sliding()
     router = LH._make_router(mapping["sdpa"])
     mapping["sdpa"] = router
-    patch_sliding()  # second model load
+    patch_sliding()
     assert (
         mapping["sdpa"] is router
         and router._unsloth_large_head
@@ -775,7 +774,7 @@ def test_backward_copies_a_wide_row_stride_grad():
     lo, hi = LH._dense_intervals(1, S, True, q.device)
     ours_in = [x.clone().requires_grad_() for x in (q, k, v)]
     out = LH.large_head_attention(*ours_in, lo, hi)
-    grad = _wide_row_stride((1, 1, S, 512), dtype, 2)  # [B, H, S, D], as the kernel reads dO
+    grad = _wide_row_stride((1, 1, S, 512), dtype, 2)
     out.backward(grad.transpose(1, 2))
     torch.cuda.synchronize()
     ref_in = [x.detach().float().requires_grad_() for x in (q, k, v)]
@@ -886,7 +885,7 @@ def test_router_compiled_takes_a_block_verified_causal_mask(monkeypatch):
     mask = _causal(40).cuda()[None, None]
     want = LH.large_head_attention(q, kv, kv, *LH._dense_intervals(1, 40, True, q.device), 1.0)
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
-    assert router(_Module(), q, kv, kv, mask, scaling = 1.0)[0] == "original"  # unverified
+    assert router(_Module(), q, kv, kv, mask, scaling = 1.0)[0] == "original"
     setattr(mask, LH.PLAIN_CAUSAL_ATTR, False)
     assert router(_Module(), q, kv, kv, mask, scaling = 1.0)[0] == "original"
     setattr(mask, LH.PLAIN_CAUSAL_ATTR, True)
@@ -1062,7 +1061,7 @@ def test_tile_classes_by_capability_and_shared_memory(monkeypatch):
         monkeypatch.setattr(LH, "_TILE_CLASS", {})
         tiles = LH._tiles(torch.device("cuda", 0))
         assert tiles == (LH._TILES[512][want] if want else None), (major, smem)
-    assert LH._tiles(torch.device("cuda", 0), 128) is None  # untimed head dims autotune
+    assert LH._tiles(torch.device("cuda", 0), 128) is None
     monkeypatch.setenv("UNSLOTH_LH_TILES", "0")
     monkeypatch.setattr(LH, "_TILE_CLASS", {})
     assert LH._tiles(torch.device("cuda", 0)) is None

@@ -155,8 +155,8 @@ def _lh_bwd_pre(
     sdom,
     H,
     S,
-    HEAD_DIM: tl.constexpr,  # hd
-    BLOCK_M: tl.constexpr,  # query rows per program
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -211,9 +211,9 @@ def _lh_bwd_dq(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,  # hd
-    BLOCK_M: tl.constexpr,  # query rows per program
-    BLOCK_N: tl.constexpr,  # key rows per step
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -301,11 +301,11 @@ def _lh_bwd_dkdv(
     G,
     S,
     NSPLIT,
-    HEAD_DIM: tl.constexpr,  # hd
-    BLOCK_M: tl.constexpr,  # query rows per program
-    BLOCK_N: tl.constexpr,  # key rows per step
-    DO_DK: tl.constexpr,  # accumulate dK
-    DO_DV: tl.constexpr,  # accumulate dV
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    DO_DK: tl.constexpr,
+    DO_DV: tl.constexpr,
 ):
     # One program owns a kv block of one kv head and loops over its query heads (all G, or G / NSPLIT
     # of them into an fp32 partial summed afterwards when B * HKV * kv blocks would leave SMs idle,
@@ -404,9 +404,9 @@ def _lh_fwd_tma(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,  # hd
-    BLOCK_M: tl.constexpr,  # query rows per program
-    BLOCK_N: tl.constexpr,  # key rows per step
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
 ):
     HALF: tl.constexpr = HEAD_DIM // 2
     start_m = tl.program_id(0)
@@ -475,9 +475,9 @@ def _lh_bwd_dq_tma(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,  # hd
-    BLOCK_M: tl.constexpr,  # query rows per program
-    BLOCK_N: tl.constexpr,  # key rows per step
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
 ):
     HALF: tl.constexpr = HEAD_DIM // 2
     start_m = tl.program_id(0)
@@ -550,11 +550,11 @@ def _lh_bwd_dkdv_tma(
     G,
     S,
     NSPLIT,
-    HEAD_DIM: tl.constexpr,  # hd
-    BLOCK_M: tl.constexpr,  # query rows per program
-    BLOCK_N: tl.constexpr,  # key rows per step
-    DO_DK: tl.constexpr,  # accumulate dK
-    DO_DV: tl.constexpr,  # accumulate dV
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    DO_DK: tl.constexpr,
+    DO_DV: tl.constexpr,
 ):
     tl.static_assert(DO_DK != DO_DV)  # one of dK / dV per pass
     HALF: tl.constexpr = HEAD_DIM // 2
@@ -611,7 +611,6 @@ def _lh_bwd_dkdv_tma(
                 dst = tl.trans((p * (dp - delta[:, None])).to(q0.dtype))
                 acc0 = tl.dot(dst, q0, acc0)
                 acc1 = tl.dot(dst, q1, acc1)
-    # One pass accumulates either dK (scaled) or dV.
     if DO_DK:
         out = DK + offs_n[:, None] * sdkn + offs_d[None, :]
         tl.store(out, (acc0 * sm_scale).to(DK.dtype.element_ty), mask = col_ok[:, None])
@@ -846,7 +845,7 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
     dv = torch.empty_like(v)
     tiles = _tiles(q.device, D)
     if tiles is None or os.environ.get("UNSLOTH_LH_SPLIT_DKDV", "1") == "0":
-        passes = [(None, True, True)]  # one autotuned pass for both
+        passes = [(None, True, True)]
     elif "dkdv" in tiles:
         passes = [(tiles["dkdv"], True, True)]
     else:
@@ -1478,7 +1477,6 @@ def _make_router(original):
                     LARGE_HEAD_ENGAGED["calls"] += 1
                     return out, None
                 except torch.cuda.OutOfMemoryError:
-                    # SDPA below either fits or raises the same OOM the previous path would.
                     LARGE_HEAD_ENGAGED["fallback"] += 1
                 except Exception as exc:
                     LARGE_HEAD_ENGAGED["fallback"] += 1
@@ -1540,14 +1538,12 @@ def patch_large_head_attention(model = None):
             targets = set()
         passed = [_self_check(device, dtype) for device, dtype in targets]
         if passed and not any(passed):
-            # Every call would go back to SDPA, so leave it unwrapped.
             return False
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
         current = ALL_ATTENTION_FUNCTIONS["sdpa"]
     except Exception:
         return False
-    # Other wrappers (unsloth_zoo's gemma-4 sliding router) may sit on top of ours.
     if _PATCHED[0] or getattr(current, "_unsloth_large_head", False):
         return True
     # unsloth/utils/hf_packed_attention.py sends packed rows (packed_seq_lengths) past head dim 256 to
