@@ -23,6 +23,7 @@ import {
   voiceRevealText,
   takeTypedDraft,
   voiceWroteBox,
+  voiceTextReleaser,
   voiceUtterancePending,
   withoutVoiceText,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
@@ -411,13 +412,19 @@ export const VoiceEngine: FC = () => {
     const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
     if (activeThreadId) resetPromptQueuesForThread(activeThreadId);
     const DEFERRED_CLEAR_MS = 50;
+    const releaseVoiceText = voiceTextReleaser();
     const deferredClear = (n: number) => {
       if (voiceModeRef.current !== "active") return;
       const fresh = auiRef.current.composer();
       // Only the transcript the composer refills: a draft typed since, or another chat's, stays.
-      if (!voiceWroteBox(fresh.getState().text)) return;
-      fresh.setText("");
-      if (n < 5) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
+      if (voiceWroteBox(fresh.getState().text)) {
+        fresh.setText("");
+        if (n < 5) {
+          setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
+          return;
+        }
+      }
+      releaseVoiceText();
     };
 
     // First message: the append + startRun path goes stale across the first-send remount.

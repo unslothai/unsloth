@@ -23,7 +23,7 @@ test("a session dropped by a clear re-arms the listener", () => {
 
 test("a transcript revealed across a Stop is dropped, not sent", () => {
   const reveal = loop.slice(loop.indexOf("const mine = { shown: shown(transcript), rush: false };"));
-  const submit = reveal.indexOf("requestVoiceSubmit(transcript)");
+  const submit = reveal.indexOf("submitLater(transcript)");
   const guard = reveal.indexOf("if (epoch !== heldEpoch) {");
   assert.ok(guard > 0 && guard < submit);
 });
@@ -107,7 +107,7 @@ test("a mic lost mid-utterance sends what was heard instead of waiting for a fra
 test("the delayed composer cleanup clears only the refilled transcript", () => {
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   const clear = engine.slice(engine.indexOf("const deferredClear = (n: number) => {"));
-  assert.match(clear.slice(0, 400), /if \(!voiceWroteBox\(fresh\.getState\(\)\.text\)\) return;/);
+  assert.match(clear.slice(0, 400), /if \(voiceWroteBox\(fresh\.getState\(\)\.text\)\) \{\s*fresh\.setText\(""\);/);
 });
 
 test("frames stay in order when the reply ends while the barge-in probe is out", () => {
@@ -325,4 +325,12 @@ test("the since-last-export cutoff is taken before the request, not after the sa
   const run = section.slice(section.indexOf("const doExport = async () => {"));
   assert.ok(run.indexOf("const cutoff = Date.now();") < run.indexOf("await exportLayaLog("));
   assert.match(run.slice(0, 900), /setExportedAt\(cutoff\);/);
+});
+
+test("a deferred submit is dropped when the turn was reset first; a sent transcript stops claiming later drafts", () => {
+  assert.doesNotMatch(loop, /setTimeout\(\(\) => requestVoiceSubmit\(\), 0\)/);
+  assert.match(loop, /const submitLater = \(text: string\) =>\s*setTimeout\(\(\) => \{\s*if \(!switchedOff\(\) && epoch === heldEpoch\) requestVoiceSubmit\(text\);\s*\}, 0\);/);
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const clear = engine.slice(engine.indexOf("const releaseVoiceText = voiceTextReleaser();"));
+  assert.ok(clear.length > 0 && clear.indexOf("releaseVoiceText();") < clear.indexOf("// First message"));
 });
