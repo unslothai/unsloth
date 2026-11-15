@@ -1661,6 +1661,40 @@ def test_router_logits_after_a_forward_without_them(request, monkeypatch):
     torch._dynamo.reset()
 
 
+@pytest.mark.parametrize("registry_kind", ["dict", "model_keyed"])
+def test_router_hooks_install_with_either_registry_api(monkeypatch, registry_kind):
+    """transformers 5.23 (huggingface/transformers#49594) made _CAN_RECORD_REGISTRY a dict subclass whose
+    .get takes the model and stringifies its class, so .get(<class string>) answered {} and no router hook
+    was installed up front (the IndexError above came back). Keys are still the class strings."""
+    M = _load()
+
+    class Registry(dict):
+        def get(self, model):
+            return super().get(str(model.__class__)) or {}
+
+    class Collector:
+        _unsloth_eager_mirror = True
+
+    class MoeModel(torch.nn.Module):
+        pass
+
+    registry = (dict if registry_kind == "dict" else Registry)()
+    dict.__setitem__(registry, str(MoeModel), {"router_logits": object()})
+    installed = []
+    fake = types.ModuleType("transformers.utils.output_capturing")
+    fake._CAN_RECORD_REGISTRY = registry
+    fake.maybe_install_capturing_hooks = installed.append
+    fake.CompileableContextVar = Collector
+    monkeypatch.setitem(sys.modules, "transformers.utils.output_capturing", fake)
+    import transformers.utils
+
+    monkeypatch.setattr(transformers.utils, "output_capturing", fake, raising = False)
+    model = MoeModel()
+    model.inner = torch.nn.Linear(2, 2)
+    assert M._install_router_capture_hooks(model) == 1
+    assert installed == [model]
+
+
 def test_router_hooks_are_not_installed_twice_after_an_eager_capture(request, monkeypatch):
     """Failing before: an eager capturing forward hooks the inner model; installing on the unflagged outer
     CausalLM recursed into it again and every captured tuple held each layer twice."""

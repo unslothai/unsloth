@@ -2021,7 +2021,9 @@ def _install_router_capture_hooks(model):
     # recursion does not check that flag, so a module with an already hooked descendant (an earlier eager
     # capturing forward) is skipped: installing it would hook that descendant twice (duplicated outputs).
     for module in model.modules():
-        flags = registry.get(str(type(module))) or {}
+        # dict.get: transformers 5.23's _CanRecordRegistry.get takes the model and stringifies its class itself
+        # (huggingface/transformers#49594), so its .get on our class string always answered {}. Keys stay strings.
+        flags = dict.get(registry, str(type(module))) or {}
         if "router_logits" not in flags or any(
             getattr(m, "_output_capturing_hooks_installed", False) for m in module.modules()
         ):
