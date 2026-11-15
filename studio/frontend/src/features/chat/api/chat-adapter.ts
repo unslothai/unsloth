@@ -6992,8 +6992,7 @@ export function createOpenAIStreamAdapter(
 
           // The audio-input route returns before Studio's tool loop: with any tool on (project sources and
           // skills included) a voice turn goes as its transcript, so retrieval and search still run.
-          const voiceTurnAsText =
-            getVoiceMode() === "active" &&
+          const studioToolsOn =
             supportsTools &&
             (toolsEnabled ||
               codeToolsEnabled ||
@@ -7004,6 +7003,7 @@ export function createOpenAIStreamAdapter(
               browserTools.length > 0 ||
               localMediaTools.length > 0 ||
               deepResearchArmed);
+          const voiceTurnAsText = getVoiceMode() === "active" && studioToolsOn;
           const turnAudioBase64 = voiceTurnAsText
             ? undefined
             : findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation);
@@ -7076,16 +7076,7 @@ export function createOpenAIStreamAdapter(
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(deepResearchArmed ? { deep_research_armed: true } : {}),
-            ...(supportsTools &&
-              (toolsEnabled ||
-                codeToolsEnabled ||
-                mcpEnabledForChat ||
-                ragEnabled ||
-                projectRagEnabled ||
-                skillTools.length > 0 ||
-                browserTools.length > 0 ||
-                localMediaTools.length > 0 ||
-                deepResearchArmed)
+            ...(studioToolsOn
               ? {
                   enable_tools: true,
                   enabled_tools: [

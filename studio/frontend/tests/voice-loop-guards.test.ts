@@ -310,7 +310,9 @@ test("Compare's read-only threads never mount the voice orb", () => {
 
 test("a voice turn goes as text whenever the request would open the tool loop", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, /const voiceTurnAsText =\s*getVoiceMode\(\) === "active" &&\s*supportsTools &&\s*\(toolsEnabled \|\|[\s\S]{0,200}projectRagEnabled \|\|\s*skillTools\.length > 0 \|\|/);
+  assert.match(adapter, /const studioToolsOn =\s*supportsTools &&\s*\(toolsEnabled \|\|[\s\S]{0,200}projectRagEnabled \|\|\s*skillTools\.length > 0 \|\|/);
+  assert.match(adapter, /const voiceTurnAsText = getVoiceMode\(\) === "active" && studioToolsOn;/);
+  assert.match(adapter, /\.\.\.\(studioToolsOn\s*\? \{\s*enable_tools: true,/);
   assert.match(adapter, /const turnAudioBase64 = voiceTurnAsText\s*\? undefined/);
   assert.match(adapter, /extra_audio_base64: voiceTurnAsText\s*\? undefined/);
 });
