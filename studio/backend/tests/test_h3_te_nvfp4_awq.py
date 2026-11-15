@@ -238,3 +238,17 @@ def test_the_fused_dequantization_is_bit_identical_on_cuda(dtype, rows, cols):
     want = nv.dequantize_nvfp4_reference(w, plain, gs, dtype)
     got = nv.dequantize_nvfp4(w.cuda(), plain.cuda(), gs.cuda(), dtype)
     assert torch.equal(got.cpu(), want)
+
+
+def test_no_default_or_request_reaches_the_nvfp4_awq_file(monkeypatch):
+    """Until the file is hosted in an Unsloth repo: an unset request keeps the hosted int8 conditioner, no scheme
+    names an nvfp4_awq file (so nothing fetches one), and a request naming it is refused with the supported list."""
+    from core.inference.diffusion_precision import normalize_te_quant
+
+    monkeypatch.delenv(te.H3_TE_QUANT_AUTO_ENV, raising = False)
+    assert te.H3_TE_QUANT_DEFAULT == te.H3_TE_INT8
+    assert te.h3_te_auto_scheme() == te.H3_TE_INT8
+    assert not any("nvfp4" in name for name in te.H3_TE_QUANT_FILES.values())
+    assert te.h3_te_quant_scheme("nvfp4_awq") is None
+    with pytest.raises(ValueError, match = "Unsupported text_encoder_quant 'nvfp4_awq'"):
+        normalize_te_quant("nvfp4_awq")
