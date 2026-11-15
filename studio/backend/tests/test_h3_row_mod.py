@@ -260,3 +260,50 @@ def test_kernels_on_a_second_card_while_card_0_is_current(dtype):
         assert fused_mod.device == x.device and fused_gated.device == x.device
         assert torch.equal(fused_mod, R.reference_modulate(x, s1, s0, idx))
         assert torch.equal(fused_gated, R.reference_gated_residual(x, s2, out, idx))
+
+
+def _row_inputs():
+    g = torch.Generator().manual_seed(0)
+    x = torch.randn(1, 8, 16, generator = g)
+    table = torch.randn(3, 16, generator = g)
+    idx = torch.randint(0, 3, (8,), generator = g)
+    return x, table, idx
+
+
+def test_compiling_the_row_ops_does_not_recompile_per_call():
+    from torch._dynamo.testing import CompileCounter
+
+    torch._dynamo.reset()
+    x, table, idx = _row_inputs()
+    for fn, args in (
+        (R.modulate, (x, table, table, idx)),
+        (R.gated_residual, (x, table, x, idx)),
+    ):
+        torch._dynamo.reset()
+        cnt = CompileCounter()
+        compiled = torch.compile(fn, backend = cnt)
+        for _ in range(5):
+            got = compiled(*args)
+        # a STATS counter bumped inside the trace is a Python-int guard: one recompile per call
+        assert cnt.frame_count == 1, cnt.frame_count
+        ref = R.reference_modulate(*args) if fn is R.modulate else R.reference_gated_residual(*args)
+        assert torch.equal(got, ref)
+    torch._dynamo.reset()
+
+
+def test_cold_tracing_of_an_eligible_call_compiles_fullgraph(monkeypatch):
+    # the CUDA-eligible branch on CPU: an empty verdict cache must not pull the probe (lock, timing) into the trace
+    x, table, idx = _row_inputs()
+    monkeypatch.setattr(R, "_VERDICTS", {})
+    monkeypatch.setattr(R, "_eligible", lambda *a: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    torch._dynamo.reset()
+    try:
+        got = torch.compile(R.modulate, backend = "eager", fullgraph = True)(x, table, table, idx)
+        assert torch.equal(got, R.reference_modulate(x, table, table, idx))
+        got = torch.compile(R.gated_residual, backend = "eager", fullgraph = True)(x, table, x, idx)
+        assert torch.equal(got, R.reference_gated_residual(x, table, x, idx))
+        assert R._VERDICTS == {}
+    finally:
+        torch._dynamo.reset()

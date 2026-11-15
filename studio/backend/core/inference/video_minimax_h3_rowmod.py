@@ -292,7 +292,19 @@ def _use(x: Any, idx: Any, *tables: Any) -> bool:
     return bool(v and v["use"])
 
 
+def _tracing() -> bool:
+    """Under torch.compile the stock math is traced as is: no ``STATS`` counters (a changing Python int is a
+    recompile guard) and no cold ``verdict`` probe (its lock and timing cannot be traced)."""
+    try:
+        import torch
+        return bool(torch.compiler.is_compiling())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def modulate(x: Any, scale: Any, shift: Any, idx: Any) -> Any:
+    if _tracing():
+        return reference_modulate(x, scale, shift, idx)
     if _use(x, idx, scale, shift):
         STATS["fused"] += 1
         return _launch_modulate(x, scale, shift, idx)
@@ -301,6 +313,8 @@ def modulate(x: Any, scale: Any, shift: Any, idx: Any) -> Any:
 
 
 def gated_residual(residual: Any, gate: Any, out: Any, idx: Any) -> Any:
+    if _tracing():
+        return reference_gated_residual(residual, gate, out, idx)
     if (
         out.dtype == residual.dtype
         and out.shape == residual.shape
