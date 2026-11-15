@@ -1105,7 +1105,7 @@ def _graph_latency(
 ) -> dict:
     """{name: us} per CUDA-graph arm: best of seven interleaved rounds, or held ``hold_s`` then timed ``hold_s``."""
     import torch
-    from .diffusion_cuda_graph import CAPTURE_MODE, _capturing, synchronize_outside_capture
+    from .diffusion_cuda_graph import _capturing, card_graph, synchronize_outside_capture
 
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(5)
@@ -1129,7 +1129,8 @@ def _graph_latency(
         synchronize_outside_capture(dev)
         for name, fn in fns.items():
             graph = torch.cuda.CUDAGraph()
-            with _capturing(), torch.cuda.graph(graph, capture_error_mode = CAPTURE_MODE):
+            # This card's own capture stream: a bare torch.cuda.graph on a second card records an empty graph.
+            with _capturing(), card_graph(graph, index):
                 for _ in range(reps):
                     for op in ops:
                         fn(*op)

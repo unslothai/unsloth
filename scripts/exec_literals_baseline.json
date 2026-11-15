@@ -38,6 +38,20 @@
       "reason": "Rebuilds the installed diffusers HunyuanImage forward from its own inspect.getsource with one fixed block swapped; the source is the imported library's code, not user or network input."
     },
     {
+      "file": "studio/backend/core/inference/sandbox_site/sitecustomize.py",
+      "sink": "compile",
+      "digest": "b120629e5fedabc3",
+      "count": 1,
+      "reason": "Builds setuptools' editable-install finder inside the chat sandbox from the _FINDER_TEMPLATE of the setuptools in Studio's own site-packages; the chat file's MAPPING / NAMESPACES are read with ast.literal_eval, checked to be str to str, and only reach the code through the template's own repr formatting."
+    },
+    {
+      "file": "studio/backend/core/inference/sandbox_site/sitecustomize.py",
+      "sink": "exec",
+      "digest": "dee6f4b86121ac91",
+      "count": 1,
+      "reason": "Builds setuptools' editable-install finder inside the chat sandbox from the _FINDER_TEMPLATE of the setuptools in Studio's own site-packages; the chat file's MAPPING / NAMESPACES are read with ast.literal_eval, checked to be str to str, and only reach the code through the template's own repr formatting."
+    },
+    {
       "file": "unsloth/models/_utils.py",
       "sink": "eval",
       "digest": "6f65bd10ad34f535",

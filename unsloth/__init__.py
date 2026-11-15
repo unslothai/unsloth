@@ -264,6 +264,15 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # MLX can load hub checkpoints through transformers too; a no-op where its quantizers are absent.
+        from .import_fixes import (
+            fix_transformers_quantizer_unquantized_converters as _fix_unquantized_converters,
+        )
+        _fix_unquantized_converters()
+        del _fix_unquantized_converters
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(
@@ -2167,6 +2176,14 @@ else:
         _sys_mod.pop(f"{__name__}._gpu_init", None)
         del _sys_mod
         from ._cpu_init import *  # __all__ carries __version__
+
+    # Both backends: the CPU path never runs _gpu_init.
+    try:
+        from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
+        _fix_dsv41()
+        del _fix_dsv41
+    except Exception:
+        pass
 
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.

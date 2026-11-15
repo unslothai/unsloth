@@ -233,8 +233,13 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "pickNativeChatImport" in projects
     assert "if (!isTauri)" in projects
     assert 'type="file"' in data_tab
-    # Open WebUI exports are .json arrays.
-    assert 'accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"' in data_tab
+    assert "accept={CHAT_IMPORT_ACCEPT}" in data_tab
+    assert "accept={CHAT_IMPORT_ACCEPT}" in projects
+    import_chats = _ui_source(FRONTEND / "features/chat/utils/import-chats.ts")
+    assert (
+        'export const CHAT_IMPORT_ACCEPT = ".json,.jsonl,.ndjson,.csv,.md,.markdown";'
+        in import_chats
+    )
 
     native_dialogs = _ui_source(NATIVE_DIALOGS)
     assert (

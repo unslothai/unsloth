@@ -12633,3 +12633,10 @@ def test_hermes_carries_only_referenced_mcp_secrets_into_the_session_env(
     )
     assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
     assert "MCP_REMOTE_API_KEY=shared" in (home / ".env").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    "window,pct", [(32_768, "90"), (200_000, "90"), (400_000, "91"), (1_000_000, "96")]
+)
+def test_claude_compacts_with_bounded_headroom_on_large_windows(window, pct):
+    assert start.claude_autocompact_pct(window) == pct

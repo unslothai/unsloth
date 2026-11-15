@@ -246,7 +246,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
-    // CUDA / ROCm only. Keeps the official id (loader reads VAE, tokenizer, config from it), so no fetchedFrom.
+    // CUDA / ROCm only; keeps the official id (the loader reads VAE, tokenizer, config from it).
     // Size is the bf16 total; the fit rule reads the measured offload tiers instead.
     canonicalId: "MiniMaxAI/MiniMax-H3-Image",
     displayName: "MiniMax-H3-Image",
@@ -267,6 +267,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
           { gpuGb: 39, systemRamGb: 64, requiresDenseQuant: true },
         ],
       }),
+      gguf("unsloth/MiniMax-H3-Image-GGUF"),
     ],
   },
   {

@@ -1290,7 +1290,13 @@ gemma4_template = \
         {{ '<|think|>\n' }}
     {%- endif -%}
     {%- if messages[0]['role'] in ['system', 'developer'] -%}
-        {{ messages[0]['content'] | trim }}
+        {%- if messages[0]['content'] is string -%}
+            {{ messages[0]['content'] | trim }}
+        {%- elif messages[0]['content'] is sequence -%}
+            {%- for item in messages[0]['content'] -%}
+                {{ item['text'] | trim + ' ' }}
+            {%- endfor -%}
+        {%- endif -%}
         {%- set loop_messages = messages[1:] -%}
     {%- endif -%}
     {%- if tools is defined and tools -%}
@@ -1632,7 +1638,13 @@ gemma4_thinking_template = \
         {{ '<|think|>\n' }}
     {%- endif -%}
     {%- if messages[0]['role'] in ['system', 'developer'] -%}
-        {{ messages[0]['content'] | trim }}
+        {%- if messages[0]['content'] is string -%}
+            {{ messages[0]['content'] | trim }}
+        {%- elif messages[0]['content'] is sequence -%}
+            {%- for item in messages[0]['content'] -%}
+                {{ item['text'] | trim + ' ' }}
+            {%- endfor -%}
+        {%- endif -%}
         {%- set loop_messages = messages[1:] -%}
     {%- endif -%}
     {%- if tools is defined and tools -%}
