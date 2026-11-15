@@ -1348,7 +1348,7 @@ function saveChatFullAccess(threadId: string, on: boolean, explicit = false): vo
   savedChatFullAccess.set(threadId, on);
   // The open chat's snapshot write carries the flag; a separate patch would supersede its queued edits.
   if (threadId === threadScopedSettingsThreadId) scheduleThreadScopedSettingsWrite(threadId);
-  else void mergeThreadScopedSettingsIntoRow(threadId, { fullAccess: on }).catch(() => undefined);
+  else void mergeThreadScopedSettingsIntoRow(threadId, { fullAccess: on }, false).catch(() => undefined);
 }
 
 function saveGrantedChats(grants: ChatFullAccessGrants): void {
@@ -1889,19 +1889,21 @@ function heldThreadScopedChanges(
   return sanitizeThreadScopedSettings(edited);
 }
 
+/** `supersede: false` queues behind this chat's pending writes instead of cancelling them. */
 async function mergeThreadScopedSettingsIntoRow(
   threadId: string,
   changes: ThreadScopedSettings,
+  supersede = true,
 ): Promise<void> {
   const settingsSeq = nextThreadSettingsSeq();
-  const ticket = takeThreadSettingsWriteTicket(threadId);
+  const ticket = supersede ? takeThreadSettingsWriteTicket(threadId) : null;
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
     .then(() => threadSettingsReplaySettled)
     .catch(() => undefined)
     .then(async () => {
-      if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
+      if (ticket !== null && (threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
         return;
       }
       try {

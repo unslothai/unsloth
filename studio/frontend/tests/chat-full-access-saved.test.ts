@@ -212,3 +212,16 @@ test("leaving Full access while loading wins even when this tab last read it as 
   await settle();
   assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false);
 });
+
+test("a grant arriving after switching away keeps the left chat's flushed edits", async () => {
+  threadRows.reset();
+  threadRows.rows.set(CHAT, { permissionMode: "auto", temperature: 0.5 });
+  const state = await start("background-grant-keeps-edits");
+  open(state, CHAT);
+  state().setParams({ ...state().params, temperature: 1.2 } as never);
+  open(state, OTHER);
+  state().grantChatFullAccess({ runId: "run-background", threadId: CHAT, sessionId: "session-1" });
+  await settle();
+  assert.equal(threadRows.rows.get(CHAT)?.temperature, 1.2);
+  assert.equal(threadRows.rows.get(CHAT)?.fullAccess, true);
+});
