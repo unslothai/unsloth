@@ -186,7 +186,7 @@ def test_rocm_call_runs_the_triton_kernel(monkeypatch):
         calls.append((tuple(q.shape), dict(config), pv, scale))
         return v.clone()
 
-    monkeypatch.setattr(T, "int8_attention", fake)
+    monkeypatch.setattr(T, "_int8_attention", fake)
     monkeypatch.setattr(I, "unsupported_reason", lambda q, k, v: None)
     monkeypatch.setattr(torch.cuda, "device", lambda *a, **k: contextlib.nullcontext())
     q = torch.randn(1, 8, 2, 128, dtype = torch.bfloat16)

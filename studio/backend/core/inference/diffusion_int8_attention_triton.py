@@ -25,6 +25,7 @@ otherwise spill them); ``PREFETCH_FIX`` keeps cubins compiled with and without t
 
 from __future__ import annotations
 
+import contextlib
 import math
 import types
 from typing import Any, Optional
@@ -962,8 +963,24 @@ def _plan(q: Any, k: Any, v: Any, config: dict, pv: Optional[str], scale: Option
     return plan
 
 
+_NO_SCOPE = contextlib.nullcontext()
+
+
+def _on_card(t: Any) -> Any:
+    """Triton launches on the current device: run the launches of a call on another card under that card. One
+    check per public call; the same card (every single-card render) never switches."""
+    import torch
+
+    d = t.device
+    if d.type != "cuda" or d.index is None or d.index == torch.cuda.current_device():
+        return _NO_SCOPE
+    if torch.compiler.is_compiling():
+        return _NO_SCOPE
+    return torch.cuda.device(d.index)
+
+
 def _quantise(plan: dict, q: Any, k: Any, v: Any) -> dict:
-    """The operands of ``attend`` for one call: two launches (``prep_kernel``, ``kv_kernel``)."""
+    """The operands of ``attend`` for one call: two launches (``prep_kernel``, ``kv_kernel``) on the current card."""
     import torch
 
     kk = kernels()
@@ -1078,10 +1095,12 @@ def quantise(
     ``config``: ``bm`` / ``bn`` (query rows / keys per tile), ``warps``, ``stages``, ``pv`` (``int8``, ``half``:
     16-bit P.V on a heads-major copy of V, ``half_strided``: 16-bit P.V reading V in place) and ``kscale``
     (``key``: one K scale per key, ``tile``: one per key tile)."""
-    return _quantise(_plan(q, k, v, config, pv, scale), q, k, v)
+    with _on_card(q):
+        return _quantise(_plan(q, k, v, config, pv, scale), q, k, v)
 
 
-def attend(p: dict) -> Any:
+def _attend(p: dict) -> Any:
+    """The attention launch on ``_quantise``'s operands, on the current card."""
     import torch
 
     kk = kernels()
@@ -1108,6 +1127,12 @@ def attend(p: dict) -> Any:
     return out
 
 
+def attend(p: dict) -> Any:
+    """``[B, Sq, H, D]`` attention on ``quantise``'s operands, launched on their card."""
+    with _on_card(p["qi"]):
+        return _attend(p)
+
+
 def int8_attention(
     q: Any,
     k: Any,
@@ -1117,7 +1142,21 @@ def int8_attention(
     scale: Optional[float] = None,
 ) -> Any:
     """``softmax(q k^T * scale) v`` with int8 Q.K^T (and int8 P.V for ``pv="int8"``) on ``[B, S, H, D]``: three
-    launches, their arithmetic planned once per call signature."""
+    launches, their arithmetic planned once per call signature, on the card of ``q``."""
+    with _on_card(q):
+        return _int8_attention(q, k, v, config, pv, scale)
+
+
+def _int8_attention(
+    q: Any,
+    k: Any,
+    v: Any,
+    config: Optional[dict] = None,
+    pv: Optional[str] = None,
+    scale: Optional[float] = None,
+) -> Any:
+    """``int8_attention`` on the current card: for callers that already hold ``torch.cuda.device(q.device)``
+    (Studio's dispatcher), so a call pays no device check."""
     import torch
 
     if q.stride(3) != 1:
@@ -1128,7 +1167,7 @@ def int8_attention(
         v = v.contiguous()
     plan = _plan(q, k, v, config or DEFAULT_CONFIGS[int(q.shape[-1])], pv, scale)
     with torch.no_grad():
-        return attend(_quantise(plan, q, k, v))
+        return _attend(_quantise(plan, q, k, v))
 
 
 def half_attention(
@@ -1150,45 +1189,46 @@ def half_attention(
     out = torch.empty((B, Sq, H, D), dtype = v.dtype, device = v.device)
     k = k.to(q.dtype)
     v2 = v.to(q.dtype)
-    kk.attn[(triton_cdiv(Sq, bm), B * H)](
-        q,
-        q,
-        k,
-        k,
-        v2,
-        q,
-        q,
-        q,
-        out,
-        Sq,
-        Sk,
-        0,
-        0,
-        H,
-        mul,
-        q.stride(0),
-        q.stride(1),
-        q.stride(2),
-        k.stride(0),
-        k.stride(1),
-        k.stride(2),
-        v2.stride(0),
-        v2.stride(1),
-        v2.stride(2),
-        out.stride(0),
-        out.stride(1),
-        out.stride(2),
-        BM = bm,
-        BN = bn,
-        D = D,
-        QK_INT8 = False,
-        K_TILE = False,
-        PV_MODE = 0,
-        EVEN_K = Sk % bn == 0,
-        ACC_IN_DOT = bool(config.get("acc_in_dot", False)),
-        PREFETCH_FIX = prefetch_fix(),
-        **_launch_options(config),
-    )
+    with _on_card(out):
+        kk.attn[(triton_cdiv(Sq, bm), B * H)](
+            q,
+            q,
+            k,
+            k,
+            v2,
+            q,
+            q,
+            q,
+            out,
+            Sq,
+            Sk,
+            0,
+            0,
+            H,
+            mul,
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            v2.stride(0),
+            v2.stride(1),
+            v2.stride(2),
+            out.stride(0),
+            out.stride(1),
+            out.stride(2),
+            BM = bm,
+            BN = bn,
+            D = D,
+            QK_INT8 = False,
+            K_TILE = False,
+            PV_MODE = 0,
+            EVEN_K = Sk % bn == 0,
+            ACC_IN_DOT = bool(config.get("acc_in_dot", False)),
+            PREFETCH_FIX = prefetch_fix(),
+            **_launch_options(config),
+        )
     return out
 
 
