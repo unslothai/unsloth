@@ -221,3 +221,42 @@ def test_hub_sidecar_absent_or_unreachable(monkeypatch):
     monkeypatch.setattr(provenance, "table_provenance", lambda model: None)
     raised.append(AssertionError("asked the Hub"))
     assert provenance._adapter_dir(None, "org/adapter", {}) is None
+
+
+@pytest.mark.parametrize("record_at", ["root", "named"])
+def test_native_resume_checks_every_adapter_before_reading(
+    checkpoints, tmp_path, monkeypatch, record_at
+):
+    """native_load_model_checkpoint (native FSDP2 Trainer resume) bypasses PEFT's loaders: it checks the record
+    at the checkpoint and in each named adapter's directory before reading any weight."""
+    from peft import LoraConfig, get_peft_model
+
+    native = ftp.load_module("fsdp2_native")
+    provenance = ftp.load_module("frozen_table_provenance")
+    assert provenance.install()
+
+    def two_adapters(path):
+        torch.manual_seed(0)
+        model = get_peft_model(_base(path), LoraConfig(r = 2, target_modules = ["o_proj"]))
+        model.add_adapter("second", LoraConfig(r = 2, target_modules = ["o_proj"]))
+        return model
+
+    ckpt = tmp_path / "checkpoint-1"
+    saved = two_adapters(checkpoints[0])
+    with torch.no_grad():
+        for n, p in saved.named_parameters():
+            if "lora_" in n:
+                p.fill_(0.5)
+    saved.save_pretrained(str(ckpt))
+    assert (ckpt / "second" / "frozen_tables.json").is_file()
+    if record_at == "named":
+        os.remove(
+            ckpt / "frozen_tables.json"
+        )  # only the named adapter's record is left to catch it
+    model = two_adapters(checkpoints[1])
+    before = {n: p.detach().clone() for n, p in model.named_parameters() if "lora_" in n}
+    monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
+    with pytest.raises(ValueError, match = "other frozen lookup tables"):
+        native.native_load_model_checkpoint(model, str(ckpt))
+    after = dict(model.named_parameters())
+    assert all(torch.equal(after[n], v) for n, v in before.items())

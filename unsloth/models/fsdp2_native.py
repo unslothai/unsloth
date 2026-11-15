@@ -3163,6 +3163,35 @@ def _persistent_buffers(root):
     return out
 
 
+def _check_checkpoint_tables(root, checkpoint):
+    """Collective: the frozen table provenance of a Trainer checkpoint's adapters (frozen_tables.json at the
+    checkpoint for "default", in <checkpoint>/<name> for the others) against the model's tables, before anything is
+    read. A mismatch warns (UNSLOTH_FROZEN_TABLE_PROVENANCE=strict: raises on every rank, nothing loaded)."""
+    from .frozen_table_provenance import check_provenance
+
+    directories = [checkpoint]
+    peft_config = getattr(root, "peft_config", None) if _is_peft(root) else None
+    if isinstance(peft_config, dict):
+        directories += [
+            os.path.join(checkpoint, name)
+            for name in peft_config
+            if name != "default" and os.path.isdir(os.path.join(checkpoint, name))
+        ]
+    error = None
+    try:
+        for directory in directories:
+            check_provenance(root, directory)
+    except ValueError as exc:
+        error = str(exc)
+    group, usable = _dcp_group(root)
+    if usable and not _all_ranks_agree(error is None, group):
+        raise ValueError(
+            error or "Unsloth: another rank refused this checkpoint's frozen lookup tables."
+        )
+    if error is not None:
+        raise ValueError(error)
+
+
 def native_load_model_checkpoint(model, checkpoint):
     """Collective: load a Trainer checkpoint's weights (PEFT adapter or full model, as save_model wrote
     them) into a natively sharded model with `set_model_state_dict(full_state_dict)`. PEFT's saved keys
@@ -3171,6 +3200,9 @@ def native_load_model_checkpoint(model, checkpoint):
     from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
 
     root = _native_root(model)
+    _check_checkpoint_tables(
+        root, checkpoint
+    )  # before any read: a refused checkpoint changes nothing
     n_loaded = _native_load_hf_sharded(root, checkpoint)
     if n_loaded is not None:
         _print_rank0(
