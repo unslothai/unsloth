@@ -4,6 +4,7 @@
 import { AdvancedGpuSlider } from "./advanced-gpu-slider";
 // eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
 import { VramBudgetControl } from "@/features/settings/components/vram-budget-control";
+import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
 import { modelDisplayName } from "../model-config/model-identity";
@@ -596,11 +597,13 @@ function GgufContextLengthSetting({
   onChange: (value: number) => void;
   renderWarning: (value: number) => ReactNode;
 }) {
-  // The slider's far right is Auto (a full bar); value 0 stays Auto for the caller. Within a step of
-  // max counts, as Radix rounds steps from min and may never land on max itself.
-  const isAutoPosition = (v: number) => v > max - CONTEXT_SLIDER_STEP;
+  // Auto shows as a full bar (value 0 stays Auto for the caller). Once the user picks a number, the
+  // far right is the real maximum, and only the reset button returns to Auto. Within a step of max
+  // counts, as Radix rounds steps from min and may never land on max itself.
+  const isMaxPosition = (v: number) => v > max - CONTEXT_SLIDER_STEP;
   const toSlider = (v: number) => (v === 0 ? max : v);
-  const fromSlider = (v: number) => (isAutoPosition(v) ? 0 : v);
+  const fromSlider = (v: number) =>
+    isMaxPosition(v) ? (value === 0 ? 0 : max) : v;
   const { draft, sliderProps } = useSliderDraft(toSlider(value), (v) =>
     onChange(fromSlider(v)),
   );
@@ -608,41 +611,60 @@ function GgufContextLengthSetting({
   const isAuto = shown === 0;
   return (
     <div className="space-y-1">
-      {/* One row, as the Settings sliders: label, slider, value. */}
-      <div className={ROW_CLASS}>
-        <div className="flex shrink-0 items-center gap-1.5">
+      {/* One row, as the Settings sliders: label, slider, value. Reset and the hint float in the gap
+          after the label (reset first, as the hint shows only on hover), so the slider's left gap
+          counts from the label text. */}
+      <div className="config-row flex min-h-8 items-center">
+        <div className="relative flex shrink-0 items-center">
           <span className={LABEL_CLASS}>Context</span>
-          <InfoHint>
-            The model&apos;s context window. Drag all the way right for Auto,
-            which picks a context window that fits while keeping GPU speed.
-            Anything short of that requests an exact context window, up to{" "}
-            {max.toLocaleString()} tokens; larger ones use more memory.
-            {isAuto && activeLoadedContext != null
-              ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
-              : ""}
-            {nativeContextLength != null
-              ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
-              : ""}
-          </InfoHint>
+          <span className="absolute left-full ml-1.5 flex items-center gap-1">
+            {isAuto ? null : (
+              <button
+                type="button"
+                onClick={() => onChange(0)}
+                className="inline-flex size-[calc(16px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                aria-label="Reset context to Auto"
+                title="Reset to Auto"
+              >
+                <HugeiconsIcon
+                  icon={ArrowTurnBackwardIcon}
+                  className="size-3.5"
+                  strokeWidth={2}
+                />
+              </button>
+            )}
+            <InfoHint>
+              The model&apos;s context window. Auto (a full bar) picks one that
+              fits while keeping GPU speed; the reset button returns to it. A
+              number requests an exact context window, up to{" "}
+              {max.toLocaleString()} tokens; larger ones use more memory.
+              {isAuto && activeLoadedContext != null
+                ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
+                : ""}
+              {nativeContextLength != null
+                ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
+                : ""}
+            </InfoHint>
+          </span>
         </div>
-        <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
-          {nativeContextLength != null ? (
-            <Slider
-              min={min}
-              max={max}
-              step={CONTEXT_SLIDER_STEP}
-              {...sliderProps}
-              className="min-w-0 flex-1"
-              aria-label="Context"
-              thumbValueText={(v) =>
-                !isAutoPosition(v)
-                  ? `${v.toLocaleString()} tokens`
-                  : activeLoadedContext != null
-                    ? `Auto, currently ${autoValue.toLocaleString()} tokens`
-                    : "Auto"
-              }
-            />
-          ) : null}
+        {nativeContextLength != null ? (
+          <Slider
+            min={min}
+            max={max}
+            step={CONTEXT_SLIDER_STEP}
+            {...sliderProps}
+            className="ml-10 mr-7 min-w-0 flex-1"
+            aria-label="Context"
+            thumbValueText={(v) =>
+              !(isMaxPosition(v) && value === 0)
+                ? `${(isMaxPosition(v) ? max : v).toLocaleString()} tokens`
+                : activeLoadedContext != null
+                  ? `Auto, currently ${autoValue.toLocaleString()} tokens`
+                  : "Auto"
+            }
+          />
+        ) : null}
+        <div className="ml-auto flex shrink-0 items-center">
           <NumericValueInput
             ref={inputRef}
             value={isAuto ? autoValue : shown}
@@ -4628,7 +4650,6 @@ export function ModelConfigPage({
             type="button"
             variant="outline"
             size="sm"
-            className="text-muted-foreground"
             disabled={
               (pinnedSet !== null
                 ? selectedSet === pinnedSet && !setUnsaved
