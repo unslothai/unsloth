@@ -15,6 +15,7 @@ import {
   startExternalJob,
   updateExternalJob,
 } from "@/features/hub/download-manager/external-jobs";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { invalidateGgufVariantsCache } from "@/features/hub/inventory/api";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -70,19 +71,28 @@ async function loadAndAnnounce(
   model: SttModel,
   engine?: SttEngine,
   ggufVariant?: string | null,
-): Promise<void> {
+  live = false,
+): Promise<boolean> {
   try {
-    await loadSttModel(model, engine, undefined, undefined, ggufVariant);
+    await loadSttModel(model, engine, undefined, undefined, ggufVariant, undefined, live);
     toast.success(
       translate("settings.voice.dictation.sttModelReady", {
         model: sttModelName(model),
       }),
     );
+    return true;
   } catch (error) {
     toast.error(translate("settings.voice.dictation.sttModelFailed"), {
       description: error instanceof Error ? error.message : undefined,
     });
+    return false;
   }
+}
+
+/** Voice mode's Transcribe slot follows the download of the transcriber it is waiting for. */
+function voiceWaitsFor(model: SttModel): boolean {
+  const voice = useChatRuntimeStore.getState();
+  return voice.selectedSttModelId === model && voice.sttSlotDownload !== null;
 }
 
 function settle(
@@ -111,15 +121,25 @@ function settle(
   const { sttModel, sttGgufVariant, dictationEngine } =
     useVoiceSettingsStore.getState();
   const variant = sttModelVariant(model, sttGgufVariant);
-  if (
+  const warm =
     shouldWarmVoiceModel &&
     outcome === "complete" &&
     dictationEngine === "model" &&
     sttModel === model &&
     // An adopted download's quant is unknown; it can only be what an unpinned row runs.
-    (tracked === undefined ? variant === null : tracked === variant)
-  ) {
-    void loadAndAnnounce(model, engine, variant);
+    (tracked === undefined ? variant === null : tracked === variant);
+  const voice = useChatRuntimeStore.getState();
+  const waited = voiceWaitsFor(model);
+  // A voice session that was waiting loads it now, and its slot stays busy until that load ends.
+  const forVoice = waited && outcome === "complete" && voice.voiceMode === "active";
+  if (waited && !forVoice) voice.setSttSlotDownload(outcome === "complete" ? null : "needed");
+  if (warm || forVoice) {
+    void loadAndAnnounce(model, engine, warm ? variant : undefined, forVoice).then((loaded) => {
+      if (!forVoice || !voiceWaitsFor(model)) return;
+      const now = useChatRuntimeStore.getState();
+      now.setSttSlotDownload(null);
+      if (loaded && now.voiceMode === "active") now.setSttSlotLoaded(true);
+    });
   }
 }
 
@@ -346,6 +366,7 @@ export function trackSttDownload(
   const resolvedEngine = options.engine ?? sttEngineFor(model);
   const key = trackerKey(model, resolvedEngine);
   const previousDownloadId = trackedDownloadIds.get(key);
+  if (voiceWaitsFor(model)) useChatRuntimeStore.getState().setSttSlotDownload("downloading");
   if (
     trackers.has(key) &&
     previousDownloadId &&

@@ -26281,6 +26281,7 @@ async def stt_load(
                 cancel_event,
                 device = payload.device,
                 **({"context_length": payload.context_length} if engine == "mtmd" else {}),
+                **({"live": True} if payload.live and engine == "audiocpp" else {}),
             )
         )
     except SttModelNotDownloadedError as e:
@@ -26889,6 +26890,176 @@ async def stt_model_capabilities(
     """What ``model`` can add to a transcript (timestamps, speakers) and where it runs. Offline."""
     from core.inference import stt_capabilities
     return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
+
+
+# Live transcription sessions by id: the session and the account that opened it.
+_live_stt_sessions: dict[str, tuple[Any, str]] = {}
+# One post of microphone audio: a second of 48 kHz speech is under 100 kB.
+_LIVE_STT_POST_BYTES = 4 * 1024 * 1024
+
+
+def _sse(event: dict) -> bytes:
+    return f"data: {json.dumps(event)}\n\n".encode("utf-8")
+
+
+@studio_router.post("/audio/stt/live")
+async def stt_live_open(
+    request: Request,
+    model: Optional[str] = Query(None, max_length = 512),
+    engine: Optional[str] = Query(None, max_length = 64),
+    sample_rate: int = Query(16000, ge = 8000, le = 192000),
+    language: Optional[str] = Query(None, max_length = 32),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Transcribe speech while it is spoken. The reply is an event stream: ``ready`` names the
+    session, each ``delta`` carries new words as the audio posted to
+    ``/audio/stt/live/{id}/audio`` is heard, and ``done`` carries the whole transcript after
+    the last post. Closing the stream drops the session. 409 for a model that cannot do this."""
+    if account_access.managed_account():
+        await asyncio.to_thread(
+            account_access.require_model_access, _stt_repo_reference(model, engine)
+        )
+    from core.inference.stt_audiocpp_sidecar import SttLiveUnsupportedError
+    from core.inference.stt_live import LiveTranscriptError
+    from core.inference.stt_sidecar import (
+        SttModelIdError,
+        SttModelNotDownloadedError,
+        SttUnavailableError,
+    )
+
+    serving = _resolve_serving_stt_engine(engine)
+    if serving != "audiocpp":
+        raise HTTPException(status_code = 409, detail = "This transcriber does not transcribe live.")
+    sidecar = _stt_sidecar_for(serving)
+    try:
+        session = await asyncio.to_thread(sidecar.open_live, model, sample_rate, language)
+    except (SttLiveUnsupportedError, SttModelNotDownloadedError) as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttUnavailableError as e:
+        raise HTTPException(status_code = 501, detail = str(e))
+    except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except Exception as e:
+        logger.error(f"STT live open error: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    loaded = sidecar.loaded_model
+    if loaded is not None:
+        account_access.note_resident_account(f"stt:{serving}", loaded)
+    session_id = uuid.uuid4().hex
+    _live_stt_sessions[session_id] = (session, current_subject)
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def hand(event: Optional[dict]) -> None:
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+        except RuntimeError:  # the server is shutting down
+            pass
+
+    def pump() -> None:
+        # Owns the session's end: it runs whether or not the client ever reads the reply.
+        try:
+            for event in session.events():
+                hand(event)
+        except LiveTranscriptError as exc:
+            hand({"type": "error", "message": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - reported to the client, never raised in a thread
+            logger.error(f"STT live session error: {exc}", exc_info = True)
+            hand({"type": "error", "message": safe_error_detail(exc)})
+        finally:
+            _live_stt_sessions.pop(session_id, None)
+            sidecar.close_live(session)
+            hand(None)
+
+    threading.Thread(target = pump, name = "stt-live", daemon = True).start()
+    label = str(loaded or model or "")
+
+    async def stream():
+        monitor_id = None
+        if not getattr(request.state, "skip_api_monitor", False):
+            monitor_id = api_monitor.start(
+                endpoint = request.url.path,
+                method = request.method,
+                via_api_key = _request_used_api_key(request),
+                model = public_model_id(label) or label,
+                prompt = "live audio",
+                subject = current_subject,
+            )
+        outcome = "cancelled"
+        try:
+            yield _sse({"type": "ready", "id": session_id})
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout = 0.5)
+                except asyncio.TimeoutError:
+                    # A client that went away leaves no one to stop the session.
+                    if await request.is_disconnected():
+                        break
+                    continue
+                if event is None:
+                    break
+                if event["type"] == "done":
+                    api_monitor.set_reply(monitor_id, event["text"])
+                    outcome = "completed"
+                elif event["type"] == "error":
+                    outcome = event["message"]
+                yield _sse(event)
+        finally:
+            session.close()
+            if outcome in ("completed", "cancelled"):
+                api_monitor.finish(monitor_id, outcome)
+            else:
+                api_monitor.fail(monitor_id, outcome)
+
+    return StreamingResponse(
+        stream(),
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@studio_router.delete("/audio/stt/live/{session_id}", status_code = 204)
+async def stt_live_drop(session_id: str, current_subject: str = Depends(get_current_subject)):
+    """Drop a live session whose audio is not wanted: nothing more is transcribed."""
+    held = _live_stt_sessions.get(session_id)
+    if held is not None and held[1] == current_subject:
+        held[0].close()
+    return Response(status_code = 204)
+
+
+@studio_router.post("/audio/stt/live/{session_id}/audio", status_code = 204)
+async def stt_live_audio(
+    session_id: str,
+    request: Request,
+    last: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
+):
+    """The next stretch of a live session's audio: mono 16-bit little-endian PCM at the rate the
+    session was opened with, posted in order. ``last`` says the speaker has stopped."""
+    from core.inference.stt_live import LiveTranscriptError
+
+    held = _live_stt_sessions.get(session_id)
+    if held is None or held[1] != current_subject:
+        raise HTTPException(status_code = 404, detail = "This live session has ended.")
+    session = held[0]
+    pcm = bytearray()
+    async for part in request.stream():
+        pcm += part
+        if len(pcm) > _LIVE_STT_POST_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large for one post.")
+    if len(pcm) % 2:
+        raise HTTPException(status_code = 400, detail = "Audio must be whole 16-bit samples.")
+
+    def send() -> None:
+        session.feed(bytes(pcm))
+        if last:
+            session.finish()
+
+    try:
+        await asyncio.to_thread(send)
+    except LiveTranscriptError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    return Response(status_code = 204)
 
 
 class ClipModelRequest(BaseModel):

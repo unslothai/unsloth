@@ -665,6 +665,14 @@ class TranscribeRequest(SttContextSettings):
 class SttLoadRequest(SttContextSettings):
     """Warm the STT sidecar with a model without transcribing."""
 
+    live: bool = Field(
+        False,
+        description = (
+            "Voice mode: also make the model ready to transcribe speech while it is spoken, "
+            "when it can (see /audio/stt/live). Other models load as usual."
+        ),
+    )
+
     model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
     engine: Optional[str] = Field(
         None,

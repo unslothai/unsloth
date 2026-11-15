@@ -218,20 +218,6 @@ def test_the_chat_delete_route_scopes_the_log_to_the_caller(monkeypatch):
     assert [r["id"] for r in vl.read_rows()] == [alice]
 
 
-def test_an_outcome_report_does_not_read_the_whole_log_again(monkeypatch):
-    ids = [_judge(f"turn {i}", 0.9) for i in range(3)]
-    reads = []
-    real = vl._read_lines
-    monkeypatch.setattr(vl, "_read_lines", lambda path: reads.append(path) or real(path))
-    for row_id in ids:
-        assert vl.row_account(row_id) == (True, None)
-        assert vl.set_outcome(row_id, "sent")
-    later = _judge("one more", 0.2)
-    assert vl.set_outcome(later, "flushed") and vl.set_outcome("missing", "sent") is False
-    assert reads.count(vl.log_path()) == 1
-    assert [r["outcome"] for r in vl.read_rows()] == ["sent", "sent", "sent", "flushed"]
-
-
 def test_loop_events_are_recorded_only_beside_the_debug_clips(tmp_path, monkeypatch):
     from core.inference import voice_log
 

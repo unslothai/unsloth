@@ -48,7 +48,8 @@ _PROBE_TIMEOUT_SECONDS = 2.0
 _SINK_CHUNK_BYTES = 1 << 20
 _ERROR_BODY_BYTES = 64 * 1024
 # CUDA graph replay wedges these transducers mid-request (server spins, never answers); graphs off fixes it.
-_NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt"})
+# Kokoro hangs the same way when a sentence it has just spoken is asked for again (seen on a B200).
+_NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt", "kokoro_tts"})
 _GPU_HOST_THREADS = 8
 
 
@@ -490,9 +491,11 @@ class AudioCppServer:
         cancel_event: Optional[threading.Event] = None,
         on_process: Optional[Any] = None,
         max_threads: Optional[int] = None,
+        streaming: bool = False,
     ) -> "AudioCppServer":
         """on_process gets the Popen as soon as it exists, so training can preempt and terminate a
-        start. max_threads caps a small model that more threads only slow down."""
+        start. max_threads caps a small model that more threads only slow down. streaming starts
+        the model in the runtime's streaming mode, which still answers whole-file requests."""
         binary = ensure_binary()
         problem = model_runtime_problem(model, binary)
         if problem:
@@ -505,7 +508,7 @@ class AudioCppServer:
             "family": model.family,
             "path": model_path,
             "task": model.server_task,
-            "mode": "offline",
+            "mode": "streaming" if streaming else "offline",
         }
         entry.update(model.model_options)
         for attempt in range(1, _START_ATTEMPTS + 1):

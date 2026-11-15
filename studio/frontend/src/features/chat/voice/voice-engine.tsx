@@ -42,6 +42,7 @@ import {
 } from "@/features/chat/voice/laya-outcomes";
 import { ORB_IDLE_GRADIENT, orbConfig } from "@/features/chat/voice/orb-config";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
+import { stillInTurn } from "@/features/chat/voice/turn-end";
 import {
   ASIDE_MIN_GAP_MS, type FillerDecision,
   QUIET_FALLBACK_AFTER_MS,
@@ -159,6 +160,8 @@ export const VoiceEngine: FC = () => {
   const aui = useAui();
   const [voiceMode, setVoiceModeState] = useState(getVoiceMode());
   const voiceCoalesceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A chat's first message, held for the coalesce window before it goes through the composer.
+  const firstTurnHeldRef = useRef<string | null>(null);
   const voiceModeRef = useRef(getVoiceMode());
   const isSpeakingRef = useRef(false);
   const isPlayingRef = useRef(false);
@@ -402,7 +405,14 @@ export const VoiceEngine: FC = () => {
   const commitUtterance = useCallback((said: string) => {
     const composer = auiRef.current.composer();
     // A barge-in cuts playback without its end firing, so held utterances go now or surface later as a stale prompt.
-    const held = queuedUtteranceRef.current.filter((q) => q !== said);
+    // A first message still inside its window is the start of this one. A cleared timer means voice
+    // mode stopped since, so that text is stale.
+    const first = voiceCoalesceTimerRef.current !== null ? firstTurnHeldRef.current : null;
+    firstTurnHeldRef.current = null;
+    const held = [
+      ...(first !== null && first !== said ? [first] : []),
+      ...queuedUtteranceRef.current.filter((q) => q !== said),
+    ];
     queuedUtteranceRef.current = [];
     const text = held.length ? [...held, said].join(" ") : said;
     if (held.length) voiceTrace("engine.foldHeld", { held, text });
@@ -468,7 +478,28 @@ export const VoiceEngine: FC = () => {
     if (thread.getState().messages.length === 0) {
       // send() takes the box, not `text`: parked turns were never in it (the re-arm
       // clears it), so an empty box here sent nothing at all.
-      sendThroughComposer();
+      // It waits out the window a later turn gets, with the mic open: sent at once, the reply began
+      // over a sentence that went on after an early end, and the rest of it was lost.
+      resumeListen();
+      const armedAt = Date.now();
+      let heardAt = 0;
+      const sendFirst = () => {
+        voiceCoalesceTimerRef.current = null;
+        if (voiceModeRef.current !== "active") return;
+        const rt = useChatRuntimeStore.getState();
+        const hearing = rt.voiceHearing || rt.voiceTranscribing;
+        if (hearing) heardAt = Date.now();
+        if (stillInTurn(hearing, heardAt, Date.now()) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
+          voiceTrace("engine.coalesceWaitHearing", { first: true });
+          voiceCoalesceTimerRef.current = setTimeout(sendFirst, VOICE_COALESCE_POLL_MS);
+          return;
+        }
+        firstTurnHeldRef.current = null;
+        sendThroughComposer();
+      };
+      firstTurnHeldRef.current = text;
+      if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
+      voiceCoalesceTimerRef.current = setTimeout(sendFirst, VOICE_COALESCE_MS);
       return;
     }
 
@@ -529,11 +560,14 @@ export const VoiceEngine: FC = () => {
     setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
     resumeListen();
     const armedAt = Date.now();
+    let heardAt = 0;
     const fireCoalescedRun = (attempt: number) => {
       voiceCoalesceTimerRef.current = null;
       if (voiceModeRef.current !== "active") return;
       const rt = useChatRuntimeStore.getState();
-      if ((rt.voiceHearing || rt.voiceTranscribing) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
+      const hearing = rt.voiceHearing || rt.voiceTranscribing;
+      if (hearing) heardAt = Date.now();
+      if (stillInTurn(hearing, heardAt, Date.now()) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
         voiceTrace("engine.coalesceWaitHearing", {});
         voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt), VOICE_COALESCE_POLL_MS);
         return;

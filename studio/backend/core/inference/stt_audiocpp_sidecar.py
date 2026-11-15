@@ -48,6 +48,7 @@ from core.inference.audio_cpp_server import (
     runtime_runs_on_cpu,
 )
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
+from core.inference.stt_live import LiveTranscript, LiveTranscriptError, family_streams
 from core.inference.stt_sidecar import (
     QWEN3_ASR_LANGUAGE_NAMES,
     STT_KEEP_ALIVE_SECONDS,
@@ -175,6 +176,10 @@ def _runtime_language(family: str, language: Optional[str]) -> Optional[str]:
 
 class SttEngineUnavailableError(SttUnavailableError):
     """audiocpp_server is not installed or stopped serving; the audio.cpp dictation engine is off."""
+
+
+class SttLiveUnsupportedError(ValueError):
+    """This model transcribes finished recordings only."""
 
 
 def _stt_tmp_dir() -> Path:
@@ -662,6 +667,10 @@ class AudioCppSttSidecar:
         self._launched_cpu = False
         # Tracked separately: ``model_options`` is not part of AudioCppModel equality.
         self._aligned = False
+        # The server runs the model in streaming mode, so open_live() needs no restart.
+        self._live = False
+        # Live sessions in progress: the idle timer waits for them.
+        self._live_open = 0
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
         self._keep_alive_seconds = keep_alive_seconds
@@ -758,6 +767,9 @@ class AudioCppSttSidecar:
         with self._lock:
             if generation != self._idle_generation:
                 return
+            if self._live_open:
+                self._schedule_idle_unload_locked()
+                return
             logger.info("Unloading idle audio.cpp STT model %s", self._model_id)
             self._release_locked()
 
@@ -771,6 +783,7 @@ class AudioCppSttSidecar:
         self._forced_cpu = False
         self._launched_cpu = False
         self._aligned = False
+        self._live = False
         if server is not None:
             server.stop()
 
@@ -919,8 +932,11 @@ class AudioCppSttSidecar:
         *,
         timestamps: bool = False,
         on_phase: Optional[Callable[[str], None]] = None,
+        live: bool = False,
     ) -> None:
-        """A server already holding the aligner keeps it for untimestamped requests (no restart)."""
+        """A server already holding the aligner keeps it for untimestamped requests (no restart).
+        ``live`` starts a model the runtime can transcribe live in streaming mode, which whole-file
+        requests use as well; any other model loads as usual."""
         from core.inference.audio_device import stt_device_forces_cpu
 
         if request_cancel_event is not None and request_cancel_event.is_set():
@@ -928,6 +944,8 @@ class AudioCppSttSidecar:
         self._raise_if_update_in_progress()
         entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         aligned = bool(timestamps) and entry.family in _ALIGNED_FAMILIES
+        # The aligner runs on whole files: a timestamped load is not a streaming one.
+        streaming = bool(live) and not aligned and family_streams(entry.family)
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -945,6 +963,7 @@ class AudioCppSttSidecar:
                 # A server training moved to the CPU goes back to the GPU once training ends.
                 and _same_placement(self._launched_cpu, entry, force_cpu)
                 and (self._aligned or not aligned)
+                and (self._live or not streaming)
             ):
                 self._loaded_as = _reported_name(model, entry)
                 self._schedule_idle_unload_locked()
@@ -982,6 +1001,7 @@ class AudioCppSttSidecar:
                         force_cpu = run_on_cpu,
                         cancel_event = cancel_event,
                         on_process = _track,
+                        streaming = streaming,
                     )
                 except AudioCppStartCancelledError as exc:
                     raise SttLoadCancelledError(str(exc)) from exc
@@ -994,6 +1014,7 @@ class AudioCppSttSidecar:
                 self._forced_cpu = force_cpu
                 self._launched_cpu = server.backend == "cpu"
                 self._aligned = aligned
+                self._live = streaming
                 self._schedule_idle_unload_locked()
             finally:
                 with self._load_state_lock:
@@ -1109,6 +1130,41 @@ class AudioCppSttSidecar:
         if details.get("speaker_ids"):
             result["speakers"] = list(details["speaker_ids"])
         return result
+
+    def open_live(
+        self, model: Optional[str], sample_rate: int, language: Optional[str] = None
+    ) -> LiveTranscript:
+        """A session that transcribes speech as it arrives (see stt_live). The model is started in
+        streaming mode first when it is not running that way; close_live() ends the session."""
+        self._raise_if_update_in_progress()
+        ensure_engine_available()
+        target = self.keep_loaded_variant(model)
+        entry = resolve_audio_cpp_stt_model(target)
+        if not family_streams(entry.family):
+            raise SttLiveUnsupportedError(f"{entry.display_name} does not transcribe live.")
+        keys = entry.request_keys
+        sent = (
+            _runtime_language(entry.family, language)
+            if keys is None or "language" in keys
+            else None
+        )
+        with self._lock:
+            self.load(target, live = True)
+            server = self._server
+            if server is None or not self._live:
+                raise SttLiveUnsupportedError(f"{entry.display_name} does not transcribe live.")
+            try:
+                session = LiveTranscript(server.port, server.model_id, sample_rate, sent)
+            except LiveTranscriptError as exc:
+                raise SttEngineUnavailableError(str(exc)) from exc
+            self._live_open += 1
+        return session
+
+    def close_live(self, session: LiveTranscript) -> None:
+        session.close()
+        with self._lock:
+            self._live_open = max(0, self._live_open - 1)
+            self._schedule_idle_unload_locked()
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
         already_cancelled = cancel_event.is_set()

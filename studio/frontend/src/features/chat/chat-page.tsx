@@ -119,6 +119,7 @@ import { isTauri } from "@/lib/api-base";
 import { getDiffusionStatus } from "@/features/images/api";
 // eslint-disable-next-line no-restricted-imports
 import { getVideoStatus } from "@/features/video/api";
+import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
   subscribeModelEjected,
   subscribeModelLifecycle,
@@ -3174,6 +3175,7 @@ export function ChatPage({
   const setSelectedVadModelId = useChatRuntimeStore((s) => s.setSelectedVadModelId);
   const vadSlotLoaded = useChatRuntimeStore((s) => s.vadSlotLoaded);
   const sttSlotLoaded = useChatRuntimeStore((s) => s.sttSlotLoaded);
+  const sttSlotDownload = useChatRuntimeStore((s) => s.sttSlotDownload);
   const setSelectedSttModelId = useChatRuntimeStore(
     (s) => s.setSelectedSttModelId,
   );
@@ -3289,6 +3291,7 @@ export function ChatPage({
     void unloadTurnModel();
     useChatRuntimeStore.getState().setVadSlotLoaded(false);
     useChatRuntimeStore.getState().setSttSlotLoaded(false);
+    useChatRuntimeStore.getState().setSttSlotDownload(null);
   }, [voiceMode, unloadOwnVoice]);
 
   useEffect(
@@ -3300,6 +3303,7 @@ export function ChatPage({
       void unloadTurnModel();
       useChatRuntimeStore.getState().setVadSlotLoaded(false);
       useChatRuntimeStore.getState().setSttSlotLoaded(false);
+      useChatRuntimeStore.getState().setSttSlotDownload(null);
     },
     [unloadOwnVoice],
   );
@@ -5156,6 +5160,8 @@ export function ChatPage({
                   sttModelId={selectedSttModelId}
                   onSttModelChange={setSelectedSttModelId}
                   sttLoaded={sttSlotLoaded}
+                  sttDownload={sttSlotDownload}
+                  onSttDownload={() => requestSttDownload(selectedSttModelId)}
                   ttsModelId={selectedVoiceModelId}
                   onTtsModelChange={setSelectedVoiceModelId}
                   ttsLoading={voiceSlotLoading}

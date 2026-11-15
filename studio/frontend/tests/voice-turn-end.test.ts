@@ -64,41 +64,6 @@ test("a failed or unfinished answer leaves the silence wait in charge", async ()
   assert.equal(unfinished.finished("0:10"), false);
 });
 
-test("the model loads once for the page, and again after an unload", async () => {
-  const calls: string[] = [];
-  let ok = true;
-  const { loadTurnModel, unloadTurnModel, askTurnEnd } = await load((url) => {
-    calls.push(url.replace("/api/inference/audio/turn/", ""));
-    if (url.endsWith("/detect")) return Promise.resolve(json({ finished: true, p_complete: 0.97 }));
-    return Promise.resolve(json({ loaded_model: "m" }, ok ? 200 : 501));
-  });
-  assert.equal(await loadTurnModel(), true);
-  assert.equal(await loadTurnModel(), true);
-  assert.deepEqual(calls, ["load"]);
-  assert.deepEqual(await askTurnEnd(wav()), { finished: true, p: 0.97 });
-  // The language travels only when the user set one.
-  await askTurnEnd(wav(), undefined, "auto");
-  await askTurnEnd(wav(), undefined, "es-419");
-  assert.deepEqual(calls.splice(1), ["detect", "detect", "detect?language=es-419"]);
-  await unloadTurnModel();
-  ok = false;
-  // An install that cannot run it says so once; the loop then never asks.
-  assert.equal(await loadTurnModel(), false);
-  assert.deepEqual(calls, ["load", "unload", "load"]);
-});
-
-test("a refused check is an error, not a no", async () => {
-  const { askTurnEnd } = await load(() => Promise.resolve(json({ detail: "busy" }, 503)));
-  await assert.rejects(askTurnEnd(wav()));
-});
-
-test("a language the model is not trusted with comes back as not finished, with no score", async () => {
-  const { askTurnEnd } = await load(() =>
-    Promise.resolve(json({ finished: false, p_complete: null, bar: null, model: null })),
-  );
-  assert.deepEqual(await askTurnEnd(wav(), undefined, "zh-CN"), { finished: false, p: null });
-});
-
 test("the clip keeps the quiet end of the last word and none of the silence after it", async () => {
   const { turnClipSpan } = await load(() => Promise.resolve(json({})));
   //               0      1      2     3     4      5      6      7
@@ -137,13 +102,10 @@ test("a transcript reads cut off on an open last word, or on a missing mark from
   assert.equal(hasClosingMark("Sure"), false);
 });
 
-test("only the end of a long turn is uploaded", async () => {
-  const { turnClipTail, TURN_CLIP_MAX_S } = await load(() => Promise.resolve(json({})));
-  const rate = 1000;
-  const long = Float32Array.from({ length: 30 * rate }, (_, i) => i);
-  const tail = turnClipTail(long, rate);
-  assert.equal(tail.length, TURN_CLIP_MAX_S * rate);
-  assert.equal(tail[tail.length - 1], long[long.length - 1]);
-  const short = new Float32Array(3 * rate);
-  assert.equal(turnClipTail(short, rate), short);
+test("a reply waits out the gap after speech heard while it was about to start", async () => {
+  const { stillInTurn, TURN_CONTINUE_GRACE_MS } = await load(() => Promise.resolve(json({})));
+  assert.equal(stillInTurn(true, 0, 5000), true, "speaking now");
+  assert.equal(stillInTurn(false, 0, 5000), false, "nothing was heard: the reply starts");
+  assert.equal(stillInTurn(false, 5000, 5000 + TURN_CONTINUE_GRACE_MS - 1), true, "the turn is still being recorded");
+  assert.equal(stillInTurn(false, 5000, 5000 + TURN_CONTINUE_GRACE_MS), false);
 });

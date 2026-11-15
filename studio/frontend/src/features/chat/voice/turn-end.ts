@@ -15,8 +15,16 @@ export const TURN_ASK_AFTER_MS = 250;
 // sound finished too: ending at the answer (about 350 ms) split a two-clause test sentence at its
 // 570 ms comma pause in 4 turns of 5. The answer and the transcript are both in by then.
 export const TURN_END_AFTER_MS = 700;
+// Speech heard while a reply waits to start is still being recorded for up to the silence wait after
+// it goes quiet. Starting the reply in that gap answered half a sentence and restarted for the rest.
+export const TURN_CONTINUE_GRACE_MS = 1200;
 // The model reads at most this much, from the end of the turn: the rest is not worth uploading.
 export const TURN_CLIP_MAX_S = 8;
+
+/** Whether a reply should still wait: the speaker is talking, or went quiet too recently to be done. */
+export function stillInTurn(hearing: boolean, lastHeardAt: number, now: number): boolean {
+  return hearing || (lastHeardAt > 0 && now - lastHeardAt < TURN_CONTINUE_GRACE_MS);
+}
 
 /** The end of `samples` the model reads. */
 export function turnClipTail(samples: Float32Array, sampleRate: number): Float32Array {

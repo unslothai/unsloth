@@ -2677,6 +2677,8 @@ type ChatRuntimeStore = {
   selectedVadModelId: string;
   vadSlotLoaded: boolean;
   sttSlotLoaded: boolean;
+  /** The picked transcriber is not on this machine: voice mode waits for its download. */
+  sttSlotDownload: "needed" | "downloading" | null;
   voiceSlotLoading: boolean;
   voiceSlotLoaded: boolean;
   voiceTranscribing: boolean;
@@ -2701,6 +2703,7 @@ type ChatRuntimeStore = {
   setSelectedVadModelId: (id: string) => void;
   setVadSlotLoaded: (loaded: boolean) => void;
   setSttSlotLoaded: (loaded: boolean) => void;
+  setSttSlotDownload: (state: "needed" | "downloading" | null) => void;
   setVoiceSlotLoading: (loading: boolean) => void;
   setVoiceSlotLoaded: (loaded: boolean) => void;
   setVoiceTranscribing: (transcribing: boolean) => void;
@@ -4492,6 +4495,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedVadModelId: loadString(CHAT_VAD_MODEL_ID_KEY, "") || VOICE_DEFAULT_VAD_MODEL,
   vadSlotLoaded: false,
   sttSlotLoaded: false,
+  sttSlotDownload: null,
   voiceSlotLoading: false,
   voiceSlotLoaded: false,
   voiceTranscribing: false,
@@ -4726,7 +4730,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSelectedSttModelId: (selectedSttModelId) =>
     set(() => {
       saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId);
-      return { selectedSttModelId, sttSlotLoaded: false };
+      return { selectedSttModelId, sttSlotLoaded: false, sttSlotDownload: null };
     }),
   setSelectedVadModelId: (selectedVadModelId) =>
     set(() => {
@@ -4735,6 +4739,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setVadSlotLoaded: (vadSlotLoaded) => set({ vadSlotLoaded }),
   setSttSlotLoaded: (sttSlotLoaded) => set({ sttSlotLoaded }),
+  setSttSlotDownload: (sttSlotDownload) => set({ sttSlotDownload }),
   setVoiceSlotLoading: (voiceSlotLoading) => set({ voiceSlotLoading }),
   setVoiceSlotLoaded: (voiceSlotLoaded) => set({ voiceSlotLoaded }),
   setVoiceTranscribing: (voiceTranscribing) => set({ voiceTranscribing }),

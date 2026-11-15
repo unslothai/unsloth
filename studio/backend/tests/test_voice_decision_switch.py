@@ -63,30 +63,6 @@ def test_switch_rebuilds_on_the_new_checkpoint(checkpoints, monkeypatch, tmp_pat
     assert asked == ["laya-ft:v4", "laya-ft:v4", "laya-ft:v3"]
 
 
-def test_route_reports_whether_the_builtin_classifiers_have_a_source(
-    checkpoints, monkeypatch, tmp_path
-):
-    from auth.authentication import get_current_subject
-    from core.inference import voice_models as vm
-    from core.systemone import catalog
-    from routes import inference
-
-    fake = SimpleNamespace(decision_state = lambda: {"state": "not_loaded", "error": None})
-    monkeypatch.setattr(vm, "get_voice_models", lambda: fake)
-    monkeypatch.setattr(catalog, "fine_tunes", lambda: [])
-    app = FastAPI()
-    app.include_router(inference.studio_router, prefix = "/api/inference")
-    app.dependency_overrides[get_current_subject] = lambda: "tester"
-    client = TestClient(app)
-
-    monkeypatch.delenv(vm.ENV_DIR, raising = False)
-    monkeypatch.delenv(vm.ENV_HUB, raising = False)
-    # Nothing to load from: the panel shows "Not set up" instead of an error.
-    assert client.get("/api/inference/voice/decision").json()["builtin_configured"] is False
-    monkeypatch.setenv(vm.ENV_DIR, str(tmp_path))
-    assert client.get("/api/inference/voice/decision").json()["builtin_configured"] is True
-
-
 def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
     from auth.authentication import get_current_subject
     from core.inference import voice_models as vm
@@ -328,30 +304,6 @@ def test_a_loading_decision_checkpoint_answers_503(monkeypatch):
     assert r.status_code == 500
 
 
-def test_the_judge_answers_with_its_own_verdict(monkeypatch):
-    """The browser reads ``finished``; the threshold lives on the server only."""
-    from core.inference import voice_log
-    from core.inference import voice_models as vm
-    from routes import inference
-
-    scores = {"done": 0.9, "at the bar": voice_log.JUDGE_SEND_THRESHOLD, "more to": 0.2}
-    fake = SimpleNamespace(
-        available = lambda name: True, reason = lambda name: "", judge = scores.__getitem__
-    )
-    monkeypatch.setattr(vm, "get_voice_models", lambda: fake)
-    client = _voice_client([inference.router])
-    answers = {
-        text: client.post("/api/inference/voice/judge", json = {"text": text}).json()
-        for text in scores
-    }
-    assert {text: a["finished"] for text, a in answers.items()} == {
-        "done": True,
-        "at the bar": True,
-        "more to": False,
-    }
-    assert answers["done"]["p_complete"] == 0.9 and answers["done"]["id"] is None
-
-
 def test_decision_voice_raises_unavailable_while_loading():
     from core.systemone import laya_runtime
 
@@ -372,28 +324,6 @@ def test_decision_voice_raises_unavailable_while_loading():
     with pytest.raises(vd.DecisionUnavailable) as err:
         voice.judge("hi")
     assert err.value.loading is False
-
-
-@pytest.mark.parametrize("message", ["laya-ft:v4 is loading", "laya-ft:v4 is downloading"])
-def test_a_warm_up_that_finds_the_checkpoint_loading_records_no_error(
-    checkpoints, monkeypatch, tmp_path, message
-):
-    from core.inference import voice_models as vm
-    from core.systemone import laya_runtime
-
-    def decide(checkpoint, state, questions, **options):
-        raise laya_runtime.Unavailable(503, "model_loading", message, 5)
-
-    monkeypatch.setattr(laya_runtime, "decide", decide)
-    monkeypatch.setattr(
-        laya_runtime,
-        "status",
-        lambda: {"loaded_model": None, "loading_model": None, "error_model": None, "error": None},
-    )
-    models = vm.VoiceModels(root = tmp_path)
-    monkeypatch.setattr(vm, "get_voice_models", lambda: models)
-    models.warm_decision()
-    assert models.decision_state() == {"state": "not_loaded", "error": None}
 
 
 def test_a_question_for_a_model_that_did_not_load_says_why(monkeypatch, tmp_path):

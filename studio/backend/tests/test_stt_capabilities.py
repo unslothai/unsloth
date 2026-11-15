@@ -93,6 +93,7 @@ def test_other_engines_and_unknown_models_are_plain_text(
         "aligner": None,
         "cpu_only": False,
         "max_seconds": 4 * 3600 if expected_engine == "audiocpp" else 30 * 60,
+        "live": False,
     }
 
 

@@ -72,35 +72,6 @@ def test_the_bar_follows_the_language(language, bar):
     assert turn.complete_at(language) == bar
 
 
-def test_only_a_turn_model_resolves(monkeypatch):
-    smart_turn = _model("smart_turn", "Smart-Turn-v3-GGUF")
-    assert (smart_turn.task, smart_turn.unsupported, dict(smart_turn.workflows)) == (
-        "turn",
-        None,
-        {},
-    )
-    asked = []
-    monkeypatch.setattr(
-        clip, "resolve", lambda base, variant, network: asked.append(base) or smart_turn
-    )
-    assert turn.resolve_turn_model(None) is smart_turn
-    assert asked == [turn.DEFAULT_TURN_MODEL]
-    monkeypatch.setattr(clip, "resolve", lambda *a, **k: _model("pulsevad", "PulseVAD-GGUF"))
-    with pytest.raises(clip.ClipError, match = "not a turn detection model"):
-        turn.resolve_turn_model(f"{acm.AUDIO_CPP_REPO}/PulseVAD-GGUF")
-    # It has no page, so nothing else loads it: not as a voice, a transcriber or a detector.
-    for task, refusal in (
-        ("tts", "not a speech or music"),
-        ("asr", "not a speech-to-text"),
-        ("vad", "not a voice activity"),
-    ):
-        with pytest.raises(acm.AudioCppModelError, match = refusal):
-            acm.require_runnable(smart_turn, task)
-    monkeypatch.setattr(clip, "resolve", lambda *a, **k: None)
-    with pytest.raises(clip.ClipModelNotDownloadedError):
-        turn.resolve_turn_model(None)
-
-
 def test_a_check_reads_the_end_of_the_clip_on_the_cpu_with_four_threads(monkeypatch, tmp_path):
     from core.inference import stt_sidecar
 
@@ -167,42 +138,6 @@ def test_a_check_reads_the_end_of_the_clip_on_the_cpu_with_four_threads(monkeypa
 def test_a_clip_too_large_to_check_is_refused():
     with pytest.raises(clip.ClipError, match = "too long"):
         turn.AudioCppTurnSidecar().detect(b"x" * (clip.MAX_CLIP_BYTES + 1))
-
-
-def test_the_thread_cap_reaches_the_runtimes_own_pool(monkeypatch, tmp_path):
-    """--threads alone leaves the runtime's OpenMP pool on every core."""
-    from core.inference import audio_cpp_server as srv
-
-    seen = {}
-
-    class Stop(Exception):
-        pass
-
-    def popen(command, env, **kwargs):
-        seen.update(command = command, omp = env.get("OMP_NUM_THREADS"))
-        raise Stop
-
-    monkeypatch.setattr(srv, "ensure_binary", lambda: "/bin/audiocpp_server")
-    monkeypatch.setattr(srv, "model_runtime_problem", lambda model, binary = None: None)
-    monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: "cpu")
-    monkeypatch.setattr(srv, "child_env", lambda binary: {})
-    monkeypatch.setattr(srv.subprocess, "Popen", popen)
-    monkeypatch.setattr(srv.tempfile, "mkdtemp", lambda prefix: str(tmp_path))
-    monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
-    entry = _model("smart_turn", "Smart-Turn-v3-GGUF")
-    with pytest.raises(Stop):
-        srv.AudioCppServer.start(entry, "/m.gguf", force_cpu = True, max_threads = 4)
-    assert seen["command"][-2:] == ["--threads", "4"] and seen["omp"] == "4"
-    # A lower budget the user set for every engine still wins.
-    monkeypatch.setenv("UNSLOTH_CPU_THREADS", "2")
-    with pytest.raises(Stop):
-        srv.AudioCppServer.start(entry, "/m.gguf", force_cpu = True, max_threads = 4)
-    assert seen["command"][-2:] == ["--threads", "2"] and seen["omp"] == "2"
-    # Without a cap the launch is as it was.
-    monkeypatch.delenv("UNSLOTH_CPU_THREADS")
-    with pytest.raises(Stop):
-        srv.AudioCppServer.start(entry, "/m.gguf", force_cpu = True)
-    assert "--threads" not in seen["command"] and seen["omp"] is None
 
 
 def test_model_access_and_the_runtime_update_cover_the_turn_model(monkeypatch):

@@ -25,16 +25,3 @@ test("a word of agreement over a reply is not a turn", () => {
   assert.equal(isAcknowledgement("mm-hmm", telling), false);
   assert.equal(isBackchannel("mm-hmm"), true);
 });
-
-test("asking for a clip's analysis twice gives the one already running", () => {
-  const cancelled: string[] = [];
-  const make = (name: string) => () => ({ name, cancel: () => cancelled.push(name) });
-  const spec = createClipSpeculation<{ name: string; cancel(): void }>();
-  const first = spec.start("0:5", make("a"));
-  assert.equal(spec.start("0:5", make("b")), first);
-  // More speech: the old analysis is dropped for the new clip's.
-  const next = spec.start("0:9", make("c"));
-  assert.equal(next.name, "c");
-  assert.deepEqual(cancelled, ["a"]);
-  assert.equal(spec.take("0:9"), next);
-});

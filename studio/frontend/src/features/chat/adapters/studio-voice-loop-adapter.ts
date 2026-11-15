@@ -15,6 +15,7 @@ import {
 } from "@/features/chat/voice/clip-speculation";
 import { createHearingHint } from "@/features/chat/voice/hearing-hint";
 import { createHeldEdit } from "@/features/chat/voice/held-edit";
+import type { LiveTranscript } from "@/features/chat/voice/live-transcript";
 import { QUICK_CONTINUE_MS } from "@/features/chat/voice/laya-outcomes";
 import {
   createReacquireBackoff,
@@ -70,6 +71,7 @@ import {
 import { voiceHearsAudio } from "@/features/chat/voice/voice-models";
 import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
+import { isTrackingSttDownload } from "@/features/settings/lib/stt-download-mirror";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { translate } from "@/i18n";
@@ -78,6 +80,7 @@ import type { DictationAdapter } from "@assistant-ui/react";
 import { SttModelNotDownloadedError } from "./stt-errors";
 import {
   loadSttModel,
+  openSttLive,
   transcribeAudioBlob,
 } from "./studio-model-dictation-adapter";
 import { isMissingDeviceError } from "./studio-web-speech-dictation-adapter";
@@ -107,7 +110,6 @@ const BARGE_CONFIRMED_MS = 250;
 
 // The transcriber the download prompt was last raised for as listening began: a dismissed prompt
 // is not raised again every time the mic re-arms (an utterance that needs the model still asks).
-let sttDownloadAskedFor: string | null = null;
 
 // Scoped to the detector pick that failed: choosing another one asks again.
 let vadDisabled = false;
@@ -357,6 +359,15 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // The gate resets on the first quiet frame, so a word ending before the answer would otherwise count as none.
     let bargePeakMs = 0;
     const preroll: Float32Array[] = [];
+    // The utterance going to a transcriber that follows along as it is spoken (live-transcript.ts):
+    // `fed` is the next chunk it has not been given.
+    let live: { session: LiveTranscript; modelId: string | undefined; fed: number } | null = null;
+    // A pause already took the live transcript: only more speech starts another.
+    let liveTaken = false;
+    // This pick gives no live transcript: it is not asked again this session.
+    let liveOff = false;
+    // The longest live text put in the box, so the finished transcript is not typed out again.
+    let liveShown = "";
     let bargedIn = heldTurn !== null && heldFromBarge;
     let peakRms = 0;
     let zeroMs = 0;
@@ -511,6 +522,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (ended) return;
       ended = true;
       utteranceInFlight = false;
+      live?.session.drop();
+      live = null;
+      // Words shown as they were heard, then not kept: the box goes back to what it held.
+      if (!transcript && liveShown) emitSpeech(heldTurn?.text ?? "", false);
       if (liveSession === handle) liveSession = null;
       endZeroRun();
       voiceTrace("session.finish", {
@@ -579,6 +594,33 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       }
       return merged;
     };
+    const feedLive = () => {
+      if (!live) return;
+      while (live.fed < chunks.length) live.session.feed(chunks[live.fed++]);
+    };
+    // Opens a live transcript of the utterance so far and keeps it fed; a pick that cannot give
+    // one leaves `live` empty, and the clip is transcribed when it ends, as before.
+    const startLive = () => {
+      const span = utteranceSpan(chunkVoiced, chunkNotSilent, padFrames());
+      if (!span) return;
+      const modelId = useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
+      const session = openSttLive(sampleRate, modelId, (text) => {
+        // Words over a reply may be its echo or an "mm-hm", and a box being edited is the user's.
+        if (ended || bargedIn || !heldEdit.autoSend()) return;
+        // A transcript restarted after a pause catches up before it adds anything.
+        if (text.length < liveShown.length) return;
+        liveShown = text;
+        emitSpeech(heldTurn ? joinTurn(heldTurn.text, text) : text, false);
+      });
+      liveTaken = false;
+      if (!session) {
+        liveOff = true;
+        return;
+      }
+      voiceTrace("stt.live", { from: span.start, frames: chunks.length - span.start });
+      live = { session, modelId, fed: span.start };
+      feedLive();
+    };
     const turnEnd = createTurnEndCheck(
       (wav, signal) => askTurnEnd(wav, signal, useVoiceSettingsStore.getState().dictationLanguage),
       (answer, ms) => voiceTrace("turn.end", { ...answer, ms }),
@@ -603,14 +645,29 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       const modelId = useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
       let dropped = false;
       const vad = detectClip(wav, bargedIn);
+      // The live transcript has heard all of this already: ending it gives the text at once.
+      let heard: Promise<string> | null = null;
+      if (live && live.modelId === modelId) {
+        feedLive();
+        heard = live.session.finish();
+        heard.catch(() => {});
+        live = null;
+        liveTaken = true;
+      }
       // A clip dropped before its transcription starts is never sent. One already in flight is left
       // to finish: the server answers an aborted transcription by restarting the transcriber, and
       // that model load costs the next clip far more than these few hundred milliseconds.
-      const text = vad.then(async (v) =>
-        v?.kept === false || dropped
-          ? ""
-          : (await transcribeAudioBlob(wav, { model: modelId })).trim(),
-      );
+      const text = vad.then(async (v) => {
+        if (v?.kept === false || dropped) return "";
+        if (heard) {
+          try {
+            return await heard;
+          } catch (error) {
+            voiceTrace("stt.liveFailed", { message: error instanceof Error ? error.message : String(error) });
+          }
+        }
+        return (await transcribeAudioBlob(wav, { model: modelId })).trim();
+      });
       text.catch(() => {});
       return {
         modelId,
@@ -688,9 +745,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           if (ended) return;
         } catch (error) {
           if (error instanceof SttModelNotDownloadedError) {
-            requestSttDownload(
-              modelId ?? useVoiceSettingsStore.getState().sttModel,
-            );
+            const missing = modelId ?? useVoiceSettingsStore.getState().sttModel;
+            if (!isTrackingSttDownload(missing)) requestSttDownload(missing);
           }
           throw error;
         } finally {
@@ -794,6 +850,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           reveal = mine;
           try {
             // A turn that sounded finished is sent at once: typing it out first is a wait before the reply.
+            // Text that was shown live as it was heard is already in the box.
+            if (liveShown) mine.rush = true;
             for (let i = stepChars; i < total && !mine.rush && !soundedFinished; i += stepChars) {
               if (ended || epoch !== heldEpoch) break;
               const partial = transcript.slice(0, i);
@@ -927,20 +985,24 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           useChatRuntimeStore.getState().selectedSttModelId ??
           useVoiceSettingsStore.getState().sttModel;
         const sttPicked = () => useChatRuntimeStore.getState().selectedSttModelId === sttPick;
-        void loadSttModel(sttPick)
-          .then(() => {
-            sttDownloadAskedFor = null;
-            if (sttPicked()) useChatRuntimeStore.getState().setSttSlotLoaded(true);
-          })
-          .catch((error: unknown) => {
-            if (!sttPicked()) return;
-            useChatRuntimeStore.getState().setSttSlotLoaded(false);
-            // Asked as listening begins, not after the first utterance is lost to the missing model.
-            if (error instanceof SttModelNotDownloadedError && sttDownloadAskedFor !== sttPick) {
-              sttDownloadAskedFor = sttPick;
-              requestSttDownload(sttPick);
-            }
-          });
+        // A transcriber known to be missing is not loaded again until its download ends: every
+        // listen session (one per 8 s of quiet) asked, and got a 409 each time.
+        if (useChatRuntimeStore.getState().sttSlotDownload === null) {
+          void loadSttModel(sttPick, undefined, undefined, undefined, undefined, undefined, true)
+            .then(() => {
+              if (sttPicked()) useChatRuntimeStore.getState().setSttSlotLoaded(true);
+            })
+            .catch((error: unknown) => {
+              if (!sttPicked()) return;
+              const rt = useChatRuntimeStore.getState();
+              rt.setSttSlotLoaded(false);
+              if (!(error instanceof SttModelNotDownloadedError)) return;
+              const downloading = isTrackingSttDownload(sttPick);
+              rt.setSttSlotDownload(downloading ? "downloading" : "needed");
+              // Asked as listening begins, not after the first utterance is lost to the missing model.
+              if (!downloading) requestSttDownload(sttPick);
+            });
+        }
         void loadTurnModel().then((ready) => {
           turnReady = ready;
         });
@@ -1105,6 +1167,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               useChatRuntimeStore.getState().setVoiceHearing(true);
               for (const cb of speechStartCallbacks) cb();
             }
+          }
+          if (heardSpeech) {
+            if (live) feedLive();
+            else if (!liveOff && (!liveTaken || speech)) startLive();
           }
           const sinceVoice = now - lastVoiceAt;
           const elapsed = now - startedAt;

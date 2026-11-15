@@ -54,6 +54,9 @@ export interface VoicePanelProps {
   sttModelId: string;
   onSttModelChange: (id: string) => void;
   sttLoaded: boolean;
+  /** The picked transcriber is not downloaded: voice mode cannot hear until it is. */
+  sttDownload: "needed" | "downloading" | null;
+  onSttDownload: () => void;
   ttsModelId: string;
   onTtsModelChange: (id: string) => void;
   ttsLoading: boolean;
@@ -107,6 +110,8 @@ export const VoicePanel: FC<VoicePanelProps> = ({
   sttModelId,
   onSttModelChange,
   sttLoaded,
+  sttDownload,
+  onSttDownload,
   ttsModelId,
   onTtsModelChange,
   ttsLoading,
@@ -158,6 +163,8 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       enabled: boolean;
       title?: string;
       unset?: boolean;
+      /** Said in place of the state's own name. */
+      label?: TranslationKey;
     }
   > = {
     listen: {
@@ -167,8 +174,15 @@ export const VoicePanel: FC<VoicePanelProps> = ({
     },
     transcribe: {
       name: shortName(sttRepoForKey(sttModelId)),
-      state: sttLoaded ? "loaded" : "not_loaded",
+      state: sttLoaded ? "loaded" : sttDownload === "downloading" ? "loading" : "not_loaded",
       enabled: true,
+      label: sttLoaded
+        ? undefined
+        : sttDownload === "downloading"
+          ? "voicePanel.state.downloading"
+          : sttDownload === "needed"
+            ? "settings.voice.dictation.sttNotDownloaded"
+            : undefined,
     },
     decide: {
       name: decision.failed ? t("voicePanel.decideOwnerOnly") : decideName,
@@ -205,7 +219,9 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       ? t("voicePanel.error")
       : !started
         ? t("voicePanel.notStarted")
-        : t("voicePanel.ready", {
+        : sttDownload === "needed" && !sttLoaded
+          ? t("voicePanel.downloadNeeded")
+          : t("voicePanel.ready", {
             n: states.filter((s) => s === "loaded").length,
           });
 
@@ -407,7 +423,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
                             ? "voicePanel.state.notSetUp"
                             : !started && row.state === "not_loaded"
                               ? "voicePanel.state.loadsOnStart"
-                              : STATE_KEY[row.state],
+                              : (row.label ?? STATE_KEY[row.state]),
                         )}
                       />
                     )}
@@ -420,6 +436,24 @@ export const VoicePanel: FC<VoicePanelProps> = ({
                 </div>
               );
             })}
+            {started && sttDownload === "needed" && !sttLoaded && (
+              <div className="mt-1 flex items-center gap-3 border-t border-border/60 pb-1 pl-2.5 pr-1 pt-2">
+                <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
+                  {t("voicePanel.transcriberMissing", { model: rows.transcribe.name })}
+                </p>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  onClick={() => {
+                    setOpen(false);
+                    onSttDownload();
+                  }}
+                >
+                  {t("settings.voice.dictation.sttDownload")}
+                </Button>
+              </div>
+            )}
             {canThink && (
               <label className="mt-1 flex cursor-pointer items-center gap-3 border-t border-border/60 py-2 pl-2.5 pr-2">
                 <span className="min-w-0 flex-1">

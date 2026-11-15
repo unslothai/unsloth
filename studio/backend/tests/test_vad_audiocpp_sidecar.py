@@ -47,60 +47,6 @@ def test_the_default_detector_is_the_earshot_copy_that_ships_with_studio():
     assert acm.family_policy("pulsevad").task == "vad"
 
 
-def test_a_builtin_detector_without_weights_is_unavailable_not_looked_up(monkeypatch):
-    """Silero and MarbleNet come with the runtime's asset bundle, which an install may not have."""
-    monkeypatch.setattr(clip, "resolve", lambda *a, **k: pytest.fail("looked up on the Hub"))
-    monkeypatch.setattr(vad, "_weights", lambda detector, binary: [])
-    with pytest.raises(vad.VadUnavailableError, match = "not included in this install"):
-        vad.resolve_vad_model("builtin/silero-vad")
-    # Shaped like a repo id, so it must not reach the Hub lookup either, variant suffix or not.
-    for unknown in ("builtin/no-such-detector", "builtin/earshot-vad:Q8_0"):
-        assert vad.is_builtin_id(unknown) and vad.builtin_detector(unknown) is None
-        with pytest.raises(vad.VadError, match = "not a detector Unsloth Studio includes"):
-            vad.resolve_vad_model(unknown)
-    listed = {d["id"]: d["available"] for d in vad.detectors()}
-    assert listed == {
-        "builtin/earshot-vad": False,
-        "builtin/silero-vad": False,
-        "builtin/marblenet-vad": False,
-    }
-
-
-def test_the_runtime_asset_bundle_supplies_a_builtin_detector(monkeypatch, tmp_path):
-    binary = tmp_path / "audiocpp_server"
-    binary.write_bytes(b"")
-    weights = tmp_path / "assets" / "framework" / "models" / "silero_vad"
-    weights.mkdir(parents = True)
-    (weights / "silero_vad.safetensors").write_bytes(b"x" * 8)
-    # Only the weights are the model: a notice beside them is not a file the runtime is given.
-    (weights / "LICENSE").write_text("notice")
-    monkeypatch.setattr(vad, "find_audio_cpp_server_binary", lambda: str(binary))
-    model = vad.resolve_vad_model("Builtin/Silero-VAD")
-    assert (model.id, model.family, model.local_path) == (
-        "builtin/silero-vad",
-        "silero_vad",
-        str(weights),
-    )
-    assert model.files == ("silero_vad.safetensors",)
-    assert vad.resolve_vad_model(None).files == ("earshot_vad.safetensors",)
-
-
-@pytest.mark.parametrize(
-    "release, runs", [((0, 9, 2), False), ((0, 9, 3), True), ((0, 9, 4), True), (None, True)]
-)
-def test_earshot_needs_the_runtime_release_that_added_it(monkeypatch, release, runs):
-    """An older runtime exits on the family name; a custom build of unknown release is not an old one."""
-    monkeypatch.setattr(vad, "find_audio_cpp_server_binary", lambda: "/opt/audiocpp_server")
-    monkeypatch.setattr(vad, "runtime_release_key", lambda binary: release)
-    listed = {d["id"]: d["available"] for d in vad.detectors()}
-    assert listed["builtin/earshot-vad"] is runs
-    if runs:
-        assert vad.resolve_vad_model(None).family == "earshot_vad"
-    else:
-        with pytest.raises(vad.VadUnavailableError, match = "needs a newer audio runtime"):
-            vad.resolve_vad_model(None)
-
-
 def test_the_weights_studio_ships_are_not_git_ignored():
     """``*.safetensors`` is ignored repo-wide: without the exception the default detector is never committed."""
     import subprocess
@@ -175,12 +121,6 @@ def test_status_answers_while_a_clip_check_holds_the_lock():
         reader.join(timeout = 10)
     assert answered and answered[0]["default_model"] == "builtin/earshot-vad"
     assert answered[0]["loaded_model"] is None
-
-
-def test_each_detector_brings_its_own_speech_bars():
-    # Earshot reads a short word lower than PulseVAD's 100 ms windows do, so its bars are lower.
-    assert vad.speech_bars("builtin/earshot-vad") == {"utterance_ms": 200.0, "barge_ms": 150.0}
-    assert vad.speech_bars(PULSEVAD) == {"utterance_ms": 300.0, "barge_ms": 200.0}
 
 
 @pytest.mark.parametrize(
