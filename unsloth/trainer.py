@@ -525,7 +525,8 @@ def _uses_multimodal_rope(model_config) -> bool:
 
 # mRoPE families whose text model expands 2D position_ids into the text row (transformers 5.2+),
 # so packed text rows get the per-document mask, exactly as with processing_class=processor.tokenizer.
-_PROCESSOR_TEXT_PACKING_MROPE_MODELS = frozenset({"qwen3_5", "qwen3_5_moe"})
+# qwen4_exp (Qwen3.8-Flash-Next): its QSA indexer reads that mask, so block selection stays per document.
+_PROCESSOR_TEXT_PACKING_MROPE_MODELS = frozenset({"qwen3_5", "qwen3_5_moe", "qwen4_exp"})
 
 _PROCESSOR_TEXT_PACKING_MODELS = (
     frozenset(
