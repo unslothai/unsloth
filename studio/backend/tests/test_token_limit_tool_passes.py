@@ -99,6 +99,8 @@ def _usage(
         (True, 0, [("reply", 12_000)] * 4, "cancelled", (0, 12_000, 12_000)),
         # Generated text the reply buffer never shows still counts.
         (True, 0, [("reasoning", 400)], "cancelled", (0, 100, 100)),
+        # OpenRouter's thought in reasoning_details, counted once beside its `reasoning` alias.
+        (False, 0, [("reasoning_details", 400)], "cancelled", (0, 100, 100)),
         (True, 0, [("hidden", 400)], "cancelled", (0, 100, 100)),
         (False, 0, [("message_reasoning", 400)], "completed", (0, 100, 100)),
         # Calls past the preview's call cap are still generated output.
@@ -216,6 +218,15 @@ def test_a_receipt_settles_reported_and_estimated_usage(
                 call_id = f"c{index}",
                 name_fragment = None,
                 arguments_fragment = "a" * chars,
+            )
+        elif kind == "reasoning_details":
+            thought = "t" * value
+            delta = {
+                "reasoning": thought,
+                "reasoning_details": [{"type": "reasoning.text", "text": thought}],
+            }
+            inference_route._monitor_openai_chunk(
+                entry, {"choices": [{"index": 0, "delta": delta}]}, None, streaming = True
             )
         elif kind == "reasoning":
             chunk = {"choices": [{"index": 0, "delta": {"reasoning_content": "t" * value}}]}
@@ -361,6 +372,9 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     # Each reported pass's running usage reaches the monitor, so a later failure keeps it.
     assert "_monitor_usage(monitor_id, totals)" in source
     assert "on_pass_reported = lambda totals: _monitor_usage(codex_monitor_id, totals)," in source
+    # The plain safetensors JSON path settles its partial choices on every failure exit.
+    assert source.count("_sf_plain_settle()") == 6  # the def and its five calls
+    assert '_sf_plain_partial["current"] = token' in source
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):

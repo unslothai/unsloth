@@ -7669,31 +7669,27 @@ def _monitor_openai_chunk(
                 monitor_id, len(reasoning) if isinstance(reasoning, str) else 0
             )
         raw_content = delta.get("content") if isinstance(delta, dict) else None
-        if isinstance(delta, dict) and (
-            delta.get("reasoning_content")
-            or (
-                isinstance(raw_content, list)
-                and any(
-                    isinstance(part, dict)
-                    and part.get("type") == "thinking"
-                    and _delta_text(part.get("thinking"))
-                    for part in raw_content
-                )
-            )
-        ):
+        thought_chars = 0
+        if isinstance(delta, dict):
             reasoning = delta.get("reasoning_content")
-            api_monitor.mark_first_token(
-                monitor_id,
-                output_chars = len(reasoning)
-                if isinstance(reasoning, str)
-                else sum(
+            details = delta.get("reasoning_details")
+            if isinstance(reasoning, str) and reasoning:
+                thought_chars = len(reasoning)
+            elif isinstance(raw_content, list):
+                thought_chars = sum(
                     len(_delta_text(part.get("thinking")) or "")
                     for part in raw_content
                     if isinstance(part, dict) and part.get("type") == "thinking"
                 )
-                if isinstance(raw_content, list)
-                else 0,
-            )
+            if not thought_chars and isinstance(details, list):
+                # OpenRouter: the thought rides in reasoning_details; its `reasoning` alias repeats it.
+                thought_chars = sum(
+                    len(part["text"])
+                    for part in details
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                )
+        if thought_chars:
+            api_monitor.mark_first_token(monitor_id, output_chars = thought_chars)
 
         streamed_tool_delta = False
         if streaming and isinstance(delta, dict):
@@ -36286,6 +36282,16 @@ async def produce_openai_chat_completions(
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
+        # Finished choices' text (covered by their usage), the current one's, and the usage so far.
+        _sf_plain_partial: dict = {"done": "", "current": "", "usage": None}
+
+        def _sf_plain_settle():
+            done = _sf_plain_partial["done"]
+            if done or _sf_plain_partial["current"]:
+                api_monitor.set_reply(monitor_id, done + _sf_plain_partial["current"])
+            if _sf_plain_partial["usage"] is not None:
+                _monitor_usage(monitor_id, _sf_plain_partial["usage"], reported_chars = len(done))
+
         try:
             _n = payload.n or 1
             _choices = []
@@ -36310,6 +36316,7 @@ async def produce_openai_chat_completions(
                     if isinstance(token, GenStreamError):
                         return token
                     final = token
+                    _sf_plain_partial["current"] = token
                 return final
 
             _produced: dict = {}
@@ -36385,6 +36392,7 @@ async def produce_openai_chat_completions(
                 if isinstance(full_text, GenStreamError):
                     backend.reset_generation_state(cancel_event)
                     _msg = _friendly_gen_stream_error(full_text)
+                    _sf_plain_settle()
                     api_monitor.fail(monitor_id, _msg)
                     _refused = _refused_parameter(full_text)
                     if _refused:
@@ -36546,6 +36554,10 @@ async def produce_openai_chat_completions(
                     )
                 )
                 _monitor_replies.append(_msg)
+                _sf_plain_partial["done"] += (_msg.get("reasoning_content") or "") + (
+                    _msg.get("content") or ""
+                )
+                _sf_plain_partial["current"] = ""
                 if _choice_stats:
                     _last_stats = _choice_stats
                     _choice_usage = _choice_stats.get("usage") or {}
@@ -36555,6 +36567,11 @@ async def produce_openai_chat_completions(
                         # Details come from the same choice as prompt_tokens, else cached can exceed prompt.
                         _prompt_details = _choice_usage.get("prompt_tokens_details")
                     _sum_completion += _choice_usage.get("completion_tokens") or 0
+                    _sf_plain_partial["usage"] = {
+                        "prompt_tokens": _prompt_tokens,
+                        "completion_tokens": _sum_completion,
+                        "total_tokens": _prompt_tokens + _sum_completion,
+                    }
             _mark_cancelled_json_response_failed(request, cancel_event)
             _msg, _finish = _monitor_replies[-1], _choices[-1].finish_reason
 
@@ -36615,6 +36632,7 @@ async def produce_openai_chat_completions(
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state(cancel_event)
+            _sf_plain_settle()
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except HTTPException:
@@ -36623,6 +36641,7 @@ async def produce_openai_chat_completions(
             # Compare-mode adapter failure: honor the public flag and the refused parameter so a contract refusal stays a client error
             backend.reset_generation_state(cancel_event)
             _msg = _friendly_gen_stream_error(exc)
+            _sf_plain_settle()
             api_monitor.fail(monitor_id, _msg)
             _refused = _refused_parameter(exc)
             if _refused:
@@ -36635,11 +36654,13 @@ async def produce_openai_chat_completions(
             raise HTTPException(status_code = 500, detail = _msg)
         except context_refusal.ContextBudgetExceeded as e:
             backend.reset_generation_state(cancel_event)
+            _sf_plain_settle()
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise _context_budget_http_error(e)
         except Exception as e:
             backend.reset_generation_state(cancel_event)
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
+            _sf_plain_settle()
             api_monitor.fail(monitor_id, _friendly_error(e))
             from core.inference.engine_transport import EngineHTTPError
 
