@@ -1503,7 +1503,8 @@ _MATERIALISED_KEEP_BYTES = 1 << 28
 
 
 def _mask_layout(mask, seq_len):
-    """(dim, dtype, heads, broadcast dims) of a self-attention mask over seq_len this module can rebuild, else None."""
+    """(dim, dtype, heads, broadcast dims, view) of a self-attention mask over seq_len this module can rebuild,
+    else None."""
     if not isinstance(mask, torch.Tensor) or mask.requires_grad or mask.is_floating_point():
         return None
     if mask.is_inference() or getattr(mask, "is_nested", False) or mask.shape[-1] != seq_len:
@@ -1525,7 +1526,17 @@ def _mask_layout(mask, seq_len):
         step *= shape[i]
     if any(shape[i] > 1 and stride[i] != expected[i] for i in range(mask.dim())):
         return None
-    return (mask.dim(), mask.dtype, heads, broadcast)
+    # Dynamo also guards a view's base (transformers expands its 4D mask, slices its 2D one): rebuild a
+    # view of a contiguous base only when the mask is one, over the same stored shape.
+    view = mask._base is not None
+    if view:
+        base = mask._base
+        stored = [1 if i in broadcast else shape[i] for i in range(mask.dim())]
+        if list(base.shape) != stored or not base.is_contiguous():
+            return None
+    elif broadcast:
+        return None
+    return (mask.dim(), mask.dtype, heads, broadcast, view)
 
 
 def _layer_is_causal(layer):
@@ -1536,7 +1547,7 @@ def _layer_is_causal(layer):
 
 
 def _materialise_mask(layout, causal, batch, seq_len, device):
-    dim, dtype, heads, broadcast = layout
+    dim, dtype, heads, broadcast, view = layout
     key = (layout, causal, batch, seq_len, device)
     cached = _MATERIALISED[0]
     if cached is not None and cached[0] == key:
@@ -1553,7 +1564,7 @@ def _materialise_mask(layout, causal, batch, seq_len, device):
             base = base.tril_()
     stored = tuple(1 if i in broadcast else size for i, size in enumerate(full))
     mask = base.expand(stored).contiguous()
-    if broadcast:
+    if view:
         mask = mask.expand(full)
     setattr(mask, _MATERIALISED_ATTR, True)
     keep = mask.untyped_storage().nbytes() <= _MATERIALISED_KEEP_BYTES

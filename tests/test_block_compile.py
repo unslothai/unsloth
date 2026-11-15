@@ -221,6 +221,18 @@ def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
     M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1] * 6, [1] * 4 + [0] * 2])})
     rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
     assert rebuilt.dtype == torch.long and rebuilt.shape == (2, 6) and bool((rebuilt == 1).all())
+    # transformers expands its 4D mask (a view) and dynamo guards the base: the rebuilt mask is a view too.
+    layer.self_attn = types.SimpleNamespace(is_causal = True)
+    M._normalise_mask(
+        layer, hidden, {"attention_mask": _padded_mask([6, 4], 6).expand(2, -1, 6, 6)}
+    )
+    rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    assert rebuilt._base is not None and rebuilt._base.shape == rebuilt.shape
+    assert torch.equal(rebuilt, torch.ones(6, 6, dtype = torch.bool).tril().expand(2, 1, 6, 6))
+    M._normalise_mask(layer, hidden, {"attention_mask": _padded_mask([6, 4], 6).contiguous()})
+    assert (
+        M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]._base is None
+    )
 
 
 def test_rebind_globals_resolves():
