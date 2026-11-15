@@ -100,6 +100,17 @@ export function defaultVideoResolution(
   return presets[0] ? [presets[0][0], presets[0][1]] : null;
 }
 
+/** The size a family declares for its first render (MiniMax-H3: the reference templates' 864x480), when it is
+ *  one of its presets; null for a family that declares none, which keeps the size the page already holds. */
+export function familyFirstRenderResolution(
+  defaults: Pick<VideoGenerationDefaults, "default_resolution"> | null | undefined,
+  presets: ReadonlyArray<readonly [number, number]>,
+): [number, number] | null {
+  const wanted = defaults?.default_resolution;
+  if (!wanted || !presets.some(([w, h]) => w === wanted[0] && h === wanted[1])) return null;
+  return [wanted[0], wanted[1]];
+}
+
 /** Whether staging a keyframe switches the size to "Match source". A family whose keyframes keep the chosen
  *  canvas (MiniMax-H3, like the reference workflow) leaves the size alone. */
 export function keyframeSelectsMatchSource(

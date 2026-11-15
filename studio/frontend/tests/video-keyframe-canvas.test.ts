@@ -2,10 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { VideoGenerationDefaults } from "../src/features/video/api.ts";
 import {
   defaultVideoResolution,
+  familyFirstRenderResolution,
   keyframeSelectsMatchSource,
   keyframeSupport,
   matchedCanvas,
@@ -169,4 +171,30 @@ test("the Default preset takes the family's default size only when it is a prese
   assert.deepEqual(defaultVideoResolution({ default_resolution: [640, 640] }, presets), [1344, 768]);
   assert.deepEqual(defaultVideoResolution({}, presets), [1344, 768]);
   assert.deepEqual(defaultVideoResolution(null, []), null);
+});
+
+test("a family's declared first-render size is used only when declared and a preset", () => {
+  const presets: Array<[number, number]> = [
+    [1344, 768],
+    [864, 480],
+  ];
+  assert.deepEqual(familyFirstRenderResolution({ default_resolution: [864, 480] }, presets), [864, 480]);
+  assert.equal(familyFirstRenderResolution({ default_resolution: [640, 640] }, presets), null);
+  // a family that declares none keeps the size the page holds (no fallback to presets[0])
+  assert.equal(familyFirstRenderResolution({}, presets), null);
+  assert.equal(familyFirstRenderResolution(null, presets), null);
+});
+
+test("the page applies the first-render size when the family loads, behind the model-defaults gate", async () => {
+  const page = await readFile(new URL("../src/features/video/video-page.tsx", import.meta.url), "utf8");
+  const start = page.indexOf("const familyChanged = loadedFamily !== prevFamilyRef.current;");
+  assert.ok(start >= 0);
+  const effect = page.slice(start, page.indexOf("keptNumFrames(", start));
+  const gate = effect.indexOf("if (familyChanged && loadedFamily && applyFamilyDefault) {");
+  assert.ok(gate >= 0, "the size follows the same gate as the family's default clip length");
+  const apply = effect.slice(gate);
+  assert.match(apply, /familyFirstRenderResolution\(status\?\.defaults, resolutionPresets\)/);
+  assert.match(apply, /setResolutionIntent\(firstSize\)/);
+  // before the clip-length branch, which returns early
+  assert.ok(gate < effect.indexOf("familyDefaultFrames && applyFamilyDefault"));
 });

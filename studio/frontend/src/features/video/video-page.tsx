@@ -245,6 +245,7 @@ import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { videoFailureToast } from "./generation-failure";
 import {
   defaultVideoResolution,
+  familyFirstRenderResolution,
   keyframeSelectsMatchSource,
   keyframeSupport,
   matchedCanvas,
@@ -1839,6 +1840,16 @@ function VideoGenerator({
       videoPresets.storedRecipe,
       pickRecipeSuperseded.current?.() ?? false,
     );
+    if (familyChanged && loadedFamily && applyFamilyDefault) {
+      // The family's first-render size (MiniMax-H3: the templates' 864x480), so a fresh page renders it.
+      const firstSize = familyFirstRenderResolution(status?.defaults, resolutionPresets);
+      if (firstSize) {
+        setResolutionIntent(firstSize);
+        const matched = matchAspect(firstSize[0], firstSize[1]);
+        setAspect(matched.key);
+        setPortrait(matched.portrait);
+      }
+    }
     if (familyChanged && loadedFamily) familySeeded.current = true;
     if (familyChanged && loadedFamily && familyDefaultFrames && applyFamilyDefault) {
       const option =
@@ -1860,6 +1871,8 @@ function VideoGenerator({
     familyDefaultFrames,
     fps,
     loadedFamily,
+    resolutionPresets,
+    status?.defaults,
     videoPresets.storedRecipe,
   ]);
 
