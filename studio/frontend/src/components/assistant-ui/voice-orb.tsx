@@ -207,6 +207,7 @@ export const VoiceOrb: FC = () => {
   const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
   const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
   const showOverlay = Boolean(orbState) && !collapsed;
+  const rootRef = useRef<HTMLDivElement>(null);
 
   const cfg = orbState ? orbConfig[orbState] : null;
   const meta = orbState ? orbMeta[orbState] : null;
@@ -215,6 +216,9 @@ export const VoiceOrb: FC = () => {
     if (!showOverlay) return;
     // Window capture, before the composer's cancelOnEscape: Escape hides the orb, it never stops the reply.
     const onKeyDown = (e: KeyboardEvent) => {
+      // Chat stays mounted off-route (hidden, inert): there the Escape belongs to whatever is showing.
+      const root = rootRef.current;
+      if (!root || root.closest('[aria-hidden="true"], [inert]') || root.getClientRects().length === 0) return;
       if (e.key === "Escape" && !e.isComposing) {
         e.preventDefault();
         e.stopPropagation();
@@ -243,6 +247,7 @@ export const VoiceOrb: FC = () => {
       `}</style>
 
       <div
+        ref={rootRef}
         className={cn(
           "absolute inset-0 z-30 flex flex-col items-center justify-center gap-8 bg-background",
           "transition-opacity duration-200 ease-out will-change-[opacity]",
