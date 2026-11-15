@@ -32,6 +32,32 @@ _ACTIVE = []
 _STAGED_4BIT = []
 
 
+def _install_table_provenance():
+    # Best effort: this module is also loaded on its own (outside the unsloth package), where the provenance
+    # hook has nothing to attach to.
+    try:
+        from .frozen_table_provenance import install
+    except ImportError:
+        try:
+            from unsloth.models.frozen_table_provenance import install
+        except (
+            Exception
+        ):  # importing unsloth itself can refuse (no accelerator): nothing to attach to then
+            return False
+    return install()
+
+
+def _frozen_tables_hidden(model):
+    try:
+        from .fsdp2_native import frozen_tables_hidden
+    except ImportError:
+        try:
+            from unsloth.models.fsdp2_native import frozen_tables_hidden
+        except Exception:  # without the unsloth package no model carries frozen lookup tables
+            return contextlib.nullcontext()
+    return frozen_tables_hidden(model)
+
+
 def _fsdp_module_class():
     try:
         from torch.distributed.fsdp import FSDPModule
@@ -337,8 +363,6 @@ def fsdp2_gathered(
     they then go, with a CPU copy of their QuantState, to the CPU right after each one is gathered, so
     rank 0 never holds the whole quantized base on its accelerator. A merge brings them back one layer
     at a time (`merge_4bit_lora_layer_by_layer`)."""
-    from .frozen_table_provenance import install as _install_table_provenance
-
     _install_table_provenance()  # adapter saves write frozen_tables.json when the model has frozen tables
     if _ACTIVE:
         yield _ACTIVE[-1]
@@ -1001,9 +1025,7 @@ def install_dcp_frozen_table_state_dict():
             model = args[0] if args else kwargs.get("model")
             if not isinstance(model, torch.nn.Module):
                 return _fn(*args, **kwargs)
-            from .fsdp2_native import frozen_tables_hidden
-
-            with frozen_tables_hidden(model):
+            with _frozen_tables_hidden(model):
                 return _fn(*args, **kwargs)
 
         wrapper._unsloth_frozen_tables_patched = True
