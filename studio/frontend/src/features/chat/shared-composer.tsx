@@ -227,6 +227,7 @@ import {
   providerModelSupportsVision,
 
   providerModelSupportsStudioTools,
+  isGeminiApiProviderType,
 } from "./external-providers";
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
@@ -1083,7 +1084,7 @@ export function SharedComposer({
     selectedExternalProvider?.providerType,
   );
   // Gemini rejects codeExecution alongside image modalities.
-  const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
+  const isExternalGemini = isGeminiApiProviderType(selectedExternalProvider?.providerType);
   // The image or video model loaded in Unsloth, reached through generate_image / generate_video.
   const localImageToolHere = useChatRuntimeStore((s) =>
     localImageTool({ ...s, supportsBuiltinImageGeneration }),
