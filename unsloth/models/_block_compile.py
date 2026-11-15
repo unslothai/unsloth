@@ -1455,16 +1455,10 @@ def _training_flex_options(options):
 
 
 def _sdpa_alignment_without_guard():
-    """Stop Inductor recompiling a block for every new `seq_len % 8` class.
-
-    Lowering an SDPA call (torch 2.14 `sdpa_constraint`) asks whether each input's strides are 8-aligned
-    (`ir.is_aligned_realized_tensor`; e.g. the flash backward's (B, H, L) logsumexp, strides (H*L, L, 1)) through
-    `guard_or_false`. With the sequence dim dynamic that installs a `Mod(s, 8)` guard, so the first aligned
-    length after an unaligned one (or the reverse) recompiled the whole block (20-44 s per layer kind on real
-    models). Inside the SDPA constraint only, `guard_or_false` becomes `statically_known_true`: False is its
-    documented safe answer, so a dynamic length takes the general path every unaligned length already took
-    (a stride-order check; an attention bias is copied to an 8-aligned layout). Static shapes decide as
-    before. UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
+    """Stop Inductor recompiling a block per `seq_len % 8` class: inside torch 2.14's SDPA lowering only,
+    `guard_or_false` becomes `statically_known_true` (False is its documented safe answer), so a dynamic length
+    takes the general unaligned path instead of installing a `Mod(s, 8)` guard (20-44 s recompile per layer kind).
+    UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
     if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
         return False
     try:

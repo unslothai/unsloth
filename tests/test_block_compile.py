@@ -1183,9 +1183,7 @@ def test_block_flex_forces_the_main_kernel(monkeypatch):
 @pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
 @pytest.mark.parametrize("guard", ["0", "1"], ids = ["no_align_guard", "torch_guard"])
 def test_block_does_not_recompile_per_length_mod_8(monkeypatch, guard):
-    """torch 2.14 Inductor's SDPA lowering guards `Mod(s, 8)` on its inputs' strides, so with a dynamic sequence
-    a block recompiled whenever a length crossed between aligned and unaligned (20-44 s per layer kind on real
-    models)."""
+    """torch 2.14 SDPA lowering guards `Mod(s, 8)` on strides: a block recompiled per alignment class."""
     import inspect
 
     import torch._inductor.lowering as lowering
@@ -1207,7 +1205,7 @@ def test_block_does_not_recompile_per_length_mod_8(monkeypatch, guard):
             monkeypatch.setitem(lowering._maybe_layout_constraints, op, stock)
     monkeypatch.setenv("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", guard)
     assert M._sdpa_alignment_without_guard() is (guard == "0")
-    # A cached graph from the other arm would carry (or lack) its guards: lower from scratch.
+    # A cached graph from the other arm would carry its guards.
     monkeypatch.setattr(torch._inductor.config, "fx_graph_cache", False)
     monkeypatch.setattr(torch._functorch.config, "enable_autograd_cache", False)
     import torch._dynamo.convert_frame as convert_frame
@@ -1238,7 +1236,7 @@ def test_block_does_not_recompile_per_length_mod_8(monkeypatch, guard):
     layer = model.layers[0]
 
     def run(L):
-        # No padding: causal flash SDPA, whose backward reads a (B, H, L) logsumexp with strides (H*L, L, 1).
+        # Causal flash SDPA: backward reads a (B, H, L) logsumexp, strides (H*L, L, 1).
         ids = torch.randint(0, 64, (2, L), device = "cuda")
         model(input_ids = ids, use_cache = False).last_hidden_state.float().sum().backward()
 
