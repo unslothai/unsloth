@@ -2034,6 +2034,13 @@ def _model_index_sample_sigmas(base: str, base_local_dir: Optional[str]) -> Any:
     return index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None
 
 
+# First sd.cpp build per native-only family, named in the too-old refusal.
+_NATIVE_ONLY_FIRST_BUILD = {
+    MOSS_IMAGE_FAMILY_NAME: "upstream master-975",
+    MINIMAX_H3_IMAGE_FAMILY_NAME: "upstream master-1088",
+}
+
+
 def _family_default_ids(fam: Any) -> tuple:
     """Ids ahead of the file / repo names in the defaults lookup: FLUX.3's file names cannot tell its variants apart,
     and a bare "anima" matches Animagine XL files while a local folder never names Anima's base repo."""
@@ -5389,6 +5396,11 @@ class DiffusionBackend:
         # Too-old diffusers matters only for a diffusers build (not native sd.cpp); imported here since the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
+        if kind == "single_file" and not getattr(fam, "single_file_loadable", True):
+            raise ValueError(
+                f"'{fam.name}' has no single-file transformer load; select the pipeline repo, or a GGUF for the "
+                f"native stable-diffusion.cpp engine."
+            )
         # MOSS-Image GGUFs are sd.cpp only: refuse before eviction and before the diffusers class check.
         if getattr(fam, "native_transformer_files_only", False) and (
             (
@@ -5400,9 +5412,10 @@ class DiffusionBackend:
                 and not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename)
             )
         ):
+            first_build = _NATIVE_ONLY_FIRST_BUILD.get(fam.name, "a current upstream build")
             raise ValueError(
                 f"'{fam.name}' runs a {'GGUF' if kind == 'gguf' else 'single-file'} transformer only on the native "
-                f"stable-diffusion.cpp engine, from a build that supports it (upstream master-975 or newer); the "
+                f"stable-diffusion.cpp engine, from a build that supports it ({first_build} or newer); the "
                 f"diffusers engine loads the full pipeline repo. Select the pipeline repo, or a GGUF with the native "
                 f"engine available."
             )
@@ -5512,7 +5525,7 @@ class DiffusionBackend:
                 )
         if text_encoder_files or vae_file:
             self._validate_component_files(fam, kind, repo_id, text_encoder_files, vae_file)
-        if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+        if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME and kind != "gguf":
             from .diffusion_minimax_h3_image import h3_image_device_refusal
             refusal = h3_image_device_refusal(resolve_diffusion_device_target().device)
             if refusal:

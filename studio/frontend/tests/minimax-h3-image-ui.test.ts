@@ -42,6 +42,7 @@ const { generationKinds, isVideoFamilyName } = await import(
 );
 
 const REPO = "MiniMaxAI/MiniMax-H3-Image";
+const GGUF_REPO = "unsloth/MiniMax-H3-Image-GGUF";
 
 // What the backend reports for a loaded MiniMax-H3-Image (diffusion_conditioning for the family).
 const H3_IMAGE_CONDITIONING = {
@@ -117,9 +118,9 @@ test("it fits the measured L4 and A100 40GB tiers only where a dense quant runs"
   assert.equal(fit(22, 32, dense), false);
 });
 
-test("Apple Silicon and CPU hosts keep the row but it never reads as fitting (the backend refuses the load)", () => {
-  // A Mac must not open the picker with a family missing, so the row stays and the load answers with the backend's
-  // "needs an NVIDIA or AMD GPU" refusal (diffusion_minimax_h3_image.h3_image_device_refusal).
+test("Apple Silicon and CPU hosts get the GGUF row in place of the pipeline (the backend refuses that load)", () => {
+  // The pipeline load answers "needs an NVIDIA or AMD GPU" there (diffusion_minimax_h3_image.h3_image_device_refusal),
+  // so the family stays in the picker through its sd.cpp GGUF row, which loads on any host.
   const mac = classifyHost({
     deviceType: "mac",
     deviceBackend: "mlx",
@@ -127,11 +128,10 @@ test("Apple Silicon and CPU hosts keep the row but it never reads as fitting (th
   });
   const cpu = classifyHost({ deviceBackend: "cpu", budgetKnown: true });
   for (const host of [mac, cpu]) {
-    assert.equal(curatedArtifactIsOfferable(REPO, host), true);
-    assert.equal(
-      catalogToModelOptions(IMAGE_CATALOG, host).some((o) => o.id === REPO),
-      true,
-    );
+    assert.equal(curatedArtifactIsOfferable(REPO, host), false);
+    const ids = catalogToModelOptions(IMAGE_CATALOG, host).map((o) => o.id);
+    assert.ok(!ids.includes(REPO));
+    assert.ok(ids.includes(GGUF_REPO));
   }
   // Unified memory with no dense quant (MPS / CPU): no tier is met.
   assert.equal(

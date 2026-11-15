@@ -95,9 +95,11 @@ import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import {
+  ChatSkillsDialog,
   contextReportBranch,
   isContextCommand,
   isRewindCommand,
+  isSkillsCommand,
   useContextReportStore,
   useRewindDialogStore,
 } from "@/features/chat";
@@ -3059,6 +3061,7 @@ const Composer: FC<{
   const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
   const [researchWebsiteAccessOpen, setResearchWebsiteAccessOpen] =
     useState(false);
+  const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
   useEffect(() => {
     if (!researchUsed) return;
     if (hasResearchMessage && researchThreadId) {
@@ -4035,6 +4038,10 @@ const Composer: FC<{
     registeringVideoDrops ||
     hasPendingVideoAttachments ||
     materializingDroppedVideo;
+  const hasMaterializingAttachments =
+    hasMaterializingImageAttachments ||
+    hasMaterializingAudioAttachments ||
+    hasMaterializingVideoAttachments;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemRemoteId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
@@ -5820,6 +5827,19 @@ const Composer: FC<{
         !overlay &&
         !hasAttachments &&
         !hasPendingAudio &&
+        !hasMaterializingAttachments &&
+        isSkillsCommand(composerText)
+      ) {
+        event.preventDefault();
+        clearStoredDraft();
+        aui.composer().setText("");
+        setSkillsDialogOpen(true);
+        return;
+      }
+      if (
+        !overlay &&
+        !hasAttachments &&
+        !hasPendingAudio &&
         isCompactCommand(composerText)
       ) {
         event.preventDefault();
@@ -6010,6 +6030,7 @@ const Composer: FC<{
       disabled,
       disableQueue,
       hasAttachments,
+      hasMaterializingAttachments,
       hasPendingAudio,
       enqueueSend,
       interceptSend,
@@ -6126,6 +6147,15 @@ const Composer: FC<{
       />
     ),
     [researchWebsiteAccessOpen, effectiveDeepResearchEnabled],
+  );
+  const skillsDialog = useMemo(
+    () => (
+      <ChatSkillsDialog
+        open={skillsDialogOpen}
+        onOpenChange={setSkillsDialogOpen}
+      />
+    ),
+    [skillsDialogOpen],
   );
 
   const composerContent = (
@@ -6264,6 +6294,7 @@ const Composer: FC<{
         )}
       </div>
       {researchWebsiteAccessDialog}
+      {skillsDialog}
       <ChatAudioUploadMount audioUpload={audioUpload} />
     </>
   );

@@ -181,6 +181,7 @@ export {
   rewindTouchesConversation,
   rewindTouchesFiles,
 } from "./utils/rewind";
+export { isSkillsCommand } from "./utils/skills-command";
 export {
   isCompactCommand,
   requestThreadCompaction,
