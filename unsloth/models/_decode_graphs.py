@@ -206,6 +206,34 @@ def weights_changed():
     WEIGHTS_EPOCH += 1
 
 
+def workspaces_cleared():
+    """The cuBLAS workspaces were freed: captured steps used them, so every graph re-captures."""
+    global BUFFER_EPOCH, WEIGHTS_EPOCH
+    BUFFER_EPOCH += 1
+    WEIGHTS_EPOCH += 1
+
+
+def _watch_cublas_workspaces():
+    # Inductor's CUDA graph trees (block CUDA graphs in training, mode="reduce-overhead") free the cuBLAS
+    # workspaces around every recording; a kept decode graph would then write memory training reuses.
+    clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
+    if clear is None or getattr(clear, "_unsloth_decode_graphs", False):
+        return
+
+    def cleared(*args, **kwargs):
+        workspaces_cleared()
+        return clear(*args, **kwargs)
+
+    cleared._unsloth_decode_graphs = True
+    try:
+        torch._C._cuda_clearCublasWorkspaces = cleared
+    except Exception:
+        pass
+
+
+_watch_cublas_workspaces()
+
+
 # Need = CALIB_WORK x (KV + prefill work) + CALIB_GRAPH_KV x KV. Calibrated on Qwen3-4B QLoRA bs16 x 2048,
 # T4: eager peaked 1.14x the estimate; graph capture OOMed at ~12 GiB free (~0.26 x KV extra).
 CALIB_WORK = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_WORK", "1.15"))

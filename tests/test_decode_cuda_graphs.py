@@ -261,6 +261,7 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
 def test_kept_graphs_replay_updated_adapters_after_optimizer_steps(stale, monkeypatch):
     """RL loop (decode, LoRA train step, decode, ...) with the graphs kept through training: no capture after
     the first round, and every round's graph decode is bit for bit the eager decode of the updated adapters.
+    Freed cuBLAS workspaces (Inductor CUDA graph trees in training) re-capture the next round.
     stale: the decode casts are re-made (new addresses) behind a pinned fingerprint, so the kept graphs read
     the old cast copies; the comparison must catch it."""
     monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", "1")
@@ -289,8 +290,10 @@ def test_kept_graphs_replay_updated_adapters_after_optimizer_steps(stale, monkey
         loss.backward()
         opt.step()
         opt.zero_grad(set_to_none = True)
+        if r == 1:
+            torch._C._cuda_clearCublasWorkspaces()
     assert not stale
-    assert captures == [1, 0, 0], captures
+    assert captures == [1, 0, 1], captures
 
 
 @cuda

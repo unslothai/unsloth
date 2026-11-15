@@ -756,3 +756,18 @@ def test_nothing_to_keep_releases(G, monkeypatch):
     model = _Model()
     model.keep(4, 512)  # buffers, no graph
     assert G.keep_for_training(model) is False
+
+
+def test_freed_cublas_workspaces_invalidate_every_graph(G, monkeypatch):
+    # Inductor's CUDA graph trees free the cuBLAS workspaces captured decode steps wrote into.
+    calls = []
+    monkeypatch.setattr(
+        torch._C, "_cuda_clearCublasWorkspaces", lambda: calls.append(1), raising = False
+    )
+    G._watch_cublas_workspaces()
+    buffers, weights = G.BUFFER_EPOCH, G.WEIGHTS_EPOCH
+    torch._C._cuda_clearCublasWorkspaces()
+    assert calls == [1] and G.BUFFER_EPOCH == buffers + 1 and G.WEIGHTS_EPOCH == weights + 1
+    G._watch_cublas_workspaces()  # wraps once
+    torch._C._cuda_clearCublasWorkspaces()
+    assert calls == [1, 1] and G.BUFFER_EPOCH == buffers + 2
