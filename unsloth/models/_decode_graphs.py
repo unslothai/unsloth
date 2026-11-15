@@ -9,7 +9,11 @@ attends over a fixed span of cache rows (the next power of two >= the KV length,
 most the cache) with a device-side keep mask, so no eager launch is left between the layers. Rows past
 the true length are masked to -inf, so the result matches the eager step up to the summation order of
 the softmax / PV reductions (not bit for bit); one graph is captured per (batch size, span). Only
-batch 1 by default (UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ): larger batches keep the segmented capture."""
+batch 1 by default (UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ): larger batches keep the segmented capture.
+
+Graphs read weights and LoRA decode casts by address, so an optimizer step (in place) does not re-capture.
+UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING: whether graphs and their buffers stay through a training step:
+auto (default) when that fits the memory a measured training step left free, 1 always, 0 never."""
 
 import math
 import os
@@ -414,6 +418,7 @@ def decode_batch_used(model):
 _OOM_WARNED = False
 EAGER_REDOS = 0
 HELD = "_unsloth_decode_held"
+KEEP_CASTS = "_unsloth_decode_keep_casts"
 
 
 def generate_with_fallback(model, generate, graphs, args, kwargs):
@@ -440,7 +445,7 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
             "and buffers and decoded this call eagerly (UNSLOTH_DECODE_CUDA_GRAPHS=0 always decodes eagerly).",
             stacklevel = 3,
         )
-    release_for_training(model)
+    release_for_training(model, force = True)
     _empty_cache()
     EAGER_REDOS += 1
     with eager_scope():
@@ -477,10 +482,9 @@ def keep_only(model, bsz = None):
 
 def release_if_training(model):
     """Run from the training forward: training can resume without for_training() (e.g. sampling in a
-    trainer callback), so this is the only place guaranteed to free kept graphs."""
+    trainer callback), so this is the only place guaranteed to free kept graphs (unless kept_for_training)."""
     if model.__dict__.pop(HELD, False):
-        release_for_training(model)
-        return True
+        return release_for_training(model)
     return False
 
 
@@ -693,6 +697,8 @@ class _ModelGraphs:
         self.replays = 0
         self.eager_steps = 0
         self.short_skips = 0
+        # K._OPTIMIZER_STEPS when training last took the decode memory back (keep_for_training).
+        self.released_at = None
 
     def clear(self):
         self.graphs.clear()
@@ -748,6 +754,7 @@ def release(model):
     for module in model.modules():
         d = module.__dict__
         d.pop(HELD, None)
+        d.pop(KEEP_CASTS, None)
         state = d.get("_unsloth_decode_graphs")
         if state is not None:
             found = True
@@ -767,15 +774,105 @@ def release(model):
         BUFFER_EPOCH += 1
 
 
-def release_for_training(model):
+def release_for_training(model, force = False):
     """release(), plus the eager decode buffers the last generate() left on the attention modules:
-    the next prefill allocates fresh ones, so training gets the KV cache memory back."""
-    release(model)
+    the next prefill allocates fresh ones, so training gets the KV cache memory back. Unless `force`, the
+    graphs and their buffers stay when keep_for_training() allows it (only the eager buffers go then).
+    Returns whether the graphs were released."""
+    keep = not force and keep_for_training(model)
+    # for_training() drops the LoRA decode casts unless this is set: kept graphs read them.
+    model.__dict__[KEEP_CASTS] = keep
+    if not keep:
+        steps = _optimizer_steps()
+        for state in _all_states(model):
+            # The next training step runs without the decode memory: its peak is what auto mode weighs.
+            state.released_at = steps
+        release(model)
     for module in model.modules():
         d = module.__dict__
         if "paged_attention" in d:
+            # Kept graphs keep their buffers through the store (the next prefill points these back at them);
+            # the training forward then sees the module as it does after a release (same compiled block).
             for name in _BUFFER_NAMES:
                 d.pop(name, None)
+    return not keep
+
+
+# Graphs + decode buffers through a training step: "0" never (frees them, as before), "1" always,
+# "auto" (default) only after a training step ran without them and its peak plus their bytes fits in
+# KEEP_FREE_FRACTION of the free memory.
+KEEP_FREE_FRACTION = float(os.environ.get("UNSLOTH_DECODE_GRAPHS_KEEP_FREE_FRACTION", "0.5"))
+KEEP_DECISIONS = {"kept": 0, "released": 0}
+
+
+def _optimizer_steps():
+    try:
+        from ..kernels import utils as K
+    except ImportError:
+        return None
+    return K._OPTIMIZER_STEPS
+
+
+def _all_states(model):
+    for module in model.modules():
+        d = module.__dict__
+        for name in ("_unsloth_decode_graphs", "_unsloth_generic_decode_graphs"):
+            state = d.get(name)
+            if state is not None:
+                yield state
+
+
+def _held(model):
+    """(bytes, device) of what kept graphs address: graph decode buffers and kept StaticCaches."""
+    total, device, seen = 0, None, set()
+
+    def add(t):
+        nonlocal total, device
+        if isinstance(t, torch.Tensor) and t.is_cuda:
+            key = (t.untyped_storage().data_ptr(), t.device)
+            if key not in seen:
+                seen.add(key)
+                total += t.untyped_storage().nbytes()
+                device = t.device
+
+    for module in model.modules():
+        d = module.__dict__
+        for bufs in (d.get("_unsloth_graph_buffers") or {}).values():
+            for t in bufs:
+                add(t)
+        generic = d.get("_unsloth_generic_decode_graphs")
+        kept = getattr(generic, "kept", None)
+        for layer in getattr(kept, "layers", ()) or ():
+            for value in vars(layer).values():
+                add(value)
+    return total, device
+
+
+def keep_for_training(model):
+    """Whether captured decode graphs (and the buffers they read) may stay through the next training step."""
+    mode = os.environ.get("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", "auto")
+    if mode == "0" or not any(getattr(state, "graphs", None) for state in _all_states(model)):
+        return False
+    try:
+        held, device = _held(model)
+        if device is None:
+            return False
+        if mode == "1":
+            KEEP_DECISIONS["kept"] += 1
+            return True
+        steps = _optimizer_steps()
+        released = [getattr(state, "released_at", None) for state in _all_states(model)]
+        if steps is None or not any(r is not None and steps > r for r in released):
+            # No training step without the decode memory seen yet: nothing to weigh.
+            KEEP_DECISIONS["released"] += 1
+            return False
+        allocated, _, peak = _allocator(device)
+        # Training needs (peak - allocated + held) beyond what is allocated now (it last ran without them).
+        fits = peak - allocated + held <= KEEP_FREE_FRACTION * _free_bytes(device)
+    except Exception:
+        fits = False
+    KEEP_DECISIONS["kept" if fits else "released"] += 1
+    return fits
 
 
 def _version(t):
@@ -784,6 +881,22 @@ def _version(t):
     if t.is_inference():
         return (t.data_ptr(), None)
     return (t.data_ptr(), t._version)
+
+
+def _ident(t):
+    """What a captured step bakes in about a tensor: its address, dtype and shape (not its values)."""
+    if t is None or not isinstance(t, torch.Tensor):
+        return None
+    return (t.data_ptr(), t.dtype, tuple(t.shape))
+
+
+def _projections(layers):
+    for layer in layers:
+        for owner in (layer.self_attn, getattr(layer, "mlp", None)):
+            for name in _PROJ_NAMES:
+                proj = getattr(owner, name, None)
+                if proj is not None:
+                    yield proj
 
 
 def _fingerprint(model, layers, rope_len):
@@ -821,8 +934,8 @@ def _fingerprint(model, layers, rope_len):
                     (
                         W.data_ptr(),
                         absmax.data_ptr() if isinstance(absmax, torch.Tensor) else id(W_quant),
-                        _version(A),
-                        _version(B),
+                        _ident(A),
+                        _ident(B),
                         S,
                         bias.data_ptr() if bias is not None else None,
                         None if cast is None else (cast[1].data_ptr(), cast[2].data_ptr()),
@@ -840,7 +953,8 @@ def _fingerprint(model, layers, rope_len):
     if adapters is None:
         return None
     items.extend(adapters)
-    items.append(K._OPTIMIZER_STEPS)
+    # No version / optimizer-step counter: graphs read weights by address, so an in-place update (optimizer
+    # step, adapter edit) replays correctly once refresh_lora_casts() brought the decode casts up to date.
     items.append(WEIGHTS_EPOCH)
     return tuple(items)
 
@@ -1053,6 +1167,9 @@ def decode_step(
         if reason is not None:
             state.disabled = reason
             return None
+        # Adapters may have moved (optimizer step, in-place edit): the decode casts the graphs read are
+        # updated in place; one that had to be re-made changes the fingerprint below (re-capture).
+        K.refresh_lora_casts(_projections(layers))
         fingerprint = _fingerprint(model, layers, rope_len)
         if fingerprint is None:
             # Ineligible for this generation only (several / non-CUDA devices, or a DoRA / non-LoRA

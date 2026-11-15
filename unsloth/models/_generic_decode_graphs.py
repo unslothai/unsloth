@@ -736,6 +736,8 @@ class _State:
         self.kept_len = None
         self.hook = None
         self.owner = None
+        # K._OPTIMIZER_STEPS when training last took the decode memory back (G.keep_for_training).
+        self.released_at = None
         self.kept_calls = 0
         self.active = False
         self.unreplayed = 0
@@ -833,7 +835,12 @@ def _release_if_training(module, args):
     if torch.compiler.is_compiling():
         return
     if module.training and torch.is_grad_enabled():
-        release(module)
+        if not G.release_for_training(module):
+            # Kept for training (G.keep_for_training): decided once, not per training forward.
+            state = module.__dict__.get(_ATTR)
+            if state is not None and state.hook is not None:
+                state.hook.remove()
+                state.hook = None
 
 
 def _cache_batch(cache):
@@ -1672,11 +1679,9 @@ def _multidevice_reason(model, devices):
 
 
 def _fingerprint(model, state = None):
-    """Parameters (address, dtype, shape, in-place version), quant state and adapter state; None
-    when the model is not on CUDA cards only, or is split over cards in a way this path does not
-    graph (offload, other hooks). `state` gets the other cards of a split model and the refusal."""
-    from ..kernels import utils as K
-
+    """Parameters (address, dtype, shape), quant state and adapter state; None when the model is not
+    on CUDA cards only, or is split over cards in a way this path does not graph (offload, other hooks).
+    `state` gets the other cards of a split model and the refusal."""
     items = []
     host = _offloaded_input_embedding(model)
     # Its weights stay fingerprinted, by identity too (a swapped table re-captures); only their device is exempt.
@@ -1684,7 +1689,8 @@ def _fingerprint(model, state = None):
     for p in model.parameters():
         if id(p) in exempt:
             items.append(id(p))
-        items.append((p.data_ptr(), p.dtype, tuple(p.shape), G._version(p)))
+        # Address, not version: a graph reads the live tensor, so an in-place update (optimizer step) replays.
+        items.append((p.data_ptr(), p.dtype, tuple(p.shape)))
     devices = _param_devices(model)
     if not devices or any(d.type != _BACKEND.device_type for d in devices):
         if state is not None:
@@ -1724,7 +1730,6 @@ def _fingerprint(model, state = None):
             state.fp_reason = "not one CUDA device / adapters"
         return None
     items.extend(adapters)
-    items.append(K._OPTIMIZER_STEPS)
     items.append(G.WEIGHTS_EPOCH)
     return tuple(items)
 

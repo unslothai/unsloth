@@ -213,8 +213,9 @@ def test_shift_labels_decode_loss(monkeypatch):
 @pytest.mark.parametrize("stale_control", [False, True])
 def test_lora_change_between_generations_recaptures(name, stale_control, monkeypatch):
     """GRPO: an optimizer step, then an in-place adapter edit, then a disabled adapter between
-    decode runs. stale_control pins the fingerprint, so the old graphs replay: proves the check is
-    what keeps the graph path on the live adapter."""
+    decode runs. stale_control re-makes the decode casts (new addresses, as before they were refreshed
+    in place) and pins the fingerprint, so the old graphs replay their old casts: proves the in-place
+    refresh / fingerprint is what keeps the graph path on the live adapter."""
     model, tok = _load(name, False, lora = True)
     enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
     ids = enc.input_ids
@@ -223,6 +224,7 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
     if stale_control:
         pinned = G._state(_causal(model)).fingerprint
         monkeypatch.setattr(G, "_fingerprint", lambda *a: pinned)
+        monkeypatch.setattr(kernel_utils, "_refresh_lora_cast", lambda *a: False)
     params = [p for n, p in model.named_parameters() if "lora_" in n and p.requires_grad]
     # for_training() frees the graphs; keep them here, so the fingerprint alone must catch the edits.
     monkeypatch.setattr(G, "release_for_training", lambda model: None)
@@ -251,6 +253,44 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
             _manual_loop(model, ids, False, monkeypatch),
             _manual_loop(model, ids, True, monkeypatch),
         )
+
+
+@cuda
+@pytest.mark.gpu
+@pytest.mark.parametrize("stale", [False, True])
+def test_kept_graphs_replay_updated_adapters_after_optimizer_steps(stale, monkeypatch):
+    """RL loop (decode, LoRA train step, decode, ...) with the graphs kept through training: no capture after
+    the first round, and every round's graph decode is bit for bit the eager decode of the updated adapters.
+    stale: the decode casts are re-made (new addresses) behind a pinned fingerprint, so the kept graphs read
+    the old cast copies; the comparison must catch it."""
+    monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", "1")
+    model, tok = _load(MODELS[1], False, lora = True)
+    ids = tok(PROMPTS[:2], return_tensors = "pt", padding = True).input_ids.to("cuda")
+    causal = _causal(model)
+    params = [p for n, p in model.named_parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(params, lr = 1e-2, fused = True)
+    captures = []
+    for r in range(3):
+        FastLanguageModel.for_inference(model)
+        eager = _manual_loop(model, ids, False, monkeypatch)
+        before = G.stats(causal).get("captures", 0)
+        graph = _manual_loop(model, ids, True, monkeypatch)
+        captures.append(G.stats(causal)["captures"] - before)
+        if stale and r > 0:
+            assert not torch.equal(eager, graph)
+            return
+        assert torch.equal(eager, graph), r
+        if stale and r == 0:
+            pinned = G._state(causal).fingerprint
+            monkeypatch.setattr(G, "_fingerprint", lambda *a: pinned)
+            monkeypatch.setattr(kernel_utils, "_refresh_lora_cast", lambda *a: False)
+        FastLanguageModel.for_training(model)
+        loss = model(input_ids = ids, labels = ids).loss
+        loss.backward()
+        opt.step()
+        opt.zero_grad(set_to_none = True)
+    assert not stale
+    assert captures == [1, 0, 0], captures
 
 
 @cuda

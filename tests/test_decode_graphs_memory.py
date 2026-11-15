@@ -685,3 +685,74 @@ def test_cache_growth_cap_uses_the_planned_length():
     assert args["start_generation"][0].id == "plan_len"
     assert args["short_call"][1].id == "plan_len"
     assert args["plan_call"][4].id == "plan_len"
+
+
+def _graphed(
+    G,
+    model,
+    bsz = 4,
+):
+    model.keep(bsz, 512)
+    G._state(model).graphs[(bsz,)] = object()
+    model.__dict__[G.HELD] = True
+
+
+def _keep_env(
+    G,
+    monkeypatch,
+    steps,
+    peak = 5 * GB,
+    allocated = 2 * GB,
+    free = 10 * GB,
+):
+    monkeypatch.setattr(G, "_held", lambda model: (GB, CUDA0))
+    monkeypatch.setattr(G, "_optimizer_steps", lambda: steps[0])
+    monkeypatch.setattr(G, "_allocator", lambda device: (allocated, 0, peak))
+    monkeypatch.setattr(G, "_free_bytes", lambda device: free)
+
+
+def test_auto_keeps_graphs_through_training_only_after_a_measured_step(G, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", raising = False)
+    steps = [0]
+    _keep_env(G, monkeypatch, steps)
+    model = _Model()
+    _graphed(G, model)
+    # No training step seen without the decode memory: release, as before.
+    assert G.release_for_training(model) is True
+    assert model.held() == 0 and not G._state(model).graphs
+    steps[0] += 1
+    _graphed(G, model)
+    # Training needs peak - allocated + held = 4 GB <= half of the 10 GB free: keep graphs and buffers.
+    assert G.release_for_training(model) is False
+    assert model.held() == 1 and G._state(model).graphs
+    # The store holds the buffers; the training forward sees no decode attributes (as after a release).
+    assert not any("paged_attention" in a.__dict__ for a in model.attns)
+    assert model.__dict__[G.KEEP_CASTS] is True
+    # The training forward asks again; still kept.
+    assert G.release_if_training(model) is False and G._state(model).graphs
+    # Less headroom: released.
+    monkeypatch.setattr(G, "_free_bytes", lambda device: 7 * GB)
+    assert G.release_for_training(model) is True
+    assert model.held() == 0 and G.KEEP_CASTS not in model.__dict__
+
+
+@pytest.mark.parametrize("mode, kept", [("0", False), ("1", True)])
+def test_keep_for_training_modes(G, monkeypatch, mode, kept):
+    monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", mode)
+    _keep_env(G, monkeypatch, [0], free = 0)
+    model = _Model()
+    _graphed(G, model)
+    assert G.release_for_training(model) is (not kept)
+    assert bool(G._state(model).graphs) is kept
+    # force (the OOM redo) always frees.
+    _graphed(G, model)
+    assert G.release_for_training(model, force = True) is True
+    assert model.held() == 0 and not G._state(model).graphs
+
+
+def test_nothing_to_keep_releases(G, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", "1")
+    _keep_env(G, monkeypatch, [0])
+    model = _Model()
+    model.keep(4, 512)  # buffers, no graph
+    assert G.keep_for_training(model) is False

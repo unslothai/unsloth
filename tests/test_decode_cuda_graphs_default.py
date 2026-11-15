@@ -196,15 +196,19 @@ def test_generate_scope_turns_graphs_on(runtime):
 
 
 @rl_default
-def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path):
+@pytest.mark.parametrize("keep", ["0", "1"])
+def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path, keep):
     """A real GRPOTrainer step: its generate() runs graphed with the variable unset, completions
-    match the eager rollout, and the decode buffers are gone before the loss is computed."""
+    match the eager rollout, and the decode buffers are gone before the loss is computed (keep=0).
+    keep=1: the graphs and their store stay through training (only the attention attributes go), and
+    the second step replays without a capture."""
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
+    runtime.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", keep)
     model, tok = _load()
     rows = [{"prompt": p} for p in PROMPTS * 4]
-    seen = {"replays": [], "buffers_at_loss": []}
+    seen = {"replays": [], "buffers_at_loss": [], "captures": []}
 
     def reward(completions, **kw):
         return [float(len(c)) for c in completions]
@@ -225,16 +229,23 @@ def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path):
     gen = getattr(trainer, hook)
 
     def recorded(*a, **k):
-        before = _Stats(model)().get("replays", 0)
+        before = _Stats(model)()
         out = gen(*a, **k)
-        seen["replays"].append(_Stats(model)().get("replays", 0) - before)
-        seen["buffers_at_loss"].append((_graph_buffers(model), _decode_buffers(model)))
+        after = _Stats(model)()
+        seen["replays"].append(after.get("replays", 0) - before.get("replays", 0))
+        seen["captures"].append(after.get("captures", 0) - before.get("captures", 0))
+        seen["buffers_at_loss"].append((_graph_buffers(model) > 0, _decode_buffers(model)))
         return out
 
     setattr(trainer, hook, recorded)
     trainer.train()
     assert len(seen["replays"]) == 2 and all(r > 0 for r in seen["replays"]), seen
-    assert seen["buffers_at_loss"] == [(0, 0), (0, 0)], seen
+    if keep == "0":
+        assert seen["buffers_at_loss"] == [(False, 0), (False, 0)], seen
+        assert seen["captures"] == [1, 1], seen
+    else:
+        assert seen["buffers_at_loss"] == [(True, 0), (True, 0)], seen
+        assert seen["captures"] == [1, 0], seen
     assert _Stats(model)()["disabled"] is None
 
 
