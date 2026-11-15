@@ -23,7 +23,7 @@ import sys
 from collections import OrderedDict
 from collections.abc import Mapping
 from functools import wraps
-from typing import Any, Iterable, Optional, Sequence, Tuple
+from typing import Any, Iterable, NamedTuple, Optional, Sequence, Tuple
 
 import torch
 
@@ -52,6 +52,19 @@ _XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
+
+# Set by attention_dispatch.prepare_packed_block in place of packed_seq_lengths for a compiled block:
+# (cu_seqlens covering the pad tail, a tensor whose length is max_seqlen), both marked dynamic.
+PACKED_BLOCK_KWARG = "_unsloth_packed_varlen"
+
+
+class PackedVarlen(NamedTuple):
+    """seq_info of a prepared packed row: nothing in it needs a host read."""
+
+    lengths: torch.Tensor
+    cu_seqlens: torch.Tensor
+    max_seqlen: Any
+
 
 # Per device: (lengths, cu_seqlens, host tuple) from the one D2H read in get_packed_info_from_kwargs
 _PACKED_HOST_LENGTHS_CACHE: dict = {}
@@ -1879,6 +1892,10 @@ def get_packed_info_from_kwargs(
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, int]]:
     """Return packed metadata, optionally inferring a mask-free prefill's boundaries."""
 
+    prepared = kwargs.get(PACKED_BLOCK_KWARG)
+    if prepared is not None:
+        cu_seqlens, carrier = prepared
+        return PackedVarlen(cu_seqlens[1:] - cu_seqlens[:-1], cu_seqlens, carrier.shape[0])
     seq_lengths = kwargs.get("packed_seq_lengths")
     if seq_lengths is None:
         # Callers must exclude padding masks and cached decoding before opting in.
@@ -1985,6 +2002,8 @@ def cover_padded_cu_seqlens(
     seq_info: Tuple[torch.Tensor, torch.Tensor, int], total_tokens: int
 ) -> Tuple[torch.Tensor, int]:
     """Flash varlen leaves rows past cu_seqlens[-1] unwritten, so the pad tail gets a segment."""
+    if isinstance(seq_info, PackedVarlen):
+        return seq_info.cu_seqlens, seq_info.max_seqlen
     _, cu_seqlens, max_seqlen = seq_info
     device = cu_seqlens.device
     entry = _PADDED_CU_SEQLENS_CACHE.get(device)

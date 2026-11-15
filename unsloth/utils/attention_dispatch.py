@@ -30,11 +30,14 @@ from ..models._utils import *
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
 from ..utils.packing import (
+    PACKED_BLOCK_KWARG,
+    PackedVarlen,
     _built_in_inference_mode,
     _cache_hit,
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
     cover_padded_cu_seqlens,
+    get_packed_info_from_kwargs,
     move_xformers_attention_bias,
     packed_block_mask,
     packed_segment_lengths,
@@ -1357,6 +1360,205 @@ def is_context_parallel_attention(forward, rl = False) -> bool:
     return isinstance(mark, dict) and (not rl or mark["rl"])
 
 
+# flash-attn 2.7+ registers torch custom ops, so its varlen call traces inside a compiled block.
+_FLASH_ATTN_VARLEN_TRACES = flash_attn_varlen_func is not None and hasattr(
+    getattr(torch.ops, "flash_attn", None), "_flash_attn_varlen_forward"
+)
+# compiled: decoder-block calls prepared for a compiled block; eager: packed calls left to the stock forward.
+PACKED_BLOCK_STATS = {"compiled": 0, "eager": 0}
+_PACKED_BLOCK_PREP = [None]
+
+
+_PACKED_VARLEN_OK = {}
+
+
+def _packed_varlen_ok_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
+    """aten's flash varlen runs this shape here: one real forward and backward, cached."""
+    key = (device_index, dtype, head_dim, n_heads, n_kv_heads, window)
+    if key not in _PACKED_VARLEN_OK:
+        from .flash_impl import flash_impl_allows
+        from .hf_packed_attention import _flash_varlen, _no_saved_tensor_hooks
+
+        ok = False
+        with torch.inference_mode(False), torch.enable_grad(), _no_saved_tensor_hooks():
+            try:
+                device = torch.device("cuda", device_index)
+                if (
+                    torch.version.hip is None
+                    and torch.cuda.get_device_capability(device)[0] >= 8
+                    and getattr(torch.backends.cuda, "is_flash_attention_available", lambda: True)()
+                    and flash_impl_allows(head_dim, window, device)
+                ):
+                    query = torch.zeros(1, n_heads, 16, head_dim, device = device, dtype = dtype)
+                    key_ = torch.zeros(1, n_kv_heads, 16, head_dim, device = device, dtype = dtype)
+                    query.requires_grad_()
+                    cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
+                    _flash_varlen(
+                        query, key_, key_, cu_seqlens, 9, 1.0, window
+                    ).float().sum().backward()
+                    ok = True
+            except Exception:
+                ok = False
+        _PACKED_VARLEN_OK[key] = ok
+    return _PACKED_VARLEN_OK[key]
+
+
+_packed_varlen_ok = _constant_probe(_packed_varlen_ok_eager)
+
+
+def _packed_block_kernel(layer, hidden_states) -> bool:
+    """A traceable varlen kernel exists for this layer's packed rows (host checks, eager)."""
+    attention = getattr(layer, "self_attn", None)
+    config = getattr(attention, "config", None)
+    if (
+        config is None
+        or any(hasattr(layer, name) for name in ("mamba", "linear_attn", "mixer"))
+        or getattr(config, "attn_logit_softcapping", None)
+        or _ring_attention_active()
+        or get_cp_manager() is not None
+        or _DEVICE_BACKENDS is not None
+        or torch.are_deterministic_algorithms_enabled()
+        or hidden_states.dtype not in (torch.float16, torch.bfloat16)
+    ):
+        return False
+    head_dim = getattr(attention, "head_dim", None)
+    n_heads = attention.__dict__.get(
+        "_unsloth_tp_heads", getattr(config, "num_attention_heads", None)
+    )
+    n_kv_heads = attention.__dict__.get(
+        "_unsloth_tp_kv_heads", getattr(config, "num_key_value_heads", None) or n_heads
+    )
+    if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
+        return False
+    backend = select_attention_backend(use_varlen = True)
+    if backend == FLASH_VARLEN and _FLASH_ATTN_VARLEN_TRACES:
+        return True
+    if backend not in (FLASH_VARLEN, SDPA) or head_dim > 256:
+        return False
+    window = getattr(config, "sliding_window", None)
+    window = window if isinstance(window, int) and window > 0 else None
+    index = hidden_states.device.index
+    return all(
+        _packed_varlen_ok_eager(index, hidden_states.dtype, head_dim, n_heads, n_kv_heads, w)
+        for w in {None, window}
+    )
+
+
+def prepare_packed_block(layer, hidden_states, kwargs):
+    """Eager, before _block_compile runs a FastLanguageModel decoder block on a packed row: kwargs
+    whose packed_seq_lengths become device cu_seqlens (pad tail covered) and a tensor of length
+    max_seqlen, both dynamic, so attention reads nothing from the host and one graph serves every
+    layout. None keeps the stock forward."""
+    seq_lengths = kwargs.get("packed_seq_lengths")
+    if (
+        not isinstance(seq_lengths, Tensor)
+        or seq_lengths.numel() == 0
+        or not isinstance(hidden_states, Tensor)
+        or not hidden_states.is_cuda
+        or hidden_states.dim() != 3
+        or hidden_states.shape[0] != 1
+        or kwargs.get("prefix_seg_info") is not None
+        or kwargs.get("attention_mask") is not None
+    ):
+        return None
+    total = hidden_states.shape[1]
+    device = hidden_states.device
+    key = (seq_lengths, seq_lengths._version, total, device, type(layer), hidden_states.dtype)
+    entry = _PACKED_BLOCK_PREP[0]
+    if entry is not None and entry[0] is seq_lengths and entry[1] == key[1:]:
+        prepared = entry[2]
+    else:
+        _PACKED_BLOCK_PREP[0] = None
+        prepared = None
+        if _packed_block_kernel(layer, hidden_states):
+            seq_info = get_packed_info_from_kwargs(kwargs, device)
+            if seq_info is not None and sum(packed_segment_lengths(seq_info)) <= total:
+                cu_seqlens, max_seqlen = cover_padded_cu_seqlens(seq_info, total)
+                attention = layer.self_attn
+                if _VARLEN_INT32_GUARD_DISABLED or not _varlen_backward_overflows_int32(
+                    cu_seqlens.numel() - 1,
+                    total,
+                    attention.__dict__.get(
+                        "_unsloth_tp_heads", attention.config.num_attention_heads
+                    ),
+                    attention.head_dim,
+                ):
+                    cu_seqlens = cu_seqlens.to(device = device, dtype = torch.int32)
+                    # 2+: a length of 1 would specialise; an upper bound is still exact for varlen.
+                    carrier = torch.empty(max(int(max_seqlen), 2), dtype = torch.uint8, device = device)
+                    torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+                    torch._dynamo.maybe_mark_dynamic(carrier, 0)
+                    prepared = (cu_seqlens, carrier)
+        _PACKED_BLOCK_PREP[0] = (seq_lengths, key[1:], prepared)
+    if prepared is None:
+        PACKED_BLOCK_STATS["eager"] += 1
+        return None
+    PACKED_BLOCK_STATS["compiled"] += 1
+    out = {k: v for k, v in kwargs.items() if k != "packed_seq_lengths"}
+    out[PACKED_BLOCK_KWARG] = prepared
+    return out
+
+
+def _packed_block_mask(cu_seqlens, total, sliding_window, is_causal, device):
+    """Block-diagonal (causal / windowed) bool mask from device cu_seqlens: no host read."""
+    position = torch.arange(total, device = device)
+    segment = torch.searchsorted(cu_seqlens[1:].to(torch.int64), position, right = True)
+    mask = segment[:, None] == segment[None, :]
+    if is_causal:
+        mask &= position[None, :] <= position[:, None]
+        if sliding_window is not None:
+            mask &= position[None, :] > position[:, None] - sliding_window
+    return mask[None, None]
+
+
+def _prepared_packed_attention(config, context, Q, K, V):
+    """Attention for a row prepared by prepare_packed_block, traced inside the compiled block."""
+    bsz, n_heads, q_len, head_dim = Q.shape
+    seq_info = context.seq_info
+    cu_seqlens, max_seqlen = seq_info.cu_seqlens, seq_info.max_seqlen
+    sliding_window = context.sliding_window
+    if sliding_window is not None and sliding_window <= 0:
+        sliding_window = None
+    if config.backend == FLASH_VARLEN and _FLASH_ATTN_VARLEN_TRACES:
+        Q_f, K_f, V_f = (
+            x.transpose(1, 2).reshape(bsz * q_len, x.shape[1], head_dim) for x in (Q, K, V)
+        )
+        flash_varlen_kwargs = config.flash_varlen_kwargs or {}
+        if not context.is_causal:
+            flash_varlen_kwargs = {**flash_varlen_kwargs, "causal": False}
+        return flash_attn_varlen_func(
+            Q_f, K_f, V_f, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **flash_varlen_kwargs
+        ).view(bsz, q_len, n_heads, head_dim)
+    sdpa_kwargs = config.sdpa_kwargs or {}
+    scale = sdpa_kwargs.get("scale")
+    if (
+        context.is_causal
+        and context.attention_mask is None
+        and Q.dtype in (torch.float16, torch.bfloat16)
+        and K.dtype == Q.dtype
+        and V.dtype == Q.dtype
+        and not (set(sdpa_kwargs) - {"scale", "dropout_p"})
+        and not sdpa_kwargs.get("dropout_p")
+        and head_dim <= 256
+    ):
+        from .hf_packed_attention import _flash_varlen
+        if _packed_varlen_ok(
+            Q.device.index, Q.dtype, head_dim, n_heads, K.shape[1], sliding_window
+        ):
+            if scale is None:
+                scale = head_dim**-0.5
+            return _flash_varlen(Q, K, V, cu_seqlens, max_seqlen, scale, sliding_window)
+    # Exact fallback: SDPA over the row's block-diagonal mask, built on the device.
+    mask = _packed_block_mask(cu_seqlens, q_len, sliding_window, context.is_causal, Q.device)
+    if K.shape[1] != n_heads:
+        K = K.repeat_interleave(n_heads // K.shape[1], dim = 1)
+        V = V.repeat_interleave(n_heads // V.shape[1], dim = 1)
+    out = F.scaled_dot_product_attention(
+        Q, K, V, attn_mask = mask, scale = scale, dropout_p = sdpa_kwargs.get("dropout_p", 0.0)
+    )
+    return out.transpose(1, 2)
+
+
 def run_attention(
     *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
 ) -> Tensor:
@@ -1396,6 +1598,9 @@ def _run_attention(
             scale = scale,
         )
         return A  # [1, T, n_heads, head_dim]
+
+    if isinstance(context.seq_info, PackedVarlen):
+        return _prepared_packed_attention(config, context, Q, K, V)
 
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
