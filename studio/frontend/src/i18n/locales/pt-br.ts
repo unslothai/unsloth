@@ -808,13 +808,9 @@ export const ptBR = {
     waitForResponse: "Aguarde a resposta atual terminar",
     noModel: "Carregue um modelo para usar /context",
     emptyChat: "Envie uma mensagem primeiro para usar /context",
-    noUsageYet: "Envie uma mensagem primeiro: modelos de API informam o uso de tokens a cada resposta.",
-    usedOnly: "{used} tokens usados",
-    totalOnly: "Este servidor retornou apenas o número total de tokens.",
     apiNoBreakdown: "Modelos de API informam apenas um total, então não há detalhamento.",
     showPrompt: "Mostrar prompt",
     hidePrompt: "Ocultar prompt",
-    copyPrompt: "Copiar",
   },
   // The chat header's "…" menu.
   chatMenu: {

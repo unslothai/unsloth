@@ -856,13 +856,9 @@ export const zhTW = {
     waitForResponse: "請等待目前的回應完成",
     noModel: "載入模型後才能使用 /context",
     emptyChat: "請先傳送訊息才能使用 /context",
-    noUsageYet: "請先傳送訊息：API 模型會在每次回覆時回報 token 用量。",
-    usedOnly: "已使用 {used} 個 token",
-    totalOnly: "此伺服器僅傳回了詞元總數。",
     apiNoBreakdown: "API 模型只回報總數，因此沒有細項。",
     showPrompt: "顯示提示詞",
     hidePrompt: "隱藏提示詞",
-    copyPrompt: "複製",
   },
   chatMenu: {
     more: "聊天選項",

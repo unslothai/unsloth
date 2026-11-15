@@ -447,7 +447,6 @@ export async function countChatInputTokens(payload: {
   auto_heal_tool_calls?: boolean;
   studio_tool_history?: boolean;
   run_tools_locally?: boolean;
-  /** /context: also split the total and return the rendered prompt, at two more renders. */
   breakdown?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
 }, serializedPayload = JSON.stringify(payload)): Promise<ChatCountTokensResponse> {
@@ -462,7 +461,6 @@ export async function countChatInputTokens(payload: {
 export interface ChatCountTokensResponse {
   input_tokens: number;
   model?: string;
-  // Present only when the request asked for `breakdown`.
   breakdown?: {
     system: number;
     tools: number;
@@ -470,9 +468,8 @@ export interface ChatCountTokensResponse {
     tool_names: string[];
   };
   context_length?: number | null;
-  /** Prompt size at which the server compacts; null when this chat would not compact. */
   compaction_budget?: number | null;
-  // Null where the backend cannot return the rendered text (MLX).
+  // Null on MLX.
   prompt?: string | null;
 }
 

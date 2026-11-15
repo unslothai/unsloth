@@ -7,10 +7,7 @@ import type {
   ProviderAuthKind,
   ProviderAuthStatus,
 } from "./api/providers-api";
-import {
-  modelCatalogSupportsVision,
-  resolveModelCatalogEntry,
-} from "./model-catalog.ts";
+import { modelCatalogSupportsVision } from "./model-catalog.ts";
 import { normalizeAutoCompactTokens } from "./utils/auto-compaction.ts";
 import {
   type CustomReasoningConfig,
@@ -379,21 +376,6 @@ export function externalModelSupportsStudioTools(
   return (
     providerModelSupportsStudioTools(provider.providerType, selection.modelId) === true
   );
-}
-
-/** The catalogued context window of the model behind an `external::` id, when published. */
-export function externalModelContextLength(
-  checkpoint: string | null | undefined,
-): number | null {
-  const selection = parseExternalModelId(checkpoint);
-  if (!selection) return null;
-  const provider = loadExternalProviders().find(
-    (candidate) => candidate.id === selection.providerId,
-  );
-  return provider
-    ? (resolveModelCatalogEntry(provider.providerType, selection.modelId)
-        ?.contextLength ?? null)
-    : null;
 }
 
 export function externalModelTakesVideo(

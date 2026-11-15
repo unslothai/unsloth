@@ -860,13 +860,9 @@ export const th = {
     waitForResponse: "รอให้คำตอบปัจจุบันเสร็จก่อน",
     noModel: "โหลดโมเดลเพื่อใช้ /context",
     emptyChat: "ส่งข้อความก่อนเพื่อใช้ /context",
-    noUsageYet: "ส่งข้อความก่อน: โมเดล API จะรายงานการใช้โทเค็นพร้อมกับทุกคำตอบ",
-    usedOnly: "ใช้ไป {used} โทเค็น",
-    totalOnly: "เซิร์ฟเวอร์นี้ส่งกลับเฉพาะจำนวนโทเค็นทั้งหมด",
     apiNoBreakdown: "โมเดล API รายงานเฉพาะยอดรวม จึงไม่มีรายละเอียดแยก",
     showPrompt: "แสดงพรอมต์",
     hidePrompt: "ซ่อนพรอมต์",
-    copyPrompt: "คัดลอก",
   },
   chatMenu: {
     more: "ตัวเลือกแชท",

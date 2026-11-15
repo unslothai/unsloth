@@ -808,13 +808,9 @@ export const hi = {
     waitForResponse: "मौजूदा जवाब पूरा होने तक प्रतीक्षा करें",
     noModel: "/context इस्तेमाल करने के लिए कोई मॉडल लोड करें",
     emptyChat: "/context इस्तेमाल करने के लिए पहले एक संदेश भेजें",
-    noUsageYet: "पहले एक संदेश भेजें: API मॉडल हर जवाब के साथ टोकन का इस्तेमाल बताते हैं।",
-    usedOnly: "{used} टोकन इस्तेमाल हुए",
-    totalOnly: "इस सर्वर ने केवल टोकन की कुल संख्या लौटाई।",
     apiNoBreakdown: "API मॉडल केवल कुल संख्या बताते हैं, इसलिए कोई विवरण नहीं है।",
     showPrompt: "प्रॉम्प्ट दिखाएँ",
     hidePrompt: "प्रॉम्प्ट छिपाएँ",
-    copyPrompt: "कॉपी करें",
   },
   // The chat header's "…" menu.
   chatMenu: {

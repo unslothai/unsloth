@@ -808,13 +808,9 @@ export const ar = {
     waitForResponse: "انتظر حتى ينتهي الرد الحالي",
     noModel: "حمّل نموذجًا لاستخدام /context",
     emptyChat: "أرسل رسالة أولاً لاستخدام /context",
-    noUsageYet: "أرسل رسالة أولًا: تُبلغ نماذج API عن استخدام التوكنات مع كل رد.",
-    usedOnly: "{used} توكن مستخدم",
-    totalOnly: "أعاد هذا الخادم إجمالي عدد الرموز فقط.",
     apiNoBreakdown: "تُبلغ نماذج API عن الإجمالي فقط، لذا لا يوجد تفصيل.",
     showPrompt: "إظهار الموجّه",
     hidePrompt: "إخفاء الموجّه",
-    copyPrompt: "نسخ",
   },
   // The chat header's "…" menu.
   chatMenu: {

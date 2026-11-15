@@ -809,13 +809,9 @@ export const ja = {
     waitForResponse: "現在の応答が終わるまでお待ちください",
     noModel: "/context を使うにはモデルを読み込んでください",
     emptyChat: "/context を使うには、まずメッセージを送信してください",
-    noUsageYet: "先にメッセージを送ってください。API モデルは応答ごとにトークン使用量を報告します。",
-    usedOnly: "{used} トークン使用",
-    totalOnly: "このサーバーは合計トークン数のみを返しました。",
     apiNoBreakdown: "API モデルは合計のみを報告するため、内訳はありません。",
     showPrompt: "プロンプトを表示",
     hidePrompt: "プロンプトを隠す",
-    copyPrompt: "コピー",
   },
   // The chat header's "…" menu.
   chatMenu: {

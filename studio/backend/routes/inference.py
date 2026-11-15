@@ -43687,7 +43687,7 @@ async def _mlx_count_chat_tokens(
         )
     # The id /status publishes as model_identifier (the raw active name, a local folder or
     # snapshot path included): the client drops a count naming any other checkpoint.
-    # No rendered text: the MLX count tokenizes in the worker and returns only the total.
+    # The MLX worker returns only the total, no rendered prompt.
     return _count_response(
         payload,
         count,
@@ -43699,17 +43699,13 @@ async def _mlx_count_chat_tokens(
 
 
 def _count_breakdown(count, messages: list[dict], tools) -> tuple[int, dict]:
-    """Attribute marginal token costs on the conversation the model actually renders.
-
-    Messages include the template's default framing. A template may get longer when an
-    instruction or catalog is removed, so cap each marginal cost at the remaining total.
-    """
+    """Marginal costs of tools and history; messages carry the template framing. Each is capped
+    at what remains, since a template can grow when an instruction or catalog is removed."""
     total = count(messages, tools)
     without_tools = count(messages, None) if tools else total
     tool_tokens = max(0, total - without_tools)
     remainder = total - tool_tokens
     history = [m for m in messages if m.get("role") not in ("system", "developer")]
-    # A system-only request has no conversation to attribute.
     message_tokens = min(remainder, count(history, None, include_system = False)) if history else 0
     return total, {
         "system": remainder - message_tokens,
@@ -43720,8 +43716,7 @@ def _count_breakdown(count, messages: list[dict], tools) -> tuple[int, dict]:
 
 
 def _without_tool_nudge(text: str, nudge: str) -> str:
-    """``text`` without the tool nudge, so a breakdown counts the nudge under the tools that
-    added it. A no-op for an empty nudge."""
+    """``text`` without the tool nudge, which a breakdown counts under Tools."""
     if not nudge:
         return text
     if "\n\n" + nudge in text:
@@ -43745,7 +43740,6 @@ def _count_response(
         content.update(
             breakdown = parts,
             context_length = context_length,
-            # Where the fitter starts compacting, only when this request would let it.
             compaction_budget = prompt_budget(context_length, payload.max_tokens)
             if context_length and not passthrough and _rolling_context_policy(payload) is not None
             else None,
@@ -43834,7 +43828,7 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
             messages = fitted
     if not payload.breakdown:
         return count_tokens(messages), None, None
-    # Only the fitted prompt's first render is kept: the fitter's trial renders never reach here.
+    # The first render is the full prompt.
     rendered: dict = {}
 
     def without_nudge(candidate):
@@ -43844,7 +43838,6 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
             if message.get("role") in ("system", "developer") and isinstance(content, str):
                 stripped = _without_tool_nudge(content, nudge)
                 if stripped != content:
-                    # A turn that held only the nudge is not there without tools.
                     if not stripped:
                         continue
                     message = {**message, "content": stripped}

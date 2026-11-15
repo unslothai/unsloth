@@ -5778,7 +5778,7 @@ const Composer: FC<{
         });
         return;
       }
-      // Only shows a count under the last message: the conversation and the next request are untouched.
+      // Never sent: only a card under the last message.
       if (!overlay && !hasAttachments && isContextCommand(composerText)) {
         event.preventDefault();
         const runtime = useChatRuntimeStore.getState();
@@ -5791,16 +5791,15 @@ const Composer: FC<{
           toast.error(translate("context.waitForResponse"));
           return;
         }
-        // An API model reports its usage per reply; a local one needs to be loaded to count.
-        if (
-          !runtime.params.checkpoint ||
-          (!isExternalModelId(runtime.params.checkpoint) &&
-            runtime.loadedContextLength == null)
-        ) {
+        // No local tokenizer: the header ring already shows the provider's total.
+        if (isExternalModelId(runtime.params.checkpoint)) {
+          toast.info(translate("context.apiNoBreakdown"));
+          return;
+        }
+        if (!runtime.params.checkpoint || runtime.loadedContextLength == null) {
           toast.info(translate("context.noModel"));
           return;
         }
-        // An empty chat has no message to hang the report under, so it would float below the welcome.
         if (aui.thread().getState().messages.length === 0) {
           toast.info(translate("context.emptyChat"));
           return;
@@ -5850,7 +5849,6 @@ const Composer: FC<{
           return;
         }
         requestThreadCompaction(referenceThreadId);
-        // The next request resets the context, so a /context report above is stale.
         useContextReportStore.getState().dismissContext();
         clearStoredDraft();
         aui.composer().setText("");
@@ -8756,7 +8754,6 @@ const RewindDialogMount: FC = () => {
   ) : null;
 };
 
-// Loaded on first use, like the rewind dialog.
 const LazyContextReport = lazy(() =>
   import("@/components/assistant-ui/context-report").then((module) => ({
     default: module.ContextReport,

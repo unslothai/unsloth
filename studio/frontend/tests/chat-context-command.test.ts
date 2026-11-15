@@ -9,9 +9,8 @@ import test from "node:test";
 import {
   deriveContextView,
   isContextCommand,
-  usagePercent,
 } from "../src/features/chat/utils/context-command.ts";
-import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
+import { readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 test("only the bare /context command matches", () => {
@@ -325,11 +324,6 @@ test("/context counts a compacted GGUF chat, whose count is of the fitted prompt
   assert.equal(published.length, 1);
 });
 
-test("an API report treats a text-length estimate as no usage yet", () => {
-  const report = readSrc("components/assistant-ui/context-report.tsx");
-  assert.match(report, /stored\?\.estimated \? null : stored/);
-});
-
 test("/compact clears a /context report, whose numbers the reset makes stale", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(
@@ -365,55 +359,11 @@ test("the card shows only in the thread that asked, until a message lands after 
   assert.equal(shownContextReport(null, "pane-a", branch, "A"), null);
 });
 
-test("an API model's window comes from the catalogue entry of its saved connection", (t) => {
-  const asked: unknown[] = [];
-  const { externalModelContextLength } = loadWithStubs<{
-    externalModelContextLength: (checkpoint: string | null) => number | null;
-  }>(new URL("../src/features/chat/external-providers.ts", import.meta.url), {
-    "./model-catalog.ts": {
-      modelCatalogSupportsVision: () => false,
-      resolveModelCatalogEntry: (providerType: string, modelId: string) => {
-        asked.push([providerType, modelId]);
-        return { contextLength: 200_000 };
-      },
-    },
-    "./custom-reasoning.ts": {
-      normalizeCustomReasoningConfig: (value: unknown) => value,
-    },
-  });
-  const { storage } = installLocalStorageFake();
-  storage.setItem(
-    "unsloth_chat_external_providers",
-    JSON.stringify([
-      {
-        id: "c1",
-        providerType: "anthropic",
-        name: "Claude",
-        baseUrl: "",
-        models: [],
-      },
-    ]),
-  );
-  t.after(() => {
-    Reflect.deleteProperty(globalThis, "window");
-  });
-  Object.assign(globalThis, { window: globalThis });
-  assert.equal(externalModelContextLength("external::c1::claude-x"), 200_000);
-  assert.deepEqual(asked, [["anthropic", "claude-x"]]);
-  // A local model, or a connection that is gone, has no catalogued window.
-  assert.equal(externalModelContextLength("org/A-GGUF"), null);
-  assert.equal(externalModelContextLength("external::gone::claude-x"), null);
-});
-
-test("usage is a whole percent of the window, capped at 100", () => {
-  assert.equal(usagePercent(1_791, 200_000), 1);
-  assert.equal(usagePercent(150_000, 200_000), 75);
-  assert.equal(usagePercent(250_000, 200_000), 100);
-});
-
-test("an empty chat asks for a message instead of floating a report", () => {
+test("an empty chat or an API model gets a toast instead of a report", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const branch = thread.slice(thread.indexOf("isContextCommand(composerText)"));
-  const gate = branch.indexOf('translate("context.emptyChat")');
-  assert.ok(gate > 0 && gate < branch.indexOf("showContext("));
+  for (const key of ["context.emptyChat", "context.apiNoBreakdown"]) {
+    const gate = branch.indexOf(`translate("${key}")`);
+    assert.ok(gate > 0 && gate < branch.indexOf("showContext("), key);
+  }
 });

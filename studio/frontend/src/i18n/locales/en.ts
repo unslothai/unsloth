@@ -798,7 +798,6 @@ export const en = {
     undone: "File restore undone",
     undoFailed: "Could not undo the file restore",
   },
-  // /context.
   context: {
     title: "Context",
     summary: "{used} of {window} tokens used ({percent}%)",
@@ -813,13 +812,9 @@ export const en = {
     waitForResponse: "Wait for the current response to finish",
     noModel: "Load a model to use /context",
     emptyChat: "Send a message first to use /context",
-    noUsageYet: "Send a message first: API models report token usage with each reply.",
-    usedOnly: "{used} tokens used",
-    totalOnly: "This server returned only the total token count.",
     apiNoBreakdown: "API models report only a total, so there is no breakdown.",
     showPrompt: "Show prompt",
     hidePrompt: "Hide prompt",
-    copyPrompt: "Copy",
   },
   // The chat header's "…" menu.
   chatMenu: {

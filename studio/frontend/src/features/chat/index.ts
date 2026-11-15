@@ -196,7 +196,6 @@ export {
   type ContextView,
   deriveContextView,
   isContextCommand,
-  usagePercent,
 } from "./utils/context-command";
 export {
   formatTokenCountFull,
@@ -375,7 +374,6 @@ export {
   buildExternalModelId,
   customProviderDisplayName,
   isCustomProviderType,
-  externalModelContextLength,
   isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,

@@ -4,8 +4,7 @@
 import type { ThreadMessage } from "@assistant-ui/react";
 import { create } from "zustand";
 
-/** Only message identities and edit revisions are needed to retire an open card.
- *  Keep media and prompt text out of the UI store. */
+// Ids and edit revisions only: no media or prompt text in the store.
 export function contextReportBranch(
   messages: readonly ThreadMessage[],
 ): string {
@@ -39,7 +38,6 @@ export const useContextReportStore = create<{
   dismissContext: () => set({ report: null }),
 }));
 
-/** The report this Thread shows: its own, and only while nothing has landed after it. */
 export function shownContextReport(
   report: ContextReportRequest | null,
   threadKey: string,

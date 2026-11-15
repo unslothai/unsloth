@@ -42674,8 +42674,7 @@ class LlamaCppBackend:
         on_prompt = None,
     ) -> int:
         """Strict callers raise: the text-only fallback is an approximation, not a count; others get 0.
-
-        ``on_prompt`` receives the prompt /apply-template rendered, the text the count priced."""
+        ``on_prompt`` receives the rendered prompt the count priced."""
         if not self.is_loaded:
             if strict:
                 raise RuntimeError("llama-server is not loaded")
@@ -42730,7 +42729,7 @@ class LlamaCppBackend:
             if system_text:
                 template_messages = [{"role": "system", "content": system_text}] + template_messages
             # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
-            # A hit has no text for on_prompt, so a caller that wants the prompt renders it.
+            # A memo hit has no text for on_prompt.
             memo_key = (
                 None
                 if prefer_native or on_prompt is not None
@@ -42793,7 +42792,6 @@ class LlamaCppBackend:
                         if continue_final_message:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
-                        # The native count returns no text, so a caller wanting it skips that path.
                         if prefer_native and on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()

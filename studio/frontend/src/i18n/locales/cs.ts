@@ -907,13 +907,9 @@ export const cs = {
     waitForResponse: "Počkejte, až se dokončí aktuální odpověď",
     noModel: "Pro použití /context načtěte model",
     emptyChat: "Pro použití /context nejprve pošlete zprávu",
-    noUsageYet: "Nejprve pošlete zprávu: modely přes API hlásí využití tokenů s každou odpovědí.",
-    usedOnly: "Využito {used} tokenů",
-    totalOnly: "Server vrátil pouze celkový počet tokenů.",
     apiNoBreakdown: "Modely přes API hlásí jen celkový součet, takže rozpis není k dispozici.",
     showPrompt: "Zobrazit prompt",
     hidePrompt: "Skrýt prompt",
-    copyPrompt: "Kopírovat",
   },
   chatMenu: {
     more: "Možnosti chatu",

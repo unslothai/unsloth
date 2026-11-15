@@ -7,12 +7,9 @@ import {
   countContext,
   contextReportBranch,
   deriveContextView,
-  externalModelContextLength,
   formatTokenCountFull,
   getSeverityColor,
-  isExternalModelId,
   shownContextReport,
-  usagePercent,
   useChatRuntimeStore,
   useContextReportStore,
 } from "@/features/chat";
@@ -23,14 +20,12 @@ import { useAui, useAuiState } from "@assistant-ui/react";
 import { ChevronRightIcon, XIcon } from "lucide-react";
 import { type FC, useEffect, useMemo, useRef, useState } from "react";
 
-// No message on an error: the loaded model changed while counting.
+// An error without a message: the model or branch changed while counting.
 type Count =
   | { state: "loading" }
   | { state: "done"; view: ContextView }
-  | { state: "total"; used: number }
   | { state: "error"; message?: string };
 
-/** Mounted once per Thread, under the last message. The report goes once a turn lands after it. */
 export const ContextReport: FC = () => {
   const threadKey = useAuiState(({ threadListItem }) => threadListItem.id);
   const messages = useAuiState(({ thread }) => thread.messages);
@@ -49,97 +44,22 @@ export const ContextReport: FC = () => {
     }
   }, [request, threadKey, report, dismissContext]);
   return report ? (
-    <ContextCard
-      key={report.nonce}
-      checkpoint={report.checkpoint}
-      onDismiss={dismissContext}
-    />
+    <ContextCard key={report.nonce} onDismiss={dismissContext} />
   ) : null;
 };
 
-const ContextCard: FC<{ checkpoint: string; onDismiss: () => void }> = ({
-  checkpoint,
-  onDismiss,
-}) => {
-  const t = useT();
-  const ref = useRef<HTMLElement>(null);
-  useEffect(() => {
-    ref.current?.scrollIntoView({ block: "nearest" });
-  }, []);
-  return (
-    <section
-      ref={ref}
-      aria-label={t("context.title")}
-      className="mx-auto mb-4 grid w-full max-w-(--thread-content-max-width) gap-3 rounded-[16px] border border-border/70 bg-muted/20 px-4 py-3 text-sm"
-    >
-      {isExternalModelId(checkpoint) ? (
-        <ApiTotal checkpoint={checkpoint} onDismiss={onDismiss} />
-      ) : (
-        <LocalCount onDismiss={onDismiss} />
-      )}
-    </section>
-  );
-};
-
-const Header: FC<{ summary: string; onDismiss: () => void }> = ({
-  summary,
-  onDismiss,
-}) => {
-  const t = useT();
-  return (
-    <header className="flex items-center justify-between gap-3">
-      <p aria-live="polite">
-        <span className="font-medium">{t("context.title")}</span>
-        <span className="text-muted-foreground">
-          {" · "}
-          {summary}
-        </span>
-      </p>
-      <button
-        type="button"
-        onClick={onDismiss}
-        aria-label={t("common.close")}
-        className="rounded-full p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:bg-accent"
-      >
-        <XIcon className="size-3.5" />
-      </button>
-    </header>
-  );
-};
-
-const UsageBar: FC<{ used: number; window: number; markAt?: number }> = ({
-  used,
-  window,
-  markAt,
-}) => {
-  // Unrounded, as the header ring reads it, so the two change color together.
-  const percent = Math.min(100, (used / window) * 100);
-  return (
-    <div className="relative" aria-hidden={true}>
-      <Progress
-        value={percent}
-        className="h-1"
-        indicatorClassName={getSeverityColor(percent).bar}
-      />
-      {markAt != null ? (
-        <div
-          className="absolute -inset-y-0.5 w-px bg-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-wash-gain,1)),transparent)]"
-          style={{ left: `${markAt * 100}%` }}
-        />
-      ) : null}
-    </div>
-  );
-};
-
-/** A local model: the backend splits the prompt it would send. */
-const LocalCount: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
+const ContextCard: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
   const t = useT();
   const aui = useAui();
+  const ref = useRef<HTMLElement>(null);
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
-  // Read once: the report describes the branch it was asked under.
+  // The report describes the branch it was asked under.
   const branch = useMemo(() => aui.thread().getState().messages, [aui]);
   const [count, setCount] = useState<Count>({ state: "loading" });
 
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: "nearest" });
+  }, []);
   useEffect(() => {
     let cancelled = false;
     countContext(
@@ -155,10 +75,7 @@ const LocalCount: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
             counted,
             useChatRuntimeStore.getState().loadedContextLength,
           );
-        if (view) setCount({ state: "done", view });
-        else if (counted)
-          setCount({ state: "total", used: counted.input_tokens });
-        else setCount({ state: "error" });
+        setCount(view ? { state: "done", view } : { state: "error" });
       },
       (error: unknown) => {
         if (cancelled) return;
@@ -180,63 +97,36 @@ const LocalCount: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
           window: formatTokenCountFull(count.view.window),
           percent: count.view.percent,
         })
-      : count.state === "total"
-        ? t("context.usedOnly", { used: formatTokenCountFull(count.used) })
-        : count.state === "loading"
-          ? t("context.loading")
-          : count.message
-            ? t("context.failed", { error: count.message })
-            : t("context.modelChanged");
+      : count.state === "loading"
+        ? t("context.loading")
+        : count.message
+          ? t("context.failed", { error: count.message })
+          : t("context.modelChanged");
   return (
-    <>
-      <Header summary={summary} onDismiss={onDismiss} />
-      {count.state === "done" ? <Breakdown view={count.view} /> : null}
-      {count.state === "total" ? (
-        <p className="text-muted-foreground text-xs">
-          {t("context.totalOnly")}
+    <section
+      ref={ref}
+      aria-label={t("context.title")}
+      className="mx-auto mb-4 grid w-full max-w-(--thread-content-max-width) gap-3 rounded-[16px] border border-border/70 bg-muted/20 px-4 py-3 text-sm"
+    >
+      <header className="flex items-center justify-between gap-3">
+        <p aria-live="polite">
+          <span className="font-medium">{t("context.title")}</span>
+          <span className="text-muted-foreground">
+            {" · "}
+            {summary}
+          </span>
         </p>
-      ) : null}
-    </>
-  );
-};
-
-/** An API model: no local tokenizer, so the last reply's total against the catalogued window. */
-const ApiTotal: FC<{ checkpoint: string; onDismiss: () => void }> = ({
-  checkpoint,
-  onDismiss,
-}) => {
-  const t = useT();
-  const [{ used, window }] = useState(() => {
-    // A text-length estimate is not the provider's number, so it shows as no usage yet.
-    const stored = useChatRuntimeStore.getState().contextUsage;
-    const usage = stored?.estimated ? null : stored;
-    return {
-      used: usage?.contextTokens ?? usage?.totalTokens ?? null,
-      window: externalModelContextLength(checkpoint),
-    };
-  });
-  const percent = used != null && window ? usagePercent(used, window) : null;
-  return (
-    <>
-      <Header
-        summary={
-          used == null
-            ? t("context.noUsageYet")
-            : window && percent != null
-              ? t("context.summary", {
-                  used: formatTokenCountFull(used),
-                  window: formatTokenCountFull(window),
-                  percent,
-                })
-              : t("context.usedOnly", { used: formatTokenCountFull(used) })
-        }
-        onDismiss={onDismiss}
-      />
-      {used != null && window ? <UsageBar used={used} window={window} /> : null}
-      <p className="text-muted-foreground text-xs">
-        {t("context.apiNoBreakdown")}
-      </p>
-    </>
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label={t("common.close")}
+          className="rounded-full p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:bg-accent"
+        >
+          <XIcon className="size-3.5" />
+        </button>
+      </header>
+      {count.state === "done" ? <Breakdown view={count.view} /> : null}
+    </section>
   );
 };
 
@@ -247,13 +137,23 @@ const Breakdown: FC<{ view: ContextView }> = ({ view }) => {
     tools: t("context.tools", { count: view.toolNames.length }),
     messages: t("context.messages"),
   };
+  // Unrounded, as the header ring reads it, so the two change color together.
+  const percent = Math.min(100, (view.used / view.window) * 100);
   return (
     <>
-      <UsageBar
-        used={view.used}
-        window={view.window}
-        markAt={view.compactAt?.share}
-      />
+      <div className="relative" aria-hidden={true}>
+        <Progress
+          value={percent}
+          className="h-1"
+          indicatorClassName={getSeverityColor(percent).bar}
+        />
+        {view.compactAt ? (
+          <div
+            className="absolute -inset-y-0.5 w-px bg-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-wash-gain,1)),transparent)]"
+            style={{ left: `${view.compactAt.share * 100}%` }}
+          />
+        ) : null}
+      </div>
       <dl className="grid grid-cols-[1fr_auto] gap-x-6 gap-y-1">
         {view.segments.map(({ key, tokens }) => (
           <Row
@@ -277,7 +177,6 @@ const Breakdown: FC<{ view: ContextView }> = ({ view }) => {
   );
 };
 
-/** A `detail` (the tool names) stays folded under its label until clicked. */
 const Row: FC<{ label: string; tokens: number; detail?: string }> = ({
   label,
   tokens,
@@ -319,7 +218,6 @@ const Row: FC<{ label: string; tokens: number; detail?: string }> = ({
 const TEXT_BUTTON =
   "text-muted-foreground outline-none hover:text-foreground focus-visible:text-foreground";
 
-/** The exact text the count priced. */
 const PromptToggle: FC<{ prompt: string }> = ({ prompt }) => {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -340,7 +238,7 @@ const PromptToggle: FC<{ prompt: string }> = ({ prompt }) => {
             onClick={() => void copyToClipboard(prompt)}
             className={TEXT_BUTTON}
           >
-            {t("context.copyPrompt")}
+            {t("chatMenu.copy")}
           </button>
         ) : null}
       </div>

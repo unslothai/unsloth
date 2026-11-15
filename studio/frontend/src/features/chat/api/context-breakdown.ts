@@ -14,10 +14,7 @@ import {
 } from "./chat-adapter";
 import { type ChatCountTokensResponse, countChatInputTokens } from "./chat-api";
 
-/** /context: the header recount's payload for this branch, split into its parts and with the
- *  rendered prompt. Only a count: nothing here reaches the conversation or the next completion.
- *  Null when the total belongs to another model, because the endpoint counts with whatever is
- *  resident. */
+/** The header recount's payload, split. Null when the model or branch moved while counting. */
 export async function countContext(
   branch: readonly ThreadMessage[],
   threadId: string | undefined,
@@ -69,8 +66,7 @@ export async function countContext(
   return counted;
 }
 
-/** Chats whose count would be wrong, which the header recount (refreshContextUsage) declines too:
- *  it would leave out the media, or price a non-GGUF chat as if it were never compacted. */
+// Declined like refreshContextUsage: media is not priced, and only GGUF counts the fitted prompt.
 function uncountable(
   branch: readonly ThreadMessage[],
   loadedIsGguf: boolean | null,

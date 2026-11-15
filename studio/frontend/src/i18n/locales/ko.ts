@@ -808,13 +808,9 @@ export const ko = {
     waitForResponse: "현재 응답이 끝날 때까지 기다려 주세요",
     noModel: "/context를 사용하려면 모델을 로드하세요",
     emptyChat: "/context를 사용하려면 먼저 메시지를 보내세요",
-    noUsageYet: "먼저 메시지를 보내세요. API 모델은 응답마다 토큰 사용량을 알려 줍니다.",
-    usedOnly: "{used}개 토큰 사용",
-    totalOnly: "이 서버는 총 토큰 수만 반환했습니다.",
     apiNoBreakdown: "API 모델은 합계만 알려 주므로 세부 내역이 없습니다.",
     showPrompt: "프롬프트 보기",
     hidePrompt: "프롬프트 숨기기",
-    copyPrompt: "복사",
   },
   // The chat header's "…" menu.
   chatMenu: {

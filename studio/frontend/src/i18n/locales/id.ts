@@ -905,13 +905,9 @@ export const id = {
     waitForResponse: "Tunggu hingga respons saat ini selesai",
     noModel: "Muat model untuk menggunakan /context",
     emptyChat: "Kirim pesan terlebih dahulu untuk menggunakan /context",
-    noUsageYet: "Kirim pesan terlebih dahulu: model API melaporkan penggunaan token di setiap balasan.",
-    usedOnly: "{used} token terpakai",
-    totalOnly: "Server ini hanya mengembalikan jumlah total token.",
     apiNoBreakdown: "Model API hanya melaporkan total, jadi tidak ada rinciannya.",
     showPrompt: "Tampilkan prompt",
     hidePrompt: "Sembunyikan prompt",
-    copyPrompt: "Salin",
   },
   chatMenu: {
     more: "Opsi chat",

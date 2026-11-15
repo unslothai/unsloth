@@ -913,13 +913,9 @@ export const pl = {
     waitForResponse: "Poczekaj, aż bieżąca odpowiedź się zakończy",
     noModel: "Załaduj model, aby użyć /context",
     emptyChat: "Najpierw wyślij wiadomość, aby użyć /context",
-    noUsageYet: "Najpierw wyślij wiadomość: modele API raportują użycie tokenów przy każdej odpowiedzi.",
-    usedOnly: "Użyto {used} tokenów",
-    totalOnly: "Serwer zwrócił tylko łączną liczbę tokenów.",
     apiNoBreakdown: "Modele API raportują tylko sumę, więc nie ma podziału.",
     showPrompt: "Pokaż prompt",
     hidePrompt: "Ukryj prompt",
-    copyPrompt: "Kopiuj",
   },
   chatMenu: {
     more: "Opcje czatu",

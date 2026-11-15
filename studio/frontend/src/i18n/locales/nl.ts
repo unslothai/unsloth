@@ -916,13 +916,9 @@ export const nl = {
     waitForResponse: "Wacht tot het huidige antwoord klaar is",
     noModel: "Laad een model om /context te gebruiken",
     emptyChat: "Stuur eerst een bericht om /context te gebruiken",
-    noUsageYet: "Stuur eerst een bericht: API-modellen melden het tokengebruik bij elk antwoord.",
-    usedOnly: "{used} tokens gebruikt",
-    totalOnly: "Deze server gaf alleen het totale aantal tokens terug.",
     apiNoBreakdown: "API-modellen melden alleen een totaal, dus er is geen uitsplitsing.",
     showPrompt: "Prompt tonen",
     hidePrompt: "Prompt verbergen",
-    copyPrompt: "Kopiëren",
   },
   chatMenu: {
     more: "Chatopties",

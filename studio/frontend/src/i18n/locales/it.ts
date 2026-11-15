@@ -3840,13 +3840,9 @@ export const it = {
     waitForResponse: "Attendi che la risposta in corso finisca",
     noModel: "Carica un modello per usare /context",
     emptyChat: "Invia prima un messaggio per usare /context",
-    noUsageYet: "Invia prima un messaggio: i modelli API indicano l'uso dei token a ogni risposta.",
-    usedOnly: "{used} token usati",
-    totalOnly: "Questo server ha restituito solo il numero totale di token.",
     apiNoBreakdown: "I modelli API indicano solo un totale, quindi non c'è un dettaglio.",
     showPrompt: "Mostra prompt",
     hidePrompt: "Nascondi prompt",
-    copyPrompt: "Copia",
   },
   // The chat header's "…" menu.
   chatMenu: {
