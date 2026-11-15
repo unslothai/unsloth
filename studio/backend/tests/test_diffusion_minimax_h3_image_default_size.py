@@ -113,6 +113,33 @@ def test_the_generate_route_resolves_an_omitted_size_per_family(
     assert (engine.calls[0]["width"], engine.calls[0]["height"]) == expected
 
 
+class _StatusFailsEngine(_Engine):
+    def status(self):
+        raise RuntimeError("status read failed")
+
+
+def test_an_omitted_text_to_image_size_survives_a_failing_status_read(monkeypatch, tmp_path):
+    """Steps and guidance named, size omitted: a status read that fails leaves the schema's size, as before the
+    family default existed, instead of failing the run."""
+    from core.inference import diffusion_engine_router
+    from models.inference import DiffusionGenerateRequest
+    from routes import inference
+    from state import active_generations
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(inference, "_enabled_agent_skills", lambda: [], raising = False)
+    engine = _StatusFailsEngine("minimax-h3-image")
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: engine)
+    active_generations.reset_for_tests()
+    request = DiffusionGenerateRequest(prompt = "x", steps = 6, guidance = 1.0)
+    try:
+        asyncio.run(inference._generate_diffusion_image_core(request))
+    finally:
+        active_generations.reset_for_tests()
+    assert engine.calls, "the run failed before the engine was called"
+    assert (engine.calls[0]["width"], engine.calls[0]["height"]) == (1024, 1024)
+
+
 @pytest.fixture(scope = "module")
 def pipe(tmp_path_factory):
     pytest.importorskip("torch")

@@ -51238,8 +51238,17 @@ async def _generate_diffusion_image_run(
             if status is None:
                 status = probe.pop("status", None) if attempt == 0 else None
             if status is None:
-                status = await asyncio.to_thread(backend.status)
-            size = omitted_txt2img_size(status.get("family")) if status.get("loaded") else None
+                try:
+                    status = await asyncio.to_thread(backend.status)
+                except Exception as exc:  # noqa: BLE001 -- no status, no family size: the schema's stands
+                    logger.debug(
+                        "images.generate: status read for the omitted size failed: %s", exc
+                    )
+            size = (
+                omitted_txt2img_size(status.get("family"))
+                if status is not None and status.get("loaded")
+                else None
+            )
             if size is not None:
                 request = request.model_copy(update = {"width": size[0], "height": size[1]})
                 if expected_load is None:
