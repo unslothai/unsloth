@@ -952,6 +952,14 @@ export const VoiceEngine: FC = () => {
     setLoopVoiceMode("active");
     voiceModeRef.current = "active";
     setVoiceModeState("active");
+    // A read-aloud already playing would talk over the mic, and barge-in cannot see it.
+    const thread = auiRef.current.thread();
+    if (thread.getState().speech) {
+      try {
+        thread.stopSpeaking();
+      } catch {
+      }
+    }
     if (!hasChatModelRef.current) return;
     if (useChatRuntimeStore.getState().voiceSlotLoading) return;
     if (!auiRef.current.thread().getState().isRunning && !isSpeakingRef.current) {

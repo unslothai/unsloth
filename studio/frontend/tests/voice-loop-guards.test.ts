@@ -372,3 +372,11 @@ test("assistive tech's bare click pauses voice; a handled press is not tapped tw
   assert.match(button, /const release = \(\) => \{\s*releasedAtRef\.current = performance\.now\(\);/);
   assert.match(button, /if \(e\.detail === 0 && performance\.now\(\) - releasedAtRef\.current > 500\) requestVoicePauseToggle\(\);/);
 });
+
+test("turning voice on stops a read-aloud already playing before the mic opens", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const act = engine.slice(engine.indexOf("const activateLoop = useCallback("));
+  const stopAt = act.indexOf("thread.stopSpeaking();");
+  assert.ok(stopAt > 0 && stopAt < act.indexOf("startDictation();"));
+  assert.match(act.slice(0, stopAt), /if \(thread\.getState\(\)\.speech\) \{/);
+});
