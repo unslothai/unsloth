@@ -1319,6 +1319,7 @@ function ComparePane({
       {header}
       <div
         ref={trackThreadScroll}
+        data-thread-scroll-host=""
         className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
         <div
           aria-hidden={true}
@@ -4793,6 +4794,7 @@ export function ChatPage({
       <McpServersDialogMount />
       <div
         ref={trackThreadScroll}
+        data-thread-scroll-host=""
         data-chat-content-root=""
         className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
       >

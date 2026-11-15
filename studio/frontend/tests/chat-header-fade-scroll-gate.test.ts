@@ -33,6 +33,9 @@ class FakeElement {
   matches(selector: string) {
     return selector.split(", ").some((s) => (s.startsWith(".") ? this.classList.contains(s.slice(1)) : this.attrs.has(s.slice(1, -1))));
   }
+  static host(parent: FakeElement | null = null) {
+    return new FakeElement([], parent, false, [HOST_ATTR]);
+  }
   setAttribute(name: string) {
     this.attrs.add(name);
   }
@@ -57,10 +60,10 @@ class FakeElement {
   }
 }
 (globalThis as { HTMLElement?: unknown }).HTMLElement = FakeElement;
-const { syncThreadScroll, trackThreadScroll, THREAD_SCROLLED_ATTR } = await import("../src/features/chat/thread-scroll-flag.ts");
+const { HOST_ATTR, syncThreadScroll, trackThreadScroll, THREAD_SCROLLED_ATTR } = await import("../src/features/chat/thread-scroll-flag.ts");
 
 test("the flag follows the thread viewport's scrollTop, captured on the fade's parent", () => {
-  const host = new FakeElement();
+  const host = FakeElement.host();
   const cleanup = trackThreadScroll(host as unknown as HTMLElement);
   assert.equal(host.listeners.get("scroll")?.capture, true, "scroll does not bubble: capture phase");
   const viewport = new FakeElement(["aui-thread-viewport"], host);
@@ -72,23 +75,27 @@ test("the flag follows the thread viewport's scrollTop, captured on the fade's p
   assert.ok(!host.attrs.has(THREAD_SCROLLED_ATTR), "back at the top: fade hidden again");
   cleanup?.();
   assert.equal(host.listeners.size, 0);
-  assert.ok(!host.attrs.has("data-thread-scroll-host"));
 });
 
-test("other scrollers and the full-view dock thread never set the flag", () => {
-  const host = new FakeElement();
+test("other scrollers never set the flag; the full-view dock's thread still does", () => {
+  const host = FakeElement.host();
   trackThreadScroll(host as unknown as HTMLElement);
   const codeBlock = new FakeElement(["code-scroller"], host);
   codeBlock.scrollTop = 99;
   host.fire(codeBlock);
-  const dock = new FakeElement(["aui-thread-viewport"], host, true);
+  assert.ok(!host.attrs.has(THREAD_SCROLLED_ATTR));
+  // The dock only toggles a class over the same thread, so leaving it reruns no ref.
+  const dock = new FakeElement(["aui-thread-viewport"], new FakeElement([], host, true));
   dock.scrollTop = 99;
+  host.fire(dock);
+  assert.ok(host.attrs.has(THREAD_SCROLLED_ATTR));
+  dock.scrollTop = 0;
   host.fire(dock);
   assert.ok(!host.attrs.has(THREAD_SCROLLED_ATTR));
 });
 
 test("the project landing list drives the shared header fade like a thread", () => {
-  const root = new FakeElement();
+  const root = FakeElement.host();
   trackThreadScroll(root as unknown as HTMLElement);
   const landing = new FakeElement([], root, false, ["data-header-fade-scroller"]);
   landing.scrollTop = 120;
@@ -100,7 +107,7 @@ test("the project landing list drives the shared header fade like a thread", () 
 });
 
 test("a replacement scroller mounting at the top clears the flag its predecessor left", () => {
-  const root = new FakeElement();
+  const root = FakeElement.host();
   trackThreadScroll(root as unknown as HTMLElement);
   const old = new FakeElement(["aui-thread-viewport"], root);
   old.scrollTop = 900;
@@ -108,7 +115,6 @@ test("a replacement scroller mounting at the top clears the flag its predecessor
   assert.ok(root.attrs.has(THREAD_SCROLLED_ATTR));
   syncThreadScroll(new FakeElement(["aui-thread-viewport"], root) as unknown as HTMLElement);
   assert.ok(!root.attrs.has(THREAD_SCROLLED_ATTR), "new empty chat: no fade over the flat page");
-  syncThreadScroll(new FakeElement(["aui-thread-viewport"], root, true) as unknown as HTMLElement);
   syncThreadScroll(null);
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const ref = thread.slice(thread.indexOf("const composedViewportRef"));
@@ -118,12 +124,16 @@ test("a replacement scroller mounting at the top clears the flag its predecessor
 });
 
 test("a compare pane's scroll moves only its own flag, not the backgrounded chat's", () => {
-  const root = new FakeElement();
+  const root = FakeElement.host();
   trackThreadScroll(root as unknown as HTMLElement);
   const chat = new FakeElement(["aui-thread-viewport"], root);
   chat.scrollTop = 500;
   root.fire(chat);
-  const pane = new FakeElement([], root);
+  // Mounting order: the pane viewport's ref syncs before the pane's own ref runs.
+  const pane = FakeElement.host(root);
+  const paneViewport0 = new FakeElement(["aui-thread-viewport"], pane);
+  syncThreadScroll(paneViewport0 as unknown as HTMLElement);
+  assert.ok(root.attrs.has(THREAD_SCROLLED_ATTR), "a mounting pane leaves the chat root alone");
   trackThreadScroll(pane as unknown as HTMLElement);
   const paneViewport = new FakeElement(["aui-thread-viewport"], pane);
   paneViewport.scrollTop = 80;
@@ -154,7 +164,7 @@ test("each fade's parent carries the scroll tracker, and the fades keep Oklab", 
     const at = page.indexOf(`className="${fade} `);
     assert.ok(at > 0, fade);
     const parentOpen = page.lastIndexOf("<div", page.lastIndexOf("<div", at) - 1);
-    assert.match(page.slice(parentOpen, at), /ref=\{trackThreadScroll\}/, `${fade} parent`);
+    assert.match(page.slice(parentOpen, at), /ref=\{trackThreadScroll\}\s+data-thread-scroll-host=""/, `${fade} parent`);
     const cls = page.slice(at, page.indexOf('"', at + 11));
     assert.match(cls, /bg-gradient-to-b from-background to-transparent/);
     assert.doesNotMatch(cls, /\/srgb/, "sRGB bands in WebKit");
