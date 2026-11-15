@@ -3,6 +3,7 @@
 
 """Platform backends on a real display: Linux on a private Xvfb, macOS read-only, Windows on CI."""
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -14,6 +15,26 @@ import pytest
 from core.inference.computer_use.backends import BackendError, Display, FrontWindow
 
 LIVE = os.environ.get("UNSLOTH_COMPUTER_USE_LIVE") == "1"
+
+
+def _wait_for(done, seconds):
+    deadline = time.monotonic() + seconds
+    while not done() and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+
+@contextlib.contextmanager
+def _tk_window(tmp_path):
+    """The Tk target window; yields the file its button writes the field's text to."""
+    out, ready = tmp_path / "out", tmp_path / "ready"
+    app = subprocess.Popen([sys.executable, "-c", _TK_APP, str(out), str(ready)])
+    try:
+        _wait_for(lambda: ready.exists() or app.poll() is not None, 30)
+        assert ready.exists(), "the Tk window never showed"
+        yield out
+    finally:
+        app.terminate()
+        app.wait(timeout = 10)
 
 
 @pytest.fixture
@@ -75,31 +96,15 @@ def test_x11_without_a_window_manager_knows_the_focused_window(xvfb, tmp_path):
     pytest.importorskip("tkinter")
     from core.inference.computer_use.backends.linux import LinuxBackend
 
-    ready = tmp_path / "ready"
-    app = subprocess.Popen([sys.executable, "-c", _TK_APP, str(tmp_path / "out"), str(ready)])
-    try:
-        deadline = time.monotonic() + 30
-        while not ready.exists():
-            assert app.poll() is None and time.monotonic() < deadline, "the Tk window never showed"
-            time.sleep(0.1)
+    with _tk_window(tmp_path):
         front = LinuxBackend().front_window()
-        assert front.app and front.title == "cu-e2e", front
-    finally:
-        app.terminate()
-        app.wait(timeout = 10)
+    assert front.app and front.title == "cu-e2e", front
 
 
 def test_x11_typing_with_caps_lock_on_keeps_the_case_and_the_lock(xvfb, tmp_path):
     pytest.importorskip("tkinter")
     from core.inference.computer_use.backends.linux import LinuxBackend
-
-    out, ready = tmp_path / "out", tmp_path / "ready"
-    app = subprocess.Popen([sys.executable, "-c", _TK_APP, str(out), str(ready)])
-    try:
-        deadline = time.monotonic() + 30
-        while not ready.exists():
-            assert app.poll() is None and time.monotonic() < deadline, "the Tk window never showed"
-            time.sleep(0.1)
+    with _tk_window(tmp_path) as out:
         backend = LinuxBackend()
         # No window manager: the Tk window sits exactly at +120+120.
         backend.click(420, 220, "left", 1, ())
@@ -108,13 +113,8 @@ def test_x11_typing_with_caps_lock_on_keeps_the_case_and_the_lock(xvfb, tmp_path
         assert backend._caps_locked()
         backend._set_caps_lock(False)
         backend.click(440, 430, "left", 1, ())
-        deadline = time.monotonic() + 10
-        while not out.exists() and time.monotonic() < deadline:
-            time.sleep(0.1)
+        _wait_for(out.exists, 10)
         assert out.read_text(encoding = "utf-8") == "Hello abc"
-    finally:
-        app.terminate()
-        app.wait(timeout = 10)
 
 
 def test_x11_typing_borrows_a_key_and_gives_it_back(xvfb):
@@ -399,7 +399,7 @@ def _centre(
     return int(np.median(xs)), int(np.median(ys))
 
 
-def test_a_scripted_model_types_into_a_real_window(real_desktop, tmp_path, monkeypatch):
+def test_a_scripted_model_types_into_a_real_window(real_desktop, tmp_path, monkeypatch, request):
     """A fake model sees the real screen through the tool loop, clicks and types into a Tk window."""
     import asyncio
     import json
@@ -430,13 +430,9 @@ def test_a_scripted_model_types_into_a_real_window(real_desktop, tmp_path, monke
     )
     monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
 
-    out, ready = tmp_path / "typed.txt", tmp_path / "ready"
-    app = subprocess.Popen([sys.executable, "-c", _TK_APP, str(out), str(ready)])
-    try:
-        deadline = time.monotonic() + 30
-        while not ready.exists():
-            assert app.poll() is None and time.monotonic() < deadline, "the Tk window never showed"
-            time.sleep(0.1)
+    request.addfinalizer(state.reset)
+    request.addfinalizer(host_policy._reset_loopback_default_state)
+    with _tk_window(tmp_path) as out:
         time.sleep(0.5)
 
         typed = "hello computer"
@@ -529,8 +525,3 @@ def test_a_scripted_model_types_into_a_real_window(real_desktop, tmp_path, monke
         assert _centre(
             _latest_picture(model.seen[-1]), (0, 0, 255)
         ), "the last screenshot shows the press"
-    finally:
-        app.terminate()
-        app.wait(timeout = 10)
-        state.reset()
-        host_policy._reset_loopback_default_state()
