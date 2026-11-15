@@ -361,6 +361,10 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     # The JSON drain counts tool arguments, streamed or finalized, for a failed or stopped run.
     assert "_sf_partial_args += len(_args)" in source
     assert "api_monitor.count_output(target, _sf_partial_args)" in source
+    # Finalized arguments follow their pass's report, so only streamed ones move the coverage mark.
+    assert "A finalized call runs after its pass reported, so its stats cover it." in source
+    # A stopped later choice is estimated beside the reported ones, and settles as cancelled.
+    assert 'if _sf_plain_partial["reported"] == len(_choices)' in source
     # A stop mid-pass in the JSON drain keeps the kept turn outside the earlier passes' report.
     assert "reported_chars = None if _stats is not _sf_text_stats else 0," in source
     assert '_sf_text_stats = _sf_stats_holder.get("stats")' in source

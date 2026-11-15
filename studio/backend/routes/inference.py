@@ -35618,7 +35618,9 @@ async def produce_openai_chat_completions(
                         _args = event.get("arguments_text")
                     if isinstance(_args, str) and _args:
                         _sf_partial_args += len(_args)
-                        _sf_text_stats = _sf_stats_holder.get("stats")
+                        if _event_type == "tool_args":
+                            # A finalized call runs after its pass reported, so its stats cover it.
+                            _sf_text_stats = _sf_stats_holder.get("stats")
                     if _event_type == "content":
                         raw_text = event.get("text", "")
                         _sf_partial_text = raw_text
@@ -36331,7 +36333,14 @@ async def produce_openai_chat_completions(
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
         # Finished choices' text (covered by their usage), the current one's, and the usage so far.
-        _sf_plain_partial: dict = {"done": "", "current": "", "usage": None}
+        _sf_plain_partial: dict = {
+            "done": "",
+            "current": "",
+            "usage": None,
+            # Choices that reported usage, and their generated length: the rest are estimated.
+            "reported": 0,
+            "reported_chars": 0,
+        }
 
         def _sf_plain_settle():
             target = _settle_target(monitor_id)
@@ -36339,7 +36348,11 @@ async def produce_openai_chat_completions(
             if done or _sf_plain_partial["current"]:
                 api_monitor.set_reply(target, done + _sf_plain_partial["current"])
             if _sf_plain_partial["usage"] is not None:
-                _monitor_usage(target, _sf_plain_partial["usage"], reported_chars = len(done))
+                _monitor_usage(
+                    target,
+                    _sf_plain_partial["usage"],
+                    reported_chars = _sf_plain_partial["reported_chars"],
+                )
 
         try:
             _n = payload.n or 1
@@ -36621,6 +36634,10 @@ async def produce_openai_chat_completions(
                         "completion_tokens": _sum_completion,
                         "total_tokens": _prompt_tokens + _sum_completion,
                     }
+                    _sf_plain_partial["reported"] += 1
+                    _sf_plain_partial["reported_chars"] += len(
+                        _msg.get("reasoning_content") or ""
+                    ) + len(_msg.get("content") or "")
             _mark_cancelled_json_response_failed(request, cancel_event)
             _msg, _finish = _monitor_replies[-1], _choices[-1].finish_reason
 
@@ -36679,8 +36696,14 @@ async def produce_openai_chat_completions(
                     _usage.model_dump(),
                     # Omitted for n > 1: timings describe only the last choice.
                     timings = _last_stats.get("timings") if len(_choices) <= 1 else None,
+                    # A stopped choice's output is past what the reported choices cover.
+                    reported_chars = (
+                        None
+                        if _sf_plain_partial["reported"] == len(_choices)
+                        else _sf_plain_partial["reported_chars"]
+                    ),
                 )
-            api_monitor.finish(monitor_id)
+            api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             return _model_json_response_with_context_truncation(
                 response, _sf_context_truncation_holder["value"]
             )
