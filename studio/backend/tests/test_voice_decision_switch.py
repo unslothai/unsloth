@@ -418,3 +418,13 @@ def test_a_d1_in_a_custom_folder_keeps_the_mlx_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog, "_custom_roots", lambda: [(root, False)])
     found = sorted((c.label, c.layout, c.backend) for c in catalog.folder_decisions())
     assert found == [("my-clef", "clef", "pytorch"), ("my-d1", "clef", "mlx")]
+
+
+def test_the_decision_switch_takes_the_models_lock_off_the_event_loop():
+    import inspect
+
+    from routes import inference
+
+    source = inspect.getsource(inference.voice_decision_put)
+    assert "await asyncio.to_thread(get_voice_models().switch_decision)" in source
+    assert "\n    get_voice_models().switch_decision()" not in source
