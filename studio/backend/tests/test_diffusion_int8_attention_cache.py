@@ -18,7 +18,7 @@ from core.inference import diffusion_int8_attention_cuda as K
 
 SOURCE = "// a kernel\n"
 DEFINES = {"HD": 128, "BN": 128}
-IDENTITY = {"nvrtc": [13, 0], "nvrtc_file": ["libnvrtc.so.13", 1, 2]}
+IDENTITY = {"nvrtc": [13, 0], "nvrtc_file": ["libnvrtc.so.13", 1, 2], "driver": [13, 0]}
 
 
 class _Toolchain:
@@ -106,6 +106,18 @@ def test_an_nvrtc_without_machine_code_keeps_the_ptx(chain, tmp_path, monkeypatc
     )
 
 
+@pytest.mark.parametrize(
+    "driver, kind",
+    [([13, 0], "cubin"), ([12, 8], "cubin"), (None, "cubin"), ([13, 1], "ptx"), ([14, 0], "ptx")],
+    ids = ["same", "older_driver", "no_driver", "newer_minor", "newer_major"],
+)
+def test_a_driver_newer_than_nvrtc_keeps_compiling_the_ptx(chain, monkeypatch, driver, kind):
+    """NVRTC's machine code only where it is what a PTX load would run: NVRTC at least as new as the driver."""
+    monkeypatch.setattr(K, "toolchain_identity", lambda: {**IDENTITY, "driver": driver})
+    assert K.binary((8, 9), SOURCE, DEFINES, 168)[0] == kind
+    assert len(chain.cubin) == (kind == "cubin") and len(chain.ptx) == (kind == "ptx")
+
+
 def test_the_key_names_everything_that_went_into_the_image(chain, monkeypatch):
     base = K.cache_key("cubin", SOURCE, "sm_89", DEFINES, None)
     assert base == K.cache_key(
@@ -121,10 +133,14 @@ def test_the_key_names_everything_that_went_into_the_image(chain, monkeypatch):
         K.cache_key("cubin", SOURCE, "sm_89", DEFINES, 168),
         K.cache_key("ptx", SOURCE, "sm_89", DEFINES, None),
     }
-    for change in ({"nvrtc": [12, 8]}, {"nvrtc_file": ["libnvrtc.so.12", 1, 2]}):
+    for change in (
+        {"nvrtc": [12, 8]},
+        {"nvrtc_file": ["libnvrtc.so.12", 1, 2]},
+        {"driver": [12, 9]},
+    ):
         monkeypatch.setattr(K, "toolchain_identity", lambda c = change: {**IDENTITY, **c})
         others.add(K.cache_key("cubin", SOURCE, "sm_89", DEFINES, None))
-    assert base not in others and len(others) == 7
+    assert base not in others and len(others) == 8
     # a new kernel source or cache format is a new version directory
     name = K.version_dir_name()
     monkeypatch.setattr(K, "CACHE_FORMAT", K.CACHE_FORMAT + 1)

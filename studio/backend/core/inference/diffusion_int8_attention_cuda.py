@@ -10,8 +10,9 @@ dispatch).
 
 A compile is paid once per machine: NVRTC makes the machine code once per architecture and process (every card of
 that architecture loads the same image, so the driver compiles nothing at load), and the image is kept under
-Studio's cache root, keyed by the source, the defines, the register cap, the architecture and NVRTC, for the next
-process.
+Studio's cache root, keyed by the source, the defines, the register cap, the architecture, NVRTC and the driver's
+CUDA version, for the next process. Where NVRTC is older than the driver, its PTX is kept instead and the driver
+compiles it at load, as before.
 """
 
 from __future__ import annotations
@@ -1391,17 +1392,41 @@ def _file_identity(path: str) -> list:
         return [os.path.basename(path)]
 
 
+def driver_version() -> Optional[tuple]:
+    """(major, minor) of the CUDA version the driver supports, or None when there is no driver to ask."""
+    try:
+        version = ctypes.c_int()
+        if driver().cuDriverGetVersion(ctypes.byref(version)) == 0 and version.value > 0:
+            return version.value // 1000, (version.value % 1000) // 10
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def toolchain_identity() -> dict:
-    """What compiled an image besides its source and options: NVRTC (version, and its library file: a patch
-    release keeps the version number). Read once per process."""
+    """What an image depends on besides its source and options: NVRTC (version, and its library file: a patch
+    release keeps the version number) and the driver's CUDA version (which picks the kind, ``binary``). Read once
+    per process."""
     found = _IDENTITY.get("value")
     if found is None:
+        drv = driver_version()
         found = {
             "nvrtc": list(nvrtc_version()),
             "nvrtc_file": _file_identity(getattr(nvrtc(), "_name", "") or ""),
+            "driver": list(drv) if drv else None,
         }
         _IDENTITY["value"] = found
     return found
+
+
+def machine_code_matches_driver() -> bool:
+    """Whether NVRTC's machine code is the code a PTX load would run: NVRTC is at least as new as the driver.
+    NVRTC and the driver of one CUDA version compile the same instructions (checked register for register, and
+    bit for bit, on sm75 / sm80 / sm89 / sm120); a newer driver can schedule them differently (the same output
+    bits, other registers), and then the driver keeps compiling NVRTC's PTX itself, as before."""
+    identity = toolchain_identity()
+    drv = identity.get("driver")
+    return not drv or tuple(identity["nvrtc"]) >= tuple(drv)
 
 
 def cache_root() -> Optional[str]:
@@ -1438,6 +1463,7 @@ def cache_key(
         "max_registers": int(max_registers) if max_registers else None,
         "nvrtc": identity["nvrtc"],
         "nvrtc_file": identity["nvrtc_file"],
+        "driver": identity.get("driver"),
     }
     digest = hashlib.sha256(json.dumps(fields, sort_keys = True).encode()).hexdigest()[:40]
     return f"{digest}.{kind}"
@@ -1559,9 +1585,10 @@ def binary(
     max_registers: Optional[int] = None,
 ) -> tuple:
     """(kind, image) to load ``source`` with ``defines`` from on a card of ``capability``: "cubin" (machine code,
-    ``compile_cubin``) or, where NVRTC cannot make machine code, "ptx" (``cap_registers`` on ``compile_ptx``, as
-    before the cache). Made once per process per architecture, and kept on disk (``cache_root``) for the next
-    process. Needs no card: every card of that architecture loads the same image."""
+    ``compile_cubin``) or, where NVRTC cannot make machine code or is older than the driver
+    (``machine_code_matches_driver``), "ptx" (``cap_registers`` on ``compile_ptx``, as before the cache: the driver
+    compiles it at load, through its own cache). Made once per process per architecture, and kept on disk
+    (``cache_root``) for the next process. Needs no card: every card of that architecture loads the same image."""
     memo = _memo(capability, source, defines, max_registers)
     found = _BINARIES.get(memo)
     if found is not None:
@@ -1575,9 +1602,13 @@ def binary(
             _BINARIES[memo] = (kind, image)
             return _BINARIES[memo]
     CACHE_STATS["compiled"] += 1
-    try:
-        found = ("cubin", compile_cubin(source, memo[1], defines, max_registers))
-    except Exception:  # noqa: BLE001 -- no nvrtcGetCUBIN, no --ptxas-options: the PTX, as before
+    found = None
+    if machine_code_matches_driver():
+        try:
+            found = ("cubin", compile_cubin(source, memo[1], defines, max_registers))
+        except Exception:  # noqa: BLE001 -- no nvrtcGetCUBIN, no --ptxas-options: the PTX, as before
+            found = None
+    if found is None:
         ptx = compile_ptx(source, f"compute_{capability[0]}{capability[1]}", defines)
         found = ("ptx", cap_registers(ptx, max_registers) if max_registers else ptx)
     CACHE_STATS[found[0]] += 1
