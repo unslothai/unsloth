@@ -61,3 +61,12 @@ test("writes to other keys leave the settings alone", () => {
   fireWindowEvent("storage", { key: "unsloth_theme" });
   assert.equal(useVoiceSettingsStore.getState().dictionary, before);
 });
+
+test("a system-default mic chosen after the legacy picker stays the default across reloads", async () => {
+  store.set("unsloth_chat_mic_device_id", "old-usb-mic");
+  useVoiceSettingsStore.getState().setMicDeviceId("default");
+  assert.equal(saved().micDeviceId, "default");
+  await useVoiceSettingsStore.persist.rehydrate();
+  assert.equal(useVoiceSettingsStore.getState().micDeviceId, "default");
+  store.delete("unsloth_chat_mic_device_id");
+});

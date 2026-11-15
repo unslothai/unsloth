@@ -405,7 +405,8 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ? savedSttModel
           : DEFAULT_STT_MODEL;
         let micDeviceId = asString(saved?.micDeviceId, "default");
-        if (micDeviceId === "default") {
+        // Only settings saved before the mic moved here: a "default" picked since is the user's choice.
+        if (typeof saved?.micDeviceId !== "string") {
           try {
             micDeviceId = localStorage.getItem(LEGACY_LOOP_MIC_KEY) || "default";
           } catch {
