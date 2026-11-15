@@ -4848,7 +4848,9 @@ class FastLlamaModel:
             layers_to_transform = [layers_to_transform]
         # The flag reflects the LAST load, not this model.
         _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
-        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq:
+        # Read from the class so an already wrapped PeftModel keeps the legacy path.
+        _has_lora_remap = callable(getattr(type(model), "unsloth_lora_target_modules", None))
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq or _has_lora_remap:
             for peft_arg, flag in (
                 ("finetune_vision_layers", False),
                 ("finetune_language_layers", True),
@@ -4858,8 +4860,9 @@ class FastLlamaModel:
             ):
                 if peft_arg not in kwargs:
                     kwargs[peft_arg] = flag
-            # Identity, not equality: only an omitted argument is replaced; the causal default names no T5 leaf.
-            if target_modules is _DEFAULT_TARGET_MODULES and _text_seq2seq:
+            # Identity, not equality: only an omitted argument is replaced; the causal default names no T5 leaf, and
+            # a remapping model reads None as its own full default.
+            if target_modules is _DEFAULT_TARGET_MODULES and (_text_seq2seq or _has_lora_remap):
                 target_modules = None
             return FastBaseModel.get_peft_model(
                 model = model,
