@@ -493,7 +493,7 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
         raise
 
 
-_ACCOUNT_API_KEY_COLUMNS = "username, key_prefix, key_hash, name, created_at, expires_at, is_active, is_internal, account_id"
+_ACCOUNT_API_KEY_COLUMNS = "username, key_prefix, key_hash, name, created_at, expires_at, is_active, is_internal, account_id, access"
 
 
 _account_keys_synced: set[str] = set()
@@ -533,6 +533,14 @@ def _ensure_account_api_keys(conn: sqlite3.Connection, existing: set) -> None:
         );
         """
     )
+    # Mirrors api_keys.access, or a key restored from this copy comes back as full access.
+    # Index 1 is the column name; callers pass connections with and without a Row factory.
+    if "access" not in {row[1] for row in conn.execute("PRAGMA table_info(account_api_keys)")}:
+        try:
+            conn.execute("ALTER TABLE account_api_keys ADD COLUMN access TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     conn.execute(
         f"""INSERT INTO account_api_keys ({_ACCOUNT_API_KEY_COLUMNS})
             SELECT {_ACCOUNT_API_KEY_COLUMNS} FROM api_keys k

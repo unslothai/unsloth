@@ -163,3 +163,20 @@ def test_a_chat_started_by_an_inference_key_gets_an_inference_tools_key():
     assert row["access"] == "inference"
     _raw, row = studio_tools_mcp._mint(as_api_caller(OWNER), 60)
     assert row["access"] is None
+
+
+@pytest.mark.usefixtures("owner_auth")
+def test_a_managed_key_restored_from_its_copy_stays_inference_only():
+    alice = storage.issue_account_setup_code(username = "alice")["account"]["account_id"]
+    raw, _row = storage.create_api_key("alice", name = "lan", account_id = alice, access = "inference")
+    conn = sqlite3.connect(storage.DB_PATH)
+    try:
+        # An older build's bulk delete; the next start restores managed keys from their copy.
+        conn.execute("DELETE FROM api_keys")
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        storage._account_keys_synced.clear()
+        storage._ensure_account_api_keys(conn, {"account_id"})
+    finally:
+        conn.close()
+    assert storage.validate_api_key_account(raw, touch = False)[0]["key_access"] == "inference"
