@@ -19,6 +19,6 @@ test("voice mode going off releases the speech detector, which has no idle unloa
 test("leaving Chat with voice mode on releases the speech detector too", () => {
   assert.match(
     chatPage,
-    /voiceSlot\.close\(\);\s*if \(prevVoiceModeRef\.current !== "off"\) releaseVoiceDetector\(\);/,
+    /voiceSlot\.close\(\);\s*if \(prevVoiceModeRef\.current !== "off"\) \{\s*releaseVoiceDetector\(\);/,
   );
 });
