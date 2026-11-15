@@ -697,6 +697,9 @@ _unsloth_uninstall_main() {
                 _ld_stopped=1
             elif launchctl bootout "gui/$_uid/$_ld_label" 2>/dev/null; then
                 _ld_stopped=1
+            # A job still loaded here would be respawned by KeepAlive after the kill sweep below; `remove` drops it by label.
+            elif launchctl remove "$_ld_label" 2>/dev/null; then
+                _ld_stopped=1
             fi
         fi
         _remove_path "$_ld_plist"

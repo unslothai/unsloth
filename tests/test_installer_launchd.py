@@ -193,6 +193,37 @@ def test_start_unloads_a_running_agent_first(tmp_path):
     )
 
 
+def test_failed_bootstrap_leaves_no_plist_to_start_at_login(tmp_path):
+    _fake_mac(
+        tmp_path,
+        f'[ "$1 $2" = "print gui/501/{LABEL}" ] && exit 113; [ "$1" = bootstrap ] && exit 5; exit 0',
+    )
+    r = _run_helper(tmp_path, "--start")
+    assert r.returncode == 1
+    assert "bootstrap" in r.stderr and "next login" in r.stderr
+    assert not _plist_path(tmp_path).exists()
+
+
+def test_failed_enable_leaves_no_plist(tmp_path):
+    _fake_mac(tmp_path, '[ "$1" = enable ] && exit 5; exit 0')
+    r = _run_helper(tmp_path, "--enable")
+    assert r.returncode == 1
+    assert not _plist_path(tmp_path).exists()
+
+
+def test_unload_wait_outlasts_the_agent_exit_timeout():
+    # bootout can take up to ExitTimeOut for a Studio mid-shutdown; giving up sooner reports a false failure.
+    helper = LAUNCHD_INSTALL_SH.read_text(encoding = "utf-8")
+    template = (LAUNCHD_INSTALL_SH.parent / "ai.unsloth.studio.server.plist.in").read_text(
+        encoding = "utf-8"
+    )
+    exit_timeout = int(
+        re.search(r"<key>ExitTimeOut</key>\s*<integer>(\d+)</integer>", template).group(1)
+    )
+    wait = int(re.search(r'"\$_waited" -ge (\d+)', helper).group(1))
+    assert wait > exit_timeout
+
+
 def test_enable_without_start_does_not_load_now(tmp_path):
     log = _fake_mac(tmp_path)
     r = _run_helper(tmp_path, "--enable")
@@ -433,8 +464,17 @@ def test_uninstall_of_an_unloaded_agent_just_removes_it(tmp_path):
     assert not _plist_path(tmp_path).exists()
 
 
-def test_uninstall_still_removes_the_file_when_bootout_fails(tmp_path):
+def test_uninstall_falls_back_to_remove_when_bootout_fails(tmp_path):
+    # A still-loaded job would be respawned by KeepAlive after the kill sweep.
     out = _run_uninstall_removal(tmp_path, _OURS, '[ "$1" = bootout ] && exit 5; exit 0')
+    assert f"remove {LABEL}" in out
+    assert "could not unload" not in out
+    assert not _plist_path(tmp_path).exists()
+
+
+def test_uninstall_still_removes_the_file_when_launchd_refuses(tmp_path):
+    launchctl = 'case "$1" in bootout|remove) exit 5 ;; esac; exit 0'
+    out = _run_uninstall_removal(tmp_path, _OURS, launchctl)
     assert "could not unload it from launchd" in out
     assert not _plist_path(tmp_path).exists()
 

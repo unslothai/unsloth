@@ -153,23 +153,31 @@ if [ "$_DO_ENABLE" != true ]; then
     exit 0
 fi
 
+# A plist left behind after a failed load would still start at next login, next to whatever
+# install.sh falls back to; remove it so a failure leaves nothing running later.
+_fail_load() {
+    rm -f "$_plist_path"
+    echo "ERROR: $1; removed $_plist_path so it does not start at next login." >&2
+    exit 1
+}
+
 # Clears a `launchctl disable` override, which would otherwise keep it from loading at login.
-launchctl enable "$_domain/$LABEL"
+launchctl enable "$_domain/$LABEL" || _fail_load "launchctl enable $_domain/$LABEL failed"
 if [ "$_DO_START" = true ]; then
     # No stop hook: `unsloth studio stop` would also stop every other Studio on this home.
     if launchctl print "$_domain/$LABEL" >/dev/null 2>&1; then
         launchctl bootout "$_domain/$LABEL" >/dev/null 2>&1 || true
         # bootstrap fails with "5: Input/output error" while the old instance is still unloading.
+        # Wait past the plist's ExitTimeOut (120s), so a Studio finishing a slow shutdown is not cut off.
         _waited=0
         while launchctl print "$_domain/$LABEL" >/dev/null 2>&1; do
-            if [ "$_waited" -ge 30 ]; then
-                echo "ERROR: $LABEL did not unload within 30s; try: launchctl bootout $_domain/$LABEL" >&2
-                exit 1
+            if [ "$_waited" -ge 130 ]; then
+                _fail_load "$LABEL did not unload within 130s; try: launchctl bootout $_domain/$LABEL"
             fi
             sleep 1
             _waited=$((_waited + 1))
         done
     fi
-    launchctl bootstrap "$_domain" "$_plist_path"
+    launchctl bootstrap "$_domain" "$_plist_path" || _fail_load "launchctl bootstrap $_domain failed"
 fi
 printf '%s\n' "$_plist_path"
