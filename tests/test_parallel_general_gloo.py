@@ -57,6 +57,20 @@ _HEADS = dict(num_attention_heads = 4, num_key_value_heads = 2, head_dim = 16)
 # arch -> (model_type, config kwargs)
 CONFIGS = {
     "llama": ("llama", {**_SMALL, **_HEADS}),
+    # gated query (q_proj emits [query | gate] per head) beside replicated Gated DeltaNet layers
+    "qwen3_5_text": (
+        "qwen3_5_text",
+        {
+            **_SMALL,
+            **_HEADS,
+            "num_hidden_layers": 2,
+            "layer_types": ["linear_attention", "full_attention"],
+            "linear_num_key_heads": 2,
+            "linear_num_value_heads": 4,
+            "linear_key_head_dim": 16,
+            "linear_value_head_dim": 16,
+        },
+    ),
     # GPT-J: parallel attention + MLP, fc_in / fc_out, partial rotary
     "gptj": (
         "gptj",
@@ -297,6 +311,7 @@ TP_PASS = {
     "hunyuan_v1_dense": None,
     "lfm2": None,
     "apertus": None,
+    "qwen3_5_text": None,
     "llama_shared": (0, 1),
 }
 TP_REFUSE = {

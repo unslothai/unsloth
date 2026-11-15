@@ -442,6 +442,15 @@ def _attention_sizes(module, projs, text):
     if q is not None and k is not None:
         heads = _logical_shape(*_weight(q.module))[0] // head_dim
         kv_heads = _logical_shape(*_weight(k.module))[0] // head_dim
+        # Gated query (Qwen3-Next / Qwen3.5): q_proj emits [query | gate] per head, 2 * head_dim rows each, while
+        # o_proj reads one head_dim per head. Contiguous row shards still hold whole heads; the count is half.
+        o = next((p for p in projs if p.style == ROWWISE), None)
+        if (
+            o is not None
+            and heads % 2 == 0
+            and _logical_shape(*_weight(o.module))[1] == heads // 2 * head_dim
+        ):
+            heads //= 2
     else:
         heads, kv_heads = heads_cfg, kv_cfg
     return heads, kv_heads, head_dim
