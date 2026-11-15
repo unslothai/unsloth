@@ -6108,6 +6108,11 @@ class PromptUpsamplerPreviewRequest(BaseModel):
         None,
         description = "Sampling variant; null = the loaded FLUX.3 family's (distilled when none is loaded)",
     )
+    family: Optional[str] = Field(
+        None,
+        description = "Image family whose enhancer runs (minimax-h3-image: its Qwen3.5-9B enhancer); null = the "
+        "loaded family's, FLUX.3's upsampler for every other family",
+    )
 
     @field_validator("reference_images")
     @classmethod
