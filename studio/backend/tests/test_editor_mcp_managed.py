@@ -248,3 +248,29 @@ async def test_mcp_app_tool_calls_on_editor_rows_follow_the_stdio_gate(
     with pytest.raises(HTTPException):
         await routes.call_mcp_ui_tool("d" * 16, payload, via_api_key = via_api_key)
     call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_loopback_editors_ignore_proxy_environment(editor_server, monkeypatch):
+    port = editor_server()
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.setenv(name, f"http://127.0.0.1:{_free_port()}")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising = False)
+    result = await editors.probe("godot", EditorSettings(port = port))
+    assert result.ok and result.tool_count == 1
+
+
+def test_unreadable_unreal_token_does_not_break_the_server_list(tmp_path):
+    (tmp_path / "Saved" / "MCP").mkdir(parents = True)
+    (tmp_path / "Saved" / "MCP" / "capability-token").write_bytes(b"\xff\xfe\x00bad")
+    config = json.dumps({"project_path": str(tmp_path)})
+    db.create_server("c" * 16, "Unreal Engine", "", builtin_id = "unreal", builtin_config_json = config)
+    assert db.list_servers()[0]["headers_json"] is None

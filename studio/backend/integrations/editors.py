@@ -72,7 +72,7 @@ def _unreal_token(project_path: str) -> Optional[str]:
     path = unreal_token_path(project_path)
     try:
         token = path.read_text(encoding = "utf-8").strip() if path else ""
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     return token or None
 

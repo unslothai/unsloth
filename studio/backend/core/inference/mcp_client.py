@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from functools import wraps
+from functools import partial, wraps
 from typing import Any, Optional, get_type_hints
 from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
@@ -160,14 +160,33 @@ def _public_http_client_factory(**kwargs):
     return client_type(**kwargs)
 
 
-def _tool_http_client_factory(**kwargs):
+def _is_loopback_url(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _tool_http_client_factory(*, loopback: bool = False, **kwargs):
     """No read cap: _race_tool_call enforces each call's budget, which the SDK's 300s read timeout would cut short."""
     if _managed_mcp_restricted():
         client = _public_http_client_factory(**kwargs)
     else:
         from mcp.shared._httpx_utils import create_mcp_http_client
+
         kwargs.pop("follow_redirects", None)  # create_mcp_http_client sets its own redirect policy
         client = create_mcp_http_client(**kwargs)
+        if loopback:
+            # HTTP(S)_PROXY would route this machine's own servers (and their headers) through the proxy.
+            client = type(client)(
+                timeout = client.timeout,
+                headers = kwargs.get("headers"),
+                auth = kwargs.get("auth"),
+                trust_env = False,
+            )
     t = client.timeout
     client.timeout = type(t)(connect = t.connect, read = None, write = t.write, pool = t.pool)
     tracker = _SESSION_POSTS.get()
@@ -822,7 +841,7 @@ def _client(
             url = url,
             headers = headers or None,
             auth = auth,
-            httpx_client_factory = _tool_http_client_factory,
+            httpx_client_factory = partial(_tool_http_client_factory, loopback = _is_loopback_url(url)),
         )
     )
 
