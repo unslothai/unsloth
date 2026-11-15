@@ -88,9 +88,7 @@ def _chunk_meta(q, k, v, g):
     )
 
 
-# Inductor's on-disk FX graph / AOTAutograd caches key on the graph, which names the op but not its fake: a fake
-# meta change under the same name replays the old output shapes and demotes every layer. Rename on each change
-# (_v2: A per value head, transformers 5.23 grouped value heads).
+# Inductor/AOTAutograd disk caches key on the op name, not its fake: rename on every fake meta change (_v2: A per value head).
 try:
 
     @torch.library.custom_op("unsloth::qwen3_5_gdn_chunk_v2", mutates_args = ())

@@ -1217,9 +1217,7 @@ def test_qwen3_5_gdn_block_has_no_break():
 
 
 def test_gdn_op_name_pins_its_fake_meta():
-    """Inductor's on-disk caches key on the graph, which names the op but not its fake meta: a changed fake under
-    the same name replays the old output shapes (A with the q / k heads), so every grouped value head layer was
-    demoted to the stock forward wherever an older Unsloth had compiled it. One op name, one fake meta."""
+    """Inductor's disk cache keys on the op name, not its fake meta: changing the fake requires a new op name."""
     M = _load("_gdn_op")
     if M._gdn_chunk is None:
         pytest.skip("torch without torch.library.custom_op")
