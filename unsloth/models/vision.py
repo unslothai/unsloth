@@ -3900,8 +3900,7 @@ _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 
 def _router_aux_loss_on(model):
-    """MoE load-balancing loss on (TRL's SFTTrainer turns it on from router_aux_loss_coef): reentrant checkpointing
-    runs the first layer forward under no_grad, so the captured router logits add the loss value but no gradient."""
+    """MoE aux loss on: reentrant GC's no_grad pass would leave it without a gradient."""
     config = getattr(model, "config", None)
     text = config.get_text_config() if hasattr(config, "get_text_config") else config
     if text is None or not hasattr(text, "output_router_logits"):

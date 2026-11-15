@@ -280,9 +280,7 @@ def _same(tensor):
 
 @contextlib.contextmanager
 def _no_output_capture(layer):
-    """The trial forward must not reach transformers' output recording: an extra MoE router_logits entry changes
-    the load-balancing loss and its gradient. transformers >= 5: a context variable read by forward hooks;
-    4.x: check_model_inputs swaps the recorded modules' forward for a capture wrapper."""
+    """Hide the trial forward from transformers' output recording (5.x collector var, 4.x capture-wrapper swap)."""
     swapped = []
     for module in layer.modules():
         fn = module.__dict__.get("forward")

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The MoE router load-balancing loss keeps its gradient under use_gradient_checkpointing = "unsloth".
-
-Reentrant checkpointing runs the first layer forward under no_grad, so router logits captured there carry no
-graph: the auxiliary loss added its value to the loss but nothing to the gradients (tiny gpt-oss, coefficient
-0.9: LoRA grad norm 0.0261 with checkpointing vs 0.0486 without). With the loss on, the model checkpoints
-non-reentrantly (activations still offloaded), so the gradients match no checkpointing."""
+"""MoE aux loss keeps its gradient under "unsloth" GC: reentrant GC's no_grad pass dropped it, so non-reentrant is used."""
 
 import pytest
 
@@ -84,5 +79,5 @@ def _grads(repo, gc):
 def test_router_aux_loss_gradient_survives_unsloth_checkpointing(repo):
     plain, plain_calls = _grads(repo, False)
     checkpointed, calls = _grads(repo, "unsloth")
-    assert plain_calls == 0 and calls > 0, (plain_calls, calls)  # the layers really checkpointed
+    assert plain_calls == 0 and calls > 0, (plain_calls, calls)
     assert abs(checkpointed - plain) / plain < 2e-2, (checkpointed, plain)
