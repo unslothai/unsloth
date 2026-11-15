@@ -219,8 +219,7 @@ def test_packed_ple_matches_separate_documents(reference_gdn_kernels, eos):
 
 
 def test_packed_forward_keeps_documents_apart_with_a_config_cache(reference_gdn_kernels):
-    # use_cache from the config (an eval after for_inference) builds a cache, and transformers then
-    # skips the per-document mask it reads off packed position_ids: QSA would select across documents.
+    # A config use_cache would make transformers skip the per-document mask (QSA across documents).
     model, _ = _tiny_model(indexer_budget = 8)
     assert model.config.use_cache
     assert patch_hybrid_linear_attention_varlen(model) is True
@@ -246,8 +245,7 @@ def test_packed_forward_keeps_documents_apart_with_a_config_cache(reference_gdn_
 
 
 def test_packed_ple_gaps_run_outside_compiled_graphs(reference_gdn_kernels):
-    # The block compile traces each decoder layer; the gapped PLE length (tokens plus a gap per document,
-    # dynamic document count) failed inductor's backward codegen (CantSplit), so packed rows run it eagerly.
+    # Packed PLE must run eagerly: the gapped length failed inductor's backward (CantSplit).
     model, ple = _tiny_model()
     assert patch_hybrid_linear_attention_varlen(model) is True
     lengths = torch.tensor(LENGTHS)
@@ -262,7 +260,7 @@ def test_packed_ple_gaps_run_outside_compiled_graphs(reference_gdn_kernels):
             torch.compile(ple._short_conv, backend = "eager", fullgraph = True)(x, None)
         torch._dynamo.reset()
         torch.testing.assert_close(torch.compile(ple._short_conv, backend = "eager")(x, None), eager)
-        ple._unsloth_varlen = None  # unpacked rows still trace in one graph
+        ple._unsloth_varlen = None
         torch.compile(ple._short_conv, backend = "eager", fullgraph = True)(x, None)
     finally:
         ple._unsloth_varlen = None

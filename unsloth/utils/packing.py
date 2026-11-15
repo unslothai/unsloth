@@ -1181,9 +1181,7 @@ def _ple_input_with_gaps(tensor, varlen, gap, fill_value):
     return expanded.index_copy(1, positions, tensor), positions
 
 
-# Eager, outside the decoder-layer block compile: there the gapped length (tokens plus a gap per
-# document, with a dynamic document count) is a symbolic size inductor may fail to tile in the
-# backward (CantSplit). One PLE layer per model, packed rows only.
+# Eager: the dynamic gapped length fails inductor's backward tiling (CantSplit) in the block compile.
 @torch.compiler.disable
 def _ple_gapped_call(fn, tensor, varlen, gap, fill_value, past_key_values):
     expanded, positions = _ple_input_with_gaps(tensor, varlen, gap, fill_value)
@@ -1695,9 +1693,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_embedding_hit = False
             if varlen is not None and takes_use_cache and bound.get("use_cache") is None:
                 if "use_cache" in kwargs or "use_cache" not in bound:
-                    # A cache built during a packed forward (use_cache from the config, e.g. after
-                    # for_inference) makes transformers drop the per-document mask it builds from
-                    # packed position_ids, so attention (Qwen4Exp's QSA indexer) spans documents.
+                    # A packed-forward cache makes transformers drop the per-document mask (QSA spans docs).
                     kwargs["use_cache"] = False
             outer, _PACKED[0] = _PACKED[0], varlen
             try:

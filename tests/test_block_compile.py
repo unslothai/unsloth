@@ -2110,8 +2110,7 @@ def test_block_keeps_real_transformers_checkpointing(monkeypatch):
 
 @pytest.mark.parametrize("extra_fwd", [0, 1], ids = ["fla_0.5_six_outputs", "fla_main_seven_outputs"])
 def test_opaque_gdn_op_takes_any_fla_return_length(monkeypatch, extra_fwd):
-    # fla main (#1731) appends the intermediate states h to chunk_gated_delta_rule_fwd's return; a fixed 6-way unpack
-    # raised inside the self-check, which then switched the op off silently (every GDN layer graph-broke again).
+    # fla main (#1731) returns an extra h; a fixed 6-way unpack silently disabled the op.
     import contextlib
 
     M = _load("_gdn_op")

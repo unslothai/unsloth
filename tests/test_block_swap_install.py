@@ -426,8 +426,7 @@ def test_every_unsupported_load_mode_is_refused_before_trimming():
 
 
 def test_generic_load_refuses_the_load_modes_the_llama_path_refuses():
-    # FastModel (vision.py) loaded load_in_8bit / caller quantization_config / state_dict / gguf with offload_layers
-    # although the host tail is only rebuilt as dense or bnb 4-bit layers.
+    # FastModel used to accept these with offload_layers though the tail is only dense or bnb 4-bit.
     fn = _method("vision.py", "FastBaseModel", "from_pretrained")
     begin = min(
         n.lineno
