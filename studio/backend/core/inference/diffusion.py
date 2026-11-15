@@ -12021,7 +12021,6 @@ class DiffusionBackend:
         if baked:
             pipe._unsloth_loras = baked
             pipe._unsloth_loras_baked = True
-            pipe._unsloth_h3_loras_merged = True
             logger.info(
                 "diffusion.lora_bake: %d adapter(s) merged into the MiniMax-H3-Image DiT",
                 len(baked),
