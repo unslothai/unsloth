@@ -7,6 +7,12 @@ The kernel is compiled at first use with NVRTC, the runtime compiler the CUDA bu
 launched through the CUDA driver on torch's context and current stream. Nothing is built at install time and no
 compiler toolchain is needed. ``diffusion_int8_attention`` owns everything around it (quantisers, configs, the
 dispatch).
+
+A compile is paid once per machine: NVRTC makes the machine code once per architecture and process (every card of
+that architecture loads the same image, so the driver compiles nothing at load), and the image is kept under
+Studio's cache root, keyed by the source, the defines, the register cap, the architecture, NVRTC and the driver's
+CUDA version, for the next process. Where NVRTC is older than the driver, its PTX is kept instead and the driver
+compiles it at load, as before.
 """
 
 from __future__ import annotations
@@ -14,9 +20,12 @@ from __future__ import annotations
 import ctypes
 import glob
 import hashlib
+import json
 import os
+import re
 import struct
 import sys
+import tempfile
 import threading
 from typing import Any, Optional
 
@@ -1157,10 +1166,49 @@ _NVRTC: Any = None
 _DRIVER: Any = None
 _LAUNCH: Any = None
 _FUNCTIONS: dict = {}
+# (source digest, arch, defines, max_registers) -> (kind, image): what a module is loaded from, made once per process
+# and shared by every card of that architecture
+_BINARIES: dict = {}
+_IDENTITY: dict = {}
 
 _CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES = 3
 _CU_FUNC_ATTRIBUTE_NUM_REGS = 4
 _CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES = 8
+_KINDS = ("cubin", "ptx")  # the image kinds, in the order the disk is read
+
+# The compiled kernels are kept on disk, so a process (and every card after the first) loads them instead of running
+# NVRTC and the driver's PTX compiler again. ``UNSLOTH_DIFFUSION_INT8_ATTENTION_CACHE``: a directory, or ``0`` for no
+# disk cache; unset, ``int8-attention`` under Studio's cache root.
+CACHE_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_CACHE"
+CACHE_DIR_NAME = "int8-attention"
+# Bumped whenever what goes into an image changes in a way the key below does not see (compile options, the loader).
+CACHE_FORMAT = 1
+CACHE_KEEP = 3  # version directories kept, the most recently used first
+CACHE_MAX_FILES = 64  # images per version directory
+_MAGIC = b"UI8ATTN1"
+_VERSION_DIR = re.compile(r"^v[0-9]+-[0-9a-f]{16}$")
+_OFF = ("0", "off", "false", "no")
+# cuModuleLoadData results (cuda.h CUresult) meaning the cubin can never load on this driver or GPU: INVALID_IMAGE
+# (200), NO_BINARY_FOR_GPU (209), INVALID_PTX (218), JIT_COMPILER_NOT_FOUND (221), UNSUPPORTED_PTX_VERSION (222).
+# The PTX is then used for that key (``_PTX_ONLY`` persists it). Other results say nothing about the image and are raised.
+_IMAGE_UNUSABLE = frozenset({200, 209, 218, 221, 222})
+_PTX_ONLY = ".ptx-only"  # suffix of the marker next to a key whose cubin this host cannot load
+# (root, version dir) -> whether images may be read from and written to it (``_usable_dir``), checked once per process
+_TRUSTED: dict = {}
+_LOGGED: set = set()
+_DIGESTS: dict = {}  # (source, ...) -> sha256 hex of the sources joined: the kernel sources are hashed once per process
+# where each image came from in this process (read by tests)
+CACHE_STATS = {
+    "compiled": 0,
+    "cubin": 0,
+    "ptx": 0,
+    "disk_hit": 0,
+    "disk_write": 0,
+    "disk_bad": 0,
+    "memory_hit": 0,
+    "load_fallback": 0,
+    "disk_refused": 0,
+}
 
 
 def _library_dirs() -> list:
@@ -1229,12 +1277,11 @@ def nvrtc_version() -> tuple:
     return major.value, minor.value
 
 
-def compile_ptx(
-    source: str,
-    arch: str,
-    defines: Optional[dict] = None,
-) -> bytes:
-    """PTX (NUL-terminated) of ``source`` for ``arch`` such as "sm_89". Raises RuntimeError with the compiler log."""
+def _nvrtc_outputs(
+    source: str, arch: str, defines: Optional[dict], extra: tuple, whats: tuple
+) -> tuple:
+    """``whats`` ("PTX", "CUBIN") of ``source`` compiled once for ``arch``. Raises RuntimeError with the compiler
+    log."""
     lib = nvrtc()
     program = ctypes.c_void_p()
     rc = lib.nvrtcCreateProgram(
@@ -1245,6 +1292,7 @@ def compile_ptx(
     try:
         options = [f"--gpu-architecture={arch}", "--std=c++17", "-default-device"]
         options += [f"-D{k}={v}" for k, v in (defines or {}).items()]
+        options += list(extra)
         argv = (ctypes.c_char_p * len(options))(*[o.encode() for o in options])
         rc = lib.nvrtcCompileProgram(program, len(options), argv)
         size = ctypes.c_size_t()
@@ -1256,12 +1304,48 @@ def compile_ptx(
                 f"NVRTC compile failed ({lib.nvrtcGetErrorString(rc).decode()}): "
                 + log.value.decode(errors = "replace")[-2000:]
             )
-        lib.nvrtcGetPTXSize(program, ctypes.byref(size))
-        ptx = ctypes.create_string_buffer(size.value)
-        lib.nvrtcGetPTX(program, ptx)
-        return ptx.raw
+        found = []
+        for what in whats:
+            get_size, get = (
+                getattr(lib, f"nvrtcGet{what}Size", None),
+                getattr(lib, f"nvrtcGet{what}", None),
+            )
+            if get_size is None or get is None:
+                raise RuntimeError(f"this NVRTC has no nvrtcGet{what}")
+            rc = get_size(program, ctypes.byref(size))
+            if rc != 0 or not size.value:
+                raise RuntimeError(f"nvrtcGet{what}Size: {lib.nvrtcGetErrorString(rc).decode()}")
+            out = ctypes.create_string_buffer(size.value)
+            rc = get(program, out)
+            if rc != 0:
+                raise RuntimeError(f"nvrtcGet{what}: {lib.nvrtcGetErrorString(rc).decode()}")
+            found.append(out.raw)
+        return tuple(found)
     finally:
         lib.nvrtcDestroyProgram(ctypes.byref(program))
+
+
+def compile_ptx(
+    source: str,
+    arch: str,
+    defines: Optional[dict] = None,
+) -> bytes:
+    """PTX (NUL-terminated) of ``source`` for ``arch`` such as "sm_89" or "compute_89" (the same PTX; the virtual
+    architecture skips the machine-code pass NVRTC runs for a real one). Raises RuntimeError with the compiler log."""
+    return _nvrtc_outputs(source, arch, defines, (), ("PTX",))[0]
+
+
+def compile_cubin(
+    source: str,
+    arch: str,
+    defines: Optional[dict] = None,
+    max_registers: Optional[int] = None,
+) -> bytes:
+    """Machine code of ``source`` for a real ``arch`` ("sm_89") from NVRTC's PTX compiler, the same whole-program
+    compile the driver runs on a PTX load. The register cap goes to that compiler alone (``--ptxas-options``): the
+    PTX stays the uncapped PTX, as with ``cap_registers``."""
+    extra = (f"--ptxas-options=--maxrregcount={int(max_registers)}",) if max_registers else ()
+    return _nvrtc_outputs(source, arch, defines, extra, ("CUBIN",))[0]
 
 
 def cap_registers(ptx: bytes, max_registers: int) -> bytes:
@@ -1297,9 +1381,341 @@ def _launcher() -> Any:
     return _LAUNCH
 
 
+class CudaError(RuntimeError):
+    """A driver call that returned ``rc``."""
+
+    def __init__(self, what: str, rc: int):
+        super().__init__(f"{what} failed with CUDA error {rc}")
+        self.rc = int(rc)
+
+
 def _check(rc: int, what: str) -> None:
     if rc != 0:
-        raise RuntimeError(f"{what} failed with CUDA error {rc}")
+        raise CudaError(what, rc)
+
+
+def _file_identity(path: str) -> list:
+    try:
+        info = os.stat(path)
+        return [os.path.basename(os.path.realpath(path)), int(info.st_size), int(info.st_mtime_ns)]
+    except OSError:
+        return [os.path.basename(path)]
+
+
+def driver_version() -> Optional[tuple]:
+    """(major, minor) of the CUDA version the driver supports, or None when there is no driver to ask."""
+    try:
+        version = ctypes.c_int()
+        if driver().cuDriverGetVersion(ctypes.byref(version)) == 0 and version.value > 0:
+            return version.value // 1000, (version.value % 1000) // 10
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def toolchain_identity() -> dict:
+    """What an image depends on besides its source and options: NVRTC (version, and its library file: a patch
+    release keeps the version number) and the driver's CUDA version (which picks the kind, ``binary``). Read once
+    per process."""
+    found = _IDENTITY.get("value")
+    if found is None:
+        drv = driver_version()
+        found = {
+            "nvrtc": list(nvrtc_version()),
+            "nvrtc_file": _file_identity(getattr(nvrtc(), "_name", "") or ""),
+            "driver": list(drv) if drv else None,
+        }
+        _IDENTITY["value"] = found
+    return found
+
+
+def machine_code_matches_driver() -> bool:
+    """Whether NVRTC's machine code is the code a PTX load would run: NVRTC is at least as new as the driver.
+    NVRTC and the driver of one CUDA version compile the same instructions (checked register for register, and
+    bit for bit, on sm75 / sm80 / sm89 / sm120); a newer driver can schedule them differently (the same output
+    bits, other registers), and then the driver keeps compiling NVRTC's PTX itself, as before."""
+    identity = toolchain_identity()
+    drv = identity.get("driver")
+    return not drv or tuple(identity["nvrtc"]) >= tuple(drv)
+
+
+def cache_root() -> Optional[str]:
+    """Where compiled images are kept: ``CACHE_ENV``, else ``int8-attention`` under Studio's cache root; None = no
+    disk cache (switched off, or outside the Studio backend)."""
+    raw = (os.environ.get(CACHE_ENV) or "").strip()
+    if raw.lower() in _OFF:
+        return None
+    if raw:
+        return os.path.abspath(os.path.expanduser(raw))
+    try:
+        from utils.paths.storage_roots import cache_root as studio_cache_root
+        return os.path.join(str(studio_cache_root()), CACHE_DIR_NAME)
+    except Exception:  # noqa: BLE001 -- outside the Studio backend: memory only
+        return None
+
+
+def version_dir_name() -> str:
+    """One directory per code version: a new source or format starts a new one and the old ones are pruned."""
+    return f"v{CACHE_FORMAT}-{source_digest()}"
+
+
+def _digest(*sources: str) -> str:
+    found = _DIGESTS.get(sources)
+    if found is None:
+        found = _DIGESTS[sources] = hashlib.sha256("".join(sources).encode()).hexdigest()
+    return found
+
+
+def cache_key(
+    kind: str, source: str, arch: str, defines: dict, max_registers: Optional[int]
+) -> str:
+    """File name of an image: a hash of everything that went into it."""
+    identity = toolchain_identity()
+    fields = {
+        "format": CACHE_FORMAT,
+        "kind": kind,
+        "source": _digest(source),
+        "arch": arch,
+        "defines": sorted((str(k), str(v)) for k, v in defines.items()),
+        "max_registers": int(max_registers) if max_registers else None,
+        "nvrtc": identity["nvrtc"],
+        "nvrtc_file": identity["nvrtc_file"],
+        "driver": identity.get("driver"),
+    }
+    digest = hashlib.sha256(json.dumps(fields, sort_keys = True).encode()).hexdigest()[:40]
+    return f"{digest}.{kind}"
+
+
+def _log_once(message: str) -> None:
+    if message in _LOGGED:
+        return
+    _LOGGED.add(message)
+    import logging
+
+    logging.getLogger(__name__).warning(message)
+
+
+def _private(info: os.stat_result) -> bool:
+    """Owned by this user and writable by no one else: nothing in it can have been put there by another user."""
+    return info.st_uid == os.getuid() and not info.st_mode & 0o022
+
+
+def _usable_dir(root: str, version: str) -> bool:
+    """Whether images may be kept in ``root``/``version``: both made (mode 0o700) when missing, and on POSIX both
+    owned by this user and not group- or world-writable (``_private``). Anything else (a shared directory set in
+    ``CACHE_ENV``, a directory that cannot be made) keeps the images in memory, with one warning. Checked once per
+    process per directory. On Windows the mode bits and ``st_uid`` say nothing about the ACLs that decide who can
+    write (the default root is under the user's own profile), so only the directories are made there."""
+    key = (root, version)
+    found = _TRUSTED.get(key)
+    if found is not None:
+        return found
+    folder = os.path.join(root, version)
+    try:
+        os.makedirs(root, mode = 0o700, exist_ok = True)
+        os.makedirs(folder, mode = 0o700, exist_ok = True)
+        found = os.name == "nt" or all(_private(os.stat(p)) for p in (root, folder))
+        if not found:
+            _log_once(
+                f"INT8 attention: not using the kernel cache at {root}: it must be owned by this user and not "
+                "writable by the group or others; compiling in memory"
+            )
+    except OSError:
+        found = False  # read-only or not a directory: memory only, as before
+    if not found:
+        CACHE_STATS["disk_refused"] += 1
+    _TRUSTED[key] = found
+    return found
+
+
+def _cache_read(path: str) -> Optional[bytes]:
+    """The image at ``path``, or None when it is missing, unreadable, not this user's own private file (POSIX) or
+    does not match its checksum (a torn or corrupt file is then removed and rebuilt)."""
+    try:
+        with open(path, "rb") as f:
+            if os.name != "nt" and not _private(os.fstat(f.fileno())):
+                CACHE_STATS["disk_refused"] += 1
+                _log_once(f"INT8 attention: not loading {path}: not this user's own private file")
+                return None
+            data = f.read()
+    except OSError:
+        return None
+    head = len(_MAGIC) + 32
+    if (
+        len(data) > head
+        and data.startswith(_MAGIC)
+        and hashlib.sha256(data[head:]).digest() == data[len(_MAGIC) : head]
+    ):
+        try:
+            os.utime(path)  # most recently used, for the pruning
+        except OSError:
+            pass
+        return data[head:]
+    CACHE_STATS["disk_bad"] += 1
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return None
+
+
+def _cache_write(path: str, image: bytes) -> None:
+    """Atomic: a temporary file in the same directory renamed over ``path``, so a reader in another process sees the
+    old file, the new one, or none. Any failure only costs the next process a compile."""
+    folder = os.path.dirname(path)
+    tmp = None
+    try:
+        os.makedirs(folder, mode = 0o700, exist_ok = True)
+        fd, tmp = tempfile.mkstemp(prefix = ".tmp-", dir = folder)  # mode 0o600
+        with os.fdopen(fd, "wb") as f:
+            f.write(_MAGIC + hashlib.sha256(image).digest() + image)
+        os.replace(tmp, path)
+        tmp = None
+        CACHE_STATS["disk_write"] += 1
+    except OSError:
+        pass  # read-only or full disk; on Windows another process may hold ``path`` open: its copy is the same
+    finally:
+        if tmp is not None:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    _prune(os.path.dirname(folder), os.path.basename(folder))
+
+
+def _prune(root: str, current: str) -> None:
+    """Keeps ``CACHE_KEEP`` version directories (``current`` and the most recently used others) and
+    ``CACHE_MAX_FILES`` images in ``current``; drops temporary files left by a killed writer."""
+    import shutil
+    import time
+
+    try:
+        with os.scandir(root) as entries:
+            # only names this module makes: a cache root pointed at a shared directory loses nothing else
+            versions = [
+                (e.stat().st_mtime, e.name)
+                for e in entries
+                if e.is_dir(follow_symlinks = False)
+                and _VERSION_DIR.match(e.name)
+                and e.name != current
+            ]
+        for _, name in sorted(versions, reverse = True)[max(0, CACHE_KEEP - 1) :]:
+            shutil.rmtree(os.path.join(root, name), ignore_errors = True)
+        folder = os.path.join(root, current)
+        os.utime(folder)
+        now = time.time()
+        with os.scandir(folder) as entries:
+            files = [
+                (e.stat().st_mtime, e.name) for e in entries if e.is_file(follow_symlinks = False)
+            ]
+        images = sorted((t, n) for t, n in files if not n.startswith(".tmp-"))
+        stale = [n for t, n in files if n.startswith(".tmp-") and now - t > 3600]
+        stale += [n for _, n in images[: max(0, len(images) - CACHE_MAX_FILES)]]
+        for name in stale:
+            try:
+                os.remove(os.path.join(folder, name))
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _memo(capability: tuple, source: str, defines: dict, max_registers: Optional[int]) -> tuple:
+    return (
+        _digest(source),
+        f"sm_{capability[0]}{capability[1]}",
+        tuple(sorted(defines.items())),
+        max_registers,
+    )
+
+
+def _image_path(
+    kind: str, capability: tuple, source: str, defines: dict, max_registers: Optional[int]
+) -> Optional[str]:
+    root = cache_root()
+    if not root:
+        return None
+    version = version_dir_name()
+    if not _usable_dir(root, version):
+        return None
+    arch = f"sm_{capability[0]}{capability[1]}"
+    return os.path.join(root, version, cache_key(kind, source, arch, defines, max_registers))
+
+
+def binary(
+    capability: tuple,
+    source: str,
+    defines: dict,
+    max_registers: Optional[int] = None,
+) -> tuple:
+    """(kind, image) to load ``source`` with ``defines`` from on a card of ``capability``: "cubin" (machine code,
+    ``compile_cubin``) or, where NVRTC cannot make machine code or is older than the driver
+    (``machine_code_matches_driver``), "ptx" (``cap_registers`` on ``compile_ptx``, as before the cache: the driver
+    compiles it at load, through its own cache). Made once per process per architecture, and kept on disk
+    (``cache_root``) for the next process. Needs no card: every card of that architecture loads the same image."""
+    memo = _memo(capability, source, defines, max_registers)
+    found = _BINARIES.get(memo)
+    if found is not None:
+        CACHE_STATS["memory_hit"] += 1
+        return found
+    paths = {kind: _image_path(kind, capability, source, defines, max_registers) for kind in _KINDS}
+    # a process before this one found that this host cannot load the cubin of this key (``_forget``)
+    ptx_only = bool(paths["cubin"]) and _cache_read(paths["cubin"] + _PTX_ONLY) is not None
+    for kind in ("ptx",) if ptx_only else _KINDS:
+        path = paths[kind]
+        image = _cache_read(path) if path else None
+        if image is not None:
+            CACHE_STATS["disk_hit"] += 1
+            _BINARIES[memo] = (kind, image)
+            return _BINARIES[memo]
+    CACHE_STATS["compiled"] += 1
+    found = None
+    if not ptx_only and machine_code_matches_driver():
+        try:
+            found = ("cubin", compile_cubin(source, memo[1], defines, max_registers))
+        except Exception:  # noqa: BLE001 -- no nvrtcGetCUBIN, no --ptxas-options: fall back to the PTX
+            found = None
+    if found is None:
+        ptx = compile_ptx(source, f"compute_{capability[0]}{capability[1]}", defines)
+        found = ("ptx", cap_registers(ptx, max_registers) if max_registers else ptx)
+    CACHE_STATS[found[0]] += 1
+    path = paths[found[0]]
+    if path:
+        _cache_write(path, found[1])
+    _BINARIES[memo] = found
+    return found
+
+
+def _forget(
+    kind: str,
+    capability: tuple,
+    source: str,
+    defines: dict,
+    max_registers: Optional[int],
+    replacement: tuple,
+) -> None:
+    """A cubin this driver or GPU cannot load (``_IMAGE_UNUSABLE``): ``replacement`` (the PTX) is used for the rest
+    of the process and kept on disk under its own key, with a marker that sends the next processes straight to it;
+    the cubin is dropped."""
+    path = _image_path(kind, capability, source, defines, max_registers)
+    if path:
+        _cache_write(path + _PTX_ONLY, b"ptx")
+        _cache_write(
+            _image_path(replacement[0], capability, source, defines, max_registers), replacement[1]
+        )
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    _BINARIES[_memo(capability, source, defines, max_registers)] = replacement
+
+
+def _load_image(image: bytes) -> ctypes.c_void_p:
+    module = ctypes.c_void_p()
+    _check(
+        driver().cuModuleLoadData(ctypes.byref(module), ctypes.c_char_p(image)), "cuModuleLoadData"
+    )
+    return module
 
 
 class Function:
@@ -1387,8 +1803,8 @@ def load_module(
     max_registers: Optional[int] = None,
 ) -> dict:
     """``source`` compiled with ``defines`` and loaded on torch's context of ``device_index``: {name: Function},
-    cached per process. Not to be called while a CUDA graph is being captured (compiling is not a stream
-    operation)."""
+    cached per process (the compiled image per architecture, ``binary``; the module per card). Not to be called while
+    a CUDA graph is being captured (compiling and loading are not stream operations)."""
     import torch
 
     key = (int(device_index), names, tuple(sorted(defines.items())), max_registers)
@@ -1399,18 +1815,23 @@ def load_module(
         found = _FUNCTIONS.get(key)
         if found is not None:
             return found
-        ptx = compile_ptx(source, f"sm_{capability[0]}{capability[1]}", defines)
-        if max_registers:
-            ptx = cap_registers(ptx, max_registers)
+        kind, image = binary(capability, source, defines, max_registers)  # no card needed
         with torch.cuda.device(device_index):
             torch.zeros(
                 1, device = f"cuda:{device_index}"
             )  # torch's context exists and is current on this thread
-            module = ctypes.c_void_p()
-            _check(
-                driver().cuModuleLoadData(ctypes.byref(module), ctypes.c_char_p(ptx)),
-                "cuModuleLoadData",
-            )
+            try:
+                module = _load_image(image)
+            except CudaError as exc:
+                if kind == "ptx" or exc.rc not in _IMAGE_UNUSABLE:
+                    raise  # a transient failure (out of memory, ...): the cached cubin stays
+                # machine code this driver or GPU cannot load: use the PTX from here on
+                CACHE_STATS["load_fallback"] += 1
+                ptx = compile_ptx(source, f"compute_{capability[0]}{capability[1]}", defines)
+                if max_registers:
+                    ptx = cap_registers(ptx, max_registers)
+                _forget(kind, capability, source, defines, max_registers, ("ptx", ptx))
+                module = _load_image(ptx)
             functions = {}
             for name in names:
                 handle = ctypes.c_void_p()
@@ -1444,4 +1865,4 @@ def load_quantisers(device_index: int, capability: tuple, defines: dict) -> dict
 
 
 def source_digest() -> str:
-    return hashlib.sha256((KERNEL_SOURCE + QUANT_SOURCE).encode()).hexdigest()[:16]
+    return _digest(KERNEL_SOURCE, QUANT_SOURCE)[:16]
