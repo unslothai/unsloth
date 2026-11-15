@@ -398,6 +398,13 @@ def _before_loading(quantizer, model, checkpoint_files):
     # dequantize=True asks transformers for 16-bit experts; its own (lossy) path is left as it is.
     if getattr(getattr(quantizer, "quantization_config", None), "dequantize", False):
         return
+    # transformers' own tensor / expert parallel load shards the stacks per rank; the placeholders are whole stacks.
+    if (
+        getattr(getattr(model, "config", None), "distributed_config", None) is not None
+        or getattr(model, "_device_mesh", None) is not None
+        or (getattr(model, "tp_size", None) or 1) > 1
+    ):
+        return
     plan = _plan(model, checkpoint_files)
     if not plan:
         return
