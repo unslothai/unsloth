@@ -56,6 +56,8 @@ def chain(monkeypatch, tmp_path):
     monkeypatch.setattr(K, "_BINARIES", {})
     monkeypatch.setattr(K, "_FUNCTIONS", {})
     monkeypatch.setattr(K, "_IDENTITY", {})
+    monkeypatch.setattr(K, "_TRUSTED", {})
+    monkeypatch.setattr(K, "_LOGGED", set())
     monkeypatch.setattr(K, "CACHE_STATS", {key: 0 for key in K.CACHE_STATS})
     monkeypatch.setattr(K, "toolchain_identity", lambda: IDENTITY)
     monkeypatch.setattr(K, "compile_ptx", tc.compile_ptx)
@@ -301,8 +303,8 @@ def test_machine_code_the_driver_will_not_load_falls_back_to_the_ptx(cards, tmp_
     monkeypatch.setattr(K, "_load_image", load_image)
     K.load_module(0, (8, 0), SOURCE, (K.KERNEL_NAME,), DEFINES)
     assert K.CACHE_STATS["load_fallback"] == 1 and loaded[-1].startswith(b"PTX compute_80")
-    # dropped from disk, and the other cards of the process load the PTX at once
-    assert list(_version_dir(tmp_path).iterdir()) == []
+    # the cubin dropped from disk for the PTX and its marker, and the other cards of the process load the PTX at once
+    assert sorted(p.suffix for p in _version_dir(tmp_path).iterdir()) == [".ptx", ".ptx-only"]
     K.load_module(1, (8, 0), SOURCE, (K.KERNEL_NAME,), DEFINES)
     assert (
         K.CACHE_STATS["load_fallback"] == 1
@@ -421,3 +423,121 @@ def test_nvrtc_makes_the_images_from_the_same_ptx(capability):
             K.QUANT_SOURCE, f"sm_{arch}", quant
         )
     assert K.compile_cubin(K.QUANT_SOURCE, f"sm_{arch}", quant).startswith(b"\x7fELF")
+
+
+def _failing_cubin_loads(monkeypatch, rc):
+    loaded = []
+
+    def load_image(image):
+        loaded.append(bytes(image))
+        if image.startswith(b"\x7fELF"):
+            raise K.CudaError("cuModuleLoadData", rc)
+        return K.ctypes.c_void_p(1)
+
+    monkeypatch.setattr(K, "_load_image", load_image)
+    return loaded
+
+
+def _new_process():
+    K._BINARIES.clear()
+    K._FUNCTIONS.clear()
+    K._TRUSTED.clear()
+
+
+@pytest.mark.parametrize(
+    "rc", [2, 3, 201], ids = ["out_of_memory", "not_initialized", "invalid_context"]
+)
+def test_a_transient_load_failure_is_raised_and_keeps_the_cubin(cards, tmp_path, monkeypatch, rc):
+    """Nothing about the image: no PTX fallback, nothing removed, the next try loads the same cubin."""
+    loaded = _failing_cubin_loads(monkeypatch, rc)
+    with pytest.raises(K.CudaError) as raised:
+        K.load_module(0, (8, 9), SOURCE, (K.KERNEL_NAME,), DEFINES)
+    assert raised.value.rc == rc and K.CACHE_STATS["load_fallback"] == 0 and not cards.ptx
+    assert [p.suffix for p in _version_dir(tmp_path).iterdir()] == [".cubin"]
+    monkeypatch.setattr(
+        K, "_load_image", lambda image: loaded.append(bytes(image)) or K.ctypes.c_void_p(1)
+    )
+    K.load_module(0, (8, 9), SOURCE, (K.KERNEL_NAME,), DEFINES)
+    assert loaded[-1].startswith(b"\x7fELF") and len(cards.cubin) == 1
+    _new_process()
+    K.load_module(0, (8, 9), SOURCE, (K.KERNEL_NAME,), DEFINES)
+    assert K.CACHE_STATS["disk_hit"] == 1 and len(cards.cubin) == 1
+
+
+@pytest.mark.parametrize("rc", sorted(K._IMAGE_UNUSABLE))
+def test_a_cubin_this_host_cannot_load_is_remembered_as_ptx_only(cards, tmp_path, monkeypatch, rc):
+    loaded = _failing_cubin_loads(monkeypatch, rc)
+    K.load_module(0, (8, 9), SOURCE, (K.KERNEL_NAME,), DEFINES, 168)
+    assert K.CACHE_STATS["load_fallback"] == 1 and len(cards.cubin) == 1 and len(cards.ptx) == 1
+    assert sorted(p.suffix for p in _version_dir(tmp_path).iterdir()) == [".ptx", ".ptx-only"]
+    ptx = loaded[-1]
+    assert ptx == K.cap_registers(_Toolchain().compile_ptx(SOURCE, "compute_89", DEFINES), 168)
+    _new_process()
+    del loaded[:]
+    K.load_module(0, (8, 9), SOURCE, (K.KERNEL_NAME,), DEFINES, 168)
+    # straight to the PTX on disk: no cubin compile, read or load
+    assert loaded == [ptx] and len(cards.cubin) == 1 and len(cards.ptx) == 1
+    assert K.CACHE_STATS["disk_hit"] == 1 and K.CACHE_STATS["load_fallback"] == 1
+    # the PTX pruned but the marker kept: the PTX is compiled again, never the cubin
+    next(_version_dir(tmp_path).glob("*.ptx")).unlink()
+    _new_process()
+    K.load_module(0, (8, 9), SOURCE, (K.KERNEL_NAME,), DEFINES, 168)
+    assert loaded[-1] == ptx and len(cards.cubin) == 1 and len(cards.ptx) == 2
+
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason = "POSIX ownership and mode bits")
+
+
+@posix_only
+@pytest.mark.parametrize("where", ["root", "version"])
+@pytest.mark.parametrize("how", ["world_writable", "group_writable", "foreign_owner"])
+def test_a_directory_others_can_write_is_not_read(chain, tmp_path, monkeypatch, where, how):
+    good = K.binary((8, 9), SOURCE, DEFINES)
+    folder = tmp_path / "cache" if where == "root" else _version_dir(tmp_path)
+    (image,) = list(_version_dir(tmp_path).iterdir())
+    planted = image.read_bytes()
+    if how == "foreign_owner":
+        uid = os.getuid()
+        monkeypatch.setattr(K.os, "getuid", lambda: uid + 1)
+    else:
+        folder.chmod(0o777 if how == "world_writable" else 0o770)
+    _new_process()
+    assert K.binary((8, 9), SOURCE, DEFINES) == good  # compiled in memory
+    assert len(chain.cubin) == 2 and K.CACHE_STATS["disk_hit"] == 0
+    assert K.CACHE_STATS["disk_refused"] == 1
+    # nothing written there either
+    assert image.read_bytes() == planted and K.CACHE_STATS["disk_write"] == 1
+    K._BINARIES.clear()  # checked once per process per directory
+    K.binary((8, 9), SOURCE, {**DEFINES, "BN": 64})
+    assert K.CACHE_STATS["disk_refused"] == 1 and len(chain.cubin) == 3
+
+
+@posix_only
+@pytest.mark.parametrize("mode", [0o666, 0o620])
+def test_a_file_others_can_write_is_not_read(chain, tmp_path, mode):
+    good = K.binary((8, 9), SOURCE, DEFINES)
+    (image,) = list(_version_dir(tmp_path).iterdir())
+    image.chmod(mode)
+    _new_process()
+    assert K.binary((8, 9), SOURCE, DEFINES) == good
+    assert len(chain.cubin) == 2 and K.CACHE_STATS["disk_hit"] == 0
+    assert K.CACHE_STATS["disk_refused"] == 1
+    assert image.stat().st_mode & 0o777 == 0o600  # replaced by this process's own private file
+
+
+@posix_only
+def test_the_cache_is_made_private(chain, tmp_path, monkeypatch):
+    root = tmp_path / "a" / "cache"
+    monkeypatch.setenv(K.CACHE_ENV, str(root))
+    old = os.umask(0o002)  # a umask that leaves new directories group-writable
+    try:
+        K.binary((8, 9), SOURCE, DEFINES)
+    finally:
+        os.umask(old)
+    folder = root / K.version_dir_name()
+    (image,) = list(folder.iterdir())
+    modes = [p.stat().st_mode & 0o777 for p in (root, folder, image)]
+    assert modes == [0o700, 0o700, 0o600]
+    _new_process()
+    K.binary((8, 9), SOURCE, DEFINES)
+    assert K.CACHE_STATS["disk_hit"] == 1 and K.CACHE_STATS["disk_refused"] == 0

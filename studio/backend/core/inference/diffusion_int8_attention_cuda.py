@@ -1188,6 +1188,19 @@ CACHE_MAX_FILES = 64  # images per version directory
 _MAGIC = b"UI8ATTN1"
 _VERSION_DIR = re.compile(r"^v[0-9]+-[0-9a-f]{16}$")
 _OFF = ("0", "off", "false", "no")
+# A cubin that cannot load for one of these ``cuModuleLoadData`` results is unusable on this driver or GPU for good
+# (CUDA Driver API, CUresult): CUDA_ERROR_INVALID_IMAGE (200, "the kernel image is invalid"),
+# CUDA_ERROR_NO_BINARY_FOR_GPU (209, "no kernel image suitable for the device"), CUDA_ERROR_INVALID_PTX (218, "a PTX
+# JIT compilation failed"), CUDA_ERROR_JIT_COMPILER_NOT_FOUND (221, "the PTX JIT compiler library was not found"),
+# CUDA_ERROR_UNSUPPORTED_PTX_VERSION (222, "the provided PTX was compiled with an unsupported toolchain"). The PTX is
+# then used for that key, in this process and (``_PTX_ONLY``) the later ones. Any other result (out of memory, not
+# initialized, a bad context) says nothing about the image: it is raised, and the disk is left as it is.
+_IMAGE_UNUSABLE = frozenset({200, 209, 218, 221, 222})
+_PTX_ONLY = ".ptx-only"  # suffix of the marker next to a key whose cubin this host cannot load
+# (root, version dir) -> whether images may be read from and written to it (``_usable_dir``), checked once per process
+_TRUSTED: dict = {}
+_LOGGED: set = set()
+_DIGESTS: dict = {}  # (source, ...) -> sha256 hex of the sources joined: the kernel sources are hashed once per process
 # where each image came from in this process (read by tests)
 CACHE_STATS = {
     "compiled": 0,
@@ -1198,6 +1211,7 @@ CACHE_STATS = {
     "disk_bad": 0,
     "memory_hit": 0,
     "load_fallback": 0,
+    "disk_refused": 0,
 }
 
 
@@ -1449,6 +1463,13 @@ def version_dir_name() -> str:
     return f"v{CACHE_FORMAT}-{source_digest()}"
 
 
+def _digest(*sources: str) -> str:
+    found = _DIGESTS.get(sources)
+    if found is None:
+        found = _DIGESTS[sources] = hashlib.sha256("".join(sources).encode()).hexdigest()
+    return found
+
+
 def cache_key(
     kind: str, source: str, arch: str, defines: dict, max_registers: Optional[int]
 ) -> str:
@@ -1457,7 +1478,7 @@ def cache_key(
     fields = {
         "format": CACHE_FORMAT,
         "kind": kind,
-        "source": hashlib.sha256(source.encode()).hexdigest(),
+        "source": _digest(source),
         "arch": arch,
         "defines": sorted((str(k), str(v)) for k, v in defines.items()),
         "max_registers": int(max_registers) if max_registers else None,
@@ -1469,11 +1490,57 @@ def cache_key(
     return f"{digest}.{kind}"
 
 
+def _log_once(message: str) -> None:
+    if message in _LOGGED:
+        return
+    _LOGGED.add(message)
+    import logging
+
+    logging.getLogger(__name__).warning(message)
+
+
+def _private(info: os.stat_result) -> bool:
+    """Owned by this user and writable by no one else: nothing in it can have been put there by another user."""
+    return info.st_uid == os.getuid() and not info.st_mode & 0o022
+
+
+def _usable_dir(root: str, version: str) -> bool:
+    """Whether images may be kept in ``root``/``version``: both made (mode 0o700) when missing, and on POSIX both
+    owned by this user and not group- or world-writable (``_private``). Anything else (a shared directory set in
+    ``CACHE_ENV``, a directory that cannot be made) keeps the images in memory, with one warning. Checked once per
+    process per directory. On Windows the mode bits and ``st_uid`` say nothing about the ACLs that decide who can
+    write (the default root is under the user's own profile), so only the directories are made there."""
+    key = (root, version)
+    found = _TRUSTED.get(key)
+    if found is not None:
+        return found
+    folder = os.path.join(root, version)
+    try:
+        os.makedirs(root, mode = 0o700, exist_ok = True)
+        os.makedirs(folder, mode = 0o700, exist_ok = True)
+        found = os.name == "nt" or all(_private(os.stat(p)) for p in (root, folder))
+        if not found:
+            _log_once(
+                f"INT8 attention: not using the kernel cache at {root}: it must be owned by this user and not "
+                "writable by the group or others; compiling in memory"
+            )
+    except OSError:
+        found = False  # read-only or not a directory: memory only, as before
+    if not found:
+        CACHE_STATS["disk_refused"] += 1
+    _TRUSTED[key] = found
+    return found
+
+
 def _cache_read(path: str) -> Optional[bytes]:
-    """The image at ``path``, or None when it is missing, unreadable or does not match its checksum (a torn or
-    corrupt file is then removed and rebuilt)."""
+    """The image at ``path``, or None when it is missing, unreadable, not this user's own private file (POSIX) or
+    does not match its checksum (a torn or corrupt file is then removed and rebuilt)."""
     try:
         with open(path, "rb") as f:
+            if os.name != "nt" and not _private(os.fstat(f.fileno())):
+                CACHE_STATS["disk_refused"] += 1
+                _log_once(f"INT8 attention: not loading {path}: not this user's own private file")
+                return None
             data = f.read()
     except OSError:
         return None
@@ -1502,8 +1569,8 @@ def _cache_write(path: str, image: bytes) -> None:
     folder = os.path.dirname(path)
     tmp = None
     try:
-        os.makedirs(folder, exist_ok = True)
-        fd, tmp = tempfile.mkstemp(prefix = ".tmp-", dir = folder)
+        os.makedirs(folder, mode = 0o700, exist_ok = True)
+        fd, tmp = tempfile.mkstemp(prefix = ".tmp-", dir = folder)  # mode 0o600
         with os.fdopen(fd, "wb") as f:
             f.write(_MAGIC + hashlib.sha256(image).digest() + image)
         os.replace(tmp, path)
@@ -1559,7 +1626,7 @@ def _prune(root: str, current: str) -> None:
 
 def _memo(capability: tuple, source: str, defines: dict, max_registers: Optional[int]) -> tuple:
     return (
-        hashlib.sha256(source.encode()).hexdigest(),
+        _digest(source),
         f"sm_{capability[0]}{capability[1]}",
         tuple(sorted(defines.items())),
         max_registers,
@@ -1572,10 +1639,11 @@ def _image_path(
     root = cache_root()
     if not root:
         return None
+    version = version_dir_name()
+    if not _usable_dir(root, version):
+        return None
     arch = f"sm_{capability[0]}{capability[1]}"
-    return os.path.join(
-        root, version_dir_name(), cache_key(kind, source, arch, defines, max_registers)
-    )
+    return os.path.join(root, version, cache_key(kind, source, arch, defines, max_registers))
 
 
 def binary(
@@ -1594,8 +1662,11 @@ def binary(
     if found is not None:
         CACHE_STATS["memory_hit"] += 1
         return found
-    for kind in _KINDS:
-        path = _image_path(kind, capability, source, defines, max_registers)
+    paths = {kind: _image_path(kind, capability, source, defines, max_registers) for kind in _KINDS}
+    # a process before this one found that this host cannot load the cubin of this key (``_forget``)
+    ptx_only = bool(paths["cubin"]) and _cache_read(paths["cubin"] + _PTX_ONLY) is not None
+    for kind in ("ptx",) if ptx_only else _KINDS:
+        path = paths[kind]
         image = _cache_read(path) if path else None
         if image is not None:
             CACHE_STATS["disk_hit"] += 1
@@ -1603,7 +1674,7 @@ def binary(
             return _BINARIES[memo]
     CACHE_STATS["compiled"] += 1
     found = None
-    if machine_code_matches_driver():
+    if not ptx_only and machine_code_matches_driver():
         try:
             found = ("cubin", compile_cubin(source, memo[1], defines, max_registers))
         except Exception:  # noqa: BLE001 -- no nvrtcGetCUBIN, no --ptxas-options: fall back to the PTX
@@ -1612,7 +1683,7 @@ def binary(
         ptx = compile_ptx(source, f"compute_{capability[0]}{capability[1]}", defines)
         found = ("ptx", cap_registers(ptx, max_registers) if max_registers else ptx)
     CACHE_STATS[found[0]] += 1
-    path = _image_path(found[0], capability, source, defines, max_registers)
+    path = paths[found[0]]
     if path:
         _cache_write(path, found[1])
     _BINARIES[memo] = found
@@ -1627,9 +1698,15 @@ def _forget(
     max_registers: Optional[int],
     replacement: tuple,
 ) -> None:
-    """An image that would not load: dropped from disk, ``replacement`` used for the rest of the process."""
+    """A cubin this driver or GPU cannot load (``_IMAGE_UNUSABLE``): ``replacement`` (the PTX) is used for the rest
+    of the process and kept on disk under its own key, with a marker that sends the next processes straight to it;
+    the cubin is dropped."""
     path = _image_path(kind, capability, source, defines, max_registers)
     if path:
+        _cache_write(path + _PTX_ONLY, b"ptx")
+        _cache_write(
+            _image_path(replacement[0], capability, source, defines, max_registers), replacement[1]
+        )
         try:
             os.remove(path)
         except OSError:
@@ -1749,10 +1826,10 @@ def load_module(
             )  # torch's context exists and is current on this thread
             try:
                 module = _load_image(image)
-            except RuntimeError:
-                if kind == "ptx":
-                    raise
-                # machine code this driver cannot load: use the PTX from here on
+            except CudaError as exc:
+                if kind == "ptx" or exc.rc not in _IMAGE_UNUSABLE:
+                    raise  # a transient failure (out of memory, ...): the cached cubin stays
+                # machine code this driver or GPU cannot load: use the PTX from here on
                 CACHE_STATS["load_fallback"] += 1
                 ptx = compile_ptx(source, f"compute_{capability[0]}{capability[1]}", defines)
                 if max_registers:
@@ -1792,4 +1869,4 @@ def load_quantisers(device_index: int, capability: tuple, defines: dict) -> dict
 
 
 def source_digest() -> str:
-    return hashlib.sha256((KERNEL_SOURCE + QUANT_SOURCE).encode()).hexdigest()[:16]
+    return _digest(KERNEL_SOURCE, QUANT_SOURCE)[:16]
