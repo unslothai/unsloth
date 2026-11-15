@@ -70,7 +70,8 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
           }
           owned = owned && loaded === id;
           loaded = id;
-          deps.setLoaded(true);
+          // A pick changed during the check: the new voice is not loaded yet.
+          deps.setLoaded(deps.pickedVoice() === id);
           return true;
         }
         // Queued behind a load that voice off already undid: never start another.

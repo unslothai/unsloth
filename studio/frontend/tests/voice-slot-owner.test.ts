@@ -223,3 +223,35 @@ test("a load queued behind one that voice off undid never starts", async () => {
   assert.equal(await second, false);
   assert.deepEqual(calls, ["load first", "unload first"]);
 });
+
+test("a serving check for a voice the user has since switched away from does not mark the slot ready", async () => {
+  let picked = "kokoro";
+  let release: () => void = () => {};
+  let loaded: boolean | null = null;
+  const owner = createVoiceSlotOwner({
+    api: async () => ({
+      voiceServing: () =>
+        new Promise<boolean>((resolve) => {
+          release = () => resolve(true);
+        }),
+      loadVoice: async () => {},
+      unloadVoice: async () => {},
+    }),
+    pickedVoice: () => picked,
+    hasChatModel: () => true,
+    voiceOff: () => false,
+    setLoaded: (value) => {
+      loaded = value;
+    },
+    setLoading: () => {},
+    onError: (error) => {
+      throw error;
+    },
+  });
+  const run = owner.ensure();
+  await new Promise((r) => setTimeout(r, 0));
+  picked = "pockettts";
+  release();
+  await run;
+  assert.equal(loaded, false);
+});
