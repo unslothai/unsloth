@@ -97,6 +97,14 @@ export function voiceWroteBox(text: string): boolean {
 
 // The box minus this loop's last transcript, or null when that transcript is not its tail:
 // dictation prepends a typed draft, so a held fragment sits after it and must go before re-arming.
+// Once a send has cleared the box, its transcript no longer claims later drafts; a newer utterance's does.
+export function voiceTextReleaser(): () => void {
+  const said = voiceBoxText;
+  return () => {
+    if (voiceBoxText === said) voiceBoxText = "";
+  };
+}
+
 export function withoutVoiceText(text: string): string | null {
   const said = voiceBoxText.trim();
   const box = text.trimEnd();
@@ -155,6 +163,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // Off now, off and back on, or a thread switch since this recording opened: its words are dropped.
     const switchedOff = () =>
       getVoiceMode() === "off" || voiceOffEpoch() !== offAtOpen || epoch !== heldEpoch;
+    // A thread switch or Stop queued behind finish() resets the turn: the old words never submit into it.
+    const submitLater = () =>
+      setTimeout(() => {
+        if (!switchedOff()) requestVoiceSubmit();
+      }, 0);
     let prerollVoicedMs = 0;
     const bargeGate = createBargeGate(
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
@@ -255,7 +268,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         heldTurn = null;
         emitSpeech(text, true);
         finish("stopped", text);
-        setTimeout(() => requestVoiceSubmit(), 0);
+        submitLater();
         return;
       }
       finish("stopped");
@@ -387,7 +400,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
           emitSpeech(transcript, true);
           finish("stopped", transcript);
-          setTimeout(() => requestVoiceSubmit(), 0);
+          submitLater();
         } else {
           if (bargedIn) requestVoiceBargeAbort();
           finish("stopped");

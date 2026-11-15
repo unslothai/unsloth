@@ -62,7 +62,7 @@ test("the barge-in probe is judged on the shorter bar its clip can meet", () => 
 test("the delayed composer cleanup clears only the refilled transcript", () => {
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   const clear = engine.slice(engine.indexOf("const deferredClear = (n: number) => {"));
-  assert.match(clear.slice(0, 400), /if \(!voiceWroteBox\(fresh\.getState\(\)\.text\)\) return;/);
+  assert.match(clear.slice(0, 400), /if \(voiceWroteBox\(fresh\.getState\(\)\.text\)\) \{\s*fresh\.setText\(""\);/);
 });
 
 test("frames stay in order when the reply ends while the barge-in probe is out", () => {
@@ -169,4 +169,12 @@ test("a phrase still in VAD/STT holds the coalesced reply; an unmounted engine's
   assert.match(loop, /teardown\(\);\s*utterancesPending \+= 1;\s*try \{\s*await finalizeHeard\(\);\s*\} finally \{\s*utterancesPending -= 1;/);
   assert.match(engine, /if \(\(rt\.voiceHearing \|\| rt\.voiceTranscribing \|\| voiceUtterancePending\(\)\) && Date\.now\(\)/);
   assert.match(engine, /return \(\) => \{\s*rearmSeqRef\.current \+= 1;\s*(?:\/\/[^\n]*\n\s*)?clearHeldTurn\(\);\s*if \(voiceCoalesceTimerRef\.current\) clearTimeout/);
+});
+
+test("a deferred submit is dropped when the turn was reset first; a sent transcript stops claiming later drafts", () => {
+  assert.doesNotMatch(loop, /setTimeout\(\(\) => requestVoiceSubmit\(\), 0\)/);
+  assert.match(loop, /const submitLater = \(\) =>\s*setTimeout\(\(\) => \{\s*if \(!switchedOff\(\)\) requestVoiceSubmit\(\);\s*\}, 0\);/);
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const clear = engine.slice(engine.indexOf("const releaseVoiceText = voiceTextReleaser();"));
+  assert.ok(clear.length > 0 && clear.indexOf("releaseVoiceText();") < clear.indexOf("// First message"));
 });
