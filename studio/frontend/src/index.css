@@ -5311,7 +5311,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
    so the bar is one row with no jump. Once stuck (data-header-stuck) it covers the strip above
    it and fades into the rows below. */
 .composer-run-settings {
-	--run-settings-stick-at: calc(8px * var(--ui-space-scale, 1));
+	--run-settings-stick-at: calc(14px * var(--ui-space-scale, 1));
 }
 .composer-run-settings [data-config-header-row] {
 	position: sticky;
