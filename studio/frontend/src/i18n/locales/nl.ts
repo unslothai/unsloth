@@ -970,6 +970,8 @@ export const nl = {
     randomEachSentence: "Willekeurige stem per zin",
     builtinSpeakers: "Ingebouwd",
     builtinDetectors: "Ingebouwd",
+    thinkFirst: "Nadenken voor het antwoorden",
+    thinkFirstHint: "Begint later met spreken",
     savedVoices: "Opgeslagen stemmen",
     decideHint:
       "Na het wisselen begint het laden meteen; de volgende beslissing gebruikt het.",

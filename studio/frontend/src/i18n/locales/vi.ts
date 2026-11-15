@@ -963,6 +963,8 @@ export const vi = {
     randomEachSentence: "Giọng ngẫu nhiên cho mỗi câu",
     builtinSpeakers: "Tích hợp",
     builtinDetectors: "Tích hợp",
+    thinkFirst: "Suy nghĩ trước khi trả lời",
+    thinkFirstHint: "Bắt đầu nói chậm hơn",
     savedVoices: "Giọng đã lưu",
     decideHint:
       "Khi chuyển, mô hình bắt đầu nạp ngay; quyết định tiếp theo sẽ dùng nó.",

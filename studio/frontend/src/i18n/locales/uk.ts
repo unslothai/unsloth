@@ -966,6 +966,8 @@ export const uk = {
     randomEachSentence: "Випадковий голос для кожного речення",
     builtinSpeakers: "Вбудовані",
     builtinDetectors: "Вбудовані",
+    thinkFirst: "Думати перед відповіддю",
+    thinkFirstHint: "Починає говорити пізніше",
     savedVoices: "Збережені голоси",
     decideHint:
       "Після перемикання завантаження починається одразу; наступне рішення використає її.",

@@ -199,10 +199,34 @@ def test_an_outcome_for_a_deleted_chat_is_not_written():
     assert not vl.outcomes_path().exists() or "secret words" not in vl.outcomes_path().read_text()
 
 
-def test_the_chat_delete_route_scopes_the_log_to_the_caller():
-    import inspect
+def test_the_chat_delete_route_scopes_the_log_to_the_caller(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
+    from auth.authentication import get_current_subject
     from routes import chat_history
-    assert "_remove_voice_log_rows, payload.ids, current_account_id()" in inspect.getsource(
-        chat_history.delete_threads
-    )
+
+    alice = vl.append("judge", {"text": "alice"}, "sent", 0.9, 1.0, thread_id = "t1", account = "alice")
+    vl.append("judge", {"text": "bob"}, "sent", 0.9, 1.0, thread_id = "t1", account = "bob")
+    app = FastAPI()
+    app.include_router(chat_history.router, prefix = "/api/chat")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    monkeypatch.setattr(chat_history, "current_account_id", lambda: "bob")
+
+    deleted = TestClient(app).request("DELETE", "/api/chat/threads", json = {"ids": ["t1"]})
+    assert deleted.status_code == 200
+    assert [r["id"] for r in vl.read_rows()] == [alice]
+
+
+def test_an_outcome_report_does_not_read_the_whole_log_again(monkeypatch):
+    ids = [_judge(f"turn {i}", 0.9) for i in range(3)]
+    reads = []
+    real = vl._read_lines
+    monkeypatch.setattr(vl, "_read_lines", lambda path: reads.append(path) or real(path))
+    for row_id in ids:
+        assert vl.row_account(row_id) == (True, None)
+        assert vl.set_outcome(row_id, "sent")
+    later = _judge("one more", 0.2)
+    assert vl.set_outcome(later, "flushed") and vl.set_outcome("missing", "sent") is False
+    assert reads.count(vl.log_path()) == 1
+    assert [r["outcome"] for r in vl.read_rows()] == ["sent", "sent", "sent", "flushed"]

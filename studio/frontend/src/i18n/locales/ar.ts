@@ -863,6 +863,8 @@ export const ar = {
     randomEachSentence: "صوت عشوائي في كل جملة",
     builtinSpeakers: "مدمجة",
     builtinDetectors: "مدمجة",
+    thinkFirst: "التفكير قبل الإجابة",
+    thinkFirstHint: "يتأخر بدء الكلام",
     savedVoices: "الأصوات المحفوظة",
     decideHint: "يبدأ التبديل بالتحميل فورًا، ويستخدمه القرار التالي.",
     decideGroupFineTunes: "مضبوطة بدقة",

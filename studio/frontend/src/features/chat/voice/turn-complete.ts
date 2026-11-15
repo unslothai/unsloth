@@ -12,6 +12,24 @@ export function isBackchannel(text: string): boolean {
   return words.length > 0 && words.every((w) => BACKCHANNEL.has(w) || /^(m+|h+m+|u+h+|a+h+|o+h+)$/.test(w));
 }
 
+// Said over a reply to show the listener is following, not to take the turn.
+const ACKNOWLEDGEMENTS = new Set([
+  "okay", "ok", "right", "sure", "alright", "all right", "i see", "got it", "wow", "really", "cool",
+  "nice", "true", "interesting", "makes sense", "go on",
+]);
+// These are answers when the reply has just asked something.
+const ANSWER_WORDS = new Set(["yes", "yeah", "yep"]);
+
+/**
+ * Whether what was said over `reply` only acknowledges it, so the reply carries on. The whole
+ * transcript must be the phrase: "okay, stop" is a request.
+ */
+export function isAcknowledgement(transcript: string, reply: string): boolean {
+  const said = transcript.toLowerCase().replace(/[^\p{L}\s]/gu, " ").trim().replace(/\s+/g, " ");
+  if (ACKNOWLEDGEMENTS.has(said)) return true;
+  return ANSWER_WORDS.has(said) && !reply.trim().endsWith("?");
+}
+
 // Only ever dropped as the whole transcript.
 const STT_NOISE = new Set(["you", "thank you", "thank you very much", "thanks", "thanks for watching", "bye", "the end"]);
 

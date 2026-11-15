@@ -904,6 +904,8 @@ export const zhTW = {
     randomEachSentence: "每句隨機音色",
     builtinSpeakers: "內建",
     builtinDetectors: "內建",
+    thinkFirst: "回答前先思考",
+    thinkFirstHint: "開始說話會比較慢",
     savedVoices: "已儲存的音色",
     decideHint: "切換後會立即開始載入，下一次判斷就會使用它。",
     decideGroupFineTunes: "已微調",

@@ -168,6 +168,11 @@ export interface VoiceSettingsState extends VoiceOrbOverlayPrefs {
   autoReadAloud: boolean;
   setAutoReadAloud: (value: boolean) => void;
 
+  /** Let the chat model reason before a voice turn's reply. Off by default: every reasoning
+   * token is silence before the first spoken word. Typed chat keeps its own Thinking setting. */
+  voiceThinking: boolean;
+  setVoiceThinking: (value: boolean) => void;
+
   /** "system": speechSynthesis voices. "studio": the loaded TTS audio model.
    * "custom": a saved connection's /audio/speech endpoint. */
   ttsEngine: TtsEngine;
@@ -373,6 +378,8 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setTtsEnabled: (ttsEnabled) => set({ ttsEnabled }),
       autoReadAloud: false,
       setAutoReadAloud: (autoReadAloud) => set({ autoReadAloud }),
+      voiceThinking: false,
+      setVoiceThinking: (voiceThinking) => set({ voiceThinking }),
 
       ttsEngine: "system",
       setTtsEngine: (ttsEngine) => set({ ttsEngine }),
@@ -477,6 +484,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
           autoReadAloud: saved?.autoReadAloud === true,
+          voiceThinking: saved?.voiceThinking === true,
           ttsEngine:
             saved?.ttsEngine === "studio" || saved?.ttsEngine === "custom"
               ? saved.ttsEngine

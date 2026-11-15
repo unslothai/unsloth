@@ -966,6 +966,8 @@ export const es419 = {
     randomEachSentence: "Voz aleatoria en cada oración",
     builtinSpeakers: "Integradas",
     builtinDetectors: "Integrados",
+    thinkFirst: "Pensar antes de responder",
+    thinkFirstHint: "Tarda más en empezar a hablar",
     savedVoices: "Voces guardadas",
     decideHint:
       "Al cambiar, empieza a cargarse de inmediato; la siguiente decisión lo usará.",

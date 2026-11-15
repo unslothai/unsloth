@@ -864,6 +864,8 @@ export const ja = {
     randomEachSentence: "文ごとにランダムな声",
     builtinSpeakers: "組み込み",
     builtinDetectors: "組み込み",
+    thinkFirst: "回答前に考える",
+    thinkFirstHint: "話し始めるのが遅くなります",
     savedVoices: "保存した声",
     decideHint: "切り替えるとすぐに読み込みを始め、次の判定から使われます。",
     decideGroupFineTunes: "ファインチューニング済み",

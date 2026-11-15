@@ -863,6 +863,8 @@ export const hi = {
     randomEachSentence: "हर वाक्य में अलग आवाज़",
     builtinSpeakers: "बिल्ट-इन",
     builtinDetectors: "बिल्ट-इन",
+    thinkFirst: "जवाब देने से पहले सोचें",
+    thinkFirstHint: "बोलना देर से शुरू होता है",
     savedVoices: "सहेजी गई आवाज़ें",
     decideHint: "बदलते ही लोड शुरू हो जाता है; अगला फ़ैसला इसी से होगा।",
     decideGroupFineTunes: "फ़ाइन-ट्यून किए गए",

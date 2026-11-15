@@ -863,6 +863,8 @@ export const de = {
     randomEachSentence: "Zufällige Stimme in jedem Satz",
     builtinSpeakers: "Integriert",
     builtinDetectors: "Integriert",
+    thinkFirst: "Vor der Antwort nachdenken",
+    thinkFirstHint: "Beginnt später zu sprechen",
     savedVoices: "Gespeicherte Stimmen",
     decideHint: "Ein Wechsel beginnt sofort zu laden; die nächste Entscheidung nutzt ihn.",
     decideGroupFineTunes: "Feinabgestimmt",

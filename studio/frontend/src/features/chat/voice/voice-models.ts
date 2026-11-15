@@ -72,6 +72,41 @@ export function wantsSpokenReply(input: {
   return !input.voiceModeOn || isChatModelVoice(input.selectedVoiceModelId);
 }
 
+/**
+ * Whether the model reasons before this turn. A turn sent while voice mode is running waits in
+ * silence for every reasoning token, so it thinks only when the user asked voice mode to.
+ */
+export function reasoningForTurn(input: {
+  enabled: boolean;
+  voiceModeOn: boolean;
+  voiceThinking: boolean;
+}): boolean {
+  return input.enabled && (!input.voiceModeOn || input.voiceThinking);
+}
+
+// A reply written for the page (lists, headings, a full survey of options) takes a minute to read aloud.
+export const SPOKEN_REPLY_INSTRUCTIONS =
+  "This is a spoken conversation: your reply is read aloud to the user. Answer the way a person " +
+  "would say it, in one to three short sentences of plain speech, in the user's language. Do not " +
+  "use lists, headings, markdown, emoji or code unless the user asks for them. When the full " +
+  "answer is long, give the short version first and offer to go on.";
+
+/** The chat instructions for a turn: while voice mode is running they end with how to answer aloud. */
+export function withSpokenReplyInstructions(instructions: string, voiceModeOn: boolean): string {
+  if (!voiceModeOn) return instructions;
+  return instructions ? `${instructions}\n\n${SPOKEN_REPLY_INSTRUCTIONS}` : SPOKEN_REPLY_INSTRUCTIONS;
+}
+
+/**
+ * Whether cutting a reply also aborts the sentence being synthesized. The server can only cancel an
+ * audio.cpp voice by stopping its process, and the next reply then waits for the voice to load again
+ * (35 to 88 seconds on a busy host). A sentence takes a fraction of a second, so it is left to
+ * finish and its clip is dropped.
+ */
+export function cutAbortsSpeechRequest(voiceModelId: string | null | undefined): boolean {
+  return isChatModelVoice(voiceModelId);
+}
+
 /** Whether the voice can speak in a saved Audio voice (the request turns into a clone). */
 export function voiceTtsCanClone(id: string | null | undefined): boolean {
   const model = audioCppModelFor(id);

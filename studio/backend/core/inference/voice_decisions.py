@@ -10,10 +10,10 @@ catalog name such as ``laya-ft:<run folder>``).
 
 from __future__ import annotations
 
+import functools
 import os
-import re
 import time
-from typing import Any, Optional
+from typing import Optional
 
 ENV_CHECKPOINT = "UNSLOTH_VOICE_DECISION_CHECKPOINT"
 SETTING_KEY = "voice_decision_checkpoint"
@@ -54,26 +54,42 @@ FILLER_INSTRUCTIONS = (
 ACTION_OF = {"amend": "restart", "replace": "restart", "queue": "queue", "ignore": "ignore"}
 
 
+def is_stock(name: str) -> bool:
+    """A catalogue checkpoint as published, or an alias of the Decision API's default. None was
+    trained on the questions above, so none can answer them: voice mode runs on fine-tunes only."""
+    from core.systemone import catalog
+    return name in catalog.CHECKPOINTS or name in catalog.DEFAULT_ALIASES
+
+
+def _pick(value: object) -> Optional[str]:
+    """A saved or launch pick; a stock one counts as no pick, so voice mode reads as not set up."""
+    name = value.strip() if isinstance(value, str) else ""
+    return name if name and not is_stock(name) else None
+
+
 def stored_checkpoint() -> Optional[str]:
     from utils.systemone_settings import _owner_setting
-    value = _owner_setting(SETTING_KEY)
-    return value.strip() or None if isinstance(value, str) else None
+    return _pick(_owner_setting(SETTING_KEY))
+
+
+def launch_checkpoint() -> Optional[str]:
+    return _pick(os.environ.get(ENV_CHECKPOINT))
 
 
 def checkpoint_source() -> Optional[str]:
     if stored_checkpoint():
         return "setting"
-    return "env" if (os.environ.get(ENV_CHECKPOINT) or "").strip() else None
+    return "env" if launch_checkpoint() else None
 
 
 def checkpoint_name() -> Optional[str]:
-    return stored_checkpoint() or (os.environ.get(ENV_CHECKPOINT) or "").strip() or None
+    return stored_checkpoint() or launch_checkpoint()
 
 
 def is_decision_checkpoint(name: str) -> bool:
     from core.systemone import catalog
     from utils.account_context import OWNER, run_as
-    return hasattr(run_as(OWNER, catalog.resolve, name), "layout")
+    return not is_stock(name) and hasattr(run_as(OWNER, catalog.resolve, name), "layout")
 
 
 def set_checkpoint(name: Optional[str]) -> None:
@@ -82,6 +98,10 @@ def set_checkpoint(name: Optional[str]) -> None:
     from utils.account_context import OWNER, run_as
 
     name = (name or "").strip() or None
+    if name is not None and is_stock(name):
+        raise ValueError(
+            f"{name} is not trained for voice mode. Pick a Decision fine-tune of the voice questions."
+        )
     if name is not None and not is_decision_checkpoint(name):
         raise ValueError(f"{name} is not a Decision checkpoint")
     run_as(OWNER, upsert_app_settings, {SETTING_KEY: name or ""}, read_back = False)
@@ -111,15 +131,18 @@ def interject_state(prompt: str, utterance: str, elapsed_s: float) -> str:
 
 
 class DecisionUnavailable(RuntimeError):
-    """The checkpoint cannot answer right now (loading, or the GPU is taken); routes answer 503."""
+    """The checkpoint cannot answer right now (loading, or the GPU is taken); routes answer 503.
+    ``loading`` tells a load or download still under way from a refusal that will not pass by itself."""
 
     def __init__(
         self,
         message: str,
         retry_after: Optional[float] = None,
+        loading: bool = False,
     ):
         super().__init__(message)
         self.retry_after = retry_after
+        self.loading = loading
 
 
 class DecisionVoice:
@@ -136,10 +159,12 @@ class DecisionVoice:
         # The pick is installation-wide: resolved as a non-owner it could fail and VoiceModels would cache that for all.
         checkpoint = run_as(OWNER, catalog.resolve, name)
         if checkpoint is None or not hasattr(checkpoint, "layout"):
-            raise RuntimeError(f"{ENV_CHECKPOINT}={name!r} is not a Decision checkpoint")
+            raise RuntimeError(f"{name} is not a Decision checkpoint")
         self.checkpoint = checkpoint
         self.backend = f"decision:{checkpoint.layout}"
-        self._decide = decide or laya_runtime.decide
+        # No wait for a load: the browser gives up on a verdict after 400 ms, so a call that finds the
+        # checkpoint loading starts the load and answers unavailable at once.
+        self._decide = decide or functools.partial(laya_runtime.decide, load_wait = 0)
 
     def ask(self, state: str, question: dict) -> dict:
         from core.systemone.laya_runtime import Unavailable
@@ -149,7 +174,9 @@ class DecisionVoice:
             result = self._decide(self.checkpoint, state, question)
         except Unavailable as exc:
             raise DecisionUnavailable(
-                f"Decision model unavailable: {exc.message}", exc.retry_after
+                f"Decision model unavailable: {exc.message}",
+                exc.retry_after,
+                loading = exc.error_type == "model_loading",
             ) from exc
         if result.get("truncated"):
             raise RuntimeError("Decision state exceeds the checkpoint's context window")

@@ -955,6 +955,8 @@ export const tr = {
     randomEachSentence: "Her cümlede rastgele ses",
     builtinSpeakers: "Yerleşik",
     builtinDetectors: "Yerleşik",
+    thinkFirst: "Yanıtlamadan önce düşün",
+    thinkFirstHint: "Konuşmaya daha geç başlar",
     savedVoices: "Kayıtlı sesler",
     decideHint:
       "Değiştirdiğinizde hemen yüklenmeye başlar; sonraki karar onu kullanır.",

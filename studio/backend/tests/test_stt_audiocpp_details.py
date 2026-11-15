@@ -7,6 +7,7 @@ import json
 import math
 import sys
 import textwrap
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -650,3 +651,43 @@ def test_a_device_less_load_follows_the_saved_voice_setting(fake, side, monkeypa
     studio_db.upsert_app_settings({"stt_device": "auto"}, read_back = False)
     side.transcribe(wav_bytes(), QWEN3, "en")
     assert side.device == "cpu" and len(fake.starts) == 1
+
+
+def test_a_clip_cancelled_while_it_waits_its_turn_leaves_the_runtime_running(fake, side, source):
+    """Voice mode drops a speculative clip when the speaker goes on. One cancelled while it waits
+    behind another clip sends nothing and leaves the server up, so the next clip, the real end of
+    the turn, pays no model load."""
+    side.transcribe_path(source, QWEN3, None)
+    server, lock = side._server, side._lock
+    waiting, cancel, raised = threading.Event(), threading.Event(), []
+
+    class Lock:
+        def __enter__(self):
+            waiting.set()
+            return lock.__enter__()
+
+        def __exit__(self, *exc):
+            return lock.__exit__(*exc)
+
+        def __getattr__(self, name):
+            return getattr(lock, name)
+
+    def queued():
+        try:
+            side.transcribe_path(source, QWEN3, None, cancel_event = cancel)
+        except Exception as exc:  # noqa: BLE001 - the test reads what was raised
+            raised.append(exc)
+
+    side._lock = Lock()
+    with lock:  # another clip holds the runtime
+        thread = threading.Thread(target = queued)
+        thread.start()
+        assert waiting.wait(10)
+        cancel.set()
+    thread.join(10)
+    side._lock = lock
+
+    assert [type(exc) for exc in raised] == [stt.SttTranscriptionCancelledError]
+    assert side._server is server and server.process.poll() is None
+    assert side.transcribe_path(source, QWEN3, None)["text"] == "Concord returned."
+    assert len(fake.starts) == 1 and len(fake.bodies) == 2

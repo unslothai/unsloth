@@ -2,13 +2,16 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """The three small voice-mode models: turn judge, filler picker, interject decision.
 
+With a Decision checkpoint picked (voice_decisions) all three are that one checkpoint's questions.
+Otherwise they are the built-in classifiers, which need UNSLOTH_VOICE_MODELS_DIR or _HUB:
 judge: ModernBERT sequence classifier, P(the user finished the turn), CPU.
 filler: int8 ONNX ModernBERT classifier over the ASR text (TF-IDF gate + class pickle when the ONNX
 folder is absent), a phrase from phrases.json, an echo slot from the int8 ONNX tagger (rules otherwise).
 interject: TF-IDF + hand features over (running prompt, new utterance, elapsed), restart | ignore | queue.
 
-Each loads on first use. A model that fails to load (no dir, no torch, bad pickle) stays
-unavailable with its reason; nothing here raises past ``available``/``reason``.
+Each loads on first use. A model that fails to load (no dir, no torch, bad pickle) is unavailable
+with its reason and is tried again after LOAD_RETRY_S: ``available``, ``reason`` and ``status`` never
+raise, and ``judge``, ``filler`` and ``interject`` raise VoiceModelUnavailable for a model that is not loaded.
 """
 
 from __future__ import annotations
@@ -40,6 +43,9 @@ FILLER_MAX_TOKENS = 48
 ECHO_MAX_TOKENS = 40
 ORT_THREADS = 4
 INTERJECT_ACTIONS = ["restart", "ignore", "queue"]
+# A model that failed to load is tried again after this long, so one bad moment (the Hub
+# unreachable, a folder not there yet) does not switch it off until the next restart.
+LOAD_RETRY_S = 60.0
 
 
 def models_dir() -> Optional[Path]:
@@ -876,6 +882,10 @@ def _Judge(root: Path):
     return _TorchJudge(root / "models" / "modernbert_base")
 
 
+class VoiceModelUnavailable(RuntimeError):
+    """A question for a model that is not loaded; the message carries why it is not."""
+
+
 class VoiceModels:
     def __init__(
         self,
@@ -888,6 +898,7 @@ class VoiceModels:
         self._lock = threading.Lock()
         self._models: dict[str, Any] = {}
         self._errors: dict[str, str] = {}
+        self._failed_at: dict[str, float] = {}
         self._dirs: dict[str, Path] = {}
         self._decision_error: Optional[tuple[str, str]] = None
 
@@ -969,17 +980,27 @@ class VoiceModels:
         with self._lock:
             if name in self._models:
                 return self._models[name]
-            if name in self._errors:
+            if name in self._errors and time.monotonic() - self._failed_at[name] < LOAD_RETRY_S:
                 return None
             try:
                 self._models[name] = self._load(name)
             except Exception as exc:  # noqa: BLE001 - the model stays unavailable, the route answers 503
                 self._errors[name] = f"{type(exc).__name__}: {exc}"
+                self._failed_at[name] = time.monotonic()
                 return None
+            self._errors.pop(name, None)
             return self._models[name]
 
     def available(self, name: str) -> bool:
         return self._get(name) is not None
+
+    def _require(self, name: str) -> Any:
+        model = self._get(name)
+        if model is None:
+            raise VoiceModelUnavailable(
+                f"Voice {name} model is unavailable: {self._errors.get(name, '')}"
+            )
+        return model
 
     def reason(self, name: str) -> str:
         self._get(name)
@@ -1001,14 +1022,14 @@ class VoiceModels:
         return out
 
     def judge(self, text: str) -> float:
-        return self._get("judge")(text)
+        return self._require("judge")(text)
 
     def filler(
         self,
         text: str,
         prev_q: bool = False,
     ) -> dict:
-        return self._get("filler").predict(text, prev_q)
+        return self._require("filler").predict(text, prev_q)
 
     def interject(
         self,
@@ -1016,7 +1037,7 @@ class VoiceModels:
         utterance: str,
         elapsed_s: float = 2.0,
     ) -> dict:
-        return self._get("interject").predict(prompt, utterance, elapsed_s)
+        return self._require("interject").predict(prompt, utterance, elapsed_s)
 
 
 _instance: Optional[VoiceModels] = None

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.inference import audio_cpp_clip_sidecar as clip
 from core.inference import audio_cpp_models as acm
 from core.inference import vad_audiocpp_sidecar as vad
 
@@ -48,7 +49,7 @@ def test_the_default_detector_is_the_earshot_copy_that_ships_with_studio():
 
 def test_a_builtin_detector_without_weights_is_unavailable_not_looked_up(monkeypatch):
     """Silero and MarbleNet come with the runtime's asset bundle, which an install may not have."""
-    monkeypatch.setattr(vad, "resolve", lambda *a, **k: pytest.fail("looked up on the Hub"))
+    monkeypatch.setattr(clip, "resolve", lambda *a, **k: pytest.fail("looked up on the Hub"))
     monkeypatch.setattr(vad, "_weights", lambda detector, binary: [])
     with pytest.raises(vad.VadUnavailableError, match = "not included in this install"):
         vad.resolve_vad_model("builtin/silero-vad")
@@ -128,7 +129,7 @@ def test_a_builtin_detector_loads_on_the_cpu_with_nothing_to_download(monkeypatc
         staticmethod(lambda *a: pytest.fail("downloaded")),
     )
     monkeypatch.setattr(
-        vad.audio_cpp_files, "materialize", lambda e: pytest.fail("read the Hub cache")
+        clip.audio_cpp_files, "materialize", lambda e: pytest.fail("read the Hub cache")
     )
     launched = []
 
@@ -136,11 +137,12 @@ def test_a_builtin_detector_loads_on_the_cpu_with_nothing_to_download(monkeypatc
         model,
         path,
         force_cpu = False,
+        max_threads = None,
     ):
         launched.append((model.family, path, force_cpu))
         return SimpleNamespace(process = SimpleNamespace(poll = lambda: None), stop = lambda: None)
 
-    monkeypatch.setattr(vad.AudioCppServer, "start", staticmethod(start))
+    monkeypatch.setattr(clip.AudioCppServer, "start", staticmethod(start))
     # Not training: a Hub detector would go to the GPU here.
     monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
     sidecar = vad.AudioCppVadSidecar()
@@ -218,7 +220,7 @@ def test_only_vad_models_resolve(monkeypatch):
         variants = (),
         default_variant = "Q8_0",
     )
-    monkeypatch.setattr(vad, "resolve", lambda *a, **k: fake)
+    monkeypatch.setattr(clip, "resolve", lambda *a, **k: fake)
     with pytest.raises(vad.VadError, match = "not a voice activity detection model"):
         vad.resolve_vad_model(fake.id)
     with pytest.raises(vad.VadError, match = "not an audio GGUF"):
@@ -247,18 +249,19 @@ def test_the_detector_runs_on_the_cpu_while_training_holds_the_gpu(monkeypatch, 
 
     entry = SimpleNamespace(id = PULSEVAD, display_name = "PulseVAD")
     monkeypatch.setattr(vad, "resolve_vad_model", lambda *a, **k: entry)
-    monkeypatch.setattr(vad.audio_cpp_files, "materialize", lambda e: tmp_path / "vad.gguf")
+    monkeypatch.setattr(clip.audio_cpp_files, "materialize", lambda e: tmp_path / "vad.gguf")
     launched = []
 
     def start(
         model,
         path,
         force_cpu = False,
+        max_threads = None,
     ):
         launched.append(force_cpu)
         return SimpleNamespace(process = SimpleNamespace(poll = lambda: None), stop = lambda: None)
 
-    monkeypatch.setattr(vad.AudioCppServer, "start", staticmethod(start))
+    monkeypatch.setattr(clip.AudioCppServer, "start", staticmethod(start))
     training = {"on": True}
     monkeypatch.setattr(stt_sidecar, "_training_active", lambda: training["on"])
     sidecar = vad.AudioCppVadSidecar()

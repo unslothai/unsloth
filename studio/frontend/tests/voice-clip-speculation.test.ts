@@ -53,7 +53,11 @@ test("the loop analyses the clip during the silence hang and finalize reuses it"
   const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
   const hang = Number(/const SILENCE_HANG_MS = (\d+);/.exec(loop)?.[1]);
   assert.ok(SPECULATE_AFTER_MS < hang);
-  assert.match(loop, /sinceVoice >= SPECULATE_AFTER_MS\) \{\s*const span = utteranceSpan\(.*?\);\s*if \(span\) early\.start\(clipKey\(span\)/);
+  // Sooner still when the end of the turn is being asked about: an early end needs the transcript.
+  assert.match(
+    loop,
+    /sinceVoice >= \(askTurn \? TURN_ASK_AFTER_MS : SPECULATE_AFTER_MS\)\) \{\s*const span = utteranceSpan\(.*?\);\s*if \(span\) \{\s*const key = clipKey\(span\);\s*const analysis = early\.start\(key,/,
+  );
   const finalize = loop.slice(loop.indexOf("const finalize = async () => {"));
   assert.match(finalize.slice(0, 1200), /const ready = early\.take\(key\);\s*const analysis = ready \?\? analyseClip\(span\);/);
   assert.match(loop, /cancel: \(\) => \{\s*teardown\(\);\s*early\.clear\(\);/);

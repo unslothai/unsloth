@@ -863,6 +863,8 @@ export const ptBR = {
     randomEachSentence: "Voz aleatória a cada frase",
     builtinSpeakers: "Integradas",
     builtinDetectors: "Integrados",
+    thinkFirst: "Pensar antes de responder",
+    thinkFirstHint: "Demora mais para começar a falar",
     savedVoices: "Vozes salvas",
     decideHint: "Uma troca começa a carregar agora; a próxima decisão a usa.",
     decideGroupFineTunes: "Ajustados",

@@ -41,6 +41,7 @@ import {
 } from "@/components/assistant-ui/composer-model-picker/context";
 import { ComposerModelPicker } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
 import { rowReachPx } from "@/components/assistant-ui/distant-rows";
+import { unloadTurnModel } from "@/features/chat/voice/turn-end";
 import { unloadVadModel } from "@/features/chat/voice/vad-client";
 import {
   holdForServing,
@@ -3285,6 +3286,7 @@ export function ChatPage({
     unloadOwnVoice();
     void unloadSttModel().catch(() => {});
     void unloadVadModel();
+    void unloadTurnModel();
     useChatRuntimeStore.getState().setVadSlotLoaded(false);
     useChatRuntimeStore.getState().setSttSlotLoaded(false);
   }, [voiceMode, unloadOwnVoice]);
@@ -3295,6 +3297,7 @@ export function ChatPage({
       if (prevVoiceModeRef.current === "off") return;
       void unloadSttModel().catch(() => {});
       void unloadVadModel();
+      void unloadTurnModel();
       useChatRuntimeStore.getState().setVadSlotLoaded(false);
       useChatRuntimeStore.getState().setSttSlotLoaded(false);
     },

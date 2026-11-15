@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 MODELS = ("judge", "filler", "interject")
-# Must match JUDGE_SEND_THRESHOLD in the frontend client.
+# The one bar a turn counts as finished at; /voice/judge answers ``finished`` with it.
 JUDGE_SEND_THRESHOLD = 0.65
 
 # A verdict is wrong when the outcome contradicts it. "restart" has no derivable error signal yet
@@ -37,6 +37,9 @@ ERROR_KINDS: dict[str, dict[tuple[str, str], str]] = {
 _LOCK = threading.Lock()
 # (account, thread) deleted in this process: a decision still in flight then must not log its words again.
 _DELETED: set[tuple[str, str]] = set()
+# Row id -> the account that logged it, for the log file named: an outcome report looks its row up
+# here and not by reading the whole log again. Dropped whenever rows are removed.
+_accounts: Optional[tuple[Path, dict[str, Optional[str]]]] = None
 
 
 def log_dir() -> Path:
@@ -58,11 +61,18 @@ def outcomes_path() -> Path:
     return log_dir() / "laya-outcomes.jsonl"
 
 
-def _append_line(path: Path, row: dict) -> None:
-    with _LOCK:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        with open(path, "a", encoding = "utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii = False) + "\n")
+def _append_locked(path: Path, row: dict) -> None:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    with open(path, "a", encoding = "utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii = False) + "\n")
+
+
+def _accounts_locked() -> dict[str, Optional[str]]:
+    global _accounts
+    path = log_path()
+    if _accounts is None or _accounts[0] != path:
+        _accounts = (path, {r["id"]: r.get("account") for r in _read_lines(path) if r.get("id")})
+    return _accounts[1]
 
 
 def _read_lines(path: Path) -> list[dict]:
@@ -120,9 +130,9 @@ def append(
         if thread_id and (account or OWNER_ACCOUNT_ID, str(thread_id)) in _DELETED:
             return row_id
         path = log_path()
-        path.parent.mkdir(parents = True, exist_ok = True)
-        with open(path, "a", encoding = "utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii = False) + "\n")
+        _append_locked(path, row)
+        if _accounts is not None and _accounts[0] == path:
+            _accounts[1][row_id] = account
     return row_id
 
 
@@ -135,21 +145,17 @@ def set_outcome(
     row = {"id": row_id, "outcome": outcome, "detail": detail or None, "at": time.time()}
     # Under the lock delete_thread_rows takes, so an outcome racing a chat delete cannot leave its words behind.
     with _LOCK:
-        if not any(r.get("id") == row_id for r in _read_lines(log_path())):
+        if row_id not in _accounts_locked():
             return False
-        path = outcomes_path()
-        path.parent.mkdir(parents = True, exist_ok = True)
-        with open(path, "a", encoding = "utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii = False) + "\n")
+        _append_locked(outcomes_path(), row)
     return True
 
 
 def row_account(row_id: str) -> tuple[bool, Optional[str]]:
     """Whether ``row_id`` is logged, and the account that logged it (``None`` predates accounts)."""
-    for row in _read_lines(log_path()):
-        if row.get("id") == row_id:
-            return True, row.get("account")
-    return False, None
+    with _LOCK:
+        accounts = _accounts_locked()
+        return row_id in accounts, accounts.get(row_id)
 
 
 def read_rows() -> list[dict]:
@@ -301,7 +307,9 @@ def _rewrite(path: Path, rows: list[dict]) -> None:
 
 
 def clear() -> int:
+    global _accounts
     with _LOCK:
+        _accounts = None
         n = len(_read_lines(log_path()))
         for p in (log_path(), outcomes_path()):
             try:
@@ -326,9 +334,11 @@ def delete_thread_rows(thread_ids, account: Optional[str] = None) -> int:
             return False
         return account is None or (r.get("account") or OWNER_ACCOUNT_ID) == account
 
+    global _accounts
     with _LOCK:
         if account is not None:
             _DELETED.update((account, t) for t in ids)
+        _accounts = None
         rows = _read_lines(log_path())
         keep = [r for r in rows if not doomed(r)]
         if len(keep) == len(rows):

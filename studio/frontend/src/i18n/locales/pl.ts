@@ -967,6 +967,8 @@ export const pl = {
     randomEachSentence: "Losowy głos w każdym zdaniu",
     builtinSpeakers: "Wbudowane",
     builtinDetectors: "Wbudowane",
+    thinkFirst: "Myśl przed odpowiedzią",
+    thinkFirstHint: "Zaczyna mówić później",
     savedVoices: "Zapisane głosy",
     decideHint:
       "Po przełączeniu ładowanie zaczyna się od razu; użyje go następna decyzja.",

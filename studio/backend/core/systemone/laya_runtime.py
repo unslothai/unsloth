@@ -2563,11 +2563,14 @@ def decide(
     questions: dict[str, dict[str, Any]],
     images: list[str] | None = None,
     audio: list[str] | None = None,
+    load_wait: float | None = None,
 ) -> dict[str, Any]:
+    """``load_wait`` is how long a call waits for a checkpoint that is still loading before it
+    answers 503 (LOAD_WAIT_S when not given); 0 starts the load and answers at once."""
     if not _admission.acquire(blocking = False):
         raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
     try:
-        return _route(checkpoint, state, questions, images or None, audio or None)
+        return _route(checkpoint, state, questions, images or None, audio or None, load_wait)
     finally:
         _admission.release()
 
@@ -2578,6 +2581,7 @@ def _route(
     questions,
     images,
     audio = None,
+    load_wait: float | None = None,
 ) -> dict[str, Any]:
     global _fallback_reason
     from utils.systemone_settings import get_backend
@@ -2597,7 +2601,7 @@ def _route(
     try:
         if _is_laya_export(target):
             _refuse_cut_questions(target, questions)
-        return _decide(target, state, questions, images, audio)
+        return _decide(target, state, questions, images, audio, load_wait)
     except NativeContextOverflow as exc:
         # Auto answers on PyTorch only what its longer window can hold, and only from a download already made.
         from .catalog import clef_unsupported_reason
@@ -2612,7 +2616,7 @@ def _route(
         ):
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
         _fallback_reason = "The request is longer than the llama.cpp context."
-        return _decide(checkpoint, state, questions, None)
+        return _decide(checkpoint, state, questions, None, None, load_wait)
     except Unavailable:
         # A llama-server that turned out not to serve decisions: Auto answers this request on PyTorch.
         if not _is_native(target) or get_backend() != "auto" or images:
@@ -2621,7 +2625,7 @@ def _route(
         if retry == target:
             raise
         _fallback_reason = reason
-        return _decide(retry, state, questions, None)
+        return _decide(retry, state, questions, None, None, load_wait)
 
 
 def _state_has_images(state) -> bool:
@@ -2641,9 +2645,10 @@ def _decide(
     questions: dict[str, dict[str, Any]],
     images: list[str] | None = None,
     audio: list[str] | None = None,
+    load_wait: float | None = None,
 ) -> dict[str, Any]:
     global _last_used, _device_name
-    agent = _agent_for(checkpoint, LOAD_WAIT_S)
+    agent = _agent_for(checkpoint, LOAD_WAIT_S if load_wait is None else load_wait)
     if not _run_lock.acquire(timeout = RUN_WAIT_S):
         raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
     try:

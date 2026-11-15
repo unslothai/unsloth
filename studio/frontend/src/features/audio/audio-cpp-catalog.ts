@@ -260,7 +260,7 @@ export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "Sidon-GGUF": "needs a newer audio runtime",
   // Offer it on Transcribe once the Hub's main branch carries it (only on spec-refresh-v0.9.2 for now).
   "VibeVoice-ASR-Streaming-7B-GGUF": "not on the Hub's main branch yet",
-  "Smart-Turn-v3-GGUF": "needs a newer audio runtime",
+  "Smart-Turn-v3-GGUF": "voice mode loads it itself, to hear the end of a turn",
   "AST-AudioSet-GGUF": "needs a newer audio runtime",
   "CED-GGUF": "needs a newer audio runtime",
   "MicroWakeWord-GGUF": "needs a newer audio runtime",

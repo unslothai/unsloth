@@ -8,6 +8,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   setVoiceDecision,
@@ -19,6 +20,7 @@ import { vadDisplayName } from "@/features/chat/voice/vad-client";
 import { isChatModelVoice } from "@/features/chat/voice/voice-models";
 import { voicePillIconClass } from "@/features/chat/voice/voice-pill-tone";
 import { DotTag } from "@/features/hub";
+import { useVoiceSettingsStore } from "@/features/settings";
 // Deep import: through the eager model-picker index it would land in the startup bundle.
 // eslint-disable-next-line no-restricted-imports
 import { DecisionPicker } from "@/features/model-picker/components/model-selector/decision-picker";
@@ -120,6 +122,9 @@ export const VoicePanel: FC<VoicePanelProps> = ({
   const vadDetectors = useVadDetectors();
   // "configuring": the pill is up for choosing models, and nothing loads until Start.
   const started = useChatRuntimeStore((s) => s.voiceMode === "active");
+  const canThink = useChatRuntimeStore((s) => s.supportsReasoning && !s.reasoningAlwaysOn);
+  const voiceThinking = useVoiceSettingsStore((s) => s.voiceThinking);
+  const setVoiceThinking = useVoiceSettingsStore((s) => s.setVoiceThinking);
   const start = () => {
     const store = useChatRuntimeStore.getState();
     store.setVoiceOrbCollapsed(false);
@@ -415,6 +420,17 @@ export const VoicePanel: FC<VoicePanelProps> = ({
                 </div>
               );
             })}
+            {canThink && (
+              <label className="mt-1 flex cursor-pointer items-center gap-3 border-t border-border/60 py-2 pl-2.5 pr-2">
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm">{t("voicePanel.thinkFirst")}</span>
+                  <span className="block text-xs leading-snug text-muted-foreground">
+                    {t("voicePanel.thinkFirstHint")}
+                  </span>
+                </span>
+                <Switch checked={voiceThinking} onCheckedChange={setVoiceThinking} />
+              </label>
+            )}
             {!started && (
               <div className="mt-1 flex items-center gap-3 border-t border-border/60 pb-1 pl-2.5 pr-1 pt-2">
                 <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">

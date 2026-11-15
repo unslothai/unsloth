@@ -870,6 +870,8 @@ export const en = {
     randomEachSentence: "Random voice each sentence",
     builtinSpeakers: "Built-in",
     builtinDetectors: "Built-in",
+    thinkFirst: "Think before answering",
+    thinkFirstHint: "Slower to start speaking",
     savedVoices: "Saved voices",
     decideHint: "A switch starts loading now; the next decision uses it.",
     decideGroupFineTunes: "Fine-tuned",

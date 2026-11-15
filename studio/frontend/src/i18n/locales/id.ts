@@ -959,6 +959,8 @@ export const id = {
     randomEachSentence: "Suara acak setiap kalimat",
     builtinSpeakers: "Bawaan",
     builtinDetectors: "Bawaan",
+    thinkFirst: "Berpikir sebelum menjawab",
+    thinkFirstHint: "Lebih lambat mulai berbicara",
     savedVoices: "Suara tersimpan",
     decideHint:
       "Peralihan langsung mulai dimuat; keputusan berikutnya akan menggunakannya.",

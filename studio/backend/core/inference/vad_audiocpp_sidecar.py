@@ -4,32 +4,21 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import threading
-import wave
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Optional
 
-from core.inference import audio_cpp_files
-from core.inference.audio_cpp_models import (
-    AudioCppModel,
-    AudioCppModelError,
-    AudioCppVariant,
-    RepoFile,
-    forget,
-    parse_identifier,
-    require_runnable,
-    resolve,
-    split_variant_ref,
+from core.inference.audio_cpp_clip_sidecar import (
+    CLIP_SAMPLE_RATE,
+    AudioCppClipSidecar,
+    ClipModelNotDownloadedError,
+    ClipError,
+    ClipUnavailableError,
+    resolve_hub_model,
 )
-from core.inference.audio_cpp_server import (
-    AudioCppServer,
-    AudioCppUnavailableError,
-    find_audio_cpp_server_binary,
-    runtime_release_key,
-)
+from core.inference.audio_cpp_models import AudioCppModel, AudioCppVariant, RepoFile
+from core.inference.audio_cpp_server import find_audio_cpp_server_binary, runtime_release_key
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -70,21 +59,12 @@ BUILTIN_DETECTORS: dict[str, BuiltinDetector] = {
 DEFAULT_VAD_MODEL = "builtin/earshot-vad"
 _ASSETS = Path(__file__).resolve().parents[2] / "assets" / "audio"
 _WEIGHT_SUFFIXES = (".safetensors", ".gguf")
-_RUN_PATH = "/v1/tasks/run"
-_DETECT_TIMEOUT_SECONDS = 30.0
-MAX_CLIP_BYTES = 16 * 1024 * 1024
 
 
-class VadError(Exception):
-    """A request-shaped failure (bad model id, not downloaded); the route maps it to a 4xx."""
-
-
-class VadModelNotDownloadedError(VadError):
-    pass
-
-
-class VadUnavailableError(VadError):
-    """The audio runtime cannot run VAD here."""
+# The names the routes and callers know these by.
+VadError = ClipError
+VadModelNotDownloadedError = ClipModelNotDownloadedError
+VadUnavailableError = ClipUnavailableError
 
 
 def _canonical(model: Optional[str]) -> str:
@@ -178,41 +158,7 @@ def resolve_vad_model(model: Optional[str], *, network: bool = False) -> AudioCp
     if is_builtin_id(identifier):
         # Shaped like a Hub repo id, but it names nothing there: never look it up.
         raise VadError(f"'{model}' is not a detector Unsloth Studio includes.")
-    base, variant = split_variant_ref(identifier)
-    if parse_identifier(base) is None:
-        raise VadError(f"'{model}' is not an audio GGUF the audio runtime can detect speech with.")
-    found = resolve(base, variant, network = network)
-    if found is None and not network:
-        raise VadModelNotDownloadedError(f"VAD model '{base}' is not downloaded yet.")
-    if found is None:
-        raise VadError(f"'{model}' is not an audio GGUF the audio runtime can detect speech with.")
-    try:
-        require_runnable(found, "vad")
-    except AudioCppModelError as exc:
-        raise VadError(str(exc)) from exc
-    return found
-
-
-@contextmanager
-def _temp_wav(wav_bytes: bytes) -> Iterator[Path]:
-    with tempfile.NamedTemporaryFile(prefix = "unsloth-vad-", suffix = ".wav", delete = False) as f:
-        f.write(wav_bytes)
-        path = Path(f.name)
-    try:
-        yield path
-    finally:
-        try:
-            path.unlink()
-        except OSError:
-            pass
-
-
-def _wav_rate(path: Path) -> int:
-    try:
-        with wave.open(str(path), "rb") as w:
-            return w.getframerate()
-    except (wave.Error, OSError):
-        return 16000
+    return resolve_hub_model(identifier, "vad", "detect speech with", network = network)
 
 
 def segments_from_result(payload: dict, fallback_rate: int) -> dict:
@@ -254,143 +200,44 @@ def _debug_dump(wav_bytes: bytes, payload: dict, result: dict) -> None:
         pass
 
 
-class AudioCppVadSidecar:
-    def __init__(self) -> None:
-        self._lock = threading.RLock()
-        self._server: Optional[AudioCppServer] = None
-        self._model: Optional[AudioCppModel] = None
-        self._loading: Optional[str] = None
-        self._on_cpu = False
+class AudioCppVadSidecar(AudioCppClipSidecar):
+    label = "speech detector"
 
-    @property
-    def loaded_model(self) -> Optional[str]:
-        with self._lock:
-            return self._model.id if self._model and self._server_alive() else None
+    def _resolve(self, model: Optional[str], *, network: bool) -> AudioCppModel:
+        return resolve_vad_model(model, network = network)
 
-    @property
-    def on_cpu(self) -> bool:
-        """Whether the live server runs on the CPU (it holds no VRAM through training)."""
-        with self._lock:
-            return self._on_cpu
+    def _cpu_only(self, entry: AudioCppModel) -> bool:
+        return entry.id in BUILTIN_DETECTORS
 
-    @property
-    def is_loading(self) -> bool:
-        return self._loading is not None
-
-    def status(self) -> dict:
-        # No lock: a clip check holds it for its whole run, and the picker must not wait behind one.
-        model = self._model
-        return {
-            "available": find_audio_cpp_server_binary() is not None,
-            "loaded_model": model.id if model is not None and self._server_alive() else None,
-            "loading": self._loading,
-            "default_model": DEFAULT_VAD_MODEL,
-            "detectors": detectors(),
-        }
-
-    def _server_alive(self) -> bool:
-        server = self._server
-        return server is not None and server.process.poll() is None
-
-    def _release_locked(self) -> None:
-        if self._server is not None:
-            try:
-                self._server.stop()
-            except Exception:  # noqa: BLE001 - a dying child is already gone
-                pass
-        self._server = None
-        self._model = None
-
-    def unload(self) -> bool:
-        with self._lock:
-            had = self._server is not None
-            self._release_locked()
-            return had
-
-    def load(
-        self,
-        model: Optional[str],
-        hf_token: Optional[str] = None,
-    ) -> str:
+    def _known_cpu_id(self, model: Optional[str]) -> Optional[str]:
         builtin = builtin_detector(model)
-        # Every clip comes through here. A live built-in has nothing to re-check: it is always on the CPU.
-        if builtin is not None and self.loaded_model == builtin.id:
-            return builtin.id
-        entry = resolve_vad_model(model, network = False)
-        from core.inference.stt_sidecar import _training_active
+        return builtin.id if builtin else None
 
-        with self._lock:
-            # Under the lock training admission's release takes, so a load cannot start on a GPU admission just freed.
-            on_cpu = builtin is not None or _training_active()
-            if (
-                self._model is not None
-                and self._model.id == entry.id
-                and self._server_alive()
-                and self._on_cpu == on_cpu
-            ):
-                return entry.id
-            try:
-                path = (
-                    entry.local_path if builtin is not None else audio_cpp_files.materialize(entry)
-                )
-            except FileNotFoundError:
-                raise VadModelNotDownloadedError(
-                    f"VAD model '{entry.display_name}' is not downloaded yet."
-                ) from None
-            except AudioCppUnavailableError as exc:
-                raise VadUnavailableError(str(exc)) from exc
-            self._loading = entry.id
-            try:
-                self._release_locked()
-                try:
-                    server = AudioCppServer.start(entry, path, force_cpu = on_cpu)
-                except AudioCppUnavailableError as exc:
-                    raise VadUnavailableError(str(exc)) from exc
-                self._server = server
-                self._model = entry
-                self._on_cpu = on_cpu
-            finally:
-                self._loading = None
-        return entry.id
+    def _weights_path(self, entry: AudioCppModel):
+        # A built-in's weights are a folder of this install, not a Hub download.
+        return entry.local_path if entry.id in BUILTIN_DETECTORS else super()._weights_path(entry)
 
     def download(
         self,
         model: Optional[str],
         hf_token: Optional[str] = None,
     ) -> str:
-        from core.inference import audio_cpp_backend
-
         builtin = builtin_detector(model)
         if builtin is not None:
-            return builtin.id
-        entry = resolve_vad_model(model, network = True)
-        audio_cpp_backend.AudioCppBackend._download_missing(entry, hf_token)
-        # The load right after reads the cache-only resolution, which still remembers the miss.
-        forget(entry.id)
-        return entry.id
+            # Nothing to fetch, but an install that cannot run it still says so.
+            return _builtin_model(builtin).id
+        return super().download(model, hf_token)
+
+    def status(self) -> dict:
+        return {**self.state(), "default_model": DEFAULT_VAD_MODEL, "detectors": detectors()}
 
     def detect(
         self,
-        wav_bytes: bytes,
+        audio: bytes,
         model: Optional[str] = None,
     ) -> dict:
-        if len(wav_bytes) > MAX_CLIP_BYTES:
-            raise VadError("Audio clip is too long for a speech check.")
-        from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
-        from core.inference.stt_sidecar import _decode_audio_bounded
-
-        wav_bytes = _pcm_to_wav_bytes(_decode_audio_bounded(wav_bytes))
-        # Loaded under the same hold as the run: another model's load cannot swap the server between.
-        with self._lock:
-            model_id = self.load(model)
-            server = self._server
-            if server is None or not self._server_alive():
-                raise VadUnavailableError("The speech detector is not running.")
-            with _temp_wav(wav_bytes) as path:
-                body = {"model": server.model_id, "request": {"audio": str(path)}}
-                _, data = server.post_json(_RUN_PATH, body, timeout = _DETECT_TIMEOUT_SECONDS)
-                payload = json.loads(data.decode("utf-8"))
-                result = segments_from_result(payload, _wav_rate(path))
+        model_id, payload, wav_bytes = self.run_clip(audio, model)
+        result = segments_from_result(payload, CLIP_SAMPLE_RATE)
         result["model"] = model_id
         result["bars"] = speech_bars(model_id)
         _debug_dump(wav_bytes, payload, result)

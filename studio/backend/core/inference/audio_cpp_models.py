@@ -712,7 +712,7 @@ _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
 
 
 # Table families can be newer than some runtimes, so the runtime check still applies to them.
-_RUNTIME_GATED_FAMILIES = frozenset(("mira_tts", "sopro_tts", "firered_vad"))
+_RUNTIME_GATED_FAMILIES = frozenset(("mira_tts", "sopro_tts", "firered_vad", "smart_turn"))
 
 _MULTI_FILE_PACKAGE = "This model ships as a multi-file package Unsloth Studio cannot load yet."
 
@@ -974,6 +974,8 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("pulsevad", "vad"),
     # Newer than some supported runtimes: one without its spec refuses it (_RUNTIME_GATED_FAMILIES).
     AudioCppFamily("firered_vad", "vad"),
+    # No page and no picker: voice mode loads it itself to hear the end of a turn.
+    AudioCppFamily("smart_turn", "turn"),
     *(
         AudioCppFamily(
             name,
@@ -3298,6 +3300,8 @@ def require_runnable(model: AudioCppModel, task: Optional[str] = None) -> None:
         raise AudioCppModelError(f"{model.display_name} is not a speech-to-text model.")
     if task == "vad" and model.task != "vad":
         raise AudioCppModelError(f"{model.display_name} is not a voice activity detection model.")
+    if task == "turn" and model.task != "turn":
+        raise AudioCppModelError(f"{model.display_name} is not a turn detection model.")
     # The main audio slot, which speech, music and separation models share.
     if task in ("tts", "music") and model.task not in ("tts", "music", "sep"):
         if model.task == "asr":

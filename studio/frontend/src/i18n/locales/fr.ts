@@ -863,6 +863,8 @@ export const fr = {
     randomEachSentence: "Voix aléatoire à chaque phrase",
     builtinSpeakers: "Intégrées",
     builtinDetectors: "Intégrés",
+    thinkFirst: "Réfléchir avant de répondre",
+    thinkFirstHint: "Commence à parler plus tard",
     savedVoices: "Voix enregistrées",
     decideHint: "Un changement se charge tout de suite ; la prochaine décision l'utilise.",
     decideGroupFineTunes: "Affinés",

@@ -863,6 +863,8 @@ export const ru = {
     randomEachSentence: "Случайный голос в каждой фразе",
     builtinSpeakers: "Встроенные",
     builtinDetectors: "Встроенные",
+    thinkFirst: "Думать перед ответом",
+    thinkFirstHint: "Начинает говорить позже",
     savedVoices: "Сохранённые голоса",
     decideHint: "Переключение сразу начинает загрузку; следующее решение использует новую модель.",
     decideGroupFineTunes: "Дообученные",

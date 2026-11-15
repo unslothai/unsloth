@@ -961,6 +961,8 @@ export const cs = {
     randomEachSentence: "Náhodný hlas pro každou větu",
     builtinSpeakers: "Vestavěné",
     builtinDetectors: "Vestavěné",
+    thinkFirst: "Před odpovědí přemýšlet",
+    thinkFirstHint: "Začne mluvit později",
     savedVoices: "Uložené hlasy",
     decideHint:
       "Po přepnutí se model hned začne načítat; použije ho další rozhodnutí.",

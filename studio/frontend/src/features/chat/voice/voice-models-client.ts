@@ -17,7 +17,6 @@ import { voiceTrace } from "./voice-trace";
 const TIMEOUT_MS = 400;
 // Asked while the chat model generates on the same GPU, where a cold call took 500 ms.
 const INTERJECT_TIMEOUT_MS = 1500;
-export const JUDGE_SEND_THRESHOLD = 0.65;
 
 async function post<T>(path: string, body: unknown, timeoutMs = TIMEOUT_MS): Promise<T | null> {
   const ctl = new AbortController();
@@ -73,16 +72,21 @@ export function reportLayaOutcome(
 
 export interface JudgeAnswer {
   p: number;
+  /** The server's verdict: the bar lives there, beside the log that records it. */
+  finished: boolean;
   id: string | null;
 }
 
 export async function judgeTurnComplete(text: string): Promise<JudgeAnswer | null> {
   const fields = logFields();
-  const r = await post<{ p_complete: number; id?: string | null }>("judge", { text, ...fields });
-  if (typeof r?.p_complete !== "number") return null;
-  publishTurnDecision(r.p_complete, r.p_complete >= JUDGE_SEND_THRESHOLD);
+  const r = await post<{ p_complete: number; finished: boolean; id?: string | null }>("judge", {
+    text,
+    ...fields,
+  });
+  if (typeof r?.p_complete !== "number" || typeof r.finished !== "boolean") return null;
+  publishTurnDecision(r.p_complete, r.finished);
   if (fields.log) voiceTrace("laya.judge", { id: r.id ?? null, p: r.p_complete });
-  return { p: r.p_complete, id: r.id ?? null };
+  return { p: r.p_complete, finished: r.finished, id: r.id ?? null };
 }
 
 export async function fillerFromModel(

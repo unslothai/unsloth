@@ -81,6 +81,27 @@ def test_a_loader_failure_is_remembered_and_never_raises(tmp_path, monkeypatch):
     assert models.status()["errors"]["judge"].startswith("ImportError")
 
 
+def test_a_failed_load_is_tried_again_after_a_while(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(vm.time, "monotonic", lambda: clock[0])
+    attempts = []
+
+    def flaky(root):
+        attempts.append(root)
+        if len(attempts) == 1:
+            raise OSError("the Hub did not answer")
+        return _FakeJudge()
+
+    models = _stubbed(tmp_path, monkeypatch, judge = flaky)
+    assert models.available("judge") is False and "OSError" in models.reason("judge")
+    clock[0] += vm.LOAD_RETRY_S - 1
+    assert models.available("judge") is False and len(attempts) == 1
+    clock[0] += 2
+    assert models.available("judge") is True and len(attempts) == 2
+    assert models.reason("judge") == "" and "judge" not in models.status()["errors"]
+    assert models.judge("are you there?") == 0.9
+
+
 def test_calls_go_through_to_the_loaded_models(tmp_path, monkeypatch):
     models = _stubbed(
         tmp_path,

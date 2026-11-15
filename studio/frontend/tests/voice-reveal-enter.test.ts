@@ -38,6 +38,10 @@ test("the engine rushes the reveal instead of sending the box, and the loop hono
   assert.ok(rush > 0, "Enter mid-reveal must rush the reveal");
   assert.ok(rush < handler.indexOf("submitTranscript(box, true)"), "rush comes before a typed send");
   const adapter = read("adapters/studio-voice-loop-adapter.ts");
-  assert.match(adapter, /for \(let i = stepChars; i < total && !mine\.rush; i \+= stepChars\)/);
+  // A turn that sounded finished is never typed out first.
+  assert.match(
+    adapter,
+    /for \(let i = stepChars; i < total && !mine\.rush && !soundedFinished; i \+= stepChars\)/,
+  );
   assert.match(adapter, /if \(reveal === mine\) reveal = null;/);
 });

@@ -340,11 +340,13 @@ def _unload_audio_cpp_models() -> bool:
     # A kept server that survived would run from, or lock, the tree being replaced.
     if model_slots.unload_audio_cpp_slots(strict = True):
         unloaded = True
-    # Voice mode's speech detector runs from the same tree (Windows refuses to replace a live server).
-    # It reloads on its next check, so the UI has nothing to resync for it.
+    # Voice mode's speech detector and end-of-turn model run from the same tree (Windows refuses to
+    # replace a live server). Each reloads on its next check, so the UI has nothing to resync for them.
+    from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
 
     get_audio_cpp_vad_sidecar().unload()
+    get_audio_cpp_turn_sidecar().unload()
     return unloaded
 
 

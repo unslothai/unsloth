@@ -26891,25 +26891,62 @@ async def stt_model_capabilities(
     return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
 
 
-class VadLoadRequest(BaseModel):
+class ClipModelRequest(BaseModel):
     model: Optional[str] = None
 
 
-def _vad_http_error(exc: Exception) -> HTTPException:
-    from core.inference.vad_audiocpp_sidecar import (
-        VadError,
-        VadModelNotDownloadedError,
-        VadUnavailableError,
+def _clip_http_error(exc: Exception, what: str) -> HTTPException:
+    from core.inference.audio_cpp_clip_sidecar import (
+        ClipModelNotDownloadedError,
+        ClipError,
+        ClipUnavailableError,
     )
 
-    if isinstance(exc, VadModelNotDownloadedError):
+    if isinstance(exc, ClipModelNotDownloadedError):
         return HTTPException(status_code = 409, detail = str(exc))
-    if isinstance(exc, VadUnavailableError):
+    if isinstance(exc, ClipUnavailableError):
         return HTTPException(status_code = 501, detail = str(exc))
-    if isinstance(exc, VadError):
+    if isinstance(exc, ClipError):
         return HTTPException(status_code = 422, detail = str(exc))
-    logger.error(f"VAD error: {exc}", exc_info = True)
+    logger.error(f"{what} error: {exc}", exc_info = True)
     return HTTPException(status_code = 500, detail = safe_error_detail(exc))
+
+
+async def _require_hub_audio_model_access(identifier: str) -> None:
+    """A managed account may load or download only the models its model access allows, as for STT."""
+    if not account_access.managed_account():
+        return
+    from core.inference.audio_cpp_models import repo_of
+
+    await asyncio.to_thread(account_access.require_model_access, repo_of(identifier) or identifier)
+
+
+async def _load_clip_sidecar(sidecar, model: Optional[str], hf_token, what: str) -> JSONResponse:
+    """Start the helper's model, downloading it first when it is not here yet."""
+    from core.inference.audio_cpp_clip_sidecar import ClipModelNotDownloadedError
+
+    try:
+        try:
+            loaded = await asyncio.to_thread(sidecar.load, model)
+        except ClipModelNotDownloadedError:
+            await asyncio.to_thread(sidecar.download, model, hf_token)
+            loaded = await asyncio.to_thread(sidecar.load, model)
+    except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
+        raise _clip_http_error(exc, what)
+    return JSONResponse(content = {"loaded_model": loaded})
+
+
+async def _clip_body(request: Request) -> bytes:
+    from core.inference.audio_cpp_clip_sidecar import MAX_CLIP_BYTES
+
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_CLIP_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large.")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @studio_router.get("/audio/vad/status")
@@ -26919,42 +26956,24 @@ async def vad_status(current_subject: str = Depends(get_current_subject)):
 
 
 async def _require_vad_model_access(model: Optional[str]) -> None:
-    """A managed account may load or download only the detectors its model access allows, as for STT."""
-    if not account_access.managed_account():
-        return
-    from core.inference.audio_cpp_models import repo_of
     from core.inference.vad_audiocpp_sidecar import is_builtin_id
-
     if is_builtin_id(model):
         # It ships with the install, or names nothing the load will accept: no Hub repo to gate.
         return
-    identifier = (model or "").strip()
-    await asyncio.to_thread(account_access.require_model_access, repo_of(identifier) or identifier)
+    await _require_hub_audio_model_access((model or "").strip())
 
 
 @studio_router.post("/audio/vad/load")
 async def vad_load(
-    payload: VadLoadRequest,
+    payload: ClipModelRequest,
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Download (if needed) and start the voice activity detector voice mode checks clips with."""
-    from core.inference.vad_audiocpp_sidecar import (
-        VadModelNotDownloadedError,
-        get_audio_cpp_vad_sidecar,
-    )
+    from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
 
     await _require_vad_model_access(payload.model)
-    sidecar = get_audio_cpp_vad_sidecar()
-    try:
-        try:
-            loaded = await asyncio.to_thread(sidecar.load, payload.model)
-        except VadModelNotDownloadedError:
-            await asyncio.to_thread(sidecar.download, payload.model, hf_token)
-            loaded = await asyncio.to_thread(sidecar.load, payload.model)
-    except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
-        raise _vad_http_error(exc)
-    return JSONResponse(content = {"loaded_model": loaded})
+    return await _load_clip_sidecar(get_audio_cpp_vad_sidecar(), payload.model, hf_token, "VAD")
 
 
 @studio_router.post("/audio/vad/unload")
@@ -26971,22 +26990,72 @@ async def vad_detect(
     current_subject: str = Depends(get_current_subject),
 ):
     """Speech segments in a raw WAV body: ``{segments: [{start_s, end_s, confidence}], speech_ms}``."""
-    from core.inference.vad_audiocpp_sidecar import MAX_CLIP_BYTES, get_audio_cpp_vad_sidecar
+    from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
 
     await _require_vad_model_access(model)
-    chunks: list[bytes] = []
-    size = 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > MAX_CLIP_BYTES:
-            raise HTTPException(status_code = 413, detail = "Audio is too large.")
-        chunks.append(chunk)
+    audio = await _clip_body(request)
+    try:
+        result = await asyncio.to_thread(get_audio_cpp_vad_sidecar().detect, audio, model)
+    except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
+        raise _clip_http_error(exc, "VAD")
+    return JSONResponse(content = result)
+
+
+# The end-of-turn model: from how a clip sounds, has the speaker finished? Voice mode asks at a short
+# pause, and a "finished" ends the turn without the fixed silence wait.
+async def _require_turn_model_access(model: Optional[str]) -> None:
+    from core.inference.turn_audiocpp_sidecar import DEFAULT_TURN_MODEL
+    await _require_hub_audio_model_access((model or "").strip() or DEFAULT_TURN_MODEL)
+
+
+@studio_router.get("/audio/turn/status")
+async def turn_status(current_subject: str = Depends(get_current_subject)):
+    from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
+    return JSONResponse(content = await asyncio.to_thread(get_audio_cpp_turn_sidecar().status))
+
+
+@studio_router.post("/audio/turn/load")
+async def turn_load(
+    payload: ClipModelRequest,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+):
+    """Download (if needed) and start the end-of-turn model."""
+    from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
+
+    await _require_turn_model_access(payload.model)
+    return await _load_clip_sidecar(
+        get_audio_cpp_turn_sidecar(), payload.model, hf_token, "Turn detection"
+    )
+
+
+@studio_router.post("/audio/turn/unload")
+async def turn_unload(current_subject: str = Depends(get_current_subject)):
+    from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
+    released = await asyncio.to_thread(get_audio_cpp_turn_sidecar().unload)
+    return JSONResponse(content = {"released": released})
+
+
+@studio_router.post("/audio/turn/detect")
+async def turn_detect(
+    request: Request,
+    model: Optional[str] = Query(None, max_length = 512),
+    language: Optional[str] = Query(None, max_length = 35),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Whether the speaker in a raw WAV body has finished: ``{p_complete, finished, bar, model}``.
+
+    ``language`` is the language being spoken, when known: the bar depends on it."""
+    from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
+
+    await _require_turn_model_access(model)
+    audio = await _clip_body(request)
     try:
         result = await asyncio.to_thread(
-            get_audio_cpp_vad_sidecar().detect, b"".join(chunks), model
+            get_audio_cpp_turn_sidecar().detect, audio, model, language
         )
     except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
-        raise _vad_http_error(exc)
+        raise _clip_http_error(exc, "Turn detection")
     return JSONResponse(content = result)
 
 
@@ -27039,11 +27108,15 @@ def _voice_model_or_503(name: str):
 
 async def _voice_decide(fn, *args):
     from core.inference.voice_decisions import DecisionUnavailable
+    from core.inference.voice_models import VoiceModelUnavailable
     try:
         return await asyncio.to_thread(fn, *args)
     except DecisionUnavailable as exc:
         headers = {"Retry-After": str(int(exc.retry_after))} if exc.retry_after else None
         raise HTTPException(status_code = 503, detail = str(exc), headers = headers) from exc
+    except VoiceModelUnavailable as exc:
+        # The model went away between the check and the call (the pick was switched).
+        raise HTTPException(status_code = 503, detail = str(exc)) from exc
 
 
 def _voice_log_source(request: Request) -> str:
@@ -27127,13 +27200,10 @@ def _voice_decision_response() -> dict:
     from routes.settings import _clef_availability
 
     clef_reason = catalog.clef_unsupported_reason(wait = False)
-    stock = [c for c in catalog.CHECKPOINTS.values() if c.layout == "laya"]
     folders = catalog.folder_decisions()
 
     def kind(c) -> str:
-        if catalog.is_fine_tune_name(c.name):
-            return "fine_tune"
-        return "folder" if c.name.startswith(catalog.FOLDER_PREFIX) else "catalog"
+        return "fine_tune" if catalog.is_fine_tune_name(c.name) else "folder"
 
     models = [
         {
@@ -27141,18 +27211,19 @@ def _voice_decision_response() -> dict:
             "label": c.label or (Path(c.source).name if kind(c) == "fine_tune" else c.name),
             "description": c.description,
             "kind": kind(c),
-            "path": c.source if kind(c) != "catalog" else None,
+            "path": c.source,
             "available": True,
             "unavailable_reason": None,
             **_clef_availability(c, clef_reason),
             **_decision_row_meta(c),
         }
-        for c in [*stock, *catalog.fine_tunes(), *folders]
+        # Fine-tunes and custom folders only: no stock checkpoint was trained on voice mode's questions.
+        for c in [*catalog.fine_tunes(), *folders]
     ]
     return {
         "current": voice_decisions.checkpoint_name(),
         "source": voice_decisions.checkpoint_source(),
-        "launch_default": (os.environ.get(voice_decisions.ENV_CHECKPOINT) or "").strip() or None,
+        "launch_default": voice_decisions.launch_checkpoint(),
         "models": models,
         # With neither set the built-in classifiers can never load: a setup gap, not a failed load.
         "builtin_configured": models_dir() is not None or models_hub() is not None,
@@ -27161,14 +27232,18 @@ def _voice_decision_response() -> dict:
 
 
 def _warm_voice_decision() -> None:
+    from core.inference.voice_decisions import DecisionUnavailable
     from core.inference.voice_models import get_voice_models
+
     models = get_voice_models()
     try:
         models.judge("hello")
-    except Exception as exc:  # noqa: BLE001 - the state reports it
-        # A load still running is not a failure: it keeps going in the runtime.
-        if "still loading" not in str(exc) and "reloading" not in str(exc):
+    except DecisionUnavailable as exc:
+        # A load or download still running is not a failure: it keeps going in the runtime.
+        if not exc.loading:
             models.note_decision_error(str(exc))
+    except Exception as exc:  # noqa: BLE001 - the state reports it
+        models.note_decision_error(str(exc))
 
 
 @studio_router.get("/voice/decision", dependencies = [Depends(auth_policy.require_owner)])
@@ -27228,17 +27303,24 @@ async def voice_judge(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """``{p_complete, ms, id}``: P(the user has finished the turn) for the transcript so far."""
+    """``{p_complete, finished, ms, id}``: P(the user has finished the turn) for the transcript so
+    far, and the verdict: ``finished`` is that probability against the server's one threshold."""
     from core.inference.voice_log import judge_verdict
 
     models = await asyncio.to_thread(_voice_model_or_503, "judge")
     t0 = time.perf_counter()
     p = await _voice_decide(models.judge, payload.text)
     ms = round((time.perf_counter() - t0) * 1000, 2)
-    row_id = await _voice_log_row(
-        request, payload, "judge", {"text": payload.text}, judge_verdict(p), p, ms
+    verdict = judge_verdict(p)
+    row_id = await _voice_log_row(request, payload, "judge", {"text": payload.text}, verdict, p, ms)
+    return JSONResponse(
+        content = {
+            "p_complete": round(p, 4),
+            "finished": verdict == "finished",
+            "ms": ms,
+            "id": row_id,
+        }
     )
-    return JSONResponse(content = {"p_complete": round(p, 4), "ms": ms, "id": row_id})
 
 
 @router.post("/voice/filler")

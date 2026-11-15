@@ -863,6 +863,8 @@ export const zhCN = {
     randomEachSentence: "每句随机音色",
     builtinSpeakers: "内置",
     builtinDetectors: "内置",
+    thinkFirst: "回答前先思考",
+    thinkFirstHint: "开始说话会更慢",
     savedVoices: "已保存的音色",
     decideHint: "切换后立即开始加载，下一次判定就会使用它。",
     decideGroupFineTunes: "已微调",

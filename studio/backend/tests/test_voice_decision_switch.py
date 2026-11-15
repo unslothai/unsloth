@@ -112,9 +112,7 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
         "env",
         "laya-ft:v4",
     )
-    stock = {m["name"]: m for m in got["models"]}["laya-multilingual"]
-    assert (stock["family"], stock["gguf"], stock["mtime"]) == ("Laya", None, None)
-    assert stock["size_bytes"] > 0
+    assert got["models"] == []
 
     put = client.put("/api/inference/voice/decision", json = {"name": "laya-ft:v3"})
     assert put.status_code == 200
@@ -128,6 +126,56 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
     assert client.put("/api/inference/voice/decision", json = {"name": "nope"}).status_code == 400
     cleared = client.put("/api/inference/voice/decision", json = {"name": None}).json()
     assert (cleared["current"], cleared["source"]) == ("laya-ft:v4", "env")
+
+
+def test_a_stock_checkpoint_is_not_offered_and_reads_as_not_set_up(monkeypatch, tmp_path):
+    """Stock Decision checkpoints were never trained on voice mode's questions, so they are no pick.
+
+    Measured on 480 labelled finished / unfinished utterances, through Studio's own Laya path: with
+    the production question laya-english scores AUC 0.52 (a coin is 0.50) and holds 95% of finished
+    turns at the 0.65 bar, 4 s each; laya-multilingual and laya-typed-decisions hold 99%; no
+    wording, state format, polarity or question type of 19 tried got past AUC 0.80. The filler
+    question fails on every call (its 12 class descriptions exceed Laya's 176-token option budget),
+    and interject gets 12 of 24 right.
+    """
+    from auth.authentication import get_current_subject
+    from core.inference import voice_models as vm
+    from core.systemone import catalog
+    from routes import inference
+
+    with pytest.raises(ValueError, match = "not trained for voice mode"):
+        vd.set_checkpoint("laya-english")
+    with pytest.raises(ValueError, match = "not trained for voice mode"):
+        vd.set_checkpoint("default")
+
+    # A pick saved before this rule, or set at launch, counts as no pick at all.
+    from storage.studio_db import upsert_app_settings
+
+    upsert_app_settings({vd.SETTING_KEY: "laya-english"}, read_back = False)
+    monkeypatch.setenv(vd.ENV_CHECKPOINT, "laya-multilingual")
+    monkeypatch.delenv(vm.ENV_DIR, raising = False)
+    monkeypatch.delenv(vm.ENV_HUB, raising = False)
+    assert (vd.checkpoint_name(), vd.checkpoint_source()) == (None, None)
+
+    models = vm.VoiceModels()
+    monkeypatch.setattr(vm, "get_voice_models", lambda: models)
+    monkeypatch.setattr(catalog, "fine_tunes", lambda: [])
+    monkeypatch.setattr(catalog, "folder_decisions", lambda: [])
+    client = _voice_client([inference.router, inference.studio_router])
+    # No answer from an untrained model: the browser sends the turn after its normal pause.
+    assert (
+        client.post("/api/inference/voice/judge", json = {"text": "Tell me a joke."}).status_code
+        == 503
+    )
+    assert "decision" not in models._models
+
+    got = client.get("/api/inference/voice/decision").json()
+    assert (got["current"], got["source"], got["launch_default"]) == (None, None, None)
+    # What the panel shows as "Not set up", not as an error.
+    assert got["builtin_configured"] is False
+    assert got["models"] == []
+    put = client.put("/api/inference/voice/decision", json = {"name": "laya-english"})
+    assert put.status_code == 400 and "not trained for voice mode" in put.json()["detail"]
 
 
 def _clef_folder(folder):
@@ -278,6 +326,30 @@ def test_a_loading_decision_checkpoint_answers_503(monkeypatch):
     assert r.status_code == 500
 
 
+def test_the_judge_answers_with_its_own_verdict(monkeypatch):
+    """The browser reads ``finished``; the threshold lives on the server only."""
+    from core.inference import voice_log
+    from core.inference import voice_models as vm
+    from routes import inference
+
+    scores = {"done": 0.9, "at the bar": voice_log.JUDGE_SEND_THRESHOLD, "more to": 0.2}
+    fake = SimpleNamespace(
+        available = lambda name: True, reason = lambda name: "", judge = scores.__getitem__
+    )
+    monkeypatch.setattr(vm, "get_voice_models", lambda: fake)
+    client = _voice_client([inference.router])
+    answers = {
+        text: client.post("/api/inference/voice/judge", json = {"text": text}).json()
+        for text in scores
+    }
+    assert {text: a["finished"] for text, a in answers.items()} == {
+        "done": True,
+        "at the bar": True,
+        "more to": False,
+    }
+    assert answers["done"]["p_complete"] == 0.9 and answers["done"]["id"] is None
+
+
 def test_decision_voice_raises_unavailable_while_loading():
     from core.systemone import laya_runtime
 
@@ -289,6 +361,60 @@ def test_decision_voice_raises_unavailable_while_loading():
     with pytest.raises(vd.DecisionUnavailable) as err:
         voice.judge("hi")
     assert err.value.retry_after == 5 and isinstance(err.value, RuntimeError)
+    assert err.value.loading is True
+
+    def busy(checkpoint, state, question):
+        raise laya_runtime.Unavailable(409, "gpu_busy", "Unload the resident chat model first.", 1)
+
+    voice._decide = busy
+    with pytest.raises(vd.DecisionUnavailable) as err:
+        voice.judge("hi")
+    assert err.value.loading is False
+
+
+@pytest.mark.parametrize("message", ["laya-ft:v4 is loading", "laya-ft:v4 is downloading"])
+def test_a_warm_up_that_finds_the_checkpoint_loading_records_no_error(
+    checkpoints, monkeypatch, tmp_path, message
+):
+    from core.inference import voice_models as vm
+    from core.systemone import laya_runtime
+    from routes import inference
+
+    def decide(checkpoint, state, questions, **options):
+        raise laya_runtime.Unavailable(503, "model_loading", message, 5)
+
+    monkeypatch.setattr(laya_runtime, "decide", decide)
+    monkeypatch.setattr(
+        laya_runtime,
+        "status",
+        lambda: {"loaded_model": None, "loading_model": None, "error_model": None, "error": None},
+    )
+    models = vm.VoiceModels(root = tmp_path)
+    monkeypatch.setattr(vm, "get_voice_models", lambda: models)
+    inference._warm_voice_decision()
+    assert models.decision_state() == {"state": "not_loaded", "error": None}
+
+
+def test_a_question_for_a_model_that_did_not_load_says_why(monkeypatch, tmp_path):
+    from core.inference import voice_models as vm
+    from routes import inference
+
+    monkeypatch.delenv(vd.ENV_CHECKPOINT, raising = False)
+    models = vm.VoiceModels(root = tmp_path / "nope")
+    with pytest.raises(vm.VoiceModelUnavailable, match = "judge model is unavailable: FileNotFound"):
+        models.judge("hi")
+
+    # A pick switched between the route's check and its call answers 503 like any unavailable model.
+    def gone(text):
+        raise vm.VoiceModelUnavailable("Voice judge model is unavailable: switched")
+
+    fake = SimpleNamespace(available = lambda name: True, reason = lambda name: "", judge = gone)
+    monkeypatch.setattr(vm, "get_voice_models", lambda: fake)
+    r = _voice_client([inference.router]).post("/api/inference/voice/judge", json = {"text": "hi"})
+    assert (r.status_code, r.json()["detail"]) == (
+        503,
+        "Voice judge model is unavailable: switched",
+    )
 
 
 def test_retiring_a_voice_skips_one_a_request_holds(monkeypatch):

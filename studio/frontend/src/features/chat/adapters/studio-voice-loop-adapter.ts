@@ -22,6 +22,7 @@ import {
   createSingleFlight,
 } from "@/features/chat/voice/mic-health";
 import {
+  isAcknowledgement,
   isBackchannel,
   isReplyEcho,
   isSttNoise,
@@ -51,11 +52,21 @@ import {
   voiceLoopSupported,
 } from "@/features/chat/voice/voice-loop-bridge";
 import {
-  JUDGE_SEND_THRESHOLD,
   judgeTurnComplete,
   reportLayaOutcome,
 } from "@/features/chat/voice/voice-models-client";
 import { createTurnAudio } from "@/features/chat/voice/turn-audio";
+import {
+  TURN_ASK_AFTER_MS,
+  TURN_END_AFTER_MS,
+  askTurnEnd,
+  createTurnEndCheck,
+  hasClosingMark,
+  loadTurnModel,
+  readsUnfinished,
+  turnClipSpan,
+  turnClipTail,
+} from "@/features/chat/voice/turn-end";
 import { voiceHearsAudio } from "@/features/chat/voice/voice-models";
 import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
@@ -214,9 +225,17 @@ function settleFinished(realSpeech: boolean): void {
   reportLayaOutcome(f.id, realSpeech ? "continued_quickly" : "sent", { gap_ms: gapMs });
 }
 
-async function turnUnfinished(text: string): Promise<boolean> {
+// The transcriber that has written a closing mark: only then does a missing one mean anything.
+let punctuatingStt: string | null = null;
+const sttKey = (modelId: string | undefined) => modelId ?? "";
+const readsCutOff = (text: string, modelId: string | undefined) =>
+  readsUnfinished(text, punctuatingStt === sttKey(modelId));
+
+async function turnUnfinished(text: string, modelId: string | undefined): Promise<boolean> {
   const r = await judgeTurnComplete(text);
-  const unfinished = r !== null && r.p < JUDGE_SEND_THRESHOLD;
+  // No decision model to ask: a transcript that reads cut off is still held for the rest.
+  if (r === null) return readsCutOff(text, modelId);
+  const unfinished = !r.finished;
   heldJudgeId = unfinished ? (r?.id ?? null) : null;
   if (r?.id && !unfinished) watchFinished(r.id);
   return unfinished;
@@ -331,6 +350,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
     );
     let vadReady = false;
+    // The end-of-turn model is up, and it called this turn finished.
+    let turnReady = false;
+    let soundedFinished = false;
     let bargeConfirming = false;
     // The gate resets on the first quiet frame, so a word ending before the answer would otherwise count as none.
     let bargePeakMs = 0;
@@ -377,6 +399,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       cancel: () => {
         teardown();
         early.clear();
+        turnEnd.clear();
         finish("cancelled");
       },
       onSpeechStart: (cb) => {
@@ -546,7 +569,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       const vad = vadReady && !vadDisabled ? rt.selectedVadModelId : "off";
       return `${span.start}:${span.end}:${rt.selectedSttModelId ?? ""}:${vad}`;
     };
-    const analyseClip = (span: { start: number; end: number }): ClipAnalysis => {
+    const spanSamples = (span: { start: number; end: number }): Float32Array => {
       const total = chunks.slice(span.start, span.end + 1).reduce((n, c) => n + c.length, 0);
       const merged = new Float32Array(total);
       let offset = 0;
@@ -554,17 +577,50 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         merged.set(chunks[i], offset);
         offset += chunks[i].length;
       }
+      return merged;
+    };
+    const turnEnd = createTurnEndCheck(
+      (wav, signal) => askTurnEnd(wav, signal, useVoiceSettingsStore.getState().dictationLanguage),
+      (answer, ms) => voiceTrace("turn.end", { ...answer, ms }),
+    );
+    // Words spoken over a reply that ask nothing of it: the reply carries on.
+    const nothingToActOn = (text: string): boolean => {
+      const reply = getVoiceReplyText();
+      return (
+        !text ||
+        isBackchannel(text) ||
+        isSttNoise(text) ||
+        isReplyEcho(text, reply) ||
+        isAcknowledgement(text, reply)
+      );
+    };
+    // The barge-in clip whose words turned out to be nothing to act on, and the one being read.
+    let bargeNothingKey: string | null = null;
+    let bargeReadingKey: string | null = null;
+    const analyseClip = (span: { start: number; end: number }): ClipAnalysis => {
+      const merged = spanSamples(span);
       const wav = wavBlob(merged, sampleRate);
       const modelId = useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
-      const abort = new AbortController();
+      let dropped = false;
       const vad = detectClip(wav, bargedIn);
+      // A clip dropped before its transcription starts is never sent. One already in flight is left
+      // to finish: the server answers an aborted transcription by restarting the transcriber, and
+      // that model load costs the next clip far more than these few hundred milliseconds.
       const text = vad.then(async (v) =>
-        v?.kept === false
+        v?.kept === false || dropped
           ? ""
-          : (await transcribeAudioBlob(wav, { model: modelId, signal: abort.signal })).trim(),
+          : (await transcribeAudioBlob(wav, { model: modelId })).trim(),
       );
       text.catch(() => {});
-      return { modelId, samples: merged, vad, text, cancel: () => abort.abort() };
+      return {
+        modelId,
+        samples: merged,
+        vad,
+        text,
+        cancel: () => {
+          dropped = true;
+        },
+      };
     };
     const early = createClipSpeculation<ClipAnalysis>();
 
@@ -593,6 +649,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (finalizing || ended) return;
       finalizing = true;
       teardown();
+      turnEnd.clear();
 
       // A barge-in already passed its own bar: a quick "stop" is shorter than a turn.
       const minMs = bargedIn ? BARGE_CONFIRMED_MS : MIN_SPEECH_MS;
@@ -607,6 +664,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         return;
       }
       voiceTrace("session.finalize", {
+        why: soundedFinished ? "sounded finished" : "silence",
         trailingMs: Math.round((chunks.length - 1 - chunkVoiced.lastIndexOf(true)) * (chunks[0].length / sampleRate) * 1000),
       });
       const key = clipKey(span);
@@ -647,6 +705,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           publishSttDecision(false, "repeated word");
           transcript = "";
         }
+        if (hasClosingMark(transcript)) punctuatingStt = sttKey(modelId);
         voiceTrace("stt", { transcript, bargedIn, heldTurn: heldTurn?.text ?? null });
         if (transcript && bargedIn && isReplyEcho(transcript, getVoiceReplyText())) {
           voiceTrace("barge.abort", { why: "echo" });
@@ -657,10 +716,15 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           setTimeout(() => requestVoiceResume(), 0);
           return;
         }
-        if (transcript && (isBackchannel(transcript) || isSttNoise(transcript))) {
-          voiceTrace("stt.drop", { transcript, why: "noise" });
+        const acknowledged =
+          Boolean(transcript) && bargedIn && isAcknowledgement(transcript, getVoiceReplyText());
+        if (transcript && (acknowledged || isBackchannel(transcript) || isSttNoise(transcript))) {
+          voiceTrace("stt.drop", { transcript, why: acknowledged ? "acknowledgement" : "noise" });
           settleFinished(false);
-          publishSttDecision(false, isBackchannel(transcript) ? "breath" : "cough");
+          publishSttDecision(
+            false,
+            acknowledged ? "acknowledgement" : isBackchannel(transcript) ? "breath" : "cough",
+          );
           if (bargedIn) {
             voiceTrace("barge.abort", { why: "backchannel" });
             requestVoiceBargeAbort();
@@ -687,10 +751,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           reportLayaOutcome(heldJudgeId, "continued", { text: transcript });
           heldJudgeId = null;
         }
+        // A turn that sounded finished is sent unless its words read cut off; the text judge is asked
+        // only about one that trailed off.
         const unfinished =
           Boolean(transcript) &&
           !editing &&
-          (await turnUnfinished(transcript));
+          (soundedFinished
+            ? readsCutOff(transcript, modelId)
+            : await turnUnfinished(transcript, modelId));
         if (epoch !== heldEpoch) {
           voiceTrace("stt.drop", { transcript, why: "cleared" });
           finish("stopped");
@@ -725,7 +793,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           const mine = { shown: shown(transcript), rush: false };
           reveal = mine;
           try {
-            for (let i = stepChars; i < total && !mine.rush; i += stepChars) {
+            // A turn that sounded finished is sent at once: typing it out first is a wait before the reply.
+            for (let i = stepChars; i < total && !mine.rush && !soundedFinished; i += stepChars) {
               if (ended || epoch !== heldEpoch) break;
               const partial = transcript.slice(0, i);
               emitSpeech(partial, false);
@@ -872,6 +941,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               requestSttDownload(sttPick);
             }
           });
+        void loadTurnModel().then((ready) => {
+          turnReady = ready;
+        });
         if (!vadDisabled) {
           const vadPick = useChatRuntimeStore.getState().selectedVadModelId;
           void loadVadModel(vadPick)
@@ -1036,9 +1108,44 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
           const sinceVoice = now - lastVoiceAt;
           const elapsed = now - startedAt;
-          if (heardSpeech && !finalizing && voicedMs >= (bargedIn ? BARGE_CONFIRMED_MS : MIN_SPEECH_MS) && sinceVoice >= SPECULATE_AFTER_MS) {
+          const enoughSpeech =
+            heardSpeech && !finalizing && voicedMs >= (bargedIn ? BARGE_CONFIRMED_MS : MIN_SPEECH_MS);
+          // The end-of-turn model is not asked about speech over a reply: on a second or two of
+          // audio it calls a quarter to a half of unfinished clips finished.
+          const askTurn = turnReady && !bargedIn;
+          // With the turn asked, the transcript is asked for at the same moment: an early end needs it.
+          if (enoughSpeech && sinceVoice >= (askTurn ? TURN_ASK_AFTER_MS : SPECULATE_AFTER_MS)) {
             const span = utteranceSpan(chunkVoiced, chunkNotSilent, padFrames());
-            if (span) early.start(clipKey(span), () => analyseClip(span));
+            if (span) {
+              const key = clipKey(span);
+              const analysis = early.start(key, () => analyseClip(span));
+              if (bargedIn && bargeNothingKey === key) {
+                // An "mm-hm" or an echo: end the clip now, so the reply it paused resumes without the full wait.
+                void finalize();
+                return;
+              }
+              if (bargedIn && bargeReadingKey !== key) {
+                bargeReadingKey = key;
+                analysis.text.then(
+                  (text) => {
+                    if (nothingToActOn(text)) bargeNothingKey = key;
+                  },
+                  () => {},
+                );
+              }
+            }
+          }
+          if (enoughSpeech && askTurn && sinceVoice >= TURN_ASK_AFTER_MS) {
+            const span = turnClipSpan(chunkVoiced, chunkNotSilent);
+            const key = span ? `${span.start}:${span.end}` : null;
+            if (span && key) {
+              turnEnd.ask(key, () => wavBlob(turnClipTail(spanSamples(span), sampleRate), sampleRate));
+              if (turnEnd.finished(key) && sinceVoice >= TURN_END_AFTER_MS) {
+                soundedFinished = true;
+                void finalize();
+                return;
+              }
+            }
           }
           if (
             (heardSpeech &&

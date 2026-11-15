@@ -913,6 +913,8 @@ export const th = {
     randomEachSentence: "สุ่มเสียงทุกประโยค",
     builtinSpeakers: "ในตัว",
     builtinDetectors: "ในตัว",
+    thinkFirst: "คิดก่อนตอบ",
+    thinkFirstHint: "เริ่มพูดช้าลง",
     savedVoices: "เสียงที่บันทึกไว้",
     decideHint:
       "เมื่อสลับ ระบบจะเริ่มโหลดทันที และการตัดสินใจครั้งถัดไปจะใช้โมเดลนี้",

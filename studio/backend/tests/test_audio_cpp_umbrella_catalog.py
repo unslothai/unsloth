@@ -157,6 +157,10 @@ def pinned_runtime(monkeypatch):
 NEWER_RUNTIME_VARIANTS = {"Phonon-2-GGUF"}
 
 
+# Voice mode loads these itself, so they run with no page and no picker.
+VOICE_HELPERS = {"Smart-Turn-v3-GGUF"}
+
+
 @pytest.mark.parametrize("folder", sorted(set(UMBRELLA) - NEWER_RUNTIME_VARIANTS))
 def test_each_folder_lands_on_its_pages(folder):
     family, pages = UMBRELLA[folder]
@@ -164,7 +168,7 @@ def test_each_folder_lands_on_its_pages(folder):
     policy = acm.family_policy(family, spec, (f"{acm.AUDIO_CPP_REPO}/{folder}", folder), folder)
     assert list(policy.workflows) == pages
     # A folder with no page is refused, should it be loaded by id.
-    assert (policy.unsupported is None) == bool(pages)
+    assert (policy.unsupported is None) == (bool(pages) or folder in VOICE_HELPERS)
 
 
 def _catalog() -> tuple[dict[str, list[str]], set[str]]:

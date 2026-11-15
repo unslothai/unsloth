@@ -863,6 +863,8 @@ export const ko = {
     randomEachSentence: "문장마다 무작위 목소리",
     builtinSpeakers: "기본 제공",
     builtinDetectors: "기본 제공",
+    thinkFirst: "답하기 전에 생각하기",
+    thinkFirstHint: "말을 시작하는 데 더 오래 걸립니다",
     savedVoices: "저장된 목소리",
     decideHint: "전환하면 바로 로드를 시작하고 다음 판단부터 사용합니다.",
     decideGroupFineTunes: "파인튜닝됨",

@@ -144,3 +144,18 @@ def test_a_non_owner_first_call_resolves_the_installation_wide_pick(monkeypatch,
 
     assert run_as(alice, models.available, "judge")
     assert run_as(OWNER, models.available, "judge")
+
+
+def test_voice_asks_the_runtime_without_waiting_for_a_load(monkeypatch):
+    from core.systemone import catalog, laya_runtime
+
+    asked = []
+
+    def decide(checkpoint, state, questions, **options):
+        asked.append(options)
+        return {"answers": {"turn_done": {"type": "noul", "noul": 0.9}}, "truncated": False}
+
+    monkeypatch.setattr(laya_runtime, "decide", decide)
+    monkeypatch.setattr(catalog, "resolve", lambda name: SimpleNamespace(name = name, layout = "laya"))
+    assert vd.DecisionVoice("laya-ft:run").judge("are you there") == pytest.approx(0.9)
+    assert asked == [{"load_wait": 0}]

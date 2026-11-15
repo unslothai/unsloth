@@ -2544,3 +2544,27 @@ def test_an_env_pinned_local_clef_folder_keeps_the_clef_layout(monkeypatch, tmp_
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(tmp_path))
     monkeypatch.delenv("UNSLOTH_SYSTEMONE_SUBFOLDER", raising = False)
     assert catalog.default_checkpoint().layout == "clef"
+
+
+def test_a_caller_that_cannot_wait_starts_the_load_and_is_answered_at_once(monkeypatch):
+    """Voice mode asks with ``load_wait = 0``: its browser gives up on a verdict after 400 ms, so
+    waiting out a load would only park a worker. The Decision API keeps the default wait."""
+    release = threading.Event()
+
+    def slow(checkpoint):
+        release.wait(30)
+        return FakeAgent(checkpoint.name), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", slow)
+    checkpoint = catalog.CHECKPOINTS["laya-english"]
+    question = {"urgent": QUESTIONS["urgent"]}
+    started = time.monotonic()
+    with pytest.raises(laya_runtime.Unavailable) as refused:
+        laya_runtime.decide(checkpoint, "hello", question, load_wait = 0)
+    assert time.monotonic() - started < 5
+    assert (refused.value.status, refused.value.error_type) == (503, "model_loading")
+    # The refused call started the load, so the next one after it lands is answered.
+    release.set()
+    laya_runtime._loader.join(10)
+    answered = laya_runtime.decide(checkpoint, "hello", question, load_wait = 0)
+    assert answered["answers"]["urgent"]["noul"] == 0.9

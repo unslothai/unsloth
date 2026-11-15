@@ -957,6 +957,8 @@ export const fa = {
     randomEachSentence: "صدای تصادفی برای هر جمله",
     builtinSpeakers: "داخلی",
     builtinDetectors: "داخلی",
+    thinkFirst: "فکر کردن پیش از پاسخ",
+    thinkFirstHint: "دیرتر شروع به صحبت می‌کند",
     savedVoices: "صداهای ذخیره‌شده",
     decideHint:
       "با تغییر، بارگیری بی‌درنگ آغاز می‌شود و تصمیم بعدی از آن استفاده می‌کند.",

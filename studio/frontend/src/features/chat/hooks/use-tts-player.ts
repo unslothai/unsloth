@@ -12,7 +12,11 @@ import { planTtsChunk } from "../voice/tts-chunk-plan";
 import { getVoicePlayContext } from "../voice/voice-loop-bridge";
 import { outputSpectrumNode } from "../voice/voice-spectrum";
 import { voiceTrace } from "../voice/voice-trace";
-import { isChatModelVoice, voiceTtsCanClone } from "../voice/voice-models";
+import {
+  cutAbortsSpeechRequest,
+  isChatModelVoice,
+  voiceTtsCanClone,
+} from "../voice/voice-models";
 import { asideBlocked, createClipLedger, type ClipLedger } from "../voice/tts-clip-ledger";
 
 export { splitStreaming };
@@ -160,7 +164,9 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       pausedRef.current = false;
       if (!heldRef.current) void getPlayCtx()?.resume().catch(() => {});
     }
-    abortRef.current?.abort();
+    if (cutAbortsSpeechRequest(useChatRuntimeStore.getState().selectedVoiceModelId)) {
+      abortRef.current?.abort();
+    }
     abortRef.current = null;
     clipsRef.current.clear();
     playHeadRef.current = 0;

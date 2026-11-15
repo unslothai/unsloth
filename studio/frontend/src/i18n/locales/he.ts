@@ -901,6 +901,8 @@ export const he = {
     randomEachSentence: "קול אקראי בכל משפט",
     builtinSpeakers: "מובנים",
     builtinDetectors: "מובנים",
+    thinkFirst: "לחשוב לפני המענה",
+    thinkFirstHint: "מתחיל לדבר מאוחר יותר",
     savedVoices: "קולות שמורים",
     decideHint: "מעבר מתחיל לטעון מיד; ההחלטה הבאה משתמשת בו.",
     decideGroupFineTunes: "מכווננים",

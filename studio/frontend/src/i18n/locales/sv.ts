@@ -916,6 +916,8 @@ export const sv = {
     randomEachSentence: "Slumpad röst i varje mening",
     builtinSpeakers: "Inbyggda",
     builtinDetectors: "Inbyggda",
+    thinkFirst: "Tänk innan svar",
+    thinkFirstHint: "Börjar tala senare",
     savedVoices: "Sparade röster",
     decideHint: "Ett byte börjar laddas direkt; nästa beslut använder det.",
     decideGroupFineTunes: "Finjusterade",

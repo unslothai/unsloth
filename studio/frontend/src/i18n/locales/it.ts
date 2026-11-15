@@ -3932,6 +3932,8 @@ export const it = {
     randomEachSentence: "Voce casuale a ogni frase",
     builtinSpeakers: "Integrate",
     builtinDetectors: "Integrati",
+    thinkFirst: "Riflettere prima di rispondere",
+    thinkFirstHint: "Inizia a parlare più tardi",
     savedVoices: "Voci salvate",
     decideHint: "Un cambio inizia subito a caricarsi; la prossima decisione lo usa.",
     decideGroupFineTunes: "Ottimizzati",

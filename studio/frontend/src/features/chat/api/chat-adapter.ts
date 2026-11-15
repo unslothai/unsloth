@@ -7,7 +7,12 @@ import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { readGenerationProgress } from "../lib/generation-progress";
 import { joinWavBase64 } from "../utils/wav-chunks";
 import { getVoiceMode, publishVoiceSpokenAudio } from "../voice/voice-loop-bridge";
-import { wantsSpokenReply } from "../voice/voice-models";
+import {
+  reasoningForTurn,
+  wantsSpokenReply,
+  withSpokenReplyInstructions,
+} from "../voice/voice-models";
+import { useVoiceSettingsStore } from "../../settings/stores/voice-settings-store";
 import {
   consumePendingFiller,
   consumePendingReplace,
@@ -2232,11 +2237,14 @@ export async function buildLocalTokenCountHistory(
     resolveProjectInstructions(projectId),
     resolveAgentsMd(projectId),
   ]);
-  const combinedSystemPrompt = composeChatInstructions({
-    agentsMd,
-    projectInstructions,
-    systemPrompt: safeSystemPrompt,
-  });
+  const combinedSystemPrompt = withSpokenReplyInstructions(
+    composeChatInstructions({
+      agentsMd,
+      projectInstructions,
+      systemPrompt: safeSystemPrompt,
+    }),
+    getVoiceMode() === "active",
+  );
   if (combinedSystemPrompt) {
     prependSystemPrompt(outboundMessages, combinedSystemPrompt);
   }
@@ -2249,6 +2257,15 @@ export async function buildLocalTokenCountHistory(
   };
 }
 
+/** The Thinking setting as this turn sends it: voice mode has its own, off unless asked for. */
+function turnReasoning(enabled: boolean): boolean {
+  return reasoningForTurn({
+    enabled,
+    voiceModeOn: getVoiceMode() === "active",
+    voiceThinking: useVoiceSettingsStore.getState().voiceThinking,
+  });
+}
+
 /** The reasoning fields a completion would send: llama-server falls back to load-time
  *  --chat-template-kwargs only for omitted keys, so sending none misreports the mode. */
 export function buildLocalTokenCountReasoning(
@@ -2257,12 +2274,13 @@ export function buildLocalTokenCountReasoning(
   const {
     supportsReasoning,
     reasoningStyle,
-    reasoningEnabled,
+    reasoningEnabled: thinkingSetting,
     reasoningEffort,
     reasoningEffortLevels,
     supportsPreserveThinking,
     preserveThinking,
   } = state;
+  const reasoningEnabled = turnReasoning(thinkingSetting);
   // Same clamp the request build applies: a level the loaded template does not offer is dropped by the backend.
   const localReasoningEffort = clampReasoningEffortToLevels(
     reasoningEffort,
@@ -5429,12 +5447,15 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      const combinedSystemPrompt = await resolveChatInstructions(
-        resolvedThreadId,
-        params.systemPrompt,
-        params.systemVariables,
-        readThreadRecord,
-        { agentsMd: true },
+      const combinedSystemPrompt = withSpokenReplyInstructions(
+        await resolveChatInstructions(
+          resolvedThreadId,
+          params.systemPrompt,
+          params.systemVariables,
+          readThreadRecord,
+          { agentsMd: true },
+        ),
+        getVoiceMode() === "active",
       );
       if (combinedSystemPrompt) {
         prependSystemPrompt(outboundMessages, combinedSystemPrompt);
@@ -6320,12 +6341,13 @@ export function createOpenAIStreamAdapter(
 
       const {
         supportsReasoning,
-        reasoningEnabled,
+        reasoningEnabled: thinkingSetting,
         reasoningAlwaysOn,
         reasoningStyle,
         reasoningEffort,
         reasoningEffortLevels,
       } = runtime;
+      const reasoningEnabled = turnReasoning(thinkingSetting);
       const externalReasoningCaps: ReturnType<
         typeof getExternalReasoningCapabilities
       > =
