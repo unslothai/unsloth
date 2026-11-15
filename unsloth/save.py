@@ -7303,7 +7303,9 @@ def _tp_collective_save(method):
                     adapter = isinstance(self, PeftModel) and not torch.is_inference_mode_enabled()
                     select = "adapters" if adapter else "all"
                     return tp_collective(self, method, lambda: fn(self, *args, **kwargs), select)
-            elif getattr(self, "__dict__", {}).get("_unsloth_tp_world_save"):
+            elif getattr(self, "__dict__", {}).get(
+                "_unsloth_tp_world_save"
+            ) or _plain_data_parallel_push(self, method, fn, args, kwargs):
                 from .models.tp_replica import tp_world_push
                 return tp_world_push(method, lambda: fn(self, *args, **kwargs))
             return fn(self, *args, **kwargs)
@@ -7311,6 +7313,29 @@ def _tp_collective_save(method):
         return wrapper
 
     return decorate
+
+
+def _plain_data_parallel_push(model, method, fn, args, kwargs):
+    """Plain DDP Hub upload: identical weights on every rank, so rank 0 alone uploads (FSDP saves gather)."""
+    import torch.distributed as dist
+
+    if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+        return False
+    if not isinstance(model, torch.nn.Module):
+        return False
+    from .models.fsdp2_save import fsdp2_units
+
+    if fsdp2_units(model):
+        return False
+    try:  # FSDP1 state dict hooks all-gather on every rank
+        from torch.distributed.fsdp import FullyShardedDataParallel
+        if any(isinstance(m, FullyShardedDataParallel) for m in model.modules()):
+            return False
+    except Exception:
+        pass
+    return method == "push_to_hub" or bool(
+        _fsdp2_save_arguments(fn, model, args, kwargs).get("push_to_hub")
+    )
 
 
 def _fsdp2_rank():
