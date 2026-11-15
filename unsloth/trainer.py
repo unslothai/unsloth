@@ -1971,7 +1971,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
-        # An explicit padding_free = True that gets turned off says why, like packing = True.
         requested_padding_free = getattr(config_arg, "padding_free", None) is True
         if boundary_blocker is not None:
             if (
