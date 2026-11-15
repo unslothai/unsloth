@@ -1342,10 +1342,12 @@ function withSavedChatFullAccess(threadId: string, settings: ThreadScopedSetting
 }
 
 function saveChatFullAccess(threadId: string, on: boolean): void {
-  chatFullAccessDecidedSinceOpen.add(threadId);
   if (savedChatFullAccess.get(threadId) === on) return;
+  chatFullAccessDecidedSinceOpen.add(threadId);
   savedChatFullAccess.set(threadId, on);
-  void mergeThreadScopedSettingsIntoRow(threadId, { fullAccess: on }).catch(() => undefined);
+  // The open chat's snapshot write carries the flag; a separate patch would supersede its queued edits.
+  if (threadId === threadScopedSettingsThreadId) scheduleThreadScopedSettingsWrite(threadId);
+  else void mergeThreadScopedSettingsIntoRow(threadId, { fullAccess: on }).catch(() => undefined);
 }
 
 function saveGrantedChats(grants: ChatFullAccessGrants): void {

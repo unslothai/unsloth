@@ -165,3 +165,32 @@ test("a revocation saved elsewhere also drops a grant this tab made, and is not 
   await grantChat(state, OTHER);
   assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false, "not written back by another chat's grant");
 });
+
+test("granting Full access keeps a settings edit still queued for that chat", async () => {
+  threadRows.reset();
+  threadRows.rows.set(CHAT, { permissionMode: "auto", temperature: 0.5 });
+  const state = await start("grant-keeps-queued-edit");
+  open(state, CHAT);
+  state().setParams({ ...state().params, temperature: 1.2 } as never);
+  void state.module.awaitThreadScopedSettingsWrite(CHAT);
+  state().grantChatFullAccess({ runId: "run-queued", threadId: CHAT, sessionId: "session-1" });
+  await settle();
+  assert.equal(threadRows.rows.get(CHAT)?.temperature, 1.2);
+  assert.equal(threadRows.rows.get(CHAT)?.fullAccess, true);
+});
+
+test("a grant for another chat while one loads does not block that chat's saved revocation", async () => {
+  threadRows.reset();
+  const state = await start("other-grant-during-read");
+  await grantChat(state, CHAT);
+  threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: false });
+  open(state, OTHER);
+  state().setActiveThreadId(CHAT);
+  state().applyThreadScopedSettings(null, null);
+  state.module.beginThreadScopedPairing(CHAT);
+  state().grantChatFullAccess({ runId: "run-other", threadId: OTHER, sessionId: "session-1" });
+  state().applyThreadScopedSettings(CHAT, sanitizeThreadScopedSettings(threadRows.rows.get(CHAT)));
+  assert.equal(state().permissionMode, "auto");
+  assert.equal(state().bypassPermissions, false);
+  await settle();
+});
