@@ -85,6 +85,25 @@ def _mlx_merged(monkeypatch):
     return lambda private: push(model, "me/repo", private = private)
 
 
+def _mlx_gguf(monkeypatch, tmp_path):
+    gguf = _mlx(monkeypatch)._decision_gguf()
+    (tmp_path / gguf._contract().EXPORT_DIR).mkdir()
+    monkeypatch.setattr(gguf.tempfile, "TemporaryDirectory", lambda: _Folder(tmp_path))
+    model = SimpleNamespace(save_pretrained_gguf = lambda *a, **kw: {})
+    return lambda private: gguf.push_to_hub_gguf(model, "me/repo", private = private)
+
+
+class _Folder:
+    def __init__(self, path):
+        self.path = path
+
+    def __enter__(self):
+        return str(self.path)
+
+    def __exit__(self, *exc):
+        return False
+
+
 PUSHES = [_decision_clef, _decision_merged, _embedding_gguf, _mlx_clef, _mlx_merged]
 
 
@@ -129,3 +148,18 @@ def test_mlx_twin_matches_save_guard(monkeypatch, public, private):
             return str(exc)
 
     assert outcome(twin) == outcome(save_guard)
+
+
+@pytest.mark.parametrize("public, private", [(True, True), (True, False), (False, True)])
+def test_mlx_gguf_push(monkeypatch, tmp_path, public, private):
+    # decision_mlx loads decision_gguf by path as unsloth._decision_gguf: no relative import of save.py.
+    calls = []
+    monkeypatch.setattr(huggingface_hub, "HfApi", _fake_api(public, calls))
+    push = _mlx_gguf(monkeypatch, tmp_path)
+    if public and private:
+        with pytest.raises(RuntimeError, match = "already exists and is public"):
+            push(private)
+        assert "upload" not in calls
+    else:
+        push(private)
+        assert "upload" in calls
