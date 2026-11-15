@@ -319,7 +319,9 @@ def _kept_buffers(model, key, rows):
         kept = True
         bufs = store.get(key)
         if bufs is not None and bufs[0].shape[0] >= rows:
-            reused += bufs[0].numel() * bufs[0].element_size()
+            vmm = _vmm_buffer(bufs[0])
+            if vmm is None or vmm.awake:  # a sleeping cache must be mapped again: no reuse credit
+                reused += bufs[0].numel() * bufs[0].element_size()
     return kept, reused
 
 

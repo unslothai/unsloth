@@ -816,3 +816,17 @@ def test_vmm_caches_sleep_through_training_from_the_first_round(G, monkeypatch, 
     assert released is False and G._state(model).graphs and model.held() == 1
     assert vmm.asleep == {id(t) for t in caches}
     assert not any("paged_attention" in a.__dict__ for a in model.attns)
+
+
+@pytest.mark.parametrize("awake", [True, False])
+def test_a_sleeping_cache_gets_no_reuse_credit(G, monkeypatch, awake):
+    # A slept VMM cache gave its pages to training; the next generate must map them again.
+    model = torch.nn.Module()
+    model.attn = _Attn()
+    buf = torch.zeros(8, 4)
+    model.attn.__dict__["_unsloth_graph_buffers"] = {"k": (buf,)}
+    monkeypatch.setattr(G, "_vmm_buffer", lambda t: types.SimpleNamespace(awake = awake))
+    assert G._kept_buffers(model, "k", 4) == (
+        True,
+        buf.numel() * buf.element_size() if awake else 0,
+    )
