@@ -438,6 +438,18 @@ def _linear_layer_types():
 _LINEAR_LAYERS = _linear_layer_types()
 
 
+def _dummy_layer_types():
+    # transformers 5.x: a layer that holds no cache (Gemma 3n's shared-KV consumers read their producer's rows).
+    try:
+        from transformers import cache_utils
+    except Exception:
+        return ()
+    return tuple(t for t in (getattr(cache_utils, "DummyLayer", None),) if isinstance(t, type))
+
+
+_DUMMY_LAYERS = _dummy_layer_types()
+
+
 def _linear_states(layer):
     """Fixed-shape conv + recurrent states, updated in place, so a replay addresses them like KV rows."""
     out = []
@@ -453,7 +465,11 @@ def _linear_states(layer):
 
 
 def _attention_layers(cache):
-    return [layer for layer in cache.layers if type(layer) not in _LINEAR_LAYERS]
+    return [
+        layer
+        for layer in cache.layers
+        if type(layer) not in _LINEAR_LAYERS and type(layer) not in _DUMMY_LAYERS
+    ]
 
 
 def wanted(model):
@@ -470,10 +486,37 @@ def wanted(model):
     return getattr(device, "type", None) == _BACKEND.device_type and _plain_forward(model)
 
 
+class _Shape:
+    """Stands in for decoder_input_ids where only the shape is read."""
+
+    def __init__(self, shape):
+        self.shape = shape
+
+
+_ENCODER_INPUTS = ("input_ids", "inputs", "inputs_embeds", "input_features", "input_values")
+
+
+def _encoder_decoder(model):
+    return bool(getattr(getattr(model, "config", None), "is_encoder_decoder", False))
+
+
+def _decoder_prompt(kwargs):
+    """Decoder prompt length of an encoder-decoder call: its decoder_input_ids, else the start token."""
+    ids = kwargs.get("decoder_input_ids")
+    if isinstance(ids, torch.Tensor) and ids.dim() >= 2:
+        return int(ids.shape[1])
+    return 1
+
+
 def _plan_len(model, args, kwargs):
-    """prompt + new tokens this call can reach (0 if unknown), as the llama path sizes its plan."""
+    """prompt + new tokens this call can reach (0 if unknown), as the llama path sizes its plan.
+    Encoder-decoder: the decoder prompt only, not the encoder input (Whisper mel frames)."""
     try:
         from .llama import _generation_plan_len
+        if _encoder_decoder(model):
+            decoder = {k: v for k, v in kwargs.items() if k not in _ENCODER_INPUTS}
+            decoder["input_ids"] = _Shape((1, _decoder_prompt(kwargs)))
+            return int(_generation_plan_len(model, (), decoder) or 0)
         return int(_generation_plan_len(model, args, kwargs) or 0)
     except Exception:
         return 0
@@ -492,7 +535,10 @@ def plan(model, args, kwargs, input_ids):
         PLANS["not wanted"] += 1
         return "eager"
     try:
-        prompt = int(input_ids.shape[1]) if input_ids.dim() >= 2 else 0
+        if _encoder_decoder(model):
+            prompt = _decoder_prompt(kwargs)
+        else:
+            prompt = int(input_ids.shape[1]) if input_ids.dim() >= 2 else 0
         bsz = G.decode_batch(
             int(input_ids.shape[0]), kwargs, getattr(model, "generation_config", None)
         )
@@ -890,6 +936,9 @@ def keepable(model, kwargs, output):
         return False
     if getattr(output, "past_key_values", None) is not None:
         return False
+    # The next call re-encodes into a new cross-attention cache (reuse_kept_cache never hands one back).
+    if _encoder_decoder(model):
+        return False
     return True
 
 
@@ -946,8 +995,9 @@ def _reserve_step(
     """Grows a growable cache to hold this generate step. `call` tracks tokens in the cache but not in input_ids
     (inputs_embeds prompt, or a returned cache continued with only new tokens)."""
     call = {} if call is None else call
+    # Dim 1 is the sequence: CSM's input_ids are (batch, frames, codebooks), shape[-1] the 33 codebooks.
     total = (
-        input_ids.shape[-1] if isinstance(input_ids, torch.Tensor) and input_ids.dim() >= 2 else 0
+        input_ids.shape[1] if isinstance(input_ids, torch.Tensor) and input_ids.dim() >= 2 else 0
     )
     embeds = bound.get("inputs_embeds")
     q = bound.get("next_sequence_length")
@@ -1204,6 +1254,46 @@ def _refusal(state, reason):
     return None
 
 
+def _self_attention_cache(cache):
+    """The cache a decode step writes: an encoder-decoder's self-attention half; cross-attention is read-only."""
+    inner = getattr(cache, "self_attention_cache", None)
+    if inner is not None and getattr(cache, "cross_attention_cache", None) is not None:
+        return inner
+    return cache
+
+
+def _cross_attention_layers(cache):
+    if _self_attention_cache(cache) is cache:
+        return ()
+    return tuple(getattr(cache.cross_attention_cache, "layers", None) or ())
+
+
+def _cross_reason(cache):
+    """None when an encoder-decoder cache's cross-attention half is a filled StaticCache on CUDA."""
+    from transformers import StaticCache
+
+    cross = cache.cross_attention_cache
+    if not isinstance(cross, StaticCache):
+        return f"cross-attention cache {type(cross).__name__}"
+    layers = getattr(cross, "layers", None)
+    updated = getattr(cache, "is_updated", None)
+    # Each cross-attention layer reads is_updated on the host: all True after prefill, so no step writes it.
+    if (
+        not layers
+        or type(updated) is not dict
+        or len(updated) != len(layers)
+        or not all(updated.values())
+    ):
+        return "cross-attention cache not filled"
+    for layer in layers:
+        keys = getattr(layer, "keys", None)
+        if not getattr(layer, "is_initialized", False) or not isinstance(keys, torch.Tensor):
+            return "uninitialized cross-attention layer"
+        if keys.device.type != _BACKEND.device_type:
+            return "cache not on CUDA"
+    return None
+
+
 def _cache_reason(cache):
     """None when every layer of `cache` is a static attention layer this path can replay."""
     if cache is None:
@@ -1212,6 +1302,11 @@ def _cache_reason(cache):
         from transformers import StaticCache
     except Exception:
         return "no StaticCache"
+    if _self_attention_cache(cache) is not cache:
+        reason = _cross_reason(cache)
+        if reason is not None:
+            return reason
+        cache = _self_attention_cache(cache)
     if not isinstance(cache, StaticCache):
         return f"cache {type(cache).__name__}"
     if getattr(cache, "offloading", False):
@@ -1221,6 +1316,8 @@ def _cache_reason(cache):
         return "legacy cache"
     for layer in layers:
         kind = type(layer)
+        if kind in _DUMMY_LAYERS:
+            continue
         if kind in _LINEAR_LAYERS:
             reason = _linear_reason(layer)
             if reason is not None:
@@ -1493,7 +1590,18 @@ def _spec(value, leaves, cache):
         return ("D", tuple((k, _spec(v, leaves, cache)) for k, v in value.items()))
     if _BlockMask is not None and isinstance(value, _BlockMask):
         return _block_mask_spec(value, leaves, cache)
+    if _is_model_output(value):
+        # Whisper's encoder_outputs: rebuilt as the same ModelOutput class over static buffers (_build).
+        return ("M", type(value), tuple((k, _spec(v, leaves, cache)) for k, v in value.items()))
     raise _Refuse(f"argument {type(value).__name__}")
+
+
+def _is_model_output(value):
+    try:
+        from transformers.utils import ModelOutput
+    except Exception:
+        return False
+    return isinstance(value, ModelOutput) and all(type(k) is str for k in value.keys())
 
 
 # BlockMask graph contract. A flex BlockMask argument replays only when its builder publishes
@@ -1544,6 +1652,8 @@ def _build(value, buffers, cache):
         return type(value)(_build(v, buffers, cache) for v in value)
     if type(value) is dict:
         return {k: _build(v, buffers, cache) for k, v in value.items()}
+    if _is_model_output(value):
+        return type(value)(**{k: _build(v, buffers, cache) for k, v in value.items()})
     if _BlockMask is not None and isinstance(value, _BlockMask):
         built = copy.copy(value)
         for name, field in _block_mask_fields(value):
@@ -1891,9 +2001,7 @@ def decode_step(
     if state.forwards == 1:
         # The first forward is the prefill, even for a one-token prompt (Qwen3-VL sets rope_deltas there).
         return None
-    ids = kwargs.get("input_ids")
-    if ids is None:
-        ids = kwargs.get("inputs_embeds")
+    ids = _step_ids(kwargs)
     if (
         not isinstance(ids, torch.Tensor)
         or ids.dim() < 2
@@ -1904,8 +2012,10 @@ def decode_step(
     state.step += 1
     if ids.shape[0] > MAX_BSZ:
         return _refusal(state, "batch over max")
-    cache = kwargs.get("past_key_values")
-    reason = _cache_reason(cache)
+    full_cache = kwargs.get("past_key_values")
+    reason = _cache_reason(full_cache)
+    cache = _self_attention_cache(full_cache)
+    cross = _cross_attention_layers(full_cache)
     if reason is None:
         reason = _window_reason(cache, 1)
     if reason is None and KV.needs_growth(cache, 1):
@@ -1952,7 +2062,7 @@ def decode_step(
     spec = []
     for name, value in kwargs.items():
         try:
-            spec.append((name, _spec(value, leaves, cache)))
+            spec.append((name, _spec(value, leaves, full_cache)))
         except _Refuse as error:
             return _refusal(state, f"{error} ({name})")
     spec = tuple(spec)
@@ -1960,7 +2070,9 @@ def decode_step(
         # Their static buffers could not be refilled outside inference mode.
         return _refusal(state, "inference tensor outside inference mode")
     layout = tuple(
-        (type(layer).__name__, tuple((tuple(t.shape), t.dtype) for t in _linear_states(layer)))
+        (type(layer).__name__,)
+        if type(layer) in _DUMMY_LAYERS
+        else (type(layer).__name__, tuple((tuple(t.shape), t.dtype) for t in _linear_states(layer)))
         if type(layer) in _LINEAR_LAYERS
         else (
             type(layer).__name__,
@@ -1969,6 +2081,8 @@ def decode_step(
             layer.keys.dtype,
         )
         for layer in cache.layers
+    ) + tuple(
+        ("cross", layer.max_cache_len, tuple(layer.keys.shape), layer.keys.dtype) for layer in cross
     )
     # Ambient autocast incl. cache flag (Dynamo guards on it); cached casts outlive end() in generate().
     autocast = (G._autocast_state(), torch.is_autocast_cache_enabled())
@@ -1984,11 +2098,12 @@ def decode_step(
     if refused is not None:
         return _refusal(state, refused)
     # Graphs address this cache's tensors: a new cache re-captures; one reordered in place stays eager.
-    cache_sig = (id(cache), KV.epoch(cache)) + tuple(
+    cache_sig = (id(full_cache), KV.epoch(cache)) + tuple(
         tuple(t.data_ptr() for t in _linear_states(layer))
         if type(layer) in _LINEAR_LAYERS
         else (layer.keys.data_ptr(), layer.values.data_ptr())
-        for layer in cache.layers
+        for layer in (*cache.layers, *cross)
+        if type(layer) not in _DUMMY_LAYERS
     )
     if cache_sig != state.cache_sig:
         moved = state.cache_sig is not None and state.cache_sig[:2] == cache_sig[:2]
@@ -2014,16 +2129,25 @@ def decode_step(
             if KV.fills_bucket(cache, 1):
                 # A graph first captured on the bucket-filling step could never replay (the next step grows).
                 return _refusal(state, "kv cache fills its bucket")
-            return _capture(state, key, forward, kwargs, leaves, cache)
+            return _capture(state, key, forward, kwargs, leaves, full_cache)
         for buffer, leaf in zip(entry.leaves, leaves):
             buffer.copy_(_compact(leaf))
         if not entry.validated or _validate_all():
-            return _validate(state, key, entry, forward, kwargs, cache)
+            return _validate(state, key, entry, forward, kwargs, full_cache)
         _replay(state, entry)
         _advance(cache, 1)
         state.replays += 1
         state.unreplayed = 0
         return _map_outputs(entry.outputs, torch.Tensor.clone)
+
+
+def _step_ids(kwargs):
+    """The one-token input of a decode step: input_ids / inputs_embeds, or an encoder-decoder's decoder_input_ids."""
+    for name in ("input_ids", "inputs_embeds", "decoder_input_ids", "decoder_inputs_embeds"):
+        ids = kwargs.get(name)
+        if ids is not None:
+            return ids
+    return None
 
 
 def _replay(state, entry):
@@ -2099,6 +2223,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         state.refused[key] = reason
         state.refusals[reason] += 1
         return forward(**kwargs)
+    cache = _self_attention_cache(cache)
     before = _host_state(cache)
     stream.wait_stream(_BACKEND.current_stream())
     graph = None
@@ -2176,7 +2301,7 @@ def _validate(state, key, entry, forward, kwargs, cache):
     """First replay of a key must match the eager step bitwise, else the key is refused. Eager runs
     last, so generation continues from its result and cache rows."""
     state.validations += 1
-    start = _snapshot(cache)
+    start = _snapshot(_self_attention_cache(cache))
     _replay(state, entry)
     _restore(start)
     eager = forward(**kwargs)
