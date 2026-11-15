@@ -611,6 +611,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         sink.connect(audioCtx.destination);
       } catch (error) {
         teardown();
+        // Stopped while the mic was starting: the closed context threw, not the mic.
+        if (ended) return;
         console.error("Voice mic error:", error);
         toast.error("Could not access the microphone for dictation.");
         finish("error");

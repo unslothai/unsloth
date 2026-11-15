@@ -143,3 +143,16 @@ def test_a_detector_refused_during_an_audio_runtime_update_is_retryable():
     finally:
         audio_cpp_server.UPDATE_IN_PROGRESS.clear()
     assert inference._vad_http_error(VadUnavailableError("no runtime")).status_code == 501
+
+
+def test_the_detector_starts_on_the_cpu(monkeypatch):
+    # GPU memory it held would outlive Voice for training and chat: nothing frees the detector there.
+    entry = SimpleNamespace(id = "audio-cpp/audio.cpp-gguf/PulseVAD-GGUF", display_name = "PulseVAD")
+    calls = []
+    monkeypatch.setattr(vad, "resolve_vad_model", lambda *a, **k: entry)
+    monkeypatch.setattr(vad.audio_cpp_files, "materialize", lambda e: "/models/pulsevad")
+    monkeypatch.setattr(
+        vad.AudioCppServer, "start", classmethod(lambda cls, *a, **k: calls.append(k) or object())
+    )
+    assert vad.AudioCppVadSidecar().load(None) == entry.id
+    assert calls == [{"force_cpu": True}]

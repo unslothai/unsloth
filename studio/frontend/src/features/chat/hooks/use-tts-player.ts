@@ -71,6 +71,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const playHeadRef = useRef(0);
   const streamRef = useRef<Stream | null>(null);
   const failedReqRef = useRef(-1);
+  // ensure() keeps no failure state: one failed voice load per reply, not one load and toast per sentence.
+  const slotFailedReqRef = useRef(-1);
   const rafRef = useRef<number | null>(null);
   const pausedRef = useRef(false);
   const onEndRef = useRef(onPlaybackEnd);
@@ -137,7 +139,11 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       for (let tries = 0; !useChatRuntimeStore.getState().voiceSlotLoaded; tries++) {
         const ensure = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
         if (!ensure) break;
-        if (tries >= 3 || !(await ensure())) return null;
+        if (slotFailedReqRef.current === reqId) return null;
+        if (tries >= 3 || !(await ensure())) {
+          slotFailedReqRef.current = reqId;
+          return null;
+        }
         if (reqRef.current !== reqId) return null;
       }
       let url: string;

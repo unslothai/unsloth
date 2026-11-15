@@ -199,7 +199,8 @@ class AudioCppVadSidecar:
             try:
                 self._release_locked()
                 try:
-                    server = AudioCppServer.start(entry, path)
+                    # A tiny model: on the CPU it never holds GPU memory chat or training needs.
+                    server = AudioCppServer.start(entry, path, force_cpu = True)
                 except AudioCppUnavailableError as exc:
                     raise VadUnavailableError(str(exc)) from exc
                 self._server = server

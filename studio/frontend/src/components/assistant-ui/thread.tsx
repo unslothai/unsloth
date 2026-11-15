@@ -7697,7 +7697,7 @@ const ComposerRightControls: FC<{
           <VoiceControlButton />
         </Suspense>
       )}
-      <div className={cn(voiceEngaged ? "hidden" : "contents")}>
+      {!voiceEngaged && (
         <ComposerPrimitive.If dictation={false}>
           {audioUpload.busy ? (
             <Button
@@ -7727,7 +7727,7 @@ const ComposerRightControls: FC<{
             </TooltipIconButton>
           )}
         </ComposerPrimitive.If>
-      </div>
+      )}
       <AuiIf
         condition={({ thread }) =>
           !thread.isRunning && !isQueueRunning && !isResearchActive
