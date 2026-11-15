@@ -219,7 +219,6 @@ def test_packed_ple_matches_separate_documents(reference_gdn_kernels, eos):
 
 
 def test_packed_forward_keeps_documents_apart_with_a_config_cache(reference_gdn_kernels):
-    # A config use_cache would make transformers skip the per-document mask (QSA across documents).
     model, _ = _tiny_model(indexer_budget = 8)
     assert model.config.use_cache
     assert patch_hybrid_linear_attention_varlen(model) is True
@@ -245,7 +244,6 @@ def test_packed_forward_keeps_documents_apart_with_a_config_cache(reference_gdn_
 
 
 def test_packed_ple_gaps_run_outside_compiled_graphs(reference_gdn_kernels):
-    # Packed PLE must run eagerly: the gapped length failed inductor's backward (CantSplit).
     model, ple = _tiny_model()
     assert patch_hybrid_linear_attention_varlen(model) is True
     lengths = torch.tensor(LENGTHS)
