@@ -159,6 +159,15 @@ _LOCK = threading.Lock()
 _VERDICTS: dict = {}
 _BROKEN: set = set()
 _VERIFIED: set = set()
+# (index, head dim, dtype, impl) whose long variant passed its own check; elsewhere long calls run the short one.
+_LONG_VERIFIED: set = set()
+_LONG_CHECKS: dict = {}
+# (index, head dim, impl) whose long variant failed in a real call
+_LONG_BROKEN: set = set()
+# long probe: queries and heads against long_keys + LONG_PROBE_EXTRA keys (a ragged last key tile)
+LONG_PROBE_QUERIES = 1000
+LONG_PROBE_HEADS = 2
+LONG_PROBE_EXTRA = 100
 _LOADED: dict = {}
 # (device index, head dim) -> why the CUDA kernel cannot run there (NVRTC, compile, module load or launch error)
 _CUDA_FAILED: dict = {}
@@ -757,6 +766,19 @@ def _verified_at(index: int, q: Any, k: Any, v: Any, impl: str) -> bool:
     return all((index, head_dim, str(x.dtype), impl) in _VERIFIED for x in (q, k, v))
 
 
+def _long_ready(index: int, head_dim: int, impl: Optional[str], q: Any, k: Any, v: Any) -> bool:
+    """Whether the long variant passed its check for this call's card, head dim, dtypes and implementation (and has
+    not failed in a call since)."""
+    return (index, head_dim, impl) not in _LONG_BROKEN and all(
+        (index, head_dim, str(x.dtype), impl) in _LONG_VERIFIED for x in (q, k, v)
+    )
+
+
+def _uses_long(config: Optional[dict], keys: int) -> bool:
+    long_keys = (config or {}).get("long_keys")
+    return bool(long_keys) and int(keys) >= int(long_keys)
+
+
 def _run(
     q: Any,
     k: Any,
@@ -765,11 +787,17 @@ def _run(
     config: Optional[dict] = None,
     scale: Optional[float] = None,
 ) -> Any:
-    """The kernels of ``impl`` on a call ``unsupported_reason`` accepted."""
+    """The kernels of ``impl`` on a call ``unsupported_reason`` accepted. Without an explicit ``config``, a call long
+    enough for the card's long variant runs it only where that variant passed its own check; elsewhere it runs the
+    short config (a valid kernel at any length, only slower there)."""
     import torch
 
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    config = config or device_config(index, q.shape[-1], impl)
+    if not config:
+        head_dim = int(q.shape[-1])
+        config = device_config(index, head_dim, impl)
+        if _uses_long(config, k.shape[1]) and not _long_ready(index, head_dim, impl, q, k, v):
+            config = select_config(config, 0)
     if impl == "triton":
         from . import diffusion_int8_attention_triton as triton_kernel
         with torch.no_grad(), torch.cuda.device(q.device):
@@ -812,6 +840,12 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
 
     reason, index, impl, config = _call_route(q, k, v)
     if reason is None and impl is not None and _verified_at(index, q, k, v, impl):
+        if _uses_long(config, k.shape[1]) and not _long_ready(
+            index, int(q.shape[-1]), impl, q, k, v
+        ):
+            config = select_config(
+                config, 0
+            )  # the long variant runs only where it passed its own check
         try:
             if impl == "triton":
                 out = _run(q, k, v, impl, config)
@@ -827,10 +861,20 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
         except torch.OutOfMemoryError:
             raise
         except Exception as exc:  # noqa: BLE001 -- a JIT / launch failure keeps native attention on this card
-            _BROKEN.add((index, int(q.shape[-1])))
-            _log().warning(
-                "diffusion.int8_attention: kernel failed, native attention from here on: %s", exc
-            )
+            head_dim = int(q.shape[-1])
+            if _uses_long(config, k.shape[1]) and _long_ready(index, head_dim, impl, q, k, v):
+                # only the long variant failed: the verified short kernel keeps every call, long ones included
+                _LONG_BROKEN.add((index, head_dim, impl))
+                _log().warning(
+                    "diffusion.int8_attention: long-sequence kernel failed, the short one runs long calls from here on: %s",
+                    exc,
+                )
+            else:
+                _BROKEN.add((index, head_dim))
+                _log().warning(
+                    "diffusion.int8_attention: kernel failed, native attention from here on: %s",
+                    exc,
+                )
     STATS["native"] += 1
     return native_attention(q, k, v)
 
@@ -955,6 +999,62 @@ def _median_ms(fns: dict, rounds: int = 5) -> dict:
     return {name: sorted(ts)[len(ts) // 2] for name, ts in times.items()}
 
 
+def _long_check(device: Any, dtype: Any, head_dim: int, impl: str) -> Optional[dict]:
+    """The accuracy check of the card's long variant (``long_keys`` / ``long`` in its config), once per card, head
+    dim, dtype and implementation, or None where the config has no long variant. It compiles that kernel here,
+    eagerly, rather than on the first long call (which may be under CUDA graph capture). A pass lets long calls run
+    it (``_LONG_VERIFIED``); a miss or a failure leaves them on the short config, which stays verified."""
+    import torch
+
+    index = _device_index(torch.device(device))
+    hd = int(head_dim)
+    try:
+        config = device_config(index, hd, impl)
+    except Exception:  # noqa: BLE001 -- no card to read a config for (the check run off CUDA)
+        config = None
+    if not (config or {}).get("long_keys"):
+        return None
+    key = (index, hd, str(dtype), impl)
+    found = _LONG_CHECKS.get(key)
+    if found is not None:
+        return found
+    keys = int(config["long_keys"]) + LONG_PROBE_EXTRA
+    found = {"ok": False, "keys": keys}
+    try:
+        with torch.no_grad():
+            q, k, v = probe_inputs(device, dtype, keys, LONG_PROBE_HEADS, hd, seed = keys)
+            q = q[:, :LONG_PROBE_QUERIES]
+            acc = accuracy(int8_attention(q, k, v, config = config), reference_attention(q, k, v))
+            q, k = q * SHARP_GAIN, k * SHARP_GAIN
+            sharp = int8_attention(q, k, v, config = config)
+            finite = bool(torch.isfinite(sharp).all())
+            sharp_cos = accuracy(sharp, reference_attention(q, k, v))["cos"] if finite else 0.0
+    except torch.OutOfMemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- the long variant cannot run here: long calls keep the short kernel
+        found.update(failed = True, error = repr(exc)[:300])
+    else:
+        found.update(cos = acc["cos"], rel_l1 = acc["rel_l1"], sharp_cos = sharp_cos)
+        found["ok"] = bool(
+            acc["cos"] >= MIN_COSINE
+            and acc["rel_l1"] <= MAX_REL_L1
+            and sharp_cos >= MIN_SHARP_COSINE
+        )
+    if found["ok"]:
+        _LONG_VERIFIED.add(key)
+    else:
+        _log().warning(
+            "diffusion.int8_attention: long-sequence kernel not verified on cuda:%d (head_dim=%d, %s), the short one "
+            "runs long calls: %s",
+            index,
+            hd,
+            impl,
+            found.get("error") or {x: found.get(x) for x in ("cos", "rel_l1", "sharp_cos")},
+        )
+    _LONG_CHECKS[key] = found
+    return found
+
+
 def _check(
     device: Any,
     dtype: Any,
@@ -968,7 +1068,8 @@ def _check(
     per call at each RACE_TOKENS size (when ``timed``). ``min_tokens``: the sequence length from which the kernel
     is more than 2% faster than the incumbent, or None when it is not at the larger size. ``failed``: the kernel
     raised (it could not be built, loaded or launched) rather than missed the accuracy bar. ``impl`` is the
-    implementation ``int8_attention`` runs here; a pass is recorded for it alone."""
+    implementation ``int8_attention`` runs here; a pass is recorded for it alone. ``long``: the check of the
+    card's long variant (``_long_check``), where its config has one; it never changes ``ok``."""
     import torch
 
     out: dict = {"ok": False, "ms": {}, "min_tokens": None, "impl": impl}
@@ -994,6 +1095,9 @@ def _check(
     if out["ok"]:
         dev = torch.device(device)
         _VERIFIED.add((_device_index(dev), int(head_dim), str(dtype), impl))
+        long = _long_check(device, dtype, head_dim, impl)
+        if long is not None:
+            out["long"] = long
     if not out["ok"] or not timed:
         return out
     wins = {}
@@ -1238,7 +1342,7 @@ def _install(
             card, heads, head_dim, name = key if len(key) == 4 else (index, *key)
             logger.info(
                 "diffusion.int8_attention: cuda:%d heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s "
-                "min_tokens=%s%s",
+                "min_tokens=%s%s%s",
                 card,
                 heads,
                 head_dim,
@@ -1248,6 +1352,7 @@ def _install(
                 found.get("cos"),
                 found.get("ms"),
                 found.get("min_tokens"),
+                f" long_ok={found['long'].get('ok')}" if "long" in found else "",
                 " (forced)" if force else "",
             )
         if engaged:
@@ -1340,7 +1445,17 @@ def status(transformer: Any = None) -> dict:
         "verdicts": {
             f"cuda:{k[0]} {k[1]} heads={k[2]} head_dim={k[3]} vs {k[4]}{' timed' if k[5] else ''} impl={k[6]}": {
                 x: v.get(x)
-                for x in ("impl", "ok", "cos", "rel_l1", "sharp_cos", "ms", "min_tokens", "error")
+                for x in (
+                    "impl",
+                    "ok",
+                    "cos",
+                    "rel_l1",
+                    "sharp_cos",
+                    "ms",
+                    "min_tokens",
+                    "error",
+                    "long",
+                )
                 if x in v
             }
             for k, v in _VERDICTS.items()
