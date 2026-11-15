@@ -52788,26 +52788,55 @@ async def clear_diffusion_queue(current_subject: str = Depends(get_current_subje
 # ── FLUX.3 prompt upsampler (llama.cpp sidecar) ──────────────────────────────────────────────────────────
 
 
+async def _upsampler_for(family: Optional[str]) -> Any:
+    """The enhancer module serving ``family`` (the loaded family when None): MiniMax-H3-Image's own, else the FLUX.3
+    upsampler."""
+    from core.inference import flux3_prompt_upsampler as pup
+
+    if family is None:
+        try:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            status = await asyncio.to_thread(get_active_diffusion_engine().status)
+            family = status.get("family") if status.get("loaded") else None
+        except Exception:  # noqa: BLE001 -- nothing loaded reads as FLUX.3
+            family = None
+    if pup.uses_h3_image_enhancer(family):
+        from core.inference import h3_image_prompt_enhancer
+        return h3_image_prompt_enhancer
+    return pup
+
+
 @studio_router.get("/images/prompt-upsampler/status")
-async def prompt_upsampler_status(current_subject: str = Depends(get_current_subject)):
-    """Whether the FLUX.3 prompt upsampler can run (llama-server present), is downloaded, is loaded, and the
-    download progress (the dictation download's shape)."""
-    from core.inference import flux3_prompt_upsampler
-    return JSONResponse(content = await asyncio.to_thread(flux3_prompt_upsampler.status))
+async def prompt_upsampler_status(
+    family: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Whether the prompt upsampler of ``family`` (the loaded family's; FLUX.3's by default) can run (llama-server
+    present), is downloaded, is loaded, and the download progress (the dictation download's shape)."""
+    module = await _upsampler_for(family)
+    return JSONResponse(content = await asyncio.to_thread(module.status))
 
 
 @studio_router.post("/images/prompt-upsampler/download")
 async def prompt_upsampler_download(
     payload: Optional[PromptUpsamplerDownloadRequest] = None,
+    family: Optional[str] = Query(None, max_length = 64),
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Start the background download of the upsampler GGUF and its vision projector; progress on /status."""
-    from core.inference import flux3_prompt_upsampler
+    from core.inference import flux3_prompt_upsampler as pup
     from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
 
     account_access.require_installation_owner()
-    if flux3_prompt_upsampler._overridden():
+    upsampler = await _upsampler_for(family)
+    if upsampler is not pup:
+        if upsampler.overridden():
+            raise HTTPException(
+                status_code = 409,
+                detail = "The prompt enhancer files come from UNSLOTH_H3_IMAGE_ENHANCER_GGUF / _MMPROJ; set both instead.",
+            )
+    elif upsampler._overridden():
         raise HTTPException(
             status_code = 409,
             detail = "The prompt upsampler files come from UNSLOTH_FLUX3_UPSAMPLER_GGUF / _MMPROJ; set both instead.",
@@ -52816,24 +52845,22 @@ async def prompt_upsampler_download(
         (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
     )
     try:
-        download_id = await asyncio.to_thread(flux3_prompt_upsampler.start_download, token)
+        download_id = await asyncio.to_thread(upsampler.start_download, token)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
-    return JSONResponse(
-        content = {**flux3_prompt_upsampler.download_status(), "download_id": download_id}
-    )
+    return JSONResponse(content = {**upsampler.download_status(), "download_id": download_id})
 
 
 @studio_router.post("/images/prompt-upsampler/cancel")
-async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_subject)):
+async def prompt_upsampler_cancel(
+    family: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
     """Stop the upsampler download; partial files stay cached, so the next download resumes."""
-    from core.inference import flux3_prompt_upsampler
-
     account_access.require_installation_owner()
-    cancelled = await asyncio.to_thread(flux3_prompt_upsampler.cancel_download)
-    return JSONResponse(
-        content = {**flux3_prompt_upsampler.download_status(), "cancelled": cancelled}
-    )
+    upsampler = await _upsampler_for(family)
+    cancelled = await asyncio.to_thread(upsampler.cancel_download)
+    return JSONResponse(content = {**upsampler.download_status(), "cancelled": cancelled})
 
 
 def _cancel_upsampler_warm_start() -> None:
@@ -52982,22 +53009,34 @@ async def prompt_upsampler_preview(
     from core.inference import flux3_prompt_upsampler as pup
 
     variant = request.variant
-    if variant is None:
+    family = request.family
+    if variant is None or family is None:
         try:
             from core.inference.diffusion_engine_router import get_active_diffusion_engine
             status = await asyncio.to_thread(get_active_diffusion_engine().status)
-            variant = pup.variant_for_family(status.get("family") if status.get("loaded") else None)
+            loaded_family = status.get("family") if status.get("loaded") else None
         except Exception:  # noqa: BLE001 -- nothing loaded reads as distilled
-            variant = "distilled"
+            loaded_family = None
+        family = loaded_family if family is None else family
+        if variant is None:
+            variant = pup.variant_for_family(loaded_family)
     account_access.require_idle_other_accounts()
     try:
         with account_access.media_generation("diffusion"):
-            caption = await asyncio.to_thread(
-                pup.upsample,
-                request.prompt,
-                variant = variant,
-                reference_images = request.reference_images or None,
-            )
+            if pup.uses_h3_image_enhancer(family):
+                from core.inference import h3_image_prompt_enhancer
+                caption = await asyncio.to_thread(
+                    h3_image_prompt_enhancer.upsample,
+                    request.prompt,
+                    reference_images = request.reference_images or None,
+                )
+            else:
+                caption = await asyncio.to_thread(
+                    pup.upsample,
+                    request.prompt,
+                    variant = variant,
+                    reference_images = request.reference_images or None,
+                )
     except pup.UpsamplerNotDownloadedError as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
     except pup.UpsamplerUnavailableError as exc:
