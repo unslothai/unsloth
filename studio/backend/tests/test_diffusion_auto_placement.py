@@ -582,9 +582,8 @@ def test_layer_split_decline_reports_the_encode_activation_it_charged():
     assert "5555 MiB of activations" in reason
 
 
-# Kaggle 2x T4 Z-Image-Turbo fp16: the split was priced with the flat estimate and declined by ~1 GB while each card
-# was held to 85% of its safe budget; with the primary at the one-card budget the flat estimate fits too, every card
-# within its limit.
+# Z-Image-Turbo fp16 on two cards: a split priced with the flat estimate declines when each card is held to 85% of
+# its safe budget; with the primary at the one-card budget it fits, every card within its limit.
 _ZIMAGE_T4 = dict(dit = 11739, te = 7672, vae = 211)
 _ZIMAGE_FLAT = 6963
 
@@ -641,11 +640,9 @@ def test_a_split_priced_with_the_measured_row_is_a_calibrated_placement(monkeypa
     assert not plan_is_calibrated(flat.plan)
 
 
-# Kaggle 2x T4, Wan2.2-TI2V-5B fp16 with both cards and a forced split: the planner declined, "short by about 1787 MiB
-# after the per-card reserves and 7839 MiB of activations on cuda:0", because the split's primary was held to 85% of
-# its safe budget. With the stems, the VAE, 2 GiB overhead and the default clip's 7839 MiB headroom that left the
-# primary no room for a block, though a one-card resident plan is priced at the full budget. Sizes and free memory
-# are the ones that run recorded (blocks of 313 MiB, 192 MiB stem, safe budgets 12758 / 12580 MiB).
+# Wan2.2-TI2V-5B fp16 with a forced split on two cards: holding the split's primary to 85% of its safe budget left
+# no room for a block beside the stems, the VAE, the overhead and the clip's headroom, though a one-card resident
+# plan is priced at the full budget.
 _WAN5B_T4 = dict(dit = 9582, te = 10836, vae = 1631)
 _WAN5B_BLOCKS = {"transformer": lsp.DenoiserLayout(192, (313,) * 30)}
 _WAN5B_HEADROOM = 7839  # estimate_video_runtime_mib at the family default 1280x704, 121 frames
@@ -678,7 +675,7 @@ def test_wan5b_forced_split_on_two_t4s_prices_the_primary_with_the_one_card_budg
     assert limits[0] == budget and required[0] <= budget
     # the secondary keeps 85% of its safe budget
     assert limits[1] == mg.secondary_resident_limit_mib(1, "auto") and required[1] <= limits[1]
-    # the cut the Kaggle run placed: 3 blocks beside the stems and the VAE, 27 on cuda:1
+    # expected cut: 3 blocks beside the stems and the VAE, 27 on cuda:1
     assert [(r.start, r.stop, r.card) for r in split.ranges] == [(0, 3, 0), (3, 30, 1)]
     weights = dict(split.card_weights_mib)
     assert required[0] >= weights[0] + _WAN5B_HEADROOM

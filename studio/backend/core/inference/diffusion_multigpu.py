@@ -1088,10 +1088,8 @@ def refine_plan_for_multigpu(
 
         # A split that fits at 85% of the primary's safe budget keeps that cut (its slack pays for unpriced reference
         # requests). One that does not is retried with the primary at the full safe budget a one-card resident plan
-        # gets: the planner already charges it the overhead and the whole request's activations (Kaggle 2x T4, Wan2.2
-        # TI2V-5B at 1280x704 x 121 frames: 5.3 GiB allocated above its weights against 7.7 GiB charged). Secondaries
-        # keep the 85% margin: their one-block working set does not grow with the request, and that clip's blocks
-        # held 3.1 GiB above their weights on cuda:1, so the margin is what covers them.
+        # gets, since the planner already charges it the overhead and the whole request's activations. Secondaries
+        # keep the 85% margin: their one-block working set does not grow with the request.
         safe_primary = max(int(primary_limit), int(budget) - reserve.get(primary, 0))
         roomier = safe_primary > int(primary_limit)
         from .diffusion_layer_split_plan import _DECLINES, FIT_DECLINE, _record_decline
