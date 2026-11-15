@@ -224,11 +224,12 @@ def _vlm_tower_needs_unused_search(args, model):
 
 
 def _reentrant_vlm_text_lora(model):
-    """A LoRA adapter on the language layers only of a VLM that vision.py checkpoints reentrantly (Gemma 4).
+    """A LoRA adapter on a VLM that vision.py checkpoints reentrantly (Gemma 4).
 
     Under reentrant checkpointing transformers' True crashes on the first backward ("mark a variable ready only
-    once"), and a text-only adapter gets a gradient on every step, so False is the setting that trains. A
-    dense model only: routed experts, tower / embedding / head adapters and extra trainable tensors keep the default."""
+    once"), and a language-layer adapter gets a gradient on every step, so False is the setting that trains;
+    vision / audio tower adapters are kept out of DDP and averaged by ``_all_reduce_tower_grads``. A dense model
+    only: routed experts, embedding / head adapters and extra trainable tensors keep the default."""
     from transformers import PreTrainedModel
 
     if isinstance(model, PreTrainedModel):
@@ -257,14 +258,17 @@ def _reentrant_vlm_text_lora(model):
             value = getattr(c, key, None)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return False
+    towers_synced = os.environ.get("UNSLOTH_DDP_TOWER_SYNC", "1") != "0"
     n_trainable = 0
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        n_trainable += 1
         if not any(m in name for m in _LORA_PARAM_MARKERS):
             return False
         lowered = name.lower()
+        if towers_synced and any(m in lowered for m in _TOWER_NAME_MARKERS):
+            continue
+        n_trainable += 1
         if any(m in lowered for m in _SKIPPABLE_NAME_MARKERS):
             return False
     return n_trainable > 0
@@ -276,7 +280,7 @@ def unsloth_default_ddp_find_unused_parameters(args, model):
 
     Kept at None (transformers' True) for anything a step may skip: MoE / expert LoRA, vision or audio
     towers, MTP heads, lm_head / embedding adapters, modules_to_save, several adapters, non-LoRA PEFT.
-    False too for a language-layers-only LoRA on Gemma 4, which checkpoints reentrantly (True crashes there).
+    False too for a LoRA on Gemma 4, which checkpoints reentrantly (True crashes there).
     Set to True for a VLM with a trainable tower under non-reentrant checkpointing. Returns the value now on ``args``.
     """
     if args is None or not hasattr(args, "ddp_find_unused_parameters"):
