@@ -4032,6 +4032,10 @@ const Composer: FC<{
     registeringVideoDrops ||
     hasPendingVideoAttachments ||
     materializingDroppedVideo;
+  const hasMaterializingAttachments =
+    hasMaterializingImageAttachments ||
+    hasMaterializingAudioAttachments ||
+    hasMaterializingVideoAttachments;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemRemoteId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
@@ -5781,6 +5785,7 @@ const Composer: FC<{
         !overlay &&
         !hasAttachments &&
         !hasPendingAudio &&
+        !hasMaterializingAttachments &&
         isSkillsCommand(composerText)
       ) {
         event.preventDefault();
@@ -5982,6 +5987,7 @@ const Composer: FC<{
       disabled,
       disableQueue,
       hasAttachments,
+      hasMaterializingAttachments,
       hasPendingAudio,
       enqueueSend,
       interceptSend,

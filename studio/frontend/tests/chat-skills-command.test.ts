@@ -27,9 +27,9 @@ test("the composer opens the Skills dialog instead of sending /skills", () => {
   const submit = thread.slice(
     thread.indexOf("const handleSubmit = useCallback("),
   );
-  // An attachment or a staged audio clip means a message to send, as for /compact.
+  // An attachment, staged audio clip or still-reading drop means a message to send.
   const intercept = submit.search(
-    /!hasAttachments &&\s*!hasPendingAudio &&\s*isSkillsCommand\(composerText\)/,
+    /!hasAttachments &&\s*!hasPendingAudio &&\s*!hasMaterializingAttachments &&\s*isSkillsCommand\(composerText\)/,
   );
   assert.ok(intercept > 0);
   assert.ok(intercept < submit.indexOf("if (disabled || shouldBlockSend())"));
