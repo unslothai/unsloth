@@ -935,6 +935,16 @@ class _LazyDigested:
 _DigestedPicture = _LazyDigested()
 
 
+def upright_size(image: Any) -> tuple:
+    """``(width, height)`` of a PIL image after its EXIF orientation is applied, without transposing it."""
+    width, height = image.size
+    try:
+        orientation = image.getexif().get(0x0112)
+    except Exception:  # noqa: BLE001 - unreadable EXIF is treated as upright
+        orientation = None
+    return (height, width) if orientation in (5, 6, 7, 8) else (width, height)
+
+
 def picture_size(picture: Any) -> tuple:
     """``(width, height)`` of a prepared picture: a PIL image or an ``(H, W, 3)`` array."""
     if hasattr(picture, "size") and not hasattr(picture, "shape"):
@@ -2054,13 +2064,16 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         if len(generators) != len(jobs):
             raise ValueError(f"got {len(generators)} generators for {len(jobs)} images")
         vae_refs, vision_refs = self.prepare_references(image)
-        # no size: an edit renders at Picture 1's size (4 MP in the reference edit workflow), text-to-image at
-        # 2048x2048 (the reference text-to-image workflow)
-        default_w, default_h = (
-            picture_size(vae_refs[0])
-            if vae_refs
-            else (H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE)
-        )
+        # no size: an edit renders at the reference edit workflow's size for Picture 1 (as the API and UI do), not
+        # the VAE copy's size, which the short-edge rule can enlarge; with that rescale off, at the VAE copy's size;
+        # text-to-image at 2048x2048 (the reference text-to-image workflow)
+        if not vae_refs:
+            default_w, default_h = H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE
+        elif source_resize_enabled():
+            first = image[0] if isinstance(image, (list, tuple)) else image
+            default_w, default_h = reference_edit_size(*upright_size(first))
+        else:
+            default_w, default_h = picture_size(vae_refs[0])
         height = int(height or default_h)
         width = int(width or default_w)
         self._interrupt = False

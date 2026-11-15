@@ -153,3 +153,47 @@ def test_the_pipeline_defaults_an_edit_to_the_reference_edit_size(pipe, monkeypa
     monkeypatch.setenv(h3i.SOURCE_RESIZE_ENV, "0")
     pipe(prompt = "<Picture 1>", image = [pic])
     assert seen["size"] == (1536, 1024)
+
+
+@pytest.mark.parametrize(
+    "source, want",
+    [((600, 100), (4992, 832)), ((1536, 1024), (2496, 1664)), ((100, 600), (832, 4992))],
+)
+def test_the_pipeline_default_ignores_the_vae_short_edge_enlargement(
+    pipe, monkeypatch, source, want
+):
+    # a panorama's VAE copy is enlarged to the 1024 short edge; the output default stays the workflow size
+    from PIL import Image
+
+    from core.inference import diffusion_minimax_h3_image as h3i
+
+    seen = {}
+
+    def spy(self, prompt, vae_refs, vision_refs, height, width, *a, **k):
+        seen["size"] = (width, height)
+        seen["vae"] = h3i.picture_size(vae_refs[0])
+        return None
+
+    monkeypatch.delenv(h3i.SOURCE_RESIZE_ENV, raising = False)
+    monkeypatch.setattr(type(pipe), "_render_one", spy)
+    pipe(prompt = "<Picture 1>", image = Image.new("RGB", source, (40, 80, 120)))
+    assert seen["size"] == h3i.reference_edit_size(*source) == want
+
+
+def test_the_pipeline_default_follows_the_exif_orientation(pipe, monkeypatch):
+    from PIL import Image
+
+    from core.inference import diffusion_minimax_h3_image as h3i
+
+    seen = {}
+
+    def spy(self, prompt, vae_refs, vision_refs, height, width, *a, **k):
+        seen["size"] = (width, height)
+        return None
+
+    monkeypatch.delenv(h3i.SOURCE_RESIZE_ENV, raising = False)
+    monkeypatch.setattr(type(pipe), "_render_one", spy)
+    pic = Image.new("RGB", (600, 100), (40, 80, 120))
+    pic.getexif()[0x0112] = 6
+    pipe(prompt = "<Picture 1>", image = pic)
+    assert seen["size"] == h3i.reference_edit_size(100, 600)
