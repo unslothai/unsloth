@@ -56,7 +56,8 @@ export function isSameAsk(earlier: string, later: string): boolean {
   if (negations(earlier) !== negations(later)) return false;
   const before = contentWords(earlier);
   const after = contentWords(later);
-  if (!sharesMostWords(earlier, later) || ![...after].every((w) => before.has(w))) return false;
+  // Same words both ways: dropping one ("cats and dogs" -> "cats") narrows the ask, it is not a repeat.
+  if (before.size === 0 || before.size !== after.size || ![...after].every((w) => before.has(w))) return false;
   const order = [...before].filter((w) => after.has(w));
   return order.join(" ") === [...after].join(" ");
 }
