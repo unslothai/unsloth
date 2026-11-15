@@ -1595,6 +1595,40 @@ export function ComposerModelPicker({
   // State as well as the ref: the panel mounts after this render, and the glide must attach then.
   const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  // Marks the run settings' Back + title row once it sticks (index.css), as the Library header does.
+  useEffect(() => {
+    const el = settingsRef.current;
+    if (!(configTarget && el)) {
+      return;
+    }
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const row = el.querySelector<HTMLElement>("[data-config-header-row]");
+      const offset = row
+        ? row.getBoundingClientRect().top - el.getBoundingClientRect().top
+        : Number.POSITIVE_INFINITY;
+      const stuck =
+        el.scrollTop > 0 &&
+        offset <= Number.parseFloat(getComputedStyle(el).getPropertyValue("--run-settings-stick-at")) + 0.5;
+      if (stuck) {
+        el.dataset.headerStuck = "";
+      } else {
+        delete el.dataset.headerStuck;
+      }
+    };
+    const schedule = () => {
+      if (!frame) {
+        frame = requestAnimationFrame(update);
+      }
+    };
+    schedule();
+    el.addEventListener("scroll", schedule, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      el.removeEventListener("scroll", schedule);
+    };
+  }, [configTarget]);
   const [tabStrip, setTabStrip] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!tabStrip) {

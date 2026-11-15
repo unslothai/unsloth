@@ -1553,3 +1553,18 @@ test("a loaded cache path keeps its maker logo before the inventory lands", () =
     /hubParts\(row\.id \? \(hfCacheRepoId\(row\.id\) \?\? undefined\) : undefined\)/,
   );
 });
+
+test("run settings keep Back and the title pinned, as the Library header", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /el\.querySelector<HTMLElement>\("\[data-config-header-row\]"\)/);
+  assert.match(picker, /el\.dataset\.headerStuck = "";/);
+  const page = readSrc("features/model-picker/components/model-config-page.tsx");
+  // The eyebrow sits outside the sticky row, so it scrolls away instead of collapsing.
+  assert.match(page, /Run settings\s*<\/div>\s*<div data-config-header-row="" className="mt-1\.5 flex items-center gap-2\.5">/);
+  const css = readSrc("index.css");
+  assert.match(css, /\.composer-run-settings \[data-config-header-row\] \{\s*position: sticky;\s*top: calc\(var\(--run-settings-stick-at\) - var\(--run-settings-pad-y\)\);/);
+  assert.match(css, /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::before,\s*\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::after \{\s*opacity: 1;/);
+  assert.doesNotMatch(css, /\[data-scrolled\] \[data-config-eyebrow\]/);
+});
