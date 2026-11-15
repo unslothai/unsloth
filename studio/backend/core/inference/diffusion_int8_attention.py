@@ -836,10 +836,13 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
 
 
 def _tracing() -> bool:
-    """Whether a dispatch mode (make_fx, FlopCounterMode) or a functorch transform (vmap, grad) is active: their
-    tensors look plain, and they must see the op, not raw launches."""
+    """Whether a dispatch mode (make_fx, FlopCounterMode), a functorch transform (vmap, grad) or the TorchScript
+    tracer is active: their tensors look plain, and they must see the op, not raw launches (a trace would record the
+    allocations but not the ctypes launches that fill them)."""
     import torch
 
+    if torch.jit.is_tracing():
+        return True
     stack = getattr(torch._C, "_len_torch_dispatch_stack", None)
     functorch = getattr(torch._C, "_are_functorch_transforms_active", None)
     return bool((stack is not None and stack()) or (functorch is not None and functorch()))

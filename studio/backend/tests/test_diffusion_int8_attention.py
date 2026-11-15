@@ -1881,3 +1881,18 @@ def test_tracers_that_look_like_plain_tensors_still_see_the_op(monkeypatch):
         I.int8_attention_call(q, q, q)
     assert any("int8_attention_nhd" in op for op in mode.ops), mode.ops
     assert not I._tracing()
+
+
+def test_torchscript_tracing_records_the_op(monkeypatch):
+    """torch.jit.trace sees plain tensors; tracing the op body would record its allocations but not its launches."""
+    I.int8_attention_op()
+    monkeypatch.setattr(I, "int8_attention_impl", lambda q, k, v: v.clone())
+
+    class Attend(torch.nn.Module):
+        def forward(self, q, k, v):
+            return I.int8_attention_call(q, k, v)
+
+    q = torch.randn(1, 8, 2, 64)
+    traced = torch.jit.trace(Attend(), (q, q, q), check_trace = False)
+    assert "int8_attention_nhd" in str(traced.graph), traced.graph
+    assert not I._tracing()
