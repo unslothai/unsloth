@@ -81,3 +81,67 @@ def test_fsdp2_sharded_load_never_reads_the_table(ckpt, table_mode):
         return
     assert ftp.violations(res, "fsdp2", table_mode, ckpt) == []
     assert ftp.check_ids(res, ckpt, table_mode, "fsdp2") == []
+
+
+def _fake_table_model():
+    nn = ftp.torch.nn
+
+    class UnslothFrozenTableEmbedding(
+        nn.Module
+    ):  # what fsdp2_native recognises: name + a bound store
+        frozen_table_store = object()
+
+        def _save_to_state_dict(self, destination, prefix, keep_vars):
+            destination[prefix + "shard_0.weight"] = ftp.torch.zeros(1)
+
+    model = nn.Module()
+    model.proj = nn.Linear(2, 2)
+    model.table = UnslothFrozenTableEmbedding()
+    return model
+
+
+@pytest.mark.parametrize(
+    "rank, writer, cpu_offload, keys",
+    [
+        (0, 0, True, {"proj", "table.shard_0.weight"}),
+        (1, 0, True, set()),  # not the writer: no table-only state dict
+        (2, 2, True, {"proj", "table.shard_0.weight"}),  # a sub-mesh writer gets the tables too
+        (3, 2, True, set()),
+        (
+            1,
+            0,
+            False,
+            {"proj", "table.shard_0.weight"},
+        ),  # no cpu_offload: the full state on every rank
+    ],
+)
+def test_full_export_puts_the_tables_where_the_full_state_is(
+    monkeypatch, rank, writer, cpu_offload, keys
+):
+    """native_full_state_dict: the frozen tables (never gathered, read from their own files) go exactly where
+    get_model_state_dict / the writer gather put the full state dict."""
+    import torch.distributed as dist
+    import torch.distributed.checkpoint.state_dict as dsd
+
+    native = ftp.load_module("fsdp2_native")
+    fsave = ftp.load_module("fsdp2_save")
+
+    def get_model_state_dict(model, options):
+        full = options.full_state_dict and (rank == 0 or not options.cpu_offload)
+        return {"proj": ftp.torch.zeros(2)} if full or not options.full_state_dict else {}
+
+    monkeypatch.setattr(dsd, "get_model_state_dict", get_model_state_dict)
+    monkeypatch.setattr(fsave, "mesh_writer_rank", lambda model: writer)
+    monkeypatch.setattr(native, "_gather_to_writer", lambda state, w: state if rank == w else {})
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_rank", lambda group = None: rank)
+    state = native.native_full_state_dict(_fake_table_model(), cpu_offload = cpu_offload)
+    assert set(state) == keys
+
+
+def test_full_export_table_keys_drop_compile_wrappers():
+    """A compiled model (or table owner) has `_orig_mod.` in its module names; the state dict keys do not."""
+    native = ftp.load_module("fsdp2_native")
+    outer = ftp.torch.nn.Module()
+    outer._orig_mod = _fake_table_model()
+    assert set(native.full_frozen_table_state(outer)) == {"table.shard_0.weight"}

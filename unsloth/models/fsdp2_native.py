@@ -2073,6 +2073,9 @@ def full_frozen_table_state(model):
     """The frozen tables' exported views (no copy) under the model's state dict names, for a full save."""
     out = {}
     for name, m in _frozen_table_modules(model):
+        name = _clean_fqn(
+            name
+        )  # the names get_model_state_dict gives the other weights (no `_orig_mod.`)
         m._save_to_state_dict(out, f"{name}." if name else "", False)
     return out
 
@@ -2096,11 +2099,18 @@ def native_full_state_dict(
     )
     with frozen_tables_hidden(model):
         state = get_model_state_dict(model, options = options)
-    if not trainable_only and options.full_state_dict:
-        state.update(
-            full_frozen_table_state(model)
-        )  # read from its own files on the writer: never gathered
-    return state if writer_rank == 0 else _gather_to_writer(state, writer_rank)
+    if writer_rank != 0:
+        state = _gather_to_writer(state, writer_rank)
+    if not trainable_only:
+        # The tables, read from their own files where the full state dict is (never gathered): the writer, or
+        # every rank without cpu_offload (full_state_dict then returns the whole state everywhere).
+        dist = torch.distributed
+        is_writer = (
+            not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == writer_rank
+        )
+        if is_writer or not cpu_offload:
+            state.update(full_frozen_table_state(model))
+    return state
 
 
 def _gather_to_writer(state, writer_rank):
