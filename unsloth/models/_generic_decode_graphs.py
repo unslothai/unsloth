@@ -438,6 +438,18 @@ def _linear_layer_types():
 _LINEAR_LAYERS = _linear_layer_types()
 
 
+def _dummy_layer_types():
+    # transformers 5.x: a layer that holds no cache (Gemma 3n's shared-KV consumers read their producer's rows).
+    try:
+        from transformers import cache_utils
+    except Exception:
+        return ()
+    return tuple(t for t in (getattr(cache_utils, "DummyLayer", None),) if isinstance(t, type))
+
+
+_DUMMY_LAYERS = _dummy_layer_types()
+
+
 def _linear_states(layer):
     """Fixed-shape conv + recurrent states, updated in place, so a replay addresses them like KV rows."""
     out = []
@@ -453,7 +465,11 @@ def _linear_states(layer):
 
 
 def _attention_layers(cache):
-    return [layer for layer in cache.layers if type(layer) not in _LINEAR_LAYERS]
+    return [
+        layer
+        for layer in cache.layers
+        if type(layer) not in _LINEAR_LAYERS and type(layer) not in _DUMMY_LAYERS
+    ]
 
 
 def wanted(model):
@@ -1294,6 +1310,8 @@ def _cache_reason(cache):
         return "legacy cache"
     for layer in layers:
         kind = type(layer)
+        if kind in _DUMMY_LAYERS:
+            continue
         if kind in _LINEAR_LAYERS:
             reason = _linear_reason(layer)
             if reason is not None:
@@ -2048,7 +2066,9 @@ def decode_step(
         # Their static buffers could not be refilled outside inference mode.
         return _refusal(state, "inference tensor outside inference mode")
     layout = tuple(
-        (type(layer).__name__, tuple((tuple(t.shape), t.dtype) for t in _linear_states(layer)))
+        (type(layer).__name__,)
+        if type(layer) in _DUMMY_LAYERS
+        else (type(layer).__name__, tuple((tuple(t.shape), t.dtype) for t in _linear_states(layer)))
         if type(layer) in _LINEAR_LAYERS
         else (
             type(layer).__name__,
@@ -2079,6 +2099,7 @@ def decode_step(
         if type(layer) in _LINEAR_LAYERS
         else (layer.keys.data_ptr(), layer.values.data_ptr())
         for layer in (*cache.layers, *cross)
+        if type(layer) not in _DUMMY_LAYERS
     )
     if cache_sig != state.cache_sig:
         moved = state.cache_sig is not None and state.cache_sig[:2] == cache_sig[:2]
