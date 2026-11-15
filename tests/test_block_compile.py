@@ -9,6 +9,7 @@ GPU: compiled Qwen3 and Qwen3.5 layers match the stock forward and gradients wit
 (Qwen3.5's fla kernel runs as the opaque op inside the block).
 """
 
+import functools
 import importlib.util
 import os
 import sys
@@ -753,6 +754,149 @@ def test_gemma4_band_fast_path_in_blocks(monkeypatch):
     finally:
         M._IN_BLOCK[0] = M._OFF
     assert routed == [short] and plain_calls == [long]
+
+
+def _fake_gemma4_router_stack(M, monkeypatch, scans):
+    """zoo's gemma-4 router wrapped by another router from a module without _ORIG_SDPA (unsloth's
+    head_dim 512 kernel is installed on top at load, before the block hook runs)."""
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    band = types.ModuleType("fake_banded_attention_2")
+    band._mask_is_plain_band = lambda mask, S, w: scans.append((S, w)) or bool(
+        getattr(mask, "_ok", True)
+    )
+    zoo = types.ModuleType("fake_flash_sliding_2")
+    top_mod = types.ModuleType("fake_large_head_2")
+    calls = {"plain": [], "top": []}
+
+    def plain(module, q, k, v, mask, **kw):
+        calls["plain"].append(mask)
+        return "plain", None
+
+    def top(module, q, k, v, mask, **kw):
+        calls["top"].append(mask)
+        return "top", None
+
+    top._unsloth_gemma4_flash = True  # forwarded sentinels, like the real wrappers do
+    top.__module__ = top_mod.__name__
+    zoo._ORIG_SDPA = [plain]
+    for mod in (band, zoo, top_mod):
+        monkeypatch.setitem(sys.modules, mod.__name__, mod)
+    monkeypatch.setattr(M, "_BAND_MODULE", band.__name__)
+    monkeypatch.setattr(M, "_FLASH_MODULE", zoo.__name__)
+    monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, "sdpa", top)
+    return calls, top
+
+
+def test_gemma4_hook_installs_beneath_a_wrapping_router(monkeypatch):
+    M = _load()
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    scans = []
+    calls, top = _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    assert wrapped is not top and wrapped._unsloth_block_band and M._BAND_CHECK[0] is not None
+
+
+def test_gemma4_global_layer_mask_gets_a_causal_verdict(monkeypatch):
+    M = _load()
+    scans = []
+    _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+
+    class Gemma4TextAttention(torch.nn.Module):
+        is_sliding, sliding_window, head_dim = False, None, 512
+
+    layer = torch.nn.Module()
+    layer.self_attn = Gemma4TextAttention()
+    plain_causal, padded = torch.zeros(1, 1, 96, 96), torch.zeros(1, 1, 96, 96)
+    padded._ok = False
+    M._precheck_band(layer, 96, (plain_causal,), {})
+    M._precheck_band(layer, 96, (), {"attention_mask": padded})
+    assert scans == [(96, 96), (96, 96)]
+    assert plain_causal._unsloth_plain_causal is True and padded._unsloth_plain_causal is False
+    assert plain_causal._unsloth_block_long_band is False
+
+
+def _sliding_layer(window = 64, head_dim = 256):
+    class Gemma4TextAttention(torch.nn.Module):
+        is_sliding, sliding_window, is_causal, training = True, window, True, True
+
+    attn = Gemma4TextAttention()
+    attn.head_dim = head_dim
+    layer = torch.nn.Module()
+    layer.self_attn = attn
+    return layer, attn
+
+
+def test_gemma4_long_band_verdict_needs_the_kernel(monkeypatch):
+    M = _load()
+    scans = []
+    _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    layer, _ = _sliding_layer()
+    hidden = torch.zeros(1, 96, 8, dtype = torch.bfloat16)
+    ready = []
+    monkeypatch.setattr(M, "_band_kernel_ready", lambda layer, h: ready.append(h) or True)
+    long = torch.zeros(1, 1, 96, 96)
+    M._precheck_band(layer, 96, (long,), {}, hidden)
+    assert scans == [(96, 64)] and long._unsloth_block_long_band is True
+    assert long._unsloth_block_band is False and long._unsloth_plain_causal is False
+    monkeypatch.setattr(M, "_band_kernel_ready", lambda layer, h: False)
+    other = torch.zeros(1, 1, 96, 96)
+    M._precheck_band(layer, 96, (other,), {}, hidden)
+    assert other._unsloth_block_long_band is False and scans == [(96, 64)]
+    # Within the window the existing is_causal route decides; no long-band scan.
+    short = torch.zeros(1, 1, 32, 32)
+    M._precheck_band(layer, 32, (short,), {}, hidden)
+    assert short._unsloth_block_long_band is False and short._unsloth_block_band is True
+
+
+def test_gemma4_band_kernel_kill_switch(monkeypatch):
+    M = _load()
+    layer, _ = _sliding_layer()
+    monkeypatch.setenv("UNSLOTH_BLOCK_SLIDING_KERNEL", "0")
+    assert M._band_kernel_ready(layer, torch.zeros(1, 4, 8)) is False
+    monkeypatch.delenv("UNSLOTH_BLOCK_SLIDING_KERNEL")
+    assert M._band_kernel_ready(layer, torch.zeros(1, 4, 8)) is False  # CPU tensor
+
+
+def test_gemma4_long_band_routes_to_the_interval_kernel(monkeypatch):
+    M = _load()
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    scans = []
+    calls, _ = _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    _, attn = _sliding_layer(window = 16, head_dim = 32)
+    kernel = []
+    monkeypatch.setattr(
+        M,
+        "_band_kernel_attention",
+        lambda q, k, v, w, s: kernel.append((q.shape, w, s)) or "kernel",
+    )
+    monkeypatch.setattr(M, "_band_kernel_checked", lambda q: True)
+    q = torch.randn(1, 4, 48, 32, dtype = torch.bfloat16)
+    kv = torch.randn(1, 2, 48, 32, dtype = torch.bfloat16)
+    mask = torch.zeros(1, 1, 48, 48)
+    mask._unsloth_block_long_band = True
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    M._IN_BLOCK[0] = M._FULL
+    try:
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "kernel"
+        assert kernel == [(q.shape, 16, 1.0)]
+        mask._unsloth_block_long_band = False
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "plain"
+        mask._unsloth_block_long_band = True
+        assert (
+            wrapped(attn, q, kv, kv, mask, dropout = 0.1, scaling = 1.0)[0] == "plain"
+        )  # training dropout
+        assert wrapped(attn, q.float(), kv.float(), kv.float(), mask, scaling = 1.0)[0] == "plain"
+    finally:
+        M._IN_BLOCK[0] = M._OFF
+    assert len(kernel) == 1 and len(calls["plain"]) == 3
 
 
 def test_kill_switch(monkeypatch):
@@ -2006,3 +2150,102 @@ def test_strict_marked_kwarg_does_not_demote_the_block(monkeypatch, capsys):
     torch._dynamo.reset()
     assert "block compile failed" not in capsys.readouterr().out
     assert layer._unsloth_block_mode != M._OFF
+
+
+def _like_transformers_5_23(forward):
+    """GradientCheckpointingLayer.__init_subclass__ (transformers >= 5.23): checkpoint in `forward`."""
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and type(self).forward is forward_with_checkpointing
+        ):
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
+def _checkpointed_layer(cls, reentrant = False):
+    layer = cls()
+    layer.gradient_checkpointing = True
+    calls = []
+
+    def checkpoint(fn, *args):
+        calls.append(len(args))
+        if reentrant:  # the forward of a reentrant checkpoint runs without grad
+            with torch.no_grad():
+                return fn(*args)
+        return fn(*args)
+
+    layer._gradient_checkpointing_func = checkpoint
+    return layer, calls
+
+
+def test_block_keeps_transformers_layer_checkpointing(monkeypatch):
+    # The block replaced the class forward, so transformers' wrapper ended up inside it, never saw
+    # itself as type(self).forward and every layer trained without checkpointing.
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _toy_class()
+    stock = cls.forward
+    cls.forward = _like_transformers_5_23(stock)
+    M._wrap(cls, {})
+    assert getattr(cls.forward, M._MARK) and cls.forward._unsloth_block_original is stock
+    layer, calls = _checkpointed_layer(cls)
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    out = layer(x, attention_mask = None)
+    torch.testing.assert_close(out, layer.proj(x) + x)
+    assert calls == [1]
+    layer.eval()(x)
+    assert calls == [1]
+    # Wrapping again (a second model load) keeps one checkpoint.
+    M._wrap(cls, {})
+    layer.train()(x)
+    assert calls == [1, 1]
+    # A reentrant checkpoint's no-grad first call runs the block's grad-mode trial, which must call
+    # the block, not the checkpoint shim again (that recursed until RecursionError).
+    fresh, fresh_calls = _checkpointed_layer(cls, reentrant = True)
+    out = fresh(x)
+    torch.testing.assert_close(out, fresh.proj(x) + x)
+    assert fresh_calls == [1]
+
+
+def test_block_leaves_call_level_checkpointing_alone(monkeypatch):
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    assert not getattr(cls.forward, "_unsloth_block_checkpoint_outside", False)
+    layer, calls = _checkpointed_layer(cls)
+    layer(torch.randn(1, 4, 8))
+    assert calls == []  # transformers <= 5.22 checkpoints in __call__, outside the block already
+
+
+def test_block_keeps_real_transformers_checkpointing(monkeypatch):
+    modeling_layers = pytest.importorskip("transformers.modeling_layers")
+    M = _load()
+
+    class ToyGCDecoderLayer(modeling_layers.GradientCheckpointingLayer):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            return self.proj(hidden_states) + hidden_states
+
+    if ToyGCDecoderLayer.forward.__code__.co_name != "forward_with_checkpointing":
+        pytest.skip("this transformers checkpoints in __call__")
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    M._wrap(ToyGCDecoderLayer, {})
+    layer, calls = _checkpointed_layer(ToyGCDecoderLayer)
+    layer(torch.randn(1, 4, 8, requires_grad = True))
+    assert calls == [1]

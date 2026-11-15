@@ -4847,6 +4847,7 @@ export const ru = {
       notifyFailures: "Только ошибки",
       notifyNone: "Выключены",
       archiveSuccessful: "Архивировать успешные запуски",
+      webSearch: "Веб-поиск",
       project: "Проект",
       projectNone: "Нет",
       model: "Модель",

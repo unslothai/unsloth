@@ -5034,6 +5034,7 @@ export const sv = {
       notifyFailures: "Bara vid fel",
       notifyNone: "Av",
       archiveSuccessful: "Arkivera lyckade körningar",
+      webSearch: "Webbsökning",
       project: "Projekt",
       projectNone: "Inget",
       model: "Modell",

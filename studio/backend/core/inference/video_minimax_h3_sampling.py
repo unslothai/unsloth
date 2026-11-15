@@ -14,6 +14,8 @@ nothing global is patched.
   condition, in packed-row shape.
 - Ref2VA vision: each two-frame block gets its own pixel budget, from the frames after the ``17 n + 5`` snap.
   ``UNSLOTH_H3_VISION_BUDGET=clip`` restores the whole-clip budget (fewer tokens on long references).
+- Condition latents: the VAE posterior mean (``video_minimax_h3_ref_encode``).
+- Output frames: truncated to 8 bits, ``(x * 255).clamp(0, 255).byte()``, as the reference's video save does.
 """
 
 from __future__ import annotations
@@ -585,6 +587,58 @@ def _fixed_conv_encode_class(base: type) -> type:
     return StudioMiniMaxH3ConditionEncodeStep
 
 
+# ── output frames ──
+
+_TRUNCATED_MARK = "_unsloth_h3_truncated_postprocess"
+
+
+def h3_truncate_frames(frames: Any) -> Any:
+    """[0, 1] float frames on the 8-bit grid by truncation, the reference's ``(x * 255).clamp(0, 255).byte()``, as
+    float32 ``k / 255``: every later ``round(x * 255)`` (np, PIL, the on-device uint8 path, the stream encoder)
+    then returns the truncated ``k``. In place on float32 input (the decode's own fresh tensor), so no copy is
+    made; idempotent on the grid (``floor(fp32(k / 255) * 255) == k`` for every k), so a fallback that
+    postprocesses the same tensor again gets the same frames."""
+    import torch
+
+    if frames.dtype is not torch.float32:
+        frames = frames.to(torch.float32)
+    return frames.mul_(255).clamp_(0, 255).floor_().div_(255)
+
+
+def install_h3_output_truncation(pipe: Any) -> bool:
+    """Wrap ``pipe.video_processor.postprocess`` (instance only) so decoded frames leave on the truncated grid.
+    Idempotent; False when the pipeline has no such processor."""
+    proc = getattr(pipe, "video_processor", None)
+    original = getattr(proc, "postprocess", None)
+    if not callable(original):
+        return False
+    if getattr(original, _TRUNCATED_MARK, False):
+        return True
+
+    def postprocess(
+        image: Any,
+        output_type: str = "pil",
+        do_denormalize: Any = None,
+    ) -> Any:
+        import torch
+
+        if output_type not in ("pt", "np", "pil") or not isinstance(image, torch.Tensor):
+            return original(image, output_type, do_denormalize)
+        frames = h3_truncate_frames(original(image, "pt", do_denormalize))
+        if output_type == "pt":
+            return frames
+        frames = proc.pt_to_numpy(frames)
+        return frames if output_type == "np" else proc.numpy_to_pil(frames)
+
+    setattr(postprocess, _TRUNCATED_MARK, True)
+    postprocess.__wrapped__ = original
+    try:
+        proc.postprocess = postprocess
+    except Exception:  # noqa: BLE001 - a processor refusing instance attributes keeps rounding
+        return False
+    return True
+
+
 # ── install ──
 
 
@@ -635,4 +689,22 @@ def install_h3_reference_recipe(pipe: Any, *, pdd: bool = False) -> dict:
     report: dict = dict(_swap_blocks(pipe, swaps))
     sampler = h3_sampler(pdd)
     report["sampler"] = sampler if install_h3_schedulers(pipe, sampler) else None
+    report["output_truncated"] = install_h3_output_truncation(pipe)
+    from .video_minimax_h3_adaln import install_h3_reference_temb
+
+    report["dense_temb_rounded"] = any(
+        [
+            install_h3_reference_temb(getattr(pipe, name, None))
+            for name in ("transformer", "transformer_ref")
+        ]
+    )
+    from .video_minimax_h3_ref_encode import (
+        install_h3_chunked_reference_encode,
+        reference_latent_mode,
+    )
+
+    # Also done at load; repeated so a render never runs Diffusers' sampled posterior by accident.
+    report["condition_latent"] = (
+        reference_latent_mode() if install_h3_chunked_reference_encode() else "sample"
+    )
     return report

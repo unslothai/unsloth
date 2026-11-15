@@ -5213,6 +5213,7 @@ export const nl = {
       notifyFailures: "Alleen mislukte",
       notifyNone: "Uit",
       archiveSuccessful: "Geslaagde uitvoeringen archiveren",
+      webSearch: "Zoeken op het web",
       project: "Project",
       projectNone: "Geen",
       model: "Model",

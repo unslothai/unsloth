@@ -4903,6 +4903,7 @@ export const fr = {
       notifyFailures: "Seulement en cas d’échec",
       notifyNone: "Désactivées",
       archiveSuccessful: "Archiver les exécutions réussies",
+      webSearch: "Recherche web",
       project: "Projet",
       projectNone: "Aucun",
       model: "Modèle",

@@ -5202,6 +5202,7 @@ export const uk = {
       notifyFailures: "Лише помилки",
       notifyNone: "Вимкнено",
       archiveSuccessful: "Архівувати успішні запуски",
+      webSearch: "Пошук в інтернеті",
       project: "Проєкт",
       projectNone: "Немає",
       model: "Модель",

@@ -49,6 +49,11 @@ export interface VideoGenerationDefaults {
   canvas_max_pixels?: number | null;
   // Image-to-video families without that rule take the preset nearest the first frame's aspect.
   canvas_from_presets?: boolean;
+  // True when a keyframe keeps the chosen canvas (MiniMax-H3, as the reference workflow does); "Match source" is
+  // then only an explicit choice, sent as a size. Absent on older backends.
+  keyframe_keeps_canvas?: boolean;
+  // The page's Default preset size when it is one of resolution_presets; absent means the first preset.
+  default_resolution?: [number, number] | null;
   // Released schedule shifts, or null when unsupported.
   flow_shift?: number | null;
   audio_flow_shift?: number | null;

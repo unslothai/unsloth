@@ -84,15 +84,15 @@ def check_output_size(fam: Any, width: int, height: int) -> None:
 
 def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -> tuple[int, int]:
     """Source aspect ratio at the target area, snapped to the family grid and bounds, from Image 1. MiniMax-H3-Image
-    renders at Image 1's reference size instead (short edge clamped to 1024..2048, sides on the 32 grid)."""
+    renders at the reference edit workflow's size instead (Image 1 at 4 MP, sides cut to the 32 grid)."""
     multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
     max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
     max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
     sw, sh = source_size
     if getattr(fam, "name", None) == "minimax-h3-image" and sw > 0 and sh > 0:
-        from .diffusion_minimax_h3_image import H3_IMAGE_REFERENCE_SHORT_EDGE, size_short_edge
+        from .diffusion_minimax_h3_image import reference_edit_size
 
-        w, h = size_short_edge(int(sw), int(sh), *H3_IMAGE_REFERENCE_SHORT_EDGE)
+        w, h = reference_edit_size(int(sw), int(sh))
         if max(w, h) <= max_side and w * h <= max_pixels:
             return w, h
         resolution = int(math.sqrt(min(max_pixels, w * h)))
@@ -113,6 +113,15 @@ def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -
             long_side -= multiple
         w, h = (long_side, short_min) if ratio >= 1.0 else (short_min, long_side)
     return w, h
+
+
+def omitted_txt2img_size(family_name: Optional[str]) -> Optional[tuple[int, int]]:
+    """The text-to-image size for a request that names none, when the family's differs from the schema's 1024
+    square: MiniMax-H3-Image renders at the reference workflow's 2048x2048."""
+    if family_name == "minimax-h3-image":
+        from .diffusion_minimax_h3_image import H3_IMAGE_DEFAULT_SIZE
+        return H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE
+    return None
 
 
 def effective_reference_resolution(fam: Any, requested: Optional[int]) -> Optional[int]:

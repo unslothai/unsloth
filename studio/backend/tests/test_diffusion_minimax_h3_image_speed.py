@@ -28,6 +28,13 @@ from core.inference import video_minimax_h3_attn as A  # noqa: E402
 
 
 @pytest.fixture(autouse = True)
+def _picture_one_at_its_own_size(monkeypatch):
+    """Picture 1 keeps its own size here (the reference edit workflow's 4 MP rescale would make every CPU edit render
+    a 4 MP reference); the tests of that rescale turn it back on."""
+    monkeypatch.setenv("UNSLOTH_H3_IMAGE_SOURCE_RESIZE", "0")
+
+
+@pytest.fixture(autouse = True)
 def _restore_backend():
     from diffusers.models.attention_dispatch import _AttentionBackendRegistry
 

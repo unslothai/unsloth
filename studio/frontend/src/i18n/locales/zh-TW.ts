@@ -4893,6 +4893,7 @@ export const zhTW = {
       notifyFailures: "僅限失敗",
       notifyNone: "關閉",
       archiveSuccessful: "封存成功的執行",
+      webSearch: "網頁搜尋",
       project: "專案",
       projectNone: "無",
       model: "模型",
