@@ -105,6 +105,11 @@ def prefetch_enabled(trainer) -> bool:
     # Only models loaded by FastSentenceTransformer.
     if not hasattr(getattr(trainer, "model", None), "_unsloth_trust_remote_code"):
         return False
+    # Distributed loaders run collectives while iterating (accelerate's dispatcher broadcasts batches, the
+    # shard syncs RNG): off the training thread they could interleave with gradient all-reduces.
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        if torch.distributed.get_world_size() > 1:
+            return False
     args = trainer.args
     # Worker processes already collate ahead of the training loop.
     return not getattr(args, "dataloader_num_workers", 0)

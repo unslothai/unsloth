@@ -5,6 +5,7 @@
 on a background thread, and decoder packing that keeps the padded layout pooling reads."""
 
 import threading
+import types
 
 import pytest
 
@@ -205,3 +206,15 @@ def test_prefetched_loader_keeps_accelerate_identity_for_resume():
     skipped = accel.skip_first_batches(loader, 2)
     assert isinstance(skipped, accel.DataLoaderShard)
     assert [b.tolist() for b in skipped] == [[2 * i, 2 * i + 1] for i in range(2, 6)]
+
+
+def test_prefetch_is_off_under_a_distributed_process_group(monkeypatch):
+    # Loader collectives (dispatcher broadcasts, RNG sync) must stay on the training thread.
+    trainer = types.SimpleNamespace(
+        model = types.SimpleNamespace(_unsloth_trust_remote_code = False),
+        args = types.SimpleNamespace(dataloader_num_workers = 0),
+    )
+    assert prefetch.prefetch_enabled(trainer)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+    assert not prefetch.prefetch_enabled(trainer)
