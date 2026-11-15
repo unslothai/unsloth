@@ -35592,12 +35592,16 @@ async def produce_openai_chat_completions(
                 monitor_id = monitor_id,
             )
 
-        # The kept turn's text so far, and the pass stats in place when it arrived (replaced once
-        # that pass reports): a drain that fails still settles what it generated.
+        # The kept turn's text and every pass's tool arguments, for a drain that fails; and the
+        # output the last-seen pass stats cover (its pass's text plus the arguments before it).
         _sf_partial_text = ""
-        _sf_text_stats = None
-        # Generated tool-call arguments, which never reach the kept text.
         _sf_partial_args = 0
+        _sf_json_seen = None
+        _sf_covered_text = _sf_covered_args = 0
+
+        def _sf_json_reported_chars(stats):
+            # Stats published after the last event seen cover everything generated.
+            return None if stats is not _sf_json_seen else _sf_covered_text + _sf_covered_args
 
         def _sf_settle_reported_passes():
             target = _settle_target(monitor_id)
@@ -35609,7 +35613,7 @@ async def produce_openai_chat_completions(
                 _monitor_usage(
                     target,
                     _stats.get("usage"),
-                    reported_chars = None if _stats is not _sf_text_stats else 0,
+                    reported_chars = _sf_json_reported_chars(_stats),
                 )
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
@@ -35617,7 +35621,8 @@ async def produce_openai_chat_completions(
             _sf_context_truncation = None
 
             def _drain_to_text():
-                nonlocal _sf_context_truncation, _sf_text_stats, _sf_partial_text, _sf_partial_args
+                nonlocal _sf_context_truncation, _sf_partial_text, _sf_partial_args
+                nonlocal _sf_json_seen, _sf_covered_text, _sf_covered_args
                 full_text = ""
                 # Only the resumed turn skips the generation prompt; track the mode of the kept turn.
                 continued = _sf_continue
@@ -35638,6 +35643,12 @@ async def produce_openai_chat_completions(
                             f"Invalid safetensors tool event: {type(event).__name__}"
                         )
                     _event_type = event.get("type")
+                    _seen = _sf_stats_holder.get("stats")
+                    if _seen is not _sf_json_seen:
+                        # A pass reported: everything generated so far is in its counts.
+                        _sf_json_seen = _seen
+                        _sf_covered_text = len(_sf_partial_text)
+                        _sf_covered_args = _sf_partial_args
                     # Generated arguments, as sf_tool_stream counts them: streamed, or finalized whole.
                     _args = None
                     if _event_type == "tool_args":
@@ -35650,13 +35661,14 @@ async def produce_openai_chat_completions(
                         _args = event.get("arguments_text")
                     if isinstance(_args, str) and _args:
                         _sf_partial_args += len(_args)
-                        if _event_type == "tool_args":
+                        if _event_type == "tool_start":
                             # A finalized call runs after its pass reported, so its stats cover it.
-                            _sf_text_stats = _sf_stats_holder.get("stats")
+                            _sf_covered_args += len(_args)
                     if _event_type == "content":
                         raw_text = event.get("text", "")
                         _sf_partial_text = raw_text
-                        _sf_text_stats = _sf_stats_holder.get("stats")
+                        # Text after a report is the next pass's own.
+                        _sf_covered_text = 0
                         prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                     elif _event_type == "tool_start" or (
                         _event_type == "status" and not event.get("text")
@@ -35693,7 +35705,7 @@ async def produce_openai_chat_completions(
                     _stats.get("usage"),
                     timings = _stats.get("timings"),
                     # A stop mid-pass: the earlier passes' counts do not cover the kept turn's text.
-                    reported_chars = None if _stats is not _sf_text_stats else 0,
+                    reported_chars = _sf_json_reported_chars(_stats),
                 )
             if cancel_event.is_set():
                 from core.inference.llama_keepwarm import mark_current_response_failed
@@ -36728,15 +36740,21 @@ async def produce_openai_chat_completions(
             api_monitor.count_output(
                 monitor_id,
                 sum(len(reply.get("reasoning_content") or "") for reply in _monitor_replies)
-                + _sf_plain_partial["extra"],
+                # Estimated from its length only when no usage is reported (else charged below).
+                + (0 if _last_stats else _sf_plain_partial["extra"]),
             )
             if len(_choices) <= 1:
                 # Suppressed for n > 1: choices can end differently.
                 api_monitor.set_perf(monitor_id, stop_reason = _finish)
             if _last_stats:
+                _monitored = _usage.model_dump()
+                # A batch's discarded output is in no reported count: debit it beside the fallback's.
+                _discarded = -(-_sf_plain_partial["extra"] // 4)
+                _monitored["completion_tokens"] += _discarded
+                _monitored["total_tokens"] += _discarded
                 _monitor_usage(
                     monitor_id,
-                    _usage.model_dump(),
+                    _monitored,
                     # Omitted for n > 1: timings describe only the last choice.
                     timings = _last_stats.get("timings") if len(_choices) <= 1 else None,
                     # A stopped choice's output is past what the reported choices cover.

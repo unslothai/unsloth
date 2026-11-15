@@ -369,8 +369,14 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     assert '_sf_plain_partial["batch"] = texts' in source
     assert '_sf_plain_partial["extra"] += len(texts[_row])' in source
     # A stop mid-pass in the JSON drain keeps the kept turn outside the earlier passes' report.
-    assert "reported_chars = None if _stats is not _sf_text_stats else 0," in source
-    assert '_sf_text_stats = _sf_stats_holder.get("stats")' in source
+    assert (
+        "return None if stats is not _sf_json_seen else _sf_covered_text + _sf_covered_args"
+        in source
+    )
+    assert "_sf_covered_args = _sf_partial_args" in source
+    assert "_sf_covered_args += len(_args)" in source
+    # Discarded batch output is debited beside the fallback's reported usage.
+    assert '_discarded = -(-_sf_plain_partial["extra"] // 4)' in source
     # A later pass's failure settles the passes that already reported, on every exit.
     assert source.count("_sf_settle_reported_passes()") == 6  # the def and its five calls
     assert source.count("_sf_settle_streamed_passes()") == 5  # the def and its four calls
