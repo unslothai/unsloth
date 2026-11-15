@@ -3849,6 +3849,7 @@ class UnslothTrainer:
             logger.info(f"Dataset formatted successfully ({final_n} samples, {detected})\n")
 
             if has_separate_eval_source and eval_dataset is not None:
+                _raise_if_empty_train_split(eval_dataset, "in the eval split")
                 eval_n = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
                 logger.info(f"Formatting eval dataset ({eval_n} rows)...\n")
                 eval_info = format_and_template_dataset(

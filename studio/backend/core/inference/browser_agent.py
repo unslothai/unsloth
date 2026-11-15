@@ -11,6 +11,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import sys
 import unicodedata
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlsplit
@@ -489,13 +490,20 @@ def _is_loopback(hostname: str) -> bool:
     return ip == ipaddress.IPv6Address("::1") or (ip.version == 4 and ip.is_loopback)
 
 
+def _own_ports() -> set[int]:
+    """The ports this server listens on (`-p 8000`), which the fixed range can miss; empty before it binds."""
+    state = getattr(getattr(sys.modules.get("main"), "app", None), "state", None)
+    ports = (getattr(state, name, None) for name in ("server_port", "loopback_http_port"))
+    return {port for port in ports if isinstance(port, int) and port > 0}
+
+
 def _studio_port_problem(url: str) -> Optional[str]:
     parsed = urlsplit(url)
     try:
         port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
     except ValueError:
         return "the address has a bad port"
-    if port in _STUDIO_PORTS or port >= _ASSIGNED_PORTS:
+    if port in _STUDIO_PORTS or port >= _ASSIGNED_PORTS or port in _own_ports():
         return f"{parsed.hostname}:{port} is Unsloth's own address"
     return None
 

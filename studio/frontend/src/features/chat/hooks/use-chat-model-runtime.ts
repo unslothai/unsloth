@@ -68,6 +68,8 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
+import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
   isOllamaModelId,
@@ -189,6 +191,7 @@ import {
   normalizeMaxSeqLength,
   residentIsServedByMlx,
   resolveInitialConfig,
+  npuLoadFields,
   savedContextPin,
   type PerModelConfig,
   loadedContextFields,
@@ -532,7 +535,9 @@ export function syncModelCapabilities(
       ...models,
       {
         id: modelId,
-        name: modelDisplayName(resp.display_name || modelId),
+        name:
+          npuDisplayNameNow(modelId) ??
+          modelDisplayName(resp.display_name || modelId),
         isLora: Boolean(resp.is_lora),
         ...synced,
       },
@@ -1939,6 +1944,8 @@ export function useChatModelRuntime() {
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       let offloadCounts: OffloadCounts = {};
+      // Set once the load asks for a standalone Engram table, so the download bar counts it.
+      let progressEngramPrecision: string | null = null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -2217,6 +2224,9 @@ export function useChatModelRuntime() {
               pendingLoadConfig?.ctxCheckpoints ??
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
+            engramPrecision:
+              pendingLoadConfig?.engramPrecision ??
+              stateBeforeUnload.engramPrecision,
           };
           const loadIn4bitChoice = stateBeforeUnload.params.loadIn4bit !== false;
           let loadEngineFields = {
@@ -2258,6 +2268,7 @@ export function useChatModelRuntime() {
                   pendingLoadConfig?.specDraftCacheDtype ?? null,
                 ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
                 cacheRam: pendingLoadConfig?.cacheRam ?? null,
+                engramPrecision: pendingLoadConfig?.engramPrecision ?? null,
               };
               loadKvCacheDtype = pendingLoadConfig?.kvCacheDtype ?? null;
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
@@ -2613,6 +2624,7 @@ export function useChatModelRuntime() {
             // Bind the request ID before the POST so an early cancel lands as a backend tombstone.
             loadRun.loadAttemptPath = loadPath;
 
+            progressEngramPrecision = loadRequest().engram_precision ?? null;
             const loadResponse = await loadModel({
               ...loadRequest(),
               load_request_id: loadRun.requestId,
@@ -2967,6 +2979,7 @@ export function useChatModelRuntime() {
                   mlx_fast_verify: rollbackState.loadedMlxFastVerifyRequested,
                   mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
                   mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
+                  ...npuLoadFields(rollbackState),
                   speculative_type:
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -2990,6 +3003,7 @@ export function useChatModelRuntime() {
                       rollbackState.loadedSpecDraftCacheDtype,
                     ctxCheckpoints: rollbackState.loadedCtxCheckpoints,
                     cacheRam: rollbackState.loadedCacheRam,
+                    engramPrecision: rollbackState.loadedEngramPrecision,
                   }),
                   // Explicit: the target is resident now, so an omitted field would inherit across models.
                   ...(rollbackState.loadedLlamaExtraArgs != null
@@ -3054,6 +3068,9 @@ export function useChatModelRuntime() {
                     rollbackState.loadedCtxCheckpoints ?? null,
                   cacheRam: previousServerTuning.cacheRam ?? null,
                   loadedCacheRam: rollbackState.loadedCacheRam ?? null,
+                  engramPrecision: previousServerTuning.engramPrecision ?? null,
+                  loadedEngramPrecision:
+                    rollbackState.loadedEngramPrecision ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
@@ -3199,6 +3216,7 @@ export function useChatModelRuntime() {
                       ggufVariant,
                       expectedBytes,
                       hfToken,
+                      progressEngramPrecision,
                     ),
                   ]
                 : await Promise.all(
@@ -3548,9 +3566,8 @@ export function useChatModelRuntime() {
       ) {
         return;
       }
-      const contextLength = savedContextPin(
-        reload?.config ?? resolveInitialConfig(modelPath).config,
-      );
+      const config = reload?.config ?? resolveInitialConfig(modelPath).config;
+      const contextLength = savedContextPin(config);
       if (loadingModelRef.current ?? store.loadingModelPick) {
         toast.info("Another model is already loading", {
           description: "Wait for it to finish or cancel it first.",
@@ -3566,9 +3583,9 @@ export function useChatModelRuntime() {
       }
       loadLifecycleLeaseRef.current = lease;
       const loadIntentId = ++modelSelectionIntentEpoch;
-      const displayName = modelDisplayName(
-        modelPath.slice(modelPath.indexOf(":") + 1),
-      );
+      const displayName =
+        npuDisplayNameNow(modelPath) ??
+        modelDisplayName(modelPath.slice(modelPath.indexOf(":") + 1));
       const previous = useChatRuntimeStore.getState();
       const previousCheckpoint = previous.params.checkpoint;
       const previousGgufVariant = previous.activeGgufVariant;
@@ -3630,6 +3647,7 @@ export function useChatModelRuntime() {
           model_path: modelPath,
           hf_token: null,
           max_seq_length: contextLength ?? 0,
+          ...npuLoadFields(config),
           load_in_4bit: false,
           is_lora: false,
           force_reload: reload?.forceReload === true,

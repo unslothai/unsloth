@@ -357,6 +357,8 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 # Studio exposure modes need explicit allowlisting or they remain inert in the documented helper
 [[ -n "${UNSLOTH_STUDIO_SECURE:-}" ]]     && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SECURE)
 [[ -n "${UNSLOTH_STUDIO_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_CLOUDFLARE)
+[[ -n "${UNSLOTH_STUDIO_SSL_CERTFILE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SSL_CERTFILE)
+[[ -n "${UNSLOTH_STUDIO_SSL_KEYFILE:-}" ]]  && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SSL_KEYFILE)
 
 STOP_BUDGET="${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120}"
 if ! [[ "$STOP_BUDGET" =~ ^[0-9]+$ ]]; then

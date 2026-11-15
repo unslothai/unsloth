@@ -1135,10 +1135,10 @@ def _rocm_bytes_dequant_arch(device):
 
 
 def _hip_bytes_dequant(device, out_dtype):
-    # fp16 excluded: on gfx1151 the byte decoder rounds fp16 differently from the torch loop.
-    return (
-        _HIP_FP8_BYTES_DEQUANT and out_dtype != torch.float16 and _rocm_bytes_dequant_arch(device)
-    )
+    # fp16 only with the integer rounding: the plain cast fuses into v_fma_mixlo_f16.
+    if out_dtype == torch.float16 and not _fp8_exact_f16_round(out_dtype):
+        return False
+    return _HIP_FP8_BYTES_DEQUANT and _rocm_bytes_dequant_arch(device)
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):

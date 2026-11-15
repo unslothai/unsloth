@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import errno
 import fnmatch
 import glob
 import hashlib
@@ -844,6 +845,35 @@ def _sweep_retired_trees(target: Path) -> None:
             shutil.rmtree(staging, ignore_errors = True)
 
 
+def _retire_tree(target: Path, retired: Path) -> None:
+    """os.replace, or on EXDEV copy then remove: overlayfs will not rename an image-layer
+    directory, where the Docker image keeps audio.cpp (#17638)."""
+    try:
+        os.replace(target, retired)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV or target.is_symlink():
+            raise
+        print(f"audio.cpp: {exc.strerror}; copying {target} aside instead", flush = True)
+    # Renamed to ``retired`` only once whole, so a rollback never restores a partial copy.
+    copying = retired.with_name(retired.name + ".copying")
+    shutil.rmtree(copying, ignore_errors = True)
+    try:
+        shutil.copytree(target, copying, symlinks = True)
+        os.replace(copying, retired)
+    except BaseException:
+        shutil.rmtree(copying, ignore_errors = True)
+        raise
+    try:
+        shutil.rmtree(target)
+    except OSError:
+        # A half-removed tree is no install: put the copy back.
+        shutil.rmtree(target, ignore_errors = True)
+        if not target.exists():
+            os.replace(retired, target)
+        raise
+
+
 def _is_unreadable(target: Path) -> bool:
     """Whether this account cannot look inside ``target``: a tree an elevated run staged under
     mkdtemp's Windows ACL is owned by Administrators and denies the same user unelevated (#14052).
@@ -1341,7 +1371,7 @@ def _install_locked(
         retired = None
         if target.exists():
             retired = target.with_name(target.name + f".old-{os.getpid()}")
-            os.replace(target, retired)
+            _retire_tree(target, retired)
         try:
             os.replace(tree, target)
         except OSError:
