@@ -3945,6 +3945,19 @@ def _offload_activation_hooks(owner = None):
 _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 
+def _router_aux_loss_on(model):
+    """MoE aux loss on: reentrant GC's no_grad pass would leave it without a gradient."""
+    config = getattr(model, "config", None)
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    if text is None or not hasattr(text, "output_router_logits"):
+        return False
+    try:
+        coef = float(getattr(text, "router_aux_loss_coef", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        coef = 0.0
+    return bool(getattr(text, "output_router_logits", False)) or coef > 0.0
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -6170,7 +6183,10 @@ class FastBaseModel:
         use_reentrant = vlm_gradient_checkpointing_reentrant()
         # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
-        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
+        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES) or (
+            # Gemma 3n / 4 keep reentrant checkpointing (AOT backward strides, below).
+            _router_aux_loss_on(model) and not _gc_model_type.startswith(("gemma3n", "gemma4"))
+        )
         if _force_non_reentrant:
             use_reentrant = False
         model._unsloth_vlm_gc_non_reentrant = bool(
