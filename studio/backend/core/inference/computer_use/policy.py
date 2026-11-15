@@ -28,7 +28,8 @@ _GRID_MODEL_RE = re.compile(
 
 _TERMINALS = (
     "terminal", "iterm", "warp", "kitty", "alacritty", "wezterm", "ghostty", "konsole", "xterm",
-    "tilix", "terminator", "powershell", "pwsh", "conhost", "mintty", "tabby",
+    "tilix", "terminator", "powershell", "pwsh", "conhost", "mintty", "tabby", "command prompt",
+    "git bash",
 )  # fmt: skip
 _SECRETS = (
     "1password", "bitwarden", "keepass", "keychain", "lastpass", "dashlane", "enpass",

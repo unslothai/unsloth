@@ -491,6 +491,16 @@ def test_a_windows_window_is_named_as_the_start_menu_names_its_app(desktop, monk
     assert policy.blocked_window(FrontWindow(app = "Command Prompt", app_id = "cmd.exe"))
 
 
+@pytest.mark.parametrize(
+    "name", ["Command Prompt", "Developer Command Prompt for VS 2022", "Git Bash"]
+)
+def test_a_terminal_known_by_its_start_menu_name_asks_every_time(desktop, name):
+    assert policy.asks_every_time(name)
+    with pytest.raises(ValueError, match = "asks every time"):
+        policy.allow_app(name)
+    assert policy.risks([{"op": "open_app", "name": name}], FrontWindow(app = "Notes"))
+
+
 def test_grid_coordinates_span_the_picture(desktop):
     desktop.chosen["coordinates"] = "grid"
     key = state.session_key(SESSION)
