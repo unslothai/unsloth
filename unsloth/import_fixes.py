@@ -6033,9 +6033,7 @@ def torchvision_compatibility_check():
         (2, 4): (0, 19),
     }
 
-    # torchvision 0.29.1+ builds on torch's stable ABI and declares a torch range instead of an exact pin
-    # (0.29.2, released with torch 2.15.0, requires torch>=2.14.0; no 0.30 exists), so the minor formula
-    # below would refuse a matching pair. A declared range the installed torch satisfies is the answer.
+    # torchvision 0.29.1+ declares a torch range, not an exact pin, which the minor formula below would refuse.
     if _torch_in_torchvision_declared_range(torch_version_raw):
         _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, tv_v.release[:3])
         return
