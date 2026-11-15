@@ -145,3 +145,17 @@ def test_full_export_table_keys_drop_compile_wrappers():
     outer = ftp.torch.nn.Module()
     outer._orig_mod = _fake_table_model()
     assert set(native.full_frozen_table_state(outer)) == {"table.shard_0.weight"}
+
+
+@pytest.mark.parametrize("mode", ["fsdp2", "tp"])
+def test_setup_alone_keeps_tables_out_of_dcp_without_bitsandbytes(ckpt, mode):
+    """Native FSDP2 / tensor parallel setup of a 16-bit LoRA model (no QLoRA), in an install without
+    bitsandbytes, and no explicit DCP install: Trainer / DCP state dicts still hold no table key and do not fail
+    on the table's checkpoint names (torch alone does)."""
+    res = ftp.run(
+        2, mode = mode, table_mode = "ram", path = ckpt, steps = 1, no_bitsandbytes = True, install_dcp = False
+    )
+    for r in res:
+        assert "dcp_full_error" not in r and "dcp_adapter_error" not in r, r
+        assert r["dcp_full_table_keys"] == 0 and r["dcp_adapter_table_keys"] == 0
+        assert r["raw_dcp_error"] == "AttributeError"

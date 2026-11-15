@@ -22,6 +22,7 @@ UNSLOTH_FROZEN_TABLE = gpu / ram / disk, applies one parallelism, trains 2 steps
 import contextlib
 import importlib.machinery
 import importlib.util
+import inspect
 import json
 import multiprocessing
 import os
@@ -348,6 +349,8 @@ def worker_case(
     sharded_load = False,
     second_adapter = False,
     layers_per_stage = None,
+    no_bitsandbytes = False,
+    install_dcp = True,
 ):
     import gc as gc_module
 
@@ -373,6 +376,8 @@ def worker_case(
     except (ValueError, RuntimeError, NotImplementedError) as e:
         rec["load_refused"] = f"{type(e).__name__}: {e}"[:400]
         return rec
+    if no_bitsandbytes:  # from here on bitsandbytes cannot be imported (an install without it)
+        sys.modules["bitsandbytes.nn"] = None
     if second_adapter:  # a named adapter: PEFT saves it in <directory>/second
         from peft import LoraConfig
         model.add_adapter("second", LoraConfig(r = 2, target_modules = ["o_proj"]))
@@ -487,7 +492,8 @@ def worker_case(
     import torch.distributed.checkpoint.state_dict as dsd
 
     fsave = load_module("fsdp2_save")
-    fsave.install_dcp_bnb_state_dict()
+    if install_dcp:  # else only what the parallel setup itself installed
+        fsave.install_dcp_bnb_state_dict()
     native = load_module("fsdp2_native")
     for key, options in (
         ("adapter", dsd.StateDictOptions(ignore_frozen_params = True)),
@@ -503,7 +509,9 @@ def worker_case(
         except Exception as e:
             rec[f"dcp_{key}_error"] = f"{type(e).__name__}: {e}"[:300]
         sd = None
-    raw = getattr(dsd.get_model_state_dict, "__wrapped__", None)
+    raw = getattr(dsd.get_model_state_dict, "__wrapped__", None) and inspect.unwrap(
+        dsd.get_model_state_dict
+    )
     if raw is not None:
         try:
             raw(model)
@@ -526,8 +534,6 @@ def worker_case(
             if writer:
                 model.save_pretrained(save_dir)
         dist.barrier()
-    import json
-
     for key, directory in (
         ("provenance", save_dir),
         ("second_provenance", os.path.join(save_dir, "second")),

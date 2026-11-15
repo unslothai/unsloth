@@ -1888,6 +1888,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
 
     install_vision_dummy(model)  # mixed image / text ranks
     _patch_accumulated_grad_guard()
+    from .fsdp2_save import install_dcp_frozen_table_state_dict
+
+    install_dcp_frozen_table_state_dict()  # Trainer / DCP checkpoints never hold a frozen lookup table
     if qlora is not None:
         # Trainer / DCP checkpoints of the sharded 4-bit weights (fsdp2_save).
         from .fsdp2_save import install_dcp_bnb_state_dict

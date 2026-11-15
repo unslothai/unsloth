@@ -11,6 +11,7 @@ __all__ = [
     "mesh_writer_rank",
     "writes_off_rank0",
     "install_dcp_bnb_state_dict",
+    "install_dcp_frozen_table_state_dict",
     "reduce_unsharded_trainable_grads",
 ]
 
@@ -977,6 +978,39 @@ def _wrap_accelerate_adapter_only():
         setattr(fsdp_utils, name, wrapper)
 
 
+def install_dcp_frozen_table_state_dict():
+    """Frozen lookup tables (UNSLOTH_FROZEN_TABLE=ram / disk) are read from their own checkpoint files: never in a
+    torch.distributed.checkpoint model state dict (saved or loaded), and their checkpoint names are no module
+    attributes (get_model_state_dict would raise AttributeError). Wraps the model state dict functions to hide them
+    (fsdp2_native.frozen_tables_hidden); needs nothing but torch. Idempotent."""
+    try:
+        import torch.distributed.checkpoint.state_dict as dcp_state_dict
+    except Exception:
+        return False
+    for name in _MODEL_STATE_FUNCTIONS:
+        fn = getattr(dcp_state_dict, name, None)
+        if fn is None or getattr(fn, "_unsloth_frozen_tables_patched", False):
+            continue
+
+        @functools.wraps(fn)
+        def wrapper(
+            *args,
+            _fn = fn,
+            **kwargs,
+        ):
+            model = args[0] if args else kwargs.get("model")
+            if not isinstance(model, torch.nn.Module):
+                return _fn(*args, **kwargs)
+            from .fsdp2_native import frozen_tables_hidden
+
+            with frozen_tables_hidden(model):
+                return _fn(*args, **kwargs)
+
+        wrapper._unsloth_frozen_tables_patched = True
+        setattr(dcp_state_dict, name, wrapper)
+    return True
+
+
 def install_dcp_bnb_state_dict():
     """torch.distributed.checkpoint resolves every state dict key as an attribute path, and
     bitsandbytes' `weight.absmax` / `weight.quant_state.bitsandbytes__nf4` entries are not one
@@ -985,6 +1019,7 @@ def install_dcp_bnb_state_dict():
     and bias; the QuantState is unchanged in memory. A full DCP state dict of a sharded 4-bit model is
     built the same way and then gets bitsandbytes' entries back under their usual keys
     (`_add_quant_state_entries`), which loading drops again. Other DCP calls are untouched."""
+    install_dcp_frozen_table_state_dict()  # with or without bitsandbytes
     try:
         import torch.distributed.checkpoint.state_dict as dcp_state_dict
         from bitsandbytes.nn import Linear4bit
@@ -1025,17 +1060,7 @@ def install_dcp_bnb_state_dict():
                 _add_quant_state_entries(model, state_dict, kwargs.get("options", None))
             return out
 
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            model = args[0] if args else kwargs.get("model")
-            if name in _MODEL_STATE_FUNCTIONS and isinstance(model, torch.nn.Module):
-                # Frozen lookup tables (UNSLOTH_FROZEN_TABLE=ram / disk) are read from their own checkpoint files:
-                # never in a DCP state dict (saved or loaded), and their names are no module attributes.
-                from .fsdp2_native import frozen_tables_hidden
-                with frozen_tables_hidden(model):
-                    return _body(*args, **kwargs)
-            return _body(*args, **kwargs)
-
+        wrapper = functools.wraps(fn)(_body)
         wrapper._unsloth_fsdp2_patched = True
         return wrapper
 

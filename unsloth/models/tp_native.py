@@ -1924,6 +1924,9 @@ def apply_tensor_parallel(
     """Shard every decoder attention / MLP of `model` over `tp_mesh` (None = all ranks), in place."""
     if is_tensor_parallel(model):
         return model
+    from .fsdp2_save import install_dcp_frozen_table_state_dict
+
+    install_dcp_frozen_table_state_dict()  # Trainer / DCP checkpoints never hold a frozen lookup table
     config = config or TPConfig()
     if plan is None:
         plan = config.plan
