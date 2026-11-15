@@ -141,7 +141,7 @@ def _eligible(x: Any, idx: Any, *tables: Any) -> bool:
 
 def _on_card(t: Any) -> Any:
     """Triton launches on the current device and stream: switch to the operand's card when another one is current
-    (a pooled or unpinned render thread on a multi-GPU host). Same card: no switch, it costs ~3 us per launch."""
+    (a pooled or unpinned render thread on a multi-GPU host). Same card: no switch."""
     import torch
 
     index = t.device.index
