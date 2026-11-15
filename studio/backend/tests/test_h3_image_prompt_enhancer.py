@@ -292,6 +292,31 @@ def test_edit_sends_the_references_with_the_projector(monkeypatch):
     assert call["payload"]["max_tokens"] == 8196
 
 
+def test_a_repeated_edit_skips_the_resizes_and_the_generation(monkeypatch):
+    sidecar = _runnable(monkeypatch, _FakeSidecar(_echo))
+    prepared = []
+    real = h3pe.prepare_reference
+    monkeypatch.setattr(h3pe, "prepare_reference", lambda image: prepared.append(1) or real(image))
+    refs = [_png_url(), _png_url((40, 40))]
+    first = h3pe.upsample("swap the hat", reference_images = refs)
+    assert len(prepared) == 2 and len(sidecar.calls) == 1
+    assert h3pe.upsample("swap the hat", reference_images = list(refs)) == first
+    assert len(prepared) == 2 and len(sidecar.calls) == 1
+    # Other pictures, or the same ones in another order, are another request.
+    h3pe.upsample("swap the hat", reference_images = refs[::-1])
+    assert len(sidecar.calls) == 2
+
+
+def test_raw_reference_hash_is_order_and_content_sensitive():
+    from PIL import Image
+
+    a, b = _png_url(), _png_url((40, 40))
+    assert h3pe.raw_references_hash([a, b]) == h3pe.raw_references_hash([a, b])
+    assert h3pe.raw_references_hash([a, b]) != h3pe.raw_references_hash([b, a])
+    red, blue = Image.new("RGB", (8, 8), (255, 0, 0)), Image.new("RGB", (8, 8), (0, 0, 255))
+    assert h3pe.raw_references_hash([red]) != h3pe.raw_references_hash([blue])
+
+
 def test_edit_without_projector_runs_text_only(monkeypatch):
     sidecar = _runnable(monkeypatch, _FakeSidecar(_echo))
     monkeypatch.setattr(h3pe, "mmproj_path", lambda: None)
@@ -319,10 +344,7 @@ def test_malformed_reply_runs_the_prompt_as_typed(monkeypatch, reply):
     assert out.status == "failed" and out.encoded("a cat") == "a cat"
     assert out.caption_for("a cat") is None
     # Not cached: the next run asks again.
-    assert (
-        pup._cache_get((h3pe.ENHANCER_ID, "a cat", False, pup.references_hash([]), "/m/qwen.gguf"))
-        is None
-    )
+    assert pup._cache_get((h3pe.ENHANCER_ID, "a cat", False, "", "/m/qwen.gguf")) is None
 
 
 def test_server_failure_runs_the_prompt_as_typed(monkeypatch):
@@ -523,3 +545,34 @@ def test_status_body_shape(monkeypatch):
     assert body["filename"] == "Qwen3.5-9B-UD-Q4_K_XL.gguf"
     assert body["current_missing_bytes"] == 5_966_095_584 + 918_166_080
     assert body["size_bytes"] == 5_966_095_584 and body["mmproj_size_bytes"] == 918_166_080
+
+
+def test_another_render_seed_reuses_the_caption(routes, monkeypatch):
+    client, backend, saved = routes
+    sidecar = _runnable(monkeypatch, _FakeSidecar(_echo))
+    for seed in (1, 2):
+        r = client.post(
+            "/api/inference/images/generate", json = {"prompt": "a cat", "steps": 4, "seed": seed}
+        )
+        assert r.status_code == 200, r.text
+        assert backend.calls[-1]["prompt"] == "Caption for a cat"
+    assert len(sidecar.calls) == 1
+
+
+def test_off_costs_nothing(routes, monkeypatch):
+    client, backend, saved = routes
+    sidecar = _runnable(monkeypatch, _FakeSidecar())
+    # Enhance off probes no file, no binary and no server.
+    monkeypatch.setattr(
+        h3pe, "model_path", lambda: pytest.fail("enhancer files probed with Enhance off")
+    )
+    monkeypatch.setattr(
+        pup, "find_llama_server_binary", lambda: pytest.fail("llama-server probed with Enhance off")
+    )
+    r = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a cat", "steps": 4, "enhance_prompt": False},
+    )
+    assert r.status_code == 200, r.text
+    assert backend.calls[-1]["prompt"] == "a cat" and sidecar.calls == []
+    assert r.json()["images"][0]["prompt_enhancement"] == "off"

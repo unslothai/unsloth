@@ -238,6 +238,21 @@ def prepare_reference(image: Any) -> bytes:
     return buffer.getvalue()
 
 
+def raw_references_hash(images: Optional[list]) -> str:
+    """A digest of the references as uploaded (data URLs, or PIL images), in order: the cache key, computed without
+    decoding or resizing anything."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for item in list(images or [])[: pup.MAX_REFERENCES]:
+        if isinstance(item, str):
+            part = item.encode("utf-8")
+        else:
+            part = f"{item.mode}:{item.size}:".encode() + item.tobytes()
+        digest.update(hashlib.sha256(part).digest())
+    return digest.hexdigest()
+
+
 def prepare_references(images: Optional[list]) -> list[bytes]:
     items = list(images or [])[: pup.MAX_REFERENCES]
     prepared = []
@@ -419,6 +434,7 @@ def status() -> dict:
     """The prompt-upsampler status route body for the H3-Image enhancer (the FLUX.3 body's shape)."""
     model = model_path()
     mmproj = mmproj_path()
+    binary = pup.find_llama_server_binary()
     model_name = Path(model).name if model else ENHANCER_MODEL_FILE
     size = None
     if model:
@@ -437,11 +453,9 @@ def status() -> dict:
         ]
     )
     return {
-        "supported": pup.find_llama_server_binary() is not None,
+        "supported": binary is not None,
         "downloaded": model is not None,
-        "loaded": pup.get_sidecar().serves(pup.find_llama_server_binary() or "", model or "", None)
-        if model
-        else False,
+        "loaded": bool(binary and model) and pup.get_sidecar().serves(binary, model, None),
         "repo": ENHANCER_REPO,
         "filename": model_name,
         "size_bytes": size
@@ -476,22 +490,30 @@ def upsample(
         raise pup.UpsamplerNotDownloadedError(f"The {LABEL} is not downloaded.")
     edit = bool(reference_images)
     mmproj = mmproj_path() if edit else None
-    references: list[bytes] = []
-    if edit:
-        if mmproj is None:
-            logger.warning(
-                "h3_image.prompt_enhancer: %s is not downloaded; enhancing the edit text-only",
-                ENHANCER_MMPROJ_FILE,
-            )
-        else:
-            references = prepare_references(reference_images)
-    payload = build_chat_payload(prompt, references, edit = edit)
-    key = (ENHANCER_ID, prompt, edit, pup.references_hash(references), model)
+    with_images = edit and mmproj is not None
+    # Keyed on the uploads as sent, so a repeat (another seed, a re-render) skips the 4 MP resizes as well as the
+    # generation. The render seed is not part of it: the templates fix the enhancer's own seed at 0.
+    key = (
+        ENHANCER_ID,
+        prompt,
+        edit,
+        raw_references_hash(reference_images) if with_images else "",
+        model,
+    )
     cached = pup._cache_get(key)
     if cached is not None:
         if cancel_event is not None and cancel_event.is_set():
             raise pup.UpsamplerCancelledError("Cancelled.")
         return cached
+    references: list[bytes] = []
+    if with_images:
+        references = prepare_references(reference_images)
+    elif edit:
+        logger.warning(
+            "h3_image.prompt_enhancer: %s is not downloaded; enhancing the edit text-only",
+            ENHANCER_MMPROJ_FILE,
+        )
+    payload = build_chat_payload(prompt, references, edit = edit)
     sidecar = sidecar or pup.get_sidecar()
     raw = sidecar.generate(
         payload,
