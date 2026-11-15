@@ -190,11 +190,18 @@ test("the page applies the first-render size when the family loads, behind the m
   const start = page.indexOf("const familyChanged = loadedFamily !== prevFamilyRef.current;");
   assert.ok(start >= 0);
   const effect = page.slice(start, page.indexOf("keptNumFrames(", start));
-  const gate = effect.indexOf("if (familyChanged && loadedFamily && applyFamilyDefault) {");
-  assert.ok(gate >= 0, "the size follows the same gate as the family's default clip length");
+  const gate = effect.indexOf(
+    "if (familyChanged && loadedFamily && applyFamilyDefault && !resolutionChosen.current) {",
+  );
+  assert.ok(gate >= 0, "the clip-length gate, and never over a size the user chose");
   const apply = effect.slice(gate);
   assert.match(apply, /familyFirstRenderResolution\(status\?\.defaults, resolutionPresets\)/);
   assert.match(apply, /setResolutionIntent\(firstSize\)/);
   // before the clip-length branch, which returns early
   assert.ok(gate < effect.indexOf("familyDefaultFrames && applyFamilyDefault"));
+  // a picked size and a restored clip's size both count as chosen, so a reload or family switch keeps them
+  const applySize = page.slice(page.indexOf("const applySize = ("), page.indexOf("const applySize = (") + 400);
+  assert.match(applySize, /resolutionChosen\.current = true;/);
+  const restore = page.slice(page.indexOf("const restoreSettings = useCallback("));
+  assert.match(restore.slice(0, restore.indexOf("setResolutionIntent(size)")), /resolutionChosen\.current = true;/);
 });
