@@ -1978,7 +1978,7 @@ def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
 
 
 def logits_to_keep_tensor(num_logits_to_keep, logits_to_keep):
-    """The tensor form of logits_to_keep (positions or a bool mask), or None for the int forms."""
+    """Tensor logits_to_keep (positions or bool mask), else None."""
     for keep in (logits_to_keep, num_logits_to_keep):
         if isinstance(keep, torch.Tensor):
             return keep
@@ -1986,8 +1986,7 @@ def logits_to_keep_tensor(num_logits_to_keep, logits_to_keep):
 
 
 def slice_hidden_to_keep(hidden_states, keep):
-    # transformers' slice_logits_to_keep: 1D positions for every row, (B, K) positions per row, or a
-    # (B, T) bool mask flattened to (N, H), as the batched decision pipeline reads the token before each mark.
+    # Mirrors transformers' slice_logits_to_keep; a (B, T) bool mask flattens to (N, H).
     keep = keep.to(hidden_states.device)
     if keep.ndim == 2:
         if keep.dtype == torch.bool:
@@ -2120,7 +2119,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         lm_head_device = lm_head.device
 
         dtype = lm_head.dtype
-        # The tensor forms select positions; without labels only those rows reach the lm_head.
         keep = logits_to_keep_tensor(num_logits_to_keep, logits_to_keep)
         if keep is not None and (labels is not None or shift_labels is not None):
             keep = None

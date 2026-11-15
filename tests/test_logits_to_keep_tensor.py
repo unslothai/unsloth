@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tensor logits_to_keep (positions, per-row positions, bool mask) selects rows like transformers'
-slice_logits_to_keep; the batched decision pipeline reads the token before each mark this way."""
+"""Tensor logits_to_keep selects rows like transformers' slice_logits_to_keep."""
 
 import pytest
 
