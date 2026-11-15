@@ -602,7 +602,7 @@ export const fr = {
     approval: {
       note: "En autorisant, vous laissez le modèle utiliser la souris et le clavier de cet ordinateur dans cette discussion.",
       because: "Demande préalable, car : {reasons}.",
-      newApp: "{app} n'a pas encore été utilisée dans cette discussion",
+      newApp: "L'application {app} n'a pas encore été utilisée dans cette discussion",
       alwaysAllowApp: "Toujours autoriser {app}",
     },
     settings: {
@@ -610,9 +610,9 @@ export const fr = {
       description: "Gérez la façon dont les modèles utilisent les autres applications de cet ordinateur.",
       control: "Contrôle",
       anyApp: "Utilisation de l'ordinateur",
-      anyAppDescription: "Autorise les modèles à voir l'écran et à contrôler la <b>souris et le clavier</b>. Les discussions demandent avant de commencer, avant une nouvelle app et avant toute action risquée. Les captures d'écran sont envoyées au modèle avec lequel vous discutez.",
+      anyAppDescription: "Autorise les modèles à voir l'écran et à contrôler la <b>souris et le clavier</b>. Les discussions demandent votre autorisation avant de commencer, avant d'utiliser une nouvelle app et avant toute action risquée. Les captures d'écran sont envoyées au modèle avec lequel vous discutez.",
       browser: "Navigateur",
-      browserDescription: "Autorise les modèles à ouvrir des pages dans le panneau navigateur d'Unsloth, à les lire, et à cliquer et saisir pour vous.",
+      browserDescription: "Autorise les modèles à ouvrir des pages dans le panneau navigateur d'Unsloth, à les lire, et à cliquer et taper pour vous.",
       screen: "Voir l'écran",
       screenDescription: "macOS le demande dans « Enregistrement de l'écran et de l'audio système ».",
       input: "Utiliser la souris et le clavier",

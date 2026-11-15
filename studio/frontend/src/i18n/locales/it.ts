@@ -599,7 +599,7 @@ export const it = {
     approval: {
       note: "Consentendo, il modello potrà usare mouse e tastiera di questo computer in questa chat.",
       because: "Chiedo prima perché: {reasons}.",
-      newApp: "{app} non è stata usata in questa chat",
+      newApp: "L'app {app} non è stata usata in questa chat",
       alwaysAllowApp: "Consenti sempre {app}",
     },
     settings: {
@@ -607,7 +607,7 @@ export const it = {
       description: "Gestisci il modo in cui i modelli usano le altre applicazioni su questo computer.",
       control: "Controllo",
       anyApp: "Uso del computer",
-      anyAppDescription: "Consenti ai modelli di vedere lo schermo e controllare <b>mouse e tastiera</b>. Le chat chiedono prima di iniziare, prima di una nuova app e prima di qualsiasi azione rischiosa. Gli screenshot vengono inviati al modello con cui chatti.",
+      anyAppDescription: "Consenti ai modelli di vedere lo schermo e controllare <b>mouse e tastiera</b>. Le chat chiedono conferma prima di iniziare, prima di usare una nuova app e prima di qualsiasi azione rischiosa. Gli screenshot vengono inviati al modello con cui chatti.",
       browser: "Browser",
       browserDescription: "Consenti ai modelli di aprire le pagine nel pannello browser di Unsloth, leggerle e fare clic e scrivere per te.",
       screen: "Vedere lo schermo",
@@ -638,7 +638,7 @@ export const it = {
       appName: "Nome dell'app",
       appNamePlaceholder: "Il nome dell'app, ad esempio Messaggi",
       confirmTitle: "Consentire ai modelli di usare questo computer?",
-      confirmBody: "Un modello vedrà il tuo schermo e controllerà mouse e tastiera, quindi potrà fare tutto ciò che puoi fare tu su questo computer. Ciò che appare sullo schermo può trarlo in inganno. Ogni chat chiede prima di iniziare.",
+      confirmBody: "Un modello vedrà il tuo schermo e controllerà mouse e tastiera, quindi potrà fare tutto ciò che puoi fare tu su questo computer. Ciò che appare sullo schermo può trarlo in inganno. Ogni chat chiede conferma prima di iniziare.",
       confirm: "Attiva",
       cancel: "Annulla",
       saveFailed: "Impossibile salvare l'impostazione di uso del computer.",

@@ -610,7 +610,7 @@ export const de = {
       description: "Lege fest, wie Modelle andere Anwendungen auf diesem Computer nutzen.",
       control: "Steuerung",
       anyApp: "Computernutzung",
-      anyAppDescription: "Modelle sehen den Bildschirm und steuern <b>Maus und Tastatur</b>. Chats fragen, bevor sie beginnen, vor einer neuen App und bevor etwas Riskantes passiert. Screenshots gehen an das Modell, mit dem du chattest.",
+      anyAppDescription: "Modelle sehen den Bildschirm und steuern <b>Maus und Tastatur</b>. Chats fragen, bevor sie beginnen, vor dem Verwenden einer neuen App und vor einer riskanten Aktion. Screenshots gehen an das Modell, mit dem du chattest.",
       browser: "Browser",
       browserDescription: "Modelle öffnen Seiten im Browser-Panel von Unsloth, lesen sie und klicken und tippen für dich.",
       screen: "Bildschirm sehen",

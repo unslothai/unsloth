@@ -672,7 +672,7 @@ export const cs = {
       description: "Spravujte, jak modely používají ostatní aplikace v tomto počítači.",
       control: "Ovládání",
       anyApp: "Ovládání počítače",
-      anyAppDescription: "Umožní modelům vidět obrazovku a ovládat <b>myš a klávesnici</b>. Chaty se zeptají před zahájením, před novou aplikací a před čímkoli riskantním. Snímky obrazovky se odesílají modelu, se kterým chatujete.",
+      anyAppDescription: "Umožní modelům vidět obrazovku a ovládat <b>myš a klávesnici</b>. Chaty se zeptají před zahájením, před použitím nové aplikace a před čímkoli riskantním. Snímky obrazovky se odesílají modelu, se kterým chatujete.",
       browser: "Prohlížeč",
       browserDescription: "Umožní modelům otevírat stránky v panelu prohlížeče Unsloth, číst je a klikat a psát za vás.",
       screen: "Vidět obrazovku",
