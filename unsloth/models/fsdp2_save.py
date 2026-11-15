@@ -940,6 +940,15 @@ def _drops_frozen_weights(kwargs):
     return bool(getattr(kwargs.get("options", None), "ignore_frozen_params", False))
 
 
+def _linear4bit_class():
+    # unsloth_zoo's stub (no bitsandbytes) yields an instance; isinstance on it raises TypeError.
+    try:
+        from bitsandbytes.nn import Linear4bit
+    except Exception:
+        return None
+    return Linear4bit if isinstance(Linear4bit, type) else None
+
+
 def _has_sharded_4bit(args, kwargs):
     """A Linear4bit whose weight FSDP2 made a DTensor: DCP cannot resolve `weight.absmax` on it at all,
     so keeping bitsandbytes' entries only raises (Trainer.save_model -> accelerate get_state_dict)."""
@@ -947,9 +956,8 @@ def _has_sharded_4bit(args, kwargs):
     DTensor = _dtensor_class()
     if DTensor is None or not isinstance(model, torch.nn.Module):
         return False
-    try:
-        from bitsandbytes.nn import Linear4bit
-    except Exception:
+    Linear4bit = _linear4bit_class()
+    if Linear4bit is None:
         return False
     return any(
         isinstance(m, Linear4bit) and isinstance(getattr(m, "weight", None), DTensor)
@@ -963,9 +971,8 @@ def _has_native_replicated_4bit(args, kwargs):
     if not isinstance(model, torch.nn.Module) or not getattr(model, "_unsloth_fsdp2_native", False):
         return False
     DTensor = _dtensor_class()
-    try:
-        from bitsandbytes.nn import Linear4bit
-    except Exception:
+    Linear4bit = _linear4bit_class()
+    if Linear4bit is None:
         return False
     return any(
         isinstance(m, Linear4bit)
@@ -1044,8 +1051,10 @@ def install_dcp_bnb_state_dict():
     install_dcp_frozen_table_state_dict()  # with or without bitsandbytes
     try:
         import torch.distributed.checkpoint.state_dict as dcp_state_dict
-        from bitsandbytes.nn import Linear4bit
     except Exception:
+        return False
+    Linear4bit = _linear4bit_class()
+    if Linear4bit is None:
         return False
     _wrap_accelerate_adapter_only()
     original_save = Linear4bit._save_to_state_dict
@@ -1096,9 +1105,8 @@ def install_dcp_bnb_state_dict():
 def _linear4bit_entries(model):
     """(state dict key prefix, module) of every bitsandbytes Linear4bit with a QuantState, keyed the way
     torch.distributed.checkpoint names them (no torch.compile `_orig_mod.` segment)."""
-    try:
-        from bitsandbytes.nn import Linear4bit
-    except Exception:
+    Linear4bit = _linear4bit_class()
+    if Linear4bit is None:
         return []
     entries = []
     for name, module in model.named_modules():
