@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Plain DDP: a Hub upload (push_to_hub, or save_pretrained / save_lora with push_to_hub = True) runs on
-rank 0 only, while a local save_pretrained still runs on every rank."""
+"""Plain DDP: Hub uploads run on rank 0 only; local saves run on every rank."""
 
 import multiprocessing
 import os
@@ -104,9 +103,7 @@ def test_plain_ddp_uploads_from_rank0_only():
         ("save_pretrained", False),
     ]
     assert rank0["push"] == "pushed" and rank0["save_push"] == "saved"
-    assert rank1["calls"] == [
-        ("save_pretrained", False)
-    ], rank1  # the local save still runs on every rank
+    assert rank1["calls"] == [("save_pretrained", False)], rank1
     assert rank1["push"] is None and rank1["save_push"] is None
 
 

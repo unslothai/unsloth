@@ -7316,8 +7316,7 @@ def _tp_collective_save(method):
 
 
 def _plain_data_parallel_push(model, method, fn, args, kwargs):
-    """A Hub upload under plain DDP: every rank holds the same weights, so rank 0 alone uploads (no
-    rendezvous). FSDP2-sharded models already write on rank 0 through their collective save."""
+    """Plain DDP Hub upload: identical weights on every rank, so rank 0 alone uploads (FSDP saves gather)."""
     import torch.distributed as dist
 
     if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
