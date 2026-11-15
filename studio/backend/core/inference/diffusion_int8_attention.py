@@ -159,13 +159,12 @@ _LOCK = threading.Lock()
 _VERDICTS: dict = {}
 _BROKEN: set = set()
 _VERIFIED: set = set()
-# The long variant of a config with ``long_keys`` (select_config) is a second compiled kernel: it runs only where
-# its own check passed, (device index, head dim, dtype, impl) here; elsewhere long calls run the short config.
+# (index, head dim, dtype, impl) whose long variant passed its own check; elsewhere long calls run the short one.
 _LONG_VERIFIED: set = set()
 _LONG_CHECKS: dict = {}
-# (device index, head dim, impl) whose long variant failed in a real call: long calls run the short config there
+# (index, head dim, impl) whose long variant failed in a real call
 _LONG_BROKEN: set = set()
-# the long probe: this many queries and heads against long_keys + LONG_PROBE_EXTRA keys (a ragged last key tile)
+# long probe: queries and heads against long_keys + LONG_PROBE_EXTRA keys (a ragged last key tile)
 LONG_PROBE_QUERIES = 1000
 LONG_PROBE_HEADS = 2
 LONG_PROBE_EXTRA = 100
