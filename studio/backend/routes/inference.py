@@ -27203,7 +27203,8 @@ async def voice_decision_put(
         await asyncio.to_thread(voice_decisions.set_checkpoint, payload.name)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    get_voice_models().switch_decision()
+    # The models lock is held through a cold load (downloads included): never on the event loop.
+    await asyncio.to_thread(get_voice_models().switch_decision)
     threading.Thread(target = _warm_voice_decision, daemon = True).start()
     return JSONResponse(content = await asyncio.to_thread(_voice_decision_response))
 

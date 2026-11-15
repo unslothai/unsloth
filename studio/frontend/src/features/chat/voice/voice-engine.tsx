@@ -137,6 +137,7 @@ function speaksWithChatModel(): boolean {
 }
 
 const IGNORE_MAX_WORDS = 3;
+const PLAYBACK_TAIL_MS = 500;
 const VOICE_COALESCE_MS = 250;
 const VOICE_COALESCE_POLL_MS = 250;
 // After a barge-in cut an unanswered run the user tends to keep going; each restart threw the thinking away.
@@ -168,6 +169,7 @@ export const VoiceEngine: FC = () => {
   const voiceModeRef = useRef(getVoiceMode());
   const isSpeakingRef = useRef(false);
   const isPlayingRef = useRef(false);
+  const playedAtRef = useRef(-Infinity);
   const synthGapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const orbDwellRef = useRef<OrbDwell | null>(null);
   const auiRef = useRef(aui);
@@ -287,9 +289,14 @@ export const VoiceEngine: FC = () => {
     if (useChatRuntimeStore.getState().voicePaused) holdPlayback(true);
   }, [holdPlayback]);
   isSpeakingRef.current = isSpeaking;
+  if (isPlayingRef.current && !isPlaying) playedAtRef.current = performance.now();
   isPlayingRef.current = isPlaying;
   useEffect(() => {
-    registerVoicePlayback(() => isSpeakingRef.current || isPlayingRef.current);
+    // Audible output only (plus its echo tail and sentence gaps): while the reply is still being thought
+    // or synthesized nothing plays, so a normal-volume interjection is heard, not held to the barge-in bar.
+    registerVoicePlayback(
+      () => isPlayingRef.current || performance.now() - playedAtRef.current < PLAYBACK_TAIL_MS,
+    );
     return () => registerVoicePlayback(null);
   }, []);
   const beginStreamRef = useRef(beginStream);
