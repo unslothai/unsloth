@@ -558,7 +558,8 @@ class _Reader:
         self.check = check
         self.groups = _offload_groups(module)
         self.wait = _ONLOAD_WAIT_SECONDS if _hooked(module) else 0.0
-        self.stream = None
+        # one side stream per card: a layer split puts blocks of the same component on several cards
+        self.streams: dict = {}
 
     def _host_copy(self, ref: Any) -> Any:
         for group in self.groups:
@@ -624,11 +625,12 @@ class _Reader:
         if tensor.device.type != "cuda":
             return tensor.to("cpu")
         torch.cuda.synchronize(tensor.device)
-        if self.stream is None:
-            self.stream = torch.cuda.Stream(device = tensor.device)
-        with torch.cuda.stream(self.stream):
+        stream = self.streams.get(tensor.device.index)
+        if stream is None:
+            stream = self.streams[tensor.device.index] = torch.cuda.Stream(device = tensor.device)
+        with torch.cuda.stream(stream):
             host = tensor.to("cpu", non_blocking = False)
-        self.stream.synchronize()
+        stream.synchronize()
         return host
 
 

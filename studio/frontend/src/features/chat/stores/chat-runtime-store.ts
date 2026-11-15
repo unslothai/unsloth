@@ -2405,6 +2405,8 @@ type ContextUsageSnapshot = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  // /context's count, preferred by the ring over the last reply's usage.
+  recountedTokens?: number;
   // Studio tool loops only: what the context holds (totalTokens re-counts earlier passes' output).
   contextTokens?: number;
   cachedTokens: number;

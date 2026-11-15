@@ -1776,12 +1776,15 @@ def fast_linear_forward(
     temp_lora = None,
     out = None,
 ):
+    from .fast_lora import _has_activation_fake_quantizer
+
     if (
         _has_non_lora_adapter(proj)
         or _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_packed_qweight(proj)
+        or _has_activation_fake_quantizer(proj, include_weight = True)
     ):
         result = proj(X)
         return result if out is None else out.copy_(result)

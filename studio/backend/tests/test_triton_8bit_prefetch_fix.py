@@ -296,6 +296,9 @@ def real_triton(monkeypatch):
         pytest.skip(f"Triton {triton.__version__} predates the regression")
     backend = nvidia_compiler.CUDABackend
     saved_stage = backend.__dict__["make_ttgir"]
+    saved_hash = backend.__dict__["hash"]
+    if getattr(saved_hash, patches._TRITON_PREFETCH_SENTINEL, False):
+        backend.hash = saved_hash.__wrapped__
     saved_prefetch = real_passes.ttgpuir.add_prefetch
     # Another test (or the int8 GEMM) may have installed the fix already: start from stock Triton.
     stage = getattr(saved_stage, "__func__", saved_stage)
@@ -307,6 +310,7 @@ def real_triton(monkeypatch):
     monkeypatch.setattr(triton.knobs.compilation, "always_compile", True)
     yield triton
     backend.make_ttgir = saved_stage
+    backend.hash = saved_hash
     real_passes.ttgpuir.add_prefetch = saved_prefetch
 
 
@@ -329,6 +333,10 @@ def _repro_kernel(triton):
 
 
 def _ptx(triton, kernel, ab, c, arch):
+    return _compiled(triton, kernel, ab, c, arch).asm["ptx"]
+
+
+def _compiled(triton, kernel, ab, c, arch):
     from triton.backends.compiler import GPUTarget
 
     src = triton.compiler.ASTSource(
@@ -346,7 +354,7 @@ def _ptx(triton, kernel, ab, c, arch):
         attrs = {(i,): [["tt.divisibility", 16]] for i in range(4)},
     )
     target = GPUTarget("cuda", arch, 32)
-    return triton.compile(src, target = target, options = {"num_warps": 4, "num_stages": 3}).asm["ptx"]
+    return triton.compile(src, target = target, options = {"num_warps": 4, "num_stages": 3})
 
 
 def test_real_triton_compile_only_changes_8bit_dots_on_sm8x(real_triton, monkeypatch):
@@ -501,3 +509,125 @@ def test_real_inductor_compile_worker_runs_with_the_fix(real_triton, monkeypatch
         finally:
             pool.shutdown()
     assert results == {"1": True, "0": False}
+
+
+def test_real_triton_cache_keeps_one_entry_per_fix_state(real_triton, monkeypatch, tmp_path):
+    """CPU only: a warm Triton cache filled without the fix (an older Studio, or the kill switch) must not be
+    reused under it, and a kernel compiled with the fix must not outlive the kill switch."""
+    monkeypatch.setattr(real_triton.knobs.compilation, "always_compile", False)
+    monkeypatch.setattr(real_triton.knobs.cache, "dir", str(tmp_path))
+    kernel = _repro_kernel(real_triton)
+
+    def build(
+        ab = "*i8",
+        c = "*i32",
+        arch = 89,
+    ):
+        compiled = _compiled(real_triton, kernel, ab, c, arch)
+        return compiled.hash, compiled.asm["ptx"].count("prmt.b32")
+
+    stale = build()
+    stock_sm90 = build(arch = 90)
+    stock_fp16 = build("*fp16", "*fp32")
+    assert stale[1] > 0
+    assert patches.fix_triton_sm8x_8bit_prefetch() is True
+    fixed = build()
+    assert fixed[0] != stale[0] and fixed[1] == 0
+    assert build(arch = 90) == stock_sm90  # other cards keep their cache entries
+    assert build("*fp16", "*fp32")[0] != stock_fp16[0]  # sm_8x: one recompile per fix state
+    monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, "0")
+    assert build() == stale  # the kill switch finds the stock entry again
+    monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, "1")
+    assert build() == fixed
+
+
+def test_backend_hash_is_salted_only_on_sm8x_with_the_fix_on(fake_triton, monkeypatch):
+    backend = fake_triton.backend
+    backend.hash = lambda self: f"ptxas-{self.target.arch}"
+    stock = {
+        arch: backend.hash(types.SimpleNamespace(target = types.SimpleNamespace(arch = arch)))
+        for arch in (80, 86, 89, 90, 100, 120)
+    }
+    assert patches.fix_triton_sm8x_8bit_prefetch() is True
+    assert patches.fix_triton_sm8x_8bit_prefetch() is True  # no double salt
+
+    def key(arch):
+        return backend.hash(types.SimpleNamespace(target = types.SimpleNamespace(arch = arch)))
+
+    for arch, value in stock.items():
+        if arch // 10 == 8:
+            assert key(arch) == f"{value}-{getattr(patches, '_TRITON_PREFETCH_SALT', None)}"
+        else:
+            assert key(arch) == value
+    monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, "0")
+    assert {arch: key(arch) for arch in stock} == stock
+
+
+def test_an_earlier_unsalted_install_gets_the_salt(fake_triton):
+    backend = fake_triton.backend
+    backend.hash = lambda self: "stock"
+    saved = backend.__dict__["hash"]
+    assert patches.fix_triton_sm8x_8bit_prefetch() is True
+    backend.hash = saved  # as left by a copy of this fix that predates the salt
+    assert patches.fix_triton_sm8x_8bit_prefetch() is True
+    target = types.SimpleNamespace(target = types.SimpleNamespace(arch = 86))
+    assert backend.hash(target) == f"stock-{getattr(patches, '_TRITON_PREFETCH_SALT', None)}"
+
+
+class _FakeDetails:
+    def __init__(self, tag):
+        self.cache_key_tag = tag
+
+
+@pytest.mark.parametrize(
+    "installed, capability, mode, tag, expected",
+    [
+        (True, 86, None, "", "{salt}"),
+        (True, 80, None, "user", "user-{salt}"),
+        (True, 90, None, "user", "user"),
+        (True, None, None, "", ""),
+        (True, 89, "0", "", ""),
+        (False, 89, None, "", ""),
+    ],
+)
+def test_fx_graph_cache_key_is_tagged_per_fix_state(
+    monkeypatch, installed, capability, mode, tag, expected
+):
+    module = types.SimpleNamespace(
+        FxGraphHashDetails = type("FxGraphHashDetails", (_FakeDetails,), {})
+    )
+    monkeypatch.setattr(patches, "triton_prefetch_fix_installed", lambda: installed)
+    monkeypatch.setattr(patches, "_current_cuda_capability", lambda: capability, raising = False)
+    if mode is None:
+        monkeypatch.delenv(patches._TRITON_PREFETCH_ENV, raising = False)
+    else:
+        monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, mode)
+    assert patches._salt_fx_graph_cache(module) is True
+    assert patches._salt_fx_graph_cache(module) is False  # idempotent
+    expected = expected.format(salt = getattr(patches, "_TRITON_PREFETCH_SALT", None)) or tag
+    assert module.FxGraphHashDetails(tag).cache_key_tag == expected
+
+
+def test_real_fx_graph_cache_key_changes_with_the_tag(monkeypatch):
+    """CPU only: the tag the wrapper appends enters a real FX graph cache key, and the hook covers codecache."""
+    torch = pytest.importorskip("torch")
+    from torch._inductor import codecache
+
+    assert "torch._inductor.codecache" in patches._POST_IMPORT
+    gm = torch.fx.symbolic_trace(lambda x: x + 1)
+    inputs = [torch.ones(2)]
+    stock = codecache.FxGraphHashDetails.__dict__["__init__"]
+    stock = getattr(stock, "__wrapped__", stock)
+    monkeypatch.setattr(codecache.FxGraphHashDetails, "__init__", stock)
+
+    def key():
+        return codecache.compiled_fx_graph_hash(gm, inputs, {}, [])[0]
+
+    before = key()
+    assert patches._salt_fx_graph_cache(codecache) is True
+    monkeypatch.setattr(patches, "triton_prefetch_fix_installed", lambda: True)
+    monkeypatch.setattr(patches, "_current_cuda_capability", lambda: 89)
+    monkeypatch.delenv(patches._TRITON_PREFETCH_ENV, raising = False)
+    salted = key()
+    monkeypatch.setenv(patches._TRITON_PREFETCH_ENV, "0")
+    assert salted != before and key() == before

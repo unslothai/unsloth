@@ -6967,6 +6967,7 @@ export function ImagesPage({
                 enabled={enhanceOn}
                 onEnabledChange={changeEnhancePrompt}
                 modelKey={`${status?.repo_id ?? ""}|${status?.gguf_filename ?? ""}|${loadEpoch}`}
+                family={status?.family ?? null}
                 prompt={prompt}
                 previewRequest={() => {
                   // Edit and Reference condition on their images, so the caption describes them too.
@@ -6977,6 +6978,7 @@ export function ImagesPage({
                   return {
                     prompt: prompt.trim(),
                     variant: upsamplerVariantFor(status?.family),
+                    ...(status?.family ? { family: status.family } : {}),
                     ...(images.length ? { reference_images: images } : {}),
                   };
                 }}

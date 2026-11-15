@@ -1990,7 +1990,7 @@ def _decode_logits(self, hidden_states):
     """The decode branch of CausalLM_fast_forward's head (q_len == 1, no labels), for captured steps."""
     lm_head = self.lm_head.weight
     dtype = lm_head.dtype
-    if hidden_states.shape[0] == 1:
+    if hidden_states.shape[0] == 1 and type(self.lm_head) is torch.nn.Linear:
         logits = torch.mv(lm_head, hidden_states.ravel().to(dtype)).unsqueeze(0).unsqueeze(0)
     else:
         logits = self.lm_head(hidden_states.to(dtype))
@@ -2118,7 +2118,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 attentions = outputs.attentions,
             )
 
-        if bsz == 1 and q_len == 1:
+        if bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
