@@ -1287,6 +1287,8 @@ export const VoiceEngine: FC = () => {
   useEffect(() => {
     return () => {
       rearmSeqRef.current += 1;
+      // A project landing swaps the composer without a thread switch: a held phrase must not submit there.
+      clearHeldTurn();
       if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
       if (streamPollRef.current) clearInterval(streamPollRef.current);
     };
