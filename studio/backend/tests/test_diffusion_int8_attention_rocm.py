@@ -357,7 +357,7 @@ def test_launch_plan_is_made_once_per_call_signature(monkeypatch):
     )
     strided = torch.zeros(1, 1000, 3, 4, 128, dtype = torch.float16)[:, :, 0]
     assert T._plan(strided, q, q, dict(cfg), None, None) is not p and len(T._PLANS) == 2
-    # past the grid limit: one launch per quantiser, as before the fused launches
+    # past the grid limit: one launch per quantiser
     monkeypatch.setattr(T, "GRID_LIMIT", 32)
     T._PLANS.clear()
     assert not T._plan(q, q, q, dict(cfg), None, None)["fused"]

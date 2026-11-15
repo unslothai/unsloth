@@ -246,7 +246,7 @@ if triton is not None:
         base = bh.to(tl.int64) * n_pad * D
         tl.store(o_ptr + base + cols[None, :].to(tl.int64) * n_pad + rows[:, None], x)
 
-    # One launch per quantiser, as the call ran before prep_kernel / kv_kernel: kept for tests and tools.
+    # One launch per quantiser: kept for tests and tools.
 
     @triton.jit
     def stats_kernel(
@@ -1005,7 +1005,7 @@ def _quantise(plan: dict, q: Any, k: Any, v: Any) -> dict:
 
 
 def _quantise_unfused(kk: Any, plan: dict, q: Any, k: Any, v: Any, out: dict, kc: Any) -> None:
-    """One launch per quantiser (what every call ran before the fused launches), for grids past ``GRID_LIMIT``."""
+    """One launch per quantiser, for grids past ``GRID_LIMIT``."""
     BH, n_qpad, n_kpad, D = plan["BH"], plan["n_qpad"], plan["n_kpad"], plan["shape"][4]
     Sq, Sk, H = plan["shape"][1], plan["shape"][2], plan["shape"][3]
     sq_, sk_, sv_ = plan["strides"]
