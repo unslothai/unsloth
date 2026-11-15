@@ -120,7 +120,9 @@ def dequantize_nvfp4(weight: Any, block_scales: Any, global_scale: Any, dtype: A
     math elsewhere."""
     import torch
 
-    if weight.is_cuda and torch.version.hip is None and dtype in (torch.bfloat16, torch.float16):
+    from .rocm_bf16 import is_rocm_torch
+
+    if weight.is_cuda and not is_rocm_torch(torch) and dtype in (torch.bfloat16, torch.float16):
         try:
             rows, half = weight.shape
             cols = half * 2
