@@ -37,9 +37,10 @@ EXPECTED = {
         12: ("model", _W8),
         16: ("model", _W8),
         24: ("dit", _AO),
-        32: ("dit", _BF),
-        48: ("none", _BF),
-        80: ("none", _BF),
+        # Hosted INT8 even where bf16 stays resident (auto_prequant_when_resident: 1.18x faster, see video_families).
+        32: ("dit", _AO),
+        48: ("none", _AO),
+        80: ("none", _AO),
     },
     "wan2.2-t2v-a14b": {
         8: ("model", _W8),
@@ -48,7 +49,8 @@ EXPECTED = {
         24: ("model", _W8),
         32: ("model", _W8),
         48: ("dit", _AO),
-        80: ("dit", _BF),
+        # Hosted INT8 even where bf16 stays resident; the 29 GB pair leaves room for the text encoder.
+        80: ("none", _AO),
     },
     "hv15-480p": {
         8: ("model", _W8),
@@ -198,7 +200,7 @@ def test_auto_planner_table(fake_runtime, monkeypatch, family, tier_gib, cap_nam
         assert spy.quant[0]["mode"] == "int8"
 
 
-@pytest.mark.parametrize("family", ["wan2.2-t2v-a14b", "ltx-2"])
+@pytest.mark.parametrize("family", ["ltx-2"])
 def test_auto_keeps_bf16_where_the_dit_stays_resident_at_80(fake_runtime, monkeypatch, family):
     """80 GiB: bf16 DiT stays resident with the text encoder streamed, so auto keeps bf16."""
     spy = _spoof(monkeypatch, tier_gib = 80)

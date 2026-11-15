@@ -24,6 +24,13 @@ class DownloadModelRequest(BaseModel):
         None,
         description = "Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
     )
+    engram_precision: Optional[str] = Field(
+        None,
+        max_length = 32,
+        pattern = r"^[A-Za-z0-9_]*$",
+        description = "With gguf_variant: fetch the repo's standalone Engram table of this "
+        "precision in place of the quant's own table shard (see LoadRequest.engram_precision).",
+    )
     use_xet: bool = Field(
         True,
         description = "Legacy transport flag, superseded by transport_mode. Kept so an older "
@@ -124,6 +131,13 @@ class ActiveDownload(BaseModel):
     generation: int = Field(
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
+    )
+    engram_precision: Optional[str] = Field(
+        None,
+        description = (
+            "The standalone Engram table this GGUF job fetches in place of the quant's own; "
+            "null when it fetches the quant's own"
+        ),
     )
 
 

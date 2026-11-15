@@ -589,9 +589,18 @@ class _Flux3KleinPipelineMixin:
         return _hooks()
 
 
+HALF_STORAGE_ENV = "UNSLOTH_DIFFUSION_FLUX3_HALF_STORAGE"
+
+
+def half_storage_disabled() -> bool:
+    """``UNSLOTH_DIFFUSION_FLUX3_HALF_STORAGE=0``: a float16 load widens every component on the host again."""
+    import os
+    return (os.environ.get(HALF_STORAGE_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
 def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
-    """bf16 when a CUDA load computes FLUX.3 in float32: keep bf16 weights and upcast per op instead of doubling
-    the load (about 40 GB for klein). None otherwise."""
+    """bf16 for a CUDA float32/float16 load: keep stored bf16 mmapped and cast per op (exact); a host conversion
+    costs ~20-40 GB for klein. None otherwise."""
     from .diffusion_manual_cast import manual_cast_disabled
 
     if manual_cast_disabled() or getattr(target, "device", None) != "cuda":
@@ -600,7 +609,97 @@ def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
         import torch
     except Exception:  # noqa: BLE001 - no torch, no load
         return None
-    return torch.bfloat16 if dtype is torch.float32 else None
+    if dtype is torch.float32:
+        return torch.bfloat16
+    if dtype is torch.float16 and not half_storage_disabled():
+        return torch.bfloat16
+    return None
+
+
+def storage_saves_memory(storage_dtype: Any, dtype: Any) -> bool:
+    try:
+        import torch
+        return (
+            torch.empty(0, dtype = dtype).element_size()
+            > torch.empty(0, dtype = storage_dtype).element_size()
+        )
+    except Exception:  # noqa: BLE001 - not dtypes: no claim
+        return False
+
+
+def transformer_storage_dtype(
+    storage_dtype: Any, dtype: Any, transformer_storage: Optional[bool]
+) -> Any:
+    """Transformer load dtype: storage when True, or (None) only when it saves memory."""
+    if storage_dtype is None or transformer_storage is False:
+        return None
+    if transformer_storage or storage_saves_memory(storage_dtype, dtype):
+        return storage_dtype
+    return None
+
+
+# "0": always widen a dense fp16 transformer on host. Conversion peaks ~1.6x stored (klein ~18 GB, killed a 12.7 GB T4).
+DENSE_STORAGE_ENV = "UNSLOTH_DIFFUSION_FLUX3_DENSE_STORAGE"
+_WIDEN_PEAK = 1.6
+_FLOAT_KEYS = frozenset({"bfloat16", "float16", "float32", "f8_e4m3", "f8_e5m2"})
+
+
+def dense_storage_disabled() -> bool:
+    import os
+    return (os.environ.get(DENSE_STORAGE_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _stored_float_mib(files: list) -> int:
+    from .diffusion_small_host import _safetensors_bytes_by_dtype
+
+    total = 0
+    for f in files:
+        for dtype, nbytes in (_safetensors_bytes_by_dtype(f) or {}).items():
+            if dtype in _FLOAT_KEYS:
+                total += int(nbytes)
+    return total >> 20
+
+
+def widened_transformer_exceeds_host(
+    repo_id: str, hf_token: Optional[str], local_files_only: bool
+) -> Optional[str]:
+    """Reason a widened transformer load would not fit host RAM, else None (unreadable sizes keep widening)."""
+    if dense_storage_disabled():
+        return None
+    from .diffusion_small_host import host_ram_check_disabled, host_ram_mib, host_reserve_mib
+
+    if host_ram_check_disabled():
+        return None
+    total, available = host_ram_mib()
+    if total is None or available is None:
+        return None
+    files = _component_files(repo_id, "transformer", hf_token, local_files_only)
+    stored = _stored_float_mib(files) if files else 0
+    if stored <= 0:
+        return None
+    need = int(stored * _WIDEN_PEAK) + host_reserve_mib(total)
+    if need <= available:
+        return None
+    return f"a widened load needs ~{need} MiB of host RAM ({stored} MiB stored), {available} MiB available"
+
+
+def transformer_load_storage(
+    storage_dtype: Any,
+    dtype: Any,
+    transformer_storage: Optional[bool],
+    repo_id: str,
+    hf_token: Optional[str],
+    local_files_only: bool,
+) -> Any:
+    """``transformer_storage_dtype``, but by default a same-width transformer reads as stored when widening won't fit."""
+    picked = transformer_storage_dtype(storage_dtype, dtype, transformer_storage)
+    if picked is not None or transformer_storage is not None or storage_dtype is None:
+        return picked
+    why = widened_transformer_exceeds_host(repo_id, hf_token, local_files_only)
+    if why is None:
+        return None
+    logger.info("diffusion.flux3: transformer reads as stored: %s", why)
+    return storage_dtype
 
 
 def _component_files(
@@ -735,12 +834,15 @@ def load_flux3_pipeline(
     check_cancelled: Optional[Callable[[], None]] = None,
     family_name: Optional[str] = None,
     storage_dtype: Any = None,
-    transformer_storage: bool = True,
+    transformer_storage: Optional[bool] = None,
 ) -> Any:
     """A ready ``Flux3KleinPipeline`` for ``repo_id`` (on CPU; the caller places it).
 
-    ``storage_dtype`` (``flux3_storage_dtype``): the text encoder, and the transformer unless ``transformer_storage``
-    is False (a transformer quant will rebuild its Linears), load at that dtype and upcast per op to ``dtype``.
+    ``storage_dtype`` (``flux3_storage_dtype``): the text encoder loads at that dtype and casts per op to ``dtype``.
+    The transformer does too when ``transformer_storage`` is True (a native quant rebuilds its Linears from the
+    stored weights, so a same-width float16 conversion would only be a host copy thrown away). None (default): only
+    when ``dtype`` is wider than the storage (float32), since a dense same-width transformer would cast every step.
+    False: never.
 
     ``family_name`` (the family the load resolved) must agree with the block graph the checkpoint runs: a base
     pipeline loaded as the distilled family would run CFG while Studio suppresses its negative prompt, and the
@@ -781,6 +883,9 @@ def load_flux3_pipeline(
         text_encoder.eval()
         check_cancelled()
     if transformer is None:
+        transformer_storage_at = transformer_load_storage(
+            storage_dtype, dtype, transformer_storage, repo_id, token, local_files_only
+        )
         transformer = _manual_cast_load(
             lambda load_dtype: diffusers.Flux3Transformer2DModel.from_pretrained(
                 repo_id, subfolder = "transformer", torch_dtype = load_dtype, **common
@@ -788,7 +893,7 @@ def load_flux3_pipeline(
             name = "transformer",
             repo_id = repo_id,
             dtype = dtype,
-            storage_dtype = storage_dtype if transformer_storage else None,
+            storage_dtype = transformer_storage_at,
             hf_token = token,
             local_files_only = local_files_only,
         )

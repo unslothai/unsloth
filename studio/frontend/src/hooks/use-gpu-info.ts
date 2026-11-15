@@ -333,12 +333,16 @@ export function nextGpuInfo(current: GpuInfo, next: GpuInfo): GpuInfo {
 }
 
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
-function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
+function useGpuInfoSource(
+  source: "gpu" | "inference_gpu",
+  enabled = true,
+): GpuInfo {
   const cachedSystem = getCachedSystemInfo();
   const [gpu, setGpu] = useState<GpuInfo>(
     cachedSystem ? toGpuInfo(cachedSystem, source) : DEFAULT_GPU,
   );
   useEffect(() => {
+    if (!enabled) return;
     // No early return on cachedSystem: a consumer mounting as the cache fills would stay default.
     let cancelled = false;
     const sync = (data: SystemInfoResponse) => {
@@ -362,17 +366,18 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
       cancelled = true;
       unsubscribe();
     };
-  }, [source]);
+  }, [source, enabled]);
   return gpu;
 }
 
-export function useGpuInfo(): GpuInfo {
-  return useGpuInfoSource("gpu");
+/** `enabled` false reads only the cache, for a consumer mounted long before it is shown. */
+export function useGpuInfo(enabled = true): GpuInfo {
+  return useGpuInfoSource("gpu", enabled);
 }
 
 /** Includes a separately installed Vulkan backend. */
-export function useInferenceGpuInfo(): GpuInfo {
-  return useGpuInfoSource("inference_gpu");
+export function useInferenceGpuInfo(enabled = true): GpuInfo {
+  return useGpuInfoSource("inference_gpu", enabled);
 }
 
 /** Optional engines launch on torch's physical CUDA/ROCm ids (`useGpuDevices(true)`), never a Vulkan ordinal. */

@@ -433,6 +433,7 @@ def test_checking_a_shared_connection_probes_no_model_and_quotes_no_upstream_err
         "success": False,
         "message": "Connection failed. Ask the owner to check this connection.",
         "models_count": None,
+        "error_kind": None,
     }
 
 
@@ -556,3 +557,56 @@ def test_capability_cache_is_keyed_by_headers(monkeypatch):
         )
         asyncio.run(providers._list_model_capabilities(payload, False))
     assert calls == [{"X-Tenant": "a"}, {"X-Tenant": "b"}]
+
+
+def test_checking_a_shared_connection_without_a_model_list_sends_one_allowed_chat(monkeypatch):
+    posted = []
+
+    class Chat(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            posted.append((self.path, body["model"]))
+            frame = b'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(frame)))
+            self.end_headers()
+            self.wfile.write(frame)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Chat)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        mpu.set_managed_private_provider_urls_allowed(True)
+        base_url = f"http://127.0.0.1:{server.server_address[1]}/openai/v1"
+        with client_for(OWNER) as client:
+            created = client.post(
+                "/providers/",
+                json = {
+                    "provider_type": "azure",
+                    "display_name": "Azure",
+                    "base_url": base_url,
+                    "models": ["private-dep", "shared-dep"],
+                    "shared": True,
+                },
+            )
+        provider_id = created.json()["id"]
+        run_as(OWNER, credential_secrets.save_provider_api_key, provider_id, "owner-secret")
+        allow_only(monkeypatch, "shared-dep")
+        with client_for(ALICE) as client:
+            response = client.post(
+                "/providers/test",
+                json = {
+                    "provider_type": "azure",
+                    "provider_id": provider_id,
+                    "model_id": "private-dep",
+                },
+            )
+        assert response.json()["success"] is True
+        # The account's own allowed model, never the one it asked for.
+        assert posted == [("/openai/v1/chat/completions", "shared-dep")]
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -727,8 +727,8 @@ export function installPageAgent(): PageAgent {
   const describe = (ref: string, value?: unknown, point?: Point | null): Record<string, unknown> => {
     const found = point ? elementAt(point) : ref ? lookup(ref) : (document.activeElement ?? document.body);
     // A click on text inside a button or label reaches that control (a label being its field or
-    // button), which may submit; a point lands on whatever is drawn, so gate the control.
-    const control = point ? (lineage(found).find((node) => roleOf(node) !== null) ?? found) : found;
+    // button), which may submit; a point or a ref can land on text inside one, so gate the control.
+    const control = point || ref ? (lineage(found).find((node) => roleOf(node) !== null) ?? found) : found;
     const holder = control.closest("button, label") ?? control;
     const el = holder instanceof HTMLLabelElement && holder.control ? holder.control : holder;
     const field = el as HTMLInputElement;

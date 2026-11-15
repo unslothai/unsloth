@@ -154,7 +154,7 @@ function SaveVoiceForm({
         emptyLabel="Not set"
       />
       {taken ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           You already have a voice named {clean}. Pick another name.
         </p>
       ) : null}

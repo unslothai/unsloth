@@ -12,6 +12,7 @@ export type TranscriptView = "text" | "segments";
 interface AudioTranscribeState {
   source: AudioSourceSelection | null;
   language: string;
+  speakerAccent: string;
   timestamps: boolean;
   speakers: boolean;
   view: TranscriptView;
@@ -23,6 +24,7 @@ export const useAudioTranscribeStore = create<AudioTranscribeState>()(
     (): AudioTranscribeState => ({
       source: null,
       language: "",
+      speakerAccent: "",
       timestamps: false,
       speakers: true,
       view: "text",

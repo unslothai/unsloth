@@ -3,15 +3,19 @@
 
 import { createRoute, redirect } from "@tanstack/react-router";
 import { getPostAuthRoute } from "@/features/auth";
+import { queryParam } from "@/features/chat/chat-search";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  beforeLoad: async () => {
-    await requireAuth();
-    throw redirect({ to: getPostAuthRoute() });
+  beforeLoad: async ({ location }) => {
+    // `/?q=...` is the shorter search-engine URL.
+    const q = queryParam(location.search);
+    await requireAuth(q);
+    const to = getPostAuthRoute();
+    throw redirect(to === "/chat" ? { to, search: { q } } : { to });
   },
   component: () => null,
 });

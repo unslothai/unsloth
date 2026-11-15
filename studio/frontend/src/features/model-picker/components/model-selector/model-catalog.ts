@@ -1041,6 +1041,12 @@ export function artifactForRepoId(
   return group ? { group, artifact } : null;
 }
 
+export function isMediaCatalogRepo(repoId: string): boolean {
+  return [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG].some(
+    (catalog) => artifactForRepoId(repoId, catalog) !== null,
+  );
+}
+
 const BYTES_PER_GB = 1024 ** 3;
 
 /** Curated size (bytes) of an exact artifact id; undefined for GGUF. */

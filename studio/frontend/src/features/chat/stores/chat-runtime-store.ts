@@ -20,12 +20,15 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in React.
+import { isNpuModelId } from "@/features/npu/api";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
 import { persistReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
   loadedContextFields,
   type MlxKvQuant,
   type MlxOffload,
+  type NpuPowerMode,
 } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
@@ -931,6 +934,17 @@ function readThreadScopedSettings(
   return sanitizeThreadScopedSettings(source);
 }
 
+/** The defaults new chats fall back to: an NPU model's forced-off pills are not the installation's. */
+function readInstallationDefaults(state: ChatRuntimeStore): ThreadScopedSettings {
+  const settings = readThreadScopedSettings(state);
+  if (npuPillDefault(state.params.checkpoint, "toolsEnabled") === undefined) return settings;
+  const out: Record<string, unknown> = { ...settings };
+  for (const key of ["toolsEnabled", "codeToolsEnabled"] as const) {
+    out[key] = loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ?? pillDefault(key);
+  }
+  return out as ThreadScopedSettings;
+}
+
 /** What a chat whose snapshot omits `key` runs with: applyThreadScopedSettings falls back to these. */
 export function threadScopedDefault<K extends ThreadScopedSettingKey>(
   key: K,
@@ -1654,7 +1668,7 @@ export function beginThreadScopedPairing(threadId: string): void {
     pairingWindowDefaultsThreadId = threadId;
     pairingWindowDefaults =
       threadScopedSettingsThreadId === null
-        ? readThreadScopedSettings(useChatRuntimeStore.getState())
+        ? readInstallationDefaults(useChatRuntimeStore.getState())
         : globalThreadScopedDefaults;
   }
   openThreadScopedPairingGate(threadId);
@@ -1920,7 +1934,21 @@ export function loadOptionalBool(key: string): boolean | null {
   return raw === "true";
 }
 
-export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
+// A tools list costs FastFlowLM its speculative decoding (ROCm/FastFlowLM#1016), so NPU models
+// default Search and Code to a saved click, else off; captured chat defaults echo the GPU default.
+function npuPillDefault(
+  checkpoint: string | null | undefined,
+  key: string,
+): boolean | undefined {
+  if (!isNpuModelId(checkpoint)) return undefined;
+  if (key !== "toolsEnabled" && key !== "codeToolsEnabled") return undefined;
+  return loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ?? false;
+}
+
+export function resolveToolsEnabledOnLoad(
+  supportsTools: boolean,
+  checkpoint?: string | null,
+): {
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   deepResearchEnabled: boolean;
@@ -1932,12 +1960,18 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
       deepResearchEnabled: false,
     };
   }
+  const preference = (key: "toolsEnabled" | "codeToolsEnabled") => {
+    const npuDefault = npuPillDefault(checkpoint, key);
+    return npuDefault === undefined
+      ? pillPreference(key)
+      : (pillOverride(key) ?? npuDefault);
+  };
   return {
     deepResearchEnabled:
       !useChatRuntimeStore.getState().incognito &&
       pillPreference("deepResearchEnabled"),
-    toolsEnabled: pillPreference("toolsEnabled"),
-    codeToolsEnabled: pillPreference("codeToolsEnabled"),
+    toolsEnabled: preference("toolsEnabled"),
+    codeToolsEnabled: preference("codeToolsEnabled"),
   };
 }
 
@@ -2437,6 +2471,7 @@ type ChatRuntimeStore = {
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
+  loadedNpuContextFit: number | null;
   loadedContextBudget: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
@@ -2549,6 +2584,10 @@ type ChatRuntimeStore = {
   loadedMlxAnePrefillRequested: boolean;
   mlxFastVerify: boolean;
   loadedMlxFastVerifyRequested: boolean;
+  /** FastFlowLM settings the resident NPU load asked for; the panel edits the per-model config. */
+  npuPowerMode: NpuPowerMode | null;
+  npuPrefillChunkLen: number | null;
+  npuImgPreResize: number | null;
   /** MLX offload knobs as chosen (null = Auto), as the resident load asked for them, the
    *  fraction it applied (null = none), and why a request was not applied. */
   mlxPleOffload: MlxOffload;
@@ -2599,6 +2638,9 @@ type ChatRuntimeStore = {
   loadedCtxCheckpoints: number | null;
   cacheRam: number | null;
   loadedCacheRam: number | null;
+  /** GGUF only: standalone Engram table precision as chosen and as the resident load ran it. */
+  engramPrecision: string | null;
+  loadedEngramPrecision: string | null;
   tensorParallel: boolean;
   loadedTensorParallel: boolean | null;
   loadedDisableVision: boolean | null;
@@ -4249,6 +4291,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedContextEnforced: null,
   loadedContextUnboundedWhenBatched: false,
   loadedParallelSlots: null,
+  loadedNpuContextFit: null,
   loadedContextBudget: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
@@ -4341,6 +4384,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedMlxAnePrefillRequested: false,
   mlxFastVerify: false,
   loadedMlxFastVerifyRequested: false,
+  npuPowerMode: null,
+  npuPrefillChunkLen: null,
+  npuImgPreResize: null,
   mlxPleOffload: null,
   mlxExpertOffload: null,
   loadedMlxPleOffloadRequested: null,
@@ -4382,6 +4428,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedCtxCheckpoints: null,
   cacheRam: null,
   loadedCacheRam: null,
+  engramPrecision: null,
+  loadedEngramPrecision: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   loadedDisableVision: null,
@@ -5070,7 +5118,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       if (threadScopedSettingsThreadId === null) {
         // Capture the pre-window value: a held edit belongs to its chat, not the defaults.
-        const captured = readThreadScopedSettings(state) as Record<
+        const captured = readInstallationDefaults(state) as Record<
           string,
           unknown
         >;
@@ -5146,6 +5194,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
         const value = firstSetThreadScopedValue(
           stored?.[key],
+          npuPillDefault(state.params.checkpoint, key),
           globalThreadScopedDefaults?.[key],
         );
         if (value === undefined) continue;
@@ -5280,6 +5329,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedMlxAnePrefillRequested: false,
       mlxFastVerify: false,
       loadedMlxFastVerifyRequested: false,
+      npuPowerMode: null,
+      npuPrefillChunkLen: null,
+      npuImgPreResize: null,
       mlxPleOffload: null,
       mlxExpertOffload: null,
       loadedMlxPleOffloadRequested: null,
@@ -5321,6 +5373,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedCtxCheckpoints: null,
       cacheRam: null,
       loadedCacheRam: null,
+      engramPrecision: null,
+      loadedEngramPrecision: null,
       tensorParallel: false,
       loadedTensorParallel: null,
   loadedDisableVision: null,

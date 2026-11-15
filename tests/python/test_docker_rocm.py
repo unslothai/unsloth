@@ -1029,6 +1029,17 @@ class TestRocmEntrypoint:
             assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
         assert "tag-studio" in wf["jobs"]["hub-readme"]["needs"]
 
+    def test_a_release_does_not_move_latest(self):
+        import yaml
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        for job in ("tag", "tag-studio"):
+            meta = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == "meta")
+            assert meta["with"].get("flavor") == "latest=false", job
+            lines = meta["with"]["tags"].splitlines()
+            alias = [ln for ln in lines if re.search(r"value=(latest|studio),", ln)]
+            assert len(alias) == 1, (job, alias)
+            assert "github.ref == format('refs/heads/{0}', github.event" in alias[0]
+
     def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
         """A dispatch that bakes another notebooks ref is an experiment like any
         other override: :studio and :latest name the default build only."""

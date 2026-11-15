@@ -510,24 +510,20 @@ def test_fused_qk_rope_kill_switch(quantized, monkeypatch):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("strided", [False, True])
 @pytest.mark.parametrize("seq", [1, 777])
-def test_qk_kernel_matches_the_compiled_stock_math(dtype, strided, seq):
-    import torch._inductor.config as ic
+@pytest.mark.parametrize("norm", [True, False])
+def test_qk_kernel_is_bit_identical_to_the_eager_stock_math(dtype, strided, seq, norm):
+    import torch.nn.functional as F
 
+    if norm and not Q.torch_fused_rms_norm_on_cuda():
+        pytest.skip("this torch normalises through the composite path; the rope form covers it")
     x, w, cos, sin = _qk_inputs("cuda", dtype, seq = seq, heads = 56, strided = strided)
-    ours = Q._launch(x, w, cos, sin, 1e-5)
     eager = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5)
-    prev = ic.emulate_precision_casts
-    ic.emulate_precision_casts = True
-    try:
-        compiled = torch.compile(Q.reference_qk_norm_rope, dynamic = False)(x, w, cos, sin, 1e-5)
-    finally:
-        ic.emulate_precision_casts = prev
+    if norm:
+        ours = Q._launch(x, w, cos, sin, 1e-5)
+    else:
+        ours = Q._launch(F.rms_norm(x, (x.shape[-1],), w, 1e-5), w, cos, sin, 1e-5, norm = False)
     assert ours.is_contiguous() and ours.shape == x.shape
-    budget = ours.numel() // (100000 if dtype == torch.bfloat16 else 20000)
-    for ref in (eager, compiled):
-        diff = (ours.float() - ref.float()).abs()
-        assert int((ours != ref).sum()) <= max(2, budget)
-        assert float(diff.max()) <= float((ref.float().abs().max() * 2**-7))
+    assert torch.equal(ours, eager)
     bad = (ours.float() * (1 + 2**-7)).to(dtype)
     assert int((bad != eager).sum()) > ours.numel() // 2
 
@@ -552,3 +548,187 @@ def test_strided_processor_adds_no_graph_break(monkeypatch, qk_rope):
     assert A.install_strided_attention(model) > 0
     assert model.transformer_blocks[0].attn.processor._unsloth_qk_rope is (qk_rope == "1")
     assert _graph_breaks(model) == stock
+
+
+# SageAttention inside the strided processor: a fake guarded backend stands in for the kernel on CPU.
+
+
+def _fake_sage_dispatch(monkeypatch, seen):
+    import torch.nn.functional as F
+    def dispatch(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        backend = None,
+        **kw,
+    ):
+        seen.append((A._backend_value(backend), tuple(query.shape)))
+        out = F.scaled_dot_product_attention(
+            query.permute(0, 2, 1, 3), key.permute(0, 2, 1, 3), value.permute(0, 2, 1, 3)
+        )
+        return out.permute(0, 2, 1, 3)
+
+    monkeypatch.setattr(h3, "dispatch_attention_fn", dispatch)
+
+
+def _stock_calls(monkeypatch):
+    calls = []
+    stock_call = h3.MiniMaxH3AttnProcessor.__call__
+
+    def spy(self, *a, **kw):
+        calls.append(1)
+        return stock_call(self, *a, **kw)
+
+    monkeypatch.setattr(h3.MiniMaxH3AttnProcessor, "__call__", spy)
+    return calls
+
+
+def _set_backend(model, name):
+    from diffusers.models.attention_dispatch import AttentionBackendName
+    for m in model.modules():
+        proc = getattr(m, "processor", None)
+        if proc is not None and hasattr(proc, "_attention_backend"):
+            proc._attention_backend = AttentionBackendName(name)
+
+
+@pytest.mark.parametrize("name", ["sage_hub", "sage"])
+@pytest.mark.parametrize("fuse", [False, True])
+def test_sage_runs_inside_the_strided_processor_and_matches_stock(
+    quantized, monkeypatch, name, fuse
+):
+    if fuse:
+        A.fuse_h3_qkv_(quantized)
+    stock = copy.deepcopy(quantized)
+    assert A.install_strided_attention(quantized) == 3
+    _set_backend(quantized, name)
+    _set_backend(stock, name)
+    assert A.strided_sage_count(quantized) == 3 and A.strided_sage_count(stock) == 0
+    seen = []
+    _fake_sage_dispatch(monkeypatch, seen)
+    want = _run(stock)
+    assert len(seen) == 3 and {s[0] for s in seen} == {name}
+    calls = _stock_calls(monkeypatch)
+    seen.clear()
+    got = _run(quantized)
+    # every attention went to the backend from the strided processor, none through the stock one
+    assert calls == [] and len(seen) == 3
+    assert _equal(want, got)
+
+
+def test_strided_sage_kill_switch_keeps_the_stock_processor(quantized, monkeypatch):
+    monkeypatch.setenv(A.STRIDED_SAGE_ENV, "0")
+    assert A.install_strided_attention(quantized) == 3
+    _set_backend(quantized, "sage_hub")
+    assert A.strided_sage_count(quantized) == 0
+    seen = []
+    _fake_sage_dispatch(monkeypatch, seen)
+    calls = _stock_calls(monkeypatch)
+    _run(quantized)
+    assert len(calls) == 3 and len(seen) == 3
+
+
+def test_strided_processor_still_defers_other_dispatch_backends(quantized, monkeypatch):
+    A.install_strided_attention(quantized)
+    _set_backend(quantized, "flash_hub")
+    seen = []
+    _fake_sage_dispatch(monkeypatch, seen)
+    calls = _stock_calls(monkeypatch)
+    _run(quantized)
+    assert len(calls) == 3 and A.strided_sage_count(quantized) == 0
+
+
+def test_strided_sage_with_a_mask_takes_the_stock_processor(quantized, monkeypatch):
+    A.install_strided_attention(quantized)
+    _set_backend(quantized, "sage_hub")
+    attn = quantized.transformer_blocks[0].attn
+    calls = _stock_calls(monkeypatch)
+    seen = []
+    _fake_sage_dispatch(monkeypatch, seen)
+    x = torch.randn(1, 4, 64)
+    with torch.no_grad():
+        attn.processor(attn, x, None, torch.ones(1, 1, 4, 4, dtype = torch.bool))
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(
+    "backend, env, want",
+    [
+        ("_native_cudnn", None, True),
+        ("_native_flash", None, True),
+        ("sage_hub", None, True),
+        ("sage", None, True),
+        ("sage_hub", "0", False),
+        ("sage", "off", False),
+        ("_native_cudnn", "0", True),
+        ("flash_hub", None, False),
+        ("_native_math", None, False),
+        ("xformers", None, False),
+        (None, None, False),
+    ],
+)
+def test_strided_install_backend_routing(backend, env, want, monkeypatch):
+    if env is None:
+        monkeypatch.delenv(A.STRIDED_SAGE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(A.STRIDED_SAGE_ENV, env)
+    assert A.strided_install_backend(backend) is want
+
+
+def test_video_h3_load_installs_strided_through_the_routing_predicate():
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference.video import VideoBackend
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(VideoBackend._load_h3_modular_pipeline)))
+    gates = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If)
+        and any(
+            getattr(c.func, "id", "") == "install_strided_attention"
+            for c in n.body
+            for c in ast.walk(c)
+            if isinstance(c, ast.Call)
+        )
+    ]
+    assert any("strided_install_backend(attention_engaged)" in ast.unparse(g.test) for g in gates)
+
+
+def _sage_hub_fn():
+    from core.inference.diffusion_sage_hub import load_sageattn
+
+    fn, why = load_sageattn((2, 3))
+    if fn is None:
+        pytest.skip(f"no SageAttention hub build here: {why}")
+    return fn
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "SageAttention needs CUDA")
+@pytest.mark.parametrize("fuse", [False, True])
+def test_strided_sage_on_cuda_is_bit_identical_to_the_stock_sage_route(fuse):
+    from core.inference import diffusion_attention as DA
+
+    target = __import__("types").SimpleNamespace(
+        device = "cuda", dtype = torch.bfloat16, torch_device = "cuda"
+    )
+    _sage_hub_fn()
+    model = _quantize(_tiny_model()).to("cuda", torch.bfloat16)
+    if fuse:
+        A.fuse_h3_qkv_(model)
+    stock = copy.deepcopy(model)
+    assert A.install_strided_attention(model) == 3
+    for m in (model, stock):
+        assert DA.apply_attention_backend(
+            __import__("types").SimpleNamespace(transformer = m), "sage", target = target
+        ) in ("sage", "sage_hub")
+    assert A.strided_sage_count(model) == 3
+    kw = {k: (v.to("cuda") if torch.is_tensor(v) else v) for k, v in _inputs().items()}
+    for k in ("hidden_states", "audio_hidden_states", "encoder_hidden_states"):
+        kw[k] = kw[k].to(torch.bfloat16)
+    with torch.no_grad():
+        assert _equal(stock(**kw), model(**kw))
