@@ -771,6 +771,26 @@ def test_kill_switch(monkeypatch):
     assert M._torch_supported()
 
 
+@pytest.mark.parametrize("version", ["2.6.0+cu124", "2.5.1"])
+def test_old_torch_installs_nothing(monkeypatch, version):
+    """#10744: torch < 2.7 keeps every layer on the stock forward (no class wrapped, nothing compiled)."""
+    M = _load()
+    calls = []
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: calls.append(1) or fn)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch, "__version__", version)
+    cls = _toy_class()
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([cls(), cls()])
+    original = cls.forward
+    assert M.patch_block_compile(model) == []
+    assert cls.forward is original
+    model.layers[0](torch.randn(2, 4, 8, requires_grad = True)).sum().backward()
+    assert calls == []
+    monkeypatch.setattr(torch, "__version__", "2.7.1+cu126")
+    assert M.patch_block_compile(model) == [cls.__name__]
+
+
 def test_forced_float32_is_decided_per_model(monkeypatch):
     M = _load()
     calls = []
@@ -1129,6 +1149,7 @@ def test_short_gqa_flex_block_stays_compiled():
 @pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need CUDA")
 def test_qwen3_5_gdn_block_has_no_break():
     pytest.importorskip("unsloth")
+    pytest.importorskip("transformers.models.qwen3_5")  # transformers >= 5.2
     pytest.importorskip("fla.ops.gated_delta_rule")
     from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
