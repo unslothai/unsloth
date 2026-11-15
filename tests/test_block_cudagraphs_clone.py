@@ -282,11 +282,12 @@ def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
 
     bc._wrap(CkptDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
     layer = CkptDecoderLayer().train()
-    for reentrant, want in ((False, {"plain"}), (True, {"graphs"})):
+    # Non-reentrant first call: grad-mode trial, forward, recompute.
+    for reentrant, want, calls in ((False, {"plain"}, 3), (True, {"graphs"}, 2)):
         seen.clear()
         x = torch.randn(2, 16, 8, requires_grad = True)
         checkpoint(layer, x, use_reentrant = reentrant).sum().backward()
-        assert len(seen) == 2 and set(seen) == want
+        assert len(seen) == calls and set(seen) == want
         assert x.grad is not None
     assert not bc._in_nonreentrant_checkpoint()
 

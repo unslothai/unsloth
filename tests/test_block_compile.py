@@ -1013,6 +1013,37 @@ def test_checkpoint_recompute_keeps_the_no_grad_mode(monkeypatch):
     assert calls == [("split", True)]
 
 
+def test_failed_attempt_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
+    """A SPLIT attempt that ran part of the block, then failed, packed its tensors into the checkpoint:
+    CheckpointError "saved during forward: 94, during recomputation: 70" (tiny Gemma3, head_dim 8)."""
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+
+    def fake_compile(fn, **kwargs):
+        def compiled(self, hidden_states, *args, **kw):
+            if M._IN_BLOCK[0] == M._SPLIT:
+                self.proj(hidden_states * 2).sum()  # ran compiled, then the next graph fails
+            raise _Boom("lowering failed")
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    original = cls.forward
+    M._wrap(cls, {})
+    torch.manual_seed(0)
+    layer, ref = cls(), cls()
+    ref.load_state_dict(layer.state_dict())
+    x = torch.randn(2, 4, 8, requires_grad = True)
+    checkpoint(layer, x, use_reentrant = False).square().sum().backward()
+    assert layer._unsloth_block_mode == M._OFF
+    x_ref = x.detach().requires_grad_()
+    original(ref, x_ref).square().sum().backward()
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(layer.proj.weight.grad, ref.proj.weight.grad)
+
+
 def test_gdn_self_check_leaves_default_rng_alone():
     # Checkpoint recompute replays the default generator for LoRA dropout masks.
     pytest.importorskip("fla.ops.gated_delta_rule.chunk")
