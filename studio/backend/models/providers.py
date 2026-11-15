@@ -150,6 +150,9 @@ class ProviderRegistryEntry(BaseModel):
     )
 
     auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
+    api_key_url: Optional[str] = Field(
+        None, description = "Provider console page where an API key is created"
+    )
     base_url_editable: bool = True
     model_ids_editable: bool = True
     model_list_mode: Literal["remote", "curated"] = Field(
@@ -403,3 +406,15 @@ class ProviderTestResult(BaseModel):
     models_count: Optional[int] = Field(
         None, description = "Number of models found (if test succeeded)"
     )
+    error_kind: Optional[
+        Literal[
+            "auth",
+            "billing",
+            "rate_limit",
+            "not_found",
+            "unreachable",
+            "timeout",
+            "invalid_url",
+            "other",
+        ]
+    ] = Field(None, description = "Why a failed test failed, for the UI to point at the fix")

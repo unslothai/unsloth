@@ -189,6 +189,7 @@ import {
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
+  isGeminiApiProviderType,
 } from "../external-providers";
 
 import {
@@ -5204,7 +5205,7 @@ export function createOpenAIStreamAdapter(
       });
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
-        externalProvider?.providerType === "gemini" &&
+        isGeminiApiProviderType(externalProvider?.providerType) &&
         imageGenerationEnabledForThisTurn;
       const webSearchEnabledForThisTurn = Boolean(
         externalProvider &&
@@ -5298,7 +5299,7 @@ export function createOpenAIStreamAdapter(
           const serialized = toOpenAIMessages(
             message,
             replayReasoning,
-            externalProvider?.providerType === "gemini",
+            isGeminiApiProviderType(externalProvider?.providerType),
           );
           return isExternalRequest
             ? withProviderCompaction(message, serialized, {
@@ -5356,7 +5357,7 @@ export function createOpenAIStreamAdapter(
         : "";
       const hasGeminiReplayContinuation = Boolean(
         continuation &&
-          externalProvider?.providerType === "gemini" &&
+          isGeminiApiProviderType(externalProvider?.providerType) &&
           (continuation.geminiReplayTurns?.length ||
             continuation.thoughtParts?.length ||
             continuation.answerParts?.length ||
@@ -5385,7 +5386,7 @@ export function createOpenAIStreamAdapter(
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         const geminiReplayTurns =
-          externalProvider?.providerType === "gemini"
+          isGeminiApiProviderType(externalProvider?.providerType)
             ? continuation.geminiReplayTurns
             : undefined;
         if (geminiReplayTurns?.length) {
@@ -8188,7 +8189,7 @@ export function createOpenAIStreamAdapter(
                 reasoningFromDetails;
               if (
                 !capturedGeminiThoughtPart &&
-                externalProvider?.providerType === "gemini" &&
+                isGeminiApiProviderType(externalProvider?.providerType) &&
                 (reasoning || geminiThoughtSignature)
               ) {
                 appendGeminiThoughtReplayPart(

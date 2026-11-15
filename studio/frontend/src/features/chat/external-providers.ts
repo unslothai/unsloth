@@ -211,6 +211,16 @@ export function getProviderModelCapabilities(
   return REGISTRY_MODEL_CAPABILITIES.get(providerType);
 }
 
+/** SGLang and Vertex save their own type, but the registry describes them as `custom` and `gemini`. */
+function registryCapabilitiesFor(
+  providerType: string,
+): Record<string, ProviderModelCapability> | undefined {
+  return (
+    REGISTRY_MODEL_CAPABILITIES.get(providerType) ??
+    REGISTRY_MODEL_CAPABILITIES.get(toExternalBackendProviderType(providerType))
+  );
+}
+
 export function setProviderModelCapabilities(
   providerType: string,
   capabilities: Record<string, ProviderModelCapability> | undefined,
@@ -246,7 +256,7 @@ export function providerModelSupportsVision(
 
   hydrateProviderModelCapabilities();
   if (providerType && modelId) {
-    const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
+    const capability = registryCapabilitiesFor(providerType)?.[modelId];
     if (typeof capability?.vision === "boolean") return capability.vision;
   }
   if (providerType != null && IMAGE_STRIPPING_PROVIDER_TYPES.has(providerType)) return false;
@@ -267,9 +277,24 @@ const MIXED_CATALOG_PROVIDER_TYPES = new Set([
   "zai",
   "opencode",
   "opencode_go",
+  "xai",
+  "nvidia",
+  "vercel",
+  "azure",
+  "bedrock",
 ]);
 // Mirrors _CATALOG_VISION_NAMESPACES: mixed catalogs whose model catalog answers vision per model.
-const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai", "opencode", "opencode_go"]);
+const CATALOG_VISION_PROVIDER_TYPES = new Set([
+  "qwencloud",
+  "zai",
+  "opencode",
+  "opencode_go",
+  "xai",
+  "nvidia",
+  "vercel",
+  "azure",
+  "bedrock",
+]);
 
 /** Same rule as the backend's _external_takes_mcp_images, so stripped images are not resent. */
 export function providerModelTakesMcpImages(
@@ -279,7 +304,7 @@ export function providerModelTakesMcpImages(
   if (providerTypeSupportsVision(providerType) === false) return false;
   hydrateProviderModelCapabilities();
   if (providerType && modelId) {
-    const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
+    const capability = registryCapabilitiesFor(providerType)?.[modelId];
     if (typeof capability?.vision === "boolean") return capability.vision;
   }
   if (providerType && MIXED_CATALOG_PROVIDER_TYPES.has(providerType)) {
@@ -297,7 +322,7 @@ export function providerModelSupportsStudioTools(
 ): boolean | null {
   if (!providerType) return null;
   hydrateProviderModelCapabilities();
-  const capabilities = REGISTRY_MODEL_CAPABILITIES.get(providerType);
+  const capabilities = registryCapabilitiesFor(providerType);
   if (modelId) {
     const value = capabilities?.[modelId]?.studio_tools;
     if (typeof value === "boolean") return value;
@@ -314,7 +339,7 @@ export function providerModelSupportsThinking(
   if (!providerType || !modelId) return null;
   hydrateProviderModelCapabilities();
   const value =
-    REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.thinking;
+    registryCapabilitiesFor(providerType)?.[modelId]?.thinking;
   return typeof value === "boolean" ? value : null;
 }
 
@@ -441,13 +466,100 @@ export const CUSTOM_PROVIDER_PRESETS = [
     baseUrlPlaceholder: "https://my-vllm-server.com/v1",
     modelIdsPlaceholder: "openai/gpt-oss-20b\nQwen/Qwen3-14B",
   },
+  // An OpenAI-compatible server like any custom one; the preset only fills in its defaults.
+  {
+    providerType: "sglang",
+    displayName: "SGLang",
+    baseUrlPlaceholder: "http://localhost:30000/v1",
+    modelIdsPlaceholder: "openai/gpt-oss-20b\nQwen/Qwen3-14B",
+  },
   {
     providerType: "ollama",
     displayName: "Ollama",
     baseUrlPlaceholder: "http://localhost:11434/v1",
     modelIdsPlaceholder: "gpt-oss:20b\nqwen3:14b",
   },
+  // Cloud platforms that need an endpoint and typed model IDs, so they use the same form as a custom server.
+  {
+    providerType: "azure",
+    displayName: "Azure OpenAI",
+    baseUrlPlaceholder: "https://YOUR-RESOURCE.openai.azure.com/openai/v1",
+    modelIdsPlaceholder: "my-gpt-deployment",
+  },
+  {
+    providerType: "bedrock",
+    displayName: "Amazon Bedrock",
+    baseUrlPlaceholder: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+    modelIdsPlaceholder: "openai.gpt-oss-120b-1:0\ndeepseek.v3.2",
+  },
+  {
+    providerType: "vertex",
+    displayName: "Google Vertex AI",
+    baseUrlPlaceholder: "https://aiplatform.googleapis.com/v1/publishers/google",
+    modelIdsPlaceholder: "gemini-4-carbon\ngemini-3.8-flash",
+  },
 ] as const;
+
+/** Presets with one well-known endpoint start with it filled in; Azure's is per resource. */
+const CLOUD_PRESET_DEFAULT_BASE_URLS: Record<string, string> = {
+  bedrock: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+  vertex: "https://aiplatform.googleapis.com/v1/publishers/google",
+};
+const CLOUD_PRESET_PROVIDER_TYPES = new Set(["azure", "bedrock", "vertex"]);
+// Mirrors the backend's provider_probes_with_chat: nothing to list, so a check sends one short chat.
+const CHAT_PROBED_PROVIDER_TYPES = new Set(["azure", "bedrock", "vertex", "perplexity"]);
+
+/** A cloud platform using the custom-server form: its key is required, not optional. */
+export function isCloudPresetProviderType(providerType: string | null | undefined): boolean {
+  return providerType != null && CLOUD_PRESET_PROVIDER_TYPES.has(providerType);
+}
+
+export function customProviderDefaultBaseUrl(providerType: string | null | undefined): string {
+  return (providerType && CLOUD_PRESET_DEFAULT_BASE_URLS[providerType]) || "";
+}
+
+// Where each platform's key is created; the registry rows behind these presets are hidden or shared.
+const CLOUD_PRESET_API_KEY_URLS: Record<string, string> = {
+  azure: "https://portal.azure.com",
+  bedrock: "https://console.aws.amazon.com/bedrock/home#/api-keys/long-term/create",
+  vertex: "https://console.cloud.google.com/agent-platform/studio/settings/api-keys",
+};
+
+export function customProviderApiKeyUrl(providerType: string | null | undefined): string | null {
+  return (providerType && CLOUD_PRESET_API_KEY_URLS[providerType]) || null;
+}
+
+/** Vertex is the native Gemini API under another type, so it shares Gemini's thought replay and resume. */
+export function isGeminiApiProviderType(providerType: string | null | undefined): boolean {
+  return providerType === "gemini" || providerType === "vertex";
+}
+
+function vertexUrl(baseUrl: string | null | undefined): URL | null {
+  try {
+    const url = new URL(baseUrl ?? "");
+    const host = url.hostname.toLowerCase();
+    return host === "aiplatform.googleapis.com" || host.endsWith("-aiplatform.googleapis.com")
+      ? url
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The backend checks every Gemini row on a Vertex host by chat, OpenAI-compatible path included. */
+export function connectionCheckNeedsModel(
+  providerType: string | null | undefined,
+  baseUrl?: string | null,
+): boolean {
+  if (providerType === "gemini") return vertexUrl(baseUrl) != null;
+  return providerType != null && CHAT_PROBED_PROVIDER_TYPES.has(providerType);
+}
+
+/** Native Vertex only: its /endpoints/openapi path is OpenAI-compatible Chat Completions. */
+export function isVertexBaseUrl(baseUrl: string | null | undefined): boolean {
+  const url = vertexUrl(baseUrl);
+  return url != null && !url.pathname.toLowerCase().includes("/endpoints/openapi");
+}
 
 const CUSTOM_PROVIDER_LABELS: Record<string, string> = {
   [LEGACY_CUSTOM_PROVIDER_TYPE]: CUSTOM_PROVIDER_DISPLAY_NAME,
@@ -490,6 +602,7 @@ const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
   LEGACY_CUSTOM_PROVIDER_TYPE,
   "ollama",
   "vllm",
+  "sglang",
   "llama_cpp",
 ]);
 
@@ -563,6 +676,11 @@ export function toExternalBackendProviderType(
   if (providerType === "vllm") return "vllm";
   if (providerType === "ollama") return "ollama";
   if (providerType === "llama_cpp") return "llama_cpp";
+  if (providerType === "azure" || providerType === "bedrock") return providerType;
+  // A plain OpenAI-compatible server: "openai" would send it to /v1/responses.
+  if (providerType === "sglang") return LEGACY_CUSTOM_PROVIDER_TYPE;
+  // Vertex speaks the native Gemini API at another host.
+  if (providerType === "vertex") return "gemini";
   if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {
     return LEGACY_CUSTOM_PROVIDER_TYPE;
   }
@@ -793,10 +911,15 @@ export function saveNewModelCheckAt(providerId: string, at: number): void {
   }
 }
 
-export function loadExternalProviders(): ExternalProviderConfig[] {
+// Switched-off rows, kept so their browser-only options survive a reload while they are off.
+export const DISABLED_EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers_disabled";
+
+export function loadExternalProviders(
+  key: string = EXTERNAL_PROVIDERS_KEY,
+): ExternalProviderConfig[] {
   if (!canUseStorage()) return [];
   try {
-    const raw = localStorage.getItem(EXTERNAL_PROVIDERS_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -842,10 +965,11 @@ function saveRawKeyMap(map: Record<string, string>): void {
 
 export function saveExternalProviders(
   providers: ExternalProviderConfig[],
+  key: string = EXTERNAL_PROVIDERS_KEY,
 ): void {
   if (!canUseStorage()) return;
   try {
-    localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(providers));
+    localStorage.setItem(key, JSON.stringify(providers));
     // Keep unmatched legacy keys until the backend confirms the exact key was stored.
   } catch {
     // ignore

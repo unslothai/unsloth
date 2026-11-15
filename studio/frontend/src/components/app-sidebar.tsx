@@ -5928,7 +5928,7 @@ export function AppSidebar() {
         className={cn(
           "relative",
           usesCustomTitlebar
-            ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0)+var(--studio-chat-header-padding-top,11px))]"
+            ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-padding-top,11px))]"
             : usesNativeMacTitlebar
               ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
               : // The chat header's top padding, so the two rows line up.

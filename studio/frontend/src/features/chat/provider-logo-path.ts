@@ -9,11 +9,13 @@ const HUB_PROVIDER_IDS = new Map([
   ["mistral", "mistralai"],
   ["deepseek", "deepseek-ai"],
   ["huggingface", "huggingface"],
-  ["kimi", "moonshotai"],
   ["qwen", "qwen"],
   ["qwencloud", "qwen"],
-  ["zai", "zai-org"],
   ["minimax", "minimax"],
+  ["xai", "xai-org"],
+  ["nvidia", "nvidia"],
+  ["cohere", "cohere"],
+  ["azure", "microsoft"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(
@@ -25,12 +27,19 @@ const CONNECTION_LOGO_PATHS = new Map([
   ["anthropic", "/provider-logos/claude.svg"],
   ["openrouter", "/provider-logos/openrouter-mark.svg"],
   ["vllm", "/provider-logos/vllm.svg"],
+  ["sglang", "/provider-logos/sglang.png"],
   ["ollama", "/provider-logos/ollama.svg"],
   ["llama_cpp", "/provider-logos/llama_cpp.svg"],
   ["liquid", "/provider-logos/liquid.svg"],
   ["typesafe", "/provider-logos/typesafe.svg"],
   ["opencode", "/provider-logos/opencode.svg"],
   ["opencode_go", "/provider-logos/opencode.svg"],
+  ["zai", "/provider-logos/zai.svg"],
+  ["kimi", "/provider-logos/moonshot.svg"],
+  ["vertex", "/provider-logos/vertex.svg"],
+  ["bedrock", "/provider-logos/bedrock.svg"],
+  ["perplexity", "/provider-logos/perplexity.svg"],
+  ["vercel", "/provider-logos/vercel.svg"],
 ]);
 
 export function providerLogoPath(

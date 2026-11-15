@@ -2044,7 +2044,7 @@ export function AudioPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-initial flex-col gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[calc(60px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto @[50rem]:pt-2 @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*6-var(--classic-scrollbar-width,0))]",
+              "hover-scrollbar flex min-h-0 flex-initial flex-col gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[calc(60px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto @[50rem]:pt-2 @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*6-var(--classic-scrollbar-width,0px))]",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",

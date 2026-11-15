@@ -693,7 +693,7 @@ export function SettingsDialog() {
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
-            "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0))] max-sm:w-dvw max-sm:max-w-none! max-sm:rounded-none",
+            "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:max-w-none! max-sm:rounded-none",
             "4xl:w-[min(1160px,calc(100vw-2rem))] 4xl:max-w-[min(1160px,calc(100vw-2rem))]! 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >

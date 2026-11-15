@@ -1536,7 +1536,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           }
           borderClassName="border-t border-border/60 lg:border-t-0 lg:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start lg:text-end lg:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]">
+            <div className="shrink-0 px-3 py-1.5 text-start lg:text-end lg:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
@@ -1655,8 +1655,8 @@ function GeneralCompareHeader({
             ? "pl-12 pr-3 md:pl-2"
             : isTauri
               ? "pl-12 pr-3 md:pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
-              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0)-var(--sidebar-width-icon,3rem)))]"
-          : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]",
+              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
+          : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
       <div className="compare-model-picker pointer-events-auto ml-1.5 min-w-0 max-w-[80%]">
@@ -4931,22 +4931,22 @@ export function ChatPage({
           <div
             aria-hidden
             data-side-panel-inset=""
-            className="chat-header-fade pointer-events-none absolute left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0))] top-[calc(var(--studio-content-top-inset,0)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-linear-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-linear-to-b from-background to-transparent"
           />
         )}
         <div
           data-side-panel-inset=""
           className={cn(
-            "pointer-events-none absolute top-(--studio-content-top-inset,0px) left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0))] z-40 flex h-(--studio-chat-header-height,48px) shrink-0 items-start bg-background pt-(--studio-chat-header-padding-top,11px) pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]",
+            "pointer-events-none absolute top-(--studio-content-top-inset,0px) left-(--studio-side-panel-left,0px) right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] z-40 flex h-(--studio-chat-header-height,48px) shrink-0 items-start bg-background pt-(--studio-chat-header-padding-top,11px) pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
                 ? "pl-2"
                 : isTauri
                   ? "pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
-                  : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0)-var(--sidebar-width-icon,3rem)))]",
+                  : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-(--thread-scrollbar-gutter,10px) left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]",
+              "right-(--thread-scrollbar-gutter,10px) left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div data-wallpaper-chrome-controls="" data-chat-model-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
