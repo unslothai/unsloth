@@ -204,7 +204,7 @@ class _Run:
         self.halts = halts
 
     def _stopped(self) -> bool:
-        if self.state.halts() != self.halts:
+        if self.state.halts(self.key[0]) != self.halts:
             return True
         return self.cancel_event is not None and self.cancel_event.is_set()
 
@@ -599,7 +599,7 @@ def execute_computer_tool(
     except ValueError as exc:
         return f"Error: {exc}"
     key = state.session_key(session_id)
-    halts = state.halts()
+    halts = state.halts(key[0])
     if state.is_stopped(key) and not approved:
         # Full access asks nothing, so without this the model could carry on after the stop.
         return (
@@ -619,7 +619,7 @@ def execute_computer_tool(
         state.grant(key)
     try:
         with state.control(key, cancel_event, take_over = approved):
-            if state.halts() != halts or not policy.settings()["enabled"]:
+            if state.halts(key[0]) != halts or not policy.settings()["enabled"]:
                 return (
                     "Error: computer use was switched off while this waited its turn, so "
                     "nothing was done. Do not try again; tell the user."

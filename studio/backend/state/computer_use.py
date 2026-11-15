@@ -41,8 +41,8 @@ _sessions: "OrderedDict[Key, Session]" = OrderedDict()
 _control = threading.Lock()
 _holder: Optional[Key] = None
 _held_at = 0.0
-# Bumped to end every chain of actions that is running now.
-_halts = 0
+# Bumped per account to end that account's chains of actions running now.
+_halts: dict[str, int] = {}
 
 
 def session_key(session_id: Optional[str]) -> Key:
@@ -136,19 +136,18 @@ def resume_account(account_id: str) -> int:
         return count
 
 
-def halts() -> int:
-    return _halts
+def halts(account_id: str) -> int:
+    return _halts.get(account_id or "", 0)
 
 
-def halt_running() -> None:
-    global _halts
+def halt_running(account_id: str) -> None:
     with _lock:
-        _halts += 1
+        _halts[account_id or ""] = halts(account_id) + 1
 
 
 def revoke_account(account_id: str) -> int:
     """Every chat of this account asks again and stays stopped: a running turn keeps its tool."""
-    halt_running()
+    halt_running(account_id)
     with _lock:
         count = 0
         for (account, _session), found in _sessions.items():
@@ -203,7 +202,8 @@ def control(
 
 
 def reset() -> None:
-    global _holder, _held_at, _halts
+    global _holder, _held_at
     with _lock:
         _sessions.clear()
-        _holder, _held_at, _halts = None, 0.0, 0
+        _halts.clear()
+        _holder, _held_at = None, 0.0

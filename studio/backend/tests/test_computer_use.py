@@ -830,12 +830,26 @@ def test_switching_off_ends_the_actions_running_now(desktop):
 
     def click(*args):
         original(*args)
-        state.revoke_account("")
+        state.revoke_account(state.session_key(SESSION)[0])
 
     desktop.click = click
     result = run({"action": "click", **at(*FIELD), "then": [{"action": "type", "text": "late"}]})
     assert "was not done: it was stopped." in result
     assert ("type", "late") not in desktop.events
+
+
+def test_another_account_switching_off_does_not_stop_this_ones_actions(desktop):
+    look()
+    original = desktop.click
+
+    def click(*args):
+        original(*args)
+        state.revoke_account("managed-user")
+
+    desktop.click = click
+    result = run({"action": "click", **at(*FIELD), "then": [{"action": "type", "text": "kept"}]})
+    assert result.startswith("Done:"), result
+    assert ("type", "kept") in desktop.events
 
 
 def test_the_models_own_corner_click_is_not_the_stop_gesture(desktop):
