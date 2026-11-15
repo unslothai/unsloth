@@ -508,6 +508,7 @@ async def generate_answer(
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
     from core.inference.llama_keepwarm import (
+        _RESPONSE_FAILED_SCOPE_KEY,
         InferenceActivityReservation,
         end_in_process_request,
         unattended_activity,
@@ -642,7 +643,10 @@ async def generate_answer(
                     # Checked before the request ends, while nobody else can have loaded a model yet.
                     if allow_switch and int(getattr(reply, "status_code", 200)) < 400:
                         serving["loaded"] = _model_is_loaded(payload.model)
-                    failed = int(getattr(reply, "status_code", 200)) >= 400
+                    # A cooperative stop answers 200 and flags the request: an empty one still refunds.
+                    failed = int(getattr(reply, "status_code", 200)) >= 400 or bool(
+                        request.scope.get(_RESPONSE_FAILED_SCOPE_KEY)
+                    )
                     return reply
                 finally:
                     end_in_process_request(

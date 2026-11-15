@@ -1121,6 +1121,29 @@ def test_a_scheduled_run_refused_before_inference_keeps_its_override(monkeypatch
     assert generate(monkeypatch, FakeProducer(completion("Done.")), task).content == "Done."
 
 
+def test_a_scheduled_run_stopped_before_any_output_keeps_its_override(monkeypatch):
+    from core.inference import token_limit
+    from core.inference.llama_keepwarm import mark_response_failed
+
+    class StoppedProducer(FakeProducer):
+        async def __call__(self, payload, request, *args, **kwargs):
+            # A cooperative stop answers an empty 200 and flags the request as stopped.
+            mark_response_failed(request.scope)
+            return completion("")
+
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+    task = make_task()
+    _seed_usage()
+    token_limit.update_settings({"enabled": True, "limit": 100})
+    token_limit.grant_override()
+    try:
+        generate(monkeypatch, StoppedProducer(), task)
+    except RunFailed:
+        pass
+    # Nothing was generated, so the override still admits the next run.
+    assert generate(monkeypatch, FakeProducer(completion("Done.")), task).content == "Done."
+
+
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("empty", [False, True])
 def test_scheduled_usage_is_recorded_before_a_chat_is_saved(monkeypatch, external, empty):
