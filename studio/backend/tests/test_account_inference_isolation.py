@@ -889,7 +889,11 @@ def _fake_vad(monkeypatch, loaded = None):
         loaded_model = loaded,
         status = lambda: {"available": True, "loaded_model": sidecar.loaded_model, "loading": None},
         load = lambda model: calls.append(("load", model)) or model,
-        unload = lambda: calls.append(("unload",)) or True,
+        unload = lambda keep = None: (
+            False
+            if keep is not None and keep(sidecar.loaded_model)
+            else calls.append(("unload",)) or True
+        ),
         detect = lambda wav, model: calls.append(("detect", model))
         or {"segments": [], "speech_ms": 0},
     )
@@ -961,9 +965,29 @@ def test_a_detect_that_loads_the_detector_records_its_account(monkeypatch):
 
 def test_vad_routes_never_read_the_locked_resident_on_the_event_loop():
     import inspect
-    for route in (inference.vad_unload, inference.vad_detect):
+    assert "asyncio.to_thread(\n        sidecar.unload," in inspect.getsource(inference.vad_unload)
+    for route in (inference.vad_detect,):
         source = inspect.getsource(route)
         assert "sidecar.loaded_model" in source
         for line in source.splitlines():
             if "sidecar.loaded_model" in line:
                 assert "asyncio.to_thread(lambda: sidecar.loaded_model)" in line, line
+
+
+def test_vad_unload_judges_the_resident_it_stops_under_the_sidecar_lock(monkeypatch):
+    from core.inference.vad_audiocpp_sidecar import AudioCppVadSidecar
+
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    run_as(ALICE, access.note_resident_account, "vad", "alice/vad-GGUF")
+    sidecar = AudioCppVadSidecar.__new__(AudioCppVadSidecar)
+    sidecar._lock = threading.RLock()
+    stopped: list = []
+    sidecar._server = SimpleNamespace(
+        process = SimpleNamespace(poll = lambda: None), stop = lambda: stopped.append(1)
+    )
+    sidecar._model = SimpleNamespace(id = "bob/vad-GGUF")
+    # Bob loaded his detector after Alice was cleared for hers: her unload must leave it running.
+    run_as(BOB, access.note_resident_account, "vad", "bob/vad-GGUF")
+    hidden = lambda resident: run_as(ALICE, access.resident_hidden, "vad", resident)
+    assert sidecar.unload(hidden) is False and stopped == []
+    assert sidecar.unload(lambda resident: False) is True and stopped == [1]
