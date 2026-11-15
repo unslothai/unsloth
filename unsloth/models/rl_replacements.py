@@ -6713,13 +6713,15 @@ def _unsloth_prepare_frozen_teacher(accelerator, teacher):
             or getattr(teacher, "_is_accelerate_prepared", False)
         ):
             return default()
-        tensors = list(teacher.parameters()) + list(teacher.buffers())
+        params = list(teacher.parameters())
         if (
-            len(tensors) == 0
-            or any(t.requires_grad for t in tensors)
-            or any(t.device.type != "cuda" for t in tensors)
+            len(params) == 0
+            or any(p.requires_grad for p in params)
+            or any(p.device.type != "cuda" for p in params)
         ):
             return default()
+        # Buffers may sit on CPU by design (Unsloth's rotary inv_freq); those stay where they are.
+        tensors = params + [b for b in teacher.buffers() if b.device.type == "cuda"]
         train = accelerator.device.index
         train = torch.cuda.current_device() if train is None else train
         on_device = {}
@@ -6747,7 +6749,8 @@ def _unsloth_prepare_frozen_teacher(accelerator, teacher):
                 )
 
                 remove_hook_from_module(teacher, recurse = True)
-                torch.nn.Module.to(teacher, torch.device("cuda", target))
+                device = torch.device("cuda", target)
+                teacher._apply(lambda t: t.to(device) if t.device.type == "cuda" else t)
                 skip_keys = getattr(teacher, "_skip_keys_device_placement", None)
                 add_hook_to_module(
                     teacher,
