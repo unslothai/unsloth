@@ -253,6 +253,7 @@ export function TaskDialog({
   const [model, setModel] = useState<string | null>(task?.model ?? null);
   const [allowLoad, setAllowLoad] = useState(task?.allowModelLoad ?? false);
   const [archiveSuccessful, setArchiveSuccessful] = useState(task?.archiveSuccessful ?? false);
+  const [webSearch, setWebSearch] = useState(task?.webSearch ?? false);
   const [projectId, setProjectId] = useState<string | null>(task?.projectId ?? null);
   const { projects } = useChatProjects();
   const openProjects = projects.filter((project) => !project.archived || project.id === projectId);
@@ -271,7 +272,10 @@ export function TaskDialog({
   const [advanced, setAdvanced] = useState(
     () =>
       task !== null &&
-      (task.notify !== "all" || task.archiveSuccessful || task.projectId !== null),
+      (task.notify !== "all" ||
+        task.archiveSuccessful ||
+        task.projectId !== null ||
+        task.webSearch === true),
   );
   const [busy, setBusy] = useState(false);
   const timezone = task?.timezone ?? browserTimeZone();
@@ -308,6 +312,7 @@ export function TaskDialog({
         if (allowLoad !== task.allowModelLoad) patch.allowModelLoad = allowLoad;
         if (archiveSuccessful !== task.archiveSuccessful) patch.archiveSuccessful = archiveSuccessful;
         if (projectId !== task.projectId) patch.projectId = projectId;
+        if (webSearch !== (task.webSearch ?? false)) patch.webSearch = webSearch;
         if (Object.keys(patch).length > 0) await update(task.id, patch);
       } else {
         await create({
@@ -322,6 +327,8 @@ export function TaskDialog({
           allowModelLoad: allowLoad,
           archiveSuccessful,
           projectId,
+          // Only when on: an older server refuses fields it does not know.
+          ...(webSearch ? { webSearch } : {}),
         });
       }
       onClose();
@@ -658,6 +665,15 @@ export function TaskDialog({
                   id={`${ids}-archive`}
                   checked={archiveSuccessful}
                   onCheckedChange={setArchiveSuccessful}
+                  disabled={busy}
+                  className="mr-2"
+                />
+              </Row>
+              <Row id={`${ids}-web-search`} label={t("scheduledTasks.form.webSearch")}>
+                <Switch
+                  id={`${ids}-web-search`}
+                  checked={webSearch}
+                  onCheckedChange={setWebSearch}
                   disabled={busy}
                   className="mr-2"
                 />

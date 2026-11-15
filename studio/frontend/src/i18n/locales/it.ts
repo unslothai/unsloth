@@ -4888,6 +4888,7 @@ export const it = {
       notifyFailures: "Solo se non riesce",
       notifyNone: "Disattivate",
       archiveSuccessful: "Archivia le esecuzioni riuscite",
+      webSearch: "Ricerca web",
       project: "Progetto",
       projectNone: "Nessuno",
       model: "Modello",

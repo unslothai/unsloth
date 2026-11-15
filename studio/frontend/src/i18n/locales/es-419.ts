@@ -5244,6 +5244,7 @@ export const es419 = {
       notifyFailures: "Solo si falla",
       notifyNone: "Desactivadas",
       archiveSuccessful: "Archivar ejecuciones correctas",
+      webSearch: "Búsqueda web",
       project: "Proyecto",
       projectNone: "Ninguno",
       model: "Modelo",

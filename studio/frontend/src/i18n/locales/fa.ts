@@ -5135,6 +5135,7 @@ export const fa = {
       notifyFailures: "فقط موارد ناموفق",
       notifyNone: "خاموش",
       archiveSuccessful: "بایگانی اجراهای موفق",
+      webSearch: "جستجوی وب",
       project: "پروژه",
       projectNone: "هیچ‌کدام",
       model: "مدل",
