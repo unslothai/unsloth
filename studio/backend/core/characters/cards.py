@@ -67,8 +67,7 @@ _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def _well_formed(value: Any) -> Any:
-    # A "\ud835" escape with no partner (an emoji or styled letter cut in half by a site's truncation) parses,
-    # but SQLite cannot store it; it becomes U+FFFD.
+    # A lone surrogate ("\ud835", half an emoji) parses but SQLite cannot store it.
     if isinstance(value, str):
         return _LONE_SURROGATE.sub("�", value)
     if isinstance(value, list):
@@ -117,12 +116,12 @@ def checked_portrait(data: Optional[bytes]) -> Optional[tuple[bytes, str]]:
     from PIL import Image
 
     if media_type == "image/png":
-        # Dropped before decoding: a large card's compressed text passes Pillow's text chunk limit.
+        # Before decoding: Pillow refuses a PNG whose compressed text passes its chunk limit.
         data = strip_png_text(data)
     try:
         with Image.open(io.BytesIO(data), formats = tuple(_PORTRAIT_FORMATS)) as image:
             width, height = image.size
-            # Pillow's JPEG opener names a JPEG with extra pictures (MPF, as many phone cameras write) MPO.
+            # Phone JPEGs with extra pictures (MPF) open as MPO, which is not an opener of its own.
             found = "JPEG" if image.format == "MPO" else image.format
             if _PORTRAIT_FORMATS.get(found) != media_type or not (
                 0 < width * height <= MAX_PORTRAIT_PIXELS
@@ -455,11 +454,9 @@ def normalize_card(card: dict, fallback_name: str = "") -> dict[str, Any]:
             raise CardError(
                 "This is a website's API response, not a character card. Download the card's PNG instead."
             )
-        # Some sites export a V2/V3 card with an empty name and show their own title instead.
         if data is card or not fallback_name.strip():
             raise CardError("The card has no name.")
         name = fallback_name.strip()
-    # Without a spec, any JSON with a name (an app's preset, for one) would import as an empty character.
     if (
         data is card
         and not any(_text(card.get(key)).strip() for key in _CARD_TEXT_KEYS)
@@ -628,7 +625,6 @@ def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
             raise CardError("The JSON is not a character card.")
         source_format = "json"
         warnings = []
-    # The file's name, for a card that left its own empty.
     fields = normalize_card(card, re.split(r"[\\/]", filename)[-1].rsplit(".", 1)[0])
     _data, spec = card_data(card)
     return ParsedCard(

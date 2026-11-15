@@ -182,7 +182,6 @@ def test_reads_a_charx_archive_with_its_icon():
         (b"not a card", "not a PNG"),
         (_png(), "no character card"),
         (json.dumps({"description": "nameless"}).encode(), "no name"),
-        # An app's preset has a name and nothing a card holds.
         (
             json.dumps({"name": "ChatML", "story_string": "{{system}}"}).encode(),
             "not a character card",
@@ -857,7 +856,6 @@ def test_an_existing_studio_db_gains_the_character_tables_and_keeps_its_chats(cl
 
 
 def test_a_card_with_half_an_emoji_imports_and_lists(client):
-    # A site's truncation can cut a surrogate pair; JSON parsers accept the lone half, SQLite does not.
     card = b'{"name": "Kuro", "description": "d", "creator_notes": "Bold \\ud835"}'
     response = client.post("/api/characters/import?filename=kuro.json", content = card)
     assert response.status_code == 201
@@ -876,7 +874,6 @@ def test_a_card_with_half_an_emoji_imports_and_lists(client):
     ],
 )
 def test_every_portrait_format_is_accepted(client, fmt, media_type):
-    # MPO is a JPEG with extra pictures (MPF), as many phone cameras write.
     buffer = io.BytesIO()
     extra = (
         {"save_all": True, "append_images": [Image.new("RGB", (20, 30))]} if fmt == "MPO" else {}
@@ -888,7 +885,6 @@ def test_every_portrait_format_is_accepted(client, fmt, media_type):
 
 
 def test_a_large_compressed_card_keeps_its_picture():
-    # Past 1 MB of compressed card text, Pillow refuses to open the PNG unless the text chunks are dropped first.
     entries = [{"keys": [f"k{i}"], "content": f"entry {i} " * 500} for i in range(300)]
     big = {**V2, "data": {**V2["data"], "character_book": {"entries": entries}}}
     parsed = cards.parse_card_file(_with_text(_png(), "chara", big, b"zTXt"), "big.png")
@@ -902,6 +898,5 @@ def test_a_spec_card_with_an_empty_name_takes_the_file_name():
         _with_text(_png(), "chara", nameless), "C:\\cards\\Captain Mira.png"
     )
     assert parsed.fields["name"] == "Captain Mira"
-    # Without a spec there is nothing to say it is a card, so it is still refused.
     with pytest.raises(cards.CardError, match = "no name"):
         cards.parse_card_file(json.dumps({"description": "nameless"}).encode(), "notes.json")

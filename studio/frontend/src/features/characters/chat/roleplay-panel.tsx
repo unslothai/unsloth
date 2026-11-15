@@ -285,7 +285,6 @@ function ReplyOrderPicker({ value, onChange }: { value: ReplyOrder; onChange: (v
 /** A small number field that saves on blur, like the text fields beside it. */
 function DepthInput({ value, onSave }: { value: number; onSave: (value: number) => void }) {
   const [draft, setDraft] = useState(String(value));
-  // As in SavedTextarea: typed digits win over a stored value arriving meanwhile.
   const typed = useRef(false);
   useEffect(() => {
     if (!typed.current) setDraft(String(value));
@@ -329,8 +328,7 @@ function SavedTextarea({
   rows?: number;
 }) {
   const [draft, setDraft] = useState(value);
-  // Typed text wins over a stored value arriving meanwhile (an earlier save answering); untyped, the field
-  // follows the stored value, so leaving it does not save stale text over another tab's edit.
+  // Typed text wins over a stored value arriving meanwhile; untyped, leaving the field saves nothing.
   const typed = useRef(false);
   useEffect(() => {
     if (!typed.current) setDraft(value);
