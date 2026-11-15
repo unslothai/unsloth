@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// Header fades show only once their thread scrolls under them: over a flat page every engine rounds
+// some gradient pixels a level off the page colour (Firefox in any space, WebKit in sRGB).
+export const THREAD_SCROLLED_ATTR = "data-thread-scrolled";
+
+function onThreadScroll(this: HTMLElement, event: Event): void {
+  const viewport = event.target;
+  if (!(viewport instanceof HTMLElement) || !viewport.classList.contains("aui-thread-viewport")) return;
+  if (viewport.closest(".chat-full-view-dock")) return;
+  this.toggleAttribute(THREAD_SCROLLED_ATTR, viewport.scrollTop > 0);
+}
+
+// Stable callback ref: scroll does not bubble, so listen in the capture phase on the fade's parent.
+export function trackThreadScroll(host: HTMLElement | null): (() => void) | undefined {
+  if (!host) return undefined;
+  host.addEventListener("scroll", onThreadScroll, { capture: true, passive: true });
+  return () => host.removeEventListener("scroll", onThreadScroll, { capture: true });
+}
