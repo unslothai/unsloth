@@ -4711,6 +4711,11 @@
     "fp8",
     "mxfp8"
    ],
+   "minimax-h3-image": [
+    "fp8",
+    "mxfp8",
+    "nf4"
+   ],
    "qwen-image": [
     "fp8"
    ],
