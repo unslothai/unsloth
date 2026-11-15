@@ -164,6 +164,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     const switchedOff = () =>
       getVoiceMode() === "off" || voiceOffEpoch() !== offAtOpen || epoch !== heldEpoch;
     // A thread switch or Stop queued behind finish() resets the turn: the old words never submit into it.
+    // A re-arm may have given up while this clip was in STT: voice still on listens again.
+    const dropSwitched = () => {
+      finish("cancelled");
+      if (getVoiceMode() === "active") setTimeout(() => requestVoiceResume(), 0);
+    };
     const submitLater = () =>
       setTimeout(() => {
         if (!switchedOff()) requestVoiceSubmit();
@@ -343,7 +348,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         // Voice was turned off while this clip was heard: its words are discarded, never held for the next session.
         if (switchedOff()) {
-          finish("cancelled");
+          dropSwitched();
           return;
         }
         if (transcript && isHallucinatedTranscript(transcript)) {
@@ -386,7 +391,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             if (ended) return;
             // Voice turned off mid-reveal: the rest would land in whatever the user types next.
             if (switchedOff()) {
-              finish("cancelled");
+              dropSwitched();
               return;
             }
             const partial = transcript.slice(0, i);
@@ -395,7 +400,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
           if (ended) return;
           if (switchedOff()) {
-            finish("cancelled");
+            dropSwitched();
             return;
           }
           emitSpeech(transcript, true);

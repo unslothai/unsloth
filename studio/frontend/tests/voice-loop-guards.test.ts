@@ -85,7 +85,7 @@ test("turning voice off forgets the open reply stream", () => {
 });
 
 test("a clip still being transcribed when voice turns off is dropped, not held", () => {
-  const off = loop.indexOf('if (switchedOff()) {\n          finish("cancelled");');
+  const off = loop.indexOf('if (switchedOff()) {\n          dropSwitched();');
   assert.ok(off > 0 && off < loop.indexOf("heldTurn = {\n            text: transcript,"));
 });
 
@@ -110,7 +110,7 @@ test("Escape on the orb hides it without reaching the composer's cancel", () => 
 test("turning voice off mid-reveal stops the transcript reaching the composer", () => {
   const reveal = loop.slice(loop.indexOf("const stepChars = Math.max("));
   const emitFinal = reveal.indexOf("emitSpeech(transcript, true);");
-  const offChecks = reveal.slice(0, emitFinal).match(/if \(switchedOff\(\)\) \{\s*finish\("cancelled"\);/g) ?? [];
+  const offChecks = reveal.slice(0, emitFinal).match(/if \(switchedOff\(\)\) \{\s*dropSwitched\(\);/g) ?? [];
   assert.equal(offChecks.length, 2);
 });
 
@@ -197,4 +197,9 @@ test("a message sent from the composer drops a voice fragment still waiting for 
   assert.ok(submit.indexOf("noteTypedSend();") > 0 && submit.indexOf("noteTypedSend();") < submit.indexOf("isRewindCommand(composerText)"));
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(engine, /registerVoiceTypedSend\(\(\) => \{\s*if \(voiceModeRef\.current === "active"\) clearHeldTurn\(\);\s*\}\);/);
+});
+
+test("a clip dropped by a reset re-arms the mic while voice stays on", () => {
+  assert.match(loop, /const dropSwitched = \(\) => \{\s*finish\("cancelled"\);\s*if \(getVoiceMode\(\) === "active"\) setTimeout\(\(\) => requestVoiceResume\(\), 0\);\s*\};/);
+  assert.equal((loop.match(/if \(switchedOff\(\)\) \{\s*dropSwitched\(\);/g) ?? []).length, 3);
 });
