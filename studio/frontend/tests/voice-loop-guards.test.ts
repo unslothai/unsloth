@@ -209,3 +209,11 @@ test("a voice turn whose attachment send is slow still gets its reply", () => {
   assert.match(engine, /if \(msgs\.length <= before && Date\.now\(\) - armedAt < VOICE_APPEND_WAIT_MAX_MS\) \{/);
   assert.doesNotMatch(engine, /msgs\.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES/);
 });
+
+test("turning voice on stops a read-aloud already playing before the mic opens", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  const act = engine.slice(engine.indexOf("const activateLoop = useCallback("));
+  const stopAt = act.indexOf("thread.stopSpeaking();");
+  assert.ok(stopAt > 0 && stopAt < act.indexOf("startDictation();"));
+  assert.match(act.slice(0, stopAt), /if \(thread\.getState\(\)\.speech\) \{/);
+});
