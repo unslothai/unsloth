@@ -133,6 +133,8 @@ type FamilyPreset = {
     rank: number;
     lr: number;
     resolution: number;
+    // A family's recommended run length (MiniMax-H3-Image overfits a style quickly); absent = the panel's 500.
+    steps?: number;
     // Both or neither: a warmup count is inert under "constant".
     lrScheduler?: LrScheduler;
     lrWarmupSteps?: number;
@@ -320,6 +322,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? p.defaults.rank,
         lr: r.defaults?.learning_rate ?? p.defaults.lr,
         resolution: r.defaults?.resolution ?? p.defaults.resolution,
+        ...(r.defaults?.train_steps ? { steps: r.defaults.train_steps } : {}),
         // No preset fallback: a reported family owns its ramp outright.
         ...lrSchedulePreset(r.defaults),
       },
@@ -345,6 +348,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? 16,
         lr: r.defaults?.learning_rate ?? 0.0001,
         resolution: r.defaults?.resolution ?? 768,
+        ...(r.defaults?.train_steps ? { steps: r.defaults.train_steps } : {}),
         ...lrSchedulePreset(r.defaults),
       },
       vram_note: r.vram_note ?? "",
@@ -676,6 +680,7 @@ export function DiffusionTrainPanel({
       setLearningRate(family.defaults.lr);
       setRank(family.defaults.rank);
       setResolution(family.defaults.resolution);
+      setSteps(family.defaults.steps ?? 500);
     }
     // Reset with the family, or a DiT's warmup leaks into SDXL.
     if (!lrScheduleDirty.current) {
@@ -721,7 +726,7 @@ export function DiffusionTrainPanel({
       baseChoice: effectiveBase,
       customBase,
       durationUnit: "steps",
-      steps: 500,
+      steps: family?.defaults.steps ?? 500,
       epochs: 10,
       learningRate: family?.defaults.lr ?? 0.0001,
       rank: family?.defaults.rank ?? 16,

@@ -463,10 +463,14 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     # resolution is the canvas AREA as a side (1024 -> about 1 MP at the picture's aspect); the distilled model renders
     # 2048 x 2048 by default, and its rotary grid is normalised to the canvas, so a 1 MP adapter carries to 4 MP.
+    # lr 5e-5 x 150 steps: picked on G4 from lr {1e-4, 5e-5} x steps {150, 300} x LoRA weight {0.6, 0.8, 1.0} on 18 tarot
+    # images (training adapter on): keeps the subject, clean line work and the card title at weight 1.0, with the
+    # lowest drift on unrelated prompts at weight 1.0 (mean LPIPS 0.38 vs 0.44-0.48 for lr 1e-4).
     "minimax-h3-image": {
         "lora_rank": 32,
-        "learning_rate": 1e-4,
+        "learning_rate": 5e-5,
         "resolution": 1024,
+        "train_steps": 150,
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
         "train_batch_size": 1,
