@@ -87,7 +87,13 @@ def _lib():
     return _CUDA
 
 
+_CUDA_ERROR_OUT_OF_MEMORY = 2
+
+
 def _check(result, what):
+    if result == _CUDA_ERROR_OUT_OF_MEMORY:
+        # An OutOfMemoryError reaches generate_with_fallback's recovery path instead of aborting the rollout.
+        raise torch.cuda.OutOfMemoryError(f"Unsloth: {what} is out of memory (CUresult {result})")
     if result != 0:
         raise RuntimeError(f"Unsloth: {what} failed (CUresult {result})")
 
@@ -186,10 +192,13 @@ class VMMBuffer:
         access = _Access()
         access.location.type, access.location.id, access.flags = _DEVICE, self.index, _READWRITE
         with _Context(self.index):
-            _check(
-                lib.cuMemCreate(ctypes.byref(handle), self.size, ctypes.byref(prop), 0),
-                "cuMemCreate",
-            )
+            result = lib.cuMemCreate(ctypes.byref(handle), self.size, ctypes.byref(prop), 0)
+            if result == _CUDA_ERROR_OUT_OF_MEMORY:
+                # Training's freed blocks sit in torch's caching allocator, which cuMemCreate cannot reuse.
+                torch.cuda.synchronize(self.index)
+                torch.cuda.empty_cache()
+                result = lib.cuMemCreate(ctypes.byref(handle), self.size, ctypes.byref(prop), 0)
+            _check(result, "cuMemCreate")
             try:
                 _check(lib.cuMemMap(self.ptr, self.size, 0, handle.value, 0), "cuMemMap")
                 try:
