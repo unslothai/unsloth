@@ -96,6 +96,24 @@ def write_adapter_provenance(
     ]
 
 
+def _without_resident_tables(saved, model, live):
+    """`saved` without the tables `model` holds resident (UNSLOTH_FROZEN_TABLE=gpu, or auto on a large GPU): those
+    are ordinary embeddings with no bound table to describe, so a residence change is not other base tables. A saved
+    table with no module at its path at all is kept, and still reported."""
+    tables = saved.get("tables") if isinstance(saved, dict) else None
+    if not tables or not hasattr(model, "named_modules"):
+        return saved
+    key = getattr(_zoo(), "_table_key", None) or (lambda name: name)
+    bound = {key(name) for name in ((live or {}).get("tables") or {})}
+    resident = {
+        key(name)
+        for name, module in model.named_modules()
+        if type(module).__name__ != "UnslothFrozenTableEmbedding"
+    }
+    kept = {k: v for k, v in tables.items() if key(k) in bound or key(k) not in resident}
+    return saved if len(kept) == len(tables) else {**saved, "tables": kept}
+
+
 def check_provenance(model, directory):
     """Compare directory/frozen_tables.json with the tables bound in `model`: [] when they are the same base
     tables (or there is nothing to check), else what differs (a warning, or an error in strict mode)."""
@@ -111,7 +129,8 @@ def check_provenance(model, directory):
     if compare is None:
         problems = ["unsloth_zoo cannot read frozen table provenance (update unsloth_zoo)"]
     else:
-        problems = compare(saved, table_provenance(model))
+        live = table_provenance(model)
+        problems = compare(_without_resident_tables(saved, model, live), live)
     if problems:
         message = (
             f"Unsloth: the adapter in {directory} was saved on other frozen lookup tables than this model's "

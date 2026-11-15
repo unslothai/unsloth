@@ -112,6 +112,31 @@ def test_reload_on_other_tables_warns_or_refuses(checkpoints, adapter, monkeypat
         PeftModel.from_pretrained(_base(checkpoints[1]), adapter)
 
 
+def test_reload_with_the_table_resident_is_not_a_mismatch(checkpoints, adapter, monkeypatch):
+    # UNSLOTH_FROZEN_TABLE=gpu (or auto on a large GPU) loads the same table as an ordinary embedding, so no table
+    # is bound to compare against: that is a residence change, not other base tables.
+    from peft import PeftModel
+
+    monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
+    with _no_provenance_warning():
+        PeftModel.from_pretrained(_base(checkpoints[0], mode = "gpu"), adapter)
+    monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "warn")
+    with _no_provenance_warning():
+        PeftModel.from_pretrained(_base(checkpoints[0], mode = "gpu"), adapter)
+    # A saved table the model has no module for at all is still reported.
+    provenance = ftp.load_module("frozen_table_provenance")
+    with open(os.path.join(adapter, "frozen_tables.json")) as f:
+        record = json.load(f)
+    record["tables"] = {"model.no_such_layer.table": next(iter(record["tables"].values()))}
+    other = os.path.join(os.path.dirname(adapter), "renamed")
+    os.makedirs(other, exist_ok = True)
+    with open(os.path.join(other, "frozen_tables.json"), "w") as f:
+        json.dump(record, f)
+    monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "strict")
+    with pytest.raises(ValueError, match = "no such frozen table"):
+        provenance.check_provenance(_base(checkpoints[0], mode = "gpu"), other)
+
+
 def test_pipeline_stages_merge_their_tables():
     provenance = ftp.load_module("frozen_table_provenance")
     a = {"format": "unsloth_frozen_tables", "version": 1, "tables": {"model.layers.1.t": {"n": 1}}}
