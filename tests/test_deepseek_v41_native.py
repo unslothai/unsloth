@@ -821,43 +821,81 @@ def test_loading_never_mutates_the_callers_config(tmp_path, monkeypatch, convert
             assert config.text_config.to_json_string() == text_before
 
 
-def test_a_direct_native_class_load_registers_the_release_renames_itself(tmp_path):
-    """A fresh transformers 5 process maps every released tensor without prior Auto registration."""
+# One fresh CPU-backend child answers both fresh-process probes below: each child pays a full `import unsloth`
+# (the slow part), and neither probe changes what the other sees. The CPU-backend registration probe runs first
+# (an AutoConfig lookup touches no conversion mapping); the direct native load then drops every cached
+# deepseek_v41 conversion mapping before it loads, as it did in its own process.
+_FRESH_CPU_CHILD = """
+import json, sys, traceback
+import unsloth
+from transformers import AutoConfig
+try:  # a failed lookup must not take the load probe down with it
+    c = AutoConfig.from_pretrained(sys.argv[1])
+    print("PROBE_CPU " + json.dumps({"cpu": bool(getattr(unsloth, "_IS_CPU_BACKEND", False)), "type": type(c).__name__}))
+except Exception:
+    traceback.print_exc()
+if len(sys.argv) > 2:
+    import transformers.conversion_mapping as cm
+    from unsloth.models.deepseek_v41.modeling import DeepseekV41ForCausalLM
+    cache = cm._checkpoint_conversion_mapping_cache
+    if cache is not None:
+        for key in [k for k in list(cache) if "deepseek_v41" in k.lower()]:
+            cache.pop(key)
+    model, info = DeepseekV41ForCausalLM.from_pretrained(sys.argv[2], output_loading_info = True)
+    print("PROBE_LOAD " + json.dumps({"missing": len(info["missing_keys"]), "unexpected": len(info["unexpected_keys"])}))
+"""
+
+
+def _direct_release_load_skip_reason():
     if not hasattr(torch, "float8_e8m0fnu"):
-        pytest.skip("torch without float8_e8m0fnu")
-    from unsloth.models.deepseek_v41.modeling import has_core_model_loading
+        return "torch without float8_e8m0fnu"
     from unsloth.models.deepseek_v41.convert import released_needs_conversion
+    from unsloth.models.deepseek_v41.modeling import has_core_model_loading
 
     if not has_core_model_loading() or released_needs_conversion():
-        pytest.skip("transformers without the direct release load")
+        return "transformers without the direct release load"
+    return None
+
+
+@pytest.fixture(scope = "module")
+def fresh_cpu_child(tmp_path_factory):
     import subprocess
     import sys
-    import textwrap
 
-    src = _quantized_release(tmp_path, _tiny_model())
-    child = textwrap.dedent(
-        f"""
-        import json
-        import transformers.conversion_mapping as cm
-        from unsloth.models.deepseek_v41.modeling import DeepseekV41ForCausalLM
-        cache = cm._checkpoint_conversion_mapping_cache
-        if cache is not None:
-            for key in [k for k in list(cache) if "deepseek_v41" in k.lower()]:
-                cache.pop(key)
-        model, info = DeepseekV41ForCausalLM.from_pretrained({str(src)!r}, output_loading_info = True)
-        print("PROBE", json.dumps({{"missing": len(info["missing_keys"]), "unexpected": len(info["unexpected_keys"])}}))
-        """
+    config_dir = tmp_path_factory.mktemp("dsv41_config")
+    _tiny_config().save_pretrained(config_dir)
+    args = [str(config_dir)]
+    if _direct_release_load_skip_reason() is None:
+        args.append(
+            str(_quantized_release(tmp_path_factory.mktemp("dsv41_release"), _tiny_model()))
+        )
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = _cpu_backend_child_env(root)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [env["PYTHONPATH"], *sys.path]))
+    out = subprocess.run(
+        [sys.executable, "-c", _FRESH_CPU_CHILD, *args],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 900,
     )
-    env = _cpu_backend_child_env()
-    env["PYTHONPATH"] = os.pathsep.join(sys.path)
-    run = subprocess.run(
-        [sys.executable, "-c", child], env = env, capture_output = True, text = True, timeout = 600
-    )
-    probe = [line for line in run.stdout.splitlines() if line.startswith("PROBE ")]
-    assert probe, run.stdout[-2000:] + run.stderr[-3000:]
+    return out
+
+
+def _probe(out, tag):
     import json
+    line = next((l for l in out.stdout.splitlines() if l.startswith(tag + " ")), None)
+    return None if line is None else json.loads(line[len(tag) + 1 :])
 
-    assert json.loads(probe[0][6:]) == {"missing": 0, "unexpected": 0}
+
+def test_a_direct_native_class_load_registers_the_release_renames_itself(fresh_cpu_child):
+    """A fresh transformers 5 process maps every released tensor without prior Auto registration."""
+    reason = _direct_release_load_skip_reason()
+    if reason is not None:
+        pytest.skip(reason)
+    probe = _probe(fresh_cpu_child, "PROBE_LOAD")
+    assert probe is not None, fresh_cpu_child.stdout[-2000:] + fresh_cpu_child.stderr[-3000:]
+    assert probe == {"missing": 0, "unexpected": 0}
 
 
 def test_each_release_rename_applies_once_per_model_root():
@@ -1806,31 +1844,11 @@ def test_building_the_model_installs_grouped_lora_for_plain_peft(monkeypatch, in
     torch.testing.assert_close(adapted, merged, rtol = 1e-4, atol = 1e-4)
 
 
-def test_cpu_backend_import_registers_deepseek_v41(tmp_path):
+def test_cpu_backend_import_registers_deepseek_v41(fresh_cpu_child):
     """The native registration hook is installed on the CPU backend too."""
-    import json
-    import subprocess
-    import sys
-
-    _tiny_config().save_pretrained(tmp_path)
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    env = _cpu_backend_child_env(root)
-    child = (
-        "import json, sys, unsloth\n"
-        "from transformers import AutoConfig\n"
-        "c = AutoConfig.from_pretrained(sys.argv[1])\n"
-        "print('PROBE ' + json.dumps({'cpu': bool(getattr(unsloth, '_IS_CPU_BACKEND', False)), 'type': type(c).__name__}))\n"
-    )
-    out = subprocess.run(
-        [sys.executable, "-c", child, str(tmp_path)],
-        capture_output = True,
-        text = True,
-        env = env,
-        timeout = 900,
-    )
-    line = next((l for l in out.stdout.splitlines() if l.startswith("PROBE ")), None)
-    if line is None and "CPU" in out.stderr and "fallback" in out.stderr.lower():
+    out = fresh_cpu_child
+    probe = _probe(out, "PROBE_CPU")
+    if probe is None and "CPU" in out.stderr and "fallback" in out.stderr.lower():
         pytest.skip("this unsloth_zoo has no CPU backend")
-    assert line is not None, out.stdout[-3000:] + out.stderr[-3000:]
-    probe = json.loads(line[6:])
+    assert probe is not None, out.stdout[-3000:] + out.stderr[-3000:]
     assert probe["cpu"] and probe["type"] == "DeepseekV41Config", probe
