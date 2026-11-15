@@ -15,7 +15,7 @@ import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from core.inference import audio_cpp_files
 from core.inference.audio_cpp_models import (
@@ -55,13 +55,20 @@ class ClipUnavailableError(ClipError):
     """The audio runtime cannot run the task here."""
 
 
-def resolve_hub_model(identifier: str, task: str, purpose: str, *, network: bool) -> AudioCppModel:
+def resolve_hub_model(
+    identifier: str,
+    task: str,
+    purpose: str,
+    *,
+    network: bool,
+    hf_token: Optional[str] = None,
+) -> AudioCppModel:
     """The audio GGUF ``identifier`` names, if the runtime runs ``task`` with it. ``purpose`` ends the refusal ("detect speech with")."""
     refusal = f"'{identifier}' is not an audio GGUF the audio runtime can {purpose}."
     base, variant = split_variant_ref(identifier)
     if parse_identifier(base) is None:
         raise ClipError(refusal)
-    found = resolve(base, variant, network = network)
+    found = resolve(base, variant, hf_token, network = network)
     if found is None and not network:
         raise ClipModelNotDownloadedError(f"'{base}' is not downloaded yet.")
     if found is None:
@@ -100,7 +107,9 @@ class AudioCppClipSidecar:
 
     # What a subclass says about its models.
 
-    def _resolve(self, model: Optional[str], *, network: bool) -> AudioCppModel:
+    def _resolve(
+        self, model: Optional[str], *, network: bool, hf_token: Optional[str] = None
+    ) -> AudioCppModel:
         raise NotImplementedError
 
     def _cpu_only(self, entry: AudioCppModel) -> bool:
@@ -153,8 +162,11 @@ class AudioCppClipSidecar:
         self._server = None
         self._model = None
 
-    def unload(self) -> bool:
+    def unload(self, keep: Optional[Callable[[Optional[str]], bool]] = None) -> bool:
         with self._lock:
+            # keep() judges the resident under the lock a load takes, so a model swapped in meanwhile is never stopped.
+            if keep is not None and keep(self.loaded_model):
+                return False
             had = self._server is not None
             self._release_locked()
             return had
@@ -218,7 +230,8 @@ class AudioCppClipSidecar:
     ) -> str:
         from core.inference import audio_cpp_backend
 
-        entry = self._resolve(model, network = True)
+        # A private or gated repo needs the caller's token for the lookup too, not only the download.
+        entry = self._resolve(model, network = True, hf_token = hf_token)
         audio_cpp_backend.AudioCppBackend._download_missing(entry, hf_token)
         # The load right after reads the cache-only resolution, which still remembers the miss.
         forget(entry.id)

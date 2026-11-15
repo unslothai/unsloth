@@ -38,9 +38,16 @@ ASK_AFTER_MS = 250
 _TAIL_SECONDS = 8.0
 
 
-def resolve_turn_model(model: Optional[str], *, network: bool = False) -> AudioCppModel:
+def resolve_turn_model(
+    model: Optional[str],
+    *,
+    network: bool = False,
+    hf_token: Optional[str] = None,
+) -> AudioCppModel:
     identifier = (model or "").strip() or DEFAULT_TURN_MODEL
-    return resolve_hub_model(identifier, "turn", "tell the end of a turn with", network = network)
+    return resolve_hub_model(
+        identifier, "turn", "tell the end of a turn with", network = network, hf_token = hf_token
+    )
 
 
 def complete_at(language: Optional[str]) -> Optional[float]:
@@ -63,8 +70,10 @@ def completion_from_result(payload: dict) -> float:
 class AudioCppTurnSidecar(AudioCppClipSidecar):
     label = "end-of-turn model"
 
-    def _resolve(self, model: Optional[str], *, network: bool) -> AudioCppModel:
-        return resolve_turn_model(model, network = network)
+    def _resolve(
+        self, model: Optional[str], *, network: bool, hf_token: Optional[str] = None
+    ) -> AudioCppModel:
+        return resolve_turn_model(model, network = network, hf_token = hf_token)
 
     def _cpu_only(self, entry: AudioCppModel) -> bool:
         # About 60 ms a clip on four CPU threads: not worth VRAM, or a move every time training starts.

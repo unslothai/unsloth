@@ -192,15 +192,27 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           speaker: selectedVoiceSpeaker,
         });
       };
+      // A named generation lets "switch model by request" swap the chat model out for the voice: own the slot first.
+      const { voiceSlotLoaded, ensureVoiceSlotLoaded } = useChatRuntimeStore.getState();
+      if (!voiceSlotLoaded && ensureVoiceSlotLoaded) {
+        if (!(await ensureVoiceSlotLoaded())) return null;
+        if (reqRef.current !== reqId) return null;
+      }
       let url: string;
       try {
         url = await request();
       } catch (error) {
         if (reqRef.current !== reqId) return null;
-        const ensure = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
-        if (!ensure || !(await ensure())) throw error;
-        if (reqRef.current !== reqId) return null;
-        url = await request();
+        if (/saved voice no longer exists/i.test(error instanceof Error ? error.message : "")) {
+          // Deleted on the Audio page: the pick is dropped so this and every later sentence use the model's voice.
+          useChatRuntimeStore.getState().setSelectedVoiceId("");
+          url = await request();
+        } else {
+          const ensure = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
+          if (!ensure || !(await ensure())) throw error;
+          if (reqRef.current !== reqId) return null;
+          url = await request();
+        }
       }
       if (reqRef.current !== reqId) return null;
       const bytes = wavBytesFromDataUrl(url);
@@ -373,7 +385,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       const reqId = reqRef.current;
       const blocked = () => asideBlocked(clipsRef.current, { patient, replySynth: realSynthRef.current });
       const play = (buffer: AudioBuffer, cached: boolean, said = text) => {
-        if (reqRef.current !== reqId) return;
+        // The reply may have ended while this synthesized: a late filler would talk over the next turn.
+        if (reqRef.current !== reqId || streamRef.current !== st || st.final) return;
         if (blocked()) {
           voiceTrace("tts.asideDropped", { text: said, cached, clips: clipsRef.current.size, synth: realSynthRef.current });
           return;

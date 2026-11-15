@@ -25,6 +25,7 @@ import {
 import {
   isAcknowledgement,
   isBackchannel,
+  answersClosingQuestion,
   isReplyEcho,
   isSttNoise,
   joinTurn,
@@ -44,6 +45,7 @@ import {
   getVoiceParkedText,
   getVoiceReplyText,
   getVoiceMode,
+  voiceOffEpoch,
   isVoicePlaybackActive,
   requestVoiceBargeAbort,
   requestVoiceBargeIn,
@@ -164,6 +166,26 @@ export function voiceWroteBox(text: string): boolean {
   return text.trim() !== "" && text.trim() === voiceBoxText.trim();
 }
 
+// The box minus this loop's last transcript, or null when that transcript is not its tail:
+// dictation prepends a typed draft, so a held fragment sits after it and must go before re-arming.
+// Once a send has cleared the box, its transcript no longer claims later drafts; a newer utterance's does.
+export function voiceTextReleaser(): () => void {
+  const said = voiceBoxText;
+  return () => {
+    if (voiceBoxText === said) voiceBoxText = "";
+  };
+}
+
+export function withoutVoiceText(text: string): string | null {
+  const said = voiceBoxText.trim();
+  const box = text.trimEnd();
+  if (!said || !box.endsWith(said)) return null;
+  const before = box.slice(0, box.length - said.length);
+  // Only a whole tail: a typed word that merely ends in the same letters stays.
+  if (before && !/\s$/.test(before)) return null;
+  return before.trimEnd();
+}
+
 /** Take a draft typed ahead of the loop's own text: it starts the spoken turn, so the box is the turn's now. */
 export function takeTypedDraft(box: string): string {
   const own = voiceBoxText.trim();
@@ -247,6 +269,12 @@ export function getHeldTurnText(): string {
   return heldTurn?.text ?? "";
 }
 
+let utterancesPending = 0;
+// Hearing ends before VAD and STT run: the coalesced reply must still wait for this phrase.
+export function voiceUtterancePending(): boolean {
+  return utterancesPending > 0;
+}
+
 // The recorded speech of the turn, kept only while the chat model hears audio (voiceHearsAudio).
 const turnAudio = createTurnAudio();
 
@@ -298,6 +326,12 @@ export function isComposerHeldForEdit(): boolean {
   return !heldEdit.autoSend();
 }
 
+// Thread switch or voice off: the box it named belongs to the chat being left, so a matching draft in
+// the next one is the user's. (Not in clearHeldTurn: a stop or typed send keeps this chat's box.)
+export function forgetVoiceBox(): void {
+  voiceBoxText = "";
+}
+
 export function cancelVoiceSession(): void {
   turnAudio.clear();
   liveSession?.cancel();
@@ -341,6 +375,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // The STT clip starts at the first of these before the first loud frame, so a soft opening word is kept.
     const chunkNotSilent: boolean[] = [];
     let voicedMs = 0;
+    const offAtOpen = voiceOffEpoch();
+    // Off now, or off and back on since this recording opened: either way its words are dropped.
+    const switchedOff = () => getVoiceMode() === "off" || voiceOffEpoch() !== offAtOpen;
     // Taken as the session opens: a clear while it still records drops what it hears.
     const epoch = heldEpoch;
     if (vadDisabled && useChatRuntimeStore.getState().selectedVadModelId !== vadDisabledFor) {
@@ -348,6 +385,17 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     }
     let noiseFloor = 0;
     let noiseFrames = 0;
+    // A thread switch or Stop queued behind finish() resets the turn: the old words never submit into it.
+    // A re-arm may have given up while this clip was in STT: voice still on listens again.
+    const dropSwitched = () => {
+      finish("cancelled");
+      if (getVoiceMode() === "active") setTimeout(() => requestVoiceResume(), 0);
+    };
+    const submitLater = (text: string) =>
+      setTimeout(() => {
+        if (!switchedOff() && epoch === heldEpoch) requestVoiceSubmit(text);
+      }, 0);
+    let prerollVoicedMs = 0;
     const bargeGate = createBargeGate(
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
     );
@@ -693,7 +741,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         heldJudgeId = null;
         emitSpeech(text, true);
         finish("stopped", text);
-        setTimeout(() => requestVoiceSubmit(text), 0);
+        submitLater(text);
         return;
       }
       if (bargedIn) requestVoiceBargeAbort();
@@ -706,6 +754,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (finalizing || ended) return;
       finalizing = true;
       teardown();
+      utterancesPending += 1;
+      try {
+        await finalizeHeard();
+      } finally {
+        utterancesPending -= 1;
+      }
+    };
+    const finalizeHeard = async () => {
       turnEnd.clear();
 
       // A barge-in already passed its own bar: a quick "stop" is shorter than a turn.
@@ -725,6 +781,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         trailingMs: Math.round((chunks.length - 1 - chunkVoiced.lastIndexOf(true)) * (chunks[0].length / sampleRate) * 1000),
       });
       const key = clipKey(span);
+      // Words heard across a voice off or reset are dropped anyway: no VAD or STT run for them.
+      if (switchedOff()) {
+        early.clear();
+        dropSwitched();
+        return;
+      }
       const ready = early.take(key);
       const analysis = ready ?? analyseClip(span);
       voiceTrace("stt.clip", { early: ready !== null });
@@ -734,6 +796,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         return;
       }
       if (ended) return;
+      if (switchedOff()) {
+        analysis.cancel();
+        dropSwitched();
+        return;
+      }
 
       try {
         const modelId = analysis.modelId;
@@ -744,7 +811,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           transcript = await analysis.text;
           if (ended) return;
         } catch (error) {
-          if (error instanceof SttModelNotDownloadedError) {
+          if (error instanceof SttModelNotDownloadedError && !switchedOff()) {
             const missing = modelId ?? useVoiceSettingsStore.getState().sttModel;
             if (!isTrackingSttDownload(missing)) requestSttDownload(missing);
           }
@@ -753,8 +820,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           store.setVoiceTranscribing(false);
         }
         // Voice was turned off while this clip was heard: its words are discarded, never held for the next session.
-        if (getVoiceMode() === "off") {
-          finish("cancelled");
+        if (switchedOff()) {
+          dropSwitched();
           return;
         }
         if (transcript && isHallucinatedTranscript(transcript)) {
@@ -774,7 +841,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         const acknowledged =
           Boolean(transcript) && bargedIn && isAcknowledgement(transcript, getVoiceReplyText());
-        if (transcript && (acknowledged || isBackchannel(transcript) || isSttNoise(transcript))) {
+        // A noise word that continues a held turn ("Translate the phrase" + "thank you") or answers the
+        // reply's question ("you or me?" + "you") is speech, not a hallucination.
+        const noise =
+          isSttNoise(transcript) && !heldTurn && !answersClosingQuestion(transcript, getVoiceReplyText());
+        if (transcript && (acknowledged || isBackchannel(transcript) || noise)) {
           voiceTrace("stt.drop", { transcript, why: acknowledged ? "acknowledgement" : "noise" });
           settleFinished(false);
           publishSttDecision(
@@ -792,7 +863,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         settleFinished(Boolean(transcript));
         // Clicked into: what was said joins the box and waits for the user's send.
         // Decided before keeping this speech, so an emptied draft's audio is dropped first.
-        const editing = !heldEdit.autoSend();
+        let editing = !heldEdit.autoSend();
+        const spokenNow = transcript;
         const rt = useChatRuntimeStore.getState();
         // A clear during STT already emptied the buffer; this turn's speech must not refill it.
         if (
@@ -815,6 +887,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           (soundedFinished
             ? readsCutOff(transcript, modelId)
             : await turnUnfinished(transcript, modelId));
+        // The user may claim the held fragment while the judge decides: their edit is never auto-sent,
+        // and the box already holds the fragment, so only the new words join it.
+        if (!editing && !heldEdit.autoSend()) {
+          editing = true;
+          transcript = spokenNow;
+        }
         if (epoch !== heldEpoch) {
           voiceTrace("stt.drop", { transcript, why: "cleared" });
           finish("stopped");
@@ -824,6 +902,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         if (
           unfinished &&
+          !editing &&
           performance.now() - (heldTurn?.at ?? performance.now()) <
             CONTINUATION_MAX_MS
         ) {
@@ -872,11 +951,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           // Speech then finish land before the deferred submit; requestVoiceSubmit no-ops outside voice mode.
           emitSpeech(transcript, true);
           finish("stopped", transcript);
-          if (editing) {
+          if (editing || !heldEdit.autoSend()) {
             voiceTrace("hold.userEditAppend", { transcript });
             setTimeout(() => requestVoiceResume(), 0);
           } else {
-            setTimeout(() => requestVoiceSubmit(transcript), 0);
+            submitLater(transcript);
           }
         } else {
           if (bargedIn) {
@@ -888,6 +967,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
       } catch (error) {
         if (ended) return;
+        if (switchedOff()) {
+          dropSwitched();
+          return;
+        }
         console.error("Voice transcription error:", error);
         toast.error(translate("voiceControls.transcriptionFailed"));
         if (bargedIn) requestVoiceBargeAbort();
@@ -977,7 +1060,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             silence.reset(now);
             return;
           }
-          if (!silence.due(now) || !reacquireBackoff.allow(now)) return;
+          // Backoff first: due() fires once, so asking it while the backoff refuses would end recovery for good.
+          if (!reacquireBackoff.allow(now) || !silence.due(now)) return;
           handle.reacquire("silent");
         }, 250);
 
@@ -1052,6 +1136,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             zeroRunMs += frameMs;
           } else if (zeroRunMs > 0) {
             endZeroRun();
+          }
+          // Speech already underway when the reply starts playing barges in: never cut down to the louder bar.
+          if (heardSpeech && !bargedIn && isVoicePlaybackActive()) {
+            bargedIn = true;
+            requestVoiceBargeIn();
           }
           // While the reply plays (or a barge-in probe is out, keeping frames in order) only a barge-in is listened for.
           if (!bargedIn && (isVoicePlaybackActive() || bargeConfirming)) {
@@ -1132,7 +1221,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             chunks.push(frame);
             chunkVoiced.push(loud);
             chunkNotSilent.push(level >= Math.max(SILENCE_RMS_MIN, noiseFloor * SILENCE_OVER_FLOOR));
-            if (loud) voicedMs += frameMs;
+            // Counted only once live speech follows: echo left after the reply must not become a turn.
+            if (loud) prerollVoicedMs += frameMs;
           }
           chunks.push(new Float32Array(input));
           if (
@@ -1158,9 +1248,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           chunkVoiced.push(speech);
           chunkNotSilent.push(notSilent);
           if (notSilent) lastVoiceAt = now;
-          if (speech || (voicedMs > 0 && !heardSpeech)) {
-            if (speech) voicedMs += frameMs;
+          if (speech) {
+            voicedMs += frameMs;
             if (!heardSpeech) {
+              voicedMs += prerollVoicedMs;
+              prerollVoicedMs = 0;
               heardSpeech = true;
               utteranceInFlight = true;
               noteSpeechStart();

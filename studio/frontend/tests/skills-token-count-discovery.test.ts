@@ -67,7 +67,7 @@ test("request building waits for skills and preserves the launcher tool catalog"
   );
   assert.match(
     payloadBuilder,
-    /supportsTools &&\s*\([\s\S]*skillTools\.length > 0[\s\S]*\)\s*\? \{\s*enable_tools: true/,
+    /const studioToolsOn =\s*supportsTools &&\s*\([\s\S]*skillTools\.length > 0[\s\S]*\);[\s\S]*\.\.\.\(studioToolsOn\s*\? \{\s*enable_tools: true/,
   );
   const localToolCatalog = payloadBuilder.slice(
     payloadBuilder.indexOf("// Sent for every local chat"),

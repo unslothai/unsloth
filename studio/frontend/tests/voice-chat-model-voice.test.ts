@@ -172,9 +172,10 @@ test("the speaker resets only when crossing to or from the chat model's voice", 
   assert.equal(speakerCarriesOver(VOICE_CHAT_MODEL_VOICE, VOICE_CHAT_MODEL_VOICE), true);
 });
 
-test("the reply's player WAV is rejoined at doubling chunk counts and once the stream ends", () => {
+test("the reply's player WAV is joined once the stream ends, never swapped mid-play", () => {
   const adapter = readFileSync(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url), "utf8");
-  assert.match(adapter, /\(\(spokenCount & \(spokenCount - 1\)\) === 0 \|\|\s*Boolean\(chunk\.choices\?\.\[0\]\?\.finish_reason\)\) &&\s*joinSpokenPart\(\)/);
+  assert.match(adapter, /if \(Boolean\(chunk\.choices\?\.\[0\]\?\.finish_reason\) && joinSpokenPart\(\)\) \{/);
+  assert.doesNotMatch(adapter, /spokenCount & \(spokenCount - 1\)/);
   assert.ok((adapter.match(/joinSpokenPart\(\);/g) ?? []).length >= 2);
 });
 

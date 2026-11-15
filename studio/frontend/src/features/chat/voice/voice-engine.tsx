@@ -13,6 +13,7 @@ import {
   claimHeldTurnForEdit,
   clearHeldTurn,
   dropVoiceUtteranceAudio,
+  forgetVoiceBox,
   endHeldEdit,
   getHeldTurnText,
   isComposerHeldForEdit,
@@ -25,11 +26,13 @@ import {
   voiceRevealText,
   takeTypedDraft,
   voiceWroteBox,
+  voiceTextReleaser,
+  voiceUtterancePending,
+  withoutVoiceText,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
 import { splitStreaming, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
-import { useChatRuntimeStore
-} from "@/features/chat/stores/chat-runtime-store";
+import { codeToolsOn, useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { stopChatThread
 } from "@/features/chat/utils/stop-chat-thread";
 import {
@@ -82,6 +85,7 @@ import {
   registerVoiceThreadReset,
   registerVoiceToggle,
   registerVoiceTypedSubmit,
+  registerVoiceTypedSend,
   setVoiceMode as setLoopVoiceMode,
   voiceRunToStop,
 } from "@/features/chat/voice/voice-loop-bridge";
@@ -134,6 +138,9 @@ function speaksWithChatModel(): boolean {
   return isChatModelVoice(s.selectedVoiceModelId) && chatModelSpeaks(s);
 }
 
+const IGNORE_MAX_WORDS = 3;
+const PLAYBACK_TAIL_MS = 500;
+const VOICE_APPEND_WAIT_MAX_MS = 120_000;
 const VOICE_COALESCE_MS = 250;
 const VOICE_COALESCE_POLL_MS = 250;
 // After a barge-in cut an unanswered run the user tends to keep going; each restart threw the thinking away.
@@ -162,9 +169,12 @@ export const VoiceEngine: FC = () => {
   const voiceCoalesceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // A chat's first message, held for the coalesce window before it goes through the composer.
   const firstTurnHeldRef = useRef<string | null>(null);
+  // Bumped per armed coalesced run: a start still settling after a newer utterance must not fire.
+  const coalesceSeqRef = useRef(0);
   const voiceModeRef = useRef(getVoiceMode());
   const isSpeakingRef = useRef(false);
   const isPlayingRef = useRef(false);
+  const playedAtRef = useRef(-Infinity);
   const synthGapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const orbDwellRef = useRef<OrbDwell | null>(null);
   const auiRef = useRef(aui);
@@ -189,7 +199,9 @@ export const VoiceEngine: FC = () => {
       // Already listening: startDictation() on a live session tears the mic down.
       if (fresh.getState().dictation) return;
       // assistant-ui appends transcripts onto the box text and the adapter emits the whole turn, so leftovers double up.
-      if (voiceWroteBox(fresh.getState().text) && !isComposerHeldForEdit()) fresh.setText("");
+      // A typed draft ahead of a held fragment stays: only the fragment goes.
+      const typed = isComposerHeldForEdit() ? null : withoutVoiceText(fresh.getState().text);
+      if (typed !== null) fresh.setText(typed);
       // Start dictation via the composer runtime, NOT by clicking the Dictate
       // button: in voice mode that button is hidden/replaced by the orb, so a
       // DOM query returns null and the mic never opens (silent green orb).
@@ -282,9 +294,14 @@ export const VoiceEngine: FC = () => {
     if (useChatRuntimeStore.getState().voicePaused) holdPlayback(true);
   }, [holdPlayback]);
   isSpeakingRef.current = isSpeaking;
+  if (isPlayingRef.current && !isPlaying) playedAtRef.current = performance.now();
   isPlayingRef.current = isPlaying;
   useEffect(() => {
-    registerVoicePlayback(() => isSpeakingRef.current || isPlayingRef.current);
+    // Audible output only (plus its echo tail and sentence gaps): while the reply is still being thought
+    // or synthesized nothing plays, so a normal-volume interjection is heard, not held to the barge-in bar.
+    registerVoicePlayback(
+      () => isPlayingRef.current || performance.now() - playedAtRef.current < PLAYBACK_TAIL_MS,
+    );
     return () => registerVoicePlayback(null);
   }, []);
   const beginStreamRef = useRef(beginStream);
@@ -302,6 +319,8 @@ export const VoiceEngine: FC = () => {
   const spokenRunRef = useRef(false);
   const spokenClipsRef = useRef(0);
   const streamBegunRef = useRef(false);
+  const streamGenRef = useRef(0);
+  const [streamSeq, setStreamSeq] = useState(0);
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFallbackAtRef = useRef(0);
   // The filler model answered (say or quiet). A quiet vote is the answer, so the
@@ -386,6 +405,14 @@ export const VoiceEngine: FC = () => {
     }
     return false;
   }, []);
+  // No answer text yet: prefill, or thinking with reasoning off. Speech then is judged like speech during reasoning.
+  const replyNotStarted = useCallback((): boolean => {
+    const messages = auiRef.current.thread().getState().messages;
+    const last = messages[messages.length - 1];
+    if (!last || last.role === "user") return true;
+    if (last.role !== "assistant") return false;
+    return !(last.content as Array<{ type: string; text?: string }>).some((p) => p.type === "text" && p.text);
+  }, []);
   const [isReasoning, setIsReasoning] = useState(false);
 
   const latestAssistantText = useCallback((): string => {
@@ -422,8 +449,20 @@ export const VoiceEngine: FC = () => {
     const visual = composer
       .getState()
       .attachments.some((a) => a.type === "image" || /^(image|video)\//.test(a.contentType ?? ""));
+    // A spoken reply (and MLX) takes one clip: beside an attached audio file the question goes as its transcript.
+    const attachedAudio = composer
+      .getState()
+      .attachments.some((a) => a.type === "audio" || /^audio\//.test(a.contentType ?? ""));
+    const rt = useChatRuntimeStore.getState();
+    // The audio-input route skips Studio's tool loop, so with tools on the turn goes as its transcript.
+    const toolsOn =
+      rt.supportsTools &&
+      (rt.toolsEnabled || codeToolsOn(rt) || rt.mcpEnabledForChat || rt.ragEnabled || rt.deepResearchEnabled);
     const turnAudio =
-      !visual && voiceHearsAudio(useChatRuntimeStore.getState(), useVoiceSettingsStore.getState().micTarget)
+      !visual &&
+      !toolsOn &&
+      !(attachedAudio && (speaksWithChatModel() || rt.loadedIsMlx === true)) &&
+      voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)
         ? taken
         : null;
     // Cover the tail clip (isPlaying) too, not just an active streaming session (isSpeaking).
@@ -446,13 +485,19 @@ export const VoiceEngine: FC = () => {
     const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
     if (activeThreadId) resetPromptQueuesForThread(activeThreadId);
     const DEFERRED_CLEAR_MS = 50;
+    const releaseVoiceText = voiceTextReleaser();
     const deferredClear = (n: number) => {
       if (voiceModeRef.current !== "active") return;
       const fresh = auiRef.current.composer();
       // Only the transcript the composer refills: a draft typed since, or another chat's, stays.
-      if (!voiceWroteBox(fresh.getState().text)) return;
-      fresh.setText("");
-      if (n < 5) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
+      if (voiceWroteBox(fresh.getState().text)) {
+        fresh.setText("");
+        if (n < 5) {
+          setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
+          return;
+        }
+      }
+      releaseVoiceText();
     };
     const sendNow = () => {
       composer.setText(text);
@@ -466,11 +511,16 @@ export const VoiceEngine: FC = () => {
         return;
       }
       const bytes = Uint8Array.from(atob(turnAudio), (c) => c.charCodeAt(0));
+      // A chat switch while the clip attaches resets the turn: the old words never go to the new chat.
+      const turn = voiceNotesEpoch();
+      const fromThread = useChatRuntimeStore.getState().activeThreadId;
       void composer
         .addAttachment(new File([bytes], "voice.wav", { type: "audio/wav" }))
         .catch((error: unknown) => voiceTrace("engine.turnAudioAttachFailed", { message: String(error) }))
         .then(() => {
-          if (voiceModeRef.current === "active") sendNow();
+          if (voiceModeRef.current !== "active" || voiceNotesEpoch() !== turn) return;
+          if (useChatRuntimeStore.getState().activeThreadId !== fromThread) return;
+          sendNow();
         });
     };
 
@@ -565,7 +615,7 @@ export const VoiceEngine: FC = () => {
       voiceCoalesceTimerRef.current = null;
       if (voiceModeRef.current !== "active") return;
       const rt = useChatRuntimeStore.getState();
-      const hearing = rt.voiceHearing || rt.voiceTranscribing;
+      const hearing = rt.voiceHearing || rt.voiceTranscribing || voiceUtterancePending();
       if (hearing) heardAt = Date.now();
       if (stillInTurn(hearing, heardAt, Date.now()) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
         voiceTrace("engine.coalesceWaitHearing", {});
@@ -583,13 +633,9 @@ export const VoiceEngine: FC = () => {
         }
         return;
       }
-      // A phrase begun inside the window joins this turn: starting the run now would stop its recorder mid-word.
-      if ((rt.voiceHearing || rt.voiceTranscribing) && attempt < VOICE_COALESCE_MAX_RETRIES) {
-        voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_MS);
-        return;
-      }
       const msgs = t.getState().messages;
-      if (msgs.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES) {
+      // An attachment's send uploads its original first: wait for the message on the clock, not a tick budget.
+      if (msgs.length <= before && Date.now() - armedAt < VOICE_APPEND_WAIT_MAX_MS) {
         voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_POLL_MS);
         return;
       }
@@ -600,8 +646,10 @@ export const VoiceEngine: FC = () => {
       const turn = voiceNotesEpoch();
       const start = () => {
         if (voiceModeRef.current !== "active") return;
-        if (voiceNotesEpoch() !== turn) return;
+        if (voiceNotesEpoch() !== turn || coalesceSeqRef.current !== seq) return;
         if (useChatRuntimeStore.getState().activeThreadId !== threadId) return;
+        const now = t.getState();
+        if (now.isRunning || now.messages[now.messages.length - 1]?.id !== last.id) return;
         try {
           t.startRun({ parentId: last.id });
         } catch {
@@ -630,6 +678,7 @@ export const VoiceEngine: FC = () => {
       })();
     };
     if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
+    const seq = ++coalesceSeqRef.current;
     const holdOn = isHoldOn(said);
     if (holdOn) voiceTrace("engine.holdOn", { text: said });
     voiceCoalesceTimerRef.current = setTimeout(
@@ -689,6 +738,11 @@ export const VoiceEngine: FC = () => {
     if (composer.getState().dictation) composer.stopDictation();
     let text = (spoken ?? composer.getState().text).trim();
     if (draft) text = `${draft} ${text}`;
+    // The chat model went away while this was heard: keep it as a draft, never auto-load a model to send it.
+    if (!hasChatModelRef.current) {
+      if (text && !typed) composer.setText(text);
+      return;
+    }
     voiceTrace("engine.submit", { text });
     const pending = pendingForVoiceRef.current;
     // A reply sent now would land before the voice can speak it: park the turn until the slot loads.
@@ -770,8 +824,10 @@ export const VoiceEngine: FC = () => {
     void fillerVerdict.then((fromModel) => {
       // Voice off, a thread switch or a typed send since: the verdict is for a turn that's gone.
       if (notesEpoch !== voiceNotesEpoch()) return;
-      if (fromModel) fillerAnsweredRef.current = true;
-      if (fromModel && !auiRef.current.thread().getState().isRunning) applyFiller(fromModel);
+      // A decision landing after the run started is too late for the request's note: the quiet fallback covers the wait.
+      if (!fromModel || auiRef.current.thread().getState().isRunning) return;
+      fillerAnsweredRef.current = true;
+      applyFiller(fromModel);
     });
     const thread = auiRef.current.thread();
     if (early?.restarted) {
@@ -781,7 +837,7 @@ export const VoiceEngine: FC = () => {
       return;
     }
     // Speech during thinking is not always a barge-in: the interject model decides. Typed text is never held.
-    if (!typed && thread.getState().isRunning && latestAssistantIsReasoning()) {
+    if (!typed && thread.getState().isRunning && (latestAssistantIsReasoning() || replyNotStarted())) {
       const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
       const fromThread = useChatRuntimeStore.getState().activeThreadId;
       const turn = voiceNotesEpoch();
@@ -845,13 +901,15 @@ export const VoiceEngine: FC = () => {
     // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
     // on its own, and the two go as one when the reply ends.
     const continuing = queuedUtteranceRef.current.length > 0 && !repeated;
+    // An "ignore" drops the words; past a backchannel's length a wrong one loses a whole correction, so it waits instead.
+    const tooLongToIgnore = text.trim().split(/\s+/).length > IGNORE_MAX_WORDS;
     const awaitingApproval = voicedApprovalCount(useChatRuntimeStore.getState()) > 0;
     const action = interjectUnderApproval(
       sameAsk
         ? "ignore"
         : verdict !== "restart" && repeated
           ? "restart"
-          : continuing && verdict === "ignore"
+          : (continuing || tooLongToIgnore) && verdict === "ignore"
             ? "queue"
             : verdict,
       awaitingApproval,
@@ -862,7 +920,7 @@ export const VoiceEngine: FC = () => {
   async function askEarly(fragment: string): Promise<EarlyAnswer | null> {
     if (voiceModeRef.current !== "active") return null;
     if (!auiRef.current.thread().getState().isRunning) return null;
-    if (!latestAssistantIsReasoning()) return { verdict: "restart", kind: null };
+    if (!latestAssistantIsReasoning() && !replyNotStarted()) return { verdict: "restart", kind: null };
     const elapsedS = (Date.now() - runStartedAtRef.current) / 1000;
     const answer = await interjectAction(lastUserPrompt(), fragment, elapsedS);
     if (voiceModeRef.current !== "active" || !auiRef.current.thread().getState().isRunning) {
@@ -1046,6 +1104,14 @@ export const VoiceEngine: FC = () => {
     setLoopVoiceMode("active");
     voiceModeRef.current = "active";
     setVoiceModeState("active");
+    // A read-aloud already playing would talk over the mic, and barge-in cannot see it.
+    const thread = auiRef.current.thread();
+    if (thread.getState().speech) {
+      try {
+        thread.stopSpeaking();
+      } catch {
+      }
+    }
     if (!hasChatModelRef.current) return;
     if (useChatRuntimeStore.getState().voiceSlotLoading) return;
     if (!auiRef.current.thread().getState().isRunning && !isSpeakingRef.current) {
@@ -1057,7 +1123,11 @@ export const VoiceEngine: FC = () => {
   useEffect(() => {
     if (armedForModelRef.current === hasChatModel) return;
     armedForModelRef.current = hasChatModel;
-    if (!hasChatModel) return;
+    if (!hasChatModel) {
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
+      return;
+    }
     if (voiceModeRef.current !== "active") return;
     resumeListen();
   }, [hasChatModel, resumeListen]);
@@ -1104,6 +1174,7 @@ export const VoiceEngine: FC = () => {
         if (composer.getState().dictation) composer.stopDictation();
         beginStreamRef.current();
         streamBegunRef.current = true;
+        streamGenRef.current++;
         spokenRunRef.current =
           speaksWithChatModel() && lastUserTurnHasAudio(auiRef.current.thread().getState().messages);
         spokenClipsRef.current = 0;
@@ -1122,6 +1193,8 @@ export const VoiceEngine: FC = () => {
             sayAsideRef.current(f.phrase, { standIns: fillerStandIns() });
           }, fillerDelayMs());
         }
+        // isSpeaking may already be true (a typed follow-up over a reply): the mic re-arms per stream, not per flip.
+        setStreamSeq((n) => n + 1);
         if (streamPollRef.current) clearInterval(streamPollRef.current);
         let quietFallbackAt: number | null = null;
         let writingDone = false;
@@ -1236,7 +1309,11 @@ export const VoiceEngine: FC = () => {
       const endMsgs = auiRef.current.thread().getState().messages;
       const endTail = endMsgs.length ? endMsgs[endMsgs.length - 1] : null;
       spokenReplyRef.current = endTail?.role === "assistant" ? { id: endTail.id, text } : null;
-      setTimeout(() => endClipsRef.current(), 150);
+      const gen = streamGenRef.current;
+      setTimeout(() => {
+        // A Regenerate inside the beat owns the stream now: finalizing it would drop the new reply's clips.
+        if (gen === streamGenRef.current && voiceModeRef.current === "active") endClipsRef.current();
+      }, 150);
       return;
     }
     if (!text) {
@@ -1265,7 +1342,10 @@ export const VoiceEngine: FC = () => {
     spokenReplyRef.current = endTail?.role === "assistant" ? { id: endTail.id, text } : null;
     // Read again after a beat: the last token can land after isRunning flipped.
     if (streamBegun) {
+      const gen = streamGenRef.current;
       setTimeout(() => {
+        // A Regenerate or Continue inside the beat owns the stream now: closing it would speak this reply again.
+        if (gen !== streamGenRef.current || voiceModeRef.current !== "active") return;
         const final = latestAssistantText();
         const said = final.length >= text.length ? final : text;
         if (spokenReplyRef.current) spokenReplyRef.current = { ...spokenReplyRef.current, text: said };
@@ -1299,11 +1379,13 @@ export const VoiceEngine: FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isSpeaking]);
+  }, [isSpeaking, streamSeq]);
 
   // No session-end watcher: the adapter raises requestVoiceSubmit itself.
 
   const turnOff = useCallback(() => {
+    // Dismissing the setup panel leaves a typed reply running: only an active voice owns the run.
+    const wasActive = voiceModeRef.current === "active";
     _voicedThreadId = null;
     spokenRunRef.current = false;
     setLoopVoiceMode("off");
@@ -1315,6 +1397,7 @@ export const VoiceEngine: FC = () => {
       voiceCoalesceTimerRef.current = null;
     }
     clearHeldTurn();
+    forgetVoiceBox();
     clearPendingVoiceNotes();
     earlyInterjectRef.current?.reset();
     clearFiller();
@@ -1332,7 +1415,7 @@ export const VoiceEngine: FC = () => {
     stop();
     pauseOutputSpectrum();
     const thread = auiRef.current.thread();
-    if (thread.getState().isRunning) {
+    if (wasActive && thread.getState().isRunning) {
       try {
         thread.cancelRun();
       } catch {
@@ -1379,6 +1462,7 @@ export const VoiceEngine: FC = () => {
     }
     streamBegunRef.current = false;
     clearHeldTurn();
+    forgetVoiceBox();
     clearPendingVoiceNotes();
     earlyInterjectRef.current?.reset();
     clearFiller();
@@ -1413,9 +1497,23 @@ export const VoiceEngine: FC = () => {
 
   useEffect(() => {
     return () => {
+      rearmSeqRef.current += 1;
+      // A project landing swaps the composer without a thread switch: a held phrase must not submit there.
+      clearHeldTurn();
+      forgetVoiceBox();
       if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
       if (streamPollRef.current) clearInterval(streamPollRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    registerVoiceTypedSend(() => {
+      if (voiceModeRef.current !== "active") return;
+      clearHeldTurn();
+      // A verdict still out for the last utterance belongs to the run this send replaces.
+      clearPendingVoiceNotes();
+    });
+    return () => registerVoiceTypedSend(null);
   }, []);
 
   useEffect(() => {
@@ -1473,10 +1571,9 @@ export const VoiceEngine: FC = () => {
   }, [holdPlayback]);
 
   const resumeOrFlush = useCallback(() => {
-    if (
-      pendingForVoiceRef.current.length &&
-      !useChatRuntimeStore.getState().voiceSlotLoading
-    ) {
+    // Only once the voice is up: after a failed load each silent session would re-park and reload in a loop.
+    const rt = useChatRuntimeStore.getState();
+    if (pendingForVoiceRef.current.length && !rt.voiceSlotLoading && rt.voiceSlotLoaded) {
       submitRef.current("");
       return;
     }

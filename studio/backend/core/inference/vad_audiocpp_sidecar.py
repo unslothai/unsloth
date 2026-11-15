@@ -150,7 +150,12 @@ def _builtin_model(detector: BuiltinDetector) -> AudioCppModel:
     )
 
 
-def resolve_vad_model(model: Optional[str], *, network: bool = False) -> AudioCppModel:
+def resolve_vad_model(
+    model: Optional[str],
+    *,
+    network: bool = False,
+    hf_token: Optional[str] = None,
+) -> AudioCppModel:
     identifier = (model or "").strip() or DEFAULT_VAD_MODEL
     builtin = builtin_detector(identifier)
     if builtin is not None:
@@ -158,7 +163,9 @@ def resolve_vad_model(model: Optional[str], *, network: bool = False) -> AudioCp
     if is_builtin_id(identifier):
         # Shaped like a Hub repo id, but it names nothing there: never look it up.
         raise VadError(f"'{model}' is not a detector Unsloth Studio includes.")
-    return resolve_hub_model(identifier, "vad", "detect speech with", network = network)
+    return resolve_hub_model(
+        identifier, "vad", "detect speech with", network = network, hf_token = hf_token
+    )
 
 
 def segments_from_result(payload: dict, fallback_rate: int) -> dict:
@@ -203,8 +210,10 @@ def _debug_dump(wav_bytes: bytes, payload: dict, result: dict) -> None:
 class AudioCppVadSidecar(AudioCppClipSidecar):
     label = "speech detector"
 
-    def _resolve(self, model: Optional[str], *, network: bool) -> AudioCppModel:
-        return resolve_vad_model(model, network = network)
+    def _resolve(
+        self, model: Optional[str], *, network: bool, hf_token: Optional[str] = None
+    ) -> AudioCppModel:
+        return resolve_vad_model(model, network = network, hf_token = hf_token)
 
     def _cpu_only(self, entry: AudioCppModel) -> bool:
         return entry.id in BUILTIN_DETECTORS

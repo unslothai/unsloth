@@ -141,6 +141,8 @@ export function VoiceDecisionLogSection() {
   const rows = stats?.rows ?? 0;
   const doExport = async () => {
     setBusy(true);
+    // Taken before the request: rows logged while the save dialog is open go in the next export.
+    const cutoff = Date.now();
     try {
       const n = await exportLayaLog({
         model,
@@ -148,7 +150,7 @@ export function VoiceDecisionLogSection() {
         threadId: chat === ALL_CHATS ? null : chat,
         since: sinceLast && exportedAt ? new Date(exportedAt).toISOString() : null,
       });
-      setExportedAt(Date.now());
+      setExportedAt(cutoff);
       toast.success(t("settings.voice.voiceMode.exported", { n: String(n) }));
     } catch (error) {
       if (!isDownloadCancelled(error)) toast.error(t("settings.voice.voiceMode.exportFailed"));

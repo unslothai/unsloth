@@ -59,6 +59,6 @@ test("the loop analyses the clip during the silence hang and finalize reuses it"
     /sinceVoice >= \(askTurn \? TURN_ASK_AFTER_MS : SPECULATE_AFTER_MS\)\) \{\s*const span = utteranceSpan\(.*?\);\s*if \(span\) \{\s*const key = clipKey\(span\);\s*const analysis = early\.start\(key,/,
   );
   const finalize = loop.slice(loop.indexOf("const finalize = async () => {"));
-  assert.match(finalize.slice(0, 1200), /const ready = early\.take\(key\);\s*const analysis = ready \?\? analyseClip\(span\);/);
+  assert.match(finalize.slice(0, 2000), /const ready = early\.take\(key\);\s*const analysis = ready \?\? analyseClip\(span\);/);
   assert.match(loop, /cancel: \(\) => \{\s*teardown\(\);\s*early\.clear\(\);/);
 });

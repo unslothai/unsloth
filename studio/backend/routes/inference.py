@@ -27076,7 +27076,12 @@ def _clip_http_error(exc: Exception, what: str) -> HTTPException:
     if isinstance(exc, ClipModelNotDownloadedError):
         return HTTPException(status_code = 409, detail = str(exc))
     if isinstance(exc, ClipUnavailableError):
-        return HTTPException(status_code = 501, detail = str(exc))
+        from core.inference.audio_cpp_server import UPDATE_IN_PROGRESS
+
+        # 501 turns the helper off for the page; an audio.cpp update is over in a moment.
+        return HTTPException(
+            status_code = 503 if UPDATE_IN_PROGRESS.is_set() else 501, detail = str(exc)
+        )
     if isinstance(exc, ClipError):
         return HTTPException(status_code = 422, detail = str(exc))
     logger.error(f"{what} error: {exc}", exc_info = True)
@@ -27092,7 +27097,9 @@ async def _require_hub_audio_model_access(identifier: str) -> None:
     await asyncio.to_thread(account_access.require_model_access, repo_of(identifier) or identifier)
 
 
-async def _load_clip_sidecar(sidecar, model: Optional[str], hf_token, what: str) -> JSONResponse:
+async def _load_clip_sidecar(
+    sidecar, model: Optional[str], hf_token, what: str, modality: str
+) -> JSONResponse:
     """Start the helper's model, downloading it first when it is not here yet."""
     from core.inference.audio_cpp_clip_sidecar import ClipModelNotDownloadedError
 
@@ -27100,11 +27107,23 @@ async def _load_clip_sidecar(sidecar, model: Optional[str], hf_token, what: str)
         try:
             loaded = await asyncio.to_thread(sidecar.load, model)
         except ClipModelNotDownloadedError:
-            await asyncio.to_thread(sidecar.download, model, hf_token)
+            token = account_access.account_hf_token(hf_token)
+            await asyncio.to_thread(sidecar.download, model, token)
             loaded = await asyncio.to_thread(sidecar.load, model)
     except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
         raise _clip_http_error(exc, what)
+    account_access.note_resident_account(modality, loaded)
     return JSONResponse(content = {"loaded_model": loaded})
+
+
+async def _claim_clip_load(sidecar, before: Optional[str], loaded: Optional[str], modality: str) -> None:
+    """A run that loaded the helper's model owns it as a load would; one that only used it claims nothing."""
+    if (
+        loaded
+        and loaded != before
+        and await asyncio.to_thread(lambda: sidecar.loaded_model) == loaded
+    ):
+        account_access.note_resident_account(modality, loaded)
 
 
 async def _clip_body(request: Request) -> bytes:
@@ -27123,7 +27142,11 @@ async def _clip_body(request: Request) -> bytes:
 @studio_router.get("/audio/vad/status")
 async def vad_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
-    return JSONResponse(content = await asyncio.to_thread(get_audio_cpp_vad_sidecar().status))
+
+    status = await asyncio.to_thread(get_audio_cpp_vad_sidecar().status)
+    if account_access.resident_hidden("vad", status.get("loaded_model")):
+        status = {**status, "loaded_model": None}
+    return JSONResponse(content = status)
 
 
 async def _require_vad_model_access(model: Optional[str]) -> None:
@@ -27144,13 +27167,20 @@ async def vad_load(
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
 
     await _require_vad_model_access(payload.model)
-    return await _load_clip_sidecar(get_audio_cpp_vad_sidecar(), payload.model, hf_token, "VAD")
+    return await _load_clip_sidecar(
+        get_audio_cpp_vad_sidecar(), payload.model, hf_token, "VAD", "vad"
+    )
 
 
 @studio_router.post("/audio/vad/unload")
 async def vad_unload(current_subject: str = Depends(get_current_subject)):
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
-    released = await asyncio.to_thread(get_audio_cpp_vad_sidecar().unload)
+
+    sidecar = get_audio_cpp_vad_sidecar()
+    # Another account's detector is not this caller's to stop; the sidecar lock (held by a detect) stays off the event loop.
+    released = await asyncio.to_thread(
+        sidecar.unload, lambda resident: account_access.resident_hidden("vad", resident)
+    )
     return JSONResponse(content = {"released": released})
 
 
@@ -27165,10 +27195,13 @@ async def vad_detect(
 
     await _require_vad_model_access(model)
     audio = await _clip_body(request)
+    sidecar = get_audio_cpp_vad_sidecar()
+    before = await asyncio.to_thread(lambda: sidecar.loaded_model)
     try:
-        result = await asyncio.to_thread(get_audio_cpp_vad_sidecar().detect, audio, model)
+        result = await asyncio.to_thread(sidecar.detect, audio, model)
     except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
         raise _clip_http_error(exc, "VAD")
+    await _claim_clip_load(sidecar, before, result.get("model"), "vad")
     return JSONResponse(content = result)
 
 
@@ -27182,7 +27215,11 @@ async def _require_turn_model_access(model: Optional[str]) -> None:
 @studio_router.get("/audio/turn/status")
 async def turn_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
-    return JSONResponse(content = await asyncio.to_thread(get_audio_cpp_turn_sidecar().status))
+
+    status = await asyncio.to_thread(get_audio_cpp_turn_sidecar().status)
+    if account_access.resident_hidden("turn", status.get("loaded_model")):
+        status = {**status, "loaded_model": None}
+    return JSONResponse(content = status)
 
 
 @studio_router.post("/audio/turn/load")
@@ -27196,14 +27233,19 @@ async def turn_load(
 
     await _require_turn_model_access(payload.model)
     return await _load_clip_sidecar(
-        get_audio_cpp_turn_sidecar(), payload.model, hf_token, "Turn detection"
+        get_audio_cpp_turn_sidecar(), payload.model, hf_token, "Turn detection", "turn"
     )
 
 
 @studio_router.post("/audio/turn/unload")
 async def turn_unload(current_subject: str = Depends(get_current_subject)):
     from core.inference.turn_audiocpp_sidecar import get_audio_cpp_turn_sidecar
-    released = await asyncio.to_thread(get_audio_cpp_turn_sidecar().unload)
+
+    # Another account's model is not this caller's to stop.
+    released = await asyncio.to_thread(
+        get_audio_cpp_turn_sidecar().unload,
+        lambda resident: account_access.resident_hidden("turn", resident),
+    )
     return JSONResponse(content = {"released": released})
 
 
@@ -27221,12 +27263,13 @@ async def turn_detect(
 
     await _require_turn_model_access(model)
     audio = await _clip_body(request)
+    sidecar = get_audio_cpp_turn_sidecar()
+    before = await asyncio.to_thread(lambda: sidecar.loaded_model)
     try:
-        result = await asyncio.to_thread(
-            get_audio_cpp_turn_sidecar().detect, audio, model, language
-        )
+        result = await asyncio.to_thread(sidecar.detect, audio, model, language)
     except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
         raise _clip_http_error(exc, "Turn detection")
+    await _claim_clip_load(sidecar, before, result.get("model"), "turn")
     return JSONResponse(content = result)
 
 
@@ -27347,7 +27390,8 @@ async def voice_decision_put(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     models = get_voice_models()
-    models.switch_decision()
+    # The models lock is held through a cold load (downloads included): never on the event loop.
+    await asyncio.to_thread(models.switch_decision)
     threading.Thread(target = models.warm_decision, daemon = True).start()
     return JSONResponse(content = await asyncio.to_thread(voice_decisions.picker_state))
 

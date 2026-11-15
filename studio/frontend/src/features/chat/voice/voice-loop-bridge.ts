@@ -71,7 +71,15 @@ export function getVoiceMode(): VoiceMode {
   return voiceMode;
 }
 
+// Bumped on every switch to off: a recording that crossed one belongs to a session the user ended.
+let offEpoch = 0;
+
+export function voiceOffEpoch(): number {
+  return offEpoch;
+}
+
 export function setVoiceMode(next: VoiceMode): void {
+  if (next === "off" && voiceMode !== "off") offEpoch++;
   voiceMode = next;
 }
 
@@ -122,6 +130,16 @@ export function registerVoiceResume(fn: (() => void) | null): void {
 
 export function requestVoiceResume(): void {
   voiceResume?.();
+}
+
+let voiceTypedSend: (() => void) | null = null;
+export function registerVoiceTypedSend(fn: (() => void) | null): void {
+  voiceTypedSend = fn;
+}
+
+// A message sent from the composer supersedes a voice fragment still waiting for its continuation.
+export function noteTypedSend(): void {
+  voiceTypedSend?.();
 }
 
 export function registerVoiceBargeIn(fn: (() => void) | null): void {

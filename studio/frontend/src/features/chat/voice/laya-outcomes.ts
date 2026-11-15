@@ -45,13 +45,19 @@ const CORRECTION_CUE = /^\W*(?:no|nope|actually|instead|i mean|sorry|rather|wait
 const NEGATOR = /\b(?:no|not|never|none|nothing|without|\w+n['’]t)\b/gi;
 const negations = (text: string) => (text.match(NEGATOR) ?? []).length;
 
+// Dropped as stop words, yet "light off" -> "light on" and "from A to B" -> "to A from B" are corrections.
+const PARTICLE = /\b(?:on|off|in|into|onto|out|up|down|to|from|over|under|before|after|with|without)\b/gi;
+const particles = (text: string) => (text.toLowerCase().match(PARTICLE) ?? []).join(" ");
+
 export function isSameAsk(earlier: string, later: string): boolean {
   if (CORRECTION_CUE.test(later)) return false;
+  if (particles(earlier) !== particles(later)) return false;
   // "with no balances" for "with balances": the stop list drops the one word that changed.
   if (negations(earlier) !== negations(later)) return false;
   const before = contentWords(earlier);
   const after = contentWords(later);
-  if (!sharesMostWords(earlier, later) || ![...after].every((w) => before.has(w))) return false;
+  // Same words both ways: dropping one ("cats and dogs" -> "cats") narrows the ask, it is not a repeat.
+  if (before.size === 0 || before.size !== after.size || ![...after].every((w) => before.has(w))) return false;
   const order = [...before].filter((w) => after.has(w));
   return order.join(" ") === [...after].join(" ");
 }

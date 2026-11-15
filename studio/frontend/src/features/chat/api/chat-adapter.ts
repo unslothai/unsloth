@@ -2025,7 +2025,7 @@ export function messagesUsePrivateContent(messages: RunMessages): boolean {
 }
 
 /** Every clip on the newest user message, in the order it was attached. */
-function latestUserAudioClips(messages: RunMessages): string[] {
+function latestUserAudioClips(messages: RunMessages, skipVoiceRecording = false): string[] {
   messages = messages.map(modelVisibleMessage);
   const clips: string[] = [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -2039,6 +2039,8 @@ function latestUserAudioClips(messages: RunMessages): string[] {
 
     if ("attachments" in message) {
       for (const attachment of message.attachments ?? []) {
+        // The voice loop's own recording (voiceTurnAttachment); an uploaded file is never skipped.
+        if (skipVoiceRecording && (attachment as { name?: string }).name === "voice.wav") continue;
         for (const part of attachment.content ?? []) {
           const base64 = extractAudioPartBase64(part);
           if (base64) clips.push(base64);
@@ -2056,8 +2058,9 @@ function latestUserAudioClips(messages: RunMessages): string[] {
 export function findLatestUserAudioBase64(
   messages: RunMessages,
   includePendingAudio = true,
+  skipVoiceRecording = false,
 ): string | undefined {
-  const [first] = latestUserAudioClips(messages);
+  const [first] = latestUserAudioClips(messages, skipVoiceRecording);
   if (first) return first;
 
   const pendingAudio = includePendingAudio
@@ -2069,8 +2072,9 @@ export function findLatestUserAudioBase64(
 /** Clips after the first, for extra_audio_base64. Undefined when empty so text turns stay durable. */
 export function findLatestUserExtraAudioBase64(
   messages: RunMessages,
+  skipVoiceRecording = false,
 ): string[] | undefined {
-  const extra = latestUserAudioClips(messages).slice(1);
+  const extra = latestUserAudioClips(messages, skipVoiceRecording).slice(1);
   return extra.length > 0 ? extra : undefined;
 }
 
@@ -7012,9 +7016,24 @@ export function createOpenAIStreamAdapter(
             };
           }
 
+          // The audio-input route returns before Studio's tool loop: with any tool on (project sources and
+          // skills included) a voice turn goes as its transcript, so retrieval and search still run.
+          const studioToolsOn =
+            supportsTools &&
+            (toolsEnabled ||
+              codeToolsEnabled ||
+              mcpEnabledForChat ||
+              ragEnabled ||
+              projectRagEnabled ||
+              skillTools.length > 0 ||
+              browserTools.length > 0 ||
+              localMediaTools.length > 0 ||
+              deepResearchArmed);
+          const voiceTurnAsText = getVoiceMode() === "active" && studioToolsOn;
           const turnAudioBase64 = findLatestUserAudioBase64(
             currentTurnMessages,
             !queuedRunSettings && !continuation,
+            voiceTurnAsText,
           );
           return {
             model: params.checkpoint,
@@ -7051,14 +7070,13 @@ export function createOpenAIStreamAdapter(
             ...(wantsSpokenReply({
               speaks: Boolean(activeModel?.speaks),
               turnHasAudio: Boolean(turnAudioBase64),
-              voiceModeOn: getVoiceMode() !== "off",
+              voiceModeOn: getVoiceMode() === "active",
               selectedVoiceModelId:
                 useChatRuntimeStore.getState().selectedVoiceModelId,
             })
               ? { modalities: ["text", "audio"] }
               : {}),
-            extra_audio_base64:
-              findLatestUserExtraAudioBase64(currentTurnMessages),
+            extra_audio_base64: findLatestUserExtraAudioBase64(currentTurnMessages, voiceTurnAsText),
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
@@ -7084,16 +7102,7 @@ export function createOpenAIStreamAdapter(
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(deepResearchArmed ? { deep_research_armed: true } : {}),
-            ...(supportsTools &&
-              (toolsEnabled ||
-                codeToolsEnabled ||
-                mcpEnabledForChat ||
-                ragEnabled ||
-                projectRagEnabled ||
-                skillTools.length > 0 ||
-                browserTools.length > 0 ||
-                localMediaTools.length > 0 ||
-                deepResearchArmed)
+            ...(studioToolsOn
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -8077,13 +8086,8 @@ export function createOpenAIStreamAdapter(
                 spokenAudioChunks.push(spokenAudio);
                 publishVoiceSpokenAudio(resolvedThreadId ?? null, spokenAudio);
               }
-              // Rejoined at doubling counts and after the stream: joining on every chunk is quadratic.
-              const spokenCount = spokenAudioChunks.length;
-              if (
-                ((spokenCount & (spokenCount - 1)) === 0 ||
-                  Boolean(chunk.choices?.[0]?.finish_reason)) &&
-                joinSpokenPart()
-              ) {
+              // The player gets one WAV when the stream ends: a new src mid-stream restarts what is playing.
+              if (Boolean(chunk.choices?.[0]?.finish_reason) && joinSpokenPart()) {
                 replayStateChanged = true;
               }
               let geminiReplayStateChanged = false;

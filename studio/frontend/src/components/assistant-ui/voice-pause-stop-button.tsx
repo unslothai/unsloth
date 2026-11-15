@@ -47,7 +47,9 @@ export const VoicePauseStopButton: FC = () => {
     pressedAtRef.current = performance.now();
     holdRef.current?.press();
   };
+  const releasedAtRef = useRef(-Infinity);
   const release = () => {
+    releasedAtRef.current = performance.now();
     const outcome = holdRef.current?.release() ?? "none";
     const heldMs = Math.round(performance.now() - pressedAtRef.current);
     voiceTrace("ui.holdStop", { outcome, heldMs });
@@ -102,7 +104,11 @@ export const VoicePauseStopButton: FC = () => {
           onKeyDown={onKeyDown}
           onKeyUp={onKeyUp}
           onBlur={cancel}
-          onClick={(e) => e.preventDefault()}
+          onClick={(e) => {
+            e.preventDefault();
+            // Assistive tech activates with a bare click (detail 0); a press already handled here is not tapped twice.
+            if (e.detail === 0 && performance.now() - releasedAtRef.current > 500) requestVoicePauseToggle();
+          }}
         >
           <span className="relative grid size-full place-items-center">
             <span

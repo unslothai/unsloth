@@ -645,19 +645,20 @@ def fine_tunes() -> list[Checkpoint]:
 
 
 FOLDER_PREFIX = "decision-folder:"
-DECISION_FOLDER_MARKERS = {"unsloth_decision_config.json": "clef", "rl_agent_config.json": "laya"}
 
 
 def _folder_checkpoint(folder: Path) -> Checkpoint | None:
-    from utils.models.model_config import clef_folder_kind
+    from utils.models.model_config import clef_folder_kind, is_d1_folder
 
     from .laya_runtime import is_cached
 
-    layout = next(
-        (kind for marker, kind in DECISION_FOLDER_MARKERS.items() if (folder / marker).is_file()),
-        None,
-    )
-    if layout is None or (layout == "clef" and clef_folder_kind(folder) is None):
+    # A Clef is known by its own files (merged config.json or adapter_config.json plus the joint head);
+    # unsloth_decision_config.json is optional, so it is not required here.
+    if clef_folder_kind(folder) is not None:
+        layout = "clef"
+    elif (folder / "rl_agent_config.json").is_file():
+        layout = "laya"
+    else:
         return None
     family = "Clef" if layout == "clef" else "Laya"
     checkpoint = Checkpoint(
@@ -667,6 +668,7 @@ def _folder_checkpoint(folder: Path) -> Checkpoint | None:
         f"{family} in a custom model folder.",
         layout = layout,
         label = folder.name,
+        backend = "mlx" if layout == "clef" and is_d1_folder(folder) else "pytorch",
     )
     return checkpoint if is_cached(checkpoint) else None
 

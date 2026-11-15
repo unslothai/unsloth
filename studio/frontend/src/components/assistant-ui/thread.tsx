@@ -186,6 +186,7 @@ import {
 } from "@/features/chat/api/chat-adapter";
 import {
   loadVoiceMode,
+  noteTypedSend,
   requestVoiceToggle,
   requestVoiceTypedSubmit,
   useVoiceAvailable,
@@ -5794,6 +5795,7 @@ const Composer: FC<{
         aui.composer().stopDictation();
         return;
       }
+      noteTypedSend();
       // A command, not a prompt: ahead of the model and queue gates, so it works with no model loaded.
       if (!overlay && !hasAttachments && isRewindCommand(composerText)) {
         event.preventDefault();
@@ -7614,6 +7616,7 @@ const ComposerRightControls: FC<{
     },
   );
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
+  const voiceActive = useChatRuntimeStore((s) => s.voiceMode === "active");
   const voiceRequested = useVoiceRequested();
   return (
     <div
@@ -7664,7 +7667,9 @@ const ComposerRightControls: FC<{
           change width under the orb. Tap pauses or resumes; a hold cuts whatever
           is in flight (reply, run, held utterances) and goes back to listening.
           Voice mode stays on; the plus-menu Voice item turns it off and unloads. */}
-      {voiceEngaged ? (
+      {/* A research run keeps its own Stop: the voice button cancels only a chat run. */}
+      {/* While voice is only being configured, typed Send and Stop still work. */}
+      {voiceActive && !isResearchActive ? (
         <VoicePauseStopButton />
       ) : (
       <AuiIf
@@ -7698,7 +7703,7 @@ const ComposerRightControls: FC<{
         </ComposerPrimitive.Send>
       </AuiIf>
       )}
-      {!voiceEngaged && isQueueRunning && !isResearchActive ? (
+      {!voiceActive && isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
           {queueEntry?.paused && queueDisabled ? (
             <TooltipIconButton
@@ -7741,7 +7746,7 @@ const ComposerRightControls: FC<{
           )}
         </AuiIf>
       ) : null}
-      {voiceEngaged ? null : isResearchActive ? (
+      {isResearchActive ? (
         <Button
           type="button"
           variant="primary"
@@ -7757,7 +7762,7 @@ const ComposerRightControls: FC<{
             <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
           )}
         </Button>
-      ) : (
+      ) : voiceActive ? null : (
         <AuiIf condition={({ thread }) => thread.isRunning}>
           {/* Classed so the narrow-screen rules can treat this like the
               sibling send/stop buttons; it is the flex item, not the button. */}

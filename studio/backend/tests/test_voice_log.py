@@ -238,3 +238,13 @@ def test_loop_events_are_recorded_only_beside_the_debug_clips(tmp_path, monkeypa
         ("turn.end", {"p": 0.9}, 12.5),
         ("stt", {}, None),
     ]
+
+
+def test_an_outcome_reported_after_the_last_export_is_in_the_next_one(monkeypatch):
+    row_id = _judge("so I was thinking", 0.9)
+    # The last export ran after the decision was logged but before its outcome came in.
+    since = "2099-01-01T00:00:00.000+00:00"
+    assert vl.export_rows(since = since) == []
+    monkeypatch.setattr(vl.time, "time", lambda: 4102444800.0)  # 2100-01-01
+    vl.set_outcome(row_id, "continued_quickly")
+    assert [r["text"] for r in vl.export_rows(since = since)] == ["so I was thinking"]

@@ -5,6 +5,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from types import SimpleNamespace
 
 from core.inference import audio_cpp_clip_sidecar as clip
 from core.inference import audio_cpp_models as acm
@@ -282,3 +283,55 @@ def test_a_detect_keeps_the_server_it_loaded_until_the_run_ends(monkeypatch):
     # The bars travel with the answer, so the browser needs no table of detectors.
     assert result["bars"] == {"utterance_ms": 300.0, "barge_ms": 200.0}
     assert held_during_load == [True, True]
+
+
+def test_a_download_resolves_the_repo_with_the_callers_token(monkeypatch):
+    from core.inference import audio_cpp_backend
+
+    seen: list = []
+    entry = SimpleNamespace(id = "org/private-vad-GGUF")
+
+    def _resolve(
+        model,
+        *,
+        network = False,
+        hf_token = None,
+    ):
+        seen.append(("resolve", hf_token))
+        return entry
+
+    monkeypatch.setattr(vad, "resolve_vad_model", _resolve)
+    monkeypatch.setattr(
+        audio_cpp_backend.AudioCppBackend,
+        "_download_missing",
+        staticmethod(lambda e, token: seen.append(("download", token))),
+    )
+    from core.inference import audio_cpp_clip_sidecar
+
+    monkeypatch.setattr(
+        audio_cpp_clip_sidecar,
+        "forget",
+        lambda identifier = None: seen.append(("forget", identifier)),
+    )
+    monkeypatch.setattr(vad.AudioCppVadSidecar, "__init__", lambda self: None)
+    sidecar = vad.AudioCppVadSidecar()
+    assert sidecar.download("org/private-vad-GGUF", "hf_secret") == "org/private-vad-GGUF"
+    # The memoized "not downloaded" answer is dropped, so the load right after finds the files.
+    assert seen == [
+        ("resolve", "hf_secret"),
+        ("download", "hf_secret"),
+        ("forget", "org/private-vad-GGUF"),
+    ]
+
+
+def test_a_detector_refused_during_an_audio_runtime_update_is_retryable():
+    from core.inference import audio_cpp_server
+    from core.inference.vad_audiocpp_sidecar import VadUnavailableError
+    from routes import inference
+
+    audio_cpp_server.UPDATE_IN_PROGRESS.set()
+    try:
+        assert inference._clip_http_error(VadUnavailableError("updating"), "VAD").status_code == 503
+    finally:
+        audio_cpp_server.UPDATE_IN_PROGRESS.clear()
+    assert inference._clip_http_error(VadUnavailableError("no runtime"), "VAD").status_code == 501

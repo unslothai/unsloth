@@ -2,6 +2,32 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 
+// Only when the turn judge cannot answer (none configured, loading, timed out): a fragment ending on
+// a dangling word or comma waits for the rest instead of starting a reply.
+const DANGLING = new Set([
+  "um", "uh", "uhm", "erm", "hmm", "like", "just", "so", "and", "but", "or", "nor",
+  "because", "cause", "cuz", "then", "than", "that", "which", "who", "whom", "whose",
+  "if", "when", "while", "where", "whether", "the", "a", "an", "to", "of", "with",
+  "about", "for", "from", "into", "onto", "at", "by", "in", "on", "as", "per", "versus",
+  "vs", "my", "your", "his", "her", "its", "our", "their", "this", "these", "those",
+  "some", "any", "every", "each", "very", "really", "basically", "actually", "kinda",
+  "sorta", "mean", "know", "gonna", "wanna", "is", "are", "was", "were", "be", "been",
+  "being", "do", "does", "did", "have", "has", "had", "can", "could", "would", "should",
+  "will", "shall", "may", "might", "must", "not", "also", "maybe", "especially",
+]);
+
+export function looksUnfinished(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/[,;:\-–—]$|\.\.\.$|…$/.test(t)) return true;
+  if (/[.!?]["')\]]?$/.test(t)) return false;
+  const words = t.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
+  const last = words[words.length - 1] ?? "";
+  if (DANGLING.has(last)) return true;
+  const tail = words.slice(-2).join(" ");
+  return tail === "you know" || tail === "i mean" || tail === "kind of" || tail === "sort of";
+}
+
 const BACKCHANNEL = new Set([
   "mm", "mmm", "hmm", "hm", "mhm", "mm-hmm", "mmhmm", "uh", "um", "uhm", "umm", "ah", "ahh",
   "oh", "ooh", "huh", "eh", "er", "erm", "hmmm", "uh-huh", "uh-uh",
@@ -54,13 +80,18 @@ const ONE_WORD_COMMANDS = new Set([
   "stop", "wait", "pause", "cancel", "hold", "enough", "quiet", "no", "nope", "yes", "yeah", "yep",
 ]);
 
+/** A word or two taken from the reply's closing question ("..., Python or JavaScript?"): the user's answer. */
+export function answersClosingQuestion(transcript: string, reply: string): boolean {
+  const t = wordsOf(transcript);
+  const asked = reply.trim().endsWith("?") ? (reply.split(/(?<=[.!?\n])\s+/).pop() ?? "") : "";
+  return t.length > 0 && t.length <= 2 && Boolean(asked) && t.every((w) => wordsOf(asked).includes(w));
+}
+
 export function isReplyEcho(transcript: string, reply: string): boolean {
   const t = wordsOf(transcript);
   if (t.length === 0 || !reply) return false;
   if (t.length === 1 && ONE_WORD_COMMANDS.has(t[0])) return false;
-  // A word or two taken from a closing question ("..., Python or JavaScript?") is the user's answer.
-  const asked = reply.trim().endsWith("?") ? (reply.split(/(?<=[.!?\n])\s+/).pop() ?? "") : "";
-  if (t.length <= 2 && asked && t.every((w) => wordsOf(asked).includes(w))) return false;
+  if (answersClosingQuestion(transcript, reply)) return false;
   // Whole words only: "hey" is not inside "they", nor "skip" inside "skipping".
   const r = ` ${wordsOf(reply).join(" ")} `;
   return r.includes(` ${t.join(" ")} `);
