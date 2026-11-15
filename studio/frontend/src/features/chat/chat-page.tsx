@@ -30,6 +30,7 @@ import {
   getVoiceMode,
   loadVoiceMode,
   requestVoiceThreadReset,
+  requestVoiceToggle,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
 import { unloadSttModel } from "@/features/chat/adapters/studio-model-dictation-adapter";
@@ -3171,6 +3172,7 @@ export function ChatPage({
   const selectedVadModelId = useChatRuntimeStore((s) => s.selectedVadModelId);
   const setSelectedVadModelId = useChatRuntimeStore((s) => s.setSelectedVadModelId);
   const vadSlotLoaded = useChatRuntimeStore((s) => s.vadSlotLoaded);
+  const sttSlotLoaded = useChatRuntimeStore((s) => s.sttSlotLoaded);
   const setSelectedSttModelId = useChatRuntimeStore(
     (s) => s.setSelectedSttModelId,
   );
@@ -3284,6 +3286,7 @@ export function ChatPage({
     void unloadSttModel().catch(() => {});
     void unloadVadModel();
     useChatRuntimeStore.getState().setVadSlotLoaded(false);
+    useChatRuntimeStore.getState().setSttSlotLoaded(false);
   }, [voiceMode, unloadOwnVoice]);
 
   useEffect(
@@ -3293,9 +3296,15 @@ export function ChatPage({
       void unloadSttModel().catch(() => {});
       void unloadVadModel();
       useChatRuntimeStore.getState().setVadSlotLoaded(false);
+      useChatRuntimeStore.getState().setSttSlotLoaded(false);
     },
     [unloadOwnVoice],
   );
+
+  // Off the chat route this page stays mounted but hidden, with no orb or pill to show a live mic: end voice mode.
+  useEffect(() => {
+    if (!active && getVoiceMode() !== "off") requestVoiceToggle();
+  }, [active]);
 
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
@@ -5143,6 +5152,7 @@ export function ChatPage({
                   vadLoaded={vadSlotLoaded}
                   sttModelId={selectedSttModelId}
                   onSttModelChange={setSelectedSttModelId}
+                  sttLoaded={sttSlotLoaded}
                   ttsModelId={selectedVoiceModelId}
                   onTtsModelChange={setSelectedVoiceModelId}
                   ttsLoading={voiceSlotLoading}

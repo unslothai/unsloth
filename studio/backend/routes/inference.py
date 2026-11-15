@@ -27119,7 +27119,7 @@ def _decision_row_meta(checkpoint) -> dict:
 
 def _voice_decision_response() -> dict:
     from core.inference import voice_decisions
-    from core.inference.voice_models import get_voice_models
+    from core.inference.voice_models import get_voice_models, models_dir, models_hub
     from core.systemone import catalog
     from routes.settings import _clef_availability
 
@@ -27151,6 +27151,8 @@ def _voice_decision_response() -> dict:
         "source": voice_decisions.checkpoint_source(),
         "launch_default": (os.environ.get(voice_decisions.ENV_CHECKPOINT) or "").strip() or None,
         "models": models,
+        # With neither set the built-in classifiers can never load: a setup gap, not a failed load.
+        "builtin_configured": models_dir() is not None or models_hub() is not None,
         **get_voice_models().decision_state(),
     }
 

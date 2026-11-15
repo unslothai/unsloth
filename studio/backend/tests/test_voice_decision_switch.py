@@ -62,6 +62,30 @@ def test_switch_rebuilds_on_the_new_checkpoint(checkpoints, monkeypatch, tmp_pat
     assert asked == ["laya-ft:v4", "laya-ft:v4", "laya-ft:v3"]
 
 
+def test_route_reports_whether_the_builtin_classifiers_have_a_source(
+    checkpoints, monkeypatch, tmp_path
+):
+    from auth.authentication import get_current_subject
+    from core.inference import voice_models as vm
+    from core.systemone import catalog
+    from routes import inference
+
+    fake = SimpleNamespace(decision_state = lambda: {"state": "not_loaded", "error": None})
+    monkeypatch.setattr(vm, "get_voice_models", lambda: fake)
+    monkeypatch.setattr(catalog, "fine_tunes", lambda: [])
+    app = FastAPI()
+    app.include_router(inference.studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    client = TestClient(app)
+
+    monkeypatch.delenv(vm.ENV_DIR, raising = False)
+    monkeypatch.delenv(vm.ENV_HUB, raising = False)
+    # Nothing to load from: the panel shows "Not set up" instead of an error.
+    assert client.get("/api/inference/voice/decision").json()["builtin_configured"] is False
+    monkeypatch.setenv(vm.ENV_DIR, str(tmp_path))
+    assert client.get("/api/inference/voice/decision").json()["builtin_configured"] is True
+
+
 def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
     from auth.authentication import get_current_subject
     from core.inference import voice_models as vm

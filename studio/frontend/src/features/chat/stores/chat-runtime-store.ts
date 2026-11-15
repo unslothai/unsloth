@@ -2676,6 +2676,7 @@ type ChatRuntimeStore = {
   selectedSttModelId: string;
   selectedVadModelId: string;
   vadSlotLoaded: boolean;
+  sttSlotLoaded: boolean;
   voiceSlotLoading: boolean;
   voiceSlotLoaded: boolean;
   voiceTranscribing: boolean;
@@ -2699,6 +2700,7 @@ type ChatRuntimeStore = {
   setSelectedSttModelId: (id: string) => void;
   setSelectedVadModelId: (id: string) => void;
   setVadSlotLoaded: (loaded: boolean) => void;
+  setSttSlotLoaded: (loaded: boolean) => void;
   setVoiceSlotLoading: (loading: boolean) => void;
   setVoiceSlotLoaded: (loaded: boolean) => void;
   setVoiceTranscribing: (transcribing: boolean) => void;
@@ -4489,6 +4491,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || VOICE_DEFAULT_STT_MODEL,
   selectedVadModelId: loadString(CHAT_VAD_MODEL_ID_KEY, "") || VOICE_DEFAULT_VAD_MODEL,
   vadSlotLoaded: false,
+  sttSlotLoaded: false,
   voiceSlotLoading: false,
   voiceSlotLoaded: false,
   voiceTranscribing: false,
@@ -4723,7 +4726,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSelectedSttModelId: (selectedSttModelId) =>
     set(() => {
       saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId);
-      return { selectedSttModelId };
+      return { selectedSttModelId, sttSlotLoaded: false };
     }),
   setSelectedVadModelId: (selectedVadModelId) =>
     set(() => {
@@ -4731,6 +4734,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { selectedVadModelId, vadSlotLoaded: false };
     }),
   setVadSlotLoaded: (vadSlotLoaded) => set({ vadSlotLoaded }),
+  setSttSlotLoaded: (sttSlotLoaded) => set({ sttSlotLoaded }),
   setVoiceSlotLoading: (voiceSlotLoading) => set({ voiceSlotLoading }),
   setVoiceSlotLoaded: (voiceSlotLoaded) => set({ voiceSlotLoaded }),
   setVoiceTranscribing: (voiceTranscribing) => set({ voiceTranscribing }),

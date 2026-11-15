@@ -10,10 +10,19 @@ const engine = readFileSync(
   "utf8",
 );
 
+const end = engine.slice(engine.indexOf("const streamBegun = streamBegunRef.current;"));
+const start = end.indexOf("if (!text) {");
+const branch = end.slice(start, end.indexOf("const endMsgs", start));
+
 test("a run that ends with no answer text closes the playback stream it opened", () => {
-  const end = engine.slice(engine.indexOf("const streamBegun = streamBegunRef.current;"));
-  const start = end.indexOf("if (!text) {");
-  const branch = end.slice(start, end.indexOf("const endMsgs", start));
   // Left open, the player polls forever: isSpeaking stays true and queued turns never send.
-  assert.match(branch, /if \(streamBegun\) endStreamRef\.current\(""\);\s*else resumeListen\(\);/);
+  assert.match(branch, /if \(!streamBegun\) \{\s*resumeListen\(\);\s*return;\s*\}/);
+  assert.match(branch, /endStreamRef\.current\(late\);/);
+});
+
+test("the answer is read again before a textless stream is closed", () => {
+  // A short answer can land whole after isRunning flipped: closed on the first read, it was never spoken.
+  assert.match(branch, /setTimeout\(\(\) => \{[\s\S]*const late = latestAssistantText\(\);[\s\S]*\}, 150\);/);
+  // A run that began meanwhile owns the open stream: the late read must not close that one.
+  assert.match(branch, /if \(streamBegunRef\.current\) return;\s*const late/);
 });

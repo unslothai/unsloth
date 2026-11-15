@@ -95,6 +95,10 @@ const VAD_MIN_SPEECH_MS = 300;
 // The probe clip holds only ~BARGE_CONFIRMED_MS of voice: the full bar failed the first check every time.
 const BARGE_VAD_MIN_SPEECH_MS = 200;
 
+// The transcriber the download prompt was last raised for as listening began: a dismissed prompt
+// is not raised again every time the mic re-arms (an utterance that needs the model still asks).
+let sttDownloadAskedFor: string | null = null;
+
 // Scoped to the detector pick that failed: choosing another one asks again.
 let vadDisabled = false;
 let vadDisabledFor: string | null = null;
@@ -851,10 +855,24 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           handle.reacquire("silent");
         }, 250);
 
-        void loadSttModel(
+        const sttPick =
           useChatRuntimeStore.getState().selectedSttModelId ??
-            useVoiceSettingsStore.getState().sttModel,
-        ).catch(() => {});
+          useVoiceSettingsStore.getState().sttModel;
+        const sttPicked = () => useChatRuntimeStore.getState().selectedSttModelId === sttPick;
+        void loadSttModel(sttPick)
+          .then(() => {
+            sttDownloadAskedFor = null;
+            if (sttPicked()) useChatRuntimeStore.getState().setSttSlotLoaded(true);
+          })
+          .catch((error: unknown) => {
+            if (!sttPicked()) return;
+            useChatRuntimeStore.getState().setSttSlotLoaded(false);
+            // Asked as listening begins, not after the first utterance is lost to the missing model.
+            if (error instanceof SttModelNotDownloadedError && sttDownloadAskedFor !== sttPick) {
+              sttDownloadAskedFor = sttPick;
+              requestSttDownload(sttPick);
+            }
+          });
         if (!vadDisabled) {
           const vadPick = useChatRuntimeStore.getState().selectedVadModelId;
           void loadVadModel(vadPick)

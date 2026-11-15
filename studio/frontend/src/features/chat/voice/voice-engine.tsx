@@ -550,7 +550,6 @@ export const VoiceEngine: FC = () => {
         return;
       }
       // A phrase begun inside the window joins this turn: starting the run now would stop its recorder mid-word.
-      const rt = useChatRuntimeStore.getState();
       if ((rt.voiceHearing || rt.voiceTranscribing) && attempt < VOICE_COALESCE_MAX_RETRIES) {
         voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_MS);
         return;
@@ -1207,9 +1206,24 @@ export const VoiceEngine: FC = () => {
       return;
     }
     if (!text) {
-      // A run with no answer text still closes its stream: playback end resumes listening.
-      if (streamBegun) endStreamRef.current("");
-      else resumeListen();
+      if (!streamBegun) {
+        resumeListen();
+        return;
+      }
+      // A short answer can land whole after isRunning flipped: read again after a beat. A run with
+      // no answer text still closes its stream (playback end resumes listening).
+      setTimeout(() => {
+        // A run that began meanwhile opened its own stream; the one this run owned is already gone.
+        if (streamBegunRef.current) return;
+        const late = latestAssistantText();
+        voiceTrace("engine.lateAnswer", { chars: late.length });
+        if (late) {
+          const lateMsgs = auiRef.current.thread().getState().messages;
+          const lateTail = lateMsgs.length ? lateMsgs[lateMsgs.length - 1] : null;
+          spokenReplyRef.current = lateTail?.role === "assistant" ? { id: lateTail.id, text: late } : null;
+        }
+        endStreamRef.current(late);
+      }, 150);
       return;
     }
     const endMsgs = auiRef.current.thread().getState().messages;

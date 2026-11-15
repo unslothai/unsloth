@@ -414,15 +414,18 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     [synthesize, schedule, asides, keepAside],
   );
 
+  // Phrases a warm-up is synthesizing now: overlapping calls share them instead of each sending its own.
+  const warmingRef = useRef(new Set<string>());
   const warmAsides = useCallback(
     async (texts: readonly string[]) => {
       let added = 0;
       const voice = currentVoiceKey();
       for (const text of texts) {
-        if (asides().has(text)) continue;
+        if (asides().has(text) || warmingRef.current.has(text)) continue;
         if (voice !== currentVoiceKey()) break;
         // A live reply owns the synthesizer; the next idle call carries on.
         if (streamRef.current || realSynthRef.current) break;
+        warmingRef.current.add(text);
         try {
           const buffer = await synthesize(text, reqRef.current);
           if (buffer && voice === currentVoiceKey()) {
@@ -431,6 +434,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           }
         } catch {
           break;
+        } finally {
+          warmingRef.current.delete(text);
         }
       }
       if (added) voiceTrace("tts.warm", { added, cached: asides().size, of: texts.length });

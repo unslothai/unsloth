@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   setVoiceDecision,
   useVoiceDecision,
@@ -47,6 +49,7 @@ export interface VoicePanelProps {
   vadLoaded: boolean;
   sttModelId: string;
   onSttModelChange: (id: string) => void;
+  sttLoaded: boolean;
   ttsModelId: string;
   onTtsModelChange: (id: string) => void;
   ttsLoading: boolean;
@@ -69,19 +72,23 @@ function shortName(id: string): string {
 const ROW =
   "group/row flex w-full items-center gap-2 rounded-full py-1.5 pl-2.5 pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
 
-const StateTag: FC<{ state: VoiceLoadState; label: string }> = ({
+// idle: voice mode has not started, so an unloaded slot is waiting, not failing.
+const StateTag: FC<{ state: VoiceLoadState; label: string; idle?: boolean }> = ({
   state,
   label,
+  idle = false,
 }) => (
   <DotTag
     tone={
-      state === "loaded"
-        ? "success"
-        : state === "loading"
-          ? "downloading"
-          : state === "error"
-            ? "danger"
-            : "warning"
+      idle
+        ? "neutral"
+        : state === "loaded"
+          ? "success"
+          : state === "loading"
+            ? "downloading"
+            : state === "error"
+              ? "danger"
+              : "warning"
     }
     label={label}
     className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
@@ -95,6 +102,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
   vadLoaded,
   sttModelId,
   onSttModelChange,
+  sttLoaded,
   ttsModelId,
   onTtsModelChange,
   ttsLoading,
@@ -107,6 +115,15 @@ export const VoicePanel: FC<VoicePanelProps> = ({
   const rowRefs = useRef<Partial<Record<Role, HTMLButtonElement | null>>>({});
   const decision = useVoiceDecision(open);
   const preset = useVoicePreset(ttsModelId, ttsLoaded);
+  // "configuring": the pill is up for choosing models, and nothing loads until Start.
+  const started = useChatRuntimeStore((s) => s.voiceMode === "active");
+  const start = () => {
+    const store = useChatRuntimeStore.getState();
+    store.setVoiceOrbCollapsed(false);
+    store.setVoiceMode("active");
+    setOpen(false);
+    setRole(null);
+  };
 
   const ttsState: VoiceLoadState = ttsLoading
     ? "loading"
@@ -121,6 +138,10 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       ? (decideModel?.label ?? shortName(decision.status.current))
       : t("voicePanel.builtinClassifiers")
     : "";
+  // Built-in classifiers with no source on the server never load: a setup gap, not a failure.
+  const decideUnset =
+    decision.status?.current === null &&
+    decision.status.builtin_configured === false;
   const rows: Record<
     Role,
     {
@@ -128,6 +149,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       state: VoiceLoadState | null;
       enabled: boolean;
       title?: string;
+      unset?: boolean;
     }
   > = {
     listen: {
@@ -137,17 +159,19 @@ export const VoicePanel: FC<VoicePanelProps> = ({
     },
     transcribe: {
       name: shortName(sttRepoForKey(sttModelId)),
-      state: "loaded",
+      state: sttLoaded ? "loaded" : "not_loaded",
       enabled: true,
     },
     decide: {
       name: decision.failed ? t("voicePanel.decideOwnerOnly") : decideName,
       state: decision.failed ? null : decision.state,
       enabled: !decision.failed && decision.status !== null,
-      title:
-        decision.state === "error" && decision.status?.error
+      title: decideUnset
+        ? t("voicePanel.decideNotSetUp")
+        : decision.state === "error" && decision.status?.error
           ? `${decideName}: ${decision.status.error}`
           : undefined,
+      unset: decideUnset,
     },
     speak: {
       name: isChatModelVoice(ttsModelId) ? t("voicePanel.chatModelVoice") : shortName(ttsModelId),
@@ -166,14 +190,16 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       enabled: preset.choosable,
     },
   };
-  const states = ROLES.map((r) => rows[r].state);
+  const states = ROLES.map((r) => (rows[r].unset ? null : rows[r].state));
   const summary = states.includes("loading")
     ? t("voicePanel.loading")
     : states.includes("error")
       ? t("voicePanel.error")
-      : t("voicePanel.ready", {
-          n: states.filter((s) => s === "loaded").length,
-        });
+      : !started
+        ? t("voicePanel.notStarted")
+        : t("voicePanel.ready", {
+            n: states.filter((s) => s === "loaded").length,
+          });
 
   const back = () => {
     const from = role;
@@ -208,7 +234,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
           <SttModelSelector
             value={sttModelId}
             onValueChange={onSttModelChange}
-            ready={true}
+            ready={sttLoaded}
             onClose={back}
           />
         );
@@ -236,6 +262,11 @@ export const VoicePanel: FC<VoicePanelProps> = ({
       case "decide":
         return decision.status ? (
           <div className="w-[min(var(--picker-panel-w),calc(100vw-1rem))] max-w-[calc(100vw-1rem)] pt-2 pl-4 pr-2">
+            {decideUnset && (
+              <p className="pb-2 pl-1 pr-2 text-xs leading-snug text-muted-foreground">
+                {t("voicePanel.decideNotSetUp")}
+              </p>
+            )}
             <DecisionPicker
               models={decision.status.models}
               current={decision.status.current}
@@ -362,7 +393,14 @@ export const VoicePanel: FC<VoicePanelProps> = ({
                     {row.state && (
                       <StateTag
                         state={row.state}
-                        label={t(STATE_KEY[row.state])}
+                        idle={row.unset || (!started && row.state === "not_loaded")}
+                        label={t(
+                          row.unset
+                            ? "voicePanel.state.notSetUp"
+                            : !started && row.state === "not_loaded"
+                              ? "voicePanel.state.loadsOnStart"
+                              : STATE_KEY[row.state],
+                        )}
                       />
                     )}
                     <HugeiconsIcon
@@ -374,6 +412,16 @@ export const VoicePanel: FC<VoicePanelProps> = ({
                 </div>
               );
             })}
+            {!started && (
+              <div className="mt-1 flex items-center gap-3 border-t border-border/60 pb-1 pl-2.5 pr-1 pt-2">
+                <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
+                  {t("voicePanel.startHint")}
+                </p>
+                <Button type="button" variant="primary" size="sm" onClick={start}>
+                  {t("voiceControls.start")}
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </PopoverContent>
