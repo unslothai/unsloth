@@ -64,29 +64,19 @@ test("the view splits the window into the counted parts and what is left", () =>
   assert.equal(view.prompt, null);
 });
 
-test("the view falls back to the loaded window and shows no marker when nothing compacts", () => {
-  const view = deriveContextView(
+test("the view's fallback window, overfull cap, and missing parts", () => {
+  const fallback = deriveContextView(
     { input_tokens: 4000, breakdown, compaction_budget: null },
     8000,
   );
-  assert.equal(view?.window, 8000);
-  assert.equal(view?.compactAt, null);
-});
-
-test("an overfull prompt caps at the window instead of overflowing the bar", () => {
-  const view = deriveContextView(
-    {
-      input_tokens: 20000,
-      breakdown: { ...breakdown, messages: 18000 },
-      context_length: 16000,
-    },
+  assert.equal(fallback?.window, 8000);
+  assert.equal(fallback?.compactAt, null);
+  const overfull = deriveContextView(
+    { input_tokens: 20000, breakdown, context_length: 16000 },
     null,
   );
-  assert.equal(view?.percent, 100);
-  assert.equal(view?.free, 0);
-});
-
-test("no view without a window or a breakdown", () => {
+  assert.equal(overfull?.percent, 100);
+  assert.equal(overfull?.free, 0);
   assert.equal(deriveContextView({ input_tokens: 10, breakdown }, null), null);
   assert.equal(
     deriveContextView({ input_tokens: 10, context_length: 100 }, null),
@@ -287,7 +277,6 @@ const compacted = [
   },
 ];
 
-// The header recount declines these too: the count would miss the media or the compaction.
 for (const [name, media, loadedIsGguf, branch] of [
   ["an image", { messagesContainImage: () => true }, true, []],
   ["audio", { findLatestUserAudioBase64: () => "UklGRg==" }, true, []],
