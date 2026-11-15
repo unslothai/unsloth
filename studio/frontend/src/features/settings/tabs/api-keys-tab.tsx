@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useNavigate } from "@tanstack/react-router";
+import { ApiIcon, ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+import { ArrowRightIcon } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Dialog,
   DialogContent,
@@ -34,6 +38,7 @@ import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { MonitorLink } from "../components/monitor-link";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsSection } from "../components/settings-section";
 import { UnslothStudioMcpRow } from "../components/unsloth-studio-mcp-row";
 import { ApiExamplesPanel } from "../components/api-example-tabs";
@@ -51,6 +56,7 @@ function expiryDays(key: ApiKey): number | null {
 
 export function ApiKeysTab() {
   const t = useT();
+  const navigate = useNavigate();
   const isOwner = useIsAccountOwner();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -148,22 +154,41 @@ export function ApiKeysTab() {
 
   return (
     <div className="settings-page">
-      <header className="flex min-w-0 flex-col gap-1">
-        <h1 className="text-xl font-semibold font-heading">
-          {t("settings.apiKeys.title")}
-        </h1>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.apiKeys.description")}{" "}
-          <a
-            href="https://unsloth.ai/docs/basics/api"
-            target="_blank"
-            rel="noreferrer"
-            className="font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
-          >
-            {t("settings.apiKeys.readDocs")}
-          </a>
-          .
-        </p>
+      <header className="flex min-w-0 items-center justify-between gap-4 pr-8">
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <h1 className="text-xl font-semibold font-heading">
+              {t("settings.apiKeys.title")}
+            </h1>
+            <a
+              href="https://unsloth.ai/docs/basics/api"
+              target="_blank"
+              rel="noopener noreferrer"
+              title={t("settings.apiKeys.readDocs")}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {t("settings.agents.docs")}
+              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+            </a>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.apiKeys.description")}
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          onClick={() => {
+            useSettingsDialogStore.getState().closeDialog();
+            void navigate({ to: "/api-monitor" });
+          }}
+        >
+          <HugeiconsIcon icon={ApiIcon} data-icon="inline-start" strokeWidth={1.75} />
+          {t("shell.navigation.apiMonitor")}
+          <ArrowRightIcon data-icon="inline-end" strokeWidth={1.75} />
+        </Button>
       </header>
 
       <section className="flex min-w-0 flex-col gap-4">

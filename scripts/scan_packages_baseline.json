@@ -1886,6 +1886,14 @@
     },
     {
       "package": "fastmcp-slim",
+      "file": "fastmcp/cli/apps_dev.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L1272:     with tarfile.open(fileobj=io.BytesIO(data), mode=\"r:gz\") as tar:\nNetwork: L1103: def _local_http_client() -> httpx2.AsyncClient: | L1105:     return httpx2.AsyncClient(timeout=httpx2.Timeout(30.0, read=300.0), trust_env=False) | L1222:     with httpx2.Client(timeout=30.0) as client: | L1236:     with httpx2.Client(timeout=30.0) as client: | L1267:     with httpx2.Client(timeout=30.0) as client: | L1500:         client = httpx2.AsyncClient(\nL1501:             timeout=httpx2.Timeout(60.0, read=None), trust_env=False\nL1502:         ) | L1670:     async with httpx2.AsyncClient(trust_env=False) as client: | L1740:                     with socket.socket(family, socket.SOCK_STREAM) as s:",
+      "evidence_hash": "0a6a8112b48b7f8d9c36b114dd44280fb30187048e6f062019a39f0612e95f6d"
+    },
+    {
+      "package": "fastmcp-slim",
       "file": "fastmcp/server/auth/providers/jwt.py",
       "check": "Embedded cryptographic key + network calls (encrypted exfil pattern)",
       "severity": "HIGH",

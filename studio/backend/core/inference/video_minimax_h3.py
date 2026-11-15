@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import math
 import os
 import tempfile
@@ -433,13 +434,16 @@ def fit_h3_keyframe(image: Any, width: int, height: int, *, anchor: str) -> Any:
         return image.resize(target, Image.LANCZOS)
     if anchor != H3_ANCHOR_LAST:
         raise ValueError(f"Unknown keyframe anchor {anchor!r}.")
+    # The reference's centre crop: a whole-pixel margin, the same on both sides, then LANCZOS.
     source_w, source_h = image.size
-    scale = max(target[0] / source_w, target[1] / source_h)
-    crop_w = min(source_w, math.ceil(target[0] / scale))
-    crop_h = min(source_h, math.ceil(target[1] / scale))
-    left = (source_w - crop_w) // 2
-    top = (source_h - crop_h) // 2
-    return image.resize(target, Image.LANCZOS, box = (left, top, left + crop_w, top + crop_h))
+    old_aspect, new_aspect = source_w / source_h, target[0] / target[1]
+    left = top = 0
+    if old_aspect > new_aspect:
+        left = round((source_w - source_w * (new_aspect / old_aspect)) / 2)
+    elif old_aspect < new_aspect:
+        top = round((source_h - source_h * (old_aspect / new_aspect)) / 2)
+    # Cropped first: a resize box would let LANCZOS read pixels beyond the crop.
+    return image.crop((left, top, source_w - left, source_h - top)).resize(target, Image.LANCZOS)
 
 
 # Ref2VA uses a separate transformer partition selected at load time.
@@ -516,15 +520,266 @@ def fit_h3_reference_image(image: Any, *, width: int, height: int, policy: str) 
     return image.resize((snap(source_w), snap(source_h)), Image.LANCZOS)
 
 
+@functools.lru_cache(maxsize = None)
+def _h3_sized_reference_setup_class(base: type) -> type:
+    """Ref2VA setup step that takes the request's references as Studio prepared them: images and video frames at
+    their size, soundtracks at their full length."""
+
+    class StudioSizedRef2VASetupStep(base):
+        def __call__(self, components: Any, state: Any) -> Any:
+            # Only the request's own PIL images and frame lists skip the rescale; arrays and tensors keep Diffusers' sizing.
+            refs = tuple(state.get("references") or ())
+            own = {id(ref.image) for ref in refs if getattr(ref, "kind", None) == "image"}
+            self.__dict__["_studio_own_frames"] = {
+                id(ref.frames)
+                for ref in refs
+                if getattr(ref, "kind", None) == "video" and isinstance(ref.frames, list)
+            }
+            processor = components.image_processor
+            stock_resize = processor.resize
+            shadowed = vars(processor).get("resize")
+            processor.resize = lambda image, *a, **k: (
+                image if id(image) in own else stock_resize(image, *a, **k)
+            )
+            try:
+                return super().__call__(components, state)
+            finally:
+                self.__dict__.pop("_studio_own_frames", None)
+                if shadowed is None:
+                    del processor.resize
+                else:
+                    processor.resize = shadowed
+
+        def _normalize_video_condition(
+            self, frames: Any, fps: float, num_frames: int, *canvas: Any
+        ) -> Any:
+            # Studio fitted these frames (never upscaled, each axis on the 32 grid) and put them on 24 fps already;
+            # the stock step would rescale them to the full canvas, upscaling a small reference.
+            multiple, target_fps = canvas[0], canvas[-1]
+            if id(frames) in self.__dict__.get("_studio_own_frames", ()) and fps == target_fps:
+                import numpy as np
+                kept = np.stack([np.asarray(frame.convert("RGB")) for frame in frames[:num_frames]])
+                if not (kept.shape[1] % multiple or kept.shape[2] % multiple):
+                    return kept
+            return base._normalize_video_condition(frames, fps, num_frames, *canvas)
+
+        def _normalize_audio_condition(
+            self, waveform: Any, sample_rate: int, target_sample_rate: int, max_duration: float
+        ) -> Any:
+            # A soundtrack is encoded whole, not cut to the generated length.
+            whole = (waveform.shape[-1] + 1) / max(1, int(sample_rate))
+            return base._normalize_audio_condition(
+                waveform, sample_rate, target_sample_rate, max(max_duration, whole)
+            )
+
+    StudioSizedRef2VASetupStep.__qualname__ = StudioSizedRef2VASetupStep.__name__
+    return StudioSizedRef2VASetupStep
+
+
+def keep_h3_reference_image_sizes(pipe: Any) -> int:
+    """Make the Ref2VA setup step take references as Studio prepared them.
+
+    Diffusers rescales every image reference (upscaling too) to ``reference_image_short_edge``
+    (2048), puts every reference video on the full canvas (upscaling a small one) and cuts every
+    soundtrack to the generated length. One config value cannot fit references of different sizes,
+    so the step is swapped for a subclass that skips the rescales and the cut. Idempotent; returns
+    how many steps are switched.
+    """
+    try:
+        from diffusers.modular_pipelines.minimax_h3.before_encoder import (
+            MiniMaxH3Ref2VASetupStep,
+        )
+    except ImportError:
+        return 0
+    sized = _h3_sized_reference_setup_class(MiniMaxH3Ref2VASetupStep)
+    # pipe.blocks is a deep copy; the pipeline runs pipe._blocks.
+    stack, seen, found = [getattr(pipe, "_blocks", None)], set(), 0
+    while stack:
+        block = stack.pop()
+        if block is None or id(block) in seen:
+            continue
+        seen.add(id(block))
+        if isinstance(block, MiniMaxH3Ref2VASetupStep):
+            if not isinstance(block, sized):
+                block.__class__ = sized
+            found += 1
+        stack.extend((getattr(block, "sub_blocks", None) or {}).values())
+    return found
+
+
+def h3_reference_video_canvas(source_w: float, source_h: float) -> tuple[int, int]:
+    """The reference implementation's reference-video canvas: 768 short edge under the 768x1344 area cap, each axis
+    rounded on its own with Python's round (halves to even), so the area may land a little over the cap."""
+    h3_canvas_for_aspect(source_w, source_h)  # the 1:4 to 4:1 refusal
+    ratio = source_w / source_h
+    if ratio >= 1.0:
+        width, height = H3_CANVAS_SHORT_EDGE * ratio, H3_CANVAS_SHORT_EDGE
+    else:
+        width, height = H3_CANVAS_SHORT_EDGE, H3_CANVAS_SHORT_EDGE / ratio
+    if width * height > H3_CANVAS_MAX_PIXELS:
+        scale = math.sqrt(H3_CANVAS_MAX_PIXELS / (width * height))
+        width, height = width * scale, height * scale
+    snap = lambda v: max(  # noqa: E731
+        H3_CANVAS_MULTIPLE, round(v / H3_CANVAS_MULTIPLE) * H3_CANVAS_MULTIPLE
+    )
+    return snap(width), snap(height)
+
+
 def h3_reference_frame_size(source_w: int, source_h: int) -> tuple[int, int]:
     """Resolve a reference-video frame size without upscaling."""
-    width, height = h3_canvas_for_aspect(source_w, source_h)
+    width, height = h3_reference_video_canvas(source_w, source_h)
     if source_w * source_h < width * height:
         snap = lambda v: max(  # noqa: E731
             H3_CANVAS_MULTIPLE, round(v / H3_CANVAS_MULTIPLE) * H3_CANVAS_MULTIPLE
         )
         width, height = snap(source_w), snap(source_h)
     return width, height
+
+
+# Decoded as 8-bit RGB directly; every other pixel format goes through float RGB, as the reference decode does.
+_H3_RGB24_FORMATS = ("yuvj420p", "yuvj422p", "yuvj444p", "rgb24", "rgba", "pal8")
+
+
+def h3_float_rgb_to_uint8(pixels: Any) -> Any:
+    """Float RGB in [0, 1] to uint8, rounded (the reference truncates here, which darkens by half a step)."""
+    import numpy as np
+    return np.clip(np.rint(pixels * 255.0), 0, 255).astype(np.uint8)
+
+
+def h3_video_frame_rgb(frame: Any) -> Any:
+    """Decoded frame to RGB PIL. YUV goes through float RGB (``gbrpf32le``), smear-padded to the 32 px grid and cropped
+    back so swscale's alignment padding never reaches the picture."""
+    import numpy as np
+    from PIL import Image
+
+    name = frame.format.name
+    if name in _H3_RGB24_FORMATS:
+        image = frame.to_image()
+        return image if image.mode == "RGB" else image.convert("RGB")
+    source = frame
+    if frame.width % 32:
+        from fractions import Fraction
+
+        import av
+
+        pad_w, pad_h = -(-frame.width // 32) * 32, -(-frame.height // 32) * 32
+        graph = av.filter.Graph()
+        src = graph.add_buffer(
+            width = frame.width,
+            height = frame.height,
+            format = name,
+            time_base = frame.time_base or Fraction(1, H3_FPS),
+        )
+        pad = graph.add("pad", f"{pad_w}:{pad_h}:0:0")
+        fill = graph.add(
+            "fillborders",
+            f"left=0:right={pad_w - frame.width}:top=0:bottom={pad_h - frame.height}:mode=smear",
+        )
+        sink = graph.add("buffersink")
+        src.link_to(pad)
+        pad.link_to(fill)
+        fill.link_to(sink)
+        graph.configure()
+        src.push(frame)
+        source = sink.pull()
+    rgb = source.to_ndarray(format = "gbrpf32le")[: frame.height, : frame.width]
+    return Image.fromarray(h3_float_rgb_to_uint8(np.asarray(rgb, dtype = np.float32)[..., :3]), "RGB")
+
+
+def h3_rotation_quarter_turns(rotation: Any) -> int:
+    """Counter-clockwise quarter turns for a frame's display rotation in degrees, read the reference way."""
+    return int(round(rotation // 90)) % 4 if rotation else 0
+
+
+def rotate_h3_video_frame(image: Any, rotation: Any) -> Any:
+    """Turn a decoded frame upright by its display rotation (``VideoFrame.rotation``, counter-clockwise), whole
+    quarter turns only, as the reference decode does with ``np.rot90``."""
+    from PIL import Image
+
+    turns = h3_rotation_quarter_turns(rotation)
+    if not turns:
+        return image
+    return image.transpose((Image.ROTATE_90, Image.ROTATE_180, Image.ROTATE_270)[turns - 1])
+
+
+# What the audio VAE takes: 32 kHz stereo, a whole number of 800-sample latent frames.
+H3_AUDIO_SAMPLE_RATE = 32_000
+H3_AUDIO_HOP = 800
+H3_AUDIO_CHANNELS = 2
+
+
+def resample_h3_audio(waveform: Any, orig_freq: int, new_freq: int) -> Any:
+    """Bandlimited sinc resampling along the last axis: torchaudio's default kernel (hann window, width 6, rolloff
+    0.99), computed in the waveform's dtype like ``torchaudio.functional.resample``, without needing torchaudio."""
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    if orig_freq == new_freq:
+        return waveform
+    lowpass_filter_width, rolloff = 6, 0.99
+    divisor = math.gcd(int(orig_freq), int(new_freq))
+    orig = int(orig_freq) // divisor
+    new = int(new_freq) // divisor
+    base_freq = min(orig, new) * rolloff
+    width = math.ceil(lowpass_filter_width * orig / base_freq)
+    dtype, device = waveform.dtype, waveform.device
+    idx = torch.arange(-width, width + orig, dtype = dtype, device = device)[None, None] / orig
+    t = torch.arange(0, -new, -1, dtype = dtype, device = device)[:, None, None] / new + idx
+    t = (t * base_freq).clamp_(-lowpass_filter_width, lowpass_filter_width)
+    window = torch.cos(t * math.pi / lowpass_filter_width / 2) ** 2
+    t *= math.pi
+    kernel = torch.where(t == 0, 1.0, t.sin() / t)
+    kernel *= window * (base_freq / orig)
+    shape = waveform.shape
+    length = shape[-1]
+    flat = F.pad(waveform.reshape(-1, length), (width, width + orig))
+    out = F.conv1d(flat[:, None], kernel, stride = orig)
+    out = out.transpose(1, 2).reshape(flat.shape[0], -1)
+    # torchaudio sizes the output in float32
+    target_length = math.ceil(np.float32(new * length / orig))
+    return out[..., :target_length].reshape(*shape[:-1], -1)
+
+
+def conform_h3_reference_audio(waveform: Any, sample_rate: int) -> tuple[Any, int]:
+    """``(samples, channels)`` waveform as the audio VAE reads it: 32 kHz, centre cropped to whole 800-sample latent
+    frames, two channels (mono duplicated). Shared so both engines get the same samples."""
+    import numpy as np
+    import torch
+
+    samples = np.asarray(waveform, dtype = np.float32)
+    if samples.ndim == 1:
+        samples = samples[:, None]
+    channels = torch.from_numpy(np.ascontiguousarray(samples.T))
+    channels = resample_h3_audio(channels, int(sample_rate), H3_AUDIO_SAMPLE_RATE)
+    length = channels.shape[-1]
+    kept = (length // H3_AUDIO_HOP) * H3_AUDIO_HOP
+    if kept and kept != length:
+        offset = (length % H3_AUDIO_HOP) // 2
+        channels = channels[:, offset : offset + kept]
+    if channels.shape[0] > H3_AUDIO_CHANNELS:
+        channels = channels[:H3_AUDIO_CHANNELS]
+    elif channels.shape[0] < H3_AUDIO_CHANNELS:
+        # mono: the last channel repeated, as a replicate pad does
+        pad = channels[-1:].expand(H3_AUDIO_CHANNELS - channels.shape[0], -1)
+        channels = torch.cat([channels, pad])
+    return np.ascontiguousarray(channels.numpy().T, dtype = np.float32), H3_AUDIO_SAMPLE_RATE
+
+
+def h3_output_audio_samples(sample_rate: int, fps: int, frames: int) -> int:
+    """Soundtrack length that covers ``frames`` at ``fps``: ``ceil(sample_rate / fps * frames)``, exactly."""
+    return -(-int(sample_rate) * int(frames) // int(fps))
+
+
+def h3_output_audio(audio: Any, sample_rate: int, fps: int, frames: int) -> Any:
+    """Soundtrack as the reference saves it: divided by ``max(1, 5 * std)`` so loud tracks do not clip, then cut to end
+    with the last frame."""
+    import torch
+
+    std = torch.std(audio.float()) * 5.0
+    if float(std) > 1.0:
+        audio = audio / std.to(audio.dtype)
+    return audio[..., : h3_output_audio_samples(sample_rate, fps, frames)]
 
 
 def _open_reference_media(av: Any, blob: bytes) -> Any:
@@ -629,9 +884,8 @@ def _fit_h3_video_frame(
 ) -> tuple[Any, tuple[int, int]]:
     from PIL import Image
 
-    image = frame.to_image()
-    if image.mode != "RGB":  # PyAV already returns a fresh RGB image; convert only copies it
-        image = image.convert("RGB")
+    image = h3_video_frame_rgb(frame)
+    image = rotate_h3_video_frame(image, getattr(frame, "rotation", 0))
     if fitted_size is None:
         fitted_size = h3_reference_frame_size(*image.size)
     if image.size != fitted_size:
@@ -1043,6 +1297,8 @@ class MiniMaxH3StagedReferences:
     videos: tuple[str, ...] = ()
     video_audios: tuple[str, ...] = ()
     audios: tuple[str, ...] = ()
+    # The 0-based ``videos`` index of each ``video_audios`` entry; () when they pair by position (a leading run).
+    video_audio_indices: tuple[int, ...] = ()
 
 
 # Pillow's zlib encoder releases the GIL, so a few threads write a reference video's PNGs in parallel.
@@ -1086,9 +1342,13 @@ def _write_h3_reference_frames(directory: Path, frames: Any) -> None:
 
 
 def stage_h3_references(
-    references: MiniMaxH3References, scratch: Path
+    references: MiniMaxH3References,
+    scratch: Path,
+    *,
+    explicit_pairing: bool = False,
 ) -> MiniMaxH3StagedReferences:
-    """Video soundtracks must form a prefix, as sd-cli pairs audio to video by index position."""
+    """Soundtracks pair with videos by position unless ``explicit_pairing`` (the build takes
+    --ref-video-audio-index), which also allows a silent video before one with audio."""
     images: list[str] = []
     for index, image in enumerate(references.images):
         path = scratch / f"ref-image-{index:02d}.png"
@@ -1098,6 +1358,7 @@ def stage_h3_references(
 
     videos: list[str] = []
     video_audios: list[str] = []
+    video_audio_indices: list[int] = []
     pairing_holds = True
     for index, (frames, waveform, sample_rate) in enumerate(references.videos):
         directory = scratch / f"ref-video-{index:02d}"
@@ -1108,7 +1369,7 @@ def stage_h3_references(
             # Positional pairing cannot express "skip this one", so stop pairing here.
             pairing_holds = False
             continue
-        if not pairing_holds:
+        if not pairing_holds and not explicit_pairing:
             raise ValueError(
                 "stable-diffusion.cpp reference-video soundtracks must form a leading "
                 "sequence without silent gaps."
@@ -1116,6 +1377,7 @@ def stage_h3_references(
         path = scratch / f"ref-video-audio-{index:02d}.wav"
         write_h3_reference_wav(path, waveform, sample_rate)
         video_audios.append(str(path))
+        video_audio_indices.append(index)
 
     audios: list[str] = []
     for index, (waveform, sample_rate) in enumerate(references.audios):
@@ -1128,6 +1390,10 @@ def stage_h3_references(
         videos = tuple(videos),
         video_audios = tuple(video_audios),
         audios = tuple(audios),
+        # Positional pairing needs no indices, so the argv stays what older builds accept.
+        video_audio_indices = ()
+        if video_audio_indices == list(range(len(video_audio_indices)))
+        else tuple(video_audio_indices),
     )
 
 
@@ -2151,7 +2417,7 @@ class H3NativeServerSlot:
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
-    """Convert sd.cpp WebM to H.264/AAC MP4 entirely in PyAV, not Diffusers, so the no-torch native runtime can export the clip."""
+    """Convert sd.cpp's container (MJPG or uncompressed AVI, WebM) to H.264/AAC MP4 entirely in PyAV, not Diffusers, so the no-torch native runtime can export the clip."""
     import av
 
     tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)
@@ -2160,10 +2426,15 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
     try:
         with av.open(str(source)) as src, av.open(str(target), mode = "w", format = "mp4") as dst:
             source_video = src.streams.video[0]
-            output_video = dst.add_stream("libx264", rate = fps)
-            output_video.width = int(source_video.codec_context.width)
-            output_video.height = int(source_video.codec_context.height)
-            output_video.pix_fmt = "yuv420p"
+            from .video_encode import add_x264_stream
+
+            # The Diffusers export's stream: frame threads, and libx264 capped at AVX2 so output depends on frames only.
+            output_video = add_x264_stream(
+                dst,
+                fps,
+                int(source_video.codec_context.width),
+                int(source_video.codec_context.height),
+            )
 
             source_audio = src.streams.audio[0] if src.streams.audio else None
             output_audio = None
@@ -2180,9 +2451,19 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
             for packet in src.demux(*selected):
                 for frame in packet.decode():
                     if packet.stream.type == "video":
-                        for encoded in output_video.encode(frame):
+                        if frame.format.name.startswith("yuvj"):
+                            # MJPG decodes to full-range yuvj, which the yuv420p encoder takes as limited range and
+                            # stretches (x1.14, -16). A fresh RGB frame carries no range, so the conversion is exact.
+                            pts, time_base = frame.pts, frame.time_base
+                            frame = av.VideoFrame.from_ndarray(
+                                frame.to_ndarray(format = "rgb24"), format = "rgb24"
+                            )
+                            frame.pts, frame.time_base = pts, time_base
+                        for encoded in output_video.encode(_unforced_picture_type(frame)):
                             dst.mux(encoded)
                     elif output_audio is not None and audio_resampler is not None:
+                        if frame.format.name in ("flt", "fltp", "dbl", "dblp"):
+                            frame = _finite_audio_frame(frame)
                         for resampled in audio_resampler.resample(frame):
                             for encoded in output_audio.encode(resampled):
                                 dst.mux(encoded)
@@ -2199,6 +2480,38 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
         return target.read_bytes()
     finally:
         target.unlink(missing_ok = True)
+
+
+def _unforced_picture_type(frame: Any) -> Any:
+    """A decoded frame keeps its picture type (every MJPG / raw frame is I), which libx264 obeys: clear it so
+    the encoder picks I / P / B frames, as the Diffusers export does."""
+    try:
+        from av.video.frame import PictureType
+        frame.pict_type = PictureType.NONE
+    except Exception:  # noqa: BLE001 - older PyAV takes the name
+        try:
+            frame.pict_type = "NONE"
+        except Exception:  # noqa: BLE001 - leave the frame as decoded
+            pass
+    return frame
+
+
+def _finite_audio_frame(frame: Any) -> Any:
+    """``frame`` with float samples bounded to [-1, 1] and NaN zeroed: the AAC encoder refuses NaN, which sd.cpp's
+    float PCM (the uncompressed AVI) keeps, and 16-bit PCM clipped the same range."""
+    import av
+    import numpy as np
+
+    samples = frame.to_ndarray()
+    if np.isfinite(samples).all() and np.abs(samples).max(initial = 0.0) <= 1.0:
+        return frame
+    fixed = av.AudioFrame.from_ndarray(
+        np.clip(np.nan_to_num(samples, nan = 0.0), -1.0, 1.0).astype(samples.dtype),
+        format = frame.format.name,
+        layout = frame.layout.name,
+    )
+    fixed.sample_rate, fixed.pts, fixed.time_base = frame.sample_rate, frame.pts, frame.time_base
+    return fixed
 
 
 def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:
@@ -2252,6 +2565,9 @@ def _full_scale_constant(samples: Any) -> Optional[float]:
 
     if samples.size == 0:
         return None
+    if np.issubdtype(samples.dtype, np.floating) and not np.isfinite(samples).any():
+        # sd.cpp's float PCM (uncompressed AVI) carries a NaN render's samples as NaN, not a clamped level.
+        return float("inf")
     lo, hi = samples.min(), samples.max()
     if lo != hi:
         return None

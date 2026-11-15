@@ -661,8 +661,8 @@ export function ModelSearchFiltersControl({
               <HugeiconsIcon
                 icon={FilterMailIcon}
                 strokeWidth={1.75}
-                // Its lines narrow downward, so the box's centre reads high: a pixel down evens it.
-                className="size-5 translate-y-px"
+                // Lifts the glyph's ink 0.5px to centre.
+                className="size-5 -translate-y-[0.5px]"
               />
               {filtered && (
                 <span
