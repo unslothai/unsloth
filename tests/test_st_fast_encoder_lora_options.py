@@ -20,7 +20,11 @@ MODELS = Path(__file__).resolve().parents[1] / "unsloth" / "models"
 PACKAGE = "_unsloth_st_fast_encoder_stub"
 
 
-def _function(path, name, class_name = None):
+def _function(
+    path,
+    name,
+    class_name = None,
+):
     tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
     body = tree.body
     if class_name is not None:
