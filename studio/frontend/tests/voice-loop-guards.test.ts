@@ -313,3 +313,9 @@ test("opening and dismissing voice setup keeps typed Send/Stop and the running r
   assert.match(off.slice(0, 300), /const wasActive = voiceModeRef\.current === "active";/);
   assert.match(off.slice(0, 2500), /if \(wasActive && thread\.getState\(\)\.isRunning\) \{\s*try \{\s*thread\.cancelRun\(\);/);
 });
+
+test("a filler that finishes synthesizing after the reply ended is dropped", () => {
+  const player = readSrc("features/chat/hooks/use-tts-player.ts");
+  const aside = player.slice(player.indexOf("const sayAside = useCallback("));
+  assert.match(aside.slice(0, 1500), /const play = \([^)]*\) => \{\s*(?:\/\/[^\n]*\n\s*)?if \(reqRef\.current !== reqId \|\| streamRef\.current !== st \|\| st\.final\) return;/);
+});
