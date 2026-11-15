@@ -366,7 +366,7 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     assert source.count("_sf_settle_streamed_passes()") == 5  # the def and its four calls
     # A failed JSON drain still records the kept turn's text before settling.
     assert "_sf_partial_text = raw_text" in source
-    assert "api_monitor.set_reply(monitor_id, _sf_partial_text)" in source
+    assert "api_monitor.set_reply(target, _sf_partial_text)" in source
     # A stopped Studio-tools provider run keeps its summed usage to the passes that reported.
     assert "_monitor_usage(monitor_id, _summed, reported_chars = _covered_chars[0])" in source
     # Each reported pass's running usage reaches the monitor, so a later failure keeps it.
@@ -375,6 +375,8 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     # The plain safetensors JSON path settles its partial choices on every failure exit.
     assert source.count("_sf_plain_settle()") == 6  # the def and its five calls
     assert '_sf_plain_partial["current"] = token' in source
+    # A wrapper that suppressed the inner row still receives that row's partial settlement.
+    assert source.count("target = _settle_target(monitor_id)") == 4
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
@@ -954,3 +956,41 @@ def test_the_codex_tool_loop_forwards_the_pass_report_hook(monkeypatch):
         None, run = run, policy = policy, cancel_event = None, on_pass_reported = hook
     )
     assert seen["hook"] is hook
+
+
+def test_a_stopped_mlx_completion_without_stats_is_estimated(monkeypatch):
+    from . import test_openai_tool_passthrough as passthrough
+
+    class _NoStats(passthrough._MLXCompletionBackend):
+        def generate_completion(self, prompt_ids, cancel_event, stats_holder, **kw):
+            if kw["stop"] != ["nostats"]:
+                yield from super().generate_completion(prompt_ids, cancel_event, stats_holder, **kw)
+                return
+            # Stopped before gen_done: text streamed, no stats ever reported.
+            cancel_event.set()
+            yield "r" * 400
+
+    receipts = []
+
+    def monitor(**kwargs):
+        made = ApiMonitor(**kwargs)
+        made.set_terminal_callback(receipts.append)
+        return made
+
+    monkeypatch.setattr(passthrough, "_MLXCompletionBackend", _NoStats)
+    monkeypatch.setattr(passthrough, "ApiMonitor", monitor)
+    passthrough._run_mlx_completion(monkeypatch, {"prompt": "P", "stop": "nostats"})
+    [receipt] = receipts
+    assert receipt.status == "cancelled"
+    # The client's zero stood in for missing stats; the 400 characters are estimated.
+    assert receipt.completion_tokens == 100
+
+
+def test_a_suppressed_drain_settles_into_its_wrappers_row():
+    token = inference_route._monitor_perf_sink.set({"monitor_id": "outer"})
+    try:
+        assert inference_route._settle_target(None) == "outer"
+        assert inference_route._settle_target("own") == "own"
+    finally:
+        inference_route._monitor_perf_sink.reset(token)
+    assert inference_route._settle_target(None) is None

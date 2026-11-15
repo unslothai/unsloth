@@ -7282,6 +7282,14 @@ def _monitor_usage(
         )
 
 
+def _settle_target(monitor_id: Optional[str]) -> Optional[str]:
+    """The row a failed drain settles into: its own, else the wrapper's that suppressed it."""
+    if monitor_id:
+        return monitor_id
+    sink = _monitor_perf_sink.get()
+    return sink.get("monitor_id") if isinstance(sink, dict) else None
+
+
 def _monitor_perf_callback(monitor_id: Optional[str], context_length):
     """Build a timing sink only when a monitor row or wrapper sink can consume it."""
     if not monitor_id and _monitor_perf_sink.get() is None:
@@ -33702,11 +33710,12 @@ async def produce_openai_chat_completions(
             _gguf_partial: dict = {"text": "", "settled": None}
 
             def _gguf_settle_partial():
+                target = _settle_target(monitor_id)
                 if _gguf_partial["text"]:
-                    api_monitor.set_reply(monitor_id, _gguf_partial["text"])
+                    api_monitor.set_reply(target, _gguf_partial["text"])
                 if _gguf_partial["settled"] is not None:
                     # Re-settled after the reply so that report covers it.
-                    _monitor_usage(monitor_id, _gguf_partial["settled"], _monitor_context_length())
+                    _monitor_usage(target, _gguf_partial["settled"], _monitor_context_length())
 
             def _drain_gguf_tool_loop():
                 full_text = ""
@@ -34443,12 +34452,13 @@ async def produce_openai_chat_completions(
             _choices_partial: dict = {"done": "", "current": "", "usage": None}
 
             def _gguf_choices_settle():
+                target = _settle_target(monitor_id)
                 done = _choices_partial["done"]
                 if done or _choices_partial["current"]:
-                    api_monitor.set_reply(monitor_id, done + _choices_partial["current"])
+                    api_monitor.set_reply(target, done + _choices_partial["current"])
                 if _choices_partial["usage"] is not None:
                     _monitor_usage(
-                        monitor_id,
+                        target,
                         _choices_partial["usage"],
                         _monitor_context_length(),
                         reported_chars = len(done),
@@ -35536,12 +35546,13 @@ async def produce_openai_chat_completions(
         _sf_text_stats = None
 
         def _sf_settle_reported_passes():
+            target = _settle_target(monitor_id)
             if _sf_partial_text:
-                api_monitor.set_reply(monitor_id, _sf_partial_text)
+                api_monitor.set_reply(target, _sf_partial_text)
             _stats = _sf_stats_holder.get("stats")
             if _stats:
                 _monitor_usage(
-                    monitor_id,
+                    target,
                     _stats.get("usage"),
                     reported_chars = None if _stats is not _sf_text_stats else 0,
                 )
@@ -36286,11 +36297,12 @@ async def produce_openai_chat_completions(
         _sf_plain_partial: dict = {"done": "", "current": "", "usage": None}
 
         def _sf_plain_settle():
+            target = _settle_target(monitor_id)
             done = _sf_plain_partial["done"]
             if done or _sf_plain_partial["current"]:
-                api_monitor.set_reply(monitor_id, done + _sf_plain_partial["current"])
+                api_monitor.set_reply(target, done + _sf_plain_partial["current"])
             if _sf_plain_partial["usage"] is not None:
-                _monitor_usage(monitor_id, _sf_plain_partial["usage"], reported_chars = len(done))
+                _monitor_usage(target, _sf_plain_partial["usage"], reported_chars = len(done))
 
         try:
             _n = payload.n or 1
@@ -38492,6 +38504,12 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         }
         return reason, usage
 
+    def monitored_usage(usage, reported):
+        # The client's zero stands in for missing stats; only a zero budget makes it a real count.
+        if reported or budget == 0:
+            return usage
+        return {"prompt_tokens": usage.get("prompt_tokens"), "completion_tokens": None}
+
     if body.get("stream") is True:
         prompt_ids = resolved[0]["ids"]
 
@@ -38548,7 +38566,11 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                 stats = stats_holder.pop("stats", None)
                 reason, usage = choice_end(prompt_ids, stats)
                 api_monitor.set_perf(monitor_id, stop_reason = reason)
-                _monitor_usage(monitor_id, usage, timings = (stats or {}).get("timings"))
+                _monitor_usage(
+                    monitor_id,
+                    monitored_usage(usage, bool((stats or {}).get("usage"))),
+                    timings = (stats or {}).get("timings"),
+                )
                 yield sse(_text_completion_chunk(completion_id, created, model_name, "", reason))
                 if include_usage:
                     yield sse(
@@ -38639,6 +38661,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
 
     choices, replies, stats = [], [], None
     prompt_tokens = completion_tokens = 0
+    every_choice_reported = True
     cached_tokens: Optional[int] = None
     failure = None
     watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
@@ -38653,6 +38676,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         for index, (text, stats) in enumerate(produced):
             prompt_index, choice = divmod(index, n)
             reason, usage = choice_end(resolved[prompt_index]["ids"], stats)
+            every_choice_reported = every_choice_reported and bool((stats or {}).get("usage"))
             if not choice:
                 prompt_tokens += usage["prompt_tokens"]
                 cached = cached_prompt_tokens(usage)
@@ -38707,7 +38731,11 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
     # One choice's reason and timings would misdescribe several.
     if single:
         api_monitor.set_perf(monitor_id, stop_reason = choices[0]["finish_reason"])
-    _monitor_usage(monitor_id, usage, timings = (stats or {}).get("timings") if single else None)
+    _monitor_usage(
+        monitor_id,
+        monitored_usage(usage, every_choice_reported),
+        timings = (stats or {}).get("timings") if single else None,
+    )
     if cancel_event.is_set():
         from core.inference.llama_keepwarm import mark_current_response_failed
         mark_current_response_failed()
