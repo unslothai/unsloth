@@ -6695,6 +6695,126 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
     return loss
 
 
+def _unsloth_prepare_frozen_teacher(accelerator, teacher):
+    """``accelerator.prepare_model(teacher, evaluation_mode = True)``, except that a frozen teacher on one
+    process moves off the training card when another visible GPU has room for it, and one held wholly by
+    other GPUs stays there: accelerate would otherwise send it to the training card, or refuse it when
+    quantized ("loaded in 8-bit or 4-bit precision on a different device"). UNSLOTH_KD_TEACHER_PLACEMENT=0
+    restores accelerate's handling."""
+    default = lambda: accelerator.prepare_model(teacher, evaluation_mode = True)
+    try:
+        from accelerate.utils import DistributedType
+
+        if (
+            os.environ.get("UNSLOTH_KD_TEACHER_PLACEMENT", "1") == "0"
+            or not isinstance(teacher, torch.nn.Module)
+            or accelerator.distributed_type != DistributedType.NO
+            or accelerator.device.type != "cuda"
+            or getattr(teacher, "_is_accelerate_prepared", False)
+        ):
+            return default()
+        tensors = list(teacher.parameters()) + list(teacher.buffers())
+        if (
+            len(tensors) == 0
+            or any(t.requires_grad for t in tensors)
+            or any(t.device.type != "cuda" for t in tensors)
+        ):
+            return default()
+        train = accelerator.device.index
+        train = torch.cuda.current_device() if train is None else train
+        on_device = {}
+        for t in tensors:
+            on_device[t.device.index] = on_device.get(t.device.index, 0) + t.nbytes
+        if on_device.get(train, 0) > 0 and torch.cuda.device_count() > 1:
+
+            def free_total(d):
+                # NVML first: mem_get_info would open a CUDA context on every probed card.
+                try:
+                    total = torch.cuda.get_device_properties(d).total_memory
+                    return total - torch.cuda.device_memory_used(d), total
+                except Exception:
+                    return torch.cuda.mem_get_info(d)
+
+            free = {d: free_total(d) for d in range(torch.cuda.device_count()) if d != train}
+            target = max(free, key = lambda d: free[d][0])
+            available, total = free[target]
+            need = sum(n for d, n in on_device.items() if d != target)
+            if available - need >= max(2**30, total // 10):
+                from accelerate.hooks import (
+                    AlignDevicesHook,
+                    add_hook_to_module,
+                    remove_hook_from_module,
+                )
+
+                remove_hook_from_module(teacher, recurse = True)
+                torch.nn.Module.to(teacher, torch.device("cuda", target))
+                skip_keys = getattr(teacher, "_skip_keys_device_placement", None)
+                add_hook_to_module(
+                    teacher,
+                    AlignDevicesHook(
+                        execution_device = target, io_same_device = True, skip_keys = skip_keys
+                    ),
+                )
+                teacher.hf_device_map = {"": target}
+                try:
+                    from unsloth_zoo.patching_utils import verify_and_set_device
+                    for module in teacher.modules():
+                        if "_per_layer_device_index" in module.__dict__:
+                            verify_and_set_device(module)
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
+                on_device = {target: sum(on_device.values())}
+                print(
+                    f"Unsloth: moved the frozen teacher ({need / 2**30:.2f} GiB) to cuda:{target}, "
+                    f"off the training card cuda:{train}."
+                )
+        if train in on_device:
+            return default()
+        # Wholly on other GPUs: no move (device_placement = False), and the 4/8-bit device check needs
+        # hf_device_map, so hide it for the call. Outputs return to the input device via accelerate's hook.
+        if getattr(teacher, "_hf_hook", None) is None:
+            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+            add_hook_to_module(
+                teacher,
+                AlignDevicesHook(
+                    execution_device = next(iter(on_device)),
+                    io_same_device = True,
+                    skip_keys = getattr(teacher, "_skip_keys_device_placement", None),
+                ),
+            )
+        hidden = [
+            (m, m.__dict__.pop("hf_device_map"))
+            for m in teacher.modules()
+            if "hf_device_map" in m.__dict__
+        ]
+        try:
+            prepared = accelerator.prepare_model(
+                teacher, device_placement = False, evaluation_mode = True
+            )
+        finally:
+            for m, device_map in hidden:
+                m.hf_device_map = device_map
+        prepared._unsloth_teacher_devices = sorted(on_device)
+        return prepared
+    except Exception as e:
+        print(f"Unsloth: frozen teacher placement skipped ({e}).")
+        return default()
+
+
+def gkd_trainer_prepare_teacher(function_name, function):
+    if function_name != "__init__":
+        return function
+    return re.sub(
+        r"self\.accelerator\.prepare_model\(\s*teacher_model\s*,\s*evaluation_mode\s*=\s*True\s*\)",
+        "_unsloth_prepare_frozen_teacher(self.accelerator, teacher_model)",
+        function,
+    )
+
+
+RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_prepare_teacher)
+
+
 def gkd_trainer_compute_loss(function_name, function):
     """Route the generated ``compute_loss`` through the chunked loss, keeping TRL's body as the fallback."""
     if function_name != "compute_loss" or "_unsloth_trl_compute_loss" in function:
@@ -6747,6 +6867,7 @@ for _gkd_item in (
     _unsloth_gkd_chunk_size,
     _unsloth_gkd_right_align,
     _unsloth_gkd_chunked_loss,
+    _unsloth_prepare_frozen_teacher,
 ):
     RL_PRE_ITEMS["gkd_trainer"].append(inspect.getsource(_gkd_item))
 RL_PRE_ITEMS["gkd_trainer"].append(
