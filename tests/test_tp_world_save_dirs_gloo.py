@@ -59,7 +59,7 @@ def _case(rank, world, tmp):
         with open(os.path.join(directory, "tokenizer_config.json")) as f:
             return json.load(f).get("model_max_length")
 
-    def leftovers():  # staging dirs live inside each destination
+    def leftovers():
         return sorted(
             os.path.relpath(os.path.join(root, d), tmp)
             for root, dirs, _ in os.walk(tmp)

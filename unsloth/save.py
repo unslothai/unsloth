@@ -9191,8 +9191,6 @@ def unsloth_tokenizer_save_pretrained(
     **kwargs,
 ):
     if self.__dict__.get("_unsloth_tp_world_save") or _fsdp2_world() > 1:
-        # Every DDP / FSDP2 rank saves the tokenizer to the same folder and re-reads tokenizer_config.json
-        # to fix it up: each rank works in a private copy and os.replace's the files in, and rank 0 pushes.
         from .models.tp_replica import tp_world_push, tp_world_save
 
         push_kwargs = dict(kwargs)

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Plain DDP / FSDP2 ranks that all save the tokenizer to one folder (as every notebook does) must not read
-each other's half-written tokenizer_config.json: Unsloth re-reads it after the transformers save to fix it
-up, and a rank that truncated it at that moment made the other raise JSONDecodeError."""
+"""DDP / FSDP2 ranks saving one tokenizer folder must not re-read each other's half-written config."""
 
 import multiprocessing
 import os
