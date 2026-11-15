@@ -7328,6 +7328,12 @@ def _plain_data_parallel_push(model, method, fn, args, kwargs):
 
     if fsdp2_units(model):
         return False
+    try:  # FSDP1 state dict hooks all-gather on every rank
+        from torch.distributed.fsdp import FullyShardedDataParallel
+        if any(isinstance(m, FullyShardedDataParallel) for m in model.modules()):
+            return False
+    except Exception:
+        pass
     return method == "push_to_hub" or bool(
         _fsdp2_save_arguments(fn, model, args, kwargs).get("push_to_hub")
     )

@@ -108,3 +108,23 @@ def test_plain_ddp_uploads_from_rank0_only():
         ("save_pretrained", False)
     ], rank1  # the local save still runs on every rank
     assert rank1["push"] is None and rank1["save_push"] is None
+
+
+def test_fsdp1_models_keep_the_all_rank_save(monkeypatch):
+    # FSDP1's state dict hooks all-gather on every rank: skipping the save on rank 1 would hang rank 0.
+    import torch
+    import torch.distributed as dist
+    import torch.distributed.fsdp as fsdp
+    from unsloth import save as unsloth_save
+
+    class FakeFSDP1(torch.nn.Module):
+        pass
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda *a: 2)
+    monkeypatch.setattr(fsdp, "FullyShardedDataParallel", FakeFSDP1)
+    plain = torch.nn.Sequential(torch.nn.Linear(2, 2))
+    wrapped = torch.nn.Sequential(FakeFSDP1())
+    push = lambda self, *a, **k: None
+    assert unsloth_save._plain_data_parallel_push(plain, "push_to_hub", push, (), {})
+    assert not unsloth_save._plain_data_parallel_push(wrapped, "push_to_hub", push, (), {})
