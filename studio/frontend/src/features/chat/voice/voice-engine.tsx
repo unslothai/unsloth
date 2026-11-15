@@ -13,6 +13,7 @@ import {
   StudioVoiceLoopAdapter,
   clearHeldTurn,
   voiceWroteBox,
+  voiceUtterancePending,
   withoutVoiceText,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
@@ -251,7 +252,7 @@ export const VoiceEngine: FC = () => {
       // A phrase begun inside the window joins this turn: starting the run now would stop its recorder mid-word.
       // Timed on its own clock, as long as one utterance can record, not by the cancel/attach retries.
       const rt = useChatRuntimeStore.getState();
-      if ((rt.voiceHearing || rt.voiceTranscribing) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
+      if ((rt.voiceHearing || rt.voiceTranscribing || voiceUtterancePending()) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
         voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt), VOICE_COALESCE_MS);
         return;
       }
@@ -522,6 +523,7 @@ export const VoiceEngine: FC = () => {
 
   useEffect(() => {
     return () => {
+      rearmSeqRef.current += 1;
       if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
       if (streamPollRef.current) clearInterval(streamPollRef.current);
     };

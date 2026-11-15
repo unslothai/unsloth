@@ -92,7 +92,7 @@ test("a clip still being transcribed when voice turns off is dropped, not held",
 test("the coalesced run waits for a phrase still being heard", () => {
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   const fire = engine.slice(engine.indexOf("const fireCoalescedRun = "));
-  const wait = fire.indexOf("(rt.voiceHearing || rt.voiceTranscribing) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS");
+  const wait = fire.indexOf("(rt.voiceHearing || rt.voiceTranscribing || voiceUtterancePending()) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS");
   assert.ok(wait > 0 && wait < fire.indexOf("t.startRun("));
 });
 
@@ -162,4 +162,11 @@ test("the mic re-arms for every reply stream, and a deleted saved voice falls ba
 test("a thread switch drops the old chat's pending transcript and its claim on the box", () => {
   assert.match(loop, /export function clearHeldTurn\(\): void \{\s*heldEpoch \+= 1;[\s\S]{0,250}voiceBoxText = "";/);
   assert.match(loop, /const epoch = heldEpoch;/);
+});
+
+test("a phrase still in VAD/STT holds the coalesced reply; an unmounted engine's mic retries go stale", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(loop, /teardown\(\);\s*utterancesPending \+= 1;\s*try \{\s*await finalizeHeard\(\);\s*\} finally \{\s*utterancesPending -= 1;/);
+  assert.match(engine, /if \(\(rt\.voiceHearing \|\| rt\.voiceTranscribing \|\| voiceUtterancePending\(\)\) && Date\.now\(\)/);
+  assert.match(engine, /return \(\) => \{\s*rearmSeqRef\.current \+= 1;\s*if \(voiceCoalesceTimerRef\.current\) clearTimeout/);
 });
