@@ -18,8 +18,9 @@ class FakeElement {
   listeners = new Map<string, { fn: (e: Event) => void; capture: boolean }>();
   parent: FakeElement | null;
   dock: boolean;
-  constructor(classes: string[] = [], parent: FakeElement | null = null, dock = false) {
+  constructor(classes: string[] = [], parent: FakeElement | null = null, dock = false, attrs: string[] = []) {
     this.parent = parent;
+    for (const a of attrs) this.attrs.add(a);
     this.dock = dock;
     this.classList = { contains: (c) => classes.includes(c) };
   }
@@ -28,6 +29,9 @@ class FakeElement {
       if (selector === ".chat-full-view-dock" ? el.dock : el.attrs.has(selector.slice(1, -1))) return el;
     }
     return null;
+  }
+  matches(selector: string) {
+    return selector.split(", ").some((s) => (s.startsWith(".") ? this.classList.contains(s.slice(1)) : this.attrs.has(s.slice(1, -1))));
   }
   setAttribute(name: string) {
     this.attrs.add(name);
@@ -81,6 +85,18 @@ test("other scrollers and the full-view dock thread never set the flag", () => {
   dock.scrollTop = 99;
   host.fire(dock);
   assert.ok(!host.attrs.has(THREAD_SCROLLED_ATTR));
+});
+
+test("the project landing list drives the shared header fade like a thread", () => {
+  const root = new FakeElement();
+  trackThreadScroll(root as unknown as HTMLElement);
+  const landing = new FakeElement([], root, false, ["data-header-fade-scroller"]);
+  landing.scrollTop = 120;
+  root.fire(landing);
+  assert.ok(root.attrs.has(THREAD_SCROLLED_ATTR));
+  const page = readSrc("features/chat/chat-page.tsx");
+  const landingFn = page.slice(page.indexOf("function ProjectLanding("));
+  assert.match(landingFn.slice(0, landingFn.indexOf("\nfunction ")), /data-header-fade-scroller=""/);
 });
 
 test("a compare pane's scroll moves only its own flag, not the backgrounded chat's", () => {
