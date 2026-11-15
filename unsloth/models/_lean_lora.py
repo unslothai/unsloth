@@ -17,6 +17,9 @@ def lean_lora_forward(self, x, *args, **kwargs):
         or self.merged
         or args
         or kwargs
+        or len(self.lora_A)
+        != 1  # another adapter was added or selected after install: PEFT routes it
+        or self.active_adapters != [adapter]
         or (
             not torch.is_autocast_enabled(x.device.type)
             and x.dtype != self.lora_A[adapter].weight.dtype
