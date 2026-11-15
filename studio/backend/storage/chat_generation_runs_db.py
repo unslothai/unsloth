@@ -312,6 +312,8 @@ def _loads(value: str | None, fallback: Any) -> Any:
 TIMEZONE_HEADERS_FIELD = "timezone_headers"
 # Server-derived API monitor and usage-receipt attribution; not a credential or part of retry identity.
 API_MONITOR_ORIGIN_FIELD = "api_monitor_via_api_key"
+# The one-time token override this run's admission spent, refunded if it never generates.
+TOKEN_LIMIT_OVERRIDE_FIELD = "token_limit_override"
 
 
 def canonical_request(
@@ -335,7 +337,12 @@ def canonical_request(
             "requestPayload": {
                 key: value
                 for key, value in request_payload.items()
-                if key not in (TIMEZONE_HEADERS_FIELD, API_MONITOR_ORIGIN_FIELD)
+                if key
+                not in (
+                    TIMEZONE_HEADERS_FIELD,
+                    API_MONITOR_ORIGIN_FIELD,
+                    TOKEN_LIMIT_OVERRIDE_FIELD,
+                )
             },
         },
         sort_keys = True,
@@ -677,6 +684,37 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | N
         conn.close()
 
 
+def _take_token_override_locked(conn: sqlite3.Connection, run_id: str) -> int | None:
+    row = conn.execute(
+        "SELECT request_json FROM chat_generation_runs WHERE id=?", (run_id,)
+    ).fetchone()
+    payload = _loads(row["request_json"], {}) if row else {}
+    spent = payload.pop(TOKEN_LIMIT_OVERRIDE_FIELD, None) if isinstance(payload, dict) else None
+    if not isinstance(spent, int):
+        return None
+    conn.execute(
+        "UPDATE chat_generation_runs SET request_json=? WHERE id=?",
+        (json.dumps(payload, sort_keys = True, separators = (",", ":"), ensure_ascii = False), run_id),
+    )
+    return spent
+
+
+def take_token_override(run_id: str) -> int | None:
+    """Removes and returns the override this run's admission spent, so exactly one settler (its
+    cancel or its worker) can refund it."""
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        spent = _take_token_override_locked(conn, run_id)
+        conn.commit()
+        return spent
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_run_state(run_id: str) -> dict[str, Any] | None:
     """Status, lastEventSeq and updatedAt of get_run's row, without reading or parsing request_json."""
     conn = _connect()
@@ -920,7 +958,12 @@ def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, A
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
         ).fetchone()
+        # A queued run generated nothing; taken in this transaction so its worker cannot also refund.
+        spent = _take_token_override_locked(conn, run_id) if status == "queued" else None
         _commit(conn, notify = True)
+        if spent is not None:
+            from core.inference.token_limit import restore_override
+            restore_override(spent)
         return _run_from_row(updated_row)
     except Exception:
         conn.rollback()

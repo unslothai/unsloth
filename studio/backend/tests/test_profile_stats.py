@@ -571,7 +571,8 @@ def test_api_fingerprint_invalidates_cache_for_independent_database_writers(stat
 
 def test_api_usage_filters_internal_and_zero_receipts_but_keeps_partial_failures(stats_db):
     now = datetime.now(timezone.utc)
-    assert record_api_usage(_api_receipt("internal", now, via_api_key = False)) is False
+    # Kept for the token allowance only: it never reaches the API usage stats below.
+    assert record_api_usage(_api_receipt("internal", now, via_api_key = False)) is True
     assert (
         record_api_usage(_api_receipt("zero", now, prompt = 0, completion = 0, total = 0, status = "error"))
         is False

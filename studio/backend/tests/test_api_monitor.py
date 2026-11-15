@@ -161,7 +161,7 @@ def test_request_ids_keep_the_full_uuid(monkeypatch):
     assert lifecycle_id == f"apievt_{full_hex[:12]}"
 
 
-def test_non_external_and_non_request_rows_never_emit_usage_receipts():
+def test_only_studio_and_external_requests_emit_usage_receipts():
     receipts = []
     monitor = ApiMonitor(terminal_callback = receipts.append)
 
@@ -191,7 +191,9 @@ def test_non_external_and_non_request_rows_never_emit_usage_receipts():
 
     disabled = ApiMonitor(enabled = False, terminal_callback = receipts.append)
     assert disabled.start(endpoint = "/v1", method = "POST", model = "m", prompt = "") == ""
-    assert receipts == []
+    # A Studio session request is receipted for the token allowance; no API-key row carries it.
+    [studio_receipt] = receipts
+    assert studio_receipt.via_api_key is False and studio_receipt.total_tokens == 10
 
 
 def _get_monitor(monkeypatch, *, enabled: bool):

@@ -1618,7 +1618,8 @@ class TestCspHfEndpoints:
 class TestRemoteAccessCORS:
     """Tunnel publishing admits the tunnel origin only; reflecting every origin exposed the local API."""
 
-    def test_configured_cors_exposes_typesafe_request_id(self, main_module):
+    @pytest.mark.parametrize("header", ["x-typesafe-request-id", "X-Unsloth-Token-Limit"])
+    def test_configured_cors_exposes_client_decision_headers(self, main_module, header):
         cors = next(
             middleware
             for middleware in main_module.app.user_middleware
@@ -1629,14 +1630,14 @@ class TestRemoteAccessCORS:
 
         @app.get("/decision")
         async def decision():
-            return Response(headers = {"x-typesafe-request-id": "decision-request"})
+            return Response(headers = {header: "decision-request"})
 
         response = TestClient(app).get("/decision", headers = {"Origin": "tauri://localhost"})
         assert response.status_code == 200
         assert response.headers["access-control-allow-origin"] in ("*", "tauri://localhost")
-        assert response.headers["x-typesafe-request-id"] == "decision-request"
+        assert response.headers[header] == "decision-request"
         exposed = response.headers["access-control-expose-headers"].lower().split(",")
-        assert "x-typesafe-request-id" in {header.strip() for header in exposed}
+        assert header.lower() in {value.strip() for value in exposed}
 
     TUNNEL = "https://demo-abc.trycloudflare.com"
 

@@ -360,8 +360,16 @@ async def create_chat_generation_run(
 ):
     sanitized = _sanitize_request(payload)
     images = detach_embedded_images(sanitized)
-    from routes.inference import _request_used_api_key
+    from core.inference.api_monitor import override_claim
+    from routes.inference import _enforce_token_limit, _request_used_api_key
 
+    # A retried POST for a run that already exists is not a new request.
+    if await asyncio.to_thread(db.get_run_state, payload.runId) is None:
+        await _enforce_token_limit(request)
+        # The 202 below precedes inference, so the worker's outcome decides the refund, not this response.
+        spent = getattr(getattr(request, "state", None), "token_limit_override", None)
+        if spent:
+            sanitized[db.TOKEN_LIMIT_OVERRIDE_FIELD] = spent
     sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
     if timezone_headers := _timezone_headers(request):
         sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers
@@ -386,6 +394,9 @@ async def create_chat_generation_run(
             raise HTTPException(status_code = 400, detail = str(exc)) from exc
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code = 409, detail = "Generation run conflicts") from exc
+        if created and (claim := override_claim()) is not None:
+            # The run now owns its spent override: it refunds itself if it never generates.
+            claim["spent"] = None
         supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
         if supervisor is not None and run["status"] == "queued":
             supervisor.start(

@@ -101,6 +101,35 @@ def test_nothing_loaded_serves_from_the_studio_embedder(studio_embedder):
     assert payload["usage"] == {"prompt_tokens": 9, "total_tokens": 9}
 
 
+def test_embeddings_stop_at_the_allowance(studio_embedder):
+    import time
+    from core.inference import token_limit
+    from storage.api_usage_db import ApiUsageReceipt, record_api_usage
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(inference_route, "_request_used_api_key", lambda request: True)
+    before = _call({"input": "alpha"})
+    assert record_api_usage(
+        ApiUsageReceipt(
+            id = "used",
+            subject = "tester",
+            endpoint = "/v1/embeddings",
+            model = MODEL,
+            status = "completed",
+            prompt_tokens = 100,
+            completion_tokens = 0,
+            total_tokens = 100,
+            created_at = int(time.time() * 1000),
+        )
+    )
+    token_limit.update_settings({"enabled": True, "limit": 100})
+    assert _http_error({"input": "alpha"}).status_code == 429
+    token_limit.update_settings({"enabled": False})
+    assert _call({"input": "alpha"}) == before
+
+
 def test_chat_model_loaded_serves_from_the_studio_embedder(studio_embedder):
     started = []
     studio_embedder.setattr(
@@ -850,13 +879,18 @@ def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
 
 
 def test_cancelled_request_closes_its_monitor_row(studio_embedder):
-    # Running rows dodge retention trimming, so a request cancelled while queued closes its own row.
     closed = []
     gate = threading.Event()
+    started = asyncio.Event()
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
-    studio_embedder.setattr(inference_route.api_monitor, "start", lambda **_kwargs: "entry-1")
+
+    def start(**_kwargs):
+        started.set()
+        return "entry-1"
+
+    studio_embedder.setattr(inference_route.api_monitor, "start", start)
     studio_embedder.setattr(
         inference_route.api_monitor,
         "finish",
@@ -872,7 +906,7 @@ def test_cancelled_request_closes_its_monitor_row(studio_embedder):
         request = _Request({"input": "alpha"})
         request.state.skip_api_monitor = False
         task = asyncio.create_task(inference_route.openai_embeddings(request, "tester"))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(started.wait(), timeout = 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
