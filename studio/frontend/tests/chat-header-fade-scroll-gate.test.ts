@@ -16,13 +16,24 @@ class FakeElement {
   classList: { contains: (c: string) => boolean };
   scrollTop = 0;
   listeners = new Map<string, { fn: (e: Event) => void; capture: boolean }>();
+  parent: FakeElement | null;
   dock: boolean;
-  constructor(classes: string[] = [], dock = false) {
+  constructor(classes: string[] = [], parent: FakeElement | null = null, dock = false) {
+    this.parent = parent;
     this.dock = dock;
     this.classList = { contains: (c) => classes.includes(c) };
   }
-  closest(selector: string) {
-    return selector === ".chat-full-view-dock" && this.dock ? this : null;
+  closest(selector: string): FakeElement | null {
+    for (let el: FakeElement | null = this; el; el = el.parent) {
+      if (selector === ".chat-full-view-dock" ? el.dock : el.attrs.has(selector.slice(1, -1))) return el;
+    }
+    return null;
+  }
+  setAttribute(name: string) {
+    this.attrs.add(name);
+  }
+  removeAttribute(name: string) {
+    this.attrs.delete(name);
   }
   toggleAttribute(name: string, on: boolean) {
     if (on) this.attrs.add(name);
@@ -34,9 +45,11 @@ class FakeElement {
   removeEventListener(type: string) {
     this.listeners.delete(type);
   }
+  // Capture phase: every tracked ancestor of the target sees the event, outermost first.
   fire(target: FakeElement) {
-    const l = this.listeners.get("scroll");
-    l?.fn.call(this, { target } as unknown as Event);
+    const chain: FakeElement[] = [];
+    for (let el: FakeElement | null = target; el; el = el.parent) chain.unshift(el);
+    for (const el of chain) el.listeners.get("scroll")?.fn.call(el, { target } as unknown as Event);
   }
 }
 (globalThis as { HTMLElement?: unknown }).HTMLElement = FakeElement;
@@ -46,7 +59,7 @@ test("the flag follows the thread viewport's scrollTop, captured on the fade's p
   const host = new FakeElement();
   const cleanup = trackThreadScroll(host as unknown as HTMLElement);
   assert.equal(host.listeners.get("scroll")?.capture, true, "scroll does not bubble: capture phase");
-  const viewport = new FakeElement(["aui-thread-viewport"]);
+  const viewport = new FakeElement(["aui-thread-viewport"], host);
   viewport.scrollTop = 40;
   host.fire(viewport);
   assert.ok(host.attrs.has(THREAD_SCROLLED_ATTR));
@@ -55,18 +68,37 @@ test("the flag follows the thread viewport's scrollTop, captured on the fade's p
   assert.ok(!host.attrs.has(THREAD_SCROLLED_ATTR), "back at the top: fade hidden again");
   cleanup?.();
   assert.equal(host.listeners.size, 0);
+  assert.ok(!host.attrs.has("data-thread-scroll-host"));
 });
 
 test("other scrollers and the full-view dock thread never set the flag", () => {
   const host = new FakeElement();
   trackThreadScroll(host as unknown as HTMLElement);
-  const codeBlock = new FakeElement(["code-scroller"]);
+  const codeBlock = new FakeElement(["code-scroller"], host);
   codeBlock.scrollTop = 99;
   host.fire(codeBlock);
-  const dock = new FakeElement(["aui-thread-viewport"], true);
+  const dock = new FakeElement(["aui-thread-viewport"], host, true);
   dock.scrollTop = 99;
   host.fire(dock);
-  assert.equal(host.attrs.size, 0);
+  assert.ok(!host.attrs.has(THREAD_SCROLLED_ATTR));
+});
+
+test("a compare pane's scroll moves only its own flag, not the backgrounded chat's", () => {
+  const root = new FakeElement();
+  trackThreadScroll(root as unknown as HTMLElement);
+  const chat = new FakeElement(["aui-thread-viewport"], root);
+  chat.scrollTop = 500;
+  root.fire(chat);
+  const pane = new FakeElement([], root);
+  trackThreadScroll(pane as unknown as HTMLElement);
+  const paneViewport = new FakeElement(["aui-thread-viewport"], pane);
+  paneViewport.scrollTop = 80;
+  root.fire(paneViewport);
+  assert.ok(pane.attrs.has(THREAD_SCROLLED_ATTR));
+  paneViewport.scrollTop = 0;
+  root.fire(paneViewport);
+  assert.ok(!pane.attrs.has(THREAD_SCROLLED_ATTR));
+  assert.ok(root.attrs.has(THREAD_SCROLLED_ATTR), "the chat behind compare is still scrolled");
 });
 
 test("both fades are hidden by default and shown only under a scrolled direct parent", () => {
