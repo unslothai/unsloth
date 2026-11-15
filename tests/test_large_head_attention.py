@@ -869,7 +869,9 @@ def test_self_check_per_head_dim():
     assert LH._self_check(device, dtype) is True and (str(device), dtype) in LH._SELF_CHECK
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(
+    not _SM80 or torch.version.hip is not None, reason = "the router engages on CUDA sm80+ only"
+)
 def test_router_compiled_takes_a_block_verified_causal_mask(monkeypatch):
     # Block compile scans the mask eagerly and marks it plain causal; the compiled graph then runs
     # the kernel instead of masked SDPA (which repeats the single kv head 16 times at head_dim 512).
