@@ -134,3 +134,43 @@ def test_non_string_expected_issuer_passes_through():
     mcp_client._accept_root_issuer_slash(auth)
 
     assert auth._expected_issuer() is None
+
+
+SAME = [
+    (BARE, BARE),
+    (SLASH, SLASH),
+    (BARE, SLASH),
+    ("http://localhost:8080", "http://localhost:8080/"),
+    ("https://[::1]:8443", "https://[::1]:8443/"),
+    ("https://login.example.com/tenant", "https://login.example.com/tenant"),
+]
+
+DIFFERENT = [
+    ("https://login.example.com/tenant", "https://login.example.com/tenant/"),
+    ("https://login.example.com/", "https://login.example.com/tenant"),
+    (BARE, "https://accounts.example.com/"),
+    (BARE, "https://accounts.google.com.example.com/"),
+    (BARE, "http://accounts.google.com/"),
+    (BARE, "https://accounts.google.com:8443/"),
+    (BARE, "https://Accounts.google.com/"),
+    (SLASH, "https://accounts.google.com//"),
+    ("https://accounts.google.com?x=1", "https://accounts.google.com?x=1/"),
+    ("https://accounts.google.com#x", "https://accounts.google.com#x/"),
+    ("https://[::1", "https://[::1/"),
+    ("", "/"),
+]
+
+
+@pytest.mark.parametrize(("a", "b"), SAME)
+def test_same_server(a, b):
+    for x, y in ((a, b), (b, a)):
+        assert mcp_client._RootSlashIssuer(x) == y
+        assert y == mcp_client._RootSlashIssuer(x)
+        assert not (y != mcp_client._RootSlashIssuer(x))
+
+
+@pytest.mark.parametrize(("a", "b"), DIFFERENT)
+def test_different_server(a, b):
+    for x, y in ((a, b), (b, a)):
+        assert mcp_client._RootSlashIssuer(x) != y
+        assert y != mcp_client._RootSlashIssuer(x)

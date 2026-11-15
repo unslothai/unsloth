@@ -37,7 +37,6 @@ from utils.account_context import (
 )
 
 from core.inference import mcp_images
-from core.inference.mcp_oauth_issuer import same_issuer
 
 logger = get_logger(__name__)
 
@@ -536,12 +535,18 @@ def _strip_client_id_under_basic_auth(auth) -> None:
 
 
 class _RootSlashIssuer(str):
-    """The SDK compares issuers with a plain ``!=``, so the rule lives here. Hashes as plain str."""
+    """The SDK compares a PRM-advertised issuer with a plain ``!=``; apply its own root-slash rule there."""
 
     __slots__ = ()
 
     def __eq__(self, other):
-        return isinstance(other, str) and same_issuer(str.__str__(self), str.__str__(other))
+        from mcp.client.auth.utils import issuers_match
+        if not isinstance(other, str):
+            return False
+        try:
+            return issuers_match(str.__str__(self), str.__str__(other))
+        except ValueError:
+            return False
 
     def __ne__(self, other):
         return not self.__eq__(other)
@@ -550,7 +555,7 @@ class _RootSlashIssuer(str):
 
 
 def _accept_root_issuer_slash(auth) -> None:
-    """Google advertises https://accounts.google.com/ but issues https://accounts.google.com."""
+    """Google advertises https://accounts.google.com/ but issues https://accounts.google.com (python-sdk#1919)."""
     expected = getattr(auth, "_expected_issuer", None)
     if expected is None:
         logger.warning("MCP OAuth: _expected_issuer missing; issuer slash fixup skipped")
@@ -563,7 +568,6 @@ def _accept_root_issuer_slash(auth) -> None:
     try:
         auth._expected_issuer = _expected_issuer
     except Exception as exc:  # noqa: BLE001
-        # Must never break OAuth; without the fixup only mismatched issuers fail.
         logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
 
 
