@@ -389,3 +389,14 @@ test("a clip heard across voice off runs no VAD or STT and raises no error or do
   assert.match(fin, /if \(error instanceof SttModelNotDownloadedError && !switchedOff\(\)\) \{/);
   assert.match(fin, /\} catch \(error\) \{\s*if \(ended\) return;\s*if \(switchedOff\(\)\) \{\s*dropSwitched\(\);\s*return;\s*\}\s*console\.error\("Voice transcription error:"/);
 });
+
+test("the orb's Escape stays out of other pages while Chat is hidden; speech owns the voice slot first", () => {
+  const orb = readSrc("components/assistant-ui/voice-orb.tsx");
+  const listener = orb.slice(orb.indexOf("const onKeyDown = (e: KeyboardEvent) => {"));
+  assert.ok(listener.indexOf("root.closest('[aria-hidden=\"true\"], [inert]') || root.getClientRects().length === 0) return;") < listener.indexOf("e.preventDefault();"));
+  assert.match(orb, /\sref=\{rootRef\}/);
+  const player = readSrc("features/chat/hooks/use-tts-player.ts");
+  const synth = player.slice(player.indexOf("const synthesize = useCallback("));
+  const own = synth.indexOf("if (!(await ensureVoiceSlotLoaded())) return null;");
+  assert.ok(own > 0 && own < synth.indexOf("url = await request();"));
+});
