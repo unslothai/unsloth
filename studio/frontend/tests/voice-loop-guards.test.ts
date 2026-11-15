@@ -164,9 +164,9 @@ test("a thread switch drops the old chat's pending transcript and its claim on t
   assert.match(loop, /const epoch = heldEpoch;/);
 });
 
-test("a phrase still in VAD/STT holds the coalesced reply; an unmounted engine's mic retries go stale", () => {
+test("a phrase still in VAD/STT holds the coalesced reply; an unmounted engine's mic retries and held phrase go stale", () => {
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(loop, /teardown\(\);\s*utterancesPending \+= 1;\s*try \{\s*await finalizeHeard\(\);\s*\} finally \{\s*utterancesPending -= 1;/);
   assert.match(engine, /if \(\(rt\.voiceHearing \|\| rt\.voiceTranscribing \|\| voiceUtterancePending\(\)\) && Date\.now\(\)/);
-  assert.match(engine, /return \(\) => \{\s*rearmSeqRef\.current \+= 1;\s*if \(voiceCoalesceTimerRef\.current\) clearTimeout/);
+  assert.match(engine, /return \(\) => \{\s*rearmSeqRef\.current \+= 1;\s*(?:\/\/[^\n]*\n\s*)?clearHeldTurn\(\);\s*if \(voiceCoalesceTimerRef\.current\) clearTimeout/);
 });
