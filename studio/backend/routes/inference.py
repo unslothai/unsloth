@@ -51152,7 +51152,7 @@ async def _generate_diffusion_image_run(
         load_identity,
     )
 
-    from core.inference.diffusion_conditioning import LocalizedEdit
+    from core.inference.diffusion_conditioning import LocalizedEdit, omitted_txt2img_size
     from core.inference.diffusion_memory import (
         IMAGE_REFUSAL_HEADER,
         IMAGE_REFUSAL_MEMORY_ESTIMATE,
@@ -51173,6 +51173,12 @@ async def _generate_diffusion_image_run(
     # An edit that names no size matches Image 1 in the backend instead of the schema's 1024 square default.
     size_omitted = request.workflow == "edit" and not (
         {"width", "height"} & request.model_fields_set
+    )
+    # A text-to-image run that names no size takes the loaded family's default (MiniMax-H3-Image: 2048x2048).
+    txt2img_size_omitted = (
+        request.workflow is None
+        and request.init_image is None
+        and not ({"width", "height"} & request.model_fields_set)
     )
     localized_edit = (
         LocalizedEdit(mode = request.localized_edit.mode, image = request.localized_edit.image)
@@ -51220,6 +51226,21 @@ async def _generate_diffusion_image_run(
                 # A load in flight would admit this run on its new model with the schema's values.
                 # Pin to "nothing loaded" so that model is refused and the retry reads its defaults.
                 expected_load = load_identity(None, None, None)
+        if txt2img_size_omitted:
+            if status is None:
+                status = await asyncio.to_thread(backend.status)
+            size = omitted_txt2img_size(status.get("family")) if status.get("loaded") else None
+            if size is not None:
+                request = request.model_copy(update = {"width": size[0], "height": size[1]})
+            if expected_load is None:
+                # Same pin as the omitted steps: a replaced model retries with its own default size.
+                expected_load = (
+                    load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
+                    if status.get("loaded")
+                    else load_identity(None, None, None)
+                )
         if enhancement.load is not None:
             # Captions are written for one family: a model swapped in since then retries with fresh ones.
             expected_load = enhancement.load
