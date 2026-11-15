@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A model converter over a tensor a pre-quantized checkpoint keeps in 16 bit must still load it.
-
-transformers 5.21+ rewrites every model converter ending in `.weight` to collect only the quantizer's serialized
-names. Qwen4Exp concatenates its n-gram table from `ngram_embedding.shard_*.weight`, which an NVFP4 / MXFP4
-compressed-tensors checkpoint stores unquantized, so the table was left randomly initialized."""
+"""A model converter over a tensor a pre-quantized checkpoint keeps in 16 bit must still load it."""
 
 import inspect
 

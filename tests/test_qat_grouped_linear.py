@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""QAT, its convert / export and the merged reload metadata must leave block-diagonal grouped Linears
-(DeepSeek-V4 / V4.1 `o_a_proj`) in full precision.
-
-torchao swaps a matched Linear for a dense fake-quantized (prepare) or quantized (convert) one: the grouped layer
-lost its grouped matmul and GroupedLinearLoRA failed on the first forward."""
+"""QAT prepare / convert / export must leave block-diagonal grouped Linears in full precision."""
 
 import copy
 import importlib.util

@@ -9636,8 +9636,7 @@ def _default_qat_linear_filter(module, fqn):
 
 
 class _SkipGroupedLinears:
-    """A QAT filter (None = torchao's default Linear filter) that never selects a grouped Linear. Module-level and
-    structural (no captured module ids), so it survives deepcopy and is reused by every export."""
+    """A QAT filter that never selects a grouped Linear; structural, so it survives deepcopy."""
 
     __slots__ = ("filter_fn",)
 
@@ -10387,9 +10386,7 @@ def _prepare_model_for_qat(
 
 
 def _qat_grouped_linear_guard(model, torchao_config):
-    """Persist the grouped-Linear exclusion in `torchao_config` (stored on the model, read again by convert,
-    export and the merged reload metadata) when the model has grouped Linears, and warn about the grouped layers
-    a filter would otherwise have selected."""
+    """Persist the grouped-Linear exclusion in `torchao_config`, which convert and export read again."""
     try:
         from .grouped_linear_lora import is_grouped_linear
     except Exception:

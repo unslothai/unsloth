@@ -3599,14 +3599,8 @@ _QUANTIZED_COMPANION_SUFFIXES = (
 def fix_transformers_quantizer_unquantized_converters():
     """Keep a model converter over a tensor the pre-quantized checkpoint stores unquantized.
 
-    A quantizer rewrites the model's converters to collect its serialized names: transformers 5.21+
-    ``HfQuantizer.update_weight_conversions`` every converter ending in ``.weight``, and the compressed-tensors
-    override of earlier 5.x builds every expert converter. For a packed format (NVFP4 / MXFP4) the rewritten copy
-    only matches ``weight_packed`` / ``weight_scale`` keys, so a tensor the checkpoint keeps in 16 bit (Qwen4Exp's
-    n-gram table shards, or bf16 experts beside quantized attention) matches nothing and is randomly initialized.
-    The replaced converter goes back after the rewritten ones, unless a rewritten copy still loads its sources (FP8,
-    or transformers 5.23, which also collects the bare name). Converters match first-wins in list order, so the
-    rewritten copy keeps every quantized key."""
+    For packed formats the quantizer's rewritten copy only matches ``weight_packed`` / ``weight_scale``, so 16-bit
+    tensors were left randomly initialized. Converters match first-wins, so the original is appended after."""
     try:
         from transformers.quantizers.base import HfQuantizer
         from transformers.core_model_loading import WeightConverter
