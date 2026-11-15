@@ -7,6 +7,7 @@ loading the adapter checks the model it lands on has the same base table: silent
 (an error with UNSLOTH_FROZEN_TABLE_PROVENANCE=strict) on a checkpoint whose table differs. CPU, tiny model.
 (The distributed saves are checked in tests/_frozen_table_parallel.py.)"""
 
+import contextlib
 import json
 import os
 import shutil
@@ -88,10 +89,17 @@ def test_adapter_save_writes_the_table_provenance(checkpoints, adapter):
     }
 
 
+@contextlib.contextmanager
+def _no_provenance_warning():
+    """Only the provenance warning is an error: transformers / PEFT may warn about their own deprecations."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message = r"Unsloth: .*frozen lookup tables")
+        yield
+
+
 def test_reload_on_the_same_tables_is_silent(checkpoints, adapter):
     from peft import PeftModel
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
+    with _no_provenance_warning():
         PeftModel.from_pretrained(_base(checkpoints[0], mode = "disk"), adapter)
 
 
@@ -104,8 +112,7 @@ def test_reload_on_other_tables_warns_or_refuses(checkpoints, adapter, monkeypat
     with pytest.raises(ValueError, match = "contents differ"):
         PeftModel.from_pretrained(_base(checkpoints[1]), adapter)
     monkeypatch.setenv("UNSLOTH_FROZEN_TABLE_PROVENANCE", "off")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
+    with _no_provenance_warning():
         PeftModel.from_pretrained(_base(checkpoints[1]), adapter)
 
 
