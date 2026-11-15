@@ -15551,7 +15551,9 @@ class VideoBackend:
     ) -> bytes:
         """Encode frames (+ optional audio) to H.264 MP4 bytes via diffusers' PyAV
         exporter. A temp file bridges the exporter's path-based API; the bytes are
-        what the gallery persists."""
+        what the gallery persists. A MiniMax-H3 pipeline gets the reference workflow's
+        save settings (encode_x264 reference=True: CRF 18, BT.709, float AAC)."""
+        reference = type(getattr(pipe, "vae", None)).__name__ == "AutoencoderKLMiniMaxH3"
         if audio is None:
             streamed = claim_stream(video_frames, fps)
             if streamed is not None:
@@ -15592,6 +15594,8 @@ class VideoBackend:
                     tmp.name,
                     encode_kwargs.get("audio"),
                     encode_kwargs.get("audio_sample_rate"),
+                    # only for H3, so every other family's call (and its test doubles) is unchanged
+                    **({"reference": True} if reference else {}),
                 ):
                     encode_video(video_frames, fps, tmp.name, **encode_kwargs)
             return Path(tmp.name).read_bytes()
