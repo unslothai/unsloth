@@ -139,3 +139,16 @@ test("reopening a chat whose saved Full access was revoked elsewhere drops the r
   assert.equal(state().permissionMode, "auto");
   assert.equal(state().bypassPermissions, false);
 });
+
+test("leaving Full access while loading, then leaving the chat, still saves the revocation", async () => {
+  threadRows.reset();
+  threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: true });
+  const state = await start("saved-grant-leave-then-commit");
+  state().setActiveThreadId(CHAT);
+  state().applyThreadScopedSettings(null, null);
+  state.module.beginThreadScopedPairing(CHAT);
+  state().setPermissionMode("ask");
+  await state.module.commitHeldThreadScopedEditsToTheirThread();
+  await settle();
+  assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false);
+});

@@ -1334,6 +1334,12 @@ const SAVED_GRANT_PREFIX = "saved:";
 /** Chats whose Full access was granted or left here since they were opened: that beats a row read meanwhile. */
 const chatFullAccessDecidedSinceOpen = new Set<string>();
 
+/** Every write carries the chat's latest flag, so a write that supersedes another cannot drop it. */
+function withSavedChatFullAccess(threadId: string, settings: ThreadScopedSettings): ThreadScopedSettings {
+  const fullAccess = savedChatFullAccess.get(threadId);
+  return fullAccess === undefined ? settings : { ...settings, fullAccess };
+}
+
 function saveChatFullAccess(threadId: string, on: boolean): void {
   chatFullAccessDecidedSinceOpen.add(threadId);
   if (savedChatFullAccess.get(threadId) === on) return;
@@ -1403,8 +1409,7 @@ function buildThreadScopedSnapshot(
   }
   restoreChatOwnedValues(threadId, settings);
   // Not a store field, so a snapshot read from the store lacks it and a replacement would erase it.
-  const fullAccess = savedChatFullAccess.get(threadId);
-  if (fullAccess !== undefined) settings.fullAccess = fullAccess;
+  Object.assign(settings, withSavedChatFullAccess(threadId, {}));
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
@@ -1811,7 +1816,7 @@ export function commitHeldThreadScopedEditsToTheirThread(
   // pairingWindowDefaultsThreadId stays set: a retry would resample the edit as a default.
   closeThreadScopedPairingGate(null);
   if (threadId === null || held.length === 0) return Promise.resolve();
-  const changes = heldThreadScopedChanges(held);
+  const changes = withSavedChatFullAccess(threadId, heldThreadScopedChanges(held));
   restoreDefaultsOverCommittedEdits(threadId, held);
   if (keepalive) {
     sendThreadScopedSettingsBeacon(threadId, changes, true);
