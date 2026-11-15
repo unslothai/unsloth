@@ -704,3 +704,20 @@ def test_an_edit_with_no_size_renders_at_picture_one_at_4mp(h3i, pipe, monkeypat
     assert seen["size"] == h3i.reference_edit_size(300, 200) == (2496, 1664)
     pipe(prompt = "a cat")
     assert seen["size"] == (2048, 2048)
+
+
+def test_prepared_pictures_are_cached_per_source_picture(h3i):
+    import hashlib
+
+    import numpy as np
+
+    pic = _picture(600, 400, 11)
+    first = h3i.MiniMaxH3ImagePipeline.prepare_references([pic], source_resize = True)
+    again = h3i.MiniMaxH3ImagePipeline.prepare_references([pic.copy()], source_resize = True)
+    # the same content reuses the prepared copies: no rescale, no resize, no rehash of the float picture
+    assert again[0][0] is first[0][0] and again[1][0] is first[1][0]
+    vae = first[0][0]
+    assert vae.digest == hashlib.blake2b(np.asarray(vae).tobytes(), digest_size = 16).hexdigest()
+    # the rule is part of the key
+    plain = h3i.MiniMaxH3ImagePipeline.prepare_references([pic], source_resize = False)
+    assert plain[0][0].size == h3i.size_short_edge(600, 400, 1024, 2048)

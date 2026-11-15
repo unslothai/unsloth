@@ -546,8 +546,8 @@ def install_pdd_head_bank(transformer: Any) -> bool:
         for k in range(1, len(heads)):
             heads[k].weight.data.copy_(w0 + rows_w[k])
             heads[k].bias.data.copy_(b0 + rows_b[k])
-    # a plain attribute: not in the state dict, moved with the head on use
-    object.__setattr__(transformer, PDD_BANK_ATTR, (rows_w, rows_b))
+    # a plain attribute on the host (not in the state dict, no device memory): moved only for a blended render
+    object.__setattr__(transformer, PDD_BANK_ATTR, (rows_w.cpu(), rows_b.cpu()))
     return True
 
 
@@ -900,6 +900,39 @@ def reference_source_picture(image: Any) -> Any:
         x0, y0 = (sw - tw) // 2, (sh - th) // 2
         x = x[:, y0 : y0 + th, x0 : x0 + tw, :]
     return np.ascontiguousarray(x[0].numpy())
+
+
+# Prepared copies of recent reference pictures (a 4 MP float Picture 1 is about 50 MB of host memory).
+PREPARED_PICTURE_ENTRIES = 4
+_PREPARED_PICTURES: "OrderedDict[tuple, tuple]" = OrderedDict()
+
+
+def _digested_picture_class() -> Any:
+    import numpy as np
+    class DigestedPicture(np.ndarray):
+        """A float picture carrying the digest of its bytes, so the reference-latent cache does not rehash it."""
+
+        digest: Optional[str] = None
+
+        @classmethod
+        def of(cls, array: Any) -> Any:
+            out = np.ascontiguousarray(array).view(cls)
+            out.digest = hashlib.blake2b(out.tobytes(), digest_size = 16).hexdigest()
+            return out
+
+    return DigestedPicture
+
+
+class _LazyDigested:
+    _cls = None
+
+    def of(self, array: Any) -> Any:
+        if _LazyDigested._cls is None:
+            _LazyDigested._cls = _digested_picture_class()
+        return _LazyDigested._cls.of(array)
+
+
+_DigestedPicture = _LazyDigested()
 
 
 def picture_size(picture: Any) -> tuple:
@@ -1835,7 +1868,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                     )
                 key = None
                 if ref_cache_enabled():
-                    digest = hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
+                    digest = (
+                        getattr(image, "digest", None)
+                        or hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
+                    )
                     key = (id(vae), str(vae_dtype), str(device), tuple(array.shape), digest)
                 cache = self.__dict__.setdefault("_unsloth_h3_ref_posteriors", OrderedDict())
                 stats = self.__dict__.setdefault("_unsloth_h3_ref_stats", {"hits": 0, "misses": 0})
@@ -1884,15 +1920,32 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 )
             prepared.append(image)
 
-        if prepared and (source_resize_enabled() if source_resize is None else source_resize):
-            prepared[0] = reference_source_picture(prepared[0])
-
         def resize(image: Any, lo: int, hi: int) -> Any:
             size = size_short_edge(*picture_size(image), lo, hi)
             return image if picture_size(image) == size else lanczos_resize(image, size)
 
-        vae_images = [resize(i, *H3_IMAGE_REFERENCE_SHORT_EDGE) for i in prepared]
-        vision_images = [resize(i, *H3_IMAGE_VISION_SHORT_EDGE) for i in prepared]
+        rescale_first = bool(prepared) and (
+            source_resize_enabled() if source_resize is None else source_resize
+        )
+        vae_images, vision_images = [], []
+        for index, image in enumerate(prepared):
+            # both copies are cached per source picture: a repeat edit resizes nothing
+            source = index == 0 and rescale_first
+            key = (source, image.size, hashlib.blake2b(image.tobytes(), digest_size = 16).hexdigest())
+            copies = _PREPARED_PICTURES.get(key)
+            if copies is None:
+                picture = reference_source_picture(image) if source else image
+                vae_copy = resize(picture, *H3_IMAGE_REFERENCE_SHORT_EDGE)
+                if vae_copy is picture and source:
+                    vae_copy = _DigestedPicture.of(picture)
+                copies = (vae_copy, resize(picture, *H3_IMAGE_VISION_SHORT_EDGE))
+                _PREPARED_PICTURES[key] = copies
+                while len(_PREPARED_PICTURES) > PREPARED_PICTURE_ENTRIES:
+                    _PREPARED_PICTURES.popitem(last = False)
+            else:
+                _PREPARED_PICTURES.move_to_end(key)
+            vae_images.append(copies[0])
+            vision_images.append(copies[1])
         return vae_images, vision_images
 
     def __call__(
@@ -2099,9 +2152,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                     "transformer's forward is wrapped."
                 )
             stats["pdd_blended_steps"] = sum(stop - start != 1 for start, stop in spans)
-            # the model sees the target latent rounded to its compute dtype (the reference casts its input), the
-            # reference rows stay float32
-            model_rows = rows.clone()
+            # the sampler state stays float32 in ``x``; ``rows`` holds the model input, the generated rows rounded to
+            # the compute dtype (the reference casts its input), the reference rows float32
+            x = rows[n_ref:].clone()
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     return None
@@ -2111,9 +2164,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                     extra["head"] = pdd_head_weights(
                         bank, self.scheduler.model_sigmas[i], sample_sigmas, grid
                     )
-                model_rows[n_ref:] = model_io(rows[n_ref:], dtype)
+                rows[n_ref:] = model_io(x, dtype)
                 velocity = transformer(
-                    hidden_states = model_rows[None],
+                    hidden_states = rows[None],
                     encoder_hidden_states = prompt_embeds,
                     timestep = unique.to(device),
                     timestep_indices = index.to(device),
@@ -2126,9 +2179,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                     velocity = velocity[:, n_ref:]
                 # the model output reaches the sampler in the compute dtype, as in the reference
                 velocity = model_io(velocity[0], dtype).float()
-                rows[n_ref:] = self.scheduler.step(velocity, t, rows[n_ref:])[0]
+                x = self.scheduler.step(velocity, t, x)[0]
                 if callback is not None:
-                    view = unpatchify(rows[n_ref:], lh, lw, channels, patch)
+                    view = unpatchify(x, lh, lw, channels, patch)
                     payload = {"latents": view} if "latents" in callback_inputs else {}
                     callback(self, i, t, payload)
         finally:
@@ -2137,7 +2190,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             torch.cuda.synchronize(device)
         stats["denoise_s"] = time.perf_counter() - t1
         t2 = time.perf_counter()
-        final = unpatchify(rows[n_ref:], lh, lw, channels, patch)
+        final = unpatchify(x, lh, lw, channels, patch)
         if output_type == "latent":
             self._unsloth_h3_last_stats = stats
             return [final[0]]
