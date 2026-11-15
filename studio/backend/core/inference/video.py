@@ -15947,7 +15947,7 @@ def _custom_size_defaults(fam: Any) -> dict[str, Any]:
 
 
 def _ui_default_resolution(fam: Any) -> Optional[list[int]]:
-    """The family's page default when it is one of its presets (UNSLOTH_VIDEO_H3_480P=0 drops the 480p ones)."""
+    """The page's Default preset size when it is a preset (UNSLOTH_VIDEO_H3_480P=0 drops the 480p ones)."""
     wanted = getattr(fam, "ui_default_resolution", None)
     if not wanted:
         return None

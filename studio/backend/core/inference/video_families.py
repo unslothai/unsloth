@@ -325,7 +325,7 @@ class VideoFamily:
     # True: a keyframe keeps the chosen (or default) canvas instead of a source-aspect one, as MiniMax-H3's reference
     # workflow does; the page then selects "Match source" only when asked.
     keyframes_keep_canvas: bool = False
-    # The size the page starts on (a preset), when it is not resolution_presets[0]; requests without a size still
+    # The page's Default preset size (a preset), when it is not resolution_presets[0]; requests without a size still
     # take resolution_presets[0].
     ui_default_resolution: Optional[tuple[int, int]] = None
     # False for a keyframe family that takes a first frame only (LTX-2.5); MiniMax-H3 takes both.

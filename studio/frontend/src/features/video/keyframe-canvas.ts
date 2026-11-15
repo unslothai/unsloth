@@ -88,7 +88,7 @@ export function snapCanvasWithinCap(
   return best;
 }
 
-/** The size the page starts on: the family's default_resolution when it is one of the presets, else the first. */
+/** The Default preset's size: the family's default_resolution when it is one of the presets, else the first. */
 export function defaultVideoResolution(
   defaults: Pick<VideoGenerationDefaults, "default_resolution"> | null | undefined,
   presets: ReadonlyArray<readonly [number, number]>,

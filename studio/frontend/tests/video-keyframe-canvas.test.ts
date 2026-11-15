@@ -160,7 +160,7 @@ test("Match source sends the matched size where an omitted size means the defaul
   assert.deepEqual(requestCanvas(false, null, [1344, 768], false), { width: 1344, height: 768 });
 });
 
-test("the page starts on the family's default size only when it is a preset", () => {
+test("the Default preset takes the family's default size only when it is a preset", () => {
   const presets: Array<[number, number]> = [
     [1344, 768],
     [864, 480],

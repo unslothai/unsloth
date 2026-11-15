@@ -8046,7 +8046,7 @@ class VideoGenerationDefaults(BaseModel):
     )
     default_resolution: Optional[list[int]] = Field(
         None,
-        description = "(width, height) the page starts on when it differs from resolution_presets[0] "
+        description = "(width, height) of the page's Default preset when it differs from resolution_presets[0] "
         "(MiniMax-H3: the reference templates' 864x480); a request without a size still takes "
         "resolution_presets[0]",
     )
