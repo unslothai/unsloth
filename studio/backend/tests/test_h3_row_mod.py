@@ -177,3 +177,86 @@ def test_the_row_forward_matches_the_stock_forward_on_cuda(monkeypatch):
     assert torch.equal(got, ref)
     monkeypatch.setenv(R.ROW_MOD_ENV, "0")
     assert torch.equal(_run(model, inputs), ref)
+
+
+class _FakeCudaTensor:
+    """Just enough of a cuda:1 tensor for the launchers: shape, dtype, device, stride."""
+
+    def __init__(self, index):
+        self.shape = (1, 4, 8)
+        self.dtype = torch.bfloat16
+        self.device = torch.device("cuda", index)
+
+    def stride(self, dim):
+        return 8
+
+
+def _record_launch_devices(monkeypatch):
+    """Patch the CUDA device API and the kernels: each launch records the device current when it fired."""
+    state = {"current": 0, "launches": []}
+
+    class _Device:
+        def __init__(self, index):
+            self.index = torch.device(index).index if not isinstance(index, int) else index
+
+        def __enter__(self):
+            self.prev, state["current"] = state["current"], self.index
+
+        def __exit__(self, *exc):
+            state["current"] = self.prev
+
+    class _Kernel:
+        def __getitem__(self, grid):
+            return lambda *args, **kwargs: state["launches"].append(state["current"])
+
+    monkeypatch.setattr(torch.cuda, "device", _Device)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: state["current"])
+    monkeypatch.setattr(torch, "empty", lambda *a, **k: object())
+    monkeypatch.setattr(R, "_kernels", lambda: (_Kernel(), _Kernel()))
+    monkeypatch.setattr(R, "_rows", lambda t: (4, 8))
+    return state
+
+
+def test_launches_switch_to_the_operand_card(monkeypatch):
+    pytest.importorskip("triton")
+    state = _record_launch_devices(monkeypatch)
+    x, t, idx = _FakeCudaTensor(1), _FakeCudaTensor(1), _FakeCudaTensor(1)
+    R._launch_modulate(x, t, t, idx)
+    R._launch_gated(x, t, x, idx)
+    # the thread's current device is 0, the operands live on cuda:1: both kernels must fire on 1, then restore 0
+    assert state["launches"] == [1, 1]
+    assert state["current"] == 0
+
+
+def test_launches_on_the_current_card_skip_the_switch(monkeypatch):
+    pytest.importorskip("triton")
+    state = _record_launch_devices(monkeypatch)
+    entered = []
+    device_cls = torch.cuda.device
+    monkeypatch.setattr(torch.cuda, "device", lambda i: entered.append(i) or device_cls(i))
+    x = _FakeCudaTensor(0)
+    R._launch_modulate(x, x, x, x)
+    R._launch_gated(x, x, x, x)
+    assert state["launches"] == [0, 0]
+    assert entered == []
+
+
+two_cards = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason = "needs 2 CUDA devices"
+)
+
+
+@two_cards
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_kernels_on_a_second_card_while_card_0_is_current(dtype):
+    pytest.importorskip("triton")
+    torch.cuda.set_device(0)
+    for seed in (1, 2):
+        x, (s0, s1, s2, *_r), idx, out = R._probe("cuda:1", dtype, 5376, seed, rows = 1031)
+        fused_mod = R._launch_modulate(x, s1, s0, idx)
+        fused_gated = R._launch_gated(x, s2, out, idx)
+        assert torch.cuda.current_device() == 0
+        torch.cuda.synchronize(1)
+        assert fused_mod.device == x.device and fused_gated.device == x.device
+        assert torch.equal(fused_mod, R.reference_modulate(x, s1, s0, idx))
+        assert torch.equal(fused_gated, R.reference_gated_residual(x, s2, out, idx))
