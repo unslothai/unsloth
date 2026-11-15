@@ -26,6 +26,7 @@ import {
   voiceRevealText,
   takeTypedDraft,
   voiceWroteBox,
+  voiceUtterancePending,
   withoutVoiceText,
 } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import { getActiveChatGenerationRuns } from "@/features/chat/api/chat-generation-api";
@@ -566,7 +567,7 @@ export const VoiceEngine: FC = () => {
       voiceCoalesceTimerRef.current = null;
       if (voiceModeRef.current !== "active") return;
       const rt = useChatRuntimeStore.getState();
-      if ((rt.voiceHearing || rt.voiceTranscribing) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
+      if ((rt.voiceHearing || rt.voiceTranscribing || voiceUtterancePending()) && Date.now() - armedAt < VOICE_HEARING_HOLD_MAX_MS) {
         voiceTrace("engine.coalesceWaitHearing", {});
         voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt), VOICE_COALESCE_POLL_MS);
         return;
@@ -1420,6 +1421,7 @@ export const VoiceEngine: FC = () => {
 
   useEffect(() => {
     return () => {
+      rearmSeqRef.current += 1;
       if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
       if (streamPollRef.current) clearInterval(streamPollRef.current);
     };

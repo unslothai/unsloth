@@ -399,3 +399,22 @@ def test_a_clef_folder_without_the_optional_decision_config_is_still_found(monke
     monkeypatch.setattr(catalog, "_custom_roots", lambda: [(root, False)])
     found = sorted((c.label, c.layout) for c in catalog.folder_decisions())
     assert found == [("adapter-clef", "clef"), ("merged-clef", "clef")]
+
+
+def test_a_d1_in_a_custom_folder_keeps_the_mlx_backend(monkeypatch, tmp_path):
+    import json
+
+    from core.systemone import catalog, laya_runtime
+
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: True)
+    root = (tmp_path / "shared").resolve()
+    from utils.models.model_config import CLEF_MARKERS
+
+    (root / "my-d1").mkdir(parents = True)
+    (root / "my-d1" / "config.json").write_text(json.dumps({"model_type": "d1_omni"}))
+    (root / "my-clef").mkdir()
+    for marker in CLEF_MARKERS:
+        (root / "my-clef" / marker).write_text("{}")
+    monkeypatch.setattr(catalog, "_custom_roots", lambda: [(root, False)])
+    found = sorted((c.label, c.layout, c.backend) for c in catalog.folder_decisions())
+    assert found == [("my-clef", "clef", "pytorch"), ("my-d1", "clef", "mlx")]
