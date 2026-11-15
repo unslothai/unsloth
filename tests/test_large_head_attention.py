@@ -31,7 +31,8 @@ def _load():
 
 
 LH = _load()
-_SM80 = has_real_cuda() and torch.cuda.get_device_capability()[0] >= 8
+# CUDA only: the router refuses ROCm, which reports gfx1151 as capability (11, 5).
+_SM80 = has_real_cuda() and torch.version.hip is None and torch.cuda.get_device_capability()[0] >= 8
 
 
 def _causal(S):
