@@ -100,6 +100,32 @@ def _count(key):
         DSV41_STATS[key] += 1
 
 
+class _StaticModuleInts:
+    """Keep the layers' config ints (compress ratio, window, head dims, top-k) constant while Dynamo traces.
+
+    unsloth_zoo compiles the forwards with dynamic=True and sets torch._dynamo.config.allow_unspec_int_on_nn_module,
+    which turns every module int into a SymInt. Shapes then carry floor divisions by a symbolic compress ratio, and
+    Inductor / AOT spent an hour in sympy (fp32 full finetuning, NVFP4 LoRA). The ints are fixed per layer, so each
+    layer kind gets its own graph instead; tensor sizes stay dynamic."""
+
+    __slots__ = ("_patch",)
+
+    def __enter__(self):
+        self._patch = None
+        config = torch._dynamo.config
+        if not torch.compiler.is_compiling() and getattr(
+            config, "allow_unspec_int_on_nn_module", False
+        ):
+            self._patch = config.patch(allow_unspec_int_on_nn_module = False)
+            self._patch.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        if self._patch is not None:
+            self._patch.__exit__(*exc)
+        return False
+
+
 # Opt-in: Unsloth's fused LoRA kernel (kernels/fast_lora.py LoRA_W) for the plain projections.
 _FAST_LORA = os.environ.get("UNSLOTH_DSV41_FAST_LORA", "0") == "1"
 _LoRA_W = None
@@ -1285,21 +1311,23 @@ class DeepseekV41DecoderLayer(GradientCheckpointingLayer):
     ):
         if shared is None:
             shared = _SharedState()
-        x = hidden_states
-        if self.engram is not None and engram_rows is not None:
-            x = self.engram(x, engram_rows, engram_mask)
-        residual = x
-        attn_pre, attn_post, attn_comb = self.attn_hc(x)
-        h = self.input_layernorm(hc_pre(x, pre_mix))
-        # keyword: accelerate's offload hooks exempt `shared` (_skip_keys_device_placement)
-        h = self.self_attn(h, positions, shared = shared._d if hasattr(shared, "_d") else shared)
-        x = hc_post(h, residual, attn_post, attn_comb)
-        residual = x
-        ffn_pre, ffn_post, ffn_comb = self.ffn_hc(x)
-        h = self.post_attention_layernorm(hc_pre(x, attn_pre))
-        h = self.mlp(h)
-        x = hc_post(h, residual, ffn_post, ffn_comb)
-        return x, ffn_pre
+        # Not a sub-call: recompute under non-reentrant checkpointing re-enters here, outside the model forward.
+        with _StaticModuleInts():
+            x = hidden_states
+            if self.engram is not None and engram_rows is not None:
+                x = self.engram(x, engram_rows, engram_mask)
+            residual = x
+            attn_pre, attn_post, attn_comb = self.attn_hc(x)
+            h = self.input_layernorm(hc_pre(x, pre_mix))
+            # keyword: accelerate's offload hooks exempt `shared` (_skip_keys_device_placement)
+            h = self.self_attn(h, positions, shared = shared._d if hasattr(shared, "_d") else shared)
+            x = hc_post(h, residual, attn_post, attn_comb)
+            residual = x
+            ffn_pre, ffn_post, ffn_comb = self.ffn_hc(x)
+            h = self.post_attention_layernorm(hc_pre(x, attn_pre))
+            h = self.mlp(h)
+            x = hc_post(h, residual, ffn_post, ffn_comb)
+            return x, ffn_pre
 
 
 def _checkpoint_key_names(path, **hub_kwargs):
@@ -1939,47 +1967,48 @@ class DeepseekV41TextModel(DeepseekV41PreTrainedModel):
         return_dict = None,
         **kwargs,
     ):
-        if inputs_embeds is None:
-            if input_ids is None:
-                raise ValueError(
-                    "Unsloth: DeepSeek-V4.1 needs input_ids (engram hashing reads the token ids)."
+        with _StaticModuleInts():
+            if inputs_embeds is None:
+                if input_ids is None:
+                    raise ValueError(
+                        "Unsloth: DeepSeek-V4.1 needs input_ids (engram hashing reads the token ids)."
+                    )
+                inputs_embeds = self.embed_tokens(input_ids)
+            bsz, seqlen = inputs_embeds.shape[:2]
+            # Relayout runs outside the traced graph even under compile, else sequences attend across each other.
+            segments = _sequence_segments_outside_trace(position_ids, attention_mask, bsz, seqlen)
+            if segments is not None:
+                return _forward_segments_outside_trace(
+                    self, segments, input_ids, inputs_embeds, output_hidden_states, **kwargs
                 )
-            inputs_embeds = self.embed_tokens(input_ids)
-        bsz, seqlen = inputs_embeds.shape[:2]
-        # Relayout runs outside the traced graph even under compile, else sequences attend across each other.
-        segments = _sequence_segments_outside_trace(position_ids, attention_mask, bsz, seqlen)
-        if segments is not None:
-            return _forward_segments_outside_trace(
-                self, segments, input_ids, inputs_embeds, output_hidden_states, **kwargs
+            positions = torch.arange(seqlen, device = inputs_embeds.device)
+            # right padding only here: pads never reach a real token's hash / gate
+            token_mask = (
+                attention_mask.bool()
+                if attention_mask is not None and attention_mask.dim() == 2
+                else None
             )
-        positions = torch.arange(seqlen, device = inputs_embeds.device)
-        # right padding only here: pads never reach a real token's hash / gate
-        token_mask = (
-            attention_mask.bool()
-            if attention_mask is not None and attention_mask.dim() == 2
-            else None
-        )
-        engram_rows = self.engram_rows(input_ids, token_mask, kwargs.get("engram_left_context"))
-        h, pre_mix = self.stream_from_embeddings(inputs_embeds)
-        shared = _SharedState()
-        all_hidden = () if output_hidden_states else None
-        for layer in self.layers:
+            engram_rows = self.engram_rows(input_ids, token_mask, kwargs.get("engram_left_context"))
+            h, pre_mix = self.stream_from_embeddings(inputs_embeds)
+            shared = _SharedState()
+            all_hidden = () if output_hidden_states else None
+            for layer in self.layers:
+                if output_hidden_states:
+                    all_hidden = all_hidden + (hc_pre(h, pre_mix),)
+                h, pre_mix = layer(
+                    h,
+                    pre_mix,
+                    positions = positions,
+                    shared = shared,
+                    engram_rows = engram_rows.get(layer.layer_idx),
+                    engram_mask = token_mask,
+                )
+            h = self.norm(hc_pre(h, pre_mix))
             if output_hidden_states:
-                all_hidden = all_hidden + (hc_pre(h, pre_mix),)
-            h, pre_mix = layer(
-                h,
-                pre_mix,
-                positions = positions,
-                shared = shared,
-                engram_rows = engram_rows.get(layer.layer_idx),
-                engram_mask = token_mask,
+                all_hidden = all_hidden + (h,)
+            return BaseModelOutputWithPast(
+                last_hidden_state = h, past_key_values = None, hidden_states = all_hidden
             )
-        h = self.norm(hc_pre(h, pre_mix))
-        if output_hidden_states:
-            all_hidden = all_hidden + (h,)
-        return BaseModelOutputWithPast(
-            last_hidden_state = h, past_key_values = None, hidden_states = all_hidden
-        )
 
     def engram_rows(
         self,

@@ -1174,6 +1174,43 @@ def test_gradient_checkpointing_without_the_zoo_replay_fails_closed(monkeypatch)
         model.gradient_checkpointing_enable()
 
 
+def test_layer_config_ints_stay_constant_under_dynamic_compile(monkeypatch):
+    """unsloth_zoo compiles the forwards with dynamic=True and sets allow_unspec_int_on_nn_module, which made every
+    module int (compress_ratio, window, head_dim, top-k) a SymInt: floor divisions by a symbolic compress ratio sent
+    AOT / Inductor into sympy for an hour (fp32 full finetuning, NVFP4 LoRA). The model forward keeps them constant."""
+    from torch._dynamo.testing import EagerAndRecordGraphs
+
+    model = _tiny_model()
+    assert {
+        l.self_attn.compressor.compress_ratio for l in model.model.layers if l.self_attn.compressor
+    } == {1, 2}
+    backend = EagerAndRecordGraphs()
+    compiled = torch.compile(
+        dsv41.DeepseekV41Compressor.forward, backend = backend, dynamic = True, fullgraph = True
+    )
+    monkeypatch.setattr(dsv41.DeepseekV41Compressor, "forward", lambda self, x: compiled(self, x))
+    torch._dynamo.reset()
+    before = torch._dynamo.config.allow_unspec_int_on_nn_module
+    ids = torch.randint(0, 512, (2, 12), generator = torch.Generator().manual_seed(0))
+    try:
+        with torch._dynamo.config.patch(allow_unspec_int_on_nn_module = True), torch.no_grad():
+            model(input_ids = ids)
+    finally:
+        torch._dynamo.reset()
+    lifted = [
+        node.name
+        for graph in backend.graphs
+        for node in graph.graph.nodes
+        if node.op == "placeholder" and isinstance(node.meta.get("example_value"), torch.SymInt)
+    ]
+    assert backend.graphs, "the compressor was never compiled"
+    attribute_ints = [n for n in lifted if "compress_ratio" in n or "head_dim" in n]
+    assert not attribute_ints, (attribute_ints, lifted)
+    assert (
+        torch._dynamo.config.allow_unspec_int_on_nn_module is before
+    )  # the forward's patch did not leak
+
+
 def test_gradient_checkpointing_enable_takes_the_trainer_keywords(monkeypatch):
     """transformers 5.22+ Trainer.train calls gradient_checkpointing_enable(..., every_n_layers=, offload=); the
     native override must take them on every transformers (honoured where the parent has them)."""
