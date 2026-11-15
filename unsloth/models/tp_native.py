@@ -269,8 +269,8 @@ def _style_for(path, compiled):
 
 
 def _weight(module):
-    base = module._modules.get("base_layer", module)
-    return base._parameters.get("weight", getattr(base, "weight", None)), base
+    base = getattr(module, "_modules", {}).get("base_layer", module)
+    return getattr(base, "_parameters", {}).get("weight", getattr(base, "weight", None)), base
 
 
 def _has_params(module):
