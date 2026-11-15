@@ -289,20 +289,23 @@ def test_mixed_references_keep_order_and_only_images_skip_the_rescale():
     first = fit_h3_reference_image(_image(6000, 4000), width = 960, height = 544, policy = "match")
     last = fit_h3_reference_image(_image(800, 600), width = 960, height = 544, policy = "match")
     frames = [Image.fromarray(np.zeros((360, 640, 3), np.uint8))] * 48
+    fitted = [Image.fromarray(np.zeros((352, 640, 3), np.uint8))] * 48
     refs = [
         blocks_mod.MiniMaxH3ImageReference(image = first),
         blocks_mod.MiniMaxH3VideoReference(frames = frames, fps = 24.0),
         blocks_mod.MiniMaxH3ImageReference(image = last),
+        blocks_mod.MiniMaxH3VideoReference(frames = fitted, fps = 24.0),
     ]
     state = PipelineState()
     for key, value in (("references", refs), ("width", 960), ("height", 544), ("num_frames", 124)):
         state.set(key, value)
     _, state = _find(pipe, "MiniMaxH3Ref2VASetupStep")(pipe, state)
     out = state.get("normalized_references")
-    assert [ref.kind for ref in out] == ["image", "video", "image"]
+    assert [ref.kind for ref in out] == ["image", "video", "image", "video"]
     assert out[0].image is first and out[2].image is last
-    # Video references keep Diffusers' own canvas rule.
-    assert out[1].frames.shape[1:3] != (360, 640)
+    # Frames off the 32 px grid keep Diffusers' own canvas rule; Studio-fitted frames keep their size.
+    assert out[1].frames.shape[1:3] == (768, 1344)
+    assert out[3].frames.shape == (48, 352, 640, 3)
 
 
 def test_resize_is_restored_when_the_step_raises():

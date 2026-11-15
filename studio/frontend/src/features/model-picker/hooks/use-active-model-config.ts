@@ -45,6 +45,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const mlxFastVerify = useChatRuntimeStore((s) => s.mlxFastVerify);
   const mlxPleOffload = useChatRuntimeStore((s) => s.mlxPleOffload);
   const mlxExpertOffload = useChatRuntimeStore((s) => s.mlxExpertOffload);
+  const npuPowerMode = useChatRuntimeStore((s) => s.npuPowerMode);
+  const npuPrefillChunkLen = useChatRuntimeStore((s) => s.npuPrefillChunkLen);
+  const npuImgPreResize = useChatRuntimeStore((s) => s.npuImgPreResize);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
@@ -127,7 +130,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       mlxFastVerify: effectiveMlxFastVerify,
       mlxPleOffload: effectiveMlxPleOffload,
       mlxExpertOffload: effectiveMlxExpertOffload,
-      speculativeType: speculativeType ?? "auto",
+      // The store keeps the last NPU load's values after a GPU model loads.
+      npuPowerMode: isNpuModelId(checkpoint) ? npuPowerMode : null,
+      npuPrefillChunkLen: isNpuModelId(checkpoint) ? npuPrefillChunkLen : null,
+      npuImgPreResize: isNpuModelId(checkpoint) ? npuImgPreResize : null,
+      // FastFlowLM has no speculative decoding; "auto" here reads as an edit right after an NPU load.
+      speculativeType: isNpuModelId(checkpoint) ? null : (speculativeType ?? "auto"),
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
       reasoningBudget: isGguf ? reasoningBudget : -1,
@@ -189,6 +197,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     effectiveMlxFastVerify,
     effectiveMlxPleOffload,
     effectiveMlxExpertOffload,
+    npuPowerMode,
+    npuPrefillChunkLen,
+    npuImgPreResize,
     speculativeType,
     specDraftNMax,
     nParallel,

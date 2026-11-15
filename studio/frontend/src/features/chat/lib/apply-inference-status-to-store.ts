@@ -7,12 +7,15 @@ import {
   adoptCachedRepoConfig,
   loadedContextFields,
   normalizeMlxKvQuant,
+  normalizeNpuPowerMode,
   resolveResidentInitialConfig,
   savedContextPin,
 } from "@/features/model-picker/model-config/per-model-config";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
 import { pinnedReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
+import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
@@ -123,7 +126,9 @@ function ensureActiveModelInStoreList(
   }
   const summary: ChatModelRow = {
     id: checkpointId,
-    name: modelDisplayName(status.active_model ?? checkpointId),
+    name:
+      npuDisplayNameNow(checkpointId) ??
+      modelDisplayName(status.active_model ?? checkpointId),
     isVision: status.is_vision ?? false,
     isLora: false,
     isGguf: status.is_gguf ?? false,
@@ -605,6 +610,14 @@ export function applyActiveModelStatusToStore(
             loadedMlxFastVerifyRequested: false,
             ...incomingMlxOffload,
           })),
+    ...(seedLoadParams && {
+      npuPowerMode:
+        status.is_npu === true ? normalizeNpuPowerMode(status.npu_power_mode) : null,
+      npuPrefillChunkLen:
+        status.is_npu === true ? (status.npu_prefill_chunk_len ?? null) : null,
+      npuImgPreResize:
+        status.is_npu === true ? (status.npu_img_pre_resize ?? null) : null,
+    }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {

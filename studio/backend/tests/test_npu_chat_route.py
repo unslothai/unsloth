@@ -1250,7 +1250,7 @@ def test_a_dropped_progress_stream_does_not_stop_the_download(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             yield {"event": "progress", "percent": 40}
             assert release.wait(10)
             yield {"event": "complete", "model": model_id, "percent": 100}
@@ -1278,7 +1278,7 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             started.append(model_id)
             assert release.wait(10)
             yield {"event": "complete", "model": model_id, "percent": 100}
@@ -1290,6 +1290,27 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     release.set()
     assert [event["event"] for event in second.follow()] == ["complete"]
     assert started == ["gemma3-4b-FLM"]
+
+
+def test_cancel_stops_the_running_pull_and_tells_its_followers(monkeypatch):
+    from routes import npu as npu_routes
+
+    class _Npu:
+        def download(self, model_id, cancel):
+            yield {"event": "progress", "percent": 20}
+            assert cancel.wait(10)
+            raise npu_routes.NpuDownloadCancelled(f"Downloading {model_id} was cancelled.")
+
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(npu_routes.cancel_npu_download("qwen3-4b-FLM"))
+    assert missing.value.status_code == 404
+
+    job = npu_routes._start_download(_Npu(), "qwen3-4b-FLM")
+    _wait_for(lambda: len(job.events) == 1)
+    answer = asyncio.run(npu_routes.cancel_npu_download("qwen3-4b-FLM"))
+    assert answer == {"status": "cancelling", "model": "qwen3-4b-FLM"}
+    assert [event["event"] for event in job.follow()] == ["progress", "cancelled"]
+    _wait_for(lambda: "qwen3-4b-FLM" not in npu_routes._downloads)
 
 
 def _wait_for(condition) -> None:
@@ -1305,7 +1326,7 @@ def test_running_downloads_are_listed_until_they_end(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             yield {"event": "progress", "percent": 12}
             yield {"event": "progress", "bytes_downloaded": 5}
             assert release.wait(10)
@@ -1328,7 +1349,7 @@ def test_following_a_download_never_starts_one(monkeypatch):
     release = threading.Event()
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             started.append(model_id)
             yield {"event": "progress", "percent": 30}
             assert release.wait(10)
@@ -1366,7 +1387,7 @@ def test_a_failed_download_is_logged(monkeypatch):
     )
 
     class _Npu:
-        def download(self, model_id):
+        def download(self, model_id, **_):
             yield {"event": "progress", "percent": 37}
             raise nb.NpuError(f"Downloading {model_id} failed: connection reset")
 

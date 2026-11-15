@@ -1986,7 +1986,7 @@ def _unlisted_latency(
     given, else the GEMM alone (a lower bound)."""
     import torch
     from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
-    from .diffusion_cuda_graph import CAPTURE_MODE, _capturing, synchronize_outside_capture
+    from .diffusion_cuda_graph import _capturing, card_graph, synchronize_outside_capture
 
     dev = torch.device("cuda", index)
     # An explicit CPU generator: a default-generator draw raises while another thread records (up to torch 2.11).
@@ -2015,8 +2015,8 @@ def _unlisted_latency(
         synchronize_outside_capture(dev)
         for name, fn in fns.items():
             graph = torch.cuda.CUDAGraph()
-            # Serialised with Studio's captures and recorded thread_local, like every other capture.
-            with _capturing(), torch.cuda.graph(graph, capture_error_mode = CAPTURE_MODE):
+            # Serialised with Studio's captures and recorded thread_local on this card's own capture stream.
+            with _capturing(), card_graph(graph, index):
                 for _ in range(reps):
                     for x in xs:
                         fn(x)

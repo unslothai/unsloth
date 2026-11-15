@@ -1878,6 +1878,41 @@ html.tauri.render-linux .media-stage-shadow {
 	box-shadow: none;
 }
 
+/* WebKitGTK's CPU painter re-blurs a box-shadow over its whole area on every repaint. When this launch
+   paints on the CPU (main.tsx), large surfaces trade their blurred layers for a 1px edge. Glass,
+   Transparent, wallpapers and the composer outline set these shadows on the element and keep them. */
+html.tauri.render-linux.webkit-cpu-paint {
+	--cpu-paint-edge: 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent);
+	--cpu-paint-composer-edge: var(--cpu-paint-edge);
+}
+html.tauri.render-linux.webkit-cpu-paint[data-palette="neon-cyberpunk"]:not(.dark) {
+	--cpu-paint-composer-edge: 0 0 0 1px rgb(230 210 0 / 0.7);
+	--cpu-paint-focus-edge: 0 0 0 1px rgb(230 210 0 / 0.9);
+}
+html.tauri.render-linux.webkit-cpu-paint[data-palette="neon-cyberpunk"].dark {
+	--cpu-paint-composer-edge: 0 0 0 1px rgb(0 240 255 / 0.35);
+	--cpu-paint-focus-edge: 0 0 0 1px rgb(0 240 255 / 0.6);
+}
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear])
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-sonner-toast][data-styled='true']) {
+	--popup-shadow: var(--cpu-paint-edge);
+	--composer-shadow: var(--cpu-paint-edge);
+}
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear], [data-composer-outline="on"])
+	:is(.chat-composer-surface, .unsloth-composer-surface, .unsloth-files-panel):not([data-wallpaper-ready] *) {
+	--composer-shadow: var(--cpu-paint-composer-edge);
+}
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear], [data-composer-outline="on"])[data-palette="neon-cyberpunk"]
+	:is(.chat-composer-surface, .unsloth-composer-surface):not([data-wallpaper-ready] *):focus-within {
+	box-shadow: var(--cpu-paint-focus-edge);
+}
+/* A dialog's rounded overflow clip is re-applied to its scrolled content on every frame: square
+   corners took Settings scroll from 28 to 41 fps on WebKitGTK 2.50.4. !important beats `rounded-*!`. */
+html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear])
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]) {
+	border-radius: 0 !important;
+}
+
 /* Chat font: only applies while a custom chat font is set. Elements with
    explicit font utilities (headings, code) keep their own families. */
 html[data-chat-font] .aui-root {

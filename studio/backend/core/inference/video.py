@@ -2192,6 +2192,17 @@ def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
     return True
 
 
+def _h3_shift_check_engine(state: Any) -> Optional[str]:
+    """Engine name for the flow-shift check: an sd.cpp build that takes --audio-flow-shift checks like Diffusers."""
+    if getattr(state, "engine", None) != "sd_cpp":
+        return getattr(state, "engine", None)
+    from .sd_cpp_args import sd_cpp_supports_flag
+
+    runtime = getattr(state, "pipe", None)
+    binary = getattr(getattr(runtime, "engine", None), "binary", None)
+    return None if sd_cpp_supports_flag(binary, "--audio-flow-shift") else "sd_cpp"
+
+
 def _refuse_h3_native_nan_render(path: Any) -> None:
     """Raise ``NonFiniteFramesError`` for an sd.cpp H3 clip that is a NaN render (``h3_native_clip_is_nan_render``):
     sd.cpp writes it and exits 0. Off with UNSLOTH_VIDEO_NONFINITE_CHECK=0; a clip the probe cannot read is kept."""
@@ -11375,6 +11386,9 @@ class VideoBackend:
                 logger = logger,
                 # Probe at the post-promotion dtype: fused SDPA is half-only, fp32 falls to math backend.
                 target = types.SimpleNamespace(device = target.device, dtype = dtype),
+                # unsloth_int8 by name routes the DiT's attention dispatch to the INT8 kernel
+                requested = attention_backend,
+                speed_active = effective_speed != SPEED_OFF,
             )
             # The optimizer's speed layer (diffusion_autoopt), shared with the image backend. Its family hooks are
             # what used to be inline here: LTX static compile (token counts depend only on (w, h, frames): one
@@ -13855,7 +13869,7 @@ class VideoBackend:
                     if continuation is not None:
                         conditioning = VIDEO_CONTINUATION_CONDITIONING
                     shift, audio_shift = self._resolve_flow_shifts(
-                        fam, state.engine, flow_shift, audio_flow_shift
+                        fam, _h3_shift_check_engine(state), flow_shift, audio_flow_shift
                     )
                 else:
                     first_pil = _resolved_inputs.first_frame
@@ -13906,6 +13920,7 @@ class VideoBackend:
                         references = references,
                         conditioning = conditioning,
                         flow_shift = shift,
+                        audio_flow_shift = audio_shift,
                         cancel = cancel,
                     )
 
@@ -14282,10 +14297,10 @@ class VideoBackend:
                         h3_diffusers_references,
                         keep_h3_reference_image_sizes,
                     )
-                    if references.images and not keep_h3_reference_image_sizes(pipe):
+                    if not keep_h3_reference_image_sizes(pipe):
                         logger.warning(
                             "video.h3_references: no Ref2VA setup step found; Diffusers may rescale "
-                            "the reference images"
+                            "the references and cut their soundtracks"
                         )
                     kwargs["references"] = h3_diffusers_references(references)
                 if continuation is not None:
@@ -14309,9 +14324,14 @@ class VideoBackend:
                     # H3 grid includes the terminal 0: `steps` evaluations need steps + 1 points.
                     kwargs["num_inference_steps"] = h3_num_inference_steps(steps)
                     # PDD bank is distilled for ComfyUI's count, so it keeps steps + 1 even under the kill switch.
-                    if bind_h3_pdd_render(pipe, shift, audio_shift):
+                    h3_pdd = bool(bind_h3_pdd_render(pipe, shift, audio_shift))
+                    if h3_pdd:
                         kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
                         request_shape["pdd"] = True
+                    from .video_minimax_h3_sampling import install_h3_reference_recipe
+
+                    # Reference grid, sampler, noise layout and vision input; Euler stays for PDD.
+                    request_shape["h3_recipe"] = install_h3_reference_recipe(pipe, pdd = h3_pdd)
 
                 # What the clip records; LTX-2.5's two-stage render reports its stage-2 steps in the progress below.
                 recorded_steps = steps
@@ -14670,6 +14690,13 @@ class VideoBackend:
                     audio = output.get("audio")
                     audio_track = audio[0] if audio is not None else None
                     audio_sample_rate = output.get("sampling_rate")
+                    if fam.name == "minimax-h3" and audio_track is not None and audio_sample_rate:
+                        from .video_minimax_h3 import h3_output_audio
+
+                        # Loudness-limited, and ending with the last frame: ceil(rate / fps * frames) samples.
+                        audio_track = h3_output_audio(
+                            audio_track, int(audio_sample_rate), int(out_fps), len(video_frames)
+                        )
                 elif fam.name in COSMOS3_FAMILIES:
                     video_frames = (
                         output.video
@@ -14939,6 +14966,7 @@ class VideoBackend:
         """Image sizing is settled here: Diffusers' rescale is skipped, sd.cpp gets "max" (#2177); native refuses "max"."""
         from .video_minimax_h3 import (
             MiniMaxH3References,
+            conform_h3_reference_audio,
             decode_h3_reference_audio,
             decode_h3_reference_video,
             validate_h3_reference_trim,
@@ -14994,6 +15022,8 @@ class VideoBackend:
                     trim_start_seconds = None if clip is None else 0.0,
                     trim_end_seconds = None if clip is None else clip[1] - clip[0],
                 )
+            if waveform is not None:
+                waveform, sample_rate = conform_h3_reference_audio(waveform, sample_rate)
             decoded_videos.append((frames, waveform, sample_rate))
         if engine == "sd_cpp":
             soundtrack_gap = False
@@ -15016,7 +15046,10 @@ class VideoBackend:
         return MiniMaxH3References(
             images = fitted_images,
             videos = tuple(decoded_videos),
-            audios = reused_audios,
+            audios = tuple(
+                conform_h3_reference_audio(waveform, sample_rate)
+                for waveform, sample_rate in reused_audios
+            ),
         )
 
     def _h3_native_server_render(
@@ -15043,6 +15076,7 @@ class VideoBackend:
         from .sd_cpp_args import (
             build_vid_gen_request,
             h3_reference_media_keys,
+            h3_server_output_format,
             h3_server_refs_enabled,
             sd_cli_frame_files,
         )
@@ -15134,6 +15168,11 @@ class VideoBackend:
                     slot.refs_unsupported = True
                     slot.release("this sd-server does not take reference video / audio")
                     return None
+                # Uncompressed AVI only from a server that lists it; older builds keep MJPG.
+                output_formats = getattr(server, "vid_gen_output_formats", None)
+                payload["output_format"] = h3_server_output_format(
+                    output_formats() if callable(output_formats) else ()
+                )
                 try:
                     data = server.vid_gen(payload, on_step = on_log, cancel_event = cancel)
                 except SdCppServerUnsupported as exc:
@@ -15201,6 +15240,7 @@ class VideoBackend:
         conditioning: str,
         flow_shift: Optional[float],
         cancel: threading.Event,
+        audio_flow_shift: Optional[float] = None,
     ) -> dict[str, Any]:
         import random
         import re
@@ -15215,6 +15255,7 @@ class VideoBackend:
             stage_h3_references,
             transcode_video_to_mp4,
         )
+        from .sd_cpp_args import sd_cpp_supports_ref_video_audio_index
 
         runtime = state.pipe
         render_flags = list(runtime.offload_flags)
@@ -15309,7 +15350,28 @@ class VideoBackend:
                 eta_seconds = (elapsed / max(1, done)) * max(0, total - done),
             )
 
-        tmp = tempfile.NamedTemporaryFile(suffix = ".webm", delete = False)
+        from .sd_cpp_args import (
+            h3_lossless_enabled,
+            h3_sd_cpp_sampler,
+            sd_cpp_supports_lossless_video,
+        )
+        from .video_families import video_generation_variant
+
+        # The reference recipe (res_multistep on the simple schedule); distilled / PDD files keep Euler.
+        h3_variant = video_generation_variant(
+            state.variant_id,
+            state.gguf_filename,
+            state.display_repo_id,
+            state.repo_id,
+            state.base_repo,
+            family = state.family.name,
+        )
+        sample_method, scheduler = h3_sd_cpp_sampler(h3_variant in ("pdd", "distilled"))
+        # sd-cli writes .avi results uncompressed when asked, so the x264 / AAC export is the only lossy step.
+        lossless_cli = h3_lossless_enabled() and sd_cpp_supports_lossless_video(
+            getattr(runtime.engine, "binary", None)
+        )
+        tmp = tempfile.NamedTemporaryFile(suffix = ".avi" if lossless_cli else ".webm", delete = False)
         tmp.close()
         output_path = Path(tmp.name)
         # Stage in-memory conditioning in sd-cli's temporary disk format.
@@ -15324,7 +15386,15 @@ class VideoBackend:
 
             init_img = stage(first_frame, "first")
             end_img = stage(last_frame, "last")
-            staged = stage_h3_references(references, Path(scratch))
+            # Builds with --ref-video-audio-index (sd-server: the ref_video_audio_indices feature, else sd-cli)
+            # accept a silent reference video before one with a soundtrack.
+            staged = stage_h3_references(
+                references,
+                Path(scratch),
+                explicit_pairing = sd_cpp_supports_ref_video_audio_index(
+                    getattr(runtime.engine, "binary", None)
+                ),
+            )
             # Take the reader claim, or an install sweep unlinks the CLI this runtime resolved at load.
             from .sd_cpp_backend import _tree_reader
 
@@ -15361,7 +15431,18 @@ class VideoBackend:
                             ref_videos = staged.videos,
                             ref_video_audios = staged.video_audios,
                             ref_audios = staged.audios,
+                            ref_video_audio_indices = staged.video_audio_indices,
                             flow_shift = flow_shift,
+                            # Only a non-default shift is sent: builds without --audio-flow-shift were refused earlier.
+                            audio_flow_shift = (
+                                audio_flow_shift
+                                if audio_flow_shift is not None
+                                and audio_flow_shift != state.family.default_audio_flow_shift
+                                else None
+                            ),
+                            sample_method = sample_method,
+                            scheduler = scheduler,
+                            lossless_output = lossless_cli,
                         )
                         generated = self._h3_native_server_render(
                             runtime,
@@ -15437,8 +15518,12 @@ class VideoBackend:
                     # sd-cli vid_gen has no negative-prompt input.
                     "negative_prompt": None,
                     "flow_shift": flow_shift,
-                    # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
-                    "audio_flow_shift": state.family.default_audio_flow_shift,
+                    # What sd.cpp ran: the requested shift on builds that take it, else the pinned default.
+                    "audio_flow_shift": (
+                        audio_flow_shift
+                        if audio_flow_shift is not None
+                        else state.family.default_audio_flow_shift
+                    ),
                     # Built from the ENGAGED state, not the request; without these six, native GGUF recipes save blank.
                     "model_kind": state.kind,
                     "gguf_filename": state.gguf_filename,

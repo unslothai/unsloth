@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
+import { npuSearchText } from "./display-name";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
 
@@ -82,7 +83,7 @@ export function npuRowsFor(
       (model) =>
         (!onDevice || model.downloaded) &&
         (!needle ||
-          `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
+          npuSearchText(model).toLowerCase().includes(needle)),
     )
     .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
 }
@@ -172,12 +173,18 @@ export function npuResumeLabel(model: NpuModel): string | null {
     : `${model.resume_percent}% downloaded`;
 }
 
+/** Rehashing kept files before a resume, or Lemonade registering the files after the download. */
+export type NpuDownloadPhase = "verifying" | "finishing";
+
 export function npuDownloadLabel(
   percent: number | null | undefined,
   reconnecting = false,
+  phase?: NpuDownloadPhase,
 ): string {
   const done = percent == null ? "" : ` ${Math.round(percent)}%`;
-  return reconnecting ? `Reconnecting${done}` : `Downloading${done}`;
+  if (reconnecting) return `Reconnecting${done}`;
+  if (phase === "finishing") return "Finishing";
+  return phase === "verifying" ? `Verifying${done}` : `Downloading${done}`;
 }
 
 export interface NpuDownloadEvent {
@@ -251,6 +258,34 @@ export async function deleteNpuModel(id: string): Promise<void> {
   }
 }
 
+export async function cancelNpuModelDownload(id: string): Promise<void> {
+  const response = await authFetch(
+    `/api/npu/models/${encodeURIComponent(id)}/download/cancel`,
+    { method: "POST" },
+  );
+  // 404: the pull already ended.
+  if (!response.ok && response.status !== 404) {
+    throw new Error(
+      await readFastApiError(response, "Could not cancel the download"),
+    );
+  }
+}
+
+export async function deleteNpuModelByCheckpoint(
+  checkpoint: string,
+): Promise<string> {
+  const response = await authFetch(
+    `/api/npu/checkpoints/${encodeURIComponent(checkpoint)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Could not delete the model"),
+    );
+  }
+  return ((await response.json()) as { model: string }).model;
+}
+
 export async function downloadNpuModel(
   id: string,
   onProgress: (event: NpuDownloadEvent) => void,
@@ -286,6 +321,8 @@ export async function followNpuModelDownload(
 
 export class NpuDownloadError extends Error {}
 
+export class NpuDownloadCancelled extends NpuDownloadError {}
+
 async function readDownloadStream(
   body: ReadableStream<Uint8Array>,
   onProgress: (event: NpuDownloadEvent) => void,
@@ -293,6 +330,9 @@ async function readDownloadStream(
   for await (const event of readSseJsonEvents<NpuDownloadEvent>(body)) {
     if (event.event === "error") {
       throw new NpuDownloadError(event.error || "The download failed");
+    }
+    if (event.event === "cancelled") {
+      throw new NpuDownloadCancelled("The download was cancelled");
     }
     onProgress(event);
     if (event.event === "complete") return;

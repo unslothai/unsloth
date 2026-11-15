@@ -2881,6 +2881,8 @@ export const de = {
             "Das ist der Modell-Cache. Wenn Sie ihn leeren, werden diese Modelle beim nächsten Verwenden erneut heruntergeladen.",
           datasetsCost:
             "Wenn Sie das leeren, werden diese Datensätze beim nächsten Verwenden erneut heruntergeladen.",
+          npuCost:
+            "Das sind Ihre heruntergeladenen NPU-Modelle. Beim Leeren werden sie gelöscht, und Sie laden sie zum Verwenden erneut aus dem Hub herunter.",
           blocked: "Nicht geleert: {reason}",
           cleared: "{size} geleert",
           partial: "Einige Cache-Dateien konnten nicht entfernt werden",
@@ -2902,6 +2904,7 @@ export const de = {
             hfAssets: "Hugging Face-Asset-Cache",
             hfDatasets: "Hugging Face-Datensatz-Cache",
             hfHub: "Hugging Face-Modell-Cache",
+            npuModels: "AMD-NPU-Modelle",
           },
         },
         lowDisk: {
@@ -3517,7 +3520,7 @@ export const de = {
     },
     mcp: {
       title: "Unsloth MCP",
-      keyHint: "Agenten melden sich mit einem Unsloth-Studio-API-Schlüssel an.",
+      keyHint: "Agenten melden sich mit einem Unsloth-API-Schlüssel an.",
       createKey: "API-Schlüssel erstellen",
       tools: {
         title: "Tools",
@@ -3766,12 +3769,12 @@ export const de = {
         title: "Agentenzugriff (MCP)",
         description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen.",
         enable: "Agentenverbindungen erlauben",
-        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Studio-API-Schlüssel bereit.",
+        enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-API-Schlüssel bereit.",
         lockedByEnv: "Festgelegt durch {name}.",
         loadError: "Die Einstellungen für den Agentenzugriff konnten nicht geladen werden.",
         saveError: "Die Einstellung für den Agentenzugriff konnte nicht gespeichert werden.",
         agent: "Agent",
-        exportKeyHint: "Setze {name} auf einen Unsloth-Studio-API-Schlüssel, bevor du den Agenten startest.",
+        exportKeyHint: "Setze {name} auf einen Unsloth-API-Schlüssel, bevor du den Agenten startest.",
         configFileHint: "Füge das zu {path} hinzu.",
         keywords: "mcp model context protocol agents claude codex tools Agenten Agent Werkzeuge Tools Modellkontextprotokoll",
       },
