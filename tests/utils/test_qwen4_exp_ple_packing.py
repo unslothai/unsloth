@@ -118,7 +118,7 @@ def reference_gdn_kernels(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 
 
-def _tiny_model():
+def _tiny_model(indexer_budget = 2048):
     torch.manual_seed(0)
     config = Qwen4ExpTextConfig(
         vocab_size = 512,
@@ -149,7 +149,7 @@ def _tiny_model():
         indexer_n_heads = 2,
         indexer_kv_heads = 1,
         indexer_head_dim = 16,
-        indexer_budget = 2048,
+        indexer_budget = indexer_budget,
         indexer_compress_ratio = 4,
         output_gate_type = "sigmoid",
         eos_token_id = EOS,
@@ -216,3 +216,30 @@ def test_packed_ple_matches_separate_documents(reference_gdn_kernels, eos):
     kinds = {kind for _, kind in packing_module._iter_stateful_mixers(model)}
     assert kinds == {"gated_delta", "ple"}
     assert ple._unsloth_varlen_conv_hit and ple._unsloth_varlen_embedding_hit
+
+
+def test_packed_forward_keeps_documents_apart_with_a_config_cache(reference_gdn_kernels):
+    # use_cache from the config (an eval after for_inference) builds a cache, and transformers then
+    # skips the per-document mask it reads off packed position_ids: QSA would select across documents.
+    model, _ = _tiny_model(indexer_budget = 8)
+    assert model.config.use_cache
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    g = torch.Generator().manual_seed(2)
+    docs = [torch.randint(8, 512, (n,), generator = g) for n in LENGTHS]
+    embed = model.get_input_embeddings()
+
+    def run(input_ids, **kwargs):
+        x = embed(input_ids).detach().requires_grad_(True)
+        out = model(inputs_embeds = x, ple_input_ids = input_ids, **kwargs)
+        return x, out.logits
+
+    x, packed = run(
+        torch.cat(docs)[None],
+        position_ids = torch.cat([torch.arange(n) for n in LENGTHS])[None],
+        packed_seq_lengths = torch.tensor(LENGTHS, dtype = torch.int32),
+    )
+    alone = torch.cat([run(d[None], use_cache = False)[1] for d in docs], dim = 1)
+    torch.testing.assert_close(packed, alone, rtol = 1e-5, atol = 1e-5)
+    start = sum(LENGTHS[:3])
+    packed[0, start:].sum().backward()
+    assert x.grad[0, :start].abs().sum() == 0 and x.grad[0, start:].abs().sum() > 0

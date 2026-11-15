@@ -1650,6 +1650,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             forward_sig = inspect.signature(forward_orig)
         except (TypeError, ValueError):
             forward_sig = None
+        takes_use_cache = forward_sig is not None and (
+            "use_cache" in forward_sig.parameters
+            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in forward_sig.parameters.values())
+        )
 
         # A bound method with no __wrapped__: accelerate's unwrap_model(keep_fp32_wrapper = False),
         # run by TRL every step, rebinds the forward it finds with MethodType(forward, model), which
@@ -1677,6 +1681,12 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_fused_hit = False
                     module._unsloth_varlen_kwargs_hit = False
                     module._unsloth_varlen_embedding_hit = False
+            if varlen is not None and takes_use_cache and bound.get("use_cache") is None:
+                if "use_cache" in kwargs or "use_cache" not in bound:
+                    # A cache built during a packed forward (use_cache from the config, e.g. after
+                    # for_inference) makes transformers drop the per-document mask it builds from
+                    # packed position_ids, so attention (Qwen4Exp's QSA indexer) spans documents.
+                    kwargs["use_cache"] = False
             outer, _PACKED[0] = _PACKED[0], varlen
             try:
                 out = forward_orig(*args, **kwargs)
