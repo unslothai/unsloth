@@ -491,6 +491,18 @@ def test_outer_compile_keeps_selective_experts_eager(request, monkeypatch):
     torch._dynamo.reset()
 
 
+def _fla_present():
+    import importlib.util
+    import sys
+
+    if sys.modules.get("fla") is not None:
+        return True
+    try:
+        return importlib.util.find_spec("fla") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
     """GDN first reached under an enclosing compile runs _prepare_gdn eagerly; later traces stay whole."""
     from transformers import AutoModelForCausalLM
@@ -507,15 +519,11 @@ def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
         ).train()
     except Exception as e:
         pytest.skip(f"tiny Qwen3-Next unavailable: {e}")
+    if _fla_present():
+        # The stock GDN op then resolves to fla (installed or vendored), which is compiler-disabled.
+        pytest.skip("stock GDN op resolves to fla")
     ids = torch.randint(0, 100, (2, 8))
-    try:
-        want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
-    except (RuntimeError, ValueError) as e:
-        # A GPU host resolves the stock GDN op to the compiler-disabled fla Triton kernel, which
-        # neither takes these CPU tensors nor traces whole; the eager GDN reference only runs CPU-only.
-        if "Triton" not in str(e):
-            raise
-        pytest.skip(f"stock GDN op resolved to a Triton kernel: {e}")
+    want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
     calls = []
     prepare = M._prepare_gdn
 
