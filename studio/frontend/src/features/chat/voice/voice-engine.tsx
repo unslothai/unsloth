@@ -84,6 +84,7 @@ import {
   registerVoiceThreadReset,
   registerVoiceToggle,
   registerVoiceTypedSubmit,
+  registerVoiceTypedSend,
   setVoiceMode as setLoopVoiceMode,
   voiceRunToStop,
 } from "@/features/chat/voice/voice-loop-bridge";
@@ -1444,6 +1445,13 @@ export const VoiceEngine: FC = () => {
       if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
       if (streamPollRef.current) clearInterval(streamPollRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    registerVoiceTypedSend(() => {
+      if (voiceModeRef.current === "active") clearHeldTurn();
+    });
+    return () => registerVoiceTypedSend(null);
   }, []);
 
   useEffect(() => {

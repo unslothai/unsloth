@@ -963,6 +963,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           } else if (zeroRunMs > 0) {
             endZeroRun();
           }
+          // Speech already underway when the reply starts playing barges in: never cut down to the louder bar.
+          if (heardSpeech && !bargedIn && isVoicePlaybackActive()) {
+            bargedIn = true;
+            requestVoiceBargeIn();
+          }
           // While the reply plays (or a barge-in probe is out, keeping frames in order) only a barge-in is listened for.
           if (!bargedIn && (isVoicePlaybackActive() || bargeConfirming)) {
             preroll.push(new Float32Array(input));
