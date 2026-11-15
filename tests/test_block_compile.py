@@ -1196,6 +1196,13 @@ def test_qwen3_5_gdn_block_has_no_break():
         counters.clear()
         got = [_grads_after_step(layers, run, xi.clone().requires_grad_()) for xi in x]
         assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])
+        # A layer that fell back to the stock forward also has no break: the block must have run (the
+        # grouped value heads, 4 q / k vs 16 v heads, demoted it on transformers 5.23 before the fix).
+        for layer in layers:
+            assert layer.__dict__.get("_unsloth_block_mode") == M._FULL, layer.__dict__.get(
+                "_unsloth_block_mode"
+            )
+            assert layer.__dict__.get("_unsloth_block_checked", 0) & 2
     finally:
         cls.forward = original
         torch._dynamo.reset()
@@ -1211,13 +1218,16 @@ def test_qwen3_5_gdn_block_has_no_break():
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need a GPU")
-def test_opaque_fla_op_matches_fla_function():
+@pytest.mark.parametrize("qk_heads", [4, 2], ids = ["equal_heads", "grouped_value_heads"])
+def test_opaque_fla_op_matches_fla_function(qk_heads):
+    """grouped_value_heads: transformers 5.23 passes q / k unrepeated (huggingface/transformers#49141); the fake
+    meta of A had the q / k head count, so Inductor's output check failed and every GVA layer ran stock."""
     pytest.importorskip("fla.ops.gated_delta_rule.chunk")
     M = _load("_gdn_op")
     gen = torch.Generator(device = "cuda").manual_seed(0)
     B, T, H, D = 2, 150, 4, 128
     mk = lambda *s, dt = torch.bfloat16: torch.randn(*s, device = "cuda", dtype = dt, generator = gen)
-    q, k, v = mk(B, T, H, D), mk(B, T, H, D), mk(B, T, H, D)
+    q, k, v = mk(B, T, qk_heads, D), mk(B, T, qk_heads, D), mk(B, T, H, D)
     g = -mk(B, T, H, dt = torch.float32).abs() * 0.1
     beta = mk(B, T, H).sigmoid()
     assert M._fla_ops(lambda: (q, k, v, g, beta))
