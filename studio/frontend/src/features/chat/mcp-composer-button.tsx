@@ -42,6 +42,9 @@ import {
   updateMcpServer,
 } from "./api/mcp-servers-api";
 import { BlenderMcpSetup } from "./blender-mcp-setup";
+import { EDITOR_MCP } from "./editor-mcp-catalog";
+import { EditorMcpSetup } from "./editor-mcp-setup";
+import type { EditorMcpId } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
 import {
   UNSLOTH_STUDIO_TOOLS_MCP_URL,
@@ -107,6 +110,8 @@ export function McpComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [blenderOpen, setBlenderOpen] = useState(false);
   const [blenderBusy, setBlenderBusy] = useState(false);
+  const [editorOpen, setEditorOpen] = useState<EditorMcpId | null>(null);
+  const [editorBusy, setEditorBusy] = useState(false);
   const [serversLoaded, setServersLoaded] = useState(false);
   const [pendingUrls, setPendingUrls] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -418,6 +423,24 @@ export function McpComposerButton({
               <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
             ) : null}
           </DropdownMenuItem>
+          {(Object.keys(EDITOR_MCP) as EditorMcpId[]).map((id) => {
+            const enabled = servers.some((server) => server.builtin_id === id && server.is_enabled);
+            return (
+              <DropdownMenuItem
+                key={id}
+                onSelect={() => {
+                  setMenuOpen(false);
+                  setEditorOpen(id);
+                }}
+                className={enabled ? "relative text-primary font-medium" : "relative"}
+              >
+                <span className="truncate">{EDITOR_MCP[id].name}</span>
+                {enabled ? (
+                  <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+                ) : null}
+              </DropdownMenuItem>
+            );
+          })}
           {customServers.length > 0 ? <DropdownMenuSeparator /> : null}
           {customServers.map((server) =>
             renderRow({
@@ -462,6 +485,33 @@ export function McpComposerButton({
               servers={servers}
               disabled={false}
               onBusyChange={setBlenderBusy}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={editorOpen !== null}
+        onOpenChange={(open) => {
+          if (!open && editorBusy) return;
+          if (!open) setEditorOpen(null);
+        }}
+      >
+        <DialogContent
+          className="max-w-lg max-h-[85dvh] overflow-y-auto"
+          showCloseButton={!editorBusy}
+        >
+          <DialogHeader>
+            <DialogTitle>{editorOpen ? EDITOR_MCP[editorOpen].name : ""} MCP</DialogTitle>
+            <DialogDescription>
+              Let the model control {editorOpen ? EDITOR_MCP[editorOpen].name : "the editor"} through MCP.
+            </DialogDescription>
+          </DialogHeader>
+          {editorOpen && (
+            <EditorMcpSetup
+              key={editorOpen}
+              editorId={editorOpen}
+              servers={servers}
+              onBusyChange={setEditorBusy}
             />
           )}
         </DialogContent>
