@@ -284,7 +284,9 @@ def attach_hf_quant_config(
         model_type = getattr(config, "model_type", None),
         architectures = getattr(config, "architectures", None),
     )
-    if modelopt_fp8_plan(probe) is None:
+    from .modelopt_nvfp4 import modelopt_nvfp4_plan
+
+    if modelopt_fp8_plan(probe) is None and modelopt_nvfp4_plan(probe) is None:
         return False
     try:
         config.quantization_config = quant

@@ -4308,6 +4308,10 @@ def check_and_disable_bitsandbytes_loading(
         from .modelopt_fp8 import enable_modelopt_merged_save
         enable_modelopt_merged_save(model_config)
     if rewrite_modelopt and str(quant_method).lower() == "modelopt":
+        from .modelopt_nvfp4 import arm_modelopt_nvfp4_loading
+        if arm_modelopt_nvfp4_loading(model_config, verbose = verbose) is not None:
+            quant_method = "compressed-tensors"
+    if rewrite_modelopt and str(quant_method).lower() == "modelopt":
         from .modelopt_fp8 import arm_modelopt_fp8_loading
         if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
             quant_method = "fp8"
