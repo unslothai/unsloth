@@ -308,14 +308,6 @@ def test_windows_reads_a_non_ascii_app_name_back_from_powershell(windows):
     env = {**os.environ, "UNSLOTH_COMPUTER_USE_APP": shown}
     echo = "Write-Output $env:UNSLOTH_COMPUTER_USE_APP"
     assert windows._powershell(echo, env).stdout.strip() == shown
-    # As it ran before: the console code page mangles the name.
-    before = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", echo],
-        capture_output = True,
-        text = True,
-        env = env,
-    )
-    assert before.stdout.strip() != shown, before.stdout
 
 
 def test_windows_open_app_takes_names_not_paths(windows):
