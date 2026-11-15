@@ -1557,6 +1557,8 @@ async def get_recommended_folders(current_subject: str = Depends(get_current_sub
 _BROWSE_MODEL_HINT_PROBE = 64
 # Hard cap on subdirectory entries so browsing ``/usr/lib`` can't stat-storm the process.
 _BROWSE_ENTRY_CAP = 2000
+# Bounds the listing itself: a folder of files costs no stat per entry, so this can sit well above the row cap.
+_BROWSE_VISIT_CAP = 50_000
 
 
 def _count_model_files(directory: Path, cap: int = 200) -> int:
@@ -1788,10 +1790,15 @@ def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str
 
 
 def _match_browse_child(current: Path, name: str) -> Optional[Path]:
+    """The child spelled *name*; else the only one differing by case, so a typed `~/documents` opens."""
+    folded = name.casefold()
+    loose: list[Path] = []
     try:
         for child in current.iterdir():
             if child.name == name:
                 return child
+            if child.name.casefold() == folded:
+                loose.append(child)
     except PermissionError:
         raise HTTPException(
             status_code = 403,
@@ -1803,7 +1810,7 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
             status_code = 500,
             detail = f"Could not read {os.path.basename(str(current))}",
         ) from exc
-    return None
+    return loose[0] if len(loose) == 1 else None
 
 
 def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
@@ -1867,9 +1874,8 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                 raise HTTPException(
                     status_code = 403,
                     detail = (
-                        "Path is not in the browseable allowlist. Register it via "
-                        "POST /api/models/scan-folders first, or pick a directory "
-                        "under your home folder."
+                        "That folder is outside the places Unsloth can browse. Pick one under "
+                        "your home folder, or add it as a custom model folder first."
                     ),
                 )
             if contains_sensitive_path_component(str(resolved_child)):
@@ -1905,11 +1911,49 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
     raise HTTPException(
         status_code = 403,
         detail = (
-            "Path is not in the browseable allowlist. Register it via "
-            "POST /api/models/scan-folders first, or pick a directory "
-            "under your home folder."
+            "That folder is outside the places Unsloth can browse. Pick one under "
+            "your home folder, or add it as a custom model folder first."
         ),
     )
+
+
+def _browse_scope(path: Optional[str]):
+    """(path, managed, media roots, drive roots, allowed roots) for one browse request."""
+    from utils.paths import external_media
+    from utils.paths.storage_roots import workspace_root
+
+    managed = account_access.managed_account()
+    if managed:
+        path = account_access.private_directory(path or str(workspace_root()), "")
+    # A managed account browses its workspace only; no media/drive roots or chips outside it.
+    media_roots = (
+        []
+        if managed
+        else [
+            *external_media.linux_external_mount_roots(),
+            *external_media.macos_volume_roots(),
+        ]
+    )
+    drive_roots = [] if managed else external_media.windows_drive_roots()
+    allowed_roots = (
+        [workspace_root().resolve()]
+        if managed
+        else _build_browse_allowlist(media_roots, drive_roots)
+    )
+    return path, managed, media_roots, drive_roots, allowed_roots
+
+
+def _resolve_logged_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
+    try:
+        return _resolve_browse_target(path, allowed_roots)
+    except HTTPException:
+        if path is not None and path.strip():
+            logger.warning(
+                "browse-folders: rejected path %r (normalized=%s)",
+                path,
+                _normalize_browse_request_path(path),
+            )
+        raise
 
 
 # Sync def so FastAPI threadpools it: a dead mapped drive would stall the loop.
@@ -1930,6 +1974,10 @@ def browse_folders(
         description = "Include entries whose name starts with a dot",
     ),
     current_subject: str = Depends(get_current_subject),
+    model_hints: bool = Query(
+        True,
+        description = "Probe each folder for model files. Pickers that do not show the hint turn it off.",
+    ),
 ):
     """List immediate subdirectories of *path* for the Custom Folders picker.
 
@@ -1942,52 +1990,21 @@ def browse_folders(
     so traversal can't escape. Sorting: model-bearing dirs, then plain,
     then hidden (if ``show_hidden=true``).
     """
-    from utils.paths.storage_roots import workspace_root
-
-    managed = account_access.managed_account()
-    if managed:
-        path = account_access.private_directory(path or str(workspace_root()), "")
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
-    from utils.paths import external_media
     from storage.studio_db import (
         contains_sensitive_path_component,
         is_denied_system_path,
         list_scan_folders,
     )
 
-    # A managed account browses its workspace only; no media/drive roots or chips outside it.
-    media_roots = (
-        []
-        if managed
-        else [
-            *external_media.linux_external_mount_roots(),
-            *external_media.macos_volume_roots(),
-        ]
-    )
-    drive_roots = [] if managed else external_media.windows_drive_roots()
-    allowed_roots = (
-        [workspace_root().resolve()]
-        if managed
-        else _build_browse_allowlist(media_roots, drive_roots)
-    )
+    path, managed, media_roots, drive_roots, allowed_roots = _browse_scope(path)
+    target = _resolve_logged_browse_target(path, allowed_roots)
 
-    try:
-        target = _resolve_browse_target(path, allowed_roots)
-    except HTTPException:
-        requested_path = _normalize_browse_request_path(path)
-        if path is not None and path.strip():
-            logger.warning(
-                "browse-folders: rejected path %r (normalized=%s)",
-                path,
-                requested_path,
-            )
-        raise
-
-    entries: list[BrowseEntry] = []
+    names: list[str] = []
     truncated = False
     visited = 0
     try:
-        it = target.iterdir()
+        it = os.scandir(target)
     except PermissionError:
         raise HTTPException(
             status_code = 403,
@@ -2001,45 +2018,54 @@ def browse_folders(
         )
 
     try:
-        for child in it:
-            # Bound by visits, not appends, so dirs full of files still hit the cap.
-            visited += 1
-            if visited > _BROWSE_ENTRY_CAP:
-                truncated = True
-                break
-            try:
-                if not child.is_dir():
+        with it:
+            for child in it:
+                visited += 1
+                if visited > _BROWSE_VISIT_CAP:
+                    truncated = True
+                    break
+                try:
+                    if not child.is_dir():
+                        continue
+                except OSError:
                     continue
-            except OSError:
-                continue
-            name = child.name
-            is_hidden = name.startswith(".")
-            if is_hidden and not show_hidden:
-                continue
-            if contains_sensitive_path_component(name):
-                continue
-            # Hide denied system dirs (Windows, /etc); resolve first so symlinks into them are hidden
-            try:
-                resolved_child = os.path.realpath(str(child))
-            except (OSError, ValueError):
-                resolved_child = str(child)
-            if is_denied_system_path(resolved_child):
-                continue
-            entries.append(
-                BrowseEntry(
-                    name = name,
-                    has_models = _looks_like_model_dir(child),
-                    hidden = is_hidden,
-                )
-            )
+                name = child.name
+                if name.startswith(".") and not show_hidden:
+                    continue
+                if contains_sensitive_path_component(name):
+                    continue
+                # Hide denied system dirs (Windows, /etc); resolve first so symlinks into them are hidden
+                try:
+                    resolved_child = os.path.realpath(child.path)
+                except (OSError, ValueError):
+                    resolved_child = child.path
+                if is_denied_system_path(resolved_child):
+                    continue
+                names.append(name)
     except PermissionError as exc:
         logger.debug(
             "browse-folders: permission denied during enumeration of %s: %s",
             target,
             exc,
         )
+        truncated = True
     except OSError as exc:
         logger.warning("browse-folders: partial enumeration of %s: %s", target, exc)
+        truncated = True
+
+    # Sorted before the cut: listing order is arbitrary, so a cut taken first drops folders at random.
+    names.sort(key = str.lower)
+    if len(names) > _BROWSE_ENTRY_CAP:
+        truncated = True
+        del names[_BROWSE_ENTRY_CAP:]
+    entries = [
+        BrowseEntry(
+            name = name,
+            has_models = bool(model_hints) and _looks_like_model_dir(target / name),
+            hidden = name.startswith("."),
+        )
+        for name in names
+    ]
 
     # Model-bearing first, then plain, then hidden; case-insensitive within each bucket.
     def _sort_key(e: BrowseEntry) -> tuple[int, str]:
@@ -2104,8 +2130,72 @@ def browse_folders(
         entries = entries,
         suggestions = suggestions,
         truncated = truncated,
-        model_files_here = _count_model_files(target),
+        model_files_here = _count_model_files(target) if model_hints else 0,
     )
+
+
+class BrowseFolderCreate(BaseModel):
+    parent: str
+    name: str
+
+
+_NEW_FOLDER_NAME_RE = _re.compile(r'\A[^<>:"/\\|?*\x00-\x1f]{1,255}\Z')
+# Names Windows resolves to a device whatever the extension.
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{n}" for n in range(1, 10)}
+    | {f"lpt{n}" for n in range(1, 10)}
+)
+
+
+def _valid_new_folder_name(name: str) -> bool:
+    if name in (".", "..") or name != name.strip() or name.endswith("."):
+        return False
+    if name.split(".", 1)[0].lower() in _WINDOWS_DEVICE_NAMES:
+        return False
+    return bool(_NEW_FOLDER_NAME_RE.match(name))
+
+
+@router.post("/browse-folders", response_model = BrowseFoldersResponse)
+def create_browse_folder(
+    payload: BrowseFolderCreate, current_subject: str = Depends(get_current_subject)
+):
+    """Create one empty folder inside a browseable directory, for the picker's New folder button."""
+    from storage.studio_db import contains_sensitive_path_component
+    from utils.account_context import via_api_key_context
+    from utils.paths import exports_root, outputs_root, studio_root
+    from utils.paths.path_utils import is_path_within
+
+    # The picker is the only caller: an API key has no folder dialog to create one from.
+    if via_api_key_context():
+        raise HTTPException(status_code = 403, detail = "Folders are created from the Unsloth UI.")
+    name = payload.name
+    if not _valid_new_folder_name(name) or contains_sensitive_path_component(name):
+        raise HTTPException(status_code = 400, detail = "That folder name cannot be used.")
+    parent, managed, _media, _drives, allowed_roots = _browse_scope(payload.parent)
+    target = _resolve_logged_browse_target(parent, allowed_roots)
+    created = target / name
+    if not managed:
+        # Studio's own data lives here; only its outputs and exports are places a user saves into.
+        inside_studio = is_path_within(created, studio_root())
+        saves_here = any(is_path_within(created, root) for root in (outputs_root(), exports_root()))
+        if inside_studio and not saves_here:
+            raise HTTPException(
+                status_code = 403,
+                detail = "Folders cannot be created inside Unsloth's own data folder.",
+            )
+    try:
+        os.mkdir(created)
+    except FileExistsError:
+        raise HTTPException(status_code = 409, detail = f"{name} already exists.") from None
+    except PermissionError:
+        raise HTTPException(
+            status_code = 403, detail = f"Permission denied creating a folder in {target.name}"
+        ) from None
+    except OSError as exc:
+        logger.warning("browse-folders: could not create %s: %s", created, exc)
+        raise HTTPException(status_code = 500, detail = f"Could not create {name}") from exc
+    return browse_folders(str(created), name.startswith("."), current_subject, False)
 
 
 @router.get("/list")

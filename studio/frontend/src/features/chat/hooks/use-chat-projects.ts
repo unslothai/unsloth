@@ -108,6 +108,8 @@ export function useChatProjects(): {
   projects: ProjectRecord[];
   isLoading: boolean;
   hasLoaded: boolean;
+  /** The last load failed, so an empty list means unknown rather than no projects. */
+  loadFailed: boolean;
 } {
   const projects = useSyncExternalStore(
     subscribeToProjects,
@@ -116,6 +118,7 @@ export function useChatProjects(): {
   );
   const [isLoading, setIsLoading] = useState(!projectsLoaded);
   const [hasLoaded, setHasLoaded] = useState(projectsLoaded);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,6 +128,10 @@ export function useChatProjects(): {
       if (!cancelled && !projectsLoaded) setIsLoading(true);
       try {
         await loadProjects(force, followUpIfPending);
+        if (!cancelled) setLoadFailed(false);
+      } catch (error) {
+        console.warn("Could not load projects", error);
+        if (!cancelled) setLoadFailed(true);
       } finally {
         if (!cancelled) {
           setHasLoaded(true);
@@ -154,7 +161,7 @@ export function useChatProjects(): {
     };
   }, []);
 
-  return { projects, isLoading, hasLoaded };
+  return { projects, isLoading, hasLoaded, loadFailed };
 }
 
 /** Newest chat or own last edit: `updatedAt` alone moves only on a rename or instructions change. */

@@ -24,6 +24,7 @@ import {
   type StagedSource,
   uploadStagedSources,
 } from "@/features/rag/components/project-source-dropzone";
+import { EXPIRY_GRACE_MS } from "@/features/rag/components/staged-source";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
@@ -103,6 +104,24 @@ export function NewProjectDialog({
       mounted.current = false;
     };
   }, []);
+
+  // The grant lasts minutes: drop one that lapsed unsent, before a submit could send it dead.
+  useEffect(() => {
+    const expiresAt = workingFolder?.expiresAtMs;
+    if (!workingFolder || !expiresAt) return;
+    const { token } = workingFolder;
+    const timer = setTimeout(
+      () => {
+        if (sentLeases.current.has(token)) return;
+        setWorkingFolder((current) => (current?.token === token ? null : current));
+        toast.info("The chosen working folder expired", {
+          description: "Choose it again to use it.",
+        });
+      },
+      Math.max(0, expiresAt - EXPIRY_GRACE_MS - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [workingFolder]);
 
   function reset() {
     setName("");

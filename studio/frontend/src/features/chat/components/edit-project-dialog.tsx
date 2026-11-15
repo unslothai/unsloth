@@ -27,6 +27,7 @@ import {
   updateChatProjectInstructions,
 } from "../hooks/use-chat-projects";
 import type { ProjectRecord } from "../types";
+import { projectFolderState } from "../utils/project-folder-state";
 import {
   imeOwnsInputKeydown,
   inputImeHandlers,
@@ -42,25 +43,26 @@ function ProjectWorkingFolder({
   disabled: boolean;
   onPendingChange: (pending: boolean) => void;
 }) {
-  const [folder, setFolder] = useState(project.workingFolder ?? null);
-  const seed = `${project.id}\n${project.workingFolder ?? ""}`;
+  // The saved record, so the row follows what the backend says the folder is now.
+  const [saved, setSaved] = useState(project);
+  const seed = `${project.id}\n${project.workingFolder ?? ""}\n${project.workingFolderStatus ?? ""}`;
   const [seededFor, setSeededFor] = useState(seed);
   if (seed !== seededFor) {
     setSeededFor(seed);
-    setFolder(project.workingFolder ?? null);
+    setSaved(project);
   }
+  const folder = projectFolderState(saved);
 
   async function apply(selection: NativeDocumentFolderSelection | null) {
-    const saved = await setChatProjectWorkingFolder(
-      project.id,
-      selection?.token ?? null,
+    setSaved(
+      await setChatProjectWorkingFolder(project.id, selection?.token ?? null),
     );
-    setFolder(saved.workingFolder ?? null);
   }
 
   return (
     <WorkingFolderPicker
-      value={folder}
+      value={folder.chosen ? folder.label : null}
+      detail={folder}
       onChange={apply}
       disabled={disabled}
       onPendingChange={onPendingChange}

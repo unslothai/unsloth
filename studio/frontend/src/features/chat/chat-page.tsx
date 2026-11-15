@@ -205,6 +205,7 @@ import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
 import { EditProjectDialog } from "./components/edit-project-dialog";
+import { ProjectFolderChip } from "./components/project-folder-chip";
 import {
   buildExternalModelId,
   isDecisionConnection,
@@ -2441,9 +2442,19 @@ function ProjectLanding({
                   className="size-6.5"
                 />
               </span>
-              <h1 className="min-w-0 flex-1 truncate font-sans text-ui-30 font-medium leading-tight tracking-normal text-foreground">
-                {projectName}
-              </h1>
+              <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+                <h1 className="max-w-full truncate font-sans text-ui-30 font-medium leading-tight tracking-normal text-foreground">
+                  {projectName}
+                </h1>
+                {currentProject && (
+                  <div className="-ml-2.5 flex max-w-full min-w-0">
+                    <ProjectFolderChip
+                      project={currentProject}
+                      onChange={() => setEditingProject(true)}
+                    />
+                  </div>
+                )}
+              </div>
               <NonModalDropdownMenu
                 side="bottom"
                 align="end"
@@ -3042,7 +3053,11 @@ export function ChatPage({
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(
     search.project ?? null,
   );
-  const { projects, isLoading: projectsLoading } = useChatProjects();
+  const {
+    projects,
+    isLoading: projectsLoading,
+    loadFailed: projectsLoadFailed,
+  } = useChatProjects();
   const currentProject = currentProjectId
     ? (projects.find((project) => project.id === currentProjectId) ?? null)
     : null;
@@ -4996,6 +5011,7 @@ export function ChatPage({
                   currentProject={currentProject}
                   projects={projects}
                   isLoading={projectsLoading}
+                  loadFailed={projectsLoadFailed}
                   onSelectProject={openProjectLanding}
                   onViewAllProjects={openProjectsList}
                   open={projectPickerOpen}

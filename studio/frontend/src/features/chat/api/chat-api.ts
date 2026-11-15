@@ -1637,16 +1637,30 @@ export async function browseFolders(
   path?: string,
   showHidden = false,
   signal?: AbortSignal,
+  modelHints = true,
 ): Promise<BrowseFoldersResponse> {
   const params = new URLSearchParams();
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
+  if (!modelHints) params.set("model_hints", "false");
   const qs = params.toString();
   // Forward the signal so a cancelled navigation also cancels the server-side walk.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,
   );
+  return parseJsonOrThrow<BrowseFoldersResponse>(response);
+}
+
+export async function createBrowseFolder(
+  parent: string,
+  name: string,
+): Promise<BrowseFoldersResponse> {
+  const response = await authFetch("/api/models/browse-folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parent, name }),
+  });
   return parseJsonOrThrow<BrowseFoldersResponse>(response);
 }
 

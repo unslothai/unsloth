@@ -3329,25 +3329,42 @@ def set_chat_project_working_folder(
         conn.close()
 
 
-def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
-    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+def _working_folder_state(project: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
+    """(status, real path). Status is None without a chosen folder; the path is set only for "ok"."""
     path = (project or {}).get("workingFolder")
-    if not path or not is_owner_context():
-        return None
+    if not path:
+        return None, None
     try:
         st = os.lstat(path)
     except OSError:
-        return None
+        return "missing", None
     if not stat.S_ISDIR(st.st_mode):
-        return None
+        return "replaced", None
     identity = (project or {}).get("workingFolderIdentity")
     if identity and identity != f"{st.st_dev}:{st.st_ino}":
-        return None
+        return "replaced", None
     real = os.path.realpath(path)
     # Reached through a new ancestor link, the same inode sits somewhere else: not the folder picked.
     if os.path.normcase(real) != os.path.normcase(path):
+        return "replaced", None
+    return "ok", real
+
+
+def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
+    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+    if not is_owner_context():
         return None
-    return real
+    # The folder is host access the owner granted in the Unsloth UI; an API key stays in the sandbox (#14345).
+    from auth.policy import api_full_access_refused
+
+    if api_full_access_refused():
+        return None
+    return _working_folder_state(project)[1]
+
+
+def project_working_folder_status(project: Optional[dict]) -> Optional[str]:
+    """ "ok", "missing" or "replaced" for a project with a chosen folder, else None."""
+    return _working_folder_state(project)[0]
 
 
 def ensure_chat_project_workspace(id: str) -> Optional[dict]:

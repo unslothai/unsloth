@@ -23,6 +23,11 @@ export interface ProjectRecord {
   rootPath?: string | null;
   sandboxPath?: string | null;
   workingFolder?: string | null;
+  /** Live state of the chosen folder; tools use the managed folder unless it is "ok". */
+  workingFolderStatus?: "ok" | "missing" | "replaced" | null;
+  /** The chosen folder with the home directory written as `~`. */
+  workingFolderDisplay?: string | null;
+  workingFolderBranch?: string | null;
   archived: boolean;
   createdAt: number;
   updatedAt: number;

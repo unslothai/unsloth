@@ -83,6 +83,7 @@ from storage.studio_db import (
     list_chat_threads,
     remap_chat_thread_document_ids,
     set_chat_project_working_folder,
+    project_working_folder_status,
     ProjectWorkingFolderConflictError,
     migrate_chat_pins,
     sync_chat_messages,
@@ -322,6 +323,10 @@ class ChatProject(BaseModel):
     sandboxPath: Optional[str] = None
     # Read only: a saved record cannot set the folder.
     workingFolder: Optional[str] = None
+    # "ok", "missing" or "replaced": tools fall back to the managed folder unless it is "ok".
+    workingFolderStatus: Optional[str] = None
+    workingFolderDisplay: Optional[str] = None
+    workingFolderBranch: Optional[str] = None
     archived: bool = False
     createdAt: SqliteInt
     updatedAt: SqliteInt
@@ -1323,6 +1328,22 @@ def delete_attachment(
     return {"ok": True}
 
 
+def _project_out(project: dict) -> ChatProject:
+    """The stored project plus the live state of its chosen folder, which only the disk knows."""
+    from utils.paths.folder_info import git_head_branch, tilde_path
+
+    folder = project.get("workingFolder")
+    status = project_working_folder_status(project) if folder else None
+    return ChatProject(
+        **{
+            **project,
+            "workingFolderStatus": status,
+            "workingFolderDisplay": tilde_path(folder) if folder else None,
+            "workingFolderBranch": git_head_branch(folder) if status == "ok" else None,
+        }
+    )
+
+
 @router.get("/projects", response_model = ChatProjectListResponse)
 def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
@@ -1330,8 +1351,8 @@ def list_projects(
     # Backfill only projects without a recorded root; the rest are ensured where their files are used.
     return ChatProjectListResponse(
         projects = [
-            ChatProject(
-                **{
+            _project_out(
+                {
                     **(
                         project
                         if project.get("rootPath")
@@ -1353,9 +1374,9 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
     try:
         project = payload.model_dump(exclude = {"nativePathLease"})
         if lease is None:
-            return ChatProject(**upsert_chat_project(project))
+            return _project_out(upsert_chat_project(project))
         working_folder = _resolve_project_working_folder(lease)
-        return ChatProject(**upsert_chat_project(project, working_folder = working_folder))
+        return _project_out(upsert_chat_project(project, working_folder = working_folder))
     except HTTPException:
         raise
     except ProjectWorkingFolderConflictError as exc:
@@ -1392,7 +1413,7 @@ def get_project(project_id: str, current_subject: str = Depends(get_current_subj
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 @router.get("/agents-md", response_model = ChatAgentsMd)
@@ -1422,7 +1443,7 @@ def patch_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
@@ -1454,12 +1475,18 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         shared_tmp_root(),
     ):
         reserved = os.path.realpath(str(reserved))
-        if is_path_within(path, reserved, allow_root = True) or is_path_within(
-            reserved, path, allow_root = True
-        ):
+        if is_path_within(path, reserved, allow_root = True):
             raise HTTPException(
                 status_code = 400,
                 detail = "Unsloth's own folders cannot be used as a project folder.",
+            )
+        if is_path_within(reserved, path):
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "This folder contains Unsloth's own data, so it cannot be a project folder. "
+                    "Choose a folder inside it instead."
+                ),
             )
     if not os.access(path, os.W_OK):
         raise HTTPException(status_code = 400, detail = "The folder is not writable.")
@@ -1493,7 +1520,7 @@ def set_project_working_folder(
         ) from exc
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 @router.delete("/projects/{project_id}/working-folder", response_model = ChatProject)
@@ -1504,7 +1531,7 @@ def clear_project_working_folder(
     project = set_chat_project_working_folder(project_id, None)
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 def _delete_project_rag_sources(project_id: str) -> None:
