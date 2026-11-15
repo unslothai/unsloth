@@ -23,7 +23,7 @@ HELPER = os.path.join(
 )
 # Global batch 4 = 2 rows per rank. Step 1: rank 0 has an image; step 2: no image anywhere; step 3: both.
 IMAGE_ROWS = {0, 8, 10}
-STEPS, PER_RANK, LR = 3, 2, 0.5  # rows per rank per optimizer step
+STEPS, PER_RANK, LR = 3, 2, 0.5
 
 
 class TinyVLM(torch.nn.Module):

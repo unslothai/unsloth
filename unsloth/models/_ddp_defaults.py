@@ -119,8 +119,7 @@ def _gradient_checkpointing_on(args, model):
 
 
 def _trainable_lora_config(model):
-    """Config of the one adapter that owns every trainable LoRA tensor and is active. A frozen extra
-    adapter (TRL's DPO "ref" copy of the policy adapter) never runs with gradients, so it does not count."""
+    """Config of the active adapter owning every trainable LoRA tensor; a frozen extra (DPO "ref") does not count."""
     peft_config = getattr(model, "peft_config", None)
     if not isinstance(peft_config, dict) or not peft_config:
         return None
@@ -363,7 +362,7 @@ def _is_full_finetune(model):
 
 
 def _tower_params(model):
-    """Trainable vision / audio tower weights of a VLM: a text-only batch leaves them without a gradient."""
+    """Trainable vision / audio tower weights of a VLM."""
     config = getattr(_unwrapped_models(model)[-1], "config", None)
     if not any(
         getattr(c, key, None) is not None for c in _configs(config) for key in _SUBMODEL_CONFIG_KEYS

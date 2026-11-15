@@ -42,7 +42,6 @@ def test_vlm_full_finetune_with_text_only_batches_matches_one_process(tmp_path):
     )
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-4000:]
-    # Gradient accumulation 1 and 2 (no_sync micro-steps), both ranks.
     ranks = re.findall(
         r"RANK_OK rank=\d ga=\d syncs=(\d+) diff=([-+.e0-9]+) moved=([-+.e0-9]+)", out
     )

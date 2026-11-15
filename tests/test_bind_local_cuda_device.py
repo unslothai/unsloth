@@ -32,7 +32,7 @@ def bind(monkeypatch):
         ({"WORLD_SIZE": "2", "LOCAL_RANK": "1"}, 1),
         ({"WORLD_SIZE": "2", "LOCAL_RANK": "0"}, None),
         ({"WORLD_SIZE": "1", "LOCAL_RANK": "1"}, None),
-        ({"WORLD_SIZE": "4", "LOCAL_RANK": "3"}, None),  # rank bound to one visible card
+        ({"WORLD_SIZE": "4", "LOCAL_RANK": "3"}, None),
         ({"WORLD_SIZE": "2"}, None),
         ({"WORLD_SIZE": "2", "LOCAL_RANK": "1", "UNSLOTH_FORCE_CPU": "1"}, None),
     ],
