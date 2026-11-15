@@ -81,7 +81,6 @@ def test_cp_shard_keeps_its_boundary_target(monkeypatch, module_name, with_label
     )
     if with_labels:
         kwargs["labels"] = torch.full((1, SEQ), -100, device = DEVICE)
-    # Global lengths [5, 3]: shard-local boundary masking would wrongly hit slot 3 or 4.
     kwargs["packed_seq_lengths"] = torch.tensor([3, 1], dtype = torch.int32, device = DEVICE)
     loss = _forward(module_name)(stub, **kwargs).loss
 
