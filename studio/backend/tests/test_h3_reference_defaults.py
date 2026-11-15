@@ -5,7 +5,7 @@
 
 Each ``_ref_*`` helper is the reference implementation's code written out literally, and Studio's default is compared
 with it bit for bit: the output 8-bit quantisation, the dense time-embedding dtype, the AdaLN curve, the keyframe
-canvas when no size is given, the float VAE decoder and the page defaults of the reference workflow templates.
+canvas when no size is given, the VAE decoder and the page defaults of the reference workflow templates.
 """
 
 from __future__ import annotations
@@ -244,10 +244,16 @@ def test_keyframes_without_a_size_keep_the_reference_canvas(size):
     assert (w2, h2) == (960, 544)
 
 
-def test_the_float_decoder_is_the_default():
+def test_the_int8_decoder_stays_the_default_like_the_reference_template(monkeypatch):
+    # The reference templates decode with an int8 ConvRot VAE; Studio's int8 decoder lands as close to that decode
+    # as its float16 one (measured on the same latent) and is faster and smaller, so it stays the default.
     from core.inference import video_minimax_h3_vae as H
-    for tier in ("eager", "default", "max", None):
-        assert H.LEVER_INT8_DECODER not in H.plan_h3_vae_levers(tier, workflow = "t2va")
+
+    monkeypatch.delenv(H.H3_VAE_INT8_ENV, raising = False)
+    for tier in ("default", "max", None):
+        assert H.LEVER_INT8_DECODER in H.plan_h3_vae_levers(tier, workflow = "t2va")
+    monkeypatch.setenv(H.H3_VAE_INT8_ENV, "0")
+    assert H.LEVER_INT8_DECODER not in H.plan_h3_vae_levers("default", workflow = "t2va")
 
 
 def test_h3_defaults_equal_the_reference_templates():

@@ -3,8 +3,8 @@
 
 """Faster MiniMax-H3 video VAE encode/decode: Triton GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU fusions
 and tile batching around Diffusers' own matmuls/convs; UNSLOTH_H3_VAE_FAST=0 disables all;
-int8_decoder (ConvRot W8A8 on the later decoder blocks) is opt-in on every tier with UNSLOTH_H3_VAE_INT8=1: by
-default the decoder stays float16 like the reference workflow's float VAE; CUDA+Triton only, else stock."""
+int8_decoder runs on the default / max tiers (UNSLOTH_H3_VAE_INT8=0 keeps it float, =1 adds it to eager);
+CUDA+Triton only, else stock."""
 
 from __future__ import annotations
 
@@ -75,8 +75,8 @@ def plan_h3_vae_levers(
         if mode != _SPEED_EAGER:
             levers.append(LEVER_FP16_ENCODER)
     levers += [LEVER_FUSED_DECODER, LEVER_TILE_BATCH]
-    # Opt-in only: it changes the decoded pixels against the float decoder the reference decodes with.
-    if _env(H3_VAE_INT8_ENV) in _TRUE:
+    int8 = _env(H3_VAE_INT8_ENV)
+    if int8 in _TRUE or (int8 not in _FALSE and mode != _SPEED_EAGER):
         levers.append(LEVER_INT8_DECODER)
     if mode == _SPEED_MAX and consumer_gpu and _env(FP16_ACCUM_DISABLE_ENV) not in _TRUE:
         levers.append(LEVER_FP16_ACCUM)
