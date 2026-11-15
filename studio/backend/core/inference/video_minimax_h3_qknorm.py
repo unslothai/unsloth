@@ -60,14 +60,16 @@ def reference_qk_norm_rope(
     sin: Any,
     eps: float,
     rounding: str = ROUNDING_EAGER,
+    exact: bool = False,
 ) -> Any:
     """The unfused math, contiguous: RMSNorm, then diffusers' ``_apply_rotary_emb`` (``eager``) or the reference
-    kernel's single-rounding rotation (``once``)."""
+    kernel's single-rounding rotation (``once``; ``exact`` emulates its fma bit for bit, which the device check
+    compares against, while the runtime fallback stays in float32)."""
     import torch.nn.functional as F
 
     normed = F.rms_norm(x, (x.shape[-1],), weight, eps)
     if rounding == ROUNDING_ONCE:
-        return _reference_rope_once(normed, cos, sin)
+        return _reference_rope_once(normed, cos, sin, exact = exact)
     return _reference_rope(normed, cos, sin)
 
 
@@ -85,27 +87,31 @@ def _reference_rope(x: Any, cos: Any, sin: Any) -> Any:
     return torch.cat((xr, xp), dim = -1).contiguous()
 
 
-def _reference_rope_once(x: Any, cos: Any, sin: Any) -> Any:
+def _reference_rope_once(
+    x: Any,
+    cos: Any,
+    sin: Any,
+    exact: bool = False,
+) -> Any:
     """Split-half rotation as the reference CUDA kernel computes it: table and inputs in ``x.dtype``, then per pair
     ``y0 = fma(x1, -sin, x0 * cos)`` and ``y1 = fma(x1, cos, x0 * sin)`` in float32, rounded once to ``x.dtype``.
-    The fma is exact through float64 (a float32 product fits in 48 bits); devices without float64 add in float32."""
+    ``exact``: the fma through float64 (a float32 product fits in 48 bits). Otherwise ``addcmul`` in float32: the
+    fallback where the kernel does not run, which can differ from the fma in the last float32 bit."""
     import torch
 
     rotary_dim = cos.shape[-1]
     half = rotary_dim // 2
-    own = x[..., :rotary_dim].float()
-    partner = torch.cat((own[..., half:], own[..., :half]), dim = -1)
+    work = torch.float64 if exact and x.device.type != "mps" else torch.float32
+    x0 = x[..., :half].float()
+    x1 = x[..., half:rotary_dim].float()
     c = cos.to(x.dtype).float()[None, :, None, :]
     s = sin.to(x.dtype).float()[None, :, None, :]
-    lo = torch.arange(rotary_dim, device = x.device) < half
-    first = torch.where(lo, own * c, partner * s)
-    a = torch.where(lo, partner, own)
-    b = torch.where(lo, -s, c)
-    if x.device.type == "mps":
-        y = a * b + first
-    else:
-        y = (a.double() * b.double() + first.double()).float()
-    return torch.cat((y.to(x.dtype), x[..., rotary_dim:]), dim = -1).contiguous()
+    lo = torch.addcmul((x0 * c[..., :half]).to(work), x1.to(work), (-s[..., :half]).to(work))
+    hi = torch.addcmul((x0 * s[..., half:]).to(work), x1.to(work), c[..., half:].to(work))
+    # float64 -> float32 -> x.dtype: the fma's own float32 result, then the kernel's single store rounding
+    return torch.cat(
+        (lo.float().to(x.dtype), hi.float().to(x.dtype), x[..., rotary_dim:]), dim = -1
+    ).contiguous()
 
 
 @lru_cache(maxsize = None)
@@ -412,7 +418,7 @@ def _check(
     passed = {m: True for m in MODES}
     for seed in (11, 12, 13):
         for x, w, cos, sin, eps in _probe_inputs(device, dtype, dim, rot, seed):
-            ref = reference_qk_norm_rope(x, w, cos, sin, eps, rounding)
+            ref = reference_qk_norm_rope(x, w, cos, sin, eps, rounding, exact = True)
             for form in MODES:
                 if not passed[form]:
                     continue

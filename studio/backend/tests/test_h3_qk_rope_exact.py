@@ -312,9 +312,12 @@ def _exact_rotation(x, w, cos, sin, eps):
 def test_once_rounding_is_the_correctly_rounded_rotation_and_eager_is_not(dtype):
     x, w, cos, sin = _inputs(dtype = dtype, seq = 300, heads = 4)
     exact = _exact_rotation(x, w, cos, sin, 1e-5)
-    once = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE)
+    once = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE, exact = True)
+    fast = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE)
     eager = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5)
     assert torch.equal(once, exact)
+    # the float32 fallback differs from the fma only where a last float32 bit decides the rounding
+    assert int((fast != exact).sum()) <= once.numel() // 10000
     assert int((eager != exact).sum()) > once.numel() // 20
     # the pass-through dims are the normed values either way
     assert torch.equal(once[..., 96:], eager[..., 96:])
@@ -366,7 +369,7 @@ def test_once_forms_are_bit_identical_to_the_unfused_once_math(dtype, dim, rot, 
         )
         x = x * (10.0 ** (seed - 3))
         eps = 1e-6 if seed % 2 else 1e-5
-        ref = Q.reference_qk_norm_rope(x, w, cos, sin, eps, Q.ROUNDING_ONCE)
+        ref = Q.reference_qk_norm_rope(x, w, cos, sin, eps, Q.ROUNDING_ONCE, exact = True)
         got = Q._launch(
             F.rms_norm(x, (x.shape[-1],), w, eps),
             w,
@@ -388,4 +391,6 @@ def test_once_device_check_passes_and_engages():
     passed = Q.verdict(x, 96, Q.ROUNDING_ONCE)
     assert passed["rope"], passed
     got = Q.qk_norm_rope_impl(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE)
-    assert torch.equal(got, Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE))
+    assert torch.equal(
+        got, Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE, exact = True)
+    )
