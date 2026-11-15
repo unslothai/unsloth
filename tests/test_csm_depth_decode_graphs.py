@@ -140,3 +140,18 @@ def test_graphs_off_keeps_the_stock_call(csm, monkeypatch):
     assert seen and all(
         "cache_implementation" not in kw and "compile_config" not in kw for kw in seen
     )
+
+
+def test_flash_attention_depth_decoder_keeps_the_stock_call(host, csm, monkeypatch):
+    # FlashAttention has no mask for unpadded rows: a static cache's unfilled slots would change the codes.
+    monkeypatch.setattr(vision, "_uses_flash_attention_for_generation", lambda config: True)
+    depth = csm.depth_decoder
+    real, seen = depth._old_generate, []
+
+    def recording(*args, **kwargs):
+        seen.append(dict(kwargs))
+        return real(*args, **kwargs)
+
+    depth._old_generate = recording
+    _gen(csm, frames = 2)
+    assert seen and all("cache_implementation" not in kw for kw in seen)

@@ -2614,6 +2614,8 @@ def unsloth_nested_fast_generate(self, *args, **kwargs):
         or kwargs.get("past_key_values") is not None
         or "cache_implementation" in kwargs
         or kwargs.get("generation_config") is not None
+        # FlashAttention builds no mask for unpadded rows, so a static cache's empty slots would be attended.
+        or _uses_flash_attention_for_generation(self.config)
     ):
         return self._old_generate(*args, **kwargs)
     input_ids = args[0] if args else kwargs.get("input_ids")
