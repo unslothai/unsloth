@@ -662,3 +662,17 @@ def test_pp_stage_forward_takes_ordinary_position_ids():
         ValueError, match = "packed or left-padded"
     ):  # a model that cannot classify positions
         ppn._PPStageModule._model_stage_forward(_fake_stage(), ids, {"position_ids": positions})
+
+
+def test_fsdp2_over_its_own_pipeline_stage_forward_is_refused():
+    """That forward runs outside the FSDP root's hooks, so root-owned parameters would stay sharded."""
+    model = torch.nn.Linear(2, 2)
+    ctx = types.SimpleNamespace(moe = None, stage_forward = (None, None, None))
+    model.__dict__["_unsloth_pp_stage"] = types.SimpleNamespace(
+        model = model, dp_mesh = None, stages_per_rank = 1, ctx = ctx
+    )
+    with pytest.raises(ValueError, match = "own pipeline_stage_forward"):
+        ppn.check_pp_dp_composition(model, None)
+    ctx.stage_forward = None
+    with pytest.raises(ValueError, match = r"FSDP2Config\(mesh"):
+        ppn.check_pp_dp_composition(model, None)

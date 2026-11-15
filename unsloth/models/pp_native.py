@@ -271,6 +271,13 @@ def check_pp_dp_composition(model, dp_mesh):
         raise ValueError(_MULTI_STAGE_DP)
     if stage.ctx.moe is not None:
         raise ValueError(_PP_MOE_COMPOSED)
+    if stage.ctx.stage_forward is not None:
+        # The model's own pipeline_stage_forward runs under the stage, not the FSDP root's forward hooks, so the
+        # root-owned embeddings / norm / lm_head (and root-layout LoRA) would stay sharded there.
+        raise ValueError(
+            f"Unsloth: native FSDP2 data parallel over a pipeline that runs {type(stage.model).__name__}'s own "
+            "pipeline_stage_forward is not supported yet; use a pp-only mesh."
+        )
     if dp_mesh is None:
         raise ValueError(
             "Unsloth: native FSDP2 over a pipeline parallel model needs FSDP2Config(mesh = mesh['dp']), the "
