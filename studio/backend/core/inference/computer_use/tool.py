@@ -92,6 +92,10 @@ def computer_tool(mode: str = "pixels", backend: Optional[Backend] = None) -> di
                     },
                     "name": {"type": "string", "description": "For open_app: the application."},
                     "seconds": {"type": "number", "description": "For wait."},
+                    "display": {
+                        "type": "integer",
+                        "description": "For screenshot: which display to show, 1 is the main one.",
+                    },
                     "why": {
                         "type": "string",
                         "description": "A few words on what this call is for, shown to the user.",
@@ -111,6 +115,7 @@ def computer_tool(mode: str = "pixels", backend: Optional[Backend] = None) -> di
                                 "amount": {"type": "integer"},
                                 "name": {"type": "string"},
                                 "seconds": {"type": "number"},
+                                "display": {"type": "integer"},
                             },
                             "required": ["action"],
                         },

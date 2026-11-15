@@ -457,6 +457,13 @@ def test_a_windows_app_name_is_looked_up_once_for_its_gate_card_and_run(monkeypa
     assert lookups == ["notepad"]
 
 
+def test_the_schema_offers_every_field_the_parser_reads_for_a_screenshot():
+    params = computer_use.computer_tool("pixels")["function"]["parameters"]
+    assert "display" in params["properties"]
+    assert "display" in params["properties"]["then"]["items"]["properties"]
+    assert actions_mod.parse_actions({"action": "screenshot", "display": 2})[0]["display"] == 2
+
+
 def test_grid_coordinates_span_the_picture(desktop):
     desktop.chosen["coordinates"] = "grid"
     key = state.session_key(SESSION)

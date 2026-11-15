@@ -49,8 +49,16 @@ function one(raw: Raw): string {
       const direction = text(raw.direction || raw.scroll_direction) || "down";
       return `Scroll ${direction}${"x" in raw || "coordinate" in raw ? ` at ${point(raw)}` : ""}`;
     }
-    case "type":
-      return `Type "${text(raw.text)}"${raw.submit === true ? " and press Enter" : ""}`;
+    case "type": {
+      // The server's rule: one trailing line end is an Enter, so the card names it.
+      let typed = text(raw.text ?? raw.content).replace(/\r\n?/g, "\n");
+      let submit = raw.submit === true || raw.press_enter === true;
+      if (typed.endsWith("\n") && !typed.slice(0, -1).includes("\n")) {
+        typed = typed.slice(0, -1);
+        submit = true;
+      }
+      return `Type "${typed}"${submit ? " and press Enter" : ""}`;
+    }
     case "key":
     case "keypress": {
       const keys = raw.keys ?? raw.key ?? raw.text;

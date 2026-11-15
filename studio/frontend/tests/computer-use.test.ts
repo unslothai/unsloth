@@ -112,3 +112,9 @@ test("the card names the point the server clicks when a call gives two", () => {
   assert.deepEqual(describe({ action: "click", x: 900, y: 50, coordinate: [10, 10] }), ["Click at (900, 50)"]);
   assert.deepEqual(describe({ action: "left_click", coordinate: [10, 10] }), ["Click at (10, 10)"]);
 });
+
+test("a typed line end reads as pressing Enter, as the server runs it", () => {
+  assert.deepEqual(describe({ action: "type", text: "rm -rf build\n" }), ['Type "rm -rf build" and press Enter']);
+  assert.deepEqual(describe({ action: "type", text: "a\r\n" }), ['Type "a" and press Enter']);
+  assert.deepEqual(describe({ action: "type", text: "two\nlines" }), ['Type "two\nlines"']);
+});
