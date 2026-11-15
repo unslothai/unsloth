@@ -4,7 +4,10 @@
 """The decision model and SentenceTransformer pushes refuse private=True into an existing public repo
 before any upload, like save.py (#17752). Hub calls are mocked: nothing reaches the network."""
 
+import importlib.util
 import os
+import sys
+from pathlib import Path
 
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
@@ -59,7 +62,30 @@ def _embedding_gguf(monkeypatch):
     return lambda private: st._push_to_hub_gguf(model, "me/repo", private = private, token = "t")
 
 
-PUSHES = [_decision_clef, _decision_merged, _embedding_gguf]
+def _mlx(monkeypatch):
+    # By path, as unsloth/__init__.py loads it on Apple Silicon: no torch, so no save.py.
+    for name in ("unsloth._decision_common", "_decision_mlx_under_test"):
+        monkeypatch.delitem(sys.modules, name, raising = False)
+    path = Path(__file__).resolve().parents[2] / "unsloth" / "models" / "decision_mlx.py"
+    spec = importlib.util.spec_from_file_location("_decision_mlx_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _mlx_clef(monkeypatch):
+    model = SimpleNamespace(save_pretrained = lambda folder, tokenizer = None: None)
+    push = _mlx(monkeypatch)._clef_push
+    return lambda private: push(model, "me/repo", private = private)
+
+
+def _mlx_merged(monkeypatch):
+    model = SimpleNamespace(save_pretrained_merged = lambda folder, tokenizer, method: None)
+    push = _mlx(monkeypatch)._decision_push_merged
+    return lambda private: push(model, "me/repo", private = private)
+
+
+PUSHES = [_decision_clef, _decision_merged, _embedding_gguf, _mlx_clef, _mlx_merged]
 
 
 @pytest.mark.parametrize("push", PUSHES, ids = lambda p: p.__name__)
@@ -71,10 +97,35 @@ def test_private_push_into_public_repo_refuses_before_upload(monkeypatch, push):
     assert "upload" not in calls
 
 
-@pytest.mark.parametrize("push", [_decision_clef, _decision_merged], ids = lambda p: p.__name__)
+@pytest.mark.parametrize(
+    "push", [_decision_clef, _decision_merged, _mlx_clef, _mlx_merged], ids = lambda p: p.__name__
+)
 @pytest.mark.parametrize("public, private", [(True, False), (False, True)])
 def test_other_pushes_still_upload(monkeypatch, push, public, private):
     calls = []
     monkeypatch.setattr(huggingface_hub, "HfApi", _fake_api(public, calls))
     push(monkeypatch)(private)
     assert "upload" in calls
+
+
+@pytest.mark.parametrize(
+    "public, private", [(True, True), (True, False), (False, True), (None, True)]
+)
+def test_mlx_twin_matches_save_guard(monkeypatch, public, private):
+    from unsloth.save import _refuse_private_push_to_public_repo as save_guard
+
+    twin = _mlx(monkeypatch)._refuse_private_push_to_public_repo
+
+    class Api:
+        def repo_info(self, **kw):
+            if public is None:
+                raise OSError("offline")
+            return SimpleNamespace(private = not public)
+
+    def outcome(guard):
+        try:
+            guard("me/repo", private, api = Api())
+        except RuntimeError as exc:
+            return str(exc)
+
+    assert outcome(twin) == outcome(save_guard)
