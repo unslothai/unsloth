@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
-import { isLocalCacheSnapshot } from "../src/features/model-picker/inventory/local-cache-snapshot.ts";
+import {
+  isLocalCacheSnapshot,
+  pickerLocalCacheSnapshots,
+} from "../src/features/model-picker/inventory/local-cache-snapshot.ts";
 
 registerBundlerResolver();
 const { buildCachedInventoryRow, buildLocalInventoryRows } = await import(
@@ -14,30 +17,53 @@ const { dedupeSameSourceHubCacheRows } = await import(
   "../src/features/hub/inventory/inventory-dedupe.ts"
 );
 
-const repoId = "example/Model";
-const path = String.raw`D:\models\hub\models--example--Model\snapshots\abc`;
-const localRows = buildLocalInventoryRows(
-  (["safetensors", "gguf"] as const).map((format) => ({
-    id: path, load_id: path, path, display_name: "Model", model_id: repoId,
-    inventory_id: `local:${format}:${repoId}`, model_format: format,
-    source: "hf_cache", active_cache: false,
-  })),
-);
+const snapshot = (repoId: string, formats: readonly ("safetensors" | "gguf")[]) => {
+  const path = String.raw`D:\models\hub\models--${repoId.replace("/", "--")}\snapshots\abc`;
+  return buildLocalInventoryRows(
+    formats.map((format) => ({
+      id: path, load_id: path, path, display_name: repoId, model_id: repoId,
+      inventory_id: `local:${format}:${repoId}`, model_format: format,
+      source: "hf_cache", active_cache: false,
+    })),
+  );
+};
+const offered = (rows: Set<{ modelId?: string | null; modelFormat: string }>) =>
+  [...rows].map((row) => [row.modelId, row.modelFormat]);
 
-test("offers the local snapshot only for formats the cached listing did not supply", () => {
-  const cached = buildCachedInventoryRow({repo_id: repoId, size_bytes: 1}, "gguf");
-  const inventory = dedupeSameSourceHubCacheRows({cachedRows: [cached], localRows});
-  const offered = inventory.localRows.filter(isLocalCacheSnapshot);
-  assert.deepEqual(offered.map(row => [row.modelFormat, row.loadId]), [["safetensors", path]]);
-  assert.equal(localRows.filter(isLocalCacheSnapshot).length, 2);
+test("offers single-format snapshots from another cache", () => {
+  const rows = [...snapshot("example/St", ["safetensors"]), ...snapshot("example/Gg", ["gguf"])];
+  assert.deepEqual(offered(pickerLocalCacheSnapshots(rows)), [
+    ["example/St", "safetensors"],
+    ["example/Gg", "gguf"],
+  ]);
+});
+
+test("a mixed snapshot is offered as GGUF only, since its directory loads the GGUF", () => {
+  const rows = snapshot("example/Mixed", ["safetensors", "gguf"]);
+  assert.deepEqual(offered(pickerLocalCacheSnapshots(rows)), [["example/Mixed", "gguf"]]);
+});
+
+test("a GGUF the cached listing kept still hides the snapshot's other formats", () => {
+  const rows = snapshot("example/Mixed", ["safetensors", "gguf"]);
+  const cached = buildCachedInventoryRow(
+    { repo_id: "example/Mixed", load_id: rows[0].loadId, size_bytes: 1 },
+    "gguf",
+  );
+  const inventory = dedupeSameSourceHubCacheRows({ cachedRows: [cached], localRows: rows });
+  assert.equal(
+    pickerLocalCacheSnapshots(inventory.localRows, inventory.cachedRows).size,
+    0,
+  );
 });
 
 test("only complete, loadable snapshots pinned to another cache qualify", () => {
-  const [row] = localRows;
+  const [row] = snapshot("example/St", ["safetensors"]);
+  assert.equal(isLocalCacheSnapshot(row), true);
   for (const override of [
-    {activeCache: true}, {loadId: repoId}, {partial: true}, {companionPrefetch: true},
-    {capabilities: {...row.capabilities, canChat: false}},
+    { activeCache: true }, { activeCache: null }, { loadId: "example/St" }, { partial: true },
+    { companionPrefetch: true }, { source: "custom" as const },
+    { capabilities: { ...row.capabilities, canChat: false } },
   ]) {
-    assert.equal(isLocalCacheSnapshot({...row, ...override}), false);
+    assert.equal(isLocalCacheSnapshot({ ...row, ...override }), false);
   }
 });

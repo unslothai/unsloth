@@ -3779,11 +3779,6 @@ function sortLocalModels(
   });
 }
 
-// A cached snapshot can supply distinct GGUF and Safetensors rows with one load path.
-function localDeviceOptionKey(section: string, model: LocalModelInfo): string {
-  return makeModelOptionKey(section, model.inventory_id ?? model.id);
-}
-
 function localModelIsGguf(m: LocalModelInfo): boolean {
   if (m.source === "hf_cache") return m.model_format === "gguf";
   return (
@@ -6588,7 +6583,7 @@ export function HubModelPicker({
     if (section === "downloaded" && !customFoldersCollapsed) {
       keys.push(
         ...sortedCustomFolderModels.map((model) =>
-          localDeviceOptionKey("custom-folder", model),
+          makeModelOptionKey("custom-folder", model.id),
         ),
       );
     }
@@ -6596,7 +6591,7 @@ export function HubModelPicker({
     if (section === "downloaded" && !lmStudioCollapsed) {
       keys.push(
         ...sortedLmStudio.map((model) =>
-          localDeviceOptionKey("lm-studio", model),
+          makeModelOptionKey("lm-studio", model.id),
         ),
       );
     }
@@ -6604,7 +6599,7 @@ export function HubModelPicker({
     if (section === "downloaded" && !localDirCollapsed) {
       keys.push(
         ...sortedLocalDir.map((model) =>
-          localDeviceOptionKey("local-dir", model),
+          makeModelOptionKey("local-dir", model.id),
         ),
       );
     }
@@ -7676,11 +7671,11 @@ export function HubModelPicker({
     section: string,
     directGguf: boolean,
   ) => {
-    const optionKey = localDeviceOptionKey(section, m);
+    const optionKey = makeModelOptionKey(section, m.id);
     const isGguf = localModelIsGguf(m);
     return (
       <LocalModelDeviceRow
-        key={optionKey}
+        key={m.id}
         model={m}
         optionKey={optionKey}
         directGguf={directGguf}
