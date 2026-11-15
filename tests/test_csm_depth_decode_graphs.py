@@ -68,6 +68,9 @@ def csm():
     model = modeling_csm.CsmForConditionalGeneration._from_config(
         config, dtype = torch.float32
     ).eval()
+    if not hasattr(model.depth_decoder, "_prepare_static_cache"):
+        # transformers 4.x: no static cache on the depth decoder, so the nested routing stays off (stock generate).
+        pytest.skip("CSM depth decoder has no static cache on this transformers version")
     model._old_generate = model.generate
     model.generate = types.MethodType(vision.unsloth_base_fast_generate, model)
     # getattr: the merge base has no nested routing, so this test fails there on the counts, not on an import.
