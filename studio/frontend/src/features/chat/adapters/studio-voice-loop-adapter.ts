@@ -636,6 +636,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         return;
       }
       const key = clipKey(span);
+      // Words heard across a voice off or reset are dropped anyway: no VAD or STT run for them.
+      if (switchedOff()) {
+        early.clear();
+        dropSwitched();
+        return;
+      }
       const ready = early.take(key);
       const analysis = ready ?? analyseClip(span);
       voiceTrace("stt.clip", { early: ready !== null });
@@ -645,6 +651,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         return;
       }
       if (ended) return;
+      if (switchedOff()) {
+        analysis.cancel();
+        dropSwitched();
+        return;
+      }
 
       try {
         const modelId = analysis.modelId;
@@ -655,7 +666,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           transcript = await analysis.text;
           if (ended) return;
         } catch (error) {
-          if (error instanceof SttModelNotDownloadedError) {
+          if (error instanceof SttModelNotDownloadedError && !switchedOff()) {
             requestSttDownload(
               modelId ?? useVoiceSettingsStore.getState().sttModel,
             );
@@ -786,6 +797,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
       } catch (error) {
         if (ended) return;
+        if (switchedOff()) {
+          dropSwitched();
+          return;
+        }
         console.error("Voice transcription error:", error);
         toast.error(translate("voiceControls.transcriptionFailed"));
         if (bargedIn) requestVoiceBargeAbort();
