@@ -2604,6 +2604,50 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     return output
 
 
+def unsloth_nested_fast_generate(self, *args, **kwargs):
+    """generate() of a sub-model its parent's generate() calls once per step: CSM's depth decoder decodes the 31
+    remaining codebooks of every audio frame. Over a static cache, the one-token steps replay a decode CUDA graph
+    kept (with its cache) from frame to frame. Runs inside the parent's inference mode and autocast, so it sets
+    neither; outside a parent call (or with a caller cache) it is the stock generate()."""
+    if (
+        not torch.is_inference_mode_enabled()
+        or kwargs.get("past_key_values") is not None
+        or "cache_implementation" in kwargs
+        or kwargs.get("generation_config") is not None
+    ):
+        return self._old_generate(*args, **kwargs)
+    input_ids = args[0] if args else kwargs.get("input_ids")
+    if not isinstance(input_ids, torch.Tensor):
+        return self._old_generate(*args, **kwargs)
+    kwargs["cache_implementation"] = "static"
+    # As the parent: a static cache would otherwise auto-compile the forward (transformers' compile_config).
+    kwargs.setdefault("compile_config", _compile_config)
+    with _decode_graphs.generate_scope():
+        if _generic_decode_graphs.plan(self, args, kwargs, input_ids) != "graph":
+            with _decode_graphs.plan_scope("eager"):
+                return self._old_generate(*args, **kwargs)
+        scope = _GraphDecodeSteps(self)
+        with scope, _decode_graphs.plan_scope("graph"):
+            out = self._old_generate(*args, **kwargs)
+            scope.keep = _generic_decode_graphs.keepable(self, kwargs, out)
+        return out
+
+
+def _patch_nested_generate(model):
+    """CSM: the depth decoder's per-frame generate() through unsloth_nested_fast_generate."""
+    depth = getattr(model, "depth_decoder", None)
+    if (
+        depth is None
+        or not hasattr(depth, "generate")
+        or not hasattr(depth, "_prepare_static_cache")
+    ):
+        return
+    if getattr(depth.generate, "__name__", "") == "unsloth_nested_fast_generate":
+        return
+    depth._old_generate = depth.generate
+    depth.generate = types.MethodType(unsloth_nested_fast_generate, depth)
+
+
 # Offline helpers live in loader_utils.py, the shared canonical source.
 from .loader_utils import (
     _get_effective_local_files_only,
@@ -5465,6 +5509,7 @@ class FastBaseModel:
                 model._old_generate = model.generate
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
+            _patch_nested_generate(model)
         model._unsloth_trust_remote_code = trust_remote_code
         # Export's trusted config re-read pins to this commit, not a moved branch head.
         model._unsloth_trust_remote_code_commit = (
