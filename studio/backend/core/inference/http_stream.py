@@ -26,8 +26,9 @@ async def aiter_sse_lines(response):
     chunks = response.aiter_text()
     try:
         async for text in chunks:
+            held_cr = pending.endswith("\r")
             pending += text
-            if "\n" not in text and "\r" not in text:
+            if not held_cr and "\n" not in text and "\r" not in text:
                 continue
             # A trailing CR may be the first half of a CRLF.
             cut = len(pending) - pending.endswith("\r")

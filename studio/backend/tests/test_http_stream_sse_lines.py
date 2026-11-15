@@ -67,6 +67,27 @@ def test_unicode_separators_stay_inside_their_line(separator, newline):
         assert json.loads(lines[0][6:])["choices"][0]["delta"]["content"] == content
 
 
+def test_a_held_cr_ends_its_line_when_the_next_chunk_arrives():
+    seen_before_last = []
+
+    class _Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"data: 1\r"
+            yield b"x"
+            seen_before_last.extend(lines)
+            yield b"\n"
+
+    lines = []
+
+    async def run():
+        async for line in aiter_sse_lines(httpx.Response(200, stream = _Stream())):
+            lines.append(line)
+
+    asyncio.run(run())
+    assert seen_before_last == ["data: 1"]
+    assert lines == ["data: 1", "x"]
+
+
 def test_closing_response_lines_closes_the_stream():
     stream = _Chunks([_event("a\u2028b").encode() + b"\n\n"])
     response = httpx.Response(200, stream = stream)
