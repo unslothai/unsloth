@@ -3140,9 +3140,32 @@ _STREAM_WRITERS = ("attn.to_out.0", "attn.to_out.0.inner", "ff.net.2", "ff.net.2
 _MLP_INPUTS = ("ff.net.0.proj", "ff.net.0.proj.inner")
 
 
+def _dense_float32_rescaled_forward(self: Any, x: Any) -> Any:
+    """A plain float16 Linear computed in float32 with ``_int8_rescaled``'s output scales, so a dense (non-int8) DiT
+    gets the same stream and SwiGLU ranges as the int8 epilogue."""
+    import torch.nn.functional as F
+
+    bias = None if self.bias is None else self.bias.float()
+    return _int8_rescaled(self, F.linear(x.float(), self.weight.float(), bias)).to(x.dtype)
+
+
+def _dense_fp16_linear(module: Any) -> bool:
+    import torch
+    weight = getattr(module, "weight", None)
+    return (
+        type(module) is torch.nn.Linear
+        and "forward" not in module.__dict__
+        and type(weight) is torch.nn.Parameter
+        and weight.dtype is torch.float16
+    )
+
+
 def _int8_epilogue(module: Any) -> bool:
     forward = module.__dict__.get("forward")
-    return getattr(forward, "__func__", None) is _int8_float32_epilogue_forward
+    return getattr(forward, "__func__", None) in (
+        _int8_float32_epilogue_forward,
+        _dense_float32_rescaled_forward,
+    )
 
 
 def stream_runs_rescaled(transformer: Any, scale: float = FP16_STREAM_SCALE) -> int:
@@ -3180,6 +3203,9 @@ def stream_runs_rescaled(transformer: Any, scale: float = FP16_STREAM_SCALE) -> 
         and name.endswith(_MLP_INPUTS)
         and not hasattr(m, "inner")
     }
+    for module in list(writers) + list(mlp_in.values()):
+        if not _int8_epilogue(module) and _dense_fp16_linear(module):
+            module.forward = types.MethodType(_dense_float32_rescaled_forward, module)
     for name, module in transformer.named_modules():
         if module not in writers:
             continue

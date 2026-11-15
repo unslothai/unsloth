@@ -1416,6 +1416,71 @@ def test_the_fp16_swiglu_product_runs_rescaled_past_the_fp16_range(h3i):
     assert float((got.float() - want).norm() / want.norm()) < 2e-2
 
 
+@pytest.mark.parametrize("case", ["stream", "swiglu"])
+def test_a_dense_fp16_dit_runs_rescaled_past_the_fp16_range(h3i, case):
+    """A dense (non-int8) float16 DiT gets the int8 path's ranges: its stream writers and MLP inputs compute in
+    float32 with the same output scales, so neither the block stream nor the SwiGLU product overflows."""
+    import torch
+
+    from _minimax_h3_image_tiny import TINY_TRANSFORMER_NATIVE
+
+    torch.manual_seed(0)
+    model = h3i.transformer_class()(
+        **h3i.transformer_config_from_native(TINY_TRANSFORMER_NATIVE)
+    ).eval()
+    h3i.h3_image_prepare_prequant_model()(
+        model,
+        {
+            "adaln_form": "curve",
+            "curve_dim": "8",
+            "curve_grid": "17",
+            "adaln_out_dtype": "bfloat16",
+        },
+    )
+    keep_fp32 = ("proj_in.", "time_embedder.", "pdd_proj_out.", "norm_out.linear.")
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            param.normal_(0, 0.05)
+            if not (name.startswith(keep_fp32) or ".adaln_proj.linear." in name):
+                param.data = param.data.to(torch.float16)
+        model.time_embedder.table.normal_(0, 1.0)
+        if case == "stream":
+            model.proj_in.weight.mul_(2.0**18)
+        else:
+            for block in model.transformer_blocks:
+                block.norm2.weight.mul_(8192.0)
+    h3i.follow_compute_dtype(model, torch.float16)
+    ref = _float32_copy(model)
+    h3i.install_h3_image_forward(ref)
+    for fn in (
+        h3i.conditioning_computes_in_float32,
+        h3i.int8_blocks_rescale_in_float32,
+        h3i.stream_runs_rescaled,
+        h3i.install_h3_image_forward,
+    ):
+        fn(model)
+    assert h3i._int8_epilogue(model.transformer_blocks[0].ff.net[2])
+    rows, text, pos, tok, img, txt, plan = _forward_inputs(h3i, h3i.grid_timesteps()[:6])
+    unique, index = plan[0]
+    kw = dict(
+        hidden_states = rows[None],
+        timestep = unique,
+        timestep_indices = index,
+        token_tags = tok,
+        position_ids = pos,
+        image_indices = img,
+        text_indices = txt,
+        pdd_step_index = 0,
+        return_dict = False,
+    )
+    with torch.no_grad():
+        want = ref(encoder_hidden_states = text.float(), **kw)[0]
+        got = model(encoder_hidden_states = text.half(), **kw)[0]
+    assert torch.isfinite(want).all()
+    assert torch.isfinite(got).all()
+    assert float((got.float() - want).norm() / want.norm()) < 2e-2
+
+
 def _float32_copy(model):
     import copy
 
