@@ -23,7 +23,8 @@ export function pickerLocalCacheSnapshots(
 ): Set<LocalInventoryRow> {
   const ggufLoadIds = new Set(
     [...localRows, ...cachedRows]
-      .filter((row) => row.modelFormat === "gguf")
+      // A partial GGUF has no file linked into the snapshot yet, so the directory load skips it.
+      .filter((row) => row.modelFormat === "gguf" && !row.partial)
       .map((row) => row.loadId),
   );
   return new Set(

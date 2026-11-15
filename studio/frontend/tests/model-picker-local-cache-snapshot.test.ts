@@ -43,6 +43,13 @@ test("a mixed snapshot is offered as GGUF only, since its directory loads the GG
   assert.deepEqual(offered(pickerLocalCacheSnapshots(rows)), [["example/Mixed", "gguf"]]);
 });
 
+test("a partial GGUF does not hide the snapshot's complete Safetensors row", () => {
+  const [st, gguf] = snapshot("example/Mixed", ["safetensors", "gguf"]);
+  assert.deepEqual(offered(pickerLocalCacheSnapshots([st, { ...gguf, partial: true }])), [
+    ["example/Mixed", "safetensors"],
+  ]);
+});
+
 test("a GGUF the cached listing kept still hides the snapshot's other formats", () => {
   const rows = snapshot("example/Mixed", ["safetensors", "gguf"]);
   const cached = buildCachedInventoryRow(
