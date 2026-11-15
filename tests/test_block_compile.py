@@ -1431,6 +1431,51 @@ def test_causal_depthwise_conv_matches_conv1d():
     torch.testing.assert_close(M._causal_depthwise_conv(x, w), want, rtol = 1e-5, atol = 1e-5)
 
 
+@pytest.mark.parametrize("call", ["positional", "x_keyword"])
+def test_causal_conv_adapter_takes_both_call_conventions(call):
+    """transformers < 5.15 GatedDeltaNet calls self.causal_conv1d_fn(x = ..., weight = ..., ...): the adapter
+    required `hidden_states`, so a Qwen3-Next model built after the first block forward raised TypeError."""
+    M = _load()
+    G = _load("_gdn_op")
+    seen = []
+
+    def legacy(
+        x,
+        weight,
+        bias = None,
+        activation = None,
+        seq_idx = None,
+        **kwargs,
+    ):
+        seen.append(sorted(kwargs) + (["seq_idx"] if seq_idx is not None else []))
+        out = torch.nn.functional.conv1d(
+            x, weight[:, None], bias, groups = x.shape[1], padding = weight.shape[-1] - 1
+        )
+        out = out[..., : x.shape[-1]]
+        return torch.nn.functional.silu(out) if activation else out
+
+    fn = M._causal_conv1d_adapter(legacy, G._causal_depthwise_conv)
+    torch.manual_seed(0)
+    x, w, b = torch.randn(2, 6, 17), torch.randn(6, 4), torch.randn(6)
+
+    def call_it(f):
+        if call == "positional":
+            return f(x, w, b, activation = "silu")
+        return f(x = x, weight = w, bias = b, activation = "silu", seq_idx = None)
+
+    want = call_it(legacy)
+    torch.testing.assert_close(call_it(fn), want)  # eager: passes through unchanged
+    M._IN_BLOCK[0] = M._FULL
+    try:
+        seen.clear()
+        got = torch.compile(lambda: call_it(fn), backend = "eager", fullgraph = True)()
+    finally:
+        M._IN_BLOCK[0] = M._OFF
+        torch._dynamo.reset()
+    assert seen == []  # in-block: the traceable depthwise conv, not the legacy kernel
+    torch.testing.assert_close(got, want, rtol = 1e-5, atol = 1e-5)
+
+
 def test_disable_unless_decode_keeps_original_traceable_on_old_torch(monkeypatch):
     # torch < 2.8: compiler.disable(fn, recursive = False) marks fn itself and returns it.
     import unsloth.import_fixes as F
