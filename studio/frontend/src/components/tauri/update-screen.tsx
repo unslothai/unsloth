@@ -95,7 +95,7 @@ export function UpdateScreen({
     status === "downloading" ? progress : backendDownload?.percent;
 
   return (
-    <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset, 0)]">
+    <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
       {shouldUseNativeMacWindowTitlebar() && (
         <div
           data-tauri-drag-region={true}

@@ -717,9 +717,9 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     >
       <div
         style={{
-          left: "calc(-1 * var(--rail-edge, 0))",
+          left: "calc(-1 * var(--rail-edge, 0px))",
           width:
-            "calc((100% - min(100%, var(--thread-content-max-width))) / 2 + var(--rail-edge, 0))",
+            "calc((100% - min(100%, var(--thread-content-max-width))) / 2 + var(--rail-edge, 0px))",
         }}
         className="aui-turn-navigator-gutter @container/turn-gutter absolute top-0 h-0"
       >
