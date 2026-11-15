@@ -105,7 +105,9 @@ def _adapted(seed = 0, rank = 4):
 @pytest.fixture
 def tiny_pipe_dir():
     """Function-scoped so the tests' allow_network marker applies (as in test_diffusion_qwenimage21_large_render)."""
+    _classes()
     from huggingface_hub import snapshot_download
+
     try:
         return snapshot_download(TINY_PIPE)
     except Exception as exc:  # noqa: BLE001 -- offline CI
@@ -342,6 +344,7 @@ def test_latents_normalise_like_the_pipeline_and_decode_inverts_them(tiny_pipe_d
 
 
 def test_auto_shift_uses_the_pipelines_resolution_dependent_mu():
+    _classes()
     from diffusers import FlowMatchEulerDiscreteScheduler
     from diffusers.pipelines.qwenimage21.pipeline_qwenimage21 import calculate_shift
 
