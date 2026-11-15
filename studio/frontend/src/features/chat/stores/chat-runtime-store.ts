@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { getFullAccessAllowed } from "@/features/auth/login-client";
 import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "@/features/auth/session-events";
 import {
+  hasChatFullAccess,
   revokeChatFullAccess,
   withChatFullAccess,
   type ChatFullAccessGrant,
@@ -1360,12 +1361,11 @@ function revokeChatFullAccessAndForget(state: ChatRuntimeStore): ChatFullAccessG
   return revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId);
 }
 
-function dropSavedChatGrant(threadId: string): void {
-  const key = `${SAVED_GRANT_PREFIX}${threadId}`;
+/** Every grant for the chat, restored or made here: one left behind would write the flag back. */
+function dropChatGrants(threadId: string): void {
   useChatRuntimeStore.setState((state) => {
-    if (!Object.hasOwn(state.chatFullAccessGrants, key)) return state;
-    const grants = { ...state.chatFullAccessGrants };
-    delete grants[key];
+    if (!hasChatFullAccess(state.chatFullAccessGrants, threadId)) return state;
+    const grants = revokeChatFullAccess(state.chatFullAccessGrants, threadId);
     return {
       chatFullAccessGrants: grants,
       ...chatFullAccessPermissionPatch(state, grants, state.activeThreadId),
@@ -1378,7 +1378,7 @@ function restoreSavedChatFullAccess(threadId: string, saved: unknown): void {
   if (typeof saved !== "boolean" || chatFullAccessDecidedSinceOpen.has(threadId)) return;
   savedChatFullAccess.set(threadId, saved);
   if (!saved) {
-    dropSavedChatGrant(threadId);
+    dropChatGrants(threadId);
     return;
   }
   // Other accounts or a restricted install: Full access is not available, so the saved copy goes.

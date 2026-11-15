@@ -152,3 +152,16 @@ test("leaving Full access while loading, then leaving the chat, still saves the 
   await settle();
   assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false);
 });
+
+test("a revocation saved elsewhere also drops a grant this tab made, and is not written back", async () => {
+  threadRows.reset();
+  const state = await start("live-grant-revoked-elsewhere");
+  await grantChat(state, CHAT);
+  threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: false });
+  open(state, OTHER);
+  open(state, CHAT);
+  assert.equal(state().permissionMode, "auto");
+  assert.equal(state().bypassPermissions, false);
+  await grantChat(state, OTHER);
+  assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false, "not written back by another chat's grant");
+});
