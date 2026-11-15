@@ -481,3 +481,41 @@ def test_long_sequences_take_the_long_config():
     assert T.select_config(plain, 10**6) == plain
     assert T._launch_options(plain) == {"num_warps": 4, "num_stages": 1}
     assert T._launch_options(dict(plain, waves_per_eu = 2))["waves_per_eu"] == 2
+
+
+def test_direct_launch_passes_every_argument_in_parameter_order():
+    """The arguments handed to a compiled kernel's launcher after the first call are the ones JITFunction.run binds:
+    every parameter in order, constexprs from the launch keywords or their defaults, launch options left out; an
+    unexpected layout means no direct launch."""
+    from core.inference import diffusion_int8_attention_triton as T
+
+    P = types.SimpleNamespace
+    kernel = P(
+        params = [
+            P(name = "x", is_constexpr = False, default = None),
+            P(name = "y", is_constexpr = False, default = None),
+            P(name = "n", is_constexpr = False, default = None),
+            P(name = "BM", is_constexpr = True, default = None),
+            P(name = "Q", is_constexpr = True, default = 7),
+        ]
+    )
+    compiled = P(run = 1, function = 2, packed_metadata = 3)
+    got = T._launcher(kernel, compiled, ("tx", "ty"), (5,), {"BM": 64, "num_warps": 4})
+    assert got == (compiled, [None, None, 5, 64, 7])
+    # the cached template must not hold the first call's tensors: the plan outlives the call, and a held buffer
+    # stays allocated next to the following call's (one extra set of quantised tensors per cached plan)
+    import gc
+    import weakref
+
+    class Buf:
+        pass
+
+    a, b = Buf(), Buf()
+    refs = (weakref.ref(a), weakref.ref(b))
+    kept = T._launcher(kernel, compiled, (a, b), (5,), {"BM": 64})
+    del a, b
+    gc.collect()
+    assert kept is not None and all(r() is None for r in refs)
+    assert T._launcher(kernel, compiled, ("tx", "ty"), (5, 6), {"BM": 64}) is None
+    assert T._launcher(kernel, None, ("tx", "ty"), (5,), {"BM": 64}) is None
+    assert T._launcher(kernel, P(run = 1), ("tx", "ty"), (5,), {"BM": 64}) is None
