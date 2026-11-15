@@ -2106,3 +2106,38 @@ def test_block_keeps_real_transformers_checkpointing(monkeypatch):
     layer, calls = _checkpointed_layer(ToyGCDecoderLayer)
     layer(torch.randn(1, 4, 8, requires_grad = True))
     assert calls == [1]
+
+
+@pytest.mark.parametrize("extra_fwd", [0, 1], ids = ["fla_0.5_six_outputs", "fla_main_seven_outputs"])
+def test_opaque_gdn_op_takes_any_fla_return_length(monkeypatch, extra_fwd):
+    # fla main (#1731) appends the intermediate states h to chunk_gated_delta_rule_fwd's return; a fixed 6-way unpack
+    # raised inside the self-check, which then switched the op off silently (every GDN layer graph-broke again).
+    import contextlib
+
+    M = _load("_gdn_op")
+    if M._gdn_chunk is None:
+        pytest.skip("torch.library.custom_op unavailable")
+    monkeypatch.setattr(torch.cuda, "device", lambda *a, **k: contextlib.nullcontext())
+
+    def fwd(q, k, v, g, beta, scale, initial_state, output_final_state, **kw):
+        A = torch.zeros(*k.shape[:-1], 64, dtype = k.dtype)
+        return (g.float().cumsum(1), v * scale, A, None, None, None) + (None,) * extra_fwd
+
+    def bwd(q, k, v, g, beta, A, scale, initial_state, do, dht, **kw):
+        return (do * 0 + 1, do * 0 + 2, do * scale, beta * 0 + 3, g * 0 + 4, None, None, None)
+
+    def l2_fwd(x):
+        return x.clone(), x.new_ones(x.shape[:-1], dtype = torch.float32)
+
+    def l2_bwd(x, rstd, dx):
+        return dx.clone()
+
+    monkeypatch.setattr(M, "_FLA", (fwd, bwd, l2_fwd, l2_bwd))
+    B, T, H, D = 1, 8, 2, 4
+    q, k, v = (torch.randn(B, T, H, D, requires_grad = True) for _ in range(3))
+    g, beta = (torch.randn(B, T, H, requires_grad = True) for _ in range(2))
+    out = M._gdn_chunk(q, k, v, g, beta, 0.5)
+    assert len(out) == 7
+    torch.testing.assert_close(out[0], v.detach() * 0.5)
+    out[0].sum().backward()
+    assert torch.all(v.grad == 0.5) and torch.all(q.grad == 1) and torch.all(g.grad == 4)
