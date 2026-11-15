@@ -157,9 +157,21 @@ def test_vision_config_under_text_config_keeps_default(ddp_env):
     assert _helper()(_args(), model) is None
 
 
-def test_two_adapters_keep_default(ddp_env):
+def test_frozen_second_adapter_defaults_to_false(ddp_env):
+    # TRL's DPOTrainer adds a frozen "ref" copy of the policy adapter after Unsloth's trainer init decided
+    # False; the Trainer.__init__ re-decision kept transformers' True, which crashes under checkpointing.
+    model = _lora(_llama())
+    model.add_adapter("ref", peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj"]))
+    assert not any(p.requires_grad for n, p in model.named_parameters() if ".ref." in n)
+    assert _helper()(_args(), model) is False
+
+
+def test_two_trainable_adapters_keep_default(ddp_env):
     model = _lora(_llama())
     model.add_adapter("second", peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj"]))
+    for n, p in model.named_parameters():
+        if ".second." in n:
+            p.requires_grad_(True)
     assert _helper()(_args(), model) is None
 
 

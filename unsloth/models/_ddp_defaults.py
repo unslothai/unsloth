@@ -118,6 +118,28 @@ def _gradient_checkpointing_on(args, model):
         return True
 
 
+def _trainable_lora_config(model):
+    """Config of the one adapter that owns every trainable LoRA tensor and is active. A frozen extra
+    adapter (TRL's DPO "ref" copy of the policy adapter) never runs with gradients, so it does not count."""
+    peft_config = getattr(model, "peft_config", None)
+    if not isinstance(peft_config, dict) or not peft_config:
+        return None
+    if len(peft_config) == 1:
+        return next(iter(peft_config.values()))
+    owners = set()
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            for marker in _LORA_PARAM_MARKERS:
+                if marker in name:
+                    owners.add(name.split(marker, 1)[1].split(".", 1)[0])
+    active = getattr(model, "active_adapter", None)
+    if isinstance(active, (list, tuple)):
+        active = active[0] if len(active) == 1 else None
+    if owners != {active}:
+        return None
+    return peft_config.get(active)
+
+
 def _lora_uses_every_trainable_param(model):
     """True only when we can show every trainable tensor is a LoRA weight run on each forward."""
     from transformers import PreTrainedModel
@@ -125,10 +147,9 @@ def _lora_uses_every_trainable_param(model):
     if isinstance(model, PreTrainedModel):
         # transformers already decides for these (False under gradient checkpointing).
         return False
-    peft_config = getattr(model, "peft_config", None)
-    if not isinstance(peft_config, dict) or len(peft_config) != 1:
+    cfg = _trainable_lora_config(model)
+    if cfg is None:
         return False
-    cfg = next(iter(peft_config.values()))
     if (
         str(getattr(getattr(cfg, "peft_type", None), "value", getattr(cfg, "peft_type", "")))
         != "LORA"
@@ -239,10 +260,9 @@ def _reentrant_vlm_text_lora(model):
     model_type = str(getattr(config, "model_type", "") or "").lower()
     if not model_type.startswith("gemma4"):
         return False
-    peft_config = getattr(model, "peft_config", None)
-    if not isinstance(peft_config, dict) or len(peft_config) != 1:
+    cfg = _trainable_lora_config(model)
+    if cfg is None:
         return False
-    cfg = next(iter(peft_config.values()))
     if (
         str(getattr(getattr(cfg, "peft_type", None), "value", getattr(cfg, "peft_type", "")))
         != "LORA"
