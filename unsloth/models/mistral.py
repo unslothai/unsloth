@@ -195,6 +195,7 @@ def MistralForCausalLM_fast_forward(
     *args,
     **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
+    shift_labels = kwargs.pop("shift_labels", None)
     past_key_values = _cache_as_legacy_tuple(past_key_values)
     if past_key_values is not None and len(past_key_values) == 0:
         past_key_values = None
@@ -277,7 +278,7 @@ def MistralForCausalLM_fast_forward(
     )
     return_dict = return_dict if return_dict is not None else config_return_dict(self.config)
 
-    self.model._has_no_labels = labels is None
+    self.model._has_no_labels = labels is None and shift_labels is None
 
     if past_key_values is not None and not (input_ids is not None and input_ids.shape[1] == 1):
         position_ids, attention_mask = _cached_prefill_defaults(
@@ -319,6 +320,8 @@ def MistralForCausalLM_fast_forward(
     hidden_states = hidden_states.to(lm_head_device)
     if labels is not None:
         labels = labels.to(lm_head_device)
+    if shift_labels is not None:
+        shift_labels = shift_labels.to(lm_head_device)
 
     # Merge spellings first so the decode last-token slice hits the normal path; no int max() on tensors
     if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
@@ -352,7 +355,7 @@ def MistralForCausalLM_fast_forward(
             # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
             RETURN_LOGITS = False
 
-        if not RETURN_LOGITS and labels is not None:
+        if not RETURN_LOGITS and (labels is not None or shift_labels is not None):
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
                 n_items = kwargs.get("n_items", None)
@@ -362,10 +365,11 @@ def MistralForCausalLM_fast_forward(
             )
 
             # This branch returns early, so mask_packed_sequence_boundaries() below is never reached
-            labels = mask_packed_boundary_labels(
-                labels,
-                kwargs.get("packed_seq_lengths"),
-            )
+            if shift_labels is None:
+                labels = mask_packed_boundary_labels(
+                    labels,
+                    kwargs.get("packed_seq_lengths"),
+                )
 
             hidden_states, lm_head = fake_quantize_lm_head_inputs(
                 self.lm_head, hidden_states, lm_head
@@ -376,7 +380,8 @@ def MistralForCausalLM_fast_forward(
                 hidden_states = hidden_states,
                 lm_head_weight = lm_head,
                 lm_head_bias = None,
-                labels = labels,
+                labels = labels if shift_labels is None else shift_labels,
+                shift_labels = shift_labels is None,
                 mask = None,
                 n_items = n_items,
                 scaling = getattr(self, "accelerator_scaler", None),
@@ -407,15 +412,16 @@ def MistralForCausalLM_fast_forward(
     # Same answer the fused branch above reads, so the two branches cannot drift apart.
     logit_softcapping, logit_scaling = resolve_logit_scaling(self.config)
 
-    if labels is not None:
+    if labels is not None or shift_labels is not None:
         shift_logits = logits
-        shift_labels = torch.empty_like(labels)
-        shift_labels[..., :-1] = labels[..., 1:]
-        shift_labels[..., -1] = -100
-        mask_packed_sequence_boundaries(
-            shift_labels,
-            kwargs.get("packed_seq_lengths"),
-        )
+        if shift_labels is None:
+            shift_labels = torch.empty_like(labels)
+            shift_labels[..., :-1] = labels[..., 1:]
+            shift_labels[..., -1] = -100
+            mask_packed_sequence_boundaries(
+                shift_labels,
+                kwargs.get("packed_seq_lengths"),
+            )
         n_items = kwargs.get("num_items_in_batch", None)
         if n_items is None:
             n_items = kwargs.get("n_items", None)
