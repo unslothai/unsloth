@@ -328,15 +328,19 @@ def real_desktop(request):
         request.getfixturevalue("xvfb")
     elif not (LIVE or os.environ.get("CI")):
         pytest.skip("drives the real pointer: set UNSLOTH_COMPUTER_USE_LIVE=1")
-    pytest.importorskip("tkinter", reason = "needs Tk to draw the target window")
+    if os.environ.get("CI"):
+        import tkinter  # noqa: F401 - on CI a skip here would pass without driving anything
+    else:
+        pytest.importorskip("tkinter", reason = "needs Tk to draw the target window")
     from core.inference.computer_use import backends
 
     backends.reset_backend()
     backend = backends.get_backend()
-    reason = backend.unavailable_reason()
-    if sys.platform == "darwin" and reason:
-        pytest.skip(f"this runner holds no macOS grants: {reason}")
-    assert reason is None, reason
+    assert backend.unavailable_reason() is None, backend.unavailable_reason()
+    grants = backend.permissions()
+    assert all(
+        value is not False for value in grants.values()
+    ), f"grant Screen Recording and Accessibility: {grants}"
     yield backend
     backends.reset_backend()
 
