@@ -1987,9 +1987,13 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             if copies is None:
                 picture = reference_source_picture(image) if source else image
                 vae_copy = resize(picture, *H3_IMAGE_REFERENCE_SHORT_EDGE)
-                if vae_copy is picture and source:
-                    vae_copy = _DigestedPicture.of(picture)
-                copies = (vae_copy, resize(picture, *H3_IMAGE_VISION_SHORT_EDGE))
+                vision_copy = resize(picture, *H3_IMAGE_VISION_SHORT_EDGE)
+                if source and (vae_copy is picture or vision_copy is picture):
+                    # a float copy reaches the latent and prompt caches: digest its bytes once for both
+                    digested = _DigestedPicture.of(picture)
+                    vae_copy = digested if vae_copy is picture else vae_copy
+                    vision_copy = digested if vision_copy is picture else vision_copy
+                copies = (vae_copy, vision_copy)
                 _PREPARED_PICTURES[key] = copies
                 while len(_PREPARED_PICTURES) > PREPARED_PICTURE_ENTRIES:
                     _PREPARED_PICTURES.popitem(last = False)
