@@ -12849,12 +12849,19 @@ class VideoBackend:
                 strided_install_backend(attention_engaged) or int8_wanted
             ):
                 try:
+                    from .video_minimax_h3_qknorm import video_qk_rope_rounding
                     if install_strided_attention(
                         getattr(pipe, denoiser_component, None),
                         logger = logger,
                         qk_rope = None if strided_install_backend(attention_engaged) else False,
+                        qk_rope_rounding = video_qk_rope_rounding(),
                     ):
                         h3_attn_levers += ("h3_strided_attn",)
+                        if any(
+                            getattr(getattr(m, "processor", None), "_unsloth_qk_rope_once", False)
+                            for m in getattr(pipe, denoiser_component).modules()
+                        ):
+                            h3_attn_levers += ("h3_qk_rope_once",)
                         if int8_wanted and int8_attention.install_int8_attention(
                             getattr(pipe, denoiser_component, None),
                             device = device,
