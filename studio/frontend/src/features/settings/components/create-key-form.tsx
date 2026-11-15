@@ -127,38 +127,6 @@ export function CreateKeyForm({
             );
           })}
         </div>
-        <div className="hub-tab-toggle inline-flex h-control items-center rounded-full">
-          {ACCESS_OPTIONS.map((option) => {
-            const active = access === option;
-            return (
-              <Tooltip key={option}>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    onClick={() => setAccess(option)}
-                    aria-pressed={active}
-                    className={cn(
-                      "relative inline-flex h-control items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                      active
-                        ? "text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {active && <SegmentedPill group={`${pillId}-access`} />}
-                    {option === "full"
-                      ? t("settings.apiKeys.accessFull")
-                      : t("settings.apiKeys.accessInference")}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" sideOffset={6}>
-                  {option === "full"
-                    ? t("settings.apiKeys.accessFullHint")
-                    : t("settings.apiKeys.accessInferenceHint")}
-                </TooltipContent>
-              </Tooltip>
-            );
-          })}
-        </div>
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button type="submit" variant="dark" size="sm" disabled={loading}>
@@ -176,6 +144,38 @@ export function CreateKeyForm({
             })}
           </TooltipContent>
         </Tooltip>
+      </div>
+      <div className="hub-tab-toggle inline-flex h-control w-fit items-center rounded-full">
+        {ACCESS_OPTIONS.map((option) => {
+          const active = access === option;
+          return (
+            <Tooltip key={option}>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  onClick={() => setAccess(option)}
+                  aria-pressed={active}
+                  className={cn(
+                    "relative inline-flex h-control items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    active
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {active && <SegmentedPill group={`${pillId}-access`} />}
+                  {option === "full"
+                    ? t("settings.apiKeys.accessFull")
+                    : t("settings.apiKeys.accessInference")}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                {option === "full"
+                  ? t("settings.apiKeys.accessFullHint")
+                  : t("settings.apiKeys.accessInferenceHint")}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
       </div>
     </form>
   );
