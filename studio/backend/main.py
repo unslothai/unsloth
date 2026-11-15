@@ -609,6 +609,20 @@ def _start_helper_precache_if_enabled() -> None:
     threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
 
 
+def _start_offline_docs_refresh_if_due() -> None:
+    """Offline docs refresh, DB check included, off the startup path."""
+    import threading
+
+    def _refresh():
+        try:
+            from utils.offline_docs_settings import refresh_offline_docs_if_due
+            refresh_offline_docs_if_due()
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _refresh, daemon = True, name = "offline-docs-refresh").start()
+
+
 def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
     """Run llama.cpp probes off the startup path; GitHub freshness checks and macOS Gatekeeper stall
     them."""
@@ -1048,6 +1062,7 @@ async def lifespan(app: FastAPI):
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
+    _start_offline_docs_refresh_if_due()
 
     from core.inference.audio_inputs import start_sweeper as _start_audio_input_sweeper
 
@@ -2590,9 +2605,17 @@ def studio_download_transport_capabilities(
     probe: bool = False, _current_subject: str = Depends(get_current_subject)
 ):
     # Sync def, so FastAPI runs this in the threadpool and an opted-in probe cannot block the loop.
-    from utils.download_speed_limit import get_download_speed_limit_mbps
+    from utils.download_speed_limit import (
+        DownloadSpeedLimitUnavailableError,
+        get_download_speed_limit_mbps,
+    )
+
     caps = asdict(get_download_transport_capabilities(probe = probe))
-    return {**caps, "speed_limited": get_download_speed_limit_mbps() is not None}
+    try:
+        speed_limited = get_download_speed_limit_mbps() is not None
+    except DownloadSpeedLimitUnavailableError:
+        speed_limited = True  # unknown policy: preflight as limited, the start itself refuses
+    return {**caps, "speed_limited": speed_limited}
 
 
 @app.post(
@@ -3034,6 +3057,7 @@ def get_system_info(
         export_capability,
         video_capability,
         cpu_frequency_mhz,
+        npu_load_percent,
     )
     from utils.hardware.hardware import _backend_label
 
@@ -3154,6 +3178,7 @@ def get_system_info(
         "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
+        "npu_load_percent": npu_load_percent(),
         "ml_packages": ml_packages,
         **export_capability(),
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
@@ -3476,7 +3501,12 @@ def _should_inject_bootstrap(request: Request) -> bool:
         return False
     if _IS_COLAB and _is_colab_notebook_request(request):
         return True
-    return _is_local_bootstrap_request(request)
+    if not _is_local_bootstrap_request(request):
+        return False
+    # A loopback port is not an identity: keep the password from another OS user's connection.
+    from utils.loopback_peer import peer_is_another_local_user
+
+    return not peer_is_another_local_user(request)
 
 
 _IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"

@@ -79,9 +79,9 @@ import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore } from "./store";
 import {
   SORT_STATES,
+  activityBeforeVisit,
   compareBySort,
   includedBySettings,
-  lastActivity,
   nextSort,
   sortParam,
   useLibrarySettingsStore,
@@ -200,15 +200,38 @@ export function LibraryPage() {
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
+  return <LibraryVisit key={visit} search={search} />;
+}
+
+type HoldOpenedAt = (id: string, openedAt: number | null) => void;
+
+// Until the Library is left, Suggested ranks opened items by their earlier openedAt.
+function LibraryVisit({ search }: { search: LibrarySearch }) {
+  const [openedBefore, setOpenedBefore] = useState<ReadonlyMap<string, number | null>>(new Map());
+  const holdOpenedAt = useCallback<HoldOpenedAt>(
+    (id, openedAt) =>
+      setOpenedBefore((held) => (held.has(id) ? held : new Map(held).set(id, openedAt))),
+    [],
+  );
   return (
     <LibraryView
-      key={`${visit}:${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
+      key={`${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
       search={search}
+      openedBefore={openedBefore}
+      holdOpenedAt={holdOpenedAt}
     />
   );
 }
 
-function LibraryView({ search }: { search: LibrarySearch }) {
+function LibraryView({
+  search,
+  openedBefore,
+  holdOpenedAt,
+}: {
+  search: LibrarySearch;
+  openedBefore: ReadonlyMap<string, number | null>;
+  holdOpenedAt: HoldOpenedAt;
+}) {
   const t = useT();
   const navigate = useNavigate();
   const { items: allItems, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder, markOpened } =
@@ -347,12 +370,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       (item) => nameMatches(item.name, needle) && matchesFilters(item, filters, !kindFilter),
     );
     if (tab === "suggested" && !folderId) {
-      const byActivity = [...pool].sort((a, b) => lastActivity(b) - lastActivity(a));
+      const activity = (item: LibraryItem) => activityBeforeVisit(item, openedBefore);
+      const byActivity = [...pool].sort((a, b) => activity(b) - activity(a));
       pool = needle || filtersActive(filters) ? byActivity : byActivity.slice(0, settings.suggestedLimit);
       if (sort.key === "modified") return sort.desc ? pool : pool.reverse();
     }
     return [...pool].sort(compareBySort(sort));
-  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort]);
+  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort, openedBefore]);
 
   // Only grid cards can pause a clip: stop it once its card is gone or the list view replaces them.
   useEffect(() => {
@@ -395,8 +419,11 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
   const previewId = previewItem?.id ?? null;
   useEffect(() => {
-    if (previewId) markOpened(previewId);
-  }, [previewId, markOpened]);
+    if (!previewId) return;
+    const opened = useLibraryStore.getState().items.find((item) => item.id === previewId);
+    holdOpenedAt(previewId, opened?.openedAt ?? null);
+    markOpened(previewId);
+  }, [previewId, markOpened, holdOpenedAt]);
 
   const router = useRouter();
   const pushedPreview = useRef<string | null>(null);

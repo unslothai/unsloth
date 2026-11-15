@@ -26,8 +26,8 @@ import { RefreshGlyph } from "@/lib/refresh-icon";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   MoreVerticalIcon,
-  PinIcon,
-  PinOffIcon,
+  StarIcon,
+  StarOffIcon,
   Undo02Icon,
 } from "@hugeicons/core-free-icons";
 import { Folder01Icon } from "@/lib/folder-icons";
@@ -52,6 +52,8 @@ export interface ModelRowMenuItem {
   icon: ReactNode;
   onSelect: () => void;
   disabled?: boolean;
+  /** Listed in red under Delete. */
+  destructive?: boolean;
 }
 
 interface ModelRowMenuPin {
@@ -98,7 +100,11 @@ export function ModelRowMenu({
   runSettings,
   update,
   del,
+  details,
+  contentClassName,
 }: {
+  contentClassName?: string;
+  details?: ReactNode;
   ariaLabel: string;
   buttonClassName?: string;
   iconClassName?: string;
@@ -110,6 +116,7 @@ export function ModelRowMenu({
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
+  const destructiveItems = items?.filter((item) => item.destructive) ?? [];
   // Null unless the owner is on the backend's own machine with a file manager.
   const revealLabel = useRevealLabel();
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -244,8 +251,18 @@ export function ModelRowMenu({
           side="bottom"
           align="end"
           sideOffset={2}
-          className="unsloth-plus-menu menu-flat-destructive w-48"
+          className={cn(
+            "unsloth-plus-menu menu-flat-destructive",
+            details ? "w-60" : "w-48",
+            contentClassName,
+          )}
         >
+          {details ? (
+            <>
+              {details}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           {pin && (
             <DropdownMenuItem
               onSelect={(e) => {
@@ -254,26 +271,28 @@ export function ModelRowMenu({
               }}
             >
               <HugeiconsIcon
-                icon={pin.pinned ? PinOffIcon : PinIcon}
+                icon={pin.pinned ? StarOffIcon : StarIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />
               <span>{pin.pinned ? pin.unpinLabel : pin.pinLabel}</span>
             </DropdownMenuItem>
           )}
-          {items?.map((item) => (
-            <DropdownMenuItem
-              key={item.key}
-              disabled={item.disabled}
-              onSelect={(e) => {
-                e.stopPropagation();
-                item.onSelect();
-              }}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </DropdownMenuItem>
-          ))}
+          {items
+            ?.filter((item) => !item.destructive)
+            .map((item) => (
+              <DropdownMenuItem
+                key={item.key}
+                disabled={item.disabled}
+                onSelect={(e) => {
+                  e.stopPropagation();
+                  item.onSelect();
+                }}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </DropdownMenuItem>
+            ))}
           {hasSavedRunSettings && (
             <DropdownMenuItem
               onSelect={(e) => {
@@ -316,15 +335,14 @@ export function ModelRowMenu({
               <span>Update</span>
             </DropdownMenuItem>
           )}
+          {(del || destructiveItems.length > 0) &&
+            (canReveal ||
+              pin ||
+              update ||
+              items?.some((item) => !item.destructive) ||
+              hasSavedRunSettings) && <DropdownMenuSeparator />}
           {del && (
             <>
-              {(canReveal ||
-                pin ||
-                update ||
-                items?.length ||
-                hasSavedRunSettings) && (
-                <DropdownMenuSeparator />
-              )}
               <DropdownMenuItem
                 variant="destructive"
                 disabled={del.disabled}
@@ -342,6 +360,20 @@ export function ModelRowMenu({
               </DropdownMenuItem>
             </>
           )}
+          {destructiveItems.map((item) => (
+            <DropdownMenuItem
+              key={item.key}
+              variant="destructive"
+              disabled={item.disabled}
+              onSelect={(e) => {
+                e.stopPropagation();
+                item.onSelect();
+              }}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </DropdownMenuItem>
+          ))}
         </DropdownMenuContent>
       </DropdownMenu>
 

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** llama-server tuning knobs always sent, committed and cleared as a group. */
+/** llama-server load knobs always sent, committed and cleared as a group. */
 
 export interface ServerTuningValues {
   loadMode?: string | null;
   specDraftCacheDtype?: string | null;
   ctxCheckpoints?: number | null;
   cacheRam?: number | null;
+  /** Standalone Engram table precision; null keeps the quant's own table. */
+  engramPrecision?: string | null;
 }
 
 export interface ServerTuningPayload {
@@ -15,6 +17,7 @@ export interface ServerTuningPayload {
   spec_draft_cache_type?: string;
   ctx_checkpoints?: number;
   cache_ram?: number;
+  engram_precision?: string;
 }
 
 /** Blank knobs are omitted, not nulled: the route treats a null as set via `model_fields_set`. */
@@ -30,6 +33,9 @@ export function serverTuningLoadPayload(
       ? { ctx_checkpoints: values.ctxCheckpoints }
       : {}),
     ...(values.cacheRam != null ? { cache_ram: values.cacheRam } : {}),
+    ...(values.engramPrecision != null
+      ? { engram_precision: values.engramPrecision }
+      : {}),
   };
 }
 
@@ -42,6 +48,8 @@ export interface ServerTuningState {
   loadedCtxCheckpoints: number | null;
   cacheRam: number | null;
   loadedCacheRam: number | null;
+  engramPrecision: string | null;
+  loadedEngramPrecision: string | null;
 }
 
 /** Diffusion commits nothing, or a saved preset would carry values onto the next GGUF. */
@@ -56,6 +64,7 @@ export function committedServerTuningState(
   const specDraftCacheDtype = values.specDraftCacheDtype ?? null;
   const ctxCheckpoints = values.ctxCheckpoints ?? null;
   const cacheRam = values.cacheRam ?? null;
+  const engramPrecision = values.engramPrecision ?? null;
   return {
     loadMode,
     loadedLoadMode: loadMode,
@@ -65,6 +74,8 @@ export function committedServerTuningState(
     loadedCtxCheckpoints: ctxCheckpoints,
     cacheRam,
     loadedCacheRam: cacheRam,
+    engramPrecision,
+    loadedEngramPrecision: engramPrecision,
   };
 }
 
@@ -79,5 +90,7 @@ export function clearedServerTuningState(): ServerTuningState {
     loadedCtxCheckpoints: null,
     cacheRam: null,
     loadedCacheRam: null,
+    engramPrecision: null,
+    loadedEngramPrecision: null,
   };
 }

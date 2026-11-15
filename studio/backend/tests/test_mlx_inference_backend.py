@@ -138,6 +138,8 @@ PLAIN_HELPERS = {
     ),
     "_VERIFY_GDN_MAX_ROWS": 16,
     "_FIRST_USE_WORK": [0],
+    # Read by zoo's speculative.py head replay (unsloth_zoo #2474); the stub holds no QSA cache trims.
+    "_QSA_TRIM_HELD": [],
 }
 
 
@@ -152,10 +154,20 @@ def _unless_failed_buffer(error):
     """zoo re-raises a failed Metal command buffer (unsloth_zoo #2333); the stub has none to fail."""
 
 
+def _no_replay(*_args, **_kwargs):
+    """zoo's head-replay and lazy-verify helpers (unsloth_zoo #2474) need Metal and a QSA cache;
+    the stub answers as if no replay can be bound."""
+    return None
+
+
 NEUTRAL_PLAIN_HELPERS = {
     "fused_drafter_ops": _fused_drafter_ops,
     "fused_drafter_layers": _fused_drafter_ops,
     "_unless_failed_buffer": _unless_failed_buffer,
+    "_ast_fingerprint": _no_replay,
+    "_bindings_intact": _no_replay,
+    "_resolved_bindings": _no_replay,
+    "_verify_with_lazy_replay": _no_replay,
 }
 
 

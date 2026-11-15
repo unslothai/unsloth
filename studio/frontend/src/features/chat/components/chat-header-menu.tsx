@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
 import { resumesThought } from "@/features/model-picker";
+import { isNpuModelId } from "@/features/npu";
 import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
@@ -55,6 +56,7 @@ import {
   useActiveChatMenuStore,
 } from "../stores/active-chat-menu-store";
 import { requestThreadCompaction } from "../stores/compact-request-store";
+import { isExternalModelId } from "../external-providers";
 import {
   liveThreadBranch,
   liveThreadRunning,
@@ -194,13 +196,14 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       toast.info(t("chatMenu.compactEmpty"));
       return;
     }
-    if (!runtime.supportsTools || !resumesThought({
+    // A cloud connection summarizes, which needs neither tools nor a resumable local model.
+    if (!isExternalModelId(runtime.params.checkpoint) && (!runtime.supportsTools || !(resumesThought({
       loadedIsGguf: runtime.loadedIsGguf,
       loadedIsMlx: runtime.loadedIsMlx,
       activeGgufVariant: runtime.activeGgufVariant,
       activeNativePathToken: runtime.activeNativePathToken,
       checkpoint: runtime.params.checkpoint,
-    })) {
+    }) || isNpuModelId(runtime.params.checkpoint)))) {
       toast.info(t("chatMenu.compactUnsupported"));
       return;
     }

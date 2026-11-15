@@ -370,8 +370,8 @@ _QWENIMAGE_TE_INT8_SKIP = (6, 6)
 _GATED_AUTO_PREFER = AutoPrefer(
     floor = (10, 0), schemes = ("int8", "fp8", "nvfp4", "mxfp8"), gated = True
 )
-# AUTO keeps bf16 while it fits for these (measured with both sides compiled: INT8 was at most ~5% faster and failed
-# the default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
+# Image AUTO rule: INT8, else FP8, else bf16, unless INT8 is BOTH over LPIPS 0.10 vs bf16 AND under ~10% faster;
+# only then ``auto_bf16_when_resident`` (INT8 still when bf16 would offload). These two: <=5% faster, LPIPS 0.146 / 0.291.
 _LUMINA2_BF16_WHEN_RESIDENT = (
     "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
@@ -382,11 +382,24 @@ _HIDREAM_BF16_WHEN_RESIDENT = (
 ANIMA_BF16_WHEN_RESIDENT = (
     "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled"
 )
-# Small DiTs (<= ~6B) stay bf16 while it fits: quantising moves detail (L4 vs bf16 LPIPS: FP8 FLUX.2-klein-4B 0.065,
-# Z-Image-Turbo 0.103; FLUX.3-klein INT8 0.027). INT8 still when bf16 would offload; such loads compile from render 1.
+# Small-DiT rule (bf16 while it fits): unused, every small DiT measured 1.39-1.56x faster under INT8 at LPIPS <= 0.083
+# (RTX PRO 6000, 1024^2, compiled). Kept for a family that fails both bars.
 SMALL_DIT_BF16_WHEN_RESIDENT = (
     "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
     "0.103 on Z-Image-Turbo)"
+)
+# Turing AUTO int8: the image rule vs fp16 AUTO, plus never offload a formerly resident model unless faster (Colab T4).
+_FLUX2_KLEIN_TURING_AUTO_INT8 = (
+    "T4: 9.71 -> 8.42 s/image against fp16 (1.15x), same placement and 13.4 GB peak, LPIPS 0.049"
+)
+_ZIMAGE_TURING_AUTO_INT8 = "T4: 29.4 -> 24.5 s/image against the streamed fp16 build (1.20x); resident int8 at 15.1 GB peak, LPIPS 0.076"
+_FLUX3_KLEIN_TURING_AUTO_INT8 = (
+    "T4: 42.6 -> 37.7 s/image against the fp16 build (1.13x), partly offloaded -> resident at 13.6 GB peak, "
+    "LPIPS 0.011 (4 prompts)"
+)
+_FLUX3_KLEIN_BASE_TURING_AUTO_INT8 = (
+    "T4: 270.9 -> 224.4 s/image against the streamed fp16 build (1.21x); resident int8 at 12.0 GB peak (LPIPS 0.023 "
+    "on an RTX PRO 6000)"
 )
 # Bases of a small-DiT family that are not small: FLUX.2 klein 9B / base 9B (18.2 GB bf16 transformer, unmeasured)
 # keep the quantized auto default. Upstream ids; mirrors fold back through ``canonical_base``.
@@ -569,7 +582,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            turing_auto_int8 = _FLUX2_KLEIN_TURING_AUTO_INT8,
             # LPIPS vs fp16 (4B, T4 W8A8, 16 renders): plain 0.103 -> ConvRot 0.037; A100 0.092 -> 0.034.
             int8_convrot = ConvRotSpec(
                 group = 256,
@@ -669,7 +682,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            turing_auto_int8 = _FLUX3_KLEIN_BASE_TURING_AUTO_INT8,
             int8_convrot = ConvRotSpec(group = 256, suffixes = _FLUX3_CONVROT_SUFFIXES, default_on = True),
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
@@ -729,7 +742,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = _FLUX3_FP16_GUARD,
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            turing_auto_int8 = _FLUX3_KLEIN_TURING_AUTO_INT8,
             int8_convrot = ConvRotSpec(
                 group = 256,
                 suffixes = _FLUX3_CONVROT_SUFFIXES,
@@ -1198,7 +1211,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 default_on = True,
             ),
             auto_prefer = _GATED_AUTO_PREFER,
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            turing_auto_int8 = _ZIMAGE_TURING_AUTO_INT8,
             preview_factors = "zimage",
         ),
         # B200 too: 1 of 4 fresh servers picked R0_BLOCK 1024 (others 4096) and rendered other latents.
@@ -1447,8 +1460,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
             # NVFP4 scored LPIPS 0.383 vs bf16 (INT8-ConvRot 0.058); as FLUX.3, a passing gate record lifts it.
             scheme_deny = frozenset({"nvfp4"}),
-            # Small-DiT rule: bf16 while it fits, INT8-ConvRot (LPIPS 0.058) when bf16 would offload.
-            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
             preview_factors = "flux2",
         ),
         pipeline_class = "MOSSImagePipeline",

@@ -512,7 +512,9 @@ with sync_playwright() as p:
 
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
-    GEAR_ANY = 'button[aria-label^="Inference settings for" i]'
+    GEAR_ANY = (
+        'button[aria-label^="Inference settings for" i], button[aria-label^="Run settings for" i]'
+    )
 
     def diagnose(name, selector):
         """Screenshot and JSON state on a miss, since a log line hides what was on screen."""
@@ -607,7 +609,8 @@ with sync_playwright() as p:
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
         # The gear is a sibling of the row. Anchor the quant at the end, or F16 matches BF16.
-        pattern = f"^Inference settings for .*{re.escape(hint)}"
+        # The header picker says "Inference settings", the composer picker "Run settings".
+        pattern = f"^(?:Inference|Run) settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"
         gear = popover.get_by_role(
@@ -673,7 +676,7 @@ with sync_playwright() as p:
     popover = open_picker()
     shoot("02-picker-open")
     needles = ["bge-small-en-v1.5", "stories260"]
-    tabs = ["Recommended", "On Device", "Connected"]
+    tabs = ["Recommended", "Discover models", "Favorites", "On Device", "Connected"]
     hidden_ok = True
     # An absence check passes on an empty picker, so prove it is populated first.
     od_tab = page.get_by_role("tab", name = "On Device").first

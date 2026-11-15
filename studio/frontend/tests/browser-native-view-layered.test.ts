@@ -66,7 +66,7 @@ const noop = () => undefined;
 const listeners = new Map<string, (event: { target: unknown }) => void>();
 let panelFocused = true;
 Object.assign(globalThis, {
-  window: Object.assign(globalThis, { innerWidth: 1000, addEventListener: noop, removeEventListener: noop }),
+  window: Object.assign(globalThis, { innerWidth: 1000, location: { protocol: "http:" }, addEventListener: noop, removeEventListener: noop }),
   document: {
     documentElement: Object.assign(html, { dataset: {} }),
     body: {},

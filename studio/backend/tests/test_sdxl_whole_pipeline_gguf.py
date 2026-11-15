@@ -25,6 +25,12 @@ _FIXTURE = json.loads(
 _SHAPES: dict = _FIXTURE["shapes"]
 _UNET = {k: v for k, v in _SHAPES.items() if k.startswith("model.diffusion_model.")}
 _NO_VAE = {k: v for k, v in _SHAPES.items() if not k.startswith("first_stage_model.")}
+_LEGACY = {
+    k.replace("conditioner.embedders.0.transformer.", "cond_stage_model.transformer.").replace(
+        "conditioner.embedders.1.model.", "cond_stage_model.1.transformer.text_model."
+    ): v
+    for k, v in _SHAPES.items()
+}
 
 
 def _write_gguf(
@@ -79,13 +85,7 @@ def test_partial_sdxl_gguf_is_not_a_whole_pipeline(tmp_path, shapes):
 def test_legacy_sd_cpp_text_encoder_layout_is_refused_up_front(tmp_path):
     from core.inference.diffusion import get_diffusion_backend
 
-    legacy = {
-        k.replace("conditioner.embedders.0.transformer.", "cond_stage_model.transformer.").replace(
-            "conditioner.embedders.1.model.", "cond_stage_model.1.transformer.text_model."
-        ): v
-        for k, v in _SHAPES.items()
-    }
-    path = _write_gguf(tmp_path / "stable-diffusion-xl-base-1.0-Q4_0.gguf", legacy)
+    path = _write_gguf(tmp_path / "stable-diffusion-xl-base-1.0-Q4_0.gguf", _LEGACY)
     assert dc.whole_pipeline_gguf_family(str(path)) is None
     with pytest.raises(ValueError, match = "also carries the text encoders and VAE"):
         get_diffusion_backend().validate_load_request(
@@ -164,6 +164,140 @@ def test_validation_refuses_a_hub_sdxl_gguf(tmp_path):
             model_kind = "gguf",
             family_override = "sdxl",
         )
+
+
+@pytest.fixture
+def hub_cache(tmp_path, monkeypatch):
+    import huggingface_hub
+    import utils.hf_cache_settings as settings
+
+    root = tmp_path / "hub"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+    monkeypatch.setattr(settings, "active_hf_hub_cache", lambda: str(root))
+    real = huggingface_hub.try_to_load_from_cache
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **kw: real(
+            repo_id, filename, cache_dir = str(root), **kw
+        ),
+    )
+    sha = "0123456789abcdef0123456789abcdef01234567"
+
+    def put(repo_id: str, filename: str, shapes: dict) -> Path:
+        repo_dir = root / ("models--" + repo_id.replace("/", "--"))
+        (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+        (repo_dir / "refs" / "main").write_text(sha)
+        return _write_gguf(repo_dir / "snapshots" / sha / filename, shapes)
+
+    return put
+
+
+@pytest.mark.parametrize("family_override", [None, "sdxl"])
+def test_hub_cached_whole_pipeline_gguf_validates_by_repo_id(hub_cache, family_override):
+    from core.inference.diffusion import get_diffusion_backend
+
+    hub_cache("off-grid-ai/juggernaut-xl-v9-GGUF", "juggernaut-xl-v9-Q4_K_S.gguf", _SHAPES)
+    fam = get_diffusion_backend().validate_load_request(
+        "off-grid-ai/juggernaut-xl-v9-GGUF",
+        gguf_filename = "juggernaut-xl-v9-Q4_K_S.gguf",
+        model_kind = "gguf",
+        family_override = family_override,
+    )
+    assert fam.name == "sdxl" and fam.single_file_is_pipeline
+
+
+@pytest.mark.parametrize("shapes", [_UNET, _LEGACY], ids = ["unet_only", "legacy_sd_cpp"])
+def test_hub_cached_partial_sdxl_gguf_is_still_refused(hub_cache, shapes):
+    from core.inference.diffusion import get_diffusion_backend
+    hub_cache("OlegSkutte/sdxl-turbo-GGUF", "sd_xl_turbo_1.0.q8_0.gguf", shapes)
+    with pytest.raises(ValueError, match = "also carries the text encoders and VAE"):
+        get_diffusion_backend().validate_load_request(
+            "OlegSkutte/sdxl-turbo-GGUF",
+            gguf_filename = "sd_xl_turbo_1.0.q8_0.gguf",
+            model_kind = "gguf",
+        )
+
+
+@pytest.fixture
+def hub_header(monkeypatch, hub_cache, tmp_path):
+    from core.inference import diffusion_compat
+    from core.inference import diffusion_hub_evidence as evidence
+
+    reads = []
+
+    def serve(shapes: dict):
+        raw = _write_gguf(tmp_path / "remote.gguf", shapes).read_bytes()
+
+        def read(repo_id, filename, hf_token, **kw):
+            reads.append((repo_id, filename, kw.get("max_bytes")))
+            return raw[: kw.get("max_bytes") or len(raw)]
+
+        monkeypatch.setattr(diffusion_compat, "_read_gguf_header", read)
+
+    monkeypatch.setattr(evidence, "_HEADER_VERDICTS", {})
+    serve.reads = reads
+    return serve
+
+
+def test_uncached_hub_whole_pipeline_gguf_is_read_from_its_header(hub_header):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
+
+    hub_header(_SHAPES)
+    repo, name = "off-grid-ai/juggernaut-xl-v9-GGUF", "juggernaut-xl-v9-Q4_K_S.gguf"
+    prefetch_for_pick(repo, name, None, None)
+    assert [r[:2] for r in hub_header.reads] == [(repo, name)]
+    assert hub_header.reads[0][2] <= 1024 * 1024
+    fam = get_diffusion_backend().validate_load_request(repo, gguf_filename = name, model_kind = "gguf")
+    assert fam.name == "sdxl" and fam.single_file_is_pipeline
+
+
+@pytest.mark.parametrize("shapes", [_UNET, _LEGACY], ids = ["unet_only", "legacy_sd_cpp"])
+def test_uncached_hub_partial_sdxl_gguf_gets_no_family(hub_header, shapes):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
+
+    hub_header(shapes)
+    repo, name = "someone/mystery-xl-GGUF", "mystery-Q4_K_S.gguf"
+    prefetch_for_pick(repo, name, None, None)
+    with pytest.raises(ValueError, match = "not a supported diffusion image model"):
+        get_diffusion_backend().validate_load_request(repo, gguf_filename = name, model_kind = "gguf")
+
+
+def test_uncached_old_sdxl_convert_is_refused_as_before(hub_header):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
+
+    hub_header(_LEGACY)
+    repo, name = "OlegSkutte/sdxl-turbo-GGUF", "sd_xl_turbo_1.0.q8_0.gguf"
+    prefetch_for_pick(repo, name, None, None)
+    assert [r[:2] for r in hub_header.reads] == [(repo, name)]
+    with pytest.raises(ValueError, match = "also carries the text encoders and VAE"):
+        get_diffusion_backend().validate_load_request(repo, gguf_filename = name, model_kind = "gguf")
+
+
+def test_uncached_sdxl_named_whole_pipeline_gguf_is_read_from_its_header(hub_header):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
+
+    hub_header(_SHAPES)
+    repo, name = "kostakoff/stable-diffusion-xl-base-1.0-GGUF", "sd_xl_base_1.0_0_Q4_K.gguf"
+    prefetch_for_pick(repo, name, None, None)
+    assert [r[:2] for r in hub_header.reads] == [(repo, name)]
+    fam = get_diffusion_backend().validate_load_request(repo, gguf_filename = name, model_kind = "gguf")
+    assert fam.name == "sdxl" and fam.single_file_is_pipeline
+
+
+def test_a_cached_sdxl_named_gguf_is_not_read_again(hub_header, hub_cache):
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
+
+    repo, name = "kostakoff/stable-diffusion-xl-base-1.0-GGUF", "sd_xl_base_1.0_0_Q4_K.gguf"
+    hub_cache(repo, name, _SHAPES)
+    hub_header(_SHAPES)
+    prefetch_for_pick(repo, name, None, None)
+    assert hub_header.reads == []
 
 
 def test_the_load_branch_routes_whole_pipeline_ggufs_to_the_bundle_loader():
@@ -386,3 +520,17 @@ def test_lora_on_a_whole_pipeline_gguf_is_refused_before_the_load(tmp_path):
         )
     # Nothing started: the resident model was never evicted.
     assert backend._loading is None
+
+
+def test_an_sdxl_override_still_reads_an_uncached_gguf_header(hub_header):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
+
+    hub_header(_SHAPES)
+    repo, name = "someone/mystery-xl-GGUF", "mystery-Q4_K_S.gguf"
+    prefetch_for_pick(repo, name, "sdxl", None)
+    assert [r[:2] for r in hub_header.reads] == [(repo, name)]
+    fam = get_diffusion_backend().validate_load_request(
+        repo, gguf_filename = name, model_kind = "gguf", family_override = "sdxl"
+    )
+    assert fam.name == "sdxl"

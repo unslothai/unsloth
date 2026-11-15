@@ -15,29 +15,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
         "display_name": "ChatGPT / Codex subscription",
         "base_url": "https://chatgpt.com/backend-api",
-        # Only seeds the picker; /codex/models is the truth once connected.
-        "default_models": [
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.5",
-            "gpt-5.6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-6-astra",
-            "gpt-6-luna",
-            "gpt-6-sol",
-        ],
-        "model_capabilities": {
-            "gpt-5.4": {"vision": True, "studio_tools": True},
-            "gpt-5.4-mini": {"vision": True, "studio_tools": True},
-            "gpt-5.5": {"vision": True, "studio_tools": True},
-            "gpt-5.6-luna": {"vision": True, "studio_tools": True},
-            "gpt-5.6-sol": {"vision": True, "studio_tools": True},
-            "gpt-5.6-terra": {"vision": True, "studio_tools": True},
-            "gpt-6-astra": {"vision": True, "studio_tools": True},
-            "gpt-6-luna": {"vision": True, "studio_tools": True},
-            "gpt-6-sol": {"vision": True, "studio_tools": True},
-        },
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -50,16 +27,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "openai": {
         "display_name": "OpenAI",
+        "api_key_url": "https://platform.openai.com/api-keys",
         "base_url": "https://api.openai.com/v1",
-        "default_models": [
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "o3",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -95,19 +64,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "anthropic": {
         "display_name": "Anthropic",
+        "api_key_url": "https://platform.claude.com/settings/keys",
         "base_url": "https://api.anthropic.com/v1",
-        "default_models": [
-            "claude-opus-5",
-            "claude-sonnet-5",
-            "claude-fable-5",
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-opus-4-5-20251101",
-            "claude-sonnet-4-5-20250929",
-            "claude-haiku-4-5-20251001",
-        ],
         # No denylist: `-YYYYMMDD` ids are canonical for pre-4.6 Claude models.
         "supports_streaming": True,
         "supports_vision": True,
@@ -125,26 +83,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "gemini": {
         "display_name": "Google Gemini",
+        "api_key_url": "https://aistudio.google.com/apikey",
         # Native Gemini REST, not OpenAI-compatible; translated in `_stream_gemini`.
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
-        # Excludes retired gemini-2.0-flash* and gemini-3-pro-preview (redirects to 3.1).
-        "default_models": [
-            "gemini-3.1-pro-preview",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-3-flash-preview",
-            "gemini-pro-latest",
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-3-pro-image-preview",
-            "gemini-3.1-flash-image-preview",
-            "gemini-2.5-flash-image",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -171,11 +112,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "deepseek": {
         "display_name": "DeepSeek",
+        "api_key_url": "https://platform.deepseek.com/api_keys",
         "base_url": "https://api.deepseek.com/v1",
-        "default_models": [
-            "deepseek-flash",
-            "deepseek-v4-pro",
-        ],
         "supports_streaming": True,
         "supports_vision": False,
         "supports_tool_calling": True,
@@ -186,22 +124,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "openrouter": {
         "display_name": "OpenRouter",
+        "api_key_url": "https://openrouter.ai/settings/keys",
         "base_url": "https://openrouter.ai/api/v1",
-        # Live /models fills the rest; ~*-latest aliases track new releases.
-        "default_models": [
-            "openrouter/free",
-            "openrouter/auto",
-            "~anthropic/claude-sonnet-latest",
-            "~anthropic/claude-opus-latest",
-            "~openai/gpt-sol-latest",
-            "~openai/gpt-mini-latest",
-            "~google/gemini-pro-latest",
-            "~google/gemini-flash-latest",
-            "~x-ai/grok-latest",
-            "~deepseek/deepseek-flash-latest",
-            "~moonshotai/kimi-latest",
-            "~z-ai/glm-latest",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -218,16 +142,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "zai": {
         "display_name": "Z.ai",
+        "api_key_url": "https://z.ai/manage-apikey/apikey-list",
         "base_url": "https://api.z.ai/api/paas/v4",
-        "default_models": [
-            "glm-5.3",
-            "glm-5.3-flash",
-            "glm-5.3-flashx",
-            "glm-5.2",
-            "glm-4.7-flash",
-            "glm-4.5-flash",
-            "glm-4.6v-flash",
-        ],
         "model_capabilities": {
             "glm-5.3": {"vision": False},
             "glm-5.3-flash": {"vision": True},
@@ -254,16 +170,11 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "kimi": {
         "display_name": "Kimi",
+        "api_key_url": "https://platform.kimi.ai/console/api-keys",
         "base_url": "https://api.moonshot.ai/v1",
         # Docs: https://platform.kimi.ai/docs/models
         # Listing/overview: https://platform.kimi.ai/docs/api/list-models
         #                   https://platform.kimi.ai/docs/api/overview
-        "default_models": [
-            "kimi-k3",
-            "kimi-k3.1-pro",
-            "kimi-k2.6",
-            "kimi-k2.5",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -281,21 +192,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "mistral": {
         "display_name": "Mistral AI",
+        "api_key_url": "https://console.mistral.ai/api-keys",
         "base_url": "https://api.mistral.ai/v1",
-        "default_models": [
-            "codestral-latest",
-            "devstral-latest",
-            "devstral-medium-latest",
-            "magistral-medium-latest",
-            "ministral-14b-latest",
-            "ministral-3b-latest",
-            "ministral-8b-latest",
-            "mistral-large-latest",
-            "mistral-medium-latest",
-            "mistral-small-latest",
-            "mistral-tiny-latest",
-            "mistral-vibe-cli-latest",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -311,11 +209,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "minimax": {
         "display_name": "MiniMax",
+        "api_key_url": "https://platform.minimax.io/user-center/basic-information/interface-key",
         "base_url": "https://api.minimax.io/v1",
-        "default_models": [
-            "MiniMax-M3.1-Flash",
-            "MiniMax-M3",
-        ],
         "model_capabilities": {
             "MiniMax-M3.1-Flash": {"vision": True},
             "MiniMax-M3": {"vision": True},
@@ -332,18 +227,135 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # Fixed at 1 / 0.95 server-side (https://platform.minimax.io/docs/api-reference/text-openai-api).
         "body_omit": ("temperature", "top_p", "presence_penalty"),
     },
+    "xai": {
+        "display_name": "xAI",
+        "api_key_url": "https://console.x.ai/team/default/api-keys",
+        "base_url": "https://api.x.ai/v1",
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # /v1/models also lists image, video and voice models.
+        "model_id_denylist": re.compile(r"^grok-(?:imagine|voice)-"),
+        # Reasoning models error on it, and every current chat id but one reasons (docs.x.ai chat-completions reference).
+        "body_omit": ("presence_penalty",),
+        # max_tokens is deprecated there.
+        "max_tokens_field": "max_completion_tokens",
+        # "Reasoning cannot be disabled" (docs.x.ai reasoning guide).
+        "reasoning_effort_values": ("low", "medium", "high", "xhigh"),
+    },
+    "nvidia": {
+        "display_name": "NVIDIA NIM",
+        "api_key_url": "https://build.nvidia.com/settings/api-keys",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # The list has no capability fields, so embedding, guard, OCR and translation models go by name.
+        "model_id_denylist": re.compile(
+            r"embed|nvclip|rerank|guard|safety|topic-control|jailbreak|parse|riva|translate|gliner"
+            r"|reward|detector|deplot|kosmos|fuyu|neva|vila|paligemma|calibration"
+        ),
+        # Per-model schemas forbid unknown fields (422), and several omit the penalties.
+        "body_omit": ("presence_penalty",),
+        "max_temperature": 1.0,
+    },
+    "perplexity": {
+        "display_name": "Perplexity",
+        "api_key_url": "https://console.perplexity.ai/project/keys",
+        # No /v1: the route is /chat/completions on the bare host.
+        "base_url": "https://api.perplexity.ai",
+        # Its /v1/models lists Agent API ids, not what /chat/completions takes.
+        "default_models": ["sonar-pro", "sonar", "sonar-reasoning-pro", "sonar-deep-research"],
+        "model_list_mode": "curated",
+        "probe_with_chat": True,
+        "supports_streaming": True,
+        "supports_vision": False,
+        # Sonar searches by itself; function calling is not documented for it.
+        "supports_tool_calling": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "body_omit": ("presence_penalty",),
+    },
+    "cohere": {
+        "display_name": "Cohere",
+        "api_key_url": "https://dashboard.cohere.com/api-keys",
+        "base_url": "https://api.cohere.ai/compatibility/v1",
+        "supports_streaming": True,
+        # Image parts are not documented on the compatibility endpoint.
+        "supports_vision": False,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # The compatibility API takes these two only (docs.cohere.com/docs/compatibility-api).
+        "reasoning_effort_values": ("none", "high"),
+        "reasoning_effort_aliases": {
+            "minimal": "high",
+            "low": "high",
+            "medium": "high",
+            "xhigh": "high",
+            "max": "high",
+        },
+    },
+    "vercel": {
+        "display_name": "Vercel AI Gateway",
+        "api_key_url": "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys",
+        "base_url": "https://ai-gateway.vercel.sh/v1",
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "reasoning_effort_values": ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+    },
+    "azure": {
+        "display_name": "Azure OpenAI",
+        # The resource's own endpoint, ending in /openai/v1.
+        "base_url": "",
+        "default_models": [],
+        # `model` is the deployment name, which no key-authenticated endpoint lists.
+        "probe_with_chat": True,
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # The deployment name hides the model, and reasoning deployments reject these and max_tokens
+        # (learn.microsoft.com/azure/foundry/openai/how-to/reasoning#unsupported-parameters).
+        "max_tokens_field": "max_completion_tokens",
+        "body_omit": ("temperature", "top_p", "presence_penalty"),
+        "reasoning_effort_values": ("none", "minimal", "low", "medium", "high", "xhigh"),
+        "hidden": True,
+    },
+    "bedrock": {
+        "display_name": "Amazon Bedrock",
+        # The region is part of the host. This route takes a Bedrock API key as a bearer token; it does
+        # not serve Claude, Nova or Llama, and has no /models (docs.aws.amazon.com inference-chat-completions).
+        "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+        "default_models": [],
+        "probe_with_chat": True,
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "reasoning_effort_values": ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+        "hidden": True,
+    },
     # Console is pay as you go, Go a subscription; both translate every text model to /chat/completions.
     "opencode": {
         "display_name": "OpenCode Console",
+        "api_key_url": "https://opencode.ai/auth",
         "base_url": "https://opencode.ai/inference/v1",
-        "default_models": [
-            "kimi-k3",
-            "glm-5.3",
-            "minimax-m3",
-            "qwen3.8-max",
-            "deepseek-v4-pro",
-            "kimi-k2.7-code",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -356,16 +368,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "opencode_go": {
         "display_name": "OpenCode Go",
+        "api_key_url": "https://opencode.ai/auth",
         # _chat_headers adds the x-opencode-session header Go requires.
         "base_url": "https://opencode.ai/inference/go/v1",
-        "default_models": [
-            "kimi-k3",
-            "glm-5.3",
-            "minimax-m3",
-            "qwen3.8-max",
-            "deepseek-v4-pro",
-            "kimi-k2.7-code",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -377,12 +382,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "qwen": {
         "display_name": "Qwen",
         "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        "default_models": [
-            "qwen-plus",
-            "qwen-turbo",
-            "qwen-max",
-            "qwen2.5-72b-instruct",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -393,17 +392,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "qwencloud": {
         "display_name": "QwenCloud",
+        "api_key_url": "https://home.qwencloud.com/api-keys",
         "base_url": "https://maas.qwencloudapi.com/compatible-mode/v1",
-        "default_models": [
-            "qwen3.8-max",
-            "qwen3.7-plus",
-            "qwen3.8-flash",
-        ],
-        "model_capabilities": {
-            "qwen3.8-max": {"vision": True, "studio_tools": True},
-            "qwen3.7-plus": {"vision": True, "studio_tools": True},
-            "qwen3.8-flash": {"vision": True, "studio_tools": True},
-        },
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -419,14 +409,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "huggingface": {
         "display_name": "Hugging Face",
+        "api_key_url": "https://huggingface.co/settings/tokens",
         "base_url": "https://router.huggingface.co/v1",
-        # Seed defaults before the live /v1/models call; the remote list (model_list_mode) wins.
-        "default_models": [
-            "openai/gpt-oss-120b",
-            "deepseek-ai/DeepSeek-V3",
-            "meta-llama/Llama-3.3-70B-Instruct",
-            "Qwen/Qwen2.5-72B-Instruct",
-        ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -445,7 +429,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "model_id_allowlist": re.compile(
             r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|mistralai|zai-org)/"
         ),
-        # Cap matches at N, as the server does not sort; default_models keeps flagship ids on top.
         "model_id_limit": 15,
     },
     "vllm": {
@@ -541,23 +524,19 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "typesafe": {
         "display_name": "TypeSafe",
         "base_url": "https://api.typesafe.ai/v1",
-        "default_models": ["jev-latest", "jev-1.13"],
         "supports_streaming": False,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "System One decision models. Used by the Decision API, never by chat.",
-        "model_list_mode": "curated",
         "decisions_only": True,
     },
     "liquid": {
         "display_name": "Liquid AI",
         "base_url": "https://api.liquid.ai/decisions/v1",
-        "default_models": ["d1:free"],
         "supports_streaming": False,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "System One decision models. Used by the Decision API, never by chat.",
-        "model_list_mode": "curated",
         "decisions_only": True,
     },
 }
@@ -565,6 +544,27 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
 
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
     return PROVIDER_REGISTRY.get(provider_type)
+
+
+def provider_default_models(
+    provider_type: str, catalog_models: dict[str, list[str]] | None = None
+) -> list[str]:
+    info = PROVIDER_REGISTRY[provider_type]
+    if "default_models" in info:
+        return info["default_models"]
+    from core.inference.provider_model_snapshot import PROVIDER_MODEL_SNAPSHOT
+
+    models = (catalog_models or {}).get(provider_type) or PROVIDER_MODEL_SNAPSHOT.get(
+        provider_type, []
+    )
+    allowlist = info.get("model_id_allowlist")
+    if allowlist is not None:
+        models = [m for m in models if allowlist.match(m)]
+    deny_exact = info.get("model_id_deny_exact") or ()
+    denylist = info.get("model_id_denylist")
+    models = [m for m in models if m not in deny_exact and not (denylist and denylist.search(m))]
+    limit = info.get("model_id_limit")
+    return models[:limit] if limit else models
 
 
 def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
@@ -578,6 +578,33 @@ def answers_decisions_only(provider_type: str | None, api_type: str | None = Non
     return bool(info and info.get("decisions_only")) or (
         provider_type == "custom" and api_type == "systemone"
     )
+
+
+VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1/publishers/google"
+
+
+def is_vertex_host(host: str | None) -> bool:
+    host = (host or "").lower()
+    return host == "aiplatform.googleapis.com" or host.endswith("-aiplatform.googleapis.com")
+
+
+def is_google_gemini_host(host: str | None) -> bool:
+    """Hosts that speak native generateContent: the Gemini Developer API and Vertex AI."""
+    return (host or "").lower() == "generativelanguage.googleapis.com" or is_vertex_host(host)
+
+
+def speaks_native_gemini(base_url: str | None) -> bool:
+    """Vertex's /endpoints/openapi path is its OpenAI-compatible Chat Completions, not generateContent."""
+    parts = urlsplit(base_url or "")
+    return is_google_gemini_host(parts.hostname) and "/endpoints/openapi" not in parts.path.lower()
+
+
+def provider_probes_with_chat(provider_type: str, base_url: str | None = None) -> bool:
+    """No usable model list, so a connection check has to send a one-token chat."""
+    info = PROVIDER_REGISTRY.get(provider_type) or {}
+    if info.get("probe_with_chat"):
+        return True
+    return provider_type == "gemini" and is_vertex_host(urlsplit(base_url or "").hostname)
 
 
 def get_base_url(provider_type: str) -> str | None:
@@ -1050,7 +1077,9 @@ def validate_provider_base_url(base_url: str) -> str:
 
 
 def list_available_providers(
-    include_hidden: bool = False, include_oauth: bool = False
+    include_hidden: bool = False,
+    include_oauth: bool = False,
+    catalog_models: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Hidden rows need include_hidden (old cached bundles would duplicate presets); OAuth rows are opt-in too (pre-OAuth bundles break); either flag opts in."""
     result = []
@@ -1064,7 +1093,7 @@ def list_available_providers(
                 "provider_type": provider_type,
                 "display_name": info["display_name"],
                 "base_url": info["base_url"],
-                "default_models": info["default_models"],
+                "default_models": provider_default_models(provider_type, catalog_models),
                 "model_capabilities": info.get("model_capabilities", {}),
                 "supports_streaming": info["supports_streaming"],
                 "supports_vision": info.get("supports_vision", False),
@@ -1073,6 +1102,7 @@ def list_available_providers(
                 "hidden": bool(info.get("hidden")),
                 "model_list_mode": info.get("model_list_mode", "remote"),
                 "auth_kind": info.get("auth_kind", "api_key"),
+                "api_key_url": info.get("api_key_url"),
                 "base_url_editable": info.get("base_url_editable", True),
                 "model_ids_editable": info.get("model_ids_editable", True),
             }

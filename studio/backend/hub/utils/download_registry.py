@@ -1094,6 +1094,10 @@ TERMINAL_STATES = frozenset({"complete", "cancelled", "error"})
 _ACTIVE_STATES = frozenset({"running", "cancelling"})
 
 
+# A claim argument the caller did not pass, told apart from an explicit None.
+_UNSET = object()
+
+
 @dataclass(frozen = True)
 class DownloadState:
     state: JobState
@@ -1118,6 +1122,9 @@ class DownloadMetadata:
     scoped_files: tuple[str, ...] = ()
     owner: Optional[str] = None
     load_attached: bool = False
+    # GGUF variant jobs: the standalone Engram table fetched in place of the quant's own, so a
+    # retry, a transport fallback and an adopting client fetch the same files.
+    engram_precision: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -1475,7 +1482,10 @@ class DownloadRegistry:
         xet_cache: Optional[str] = None,
         scoped_files: Optional[Sequence[str]] = None,
         owner: Optional[str] = None,
+        engram_precision: object = _UNSET,
     ) -> tuple[bool, str]:
+        """``engram_precision`` left unset is a claim that does not choose a table (a load, a
+        delete); set, it is part of the job's plan and must match a live job to join it."""
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
         requested_hashes = blob_hashes or frozenset()
@@ -1531,6 +1541,13 @@ class DownloadRegistry:
                     and sorted(set(live.scoped_files)) != sorted(set(scoped_files))
                 ):
                     return False, "scope_file_mismatch"
+                # Same for the table: the live job is fetching a different file set.
+                if (
+                    engram_precision is not _UNSET
+                    and live is not None
+                    and (live.engram_precision or "").upper() != (engram_precision or "").upper()
+                ):
+                    return False, "engram_mismatch"
                 return False, current
             if generation is None:
                 self._generation_seq += 1
@@ -1560,6 +1577,9 @@ class DownloadRegistry:
                     scoped_files = tuple(scoped_files or ()),
                     owner = owner,
                     load_attached = previous.load_attached if previous is not None else False,
+                    engram_precision = (
+                        (engram_precision or None) if engram_precision is not _UNSET else None
+                    ),
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport

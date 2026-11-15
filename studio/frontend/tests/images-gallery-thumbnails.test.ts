@@ -80,9 +80,35 @@ test("the live denoise preview shows only the in-flight preview and offers no ac
       'busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;',
     ),
   );
-  const live = between(page, "{livePreviewSrc ? (", ") : selected && selectedSrc ? (");
-  assert.ok(live.includes("src={livePreviewSrc}"));
+  const live = between(page, "{stagePreviewSrc ? (", ") : selected && selectedSrc ? (");
+  assert.ok(live.includes("src={stagePreviewSrc}"));
   for (const forbidden of ["selectedSrc", "thumbById", "selectedThumb", "downloadImage", "openViewer", "GalleryItemMenu"]) {
     assert.ok(!live.includes(forbidden), forbidden);
   }
+});
+
+test("an image picked during a run takes the stage from the live preview until the run is followed again", () => {
+  assert.ok(page.includes("const stagePreviewSrc = pickedDuringRun ? undefined : livePreviewSrc;"));
+  const pick = between(page, "const pickImage = useCallback((id: string) => {", "}, []);");
+  assert.ok(pick.includes("galleryCache.selectedId = id;"));
+  assert.ok(pick.includes("setSelectedId(id);") && pick.includes("setPickedDuringRun(true);"));
+  assert.ok(page.includes("select: pickImage,"));
+  assert.ok(page.includes("pickImage(routedItem);"));
+  assert.ok(page.includes("() => galleryCache.selectedId,"));
+  const liveTile = between(page, 'data-testid="images-live-tile"', "</button>");
+  assert.ok(liveTile.includes("onClick={() => setPickedDuringRun(false)}"));
+  assert.ok(page.includes("localRun.current = true;\n    setPickedDuringRun(false);"));
+  assert.match(
+    page,
+    /pickedDuringRun &&\s*pickReleased\(\{\s*statusKnown: generateProbed && imageQueue\.polled,\s*generating: busy === "generating",\s*queueBusy: queueBusy\(imageQueue\.jobs\),/,
+  );
+  assert.ok(page.includes("if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);"));
+  assert.ok(page.includes('if (finished.some((job) => job.status === "done")) refreshLoadedGallery();'));
+  assert.match(page, /setGenStep\(null\);\s*refreshLoadedGallery\(\);\s*void refreshStatus\(\);/);
+  const refresh = between(page, "const refreshLoadedGallery = useCallback(() => {", "}, [loadGallery, resyncWindow]);");
+  assert.match(
+    refresh,
+    /attempt < PAGE_MAX_ATTEMPTS && refreshSeq\.current === ticket;[\s\S]*?if \(attempt > 0\) await serializeById\("image-pin", async \(\) => \{\}\);[\s\S]*?if \(await resyncWindow\(galleryCache\.images\.length, fresh\)\) return;/,
+  );
+  assert.ok(page.includes("selected={!stagePreviewSrc && image.id === selected?.id}"));
 });

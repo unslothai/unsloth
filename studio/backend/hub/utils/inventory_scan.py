@@ -750,12 +750,14 @@ _UNJUDGEABLE_FAMILY = object()
 def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     if snapshot_dir is None:
         return set()
-    # A load id can name the .gguf file itself, so resolve to its parent like the lister.
+    from core.inference.engram_tables import table_shard_skipped
     from hub.utils.gguf import _resolve_gguf_dir
 
+    # A load id can name the .gguf file itself, so resolve to its parent like the lister.
     snapshot_dir = _resolve_gguf_dir(snapshot_dir) or snapshot_dir
     # Keyed on quant, then on shard family (directory, prefix, total); one quant can cover several.
     split_groups: dict[str, dict[tuple[str, str, int], set[int]]] = {}
+    split_paths: dict[tuple[str, tuple[str, str, int], int], Path] = {}
     # Lister and loader both take the lexicographically first file, hence the sort. None = no total named; _UNJUDGEABLE_FAMILY = bad spec.
     selected: dict[str, object] = {}
     try:
@@ -806,13 +808,21 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         )
         # Record every shard: the rest of the selected family sorts after the one that selected it.
         split_groups.setdefault(quant, {}).setdefault(family, set()).add(index)
+        split_paths.setdefault((quant, family, index), path)
         selected.setdefault(quant, family)
     complete: set[str] = set()
     for quant, family in selected.items():
         if family is None:
             complete.add(quant)
         elif isinstance(family, tuple):
-            if _shard_family_is_whole(family, split_groups.get(quant, {}).get(family) or set()):
+            indices = split_groups.get(quant, {}).get(family) or set()
+            # Or a --ple download that left out the quant's own Engram table shard.
+            if _shard_family_is_whole(family, indices) or (
+                1 in indices
+                and table_shard_skipped(
+                    [split_paths[(quant, family, i)] for i in sorted(indices)], family[2]
+                )
+            ):
                 complete.add(quant)
     return complete
 
