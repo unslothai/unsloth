@@ -459,13 +459,18 @@ def test_training_adapter_auto_falls_back_and_explicit_values(tmp_path, monkeypa
 
     from core.training import diffusion_h3_image_trainer as trainer
 
+    seen = []
+
     def boom(*a, **k):
+        seen.append(k.get("revision"))
         raise OSError("offline")
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", boom)
     notes = []
     monkeypatch.delenv(trainer.TRAINING_ADAPTER_ENV, raising = False)
     assert trainer.training_adapter_path(None, notes.append) is None and notes
+    # the fetch is pinned to one commit of the third-party repo, never its moving main
+    assert seen == [trainer.OSTRIS_ADAPTER_REVISION] and len(trainer.OSTRIS_ADAPTER_REVISION) == 40
     monkeypatch.setenv(trainer.TRAINING_ADAPTER_ENV, "ostris")
     with pytest.raises(OSError):
         trainer.training_adapter_path(None)

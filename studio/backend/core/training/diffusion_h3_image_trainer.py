@@ -109,6 +109,9 @@ OSTRIS_ADAPTER = (
     "ostris/minimax_h3_training_adapter",
     "minimax_h3_image_training_adapter_v1.safetensors",
 )
+# Pinned: the repo keeps receiving uploads, so a run fetches the exact file the defaults were tuned with
+# (sha256 45a5d60d...68bb60, the file ai-toolkit's minimax_h3_image preset names).
+OSTRIS_ADAPTER_REVISION = "e4e119caa391053286145e48ebbaf0e0c00293d3"
 
 
 def training_adapter_path(hf_token: Optional[str] = None, on_note = None) -> Optional[str]:
@@ -122,7 +125,13 @@ def training_adapter_path(hf_token: Optional[str] = None, on_note = None) -> Opt
 
         repo, filename = OSTRIS_ADAPTER
         try:
-            return hf_hub_download(repo, filename, token = hf_token, cache_dir = hub_cache_dir())
+            return hf_hub_download(
+                repo,
+                filename,
+                revision = OSTRIS_ADAPTER_REVISION,
+                token = hf_token,
+                cache_dir = hub_cache_dir(),
+            )
         except Exception as exc:  # noqa: BLE001 - auto trains without it
             if value.lower() == "ostris":
                 raise
