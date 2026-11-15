@@ -22,24 +22,15 @@ class _Raised:
 
 
 class PrefetchedDataLoader:
-    def __init__(
-        self,
-        loader,
-        depth = 2,
-    ):
-        self._unsloth_loader = loader
-        self._unsloth_depth = depth
-        self.prefetched_batches = 0
+    """Mixed into the loader's own class (see prefetched), so isinstance checks such as accelerate's
+    skip_first_batches on resume still see a DataLoaderShard / DataLoaderDispatcher."""
 
-    def __getattr__(self, name):
-        return getattr(self._unsloth_loader, name)
-
-    def __len__(self):
-        return len(self._unsloth_loader)
+    _unsloth_depth = 2
+    prefetched_batches = 0
 
     def __iter__(self):
         batches, stop = queue.Queue(self._unsloth_depth), threading.Event()
-        loader = self._unsloth_loader
+        source = super().__iter__
         # A new thread starts on device 0: under torchrun every rank would open a context there.
         device = torch.cuda.current_device() if torch.cuda.is_initialized() else None
 
@@ -48,7 +39,7 @@ class PrefetchedDataLoader:
             try:
                 if device is not None:
                     torch.cuda.set_device(device)
-                iterator = iter(loader)
+                iterator = source()
                 for batch in iterator:
                     while not stop.is_set():
                         try:
@@ -89,6 +80,25 @@ class PrefetchedDataLoader:
             thread.join()
 
 
+_SUBCLASSES = {}
+
+
+def prefetched(loader, depth = 2):
+    cls = type(loader)
+    if not isinstance(loader, PrefetchedDataLoader):
+        sub = _SUBCLASSES.get(cls)
+        if sub is None:
+            sub = _SUBCLASSES[cls] = type(
+                f"Prefetched{cls.__name__}", (PrefetchedDataLoader, cls), {}
+            )
+        # A new instance sharing the loader's state: accelerate's adapters make __class__ read-only.
+        clone = object.__new__(sub)
+        object.__setattr__(clone, "__dict__", loader.__dict__)
+        loader = clone
+    loader._unsloth_depth = depth
+    return loader
+
+
 def prefetch_enabled(trainer) -> bool:
     if os.environ.get("UNSLOTH_ST_PREFETCH", "1") == "0":
         return False
@@ -108,7 +118,7 @@ def patch_train_dataloader(trainer_class) -> None:
     def get_train_dataloader(self, *args, **kwargs):
         loader = original(self, *args, **kwargs)
         if prefetch_enabled(self) and not isinstance(loader, PrefetchedDataLoader):
-            loader = PrefetchedDataLoader(loader)
+            loader = prefetched(loader)
         return loader
 
     get_train_dataloader.__wrapped__ = original

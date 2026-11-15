@@ -72,6 +72,18 @@ def test_fast_encoder_lora_runs_lean_forward(fast_encoder):
     (grad_peft,) = torch.autograd.grad(peft.square().sum(), x)
     torch.testing.assert_close(lean, peft)
     torch.testing.assert_close(grad_lean, grad_peft)
+    # A second adapter selected after install: the output must follow it, not the cached "default".
+    from peft import LoraConfig
+
+    peft_model = model[0].auto_model
+    peft_model.add_adapter(
+        "other", LoraConfig(r = 4, lora_alpha = 8, target_modules = ["query", "key", "value"])
+    )
+    with torch.no_grad():
+        layer.lora_B["other"].weight.normal_()
+    peft_model.set_adapter("other")
+    torch.testing.assert_close(layer(x), layer._unsloth_peft_forward(x))
+    assert not torch.allclose(layer(x), lean)
 
 
 def test_trainer_collates_on_a_background_thread(fast_encoder, tmp_path, monkeypatch):
@@ -136,7 +148,7 @@ class _Loader:
 
 def test_prefetched_loader_order_early_stop_and_errors():
     loader = _Loader(list(range(50)))
-    wrapped = prefetch.PrefetchedDataLoader(loader)
+    wrapped = prefetch.prefetched(loader)
     assert list(wrapped) == list(range(50)) and len(wrapped) == 50 and wrapped.dataset == "data"
     before = threading.active_count()
     for i in wrapped:
@@ -144,7 +156,7 @@ def test_prefetched_loader_order_early_stop_and_errors():
             break
     assert threading.active_count() == before and loader.closed == 2
     with pytest.raises(ValueError, match = "bad batch"):
-        list(prefetch.PrefetchedDataLoader(_Loader(list(range(10)), fail_at = 4)))
+        list(prefetch.prefetched(_Loader(list(range(10)), fail_at = 4)))
 
 
 class _FakeTransformer(torch.nn.Module):
@@ -180,3 +192,16 @@ def test_decoder_packing_restores_the_padded_layout(monkeypatch, side):
     torch.testing.assert_close(out["token_embeddings"], want)
     assert torch.equal(out["attention_mask"], mask) and torch.equal(out["input_ids"], ids)
     assert "position_ids" not in out and transformer._unsloth_packed_calls == 1
+
+
+def test_prefetched_loader_keeps_accelerate_identity_for_resume():
+    # Trainer resumes mid-epoch through accelerate.skip_first_batches, which dispatches on isinstance.
+    accel = pytest.importorskip("accelerate.data_loader")
+    loader = prefetch.prefetched(accel.DataLoaderShard(list(range(12)), batch_size = 2))
+    assert isinstance(loader, accel.DataLoaderShard)
+    assert [b.tolist() for b in loader] == [
+        [2 * i, 2 * i + 1] for i in range(6)
+    ] and loader.prefetched_batches == 6
+    skipped = accel.skip_first_batches(loader, 2)
+    assert isinstance(skipped, accel.DataLoaderShard)
+    assert [b.tolist() for b in skipped] == [[2 * i, 2 * i + 1] for i in range(2, 6)]
