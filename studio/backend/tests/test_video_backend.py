@@ -7056,7 +7056,7 @@ def test_h3_native_generate_names_each_keyframe_combination(monkeypatch):
     assert calls[-1]["params"].init_img is None
 
 
-def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
+def test_h3_omitted_size_keeps_the_reference_canvas(monkeypatch):
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
@@ -7064,10 +7064,10 @@ def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
     backend.generate(prompt = "p", first_frame = _data_url(1920, 1080))
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
 
-    # With no first frame the last one drives it, matching the Diffusers blocks.
+    # The reference keyframe node keeps its 1344x768 whatever the keyframe's aspect (the frame is cropped onto it).
     backend.generate(prompt = "p", last_frame = _data_url(1080, 1920))
-    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (768, 1344)
-    assert calls[-1]["end_size"] == (768, 1344)
+    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
+    assert calls[-1]["end_size"] == (1344, 768)
 
     backend.generate(prompt = "p")
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)

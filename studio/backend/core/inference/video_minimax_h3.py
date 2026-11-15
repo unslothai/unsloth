@@ -641,9 +641,9 @@ _H3_RGB24_FORMATS = ("yuvj420p", "yuvj422p", "yuvj444p", "rgb24", "rgba", "pal8"
 
 
 def h3_float_rgb_to_uint8(pixels: Any) -> Any:
-    """Float RGB in [0, 1] to uint8, rounded (the reference truncates here, which darkens by half a step)."""
+    """Float RGB in [0, 1] to uint8 truncated, as the reference's LANCZOS helper quantises (``astype(uint8)``)."""
     import numpy as np
-    return np.clip(np.rint(pixels * 255.0), 0, 255).astype(np.uint8)
+    return np.clip(255.0 * pixels, 0, 255).astype(np.uint8)
 
 
 def h3_video_frame_rgb(frame: Any) -> Any:

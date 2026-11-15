@@ -402,8 +402,8 @@ if triton is not None:
             TO_F16,
         )
 
-    # Token counts, head counts and block counts stay out of the compile key (Triton would otherwise specialise them on
-    # % 16 and == 1), so one compile serves every shape.
+    # Token, block and head counts stay out of the compile key (Triton would otherwise specialise them on
+    # % 16 and == 1), so one compile per head dim serves every sequence length and head count.
     @triton.jit(do_not_specialize = ["sq", "sk", "n_heads", "n_qblk"])
     def prep_kernel(
         q_ptr,
@@ -438,10 +438,8 @@ if triton is not None:
         V_STATS: tl.constexpr,
         V_T: tl.constexpr,
     ):
-        # Everything that reads only the inputs, in one launch, per (batch, head): block 0 the K mean, block 1 the V
-        # range (V_STATS), then the Q row tiles, then (V_T 1: V's dtype, 2: fp16) the channel-major V copy. The
-        # statistics blocks come first so the long serial ones start before the short tiles fill the card. Each
-        # block runs the same code its standalone kernel ran, so the operands are bit for bit the same.
+        # Input-only work per (batch, head): block 0 K mean, block 1 V range, then Q tiles, then the channel-major V
+        # copy. Statistics blocks go first (longest); each block is its standalone kernel's code, so bits match.
         bh = tl.program_id(0)
         blk = tl.program_id(1)
         j = blk - 1 - V_STATS
@@ -516,8 +514,7 @@ if triton is not None:
         K_TILE: tl.constexpr,
         V_Q: tl.constexpr,
     ):
-        # What needs prep_kernel's statistics, in one launch: the K tiles (centred, RK rows each), then (V_Q 1:
-        # key-major, 2: channel-major) the INT8 V tiles of T keys.
+        # Needs prep_kernel's statistics: centred K tiles, then INT8 V tiles (V_Q 1 key-, 2 channel-major).
         bh = tl.program_id(0)
         blk = tl.program_id(1)
         if blk < n_kblk:
@@ -858,8 +855,7 @@ def _pad(n: int, multiple: int) -> int:
 PV_MODES = {"half_strided": 0, "half": 1, "int8": 2, "half_t": 3, "int8_t": 4, "f16_t": 3}
 # blocks along y in one launch; a call whose fused launch would need more runs one launch per quantiser
 GRID_LIMIT = 65535
-# A call's launch arithmetic (padded lengths, grids, every argument that is not a tensor), keyed by everything it
-# depends on: a short call is mostly this glue, so it is done once per call signature.
+# Launch arithmetic (padded lengths, grids, non-tensor args) cached per call signature: short calls are mostly glue.
 _PLAN_LIMIT = 256
 _PLANS: dict = {}
 
@@ -939,7 +935,6 @@ def _make_plan(
             "V_Q": (2 if pv == "int8_t" else 1) if int8_v else 0,
         },
         "attn_grid": (n_qpad // bm, BH),
-        # the output is a fresh contiguous [B, Sq, H, D]
         "attn_args": (Sq, Sk, n_qpad, n_kpad, H, 1.0, 0, 0, 0, 0, 0, 0, *sv_, Sq * H * D, H * D, D),
         "attn_meta": {
             "BM": bm,

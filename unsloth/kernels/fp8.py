@@ -10,6 +10,7 @@
 # limitations under the License.
 import os
 import functools
+import inspect
 from contextlib import nullcontext
 import torch
 import torch.nn as nn
@@ -2759,11 +2760,29 @@ if FP8GroupedLinear is not None:
             grad_bias = gy.sum(1).reshape(-1) if ctx.has_bias else None
             return grad_x, None, None, None, None, grad_bias
 
+    def _fp8_grouped_eval_kernel_ok():
+        """Whether transformers' grouped fp8 eval kernel is usable; newer releases need the optional `kernels` package."""
+        try:
+            import transformers.integrations.finegrained_fp8 as _ff8
+
+            if "lazy_load_kernel" not in inspect.getsource(_ff8):
+                return True
+            from transformers.integrations.hub_kernels import is_kernels_available
+
+            return bool(is_kernels_available())
+        except Exception:
+            return False
+
+    # Read once at import: inspect.getsource inside the forward cannot be traced (fullgraph compiles fail).
+    _FP8_GROUPED_EVAL_KERNEL_OK = _fp8_grouped_eval_kernel_ok()
+
     def _fp8_grouped_forward(self, x):
-        # The upstream eval path runs its own fp8e4nv kernels, so pre-sm89 has to use the
-        # dequant path here too, not only while training.
+        # The upstream eval path runs its own fp8e4nv kernels (Hub kernels on newer transformers), so pre-sm89 and
+        # an install without `kernels` use the dequant path here too, not only while training.
         if self.weight.element_size() > 1 or (
-            not self.training and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+            not self.training
+            and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+            and _FP8_GROUPED_EVAL_KERNEL_OK
         ):
             return _fp8_grouped_forward_orig(self, x)
         bias = self.bias if self.has_bias else None
