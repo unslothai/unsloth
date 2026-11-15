@@ -133,9 +133,11 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         });
       };
       // A named generation lets "switch model by request" swap the chat model out for the voice: own the slot first.
-      const { voiceSlotLoaded, ensureVoiceSlotLoaded } = useChatRuntimeStore.getState();
-      if (!voiceSlotLoaded && ensureVoiceSlotLoaded) {
-        if (!(await ensureVoiceSlotLoaded())) return null;
+      // A pick changed while it loaded resolves the old load: ask again until the slot holds the current pick.
+      for (let tries = 0; !useChatRuntimeStore.getState().voiceSlotLoaded; tries++) {
+        const ensure = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
+        if (!ensure) break;
+        if (tries >= 3 || !(await ensure())) return null;
         if (reqRef.current !== reqId) return null;
       }
       let url: string;

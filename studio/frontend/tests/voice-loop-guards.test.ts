@@ -233,6 +233,14 @@ test("the orb's Escape stays out of other pages while Chat is hidden; speech own
   assert.match(orb, /<div\s+ref=\{rootRef\}/);
   const player = readSrc("features/chat/hooks/use-tts-player.ts");
   const synth = player.slice(player.indexOf("const synthesize = useCallback("));
-  const own = synth.indexOf("if (!(await ensureVoiceSlotLoaded())) return null;");
+  const own = synth.indexOf("if (tries >= 3 || !(await ensure())) return null;");
   assert.ok(own > 0 && own < synth.indexOf("url = await request();"));
+});
+
+test("signing out ends voice; a held continuation keeps the coalesced reply waiting", () => {
+  const page = readSrc("features/chat/chat-page.tsx");
+  assert.match(page, /voiceSlot\.close\(\);\s*if \(prevVoiceModeRef\.current !== "off"\) \{\s*releaseVoiceDetector\(\);\s*endVoiceOnSignOut\(\);\s*useChatRuntimeStore\.getState\(\)\.setVoiceMode\("off"\);/);
+  assert.match(loop, /registerVoiceSessionEnd\(\(\) => openSession\?\.cancel\(\)\);/);
+  assert.match(loop, /if \(openSession === session\) openSession = null;/);
+  assert.match(loop, /return utterancesPending > 0 \|\| heldTurn !== null;/);
 });

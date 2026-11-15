@@ -27,6 +27,7 @@ import {
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import {
+  endVoiceOnSignOut,
   getVoiceMode,
   loadVoiceMode,
   requestVoiceThreadReset,
@@ -3225,7 +3226,11 @@ export function ChatPage({
     voiceSlot.open();
     return () => {
       voiceSlot.close();
-      if (prevVoiceModeRef.current !== "off") releaseVoiceDetector();
+      if (prevVoiceModeRef.current !== "off") {
+        releaseVoiceDetector();
+        endVoiceOnSignOut();
+        useChatRuntimeStore.getState().setVoiceMode("off");
+      }
     };
   }, [voiceSlot]);
 

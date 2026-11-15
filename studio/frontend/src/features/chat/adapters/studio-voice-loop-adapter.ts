@@ -25,6 +25,7 @@ import {
   requestVoiceBargeAbort,
   requestVoiceBargeIn,
   requestVoiceResume,
+  registerVoiceSessionEnd,
   requestVoiceSubmit,
   voiceLoopSupported,
 } from "@/features/chat/voice/voice-loop-bridge";
@@ -121,8 +122,12 @@ let heldEpoch = 0;
 let utterancesPending = 0;
 // Hearing ends before VAD and STT run: the coalesced reply must still wait for this phrase.
 export function voiceUtterancePending(): boolean {
-  return utterancesPending > 0;
+  // A fragment held for its continuation ("... and") is still this turn.
+  return utterancesPending > 0 || heldTurn !== null;
 }
+
+let openSession: DictationAdapter.Session | null = null;
+registerVoiceSessionEnd(() => openSession?.cancel());
 
 export function clearHeldTurn(): void {
   heldEpoch += 1;
@@ -216,6 +221,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         return () => speechCallbacks.delete(cb);
       },
     };
+    openSession = session;
     const emitSpeech = (transcript: string, isFinal: boolean) => {
       voiceBoxText = transcript;
       for (const cb of speechCallbacks) cb({ transcript, isFinal });
@@ -242,6 +248,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     ) => {
       if (ended) return;
       ended = true;
+      if (openSession === session) openSession = null;
       session.status = { type: "ended", reason };
       if (transcript) {
         for (const cb of speechEndCallbacks) cb({ transcript });
