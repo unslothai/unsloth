@@ -1038,6 +1038,38 @@ def reference_noise(rows: Any, seed: int) -> Any:
     return torch.randn(tuple(rows.shape), generator = cpu_generator(seed), dtype = torch.float32)
 
 
+VAE_ENCODE_HALF_ENV = "UNSLOTH_H3_IMAGE_VAE_ENCODE_HALF"
+
+
+def reference_encode_dtype(device: Any, vae: Any = None) -> Any:
+    """The reference VAE's working dtype for an encode: float16 on CUDA, float32 elsewhere, with
+    ``UNSLOTH_H3_IMAGE_VAE_ENCODE_HALF=0``, or once fp16 overflowed on this VAE."""
+    import torch
+
+    if (
+        getattr(torch.device(device), "type", "cpu") == "cuda"
+        and not _env_off(VAE_ENCODE_HALF_ENV)
+        and not getattr(vae, "_unsloth_h3_encode_fp32", False)
+    ):
+        return torch.float16
+    return torch.float32
+
+
+def set_encoder_dtype(vae: Any, dtype: Any) -> None:
+    """Cast the VAE encoder and its moment projection (the decoder keeps its own dtype)."""
+    for name in ("encoder", "quant_conv"):
+        module = getattr(vae, name, None)
+        if module is not None:
+            module.to(dtype = dtype)
+
+
+def reference_vae_pixels(picture: Any, dtype: Any, mean: Any, std: Any) -> Any:
+    """Encoder input as the reference builds it: ``[1, H, W, 3]`` float pixels to ``2x - 1``, cast to the working
+    dtype, then normalized in that dtype (``(x + 1) * 0.5``, minus mean, over std)."""
+    x = picture.permute(0, 3, 1, 2).mul(2.0).sub_(1.0).to(dtype)
+    return x.add_(1.0).mul_(0.5).sub_(mean.to(x)).div_(std.to(x))
+
+
 def reference_posterior_latents(posterior: Any, latents_mean: Any, latents_std: Any) -> Any:
     """A reference's normalized latent: the posterior sampled in float32 with a CPU generator seeded
     ``H3_IMAGE_POSTERIOR_SEED`` (deterministic, so it is cached per picture)."""
@@ -1853,7 +1885,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         device = self._device()
         vae = self._enter("vae")
         try:
-            vae_dtype = _module_dtype(vae)
+            vae_dtype = reference_encode_dtype(device, vae)
+            encoder = getattr(vae, "encoder", None)
+            if isinstance(encoder, torch.nn.Module) and _module_dtype(encoder) != vae_dtype:
+                set_encoder_dtype(vae, vae_dtype)
             mean = torch.tensor(H3_IMAGE_PIXEL_MEAN, device = device).view(1, -1, 1, 1)
             std = torch.tensor(H3_IMAGE_PIXEL_STD, device = device).view(1, -1, 1, 1)
             lmean = torch.tensor(vae.config.latents_mean, device = device).view(1, -1, 1, 1)
@@ -1880,11 +1915,27 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                     cache.move_to_end(key)
                     stats["hits"] += 1
                 else:
-                    pixels = picture_float(array).to(device).permute(0, 3, 1, 2)
-                    pixels = (pixels - mean) / std
-                    posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                    picture = picture_float(array).to(device)
+                    posterior = vae.encode(
+                        reference_vae_pixels(picture, vae_dtype, mean, std), return_dict = False
+                    )[0]
+                    if vae_dtype != torch.float32 and not bool(
+                        torch.isfinite(posterior.parameters).all()
+                    ):
+                        # fp16 overflowed on this picture: this load encodes in float32 from now on
+                        logger.warning(
+                            "diffusion.minimax_h3_image: fp16 VAE encode overflowed; using float32"
+                        )
+                        vae._unsloth_h3_encode_fp32 = True
+                        vae_dtype = torch.float32
+                        set_encoder_dtype(vae, vae_dtype)
+                        posterior = vae.encode(
+                            reference_vae_pixels(picture, vae_dtype, mean, std), return_dict = False
+                        )[0]
+                        if key is not None:
+                            key = (key[0], str(vae_dtype)) + key[2:]
                     latents = reference_posterior_latents(posterior, lmean, lstd)
-                    del posterior
+                    del posterior, picture
                     if key is not None:
                         stats["misses"] += 1
                         cache[key] = latents

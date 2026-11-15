@@ -194,10 +194,10 @@ def test_reference_rows_use_the_seed42_posterior_and_per_reference_restarted_noi
     expected = []
     for ref in vae_refs:
         pixels = torch.from_numpy(np.array(ref)).permute(2, 0, 1)[None].float().div(255.0)
+        # the reference VAE input: 2x - 1, then (x + 1) * 0.5 normalized (float32 off CUDA)
+        x = pixels * 2.0 - 1.0
         with torch.no_grad():
-            moments = vae.encode(
-                ((pixels - mean) / std).to(h3i._module_dtype(vae)), return_dict = False
-            )[0]
+            moments = vae.encode(x.add(1.0).mul_(0.5).sub_(mean).div_(std), return_dict = False)[0]
         m, logvar = moments.parameters.float()[:, :, None].chunk(2, dim = 1)
         noise = torch.randn(m.shape, generator = torch.Generator().manual_seed(42))
         z = (torch.addcmul(m, torch.exp(0.5 * logvar.clamp(-30.0, 20.0)), noise) - lmean) / lstd
@@ -721,3 +721,41 @@ def test_prepared_pictures_are_cached_per_source_picture(h3i):
     # the rule is part of the key
     plain = h3i.MiniMaxH3ImagePipeline.prepare_references([pic], source_resize = False)
     assert plain[0][0].size == h3i.size_short_edge(600, 400, 1024, 2048)
+
+
+def test_the_vae_encodes_in_the_reference_working_dtype(h3i):
+    import torch
+
+    # float16 on CUDA, float32 on CPU or with the opt-out; normalized after the cast, in that dtype
+    assert h3i.reference_encode_dtype("cuda") == torch.float16
+    assert h3i.reference_encode_dtype("cpu") == torch.float32
+    pic = torch.rand(1, 64, 96, 3, generator = torch.Generator().manual_seed(5))
+    mean = torch.tensor(h3i.H3_IMAGE_PIXEL_MEAN).view(1, -1, 1, 1)
+    std = torch.tensor(h3i.H3_IMAGE_PIXEL_STD).view(1, -1, 1, 1)
+    for dt in (torch.float16, torch.float32):
+        x = (pic * 2.0 - 1.0).to(dt).permute(0, 3, 1, 2)
+        ref = x.add(1.0).mul_(0.5).sub_(mean.to(x)).div_(std.to(x))
+        mine = h3i.reference_vae_pixels(pic, dt, mean, std)
+        assert mine.dtype == dt and torch.equal(mine, ref)
+
+
+def test_the_vae_encode_opt_out_and_overflow_fall_back_to_float32(h3i, monkeypatch):
+    import types
+
+    import torch
+
+    monkeypatch.setenv(h3i.VAE_ENCODE_HALF_ENV, "0")
+    assert h3i.reference_encode_dtype("cuda") == torch.float32
+    monkeypatch.delenv(h3i.VAE_ENCODE_HALF_ENV)
+    assert (
+        h3i.reference_encode_dtype("cuda", types.SimpleNamespace(_unsloth_h3_encode_fp32 = True))
+        == torch.float32
+    )
+    vae = types.SimpleNamespace(
+        encoder = torch.nn.Linear(2, 2),
+        quant_conv = torch.nn.Linear(2, 2),
+        decoder = torch.nn.Linear(2, 2),
+    )
+    h3i.set_encoder_dtype(vae, torch.float16)
+    assert vae.encoder.weight.dtype == vae.quant_conv.weight.dtype == torch.float16
+    assert vae.decoder.weight.dtype == torch.float32
