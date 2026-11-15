@@ -499,7 +499,8 @@ def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
     )
     LlamaForCausalLM(config).save_pretrained(tmp_path)
     raw = json.loads((tmp_path / "config.json").read_text())
-    raw["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "NVFP4"}
+    # A ModelOpt algorithm neither loader takes (FP8 -> modelopt_fp8, NVFP4 -> modelopt_nvfp4 since #17848).
+    raw["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "W4A8_AWQ"}
     (tmp_path / "config.json").write_text(json.dumps(raw))
     code = f"""
 import os
