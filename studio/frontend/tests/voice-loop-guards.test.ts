@@ -342,11 +342,11 @@ test("a thread switch drops the old chat's pending transcript and its claim on t
   }
 });
 
-test("a phrase still in VAD/STT holds the coalesced reply; an unmounted engine's mic retries go stale", () => {
+test("a phrase still in VAD/STT holds the coalesced reply; an unmounted engine's mic retries and held phrase go stale", () => {
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(loop, /teardown\(\);\s*utterancesPending \+= 1;\s*try \{\s*await finalizeHeard\(\);\s*\} finally \{\s*utterancesPending -= 1;/);
   assert.match(engine, /if \(\(rt\.voiceHearing \|\| rt\.voiceTranscribing \|\| voiceUtterancePending\(\)\) && Date\.now\(\)/);
-  assert.match(engine, /return \(\) => \{\s*rearmSeqRef\.current \+= 1;\s*if \(voiceCoalesceTimerRef\.current\) clearTimeout/);
+  assert.match(engine, /return \(\) => \{\s*rearmSeqRef\.current \+= 1;\s*(?:\/\/[^\n]*\n\s*)?clearHeldTurn\(\);\s*forgetVoiceBox\(\);\s*if \(voiceCoalesceTimerRef\.current\) clearTimeout/);
 });
 
 test("opening and dismissing voice setup keeps typed Send/Stop and the running reply", () => {
@@ -357,4 +357,10 @@ test("opening and dismissing voice setup keeps typed Send/Stop and the running r
   const off = engine.slice(engine.indexOf("const turnOff = useCallback("));
   assert.match(off.slice(0, 300), /const wasActive = voiceModeRef\.current === "active";/);
   assert.match(off.slice(0, 2500), /if \(wasActive && thread\.getState\(\)\.isRunning\) \{\s*try \{\s*thread\.cancelRun\(\);/);
+});
+
+test("a filler that finishes synthesizing after the reply ended is dropped", () => {
+  const player = readSrc("features/chat/hooks/use-tts-player.ts");
+  const aside = player.slice(player.indexOf("const sayAside = useCallback("));
+  assert.match(aside.slice(0, 1500), /const play = \([^)]*\) => \{\s*(?:\/\/[^\n]*\n\s*)?if \(reqRef\.current !== reqId \|\| streamRef\.current !== st \|\| st\.final\) return;/);
 });

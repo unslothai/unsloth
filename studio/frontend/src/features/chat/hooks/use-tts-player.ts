@@ -373,7 +373,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       const reqId = reqRef.current;
       const blocked = () => asideBlocked(clipsRef.current, { patient, replySynth: realSynthRef.current });
       const play = (buffer: AudioBuffer, cached: boolean, said = text) => {
-        if (reqRef.current !== reqId) return;
+        // The reply may have ended while this synthesized: a late filler would talk over the next turn.
+        if (reqRef.current !== reqId || streamRef.current !== st || st.final) return;
         if (blocked()) {
           voiceTrace("tts.asideDropped", { text: said, cached, clips: clipsRef.current.size, synth: realSynthRef.current });
           return;
