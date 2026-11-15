@@ -180,7 +180,7 @@ def _checked_shard(name):
 def _read_index(src):
     index = os.path.join(src, "model.safetensors.index.json")
     if os.path.isfile(index):
-        with open(index) as f:
+        with open(index, encoding = "utf-8") as f:
             weight_map = json.load(f)["weight_map"]
         for shard in weight_map.values():
             _checked_shard(shard)
@@ -438,16 +438,16 @@ def _convert_into(src, tmp, dst):
                 new_map.update({k: fname for k in out})
     finally:
         handles.clear()
-    with open(os.path.join(tmp, "model.safetensors.index.json"), "w") as f:
+    with open(os.path.join(tmp, "model.safetensors.index.json"), "w", encoding = "utf-8") as f:
         json.dump({"metadata": {}, "weight_map": new_map}, f)
-    with open(os.path.join(src, "config.json")) as f:
+    with open(os.path.join(src, "config.json"), encoding = "utf-8") as f:
         config = json.load(f)
     config.pop("quantization_config", None)
     if packed_experts:
         config["unsloth_experts_format"] = "mxfp4"
         if isinstance(config.get("text_config"), dict):
             config["text_config"]["unsloth_experts_format"] = "mxfp4"
-    with open(os.path.join(tmp, "config.json"), "w") as f:
+    with open(os.path.join(tmp, "config.json"), "w", encoding = "utf-8") as f:
         json.dump(config, f, indent = 1)
     for f in os.listdir(src):
         if (
@@ -456,4 +456,4 @@ def _convert_into(src, tmp, dst):
             or f in ("generation_config.json", "special_tokens_map.json")
         ):
             shutil.copy(os.path.join(src, f), os.path.join(tmp, f))
-    open(os.path.join(tmp, ".unsloth_converted"), "w").close()
+    open(os.path.join(tmp, ".unsloth_converted"), "w", encoding = "utf-8").close()

@@ -1363,7 +1363,7 @@ def _checkpoint_key_names(path, **hub_kwargs):
 
     index = _local_or_cached("model.safetensors.index.json")
     if index:
-        with open(index) as f:
+        with open(index, encoding = "utf-8") as f:
             return set(json.load(f).get("weight_map", {}))
     single = _local_or_cached("model.safetensors")
     if single:
