@@ -601,8 +601,12 @@ def install_fsdp2_peft_full_state_dict():
     ):
         if _full_peft(model, adapter_only, sd_options):
             from torch.distributed.checkpoint.state_dict import get_model_state_dict
+
+            from .fsdp2_native import frozen_tables_hidden
+
             options = dataclasses.replace(sd_options, ignore_frozen_params = True)
-            return get_model_state_dict(model, options = options)
+            with frozen_tables_hidden(model):  # a frozen lookup table is no adapter weight
+                return get_model_state_dict(model, options = options)
         return original_get(model, adapter_only = adapter_only, sd_options = sd_options)
 
     @functools.wraps(original_set)

@@ -9259,6 +9259,12 @@ def patch_saving_functions(model, vision = False):
     import inspect
     from typing import Callable, Optional, Union, List
 
+    try:  # adapter saves of a model with frozen lookup tables write frozen_tables.json next to the adapter
+        from .models.frozen_table_provenance import install as _install_table_provenance
+        _install_table_provenance()
+    except Exception:
+        pass
+
     if model.push_to_hub.__name__ == "unsloth_push_to_hub":
         original_push_to_hub = model.original_push_to_hub
     else:

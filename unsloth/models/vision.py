@@ -313,6 +313,7 @@ from .loader_utils import (
     _restore_dropped_fp8_scales,
     _dequantize_multihead_attention_out_proj,
     _prepare_compressed_tensors_model,
+    quantize_moe_experts_if_requested,
     _dequantize_bitsandbytes_for_full_finetuning,
     planner_class_mismatch_reason,
     planner_model_class,
@@ -2602,6 +2603,51 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         _clear_generation_caches(self)
 
     return output
+
+
+def unsloth_nested_fast_generate(self, *args, **kwargs):
+    """Per-step sub-model generate() (CSM depth decoder): replays a decode graph kept across frames.
+    Relies on the parent's inference mode/autocast; outside a parent call (or with a caller cache) it is stock."""
+    if (
+        not torch.is_inference_mode_enabled()
+        or kwargs.get("past_key_values") is not None
+        or "cache_implementation" in kwargs
+        or kwargs.get("generation_config") is not None
+        # FlashAttention builds no mask for unpadded rows, so a static cache's empty slots would be attended.
+        or _uses_flash_attention_for_generation(self.config)
+    ):
+        return self._old_generate(*args, **kwargs)
+    input_ids = args[0] if args else kwargs.get("input_ids")
+    if not isinstance(input_ids, torch.Tensor):
+        return self._old_generate(*args, **kwargs)
+    static = dict(kwargs, cache_implementation = "static")
+    # As the parent: a static cache would otherwise auto-compile the forward (transformers' compile_config).
+    static.setdefault("compile_config", _compile_config)
+    with _decode_graphs.generate_scope():
+        if _generic_decode_graphs.plan(self, args, static, input_ids) != "graph":
+            # Graphs off (kill switch, ROCm, short call): stock call; static eager is 13% slower (T4, csm-1b).
+            with _decode_graphs.plan_scope("eager"):
+                return self._old_generate(*args, **kwargs)
+        scope = _GraphDecodeSteps(self)
+        with scope, _decode_graphs.plan_scope("graph"):
+            out = self._old_generate(*args, **static)
+            scope.keep = _generic_decode_graphs.keepable(self, static, out)
+        return out
+
+
+def _patch_nested_generate(model):
+    """CSM: the depth decoder's per-frame generate() through unsloth_nested_fast_generate."""
+    depth = getattr(model, "depth_decoder", None)
+    if (
+        depth is None
+        or not hasattr(depth, "generate")
+        or not hasattr(depth, "_prepare_static_cache")
+    ):
+        return
+    if getattr(depth.generate, "__name__", "") == "unsloth_nested_fast_generate":
+        return
+    depth._old_generate = depth.generate
+    depth.generate = types.MethodType(unsloth_nested_fast_generate, depth)
 
 
 # Offline helpers live in loader_utils.py, the shared canonical source.
@@ -4919,6 +4965,7 @@ class FastBaseModel:
                         "Unsloth: dequantized 4-bit nn.MultiheadAttention out_proj weights."
                     )
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
+                quantize_moe_experts_if_requested(model, full_finetuning = full_finetuning)
                 if full_finetuning:
                     _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
                 elif fsdp2_requested():
@@ -5478,6 +5525,7 @@ class FastBaseModel:
                 model._old_generate = model.generate
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
+            _patch_nested_generate(model)
         model._unsloth_trust_remote_code = trust_remote_code
         # Export's trusted config re-read pins to this commit, not a moved branch head.
         model._unsloth_trust_remote_code_commit = (

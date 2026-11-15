@@ -914,6 +914,26 @@ def test_kill_switch(monkeypatch):
     assert M._torch_supported()
 
 
+@pytest.mark.parametrize("version", ["2.6.0+cu124", "2.5.1"])
+def test_old_torch_installs_nothing(monkeypatch, version):
+    """#10744: torch < 2.7 keeps every layer on the stock forward (no class wrapped, nothing compiled)."""
+    M = _load()
+    calls = []
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: calls.append(1) or fn)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch, "__version__", version)
+    cls = _toy_class()
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([cls(), cls()])
+    original = cls.forward
+    assert M.patch_block_compile(model) == []
+    assert cls.forward is original
+    model.layers[0](torch.randn(2, 4, 8, requires_grad = True)).sum().backward()
+    assert calls == []
+    monkeypatch.setattr(torch, "__version__", "2.7.1+cu126")
+    assert M.patch_block_compile(model) == [cls.__name__]
+
+
 def test_forced_float32_is_decided_per_model(monkeypatch):
     M = _load()
     calls = []
@@ -1071,7 +1091,7 @@ def _record_proj(layer, style, recorded):
 
 @pytest.mark.parametrize("style", ["hook", "forward"])
 def test_trial_forward_is_not_recorded_as_a_model_output(monkeypatch, style):
-    """The first-call trial must not add an extra router_logits entry to the MoE aux loss."""
+    # Qwen3-MoE tiny: trial forward added an extra router_logits entry (grad norm 1.04 vs 1.21).
     from torch.utils.checkpoint import checkpoint
 
     if style == "hook":
@@ -1259,6 +1279,80 @@ def test_block_flex_forces_the_main_kernel(monkeypatch):
     ]
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
+@pytest.mark.parametrize("guard", ["0", "1"], ids = ["no_align_guard", "torch_guard"])
+def test_block_does_not_recompile_per_length_mod_8(monkeypatch, guard):
+    """torch 2.14 SDPA lowering guards `Mod(s, 8)` on strides: a block recompiled per alignment class."""
+    import inspect
+
+    import torch._inductor.lowering as lowering
+    from transformers.models.qwen3 import modeling_qwen3 as modeling
+    from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+
+    M = _load()
+    stock = lowering.sdpa_constraint
+    stock = (
+        getattr(stock, "__wrapped__", stock)
+        if getattr(stock, "_unsloth_no_align_guard", False)
+        else stock
+    )
+    if "is_aligned_realized_tensor" not in inspect.getsource(stock):
+        pytest.skip("this torch has no alignment check in the SDPA lowering")
+    monkeypatch.setattr(lowering, "sdpa_constraint", stock)
+    for op, fn in list(lowering._maybe_layout_constraints.items()):
+        if getattr(fn, "_unsloth_no_align_guard", False):
+            monkeypatch.setitem(lowering._maybe_layout_constraints, op, stock)
+    monkeypatch.setenv("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", guard)
+    assert M._sdpa_alignment_without_guard() is (guard == "0")
+    # A cached graph from the other arm would carry its guards.
+    monkeypatch.setattr(torch._inductor.config, "fx_graph_cache", False)
+    monkeypatch.setattr(torch._functorch.config, "enable_autograd_cache", False)
+    import torch._dynamo.convert_frame as convert_frame
+
+    reasons = []
+    stock_reasons = convert_frame.get_and_maybe_log_recompilation_reasons
+
+    def record(*a, **k):
+        out = stock_reasons(*a, **k)
+        reasons.extend(str(r) for r in out)
+        return out
+
+    monkeypatch.setattr(convert_frame, "get_and_maybe_log_recompilation_reasons", record)
+
+    cfg = Qwen3Config(
+        vocab_size = 64,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+    )
+    cfg._attn_implementation = "sdpa"
+    torch.manual_seed(0)
+    cls = modeling.Qwen3DecoderLayer
+    model = modeling.Qwen3Model(cfg).cuda().to(torch.bfloat16).train()
+    layer = model.layers[0]
+
+    def run(L):
+        # Causal flash SDPA: backward reads a (B, H, L) logsumexp, strides (H*L, L, 1).
+        ids = torch.randint(0, 64, (2, L), device = "cuda")
+        model(input_ids = ids, use_cache = False).last_hidden_state.float().sum().backward()
+
+    original = cls.forward
+    try:
+        M._wrap(cls, M._COMPILE_OPTIONS)
+        torch._dynamo.reset()
+        for L in (517, 520, 523, 528):  # unaligned, aligned, unaligned, aligned
+            run(L)
+        assert layer.__dict__.get("_unsloth_block_checked", 0) & 2
+    finally:
+        cls.forward = original
+        torch._dynamo.reset()
+    mod_8 = [r for r in reasons if "% 8" in r]
+    assert bool(mod_8) is (guard == "1"), reasons
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "flex_attention kernels need CUDA")
 def test_block_flex_options_lower_short_gqa_training_queries():
     """Qwen3.5 GRPO shapes: with the block options, compiled flex fwd + bwd lower and match eager."""
@@ -1351,6 +1445,7 @@ def test_short_gqa_flex_block_stays_compiled():
 @pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need CUDA")
 def test_qwen3_5_gdn_block_has_no_break():
     pytest.importorskip("unsloth")
+    pytest.importorskip("transformers.models.qwen3_5")  # transformers >= 5.2
     pytest.importorskip("fla.ops.gated_delta_rule")
     from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
@@ -1397,6 +1492,12 @@ def test_qwen3_5_gdn_block_has_no_break():
         counters.clear()
         got = [_grads_after_step(layers, run, xi.clone().requires_grad_()) for xi in x]
         assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])
+        # A stock-forward fallback also has no break: assert the block ran (grouped heads demoted it on 5.23).
+        for layer in layers:
+            assert layer.__dict__.get("_unsloth_block_mode") == M._FULL, layer.__dict__.get(
+                "_unsloth_block_mode"
+            )
+            assert layer.__dict__.get("_unsloth_block_checked", 0) & 2
     finally:
         cls.forward = original
         torch._dynamo.reset()
@@ -1411,14 +1512,33 @@ def test_qwen3_5_gdn_block_has_no_break():
             )
 
 
+def test_gdn_op_name_pins_its_fake_meta():
+    """Inductor's disk cache keys on the op name, not its fake meta: changing the fake requires a new op name."""
+    M = _load("_gdn_op")
+    if M._gdn_chunk is None:
+        pytest.skip("torch without torch.library.custom_op")
+    q = torch.empty(2, 64, 4, 32, device = "meta", dtype = torch.bfloat16)
+    v = torch.empty(2, 64, 16, 32, device = "meta", dtype = torch.bfloat16)
+    g = torch.empty(2, 64, 16, device = "meta")
+    A = [tuple(shape) for shape, _ in M._chunk_meta(q, q, v, g)][-1]
+    published = {
+        "unsloth::qwen3_5_gdn_chunk": (2, 64, 4, 64),
+        "unsloth::qwen3_5_gdn_chunk_v2": (2, 64, 16, 64),
+    }
+    assert published[M._gdn_chunk._qualname] == A, (M._gdn_chunk._qualname, A)
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need a GPU")
-def test_opaque_fla_op_matches_fla_function():
+@pytest.mark.parametrize("qk_heads", [4, 2], ids = ["equal_heads", "grouped_value_heads"])
+def test_opaque_fla_op_matches_fla_function(qk_heads):
+    """grouped_value_heads: transformers 5.23 passes q / k unrepeated (huggingface/transformers#49141); the fake
+    meta of A had the q / k head count, so Inductor's output check failed and every GVA layer ran stock."""
     pytest.importorskip("fla.ops.gated_delta_rule.chunk")
     M = _load("_gdn_op")
     gen = torch.Generator(device = "cuda").manual_seed(0)
     B, T, H, D = 2, 150, 4, 128
     mk = lambda *s, dt = torch.bfloat16: torch.randn(*s, device = "cuda", dtype = dt, generator = gen)
-    q, k, v = mk(B, T, H, D), mk(B, T, H, D), mk(B, T, H, D)
+    q, k, v = mk(B, T, qk_heads, D), mk(B, T, qk_heads, D), mk(B, T, H, D)
     g = -mk(B, T, H, dt = torch.float32).abs() * 0.1
     beta = mk(B, T, H).sigmoid()
     assert M._fla_ops(lambda: (q, k, v, g, beta))
@@ -1441,7 +1561,7 @@ def test_gdn_adapter_routes_only_the_self_checked_call(monkeypatch):
     monkeypatch.setattr(
         torch.ops,
         "unsloth",
-        types.SimpleNamespace(qwen3_5_gdn_chunk = lambda *a: seen.append("op") or ("out",)),
+        types.SimpleNamespace(qwen3_5_gdn_chunk_v2 = lambda *a: seen.append("op") or ("out",)),
         raising = False,
     )
     adapter = M._gdn_chunk_adapter(lambda *a, **kw: seen.append("fla") or ("fla", None))
@@ -1475,7 +1595,7 @@ def test_gdn_adapter_routes_packed_batches_once_self_checked(monkeypatch):
         return ("out",)
 
     monkeypatch.setattr(
-        torch.ops, "unsloth", types.SimpleNamespace(qwen3_5_gdn_chunk = op), raising = False
+        torch.ops, "unsloth", types.SimpleNamespace(qwen3_5_gdn_chunk_v2 = op), raising = False
     )
     adapter = M._gdn_chunk_adapter(lambda *a, **kw: seen.append(("fla", None)) or ("fla", None))
     stock = dict(use_qk_l2norm_in_kernel = True, initial_state = None, output_final_state = False)
@@ -1513,7 +1633,7 @@ def test_gdn_adapter_ignores_kwargs_the_hub_wrapper_drops(monkeypatch):
     monkeypatch.setattr(
         torch.ops,
         "unsloth",
-        types.SimpleNamespace(qwen3_5_gdn_chunk = lambda *a: seen.append("op") or ("out",)),
+        types.SimpleNamespace(qwen3_5_gdn_chunk_v2 = lambda *a: seen.append("op") or ("out",)),
         raising = False,
     )
     fla = lambda *a, **kw: seen.append("fla") or ("fla", None)
@@ -1620,6 +1740,51 @@ def test_causal_depthwise_conv_matches_conv1d():
     x, w = torch.randn(2, 6, 37), torch.randn(6, 4)
     want = torch.nn.functional.conv1d(x, w[:, None], groups = 6, padding = 3)[..., :37]
     torch.testing.assert_close(M._causal_depthwise_conv(x, w), want, rtol = 1e-5, atol = 1e-5)
+
+
+@pytest.mark.parametrize("call", ["positional", "x_keyword"])
+def test_causal_conv_adapter_takes_both_call_conventions(call):
+    """transformers < 5.15 GatedDeltaNet calls self.causal_conv1d_fn(x = ..., weight = ..., ...): the adapter
+    required `hidden_states`, so a Qwen3-Next model built after the first block forward raised TypeError."""
+    M = _load()
+    G = _load("_gdn_op")
+    seen = []
+
+    def legacy(
+        x,
+        weight,
+        bias = None,
+        activation = None,
+        seq_idx = None,
+        **kwargs,
+    ):
+        seen.append(sorted(kwargs) + (["seq_idx"] if seq_idx is not None else []))
+        out = torch.nn.functional.conv1d(
+            x, weight[:, None], bias, groups = x.shape[1], padding = weight.shape[-1] - 1
+        )
+        out = out[..., : x.shape[-1]]
+        return torch.nn.functional.silu(out) if activation else out
+
+    fn = M._causal_conv1d_adapter(legacy, G._causal_depthwise_conv)
+    torch.manual_seed(0)
+    x, w, b = torch.randn(2, 6, 17), torch.randn(6, 4), torch.randn(6)
+
+    def call_it(f):
+        if call == "positional":
+            return f(x, w, b, activation = "silu")
+        return f(x = x, weight = w, bias = b, activation = "silu", seq_idx = None)
+
+    want = call_it(legacy)
+    torch.testing.assert_close(call_it(fn), want)  # eager: passes through unchanged
+    M._IN_BLOCK[0] = M._FULL
+    try:
+        seen.clear()
+        got = torch.compile(lambda: call_it(fn), backend = "eager", fullgraph = True)()
+    finally:
+        M._IN_BLOCK[0] = M._OFF
+        torch._dynamo.reset()
+    assert seen == []  # in-block: the traceable depthwise conv, not the legacy kernel
+    torch.testing.assert_close(got, want, rtol = 1e-5, atol = 1e-5)
 
 
 def test_disable_unless_decode_keeps_original_traceable_on_old_torch(monkeypatch):
@@ -1881,6 +2046,40 @@ def test_router_logits_after_a_forward_without_them(request, monkeypatch):
     torch.testing.assert_close(out.aux_loss.detach(), want.aux_loss.detach())
     torch.testing.assert_close(out.loss.detach(), want.loss.detach())
     torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("registry_kind", ["dict", "model_keyed"])
+def test_router_hooks_install_with_either_registry_api(monkeypatch, registry_kind):
+    """transformers 5.23 (huggingface/transformers#49594) made _CAN_RECORD_REGISTRY a dict subclass whose
+    .get takes the model and stringifies its class, so .get(<class string>) answered {} and no router hook
+    was installed up front (the IndexError above came back). Keys are still the class strings."""
+    M = _load()
+
+    class Registry(dict):
+        def get(self, model):
+            return super().get(str(model.__class__)) or {}
+
+    class Collector:
+        _unsloth_eager_mirror = True
+
+    class MoeModel(torch.nn.Module):
+        pass
+
+    registry = (dict if registry_kind == "dict" else Registry)()
+    dict.__setitem__(registry, str(MoeModel), {"router_logits": object()})
+    installed = []
+    fake = types.ModuleType("transformers.utils.output_capturing")
+    fake._CAN_RECORD_REGISTRY = registry
+    fake.maybe_install_capturing_hooks = installed.append
+    fake.CompileableContextVar = Collector
+    monkeypatch.setitem(sys.modules, "transformers.utils.output_capturing", fake)
+    import transformers.utils
+
+    monkeypatch.setattr(transformers.utils, "output_capturing", fake, raising = False)
+    model = MoeModel()
+    model.inner = torch.nn.Linear(2, 2)
+    assert M._install_router_capture_hooks(model) == 1
+    assert installed == [model]
 
 
 def test_router_hooks_are_not_installed_twice_after_an_eager_capture(request, monkeypatch):

@@ -1050,6 +1050,7 @@ class DeepseekV41NgramHashState(nn.Module):
         # __init__ may run under a meta device context (from_pretrained).
         self._layout = (primes, offsets)
         self._token_map = None
+        self._host_tables = None
         self.pad_id = None
         self._device_cache = {}
 
@@ -1065,6 +1066,16 @@ class DeepseekV41NgramHashState(nn.Module):
     def bind_token_map(self, token_map):
         self._token_map = torch.as_tensor(token_map, dtype = torch.int64, device = "cpu")
         self.pad_id = int(self._token_map[self.engram_pad_id])
+        # Not in forward: compiled cache disables compute_hash_multipliers, breaking fullgraph.
+        primes, offsets = self._layout
+        self._host_tables = (
+            self._token_map,
+            torch.tensor(primes, dtype = torch.int64, device = "cpu"),
+            torch.tensor(offsets, dtype = torch.int64, device = "cpu"),
+            compute_hash_multipliers(
+                self.layer_ids, self.max_ngram_size, self.compressed_vocab_size
+            ),
+        )
         self._device_cache = {}
 
     @property
@@ -1074,16 +1085,7 @@ class DeepseekV41NgramHashState(nn.Module):
     def _tables(self, device):
         cached = self._device_cache.get(device)
         if cached is None:
-            primes, offsets = self._layout
-            cpu = (
-                self._token_map,
-                torch.tensor(primes, dtype = torch.int64, device = "cpu"),
-                torch.tensor(offsets, dtype = torch.int64, device = "cpu"),
-                compute_hash_multipliers(
-                    self.layer_ids, self.max_ngram_size, self.compressed_vocab_size
-                ),
-            )
-            cached = tuple(t.to(device) for t in cpu)
+            cached = tuple(t.to(device) for t in self._host_tables)
             self._device_cache[device] = cached
         return cached
 
