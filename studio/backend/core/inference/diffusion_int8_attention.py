@@ -164,6 +164,15 @@ _LOADED: dict = {}
 _CUDA_FAILED: dict = {}
 STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
+_KINDS: dict = {}  # torch dtype -> _OUT_KIND, filled on first use (torch is imported lazily)
+
+
+def _dtype_kinds() -> dict:
+    import torch
+
+    # filled in one step: a concurrent first call never sees a partial table
+    _KINDS.update({getattr(torch, name.split(".", 1)[1]): kind for name, kind in _OUT_KIND.items()})
+    return _KINDS
 
 
 def mode() -> str:
@@ -237,27 +246,33 @@ def triton_available() -> bool:
         return False
 
 
+def _serving(index: int, head_dim: int) -> tuple:
+    """(implementation, config) for this device and head dim (``implementation``, ``device_config``), the device
+    facts read once."""
+    import torch
+
+    if _is_rocm():
+        config = rocm_kernel_config(_gfx_arch(index), head_dim)
+        return ("triton", config) if config is not None else (None, None)
+    setting = impl_setting()
+    capability = torch.cuda.get_device_capability(index)
+    if setting != "triton" and (int(index), int(head_dim)) not in _CUDA_FAILED:
+        config = kernel_config(capability, head_dim)
+        if config is not None:
+            return "cuda", config
+    if setting == "cuda":
+        return None, None
+    config = triton_kernel_config(capability, head_dim)
+    if config is not None and triton_available():
+        return "triton", config
+    return None, None
+
+
 def implementation(index: int, head_dim: int) -> Optional[str]:
     """``cuda`` | ``triton`` | None (native attention): what serves this device and head dim. NVIDIA runs the CUDA
     kernel unless it failed to build, load or launch here (or ``IMPL=triton``); then the Triton kernel where Triton
     imports and the capability has a Triton config. ROCm runs Triton where its gfx arch has a config."""
-    import torch
-
-    if _is_rocm():
-        return "triton" if rocm_kernel_config(_gfx_arch(index), head_dim) is not None else None
-    setting = impl_setting()
-    capability = torch.cuda.get_device_capability(index)
-    if (
-        setting != "triton"
-        and kernel_config(capability, head_dim) is not None
-        and (int(index), int(head_dim)) not in _CUDA_FAILED
-    ):
-        return "cuda"
-    if setting == "cuda":
-        return None
-    if triton_kernel_config(capability, head_dim) is not None and triton_available():
-        return "triton"
-    return None
+    return _serving(index, head_dim)[0]
 
 
 def device_config(
@@ -269,9 +284,8 @@ def device_config(
     the CUDA or the Triton table by capability, the ROCm table by gfx arch."""
     import torch
 
-    impl = impl or implementation(index, head_dim)
     if impl is None:
-        return None
+        return _serving(index, head_dim)[1]
     if _is_rocm():
         return rocm_kernel_config(_gfx_arch(index), head_dim)
     capability = torch.cuda.get_device_capability(index)
@@ -559,6 +573,58 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
     return plan
 
 
+def _find_plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> tuple:
+    """(plan, q, k, v): the call's launch plan and its operands with aligned strides (copies only where needed)."""
+    # a plan is only ever made for aligned strides: finding one leaves the first rows' alignment to check
+    plan = None
+    if not (q.data_ptr() | k.data_ptr() | v.data_ptr()) & 15:
+        plan = _plans().get(_plan_key(q, k, v, config, scale, index))
+    if plan is None:
+        q, k, v = _aligned(q), _aligned(k), _aligned(v)
+        plan = _plan(q, k, v, config, scale, index)
+    return plan, q, k, v
+
+
+def _launch_quantisers(plan: dict, q: Any, k: Any, v: Any, base: int, stream: int) -> None:
+    qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
+    off = plan["off"]
+    stats_q, quant_kv, _ = plan["kernels"]
+    kc, vpart = base + off["kc"], base + off["vpart"]
+    args = (qp, kp, vp, kc, vpart, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
+    for grid, job in plan["stats_grids"]:
+        stats_q.launch(grid, plan["stats_threads"], args + (job,), 0, stream)
+    args = (
+        kp,
+        vp,
+        kc,
+        vpart,
+        base + off["ki"],
+        base + off["ks"],
+        base + off["vt"],
+        base + off["vs"],
+        base + off["vc"],
+        base + off["vg"],
+    ) + plan["kv_tail"]
+    for grid, job in plan["kv_grids"]:
+        quant_kv.launch(grid, plan["kv_threads"], args + (job,), 0, stream)
+
+
+def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int) -> None:
+    off = plan["off"]
+    args = (
+        base + off["qi"],
+        base + off["ki"],
+        base + off["vt"],
+        base + off["qs"],
+        base + off["ks"],
+        base + off["vs"],
+        base + off["vg"],
+        base + off["vc"],
+        out_ptr,
+    ) + plan["attn_tail"]
+    plan["kernels"][2].launch(plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream)
+
+
 def quantise(
     q: Any,
     k: Any,
@@ -571,43 +637,13 @@ def quantise(
 
     dev = q.device
     index = _device_index(dev)
-    qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
-    # a plan is only ever made for aligned strides: finding one leaves the first rows' alignment to check
-    plan = None if (qp | kp | vp) & 15 else _plans().get(_plan_key(q, k, v, config, scale, index))
-    if plan is None:
-        q, k, v = _aligned(q), _aligned(k), _aligned(v)
-        qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
-        plan = _plan(q, k, v, config, scale, index)
+    plan, q, k, v = _find_plan(q, k, v, config, scale, index)
     i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = dev)
-    base, off = i8.data_ptr(), plan["off"]
-    stats_q, quant_kv, _ = plan["kernels"]
-    kc, vpart = base + off["kc"], base + off["vpart"]
-
-    def launch() -> None:
-        stream = _raw_stream(index)
-        args = (qp, kp, vp, kc, vpart, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
-        for grid, job in plan["stats_grids"]:
-            stats_q.launch(grid, plan["stats_threads"], args + (job,), 0, stream)
-        args = (
-            kp,
-            vp,
-            kc,
-            vpart,
-            base + off["ki"],
-            base + off["ks"],
-            base + off["vt"],
-            base + off["vs"],
-            base + off["vc"],
-            base + off["vg"],
-        ) + plan["kv_tail"]
-        for grid, job in plan["kv_grids"]:
-            quant_kv.launch(grid, plan["kv_threads"], args + (job,), 0, stream)
-
     if torch.cuda.current_device() == index:
-        launch()
+        _launch_quantisers(plan, q, k, v, i8.data_ptr(), _raw_stream(index))
     else:
         with torch.cuda.device(index):
-            launch()
+            _launch_quantisers(plan, q, k, v, i8.data_ptr(), _raw_stream(index))
     return Operands(
         i8 = i8,
         plan = plan,
@@ -617,6 +653,31 @@ def quantise(
         config = plan["config"],
         inputs = (q, k, v),  # kept alive until the launches that read them are done
     )
+
+
+def _cuda_attention(
+    q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int
+) -> Any:
+    """``attend(quantise(q, k, v, config, scale))`` in one pass: one plan lookup, one stream lookup, no operand
+    views. The scratch buffer and any aligned copies are freed on return; the caching allocator hands their memory
+    out again only in stream order, after the launches that read it."""
+    import torch
+
+    plan, q, k, v = _find_plan(q, k, v, config, scale, index)
+    dev = q.device
+    i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = dev)
+    out = torch.empty(plan["out_shape"], dtype = v.dtype, device = dev)
+    base = i8.data_ptr()
+    if torch.cuda.current_device() == index:
+        stream = _raw_stream(index)
+        _launch_quantisers(plan, q, k, v, base, stream)
+        _launch_attention(plan, base, out.data_ptr(), stream)
+    else:
+        with torch.cuda.device(index):
+            stream = _raw_stream(index)
+            _launch_quantisers(plan, q, k, v, base, stream)
+            _launch_attention(plan, base, out.data_ptr(), stream)
+    return out
 
 
 def kernel_function(device: Any, head_dim: int, config: dict) -> Any:
@@ -632,58 +693,49 @@ def attend(p: dict) -> Any:
     plan, i8 = p["plan"], p["i8"]
     index = plan["index"]
     out = torch.empty(plan["out_shape"], dtype = p["dtype"], device = i8.device)
-    base, off = i8.data_ptr(), plan["off"]
-    args = (
-        base + off["qi"],
-        base + off["ki"],
-        base + off["vt"],
-        base + off["qs"],
-        base + off["ks"],
-        base + off["vs"],
-        base + off["vg"],
-        base + off["vc"],
-        out.data_ptr(),
-    ) + plan["attn_tail"]
-    fn = plan["kernels"][2]
     if torch.cuda.current_device() == index:
-        fn.launch(plan["attn_grid"], plan["attn_threads"], args, plan["shared"], _raw_stream(index))
+        _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index))
     else:
         with torch.cuda.device(index):
-            fn.launch(
-                plan["attn_grid"], plan["attn_threads"], args, plan["shared"], _raw_stream(index)
-            )
+            _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index))
     return out
+
+
+def _call_route(q: Any, k: Any, v: Any) -> tuple:
+    """(reason, device index, implementation, config): why this call cannot run the kernel (None when it can), and
+    what serves it. Every device fact is read once per call."""
+    import torch
+
+    if not (q.is_cuda and k.is_cuda and v.is_cuda) or not (q.device == k.device == v.device):
+        return "not on one CUDA device", None, None, None
+    if q.dim() != 4 or k.dim() != 4 or v.shape != k.shape:
+        return "not [B, S, H, D]", None, None, None
+    B, Sq, H, D = q.shape
+    if k.shape[0] != B or k.shape[2] != H or k.shape[3] != D or Sq < 1 or k.shape[1] < 1:
+        return "q / k / v shapes differ", None, None, None
+    if D not in HEAD_DIMS:
+        return f"head dim {D}", None, None, None
+    kinds = _KINDS or _dtype_kinds()
+    if q.dtype not in kinds or k.dtype not in kinds or v.dtype not in kinds:
+        return "dtype", None, None, None
+    if B * H > 65535:
+        return "batch * heads", None, None, None
+    if torch.is_grad_enabled() and (q.requires_grad or k.requires_grad or v.requires_grad):
+        return "needs gradients", None, None, None
+    index = q.device.index
+    if index is None:
+        index = torch.cuda.current_device()
+    impl, config = _serving(index, D)
+    if config is None:
+        return "no kernel config for this card", index, None, None
+    if (index, D) in _BROKEN:
+        return "kernel failed on this card", index, impl, config
+    return None, index, impl, config
 
 
 def unsupported_reason(q: Any, k: Any, v: Any) -> Optional[str]:
     """Why this call cannot run the kernel (it then runs native attention), or None."""
-    import torch
-
-    if not (q.is_cuda and k.is_cuda and v.is_cuda) or not (q.device == k.device == v.device):
-        return "not on one CUDA device"
-    if q.dim() != 4 or k.dim() != 4 or v.shape != k.shape:
-        return "not [B, S, H, D]"
-    B, Sq, H, D = q.shape
-    if k.shape[0] != B or k.shape[2] != H or k.shape[3] != D or Sq < 1 or k.shape[1] < 1:
-        return "q / k / v shapes differ"
-    if D not in HEAD_DIMS:
-        return f"head dim {D}"
-    if (
-        str(v.dtype) not in _OUT_KIND
-        or str(q.dtype) not in _OUT_KIND
-        or str(k.dtype) not in _OUT_KIND
-    ):
-        return "dtype"
-    if B * H > 65535:
-        return "batch * heads"
-    if torch.is_grad_enabled() and (q.requires_grad or k.requires_grad or v.requires_grad):
-        return "needs gradients"
-    index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    if device_config(index, D) is None:
-        return "no kernel config for this card"
-    if (index, D) in _BROKEN:
-        return "kernel failed on this card"
-    return None
+    return _call_route(q, k, v)[0]
 
 
 def _verified(
@@ -696,11 +748,13 @@ def _verified(
     serves it (the op runs the kernel only then: a check passed in one dtype, or by the other implementation, says
     nothing about this one)."""
     index = _device_index(q.device)
+    impl = impl or implementation(index, int(q.shape[-1]))
+    return impl is not None and _verified_at(index, q, k, v, impl)
+
+
+def _verified_at(index: int, q: Any, k: Any, v: Any, impl: str) -> bool:
     head_dim = int(q.shape[-1])
-    impl = impl or implementation(index, head_dim)
-    return impl is not None and all(
-        (index, head_dim, str(x.dtype), impl) in _VERIFIED for x in (q, k, v)
-    )
+    return all((index, head_dim, str(x.dtype), impl) in _VERIFIED for x in (q, k, v))
 
 
 def _run(
@@ -756,12 +810,16 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
     """The kernel where it can run, native attention elsewhere and after any failure."""
     import torch
 
-    impl = None
-    if unsupported_reason(q, k, v) is None:
-        impl = implementation(_device_index(q.device), int(q.shape[-1]))
-    if impl is not None and _verified(q, k, v, impl):
+    reason, index, impl, config = _call_route(q, k, v)
+    if reason is None and impl is not None and _verified_at(index, q, k, v, impl):
         try:
-            out = _run(q, k, v, impl)
+            if impl == "triton":
+                out = _run(q, k, v, impl, config)
+            elif torch.is_grad_enabled():
+                with torch.no_grad():
+                    out = _cuda_attention(q, k, v, config, None, index)
+            else:
+                out = _cuda_attention(q, k, v, config, None, index)
             STATS["int8"] += 1
             if impl == "triton":
                 STATS["triton"] += 1
@@ -769,13 +827,42 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
         except torch.OutOfMemoryError:
             raise
         except Exception as exc:  # noqa: BLE001 -- a JIT / launch failure keeps native attention on this card
-            index = q.device.index if q.device.index is not None else torch.cuda.current_device()
             _BROKEN.add((index, int(q.shape[-1])))
             _log().warning(
                 "diffusion.int8_attention: kernel failed, native attention from here on: %s", exc
             )
     STATS["native"] += 1
     return native_attention(q, k, v)
+
+
+def _tracing() -> bool:
+    """Whether a dispatch mode (make_fx, FlopCounterMode), a functorch transform (vmap, grad) or the TorchScript
+    tracer is active: their tensors look plain, and they must see the op, not raw launches (a trace would record the
+    allocations but not the ctypes launches that fill them)."""
+    import torch
+
+    if torch.jit.is_tracing():
+        return True
+    stack = getattr(torch._C, "_len_torch_dispatch_stack", None)
+    functorch = getattr(torch._C, "_are_functorch_transforms_active", None)
+    return bool((stack is not None and stack()) or (functorch is not None and functorch()))
+
+
+def int8_attention_call(q: Any, k: Any, v: Any) -> Any:
+    """What a processor calls: the custom op while torch.compile traces (opaque, with a fake), and in eager the op's
+    body directly, which skips the dispatcher's per-call cost (about a fifth of a short call's CPU time). Tensor
+    subclasses, dispatch modes and functorch transforms always go through the op."""
+    import torch
+
+    if (
+        type(q) is torch.Tensor
+        and type(k) is torch.Tensor
+        and type(v) is torch.Tensor
+        and not torch.compiler.is_compiling()
+        and not _tracing()
+    ):
+        return int8_attention_impl(q, k, v)
+    return torch.ops.unsloth_studio.int8_attention_nhd(q, k, v)
 
 
 def _log() -> Any:

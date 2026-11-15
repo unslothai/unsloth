@@ -1556,7 +1556,9 @@ def test_op_runs_the_kernel_only_where_it_was_verified(monkeypatch):
     torch.ops.unsloth_studio.int8_attention_nhd(*half)
     assert I.STATS["int8"] == before["int8"] + 2
     monkeypatch.setattr(I, "_BROKEN", set())
-    monkeypatch.setattr(I, "attend", lambda p: (_ for _ in ()).throw(RuntimeError("launch failed")))
+    monkeypatch.setattr(
+        I, "_launch_attention", lambda *a: (_ for _ in ()).throw(RuntimeError("launch failed"))
+    )
     assert torch.equal(
         torch.ops.unsloth_studio.int8_attention_nhd(q, k, v), I.native_attention(q, k, v)
     )
@@ -1819,3 +1821,78 @@ def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     record = getattr(model, H.ATTENTION_RACE_ATTR)
     assert record["timed"] == "block" and record["blocks"] == routed and routed in (0, 2)
     assert I.int8_attention_count(model) == routed
+
+
+def test_the_eager_call_skips_the_op_and_compile_traces_it(monkeypatch):
+    """``int8_attention_call`` runs the op's body directly in eager, and the custom op under torch.compile
+    (fullgraph: no break)."""
+    I.int8_attention_op()
+    seen = []
+    monkeypatch.setattr(I, "int8_attention_impl", lambda q, k, v: seen.append("impl") or v * 2)
+    q = torch.randn(1, 8, 2, 64)
+    assert torch.equal(I.int8_attention_call(q, q, q), q * 2) and seen == ["impl"]
+    graphs = []
+
+    def backend(gm, inputs):
+        graphs.append(gm)
+        return gm.forward
+
+    fn = torch.compile(
+        lambda q: I.int8_attention_call(q, q, q) + 1, backend = backend, fullgraph = True
+    )
+    torch._dynamo.reset()
+    assert torch.equal(fn(q), q * 2 + 1)
+    targets = {str(node.target) for node in graphs[0].graph.nodes}
+    assert any("int8_attention_nhd" in t for t in targets), targets
+    # a tensor subclass always takes the op
+    calls = []
+    monkeypatch.setattr(
+        I, "int8_attention_impl", lambda q, k, v: calls.append(type(q)) or v.clone()
+    )
+    p = torch.nn.Parameter(q.clone(), requires_grad = False)
+    I.int8_attention_call(p, q, q)
+    assert len(calls) == 1
+
+
+def test_tracers_that_look_like_plain_tensors_still_see_the_op(monkeypatch):
+    """A dispatch mode (make_fx, FlopCounterMode) records the op; raw launches would bypass it."""
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    I.int8_attention_op()
+    monkeypatch.setattr(I, "int8_attention_impl", lambda q, k, v: v.clone())
+
+    class Record(TorchDispatchMode):
+        def __init__(self):
+            super().__init__()
+            self.ops = []
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            self.ops.append(str(func))
+            return func(*args, **(kwargs or {}))
+
+    q = torch.randn(1, 8, 2, 64)
+    with Record() as mode:
+        I.int8_attention_call(q, q, q)
+    assert any("int8_attention_nhd" in op for op in mode.ops), mode.ops
+    assert not I._tracing()
+
+
+def test_torchscript_tracing_records_the_op(monkeypatch):
+    """torch.jit.trace sees plain tensors; tracing the op body would record its allocations but not its launches."""
+    I.int8_attention_op()
+    monkeypatch.setattr(I, "int8_attention_impl", lambda q, k, v: v.clone())
+
+    class Attend(torch.nn.Module):
+        def forward(self, q, k, v):
+            return I.int8_attention_call(q, k, v)
+
+    q = torch.randn(1, 8, 2, 64)
+    traced = torch.jit.trace(Attend(), (q, q, q), check_trace = False)
+    assert "int8_attention_nhd" in str(traced.graph), traced.graph
+    assert not I._tracing()
