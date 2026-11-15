@@ -1086,7 +1086,8 @@ def test_inventory_scans_every_dynamic_cache_root(monkeypatch, tmp_path):
     assert [Path(scan.cache_dir) for scan in result] == [first, second]
 
 
-def test_unreadable_ref_keeps_healthy_repos_in_the_same_cache(monkeypatch, tmp_path):
+@pytest.mark.parametrize("failure", ["undecodable_ref", "unexpected_error"])
+def test_failed_scan_keeps_healthy_repos_in_the_same_cache(monkeypatch, tmp_path, failure):
     for name in ("Healthy", "BadRef"):
         repo = tmp_path / f"models--Org--{name}"
         snapshot = repo / "snapshots" / "abc123"
@@ -1097,11 +1098,13 @@ def test_unreadable_ref_keeps_healthy_repos_in_the_same_cache(monkeypatch, tmp_p
 
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
 
-    # The encoding used by huggingface_hub to open refs depends on the host locale.
-    def undecodable_ref(cache_dir):
+    # huggingface_hub opens refs in the host locale encoding, so force the UTF-8 failure.
+    def failing_scan(cache_dir):
+        if failure == "unexpected_error":
+            raise RuntimeError("scan aborted")
         (Path(cache_dir) / "models--Org--BadRef" / "refs" / "main").read_text(encoding = "utf-8")
 
-    monkeypatch.setattr("huggingface_hub.scan_cache_dir", undecodable_ref)
+    monkeypatch.setattr("huggingface_hub.scan_cache_dir", failing_scan)
     scans = inventory_scan._compute_all_hf_cache_scans()
     assert [repo.repo_id for scan in scans for repo in scan.repos] == ["Org/Healthy"]
 
