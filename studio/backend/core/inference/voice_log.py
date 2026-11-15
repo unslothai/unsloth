@@ -95,6 +95,27 @@ def _read_lines(path: Path) -> list[dict]:
     return out
 
 
+TRACE_DIR_ENV = "UNSLOTH_VAD_DEBUG_DIR"
+
+
+def trace_enabled() -> bool:
+    """Whether the loop's events are recorded: only when the VAD debug folder is set."""
+    return bool(os.environ.get(TRACE_DIR_ENV))
+
+
+def append_trace(event: str, detail: Optional[dict], t: Optional[float]) -> bool:
+    """Append one loop event to ``voice-trace.jsonl`` beside the VAD debug clips; False without that folder."""
+    folder = os.environ.get(TRACE_DIR_ENV)
+    if not folder:
+        return False
+    root = Path(folder)
+    root.mkdir(parents = True, exist_ok = True)
+    line = json.dumps({"at": time.time(), "t": t, "event": event, "detail": detail or {}})
+    with open(root / "voice-trace.jsonl", "a", encoding = "utf-8") as f:
+        f.write(line + "\n")
+    return True
+
+
 def judge_verdict(p_complete: float) -> str:
     return "finished" if p_complete >= JUDGE_SEND_THRESHOLD else "hold"
 

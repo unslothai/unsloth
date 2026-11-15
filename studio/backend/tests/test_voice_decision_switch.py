@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -92,11 +93,11 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
     from core.systemone import catalog, laya_runtime
     from routes import inference
 
-    switched = []
+    switched, warmed = [], threading.Event()
     fake = SimpleNamespace(
         switch_decision = lambda: switched.append(True),
         decision_state = lambda: {"state": "loading", "error": None},
-        judge = lambda text: 0.5,
+        warm_decision = warmed.set,
     )
     monkeypatch.setattr(vm, "get_voice_models", lambda: fake)
     monkeypatch.setattr(catalog, "fine_tunes", lambda: [])
@@ -122,6 +123,8 @@ def test_route_sets_and_reports_the_pick(checkpoints, monkeypatch):
         "loading",
     )
     assert switched == [True]
+    # The new pick starts loading now, off the request.
+    assert warmed.wait(5)
 
     assert client.put("/api/inference/voice/decision", json = {"name": "nope"}).status_code == 400
     cleared = client.put("/api/inference/voice/decision", json = {"name": None}).json()
@@ -215,7 +218,6 @@ def test_custom_folder_decision_models_are_found_and_kept_in_bounds(monkeypatch,
 def test_a_refused_warm_up_reports_an_error(checkpoints, monkeypatch, tmp_path):
     from core.inference import voice_models as vm
     from core.systemone import laya_runtime
-    from routes import inference
 
     def ask(self, state, question):
         raise RuntimeError("Decision model unavailable: Unload the resident chat model first.")
@@ -228,7 +230,7 @@ def test_a_refused_warm_up_reports_an_error(checkpoints, monkeypatch, tmp_path):
     )
     models = vm.VoiceModels(root = tmp_path)
     monkeypatch.setattr(vm, "get_voice_models", lambda: models)
-    inference._warm_voice_decision()
+    models.warm_decision()
     assert models.decision_state() == {
         "state": "error",
         "error": "Decision model unavailable: Unload the resident chat model first.",
@@ -378,7 +380,6 @@ def test_a_warm_up_that_finds_the_checkpoint_loading_records_no_error(
 ):
     from core.inference import voice_models as vm
     from core.systemone import laya_runtime
-    from routes import inference
 
     def decide(checkpoint, state, questions, **options):
         raise laya_runtime.Unavailable(503, "model_loading", message, 5)
@@ -391,7 +392,7 @@ def test_a_warm_up_that_finds_the_checkpoint_loading_records_no_error(
     )
     models = vm.VoiceModels(root = tmp_path)
     monkeypatch.setattr(vm, "get_voice_models", lambda: models)
-    inference._warm_voice_decision()
+    models.warm_decision()
     assert models.decision_state() == {"state": "not_loaded", "error": None}
 
 

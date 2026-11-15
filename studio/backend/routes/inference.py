@@ -27144,10 +27144,11 @@ async def _voice_log_row(
 
 @studio_router.get("/voice/models/status")
 async def voice_models_status(current_subject: str = Depends(get_current_subject)):
+    from core.inference import voice_log
     from core.inference.voice_models import get_voice_models
 
     status = await asyncio.to_thread(get_voice_models().status)
-    status["trace"] = bool(os.environ.get("UNSLOTH_VAD_DEBUG_DIR"))
+    status["trace"] = voice_log.trace_enabled()
     return JSONResponse(content = status)
 
 
@@ -27155,101 +27156,11 @@ class VoiceDecisionPick(BaseModel):
     name: Optional[str] = None
 
 
-def _decision_row_meta(checkpoint) -> dict:
-    """The picker row's badges: family and parameter size, a current GGUF export, size on disk, age."""
-    import re
-
-    family, params, gguf, size, mtime = "Laya", None, None, checkpoint.download_bytes or None, None
-    folder = Path(checkpoint.source).expanduser()
-    if checkpoint.layout == "clef":
-        family = "Clef"
-    if folder.is_dir():
-        if checkpoint.layout == "clef":
-            try:
-                config = json.loads(
-                    (folder / "unsloth_decision_config.json").read_text(encoding = "utf-8")
-                )
-                base = str(config.get("base_model") or "").rsplit("/", 1)[-1]
-                family = (
-                    re.match(r"[A-Za-z]+", base).group(0)
-                    if re.match(r"[A-Za-z]+", base)
-                    else family
-                )
-                found = re.search(r"(\d+(?:\.\d+)?)[Bb]\b", base)
-                params = f"{found.group(1)}B" if found else None
-            except Exception:
-                pass
-        try:
-            from core.export.decision import current_export
-            export = current_export(folder, checkpoint.layout)
-            gguf = export["quantizations"][0] if export else None
-        except Exception:
-            gguf = None
-        try:
-            size = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
-            mtime = folder.stat().st_mtime
-        except OSError:
-            pass
-    return {"family": family, "params": params, "gguf": gguf, "size_bytes": size, "mtime": mtime}
-
-
-def _voice_decision_response() -> dict:
-    from core.inference import voice_decisions
-    from core.inference.voice_models import get_voice_models, models_dir, models_hub
-    from core.systemone import catalog
-    from routes.settings import _clef_availability
-
-    clef_reason = catalog.clef_unsupported_reason(wait = False)
-    folders = catalog.folder_decisions()
-
-    def kind(c) -> str:
-        return "fine_tune" if catalog.is_fine_tune_name(c.name) else "folder"
-
-    models = [
-        {
-            "name": c.name,
-            "label": c.label or (Path(c.source).name if kind(c) == "fine_tune" else c.name),
-            "description": c.description,
-            "kind": kind(c),
-            "path": c.source,
-            "available": True,
-            "unavailable_reason": None,
-            **_clef_availability(c, clef_reason),
-            **_decision_row_meta(c),
-        }
-        # Fine-tunes and custom folders only: no stock checkpoint was trained on voice mode's questions.
-        for c in [*catalog.fine_tunes(), *folders]
-    ]
-    return {
-        "current": voice_decisions.checkpoint_name(),
-        "source": voice_decisions.checkpoint_source(),
-        "launch_default": voice_decisions.launch_checkpoint(),
-        "models": models,
-        # With neither set the built-in classifiers can never load: a setup gap, not a failed load.
-        "builtin_configured": models_dir() is not None or models_hub() is not None,
-        **get_voice_models().decision_state(),
-    }
-
-
-def _warm_voice_decision() -> None:
-    from core.inference.voice_decisions import DecisionUnavailable
-    from core.inference.voice_models import get_voice_models
-
-    models = get_voice_models()
-    try:
-        models.judge("hello")
-    except DecisionUnavailable as exc:
-        # A load or download still running is not a failure: it keeps going in the runtime.
-        if not exc.loading:
-            models.note_decision_error(str(exc))
-    except Exception as exc:  # noqa: BLE001 - the state reports it
-        models.note_decision_error(str(exc))
-
-
 @studio_router.get("/voice/decision", dependencies = [Depends(auth_policy.require_owner)])
 async def voice_decision_get(current_subject: str = Depends(get_current_subject)):
     """The checkpoint voice mode decides with, where it came from, its load state and the choices."""
-    return JSONResponse(content = await asyncio.to_thread(_voice_decision_response))
+    from core.inference import voice_decisions
+    return JSONResponse(content = await asyncio.to_thread(voice_decisions.picker_state))
 
 
 @studio_router.put("/voice/decision", dependencies = [Depends(auth_policy.require_owner)])
@@ -27264,15 +27175,17 @@ async def voice_decision_put(
         await asyncio.to_thread(voice_decisions.set_checkpoint, payload.name)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    get_voice_models().switch_decision()
-    threading.Thread(target = _warm_voice_decision, daemon = True).start()
-    return JSONResponse(content = await asyncio.to_thread(_voice_decision_response))
+    models = get_voice_models()
+    models.switch_decision()
+    threading.Thread(target = models.warm_decision, daemon = True).start()
+    return JSONResponse(content = await asyncio.to_thread(voice_decisions.picker_state))
 
 
 @studio_router.get("/voice/trace")
 async def voice_trace_enabled(current_subject: str = Depends(get_current_subject)):
     """Whether loop events are recorded; reads no decision model, unlike /voice/models/status."""
-    return JSONResponse(content = {"trace": bool(os.environ.get("UNSLOTH_VAD_DEBUG_DIR"))})
+    from core.inference import voice_log
+    return JSONResponse(content = {"trace": voice_log.trace_enabled()})
 
 
 @studio_router.post("/voice/trace")
@@ -27280,21 +27193,10 @@ async def voice_trace(
     payload: VoiceTraceRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Append one loop event to ``voice-trace.jsonl`` beside the VAD debug clips; a no-op without that dir."""
-    folder = os.environ.get("UNSLOTH_VAD_DEBUG_DIR")
-    if not folder:
-        return JSONResponse(content = {"ok": False})
-    line = json.dumps(
-        {"at": time.time(), "t": payload.t, "event": payload.event, "detail": payload.detail or {}}
-    )
+    from core.inference import voice_log
 
-    def _append() -> None:
-        root = Path(folder)
-        root.mkdir(parents = True, exist_ok = True)
-        with open(root / "voice-trace.jsonl", "a", encoding = "utf-8") as f:
-            f.write(line + "\n")
-
-    await asyncio.to_thread(_append)
-    return JSONResponse(content = {"ok": True})
+    ok = await asyncio.to_thread(voice_log.append_trace, payload.event, payload.detail, payload.t)
+    return JSONResponse(content = {"ok": ok})
 
 
 @router.post("/voice/judge")

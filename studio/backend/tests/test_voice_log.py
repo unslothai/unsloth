@@ -230,3 +230,25 @@ def test_an_outcome_report_does_not_read_the_whole_log_again(monkeypatch):
     assert vl.set_outcome(later, "flushed") and vl.set_outcome("missing", "sent") is False
     assert reads.count(vl.log_path()) == 1
     assert [r["outcome"] for r in vl.read_rows()] == ["sent", "sent", "sent", "flushed"]
+
+
+def test_loop_events_are_recorded_only_beside_the_debug_clips(tmp_path, monkeypatch):
+    from core.inference import voice_log
+
+    monkeypatch.delenv(voice_log.TRACE_DIR_ENV, raising = False)
+    assert voice_log.trace_enabled() is False
+    assert voice_log.append_trace("turn.end", {"p": 0.9}, 12.5) is False
+
+    folder = tmp_path / "debug"
+    monkeypatch.setenv(voice_log.TRACE_DIR_ENV, str(folder))
+    assert voice_log.trace_enabled() is True
+    assert voice_log.append_trace("turn.end", {"p": 0.9}, 12.5) is True
+    assert voice_log.append_trace("stt", None, None) is True
+    rows = [
+        json.loads(line)
+        for line in (folder / "voice-trace.jsonl").read_text(encoding = "utf-8").splitlines()
+    ]
+    assert [(r["event"], r["detail"], r["t"]) for r in rows] == [
+        ("turn.end", {"p": 0.9}, 12.5),
+        ("stt", {}, None),
+    ]

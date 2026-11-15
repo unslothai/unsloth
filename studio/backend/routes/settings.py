@@ -1894,27 +1894,6 @@ def _decision_description(checkpoint, mlx: bool) -> str:
     return checkpoint.description
 
 
-def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
-    from core.systemone import laya_runtime
-
-    only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
-    if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
-        # A non-Clef MLX-only entry (Decider) is flagged too, so its runtime row stays reachable.
-        only = {} if only_mlx and checkpoint.layout == "clef" else {"llama_cpp_only": True}
-        # Selectable under a PyTorch runtime: the runtime row then says to switch it.
-        try:
-            laya_runtime.select(checkpoint, preference = "auto")
-        except laya_runtime.Unavailable as exc:
-            return {**only, "available": False, "unavailable_reason": exc.message}
-        return only
-    if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
-        return {}
-    # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
-    if laya_runtime.native_ready(checkpoint) or laya_runtime.mlx_ready(checkpoint):
-        return {}
-    return {"available": False, "unavailable_reason": reason}
-
-
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     from core.systemone.native_worker import reuse_found_binary
     with reuse_found_binary():
@@ -1968,7 +1947,7 @@ def _systemone_answer(request: Request) -> SystemOneSettingsResponse:
                 description = _decision_description(c, mlx_available),
                 download_bytes = c.download_bytes,
                 label = c.label,
-                **_clef_availability(c, clef_reason),
+                **catalog.clef_availability(c, clef_reason),
             )
             for c in catalog.CHECKPOINTS.values()
         ]
@@ -1979,7 +1958,7 @@ def _systemone_answer(request: Request) -> SystemOneSettingsResponse:
                 download_bytes = 0,
                 kind = "fine_tune",
                 label = Path(c.source).name,
-                **_clef_availability(c, clef_reason),
+                **catalog.clef_availability(c, clef_reason),
             )
             for c in fine_tunes
         ],

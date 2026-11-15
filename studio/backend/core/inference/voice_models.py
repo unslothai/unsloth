@@ -927,6 +927,18 @@ class VoiceModels:
         from core.inference import voice_decisions
         self._decision_error = (voice_decisions.checkpoint_name() or "", message)
 
+    def warm_decision(self) -> None:
+        """Ask the current Decision pick one question so it loads now; a refusal becomes its error."""
+        from core.inference.voice_decisions import DecisionUnavailable
+        try:
+            self.judge("hello")
+        except DecisionUnavailable as exc:
+            # A load or download still running is not a failure: it keeps going in the runtime.
+            if not exc.loading:
+                self.note_decision_error(str(exc))
+        except Exception as exc:  # noqa: BLE001 - the state reports it
+            self.note_decision_error(str(exc))
+
     def decision_state(self) -> dict:
         """Where voice mode's decisions stand, read without loading anything."""
         from core.inference import voice_decisions

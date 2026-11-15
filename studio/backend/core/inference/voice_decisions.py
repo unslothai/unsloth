@@ -11,8 +11,11 @@ catalog name such as ``laya-ft:<run folder>``).
 from __future__ import annotations
 
 import functools
+import json
 import os
+import re
 import time
+from pathlib import Path
 from typing import Optional
 
 ENV_CHECKPOINT = "UNSLOTH_VOICE_DECISION_CHECKPOINT"
@@ -105,6 +108,75 @@ def set_checkpoint(name: Optional[str]) -> None:
     if name is not None and not is_decision_checkpoint(name):
         raise ValueError(f"{name} is not a Decision checkpoint")
     run_as(OWNER, upsert_app_settings, {SETTING_KEY: name or ""}, read_back = False)
+
+
+def row_meta(checkpoint) -> dict:
+    """The picker row's badges: family and parameter size, a current GGUF export, size on disk, age."""
+    family, params, gguf, size, mtime = "Laya", None, None, checkpoint.download_bytes or None, None
+    folder = Path(checkpoint.source).expanduser()
+    if checkpoint.layout == "clef":
+        family = "Clef"
+    if folder.is_dir():
+        if checkpoint.layout == "clef":
+            try:
+                config = json.loads(
+                    (folder / "unsloth_decision_config.json").read_text(encoding = "utf-8")
+                )
+                base = str(config.get("base_model") or "").rsplit("/", 1)[-1]
+                named = re.match(r"[A-Za-z]+", base)
+                family = named.group(0) if named else family
+                found = re.search(r"(\d+(?:\.\d+)?)[Bb]\b", base)
+                params = f"{found.group(1)}B" if found else None
+            except Exception:
+                pass
+        try:
+            from core.export.decision import current_export
+            export = current_export(folder, checkpoint.layout)
+            gguf = export["quantizations"][0] if export else None
+        except Exception:
+            gguf = None
+        try:
+            size = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+            mtime = folder.stat().st_mtime
+        except OSError:
+            pass
+    return {"family": family, "params": params, "gguf": gguf, "size_bytes": size, "mtime": mtime}
+
+
+def picker_state() -> dict:
+    """The checkpoint voice mode decides with, where it came from, its load state and the choices."""
+    from core.inference.voice_models import get_voice_models, models_dir, models_hub
+    from core.systemone import catalog
+
+    clef_reason = catalog.clef_unsupported_reason(wait = False)
+
+    def kind(c) -> str:
+        return "fine_tune" if catalog.is_fine_tune_name(c.name) else "folder"
+
+    models = [
+        {
+            "name": c.name,
+            "label": c.label or (Path(c.source).name if kind(c) == "fine_tune" else c.name),
+            "description": c.description,
+            "kind": kind(c),
+            "path": c.source,
+            "available": True,
+            "unavailable_reason": None,
+            **catalog.clef_availability(c, clef_reason),
+            **row_meta(c),
+        }
+        # Fine-tunes and custom folders only: no stock checkpoint was trained on voice mode's questions.
+        for c in [*catalog.fine_tunes(), *catalog.folder_decisions()]
+    ]
+    return {
+        "current": checkpoint_name(),
+        "source": checkpoint_source(),
+        "launch_default": launch_checkpoint(),
+        "models": models,
+        # With neither set the built-in classifiers can never load: a setup gap, not a failed load.
+        "builtin_configured": models_dir() is not None or models_hub() is not None,
+        **get_voice_models().decision_state(),
+    }
 
 
 def filler_question(bank: dict) -> dict:
