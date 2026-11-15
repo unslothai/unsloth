@@ -3,27 +3,11 @@
 
 """MiniMax-H3's Qwen3-VL vision tower computed in float32, as the reference implementation runs it.
 
-The reference feeds float32 pixels to the tower and casts its bf16 weights up to the input per op, so every vision
-linear, convolution and layer norm runs in float32 while the weights stay bf16 in memory. Transformers rounds the
-pixels to the tower's dtype and computes in bf16. ``h3_vision_float32(text_encoder)`` scopes the reference's numerics
-to the tower for one call (MiniMax-H3 video and MiniMax-H3-Image share it):
-
-- ``get_image_features`` / ``get_video_features`` of the Qwen3-VL model run under a torch function mode that keeps
-  the float32 pixels unrounded and upcasts each bf16 / fp16 weight and bias to the float32 input (a temporary per
-  op, no resident float32 copy).
-- Position embeddings: the reference interpolates the learned grid in the table's dtype (bf16 bilinear weights,
-  the four taps summed in bf16). Transformers releases with ``fast_pos_embed_interpolate`` (4.57 to 5.5) do the
-  same; later ones sum the taps in float32, and there the reference's sum (``reference_position_embeddings``) is
-  swapped in, checked against transformers' own.
-- On CUDA, float32 matmuls in the tower run without TF32 (the reference's default); convolutions keep cuDNN's TF32
-  setting, as in the reference.
-- The merged rows and the DeepStack features leave the tower in the dtype the bf16 tower returned, so the language
-  model sees the same dtype as before and its layers are untouched.
-
-Pixels a caller already rounded to the tower's dtype are swapped back for their float32 source when that source was
-offered with ``offer_float32_pixels`` inside ``float32_pixel_sources()`` (Diffusers' MiniMax-H3 steps cast them).
-
-``UNSLOTH_H3_VISION_FP32=0`` restores the bf16 tower.
+The reference feeds float32 pixels and upcasts the bf16 weights per op; transformers rounds the pixels and computes in
+bf16. ``h3_vision_float32(text_encoder)`` scopes the reference numerics to the tower for one call: float32 pixels kept
+(``offer_float32_pixels`` swaps a caller's rounded copy back), weights upcast per op with no resident copy, no TF32
+for matmuls, the reference's bf16 position-embedding sum where transformers sums in float32, and outputs returned in
+the tower's dtype so the language model is untouched. ``UNSLOTH_H3_VISION_FP32=0`` restores the bf16 tower.
 """
 
 from __future__ import annotations
