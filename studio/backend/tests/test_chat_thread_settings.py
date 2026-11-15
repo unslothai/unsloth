@@ -32,6 +32,7 @@ SETTINGS = {
     "codeToolsEnabled": False,
     "deepResearchEnabled": False,
     "permissionMode": "auto",
+    "fullAccess": True,
     "ragEnabled": True,
     "ragSource": {"type": "kb", "kbId": "notes"},
     "ragMode": "dense",
@@ -70,6 +71,7 @@ def test_thread_settings_round_trip():
     "field, value",
     [
         ("permissionMode", "full"),
+        ("fullAccess", "full"),
         ("ragTopK", 51),
         ("ragAutoInjectMinScore", 1.5),
         ("ragMode", "vector"),

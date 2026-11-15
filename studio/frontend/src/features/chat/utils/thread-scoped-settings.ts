@@ -18,7 +18,7 @@ import {
   sanitizeRagSource,
 } from "./mirrored-chat-settings.ts";
 
-/** "full" (Full access) is session-only, so a thread never carries it. */
+/** Never "full": a chat's Full access is the separate `fullAccess` flag. */
 export type ThreadPermissionMode = Exclude<PermissionMode, "full">;
 
 export interface ThreadScopedSettings {
@@ -31,6 +31,8 @@ export interface ThreadScopedSettings {
   deepResearchEnabled?: boolean;
   mcpEnabledForChat?: boolean;
   permissionMode?: ThreadPermissionMode;
+  /** Full access granted to this chat; the store writes it, the sanitizer never keeps it. */
+  fullAccess?: boolean;
   ragEnabled?: boolean;
   ragSource?: RagSource;
   ragMode?: RagMode;
