@@ -1794,9 +1794,42 @@ def _fast_lora_weights(lora_A, lora_B, dtype):
         )
     cache = getattr(lora_A, "_fast_lora", None)
     if cache is None or cache[0] != key:
-        cache = (key, lora_A.to(dtype), lora_B.to(dtype))
+        if cache is not None and _refresh_lora_cast(cache, lora_A, lora_B, dtype):
+            # Same tensors, new values: a captured decode graph reading them stays valid.
+            cache = (key, cache[1], cache[2])
+        else:
+            cache = (key, *_new_lora_cast(lora_A, lora_B, dtype))
         lora_A._fast_lora = cache
     return cache[1], cache[2]
+
+
+def _new_lora_cast(lora_A, lora_B, dtype):
+    if torch.is_inference_mode_enabled() and not _is_compiling():
+        # Normal tensors, so a later refresh can write them in place outside inference mode too.
+        with torch.inference_mode(False), torch.no_grad():
+            return lora_A.to(dtype), lora_B.to(dtype)
+    return lora_A.to(dtype), lora_B.to(dtype)
+
+
+def _refresh_lora_cast(cache, lora_A, lora_B, dtype):
+    """Copies the adapters into the cached casts in place (addresses kept) when they still fit."""
+    A, B = cache[1], cache[2]
+    if _is_compiling() or torch.is_grad_enabled():
+        return False
+    pairs = [(cast, source) for cast, source in ((A, lora_A), (B, lora_B)) if cast is not source]
+    for cast, source in pairs:
+        if (
+            cast.dtype != dtype
+            or cast.shape != source.shape
+            or cast.device != source.device
+            or cast.requires_grad
+            or cast._base is not None
+            or (cast.is_inference() and not torch.is_inference_mode_enabled())
+        ):
+            return False
+    for cast, source in pairs:
+        cast.copy_(source)
+    return True
 
 
 def fast_linear_forward(

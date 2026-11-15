@@ -3190,8 +3190,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
         if graphs and _decode_graphs.EAGER_REDOS == redos:
             _decode_graphs.record_need(self, token)
     if graphs and restore_training_mode:
-        # Back to training: the next optimizer step invalidates the graphs anyway; free them and the
-        # decode buffers for training.
+        # Back to training: free the graphs and decode buffers for it, unless they fit beside it
+        # (keep_for_training; they replay the updated adapters after the optimizer step).
         _decode_graphs.release_for_training(self)
     elif graphs and getattr(output, "past_key_values", None) is not None:
         # The returned cache views the persistent decode buffers: hand them over, so a later
