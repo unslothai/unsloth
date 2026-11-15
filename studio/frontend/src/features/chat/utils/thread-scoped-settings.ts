@@ -31,7 +31,7 @@ export interface ThreadScopedSettings {
   deepResearchEnabled?: boolean;
   mcpEnabledForChat?: boolean;
   permissionMode?: ThreadPermissionMode;
-  /** Full access granted to this chat; the store writes it, the sanitizer never keeps it. */
+  /** Full access granted to this chat. Not a store field: the store reads and writes it itself. */
   fullAccess?: boolean;
   ragEnabled?: boolean;
   ragSource?: RagSource;
@@ -212,6 +212,7 @@ export function sanitizeThreadScopedSettings(
     if (typeof value[key] === "string") target[key] = value[key];
   }
   if (value.seed === null) settings.seed = null;
+  if (typeof value.fullAccess === "boolean") settings.fullAccess = value.fullAccess;
   const ragSource = sanitizeRagSource(value.ragSource);
   if (ragSource) settings.ragSource = ragSource;
   return settings;

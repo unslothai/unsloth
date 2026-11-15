@@ -1382,7 +1382,7 @@ function buildThreadScopedSnapshot(
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
   restoreChatOwnedValues(threadId, settings);
-  // A full replacement would erase it: the sanitizer never keeps it.
+  // Not a store field, so a snapshot read from the store lacks it and a replacement would erase it.
   const fullAccess = savedChatFullAccess.get(threadId);
   if (fullAccess !== undefined) settings.fullAccess = fullAccess;
   if (threadId === threadScopedSettingsThreadId) {

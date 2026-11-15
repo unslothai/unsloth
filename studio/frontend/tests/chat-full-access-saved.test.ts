@@ -14,6 +14,7 @@ register("./thread-sampling-resolver.mjs", import.meta.url);
 const { threadRows } = await import("./helpers/store-stubs/chat-history-storage.ts");
 const { setLoginMode } = await import("../src/features/auth/login-client.ts");
 const STORE = new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url).href;
+const { sanitizeThreadScopedSettings } = await import("../src/features/chat/utils/thread-scoped-settings.ts");
 type Runtime = typeof import("../src/features/chat/stores/chat-runtime-store.ts");
 
 const CHAT = "chat-with-full-access";
@@ -32,9 +33,10 @@ async function start(name: string) {
 
 type State = Awaited<ReturnType<typeof start>>;
 
+/** As runtime-provider opens a chat: its stored row, through the same sanitizer. */
 function open(state: State, threadId: string): void {
   state().setActiveThreadId(threadId);
-  state().applyThreadScopedSettings(threadId, (threadRows.rows.get(threadId) ?? {}) as never);
+  state().applyThreadScopedSettings(threadId, sanitizeThreadScopedSettings(threadRows.rows.get(threadId) ?? {}));
 }
 
 function logOutAndBackIn(): void {
