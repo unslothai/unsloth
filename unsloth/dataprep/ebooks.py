@@ -88,6 +88,12 @@ class _BookTextParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag == "body":
             self.handle_endtag("head")
+        elif tag in {"rb", "rp", "rt", "rtc"} and any(t == "ruby" for t, _ in self.stack):
+            # HTML lets </rb>, </rp>, </rt> (and </rtc> before rb/rtc) be omitted; close them like
+            # the spec's tree builder, else base text after an unclosed <rt> would stay hidden.
+            closes = {"rb", "rp", "rt", "rtc"} if tag in {"rb", "rtc"} else {"rb", "rp", "rt"}
+            while self.stack and self.stack[-1][0] in closes:
+                self.stack.pop()
         attrs = dict(attrs)
         if tag == "meta" and self.encoding is None:
             self.encoding = attrs.get("charset")
